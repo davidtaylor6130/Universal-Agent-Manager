@@ -474,6 +474,10 @@ namespace
 				JsonValue tc_obj = uam::json::Object();
 				uam::json::SetString(tc_obj, kToolCallIdField, tc.id);
 				uam::json::SetString(tc_obj, kToolCallNameField, tc.name);
+				uam::json::SetString(tc_obj, "kind", tc.kind);
+				uam::json::SetString(tc_obj, "approval_status", tc.approval_status);
+				uam::json::SetString(tc_obj, "task_id", tc.task_id);
+				uam::json::SetString(tc_obj, "child_activity", tc.child_activity);
 				uam::json::SetString(tc_obj, kToolCallArgsJsonField, tc.args_json);
 				uam::json::SetString(tc_obj, kToolCallResultTextField, tc.result_text);
 				uam::json::SetString(tc_obj, kToolCallStatusField, tc.status);
@@ -599,9 +603,19 @@ namespace
 				ToolCall tool_call;
 				tool_call.id = JsonStringOrEmpty(tc.Find(kToolCallIdField));
 				tool_call.name = JsonStringOrEmpty(tc.Find(kToolCallNameField));
+				tool_call.kind = JsonStringOrEmpty(tc.Find("kind"));
+				tool_call.approval_status = JsonStringOrEmpty(tc.Find("approval_status"));
+				tool_call.task_id = JsonStringOrEmpty(tc.Find("task_id"));
+				tool_call.child_activity = JsonStringOrEmpty(tc.Find("child_activity"));
 				tool_call.args_json = JsonStringOrEmpty(tc.Find(kToolCallArgsJsonField));
 				tool_call.result_text = JsonStringOrEmpty(tc.Find(kToolCallResultTextField));
 				tool_call.status = JsonStringOrEmpty(tc.Find(kToolCallStatusField));
+				// Older saves recorded approval without an execution outcome; do not infer pending work.
+				if (tool_call.status == "auto_approved")
+				{
+					tool_call.approval_status = "auto_approved";
+					tool_call.status = "unknown";
+				}
 				tool_call.is_sub_agent = JsonBoolOrDefault(tc.Find(kToolCallIsSubAgentField), false);
 				tool_call.sub_agent_id = JsonStringOrEmpty(tc.Find(kToolCallSubAgentIdField));
 				tool_call.sub_agent_title = JsonStringOrEmpty(tc.Find(kToolCallSubAgentTitleField));
@@ -721,7 +735,7 @@ namespace
 
 	bool ToolCallEquivalentForRecovery(const ToolCall& lhs, const ToolCall& rhs)
 	{
-		return lhs.id == rhs.id && lhs.name == rhs.name && lhs.args_json == rhs.args_json && lhs.result_text == rhs.result_text && lhs.status == rhs.status && lhs.is_sub_agent == rhs.is_sub_agent && lhs.sub_agent_id == rhs.sub_agent_id && lhs.sub_agent_title == rhs.sub_agent_title;
+		return lhs == rhs;
 	}
 
 	bool ToolCallsEquivalentForRecovery(const std::vector<ToolCall>& lhs, const std::vector<ToolCall>& rhs)

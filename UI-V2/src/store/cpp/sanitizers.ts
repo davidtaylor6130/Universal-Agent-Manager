@@ -251,6 +251,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     title: stringOr(value.title),
     kind: stringOr(value.kind),
     status: stringOr(value.status),
+    approvalStatus: stringOr(value.approvalStatus),
     content: stringOr(value.content),
     contentDeferred: booleanOr(value.contentDeferred),
     contentDigest: stringOr(value.contentDigest),

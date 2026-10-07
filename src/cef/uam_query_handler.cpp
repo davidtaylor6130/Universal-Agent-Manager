@@ -215,6 +215,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"stopDictation", &UamQueryHandler::HandleStopDictation},
 		{"stageChatAttachments", &UamQueryHandler::HandleStageChatAttachments},
 		{"sendAcpPrompt", &UamQueryHandler::HandleSendAcpPrompt},
+		{"compactAcpSession", &UamQueryHandler::HandleCompactAcpSession},
 		{"manageQueuedAcpPrompt", &UamQueryHandler::HandleManageQueuedAcpPrompt},
 		{"discoverProviderModels", &UamQueryHandler::HandleDiscoverProviderModels},
 		{"setAcpConfigOption", &UamQueryHandler::HandleSetAcpConfigOption},

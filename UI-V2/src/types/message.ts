@@ -13,6 +13,7 @@ export interface MessageToolCall {
   title: string
   kind: string
   status: string
+  approvalStatus?: string
   content: string
   contentDeferred?: boolean
   contentDigest?: string

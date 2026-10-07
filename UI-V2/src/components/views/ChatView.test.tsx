@@ -2668,6 +2668,98 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it.each(['enter', 'send', 'palette', 'failure', 'not-accepted', 'new-draft'] as const)('routes compact via native control and preserves attachments (%s)', async (operation) => {
+    const previousSendAcpPrompt = useAppStore.getState().sendAcpPrompt
+    const previousSkills = useAppStore.getState().markdownStoreAttachedBySessionId
+    const sendAcpPrompt = vi.fn().mockResolvedValue(true)
+    const skill = { id: 'keep', title: 'Keep', maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath: '/skills/keep.md' }
+    useAppStore.setState((state) => ({
+      sendAcpPrompt, markdownStoreAttachedBySessionId: { 'chat-1': [skill] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null } },
+    }))
+    writeChatComposerDraft('chat-1', { text: '/compact', attachments: [{ id: 'keep-file', name: 'keep.txt', type: 'file', size: 4, path: '/tmp/keep.txt', status: 'ready' }] })
+    const requests: Array<{ action: string; payload: unknown }> = []
+    let finish = () => { throw new Error('Compact not requested') }
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'compactAcpSession') finish = () => operation === 'failure'
+        ? onFailure(400, 'This provider does not support manual compaction.')
+        : onSuccess(JSON.stringify({ accepted: operation !== 'not-accepted' }))
+      else onSuccess('{}')
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    await act(async () => {
+      if (operation === 'send' || operation === 'failure' || operation === 'not-accepted' || operation === 'new-draft') {
+        (host.querySelector('button[aria-label="Send prompt"]') as HTMLButtonElement).click()
+      } else {
+        setDraft('/compact')
+        if (operation === 'palette') {
+          const row = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/compact')) as HTMLElement
+          expect(row).toBeTruthy()
+          row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+        } else textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      }
+    })
+    expect(requests.filter((request) => request.action === 'compactAcpSession')).toEqual([{ action: 'compactAcpSession', payload: { chatId: 'chat-1' }, requestId: expect.any(String) }])
+    expect(sendAcpPrompt).not.toHaveBeenCalled()
+    if (operation === 'new-draft') act(() => setDraft('My next prompt'))
+    await act(async () => finish())
+    expect(textarea.value).toBe(operation === 'failure' || operation === 'not-accepted' ? '/compact' : operation === 'new-draft' ? 'My next prompt' : '')
+    expect(readChatComposerDraft('chat-1').attachments).toHaveLength(1)
+    expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
+    expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
+    if (operation === 'failure') expect(host.textContent).toContain('This provider does not support manual compaction.')
+    if (operation === 'not-accepted') expect(host.textContent).toContain('Compaction request was not accepted.')
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
+    useAppStore.setState({ sendAcpPrompt: previousSendAcpPrompt, markdownStoreAttachedBySessionId: previousSkills })
+  })
+
+  it.each([false, true])('keeps compact acknowledgements scoped to their original chat visit and blocks duplicates (return=%s)', async (returnToFirst) => {
+    const first = useAppStore.getState().sessions[0]
+    const second = { ...first, id: 'chat-2', name: 'Second chat' }
+    useAppStore.setState((state) => ({
+      sessions: [first, second],
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-2': { ...state.acpBindingBySessionId['chat-1'], sessionId: 'native-2' } },
+    }))
+    writeChatComposerDraft('chat-1', { text: '/compact', attachments: [] })
+    writeChatComposerDraft('chat-2', { text: 'Second chat draft', attachments: [] })
+    let finish = () => { throw new Error('Compact not requested') }
+    let count = 0
+    window.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'compactAcpSession') { count++; finish = () => onSuccess(JSON.stringify({ accepted: true })) }
+      else onSuccess('{}')
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView key={first.id} session={first} />))
+    await act(async () => {
+      host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      host.querySelector('form')?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    expect(count).toBe(1)
+    act(() => root.render(<ChatView key={second.id} session={second} />))
+    if (returnToFirst) act(() => root.render(<ChatView key={first.id} session={first} />))
+    await act(async () => finish())
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe(returnToFirst ? '/compact' : 'Second chat draft')
+    expect(readChatComposerDraft('chat-1').text).toBe('/compact')
+    expect(host.textContent).not.toContain('Compaction requested.')
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
+  })
+
   it('offers Copilot ACP advertised commands without shadowing local slash actions', async () => {
     useAppStore.setState((state) => ({
       providers: [
@@ -6221,6 +6313,7 @@ describe('ChatView', () => {
         workspaceDirectory: '/tmp/project/.uam-worktrees/chat-1',
         workspaceSourceDirectory: '/tmp/project',
         workspaceIsolationKind: 'gitWorktree',
+        workspaceBranchName: 'build/fix-login',
       })),
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
@@ -6242,6 +6335,7 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
     openWorkspaceActions(host)
+    expect(document.body.querySelector('[role="menu"][aria-label="Workspace actions"]')?.textContent).toContain('build/fix-login')
     const discard = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]'))
       .find((button) => button.textContent === 'Discard & return') as HTMLButtonElement
     expect(discard.disabled).toBe(false)

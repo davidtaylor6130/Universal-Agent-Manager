@@ -290,6 +290,8 @@ export function providerSupportsTextWorkers(providerId: string): boolean {
   return providerMetadataForId(providerId).capabilities.supportsTextWorkers
 }
 
+/** Supported provider IDs in catalogue order, shared by provider selection controls. */
+
 const GEMINI_METADATA = PROVIDER_METADATA_BY_ID[DEFAULT_PROVIDER_ID]
 
 const PROVIDER_ID_ALIASES: Record<string, string> = {

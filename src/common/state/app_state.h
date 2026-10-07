@@ -160,6 +160,9 @@ namespace uam
 		bool is_sub_agent = false;
 		std::string sub_agent_id;
 		std::string sub_agent_title;
+		std::string approval_status;
+		std::string task_id;
+		std::string child_activity;
 	};
 
 	struct AcpPlanEntryState
@@ -458,6 +461,7 @@ namespace uam
 		bool mcp_http_supported = false;
 		bool mcp_sse_supported = false;
 		bool processing = false;
+		bool manual_compaction_pending = false;
 		bool recovering_remote_turn = false;
 		bool recovering_remote_process = false;
 		bool waiting_for_permission = false;
@@ -570,6 +574,7 @@ namespace uam
 		std::unordered_map<std::string, AcpPendingSteerState> pending_steer_requests;
 		std::unordered_map<std::string, int> tool_call_message_indices;
 		std::vector<AcpToolCallState> tool_calls;
+		std::unordered_set<std::string> claude_seen_child_messages;
 		std::vector<AcpPlanEntryState> plan_entries;
 		std::string plan_summary;
 		std::unordered_map<std::string, std::string> codex_agent_message_text_by_item_id;
@@ -863,6 +868,8 @@ namespace uam
 		std::vector<UamControlCapability> uam_control_capabilities;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
+		/// <summary>Retains cancellation intent across failed ledger writes until polling can retry.</summary>
+		std::unordered_set<std::string> pending_agent_run_cancellation_ids;
 		std::unordered_map<std::string, int64_t> agent_run_deadline_steady_ms;
 		std::unordered_map<std::string, std::deque<int64_t>> agent_provider_crash_times_epoch_ms;
 		std::unordered_map<std::string, int64_t> agent_provider_circuit_open_until_epoch_ms;

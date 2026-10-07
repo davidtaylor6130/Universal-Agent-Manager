@@ -14,6 +14,7 @@
 namespace uam::paths
 {
 	inline constexpr const char* kGitWorktreeIsolationKind = "gitWorktree";
+	inline constexpr const char* kPendingGitWorktreeIsolationKind = "pendingGitWorktree";
 
 	inline const ChatFolder* FindWorkspaceFolderById(const uam::AppState& app, std::string_view folder_id)
 	{

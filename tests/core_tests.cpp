@@ -19,11 +19,13 @@
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
 
+#include <cstdio>
 #include <fstream>
 #include <type_traits>
 
 #if defined(_WIN32)
 #include <windows.h>
+#include <io.h>
 #endif
 
 #if defined(__APPLE__)
@@ -31,6 +33,405 @@
 #endif
 
 using namespace uam_test;
+
+namespace
+{
+/// <summary>Captures native requests using a private descriptor, including assertion cleanup.</summary>
+class ManualCompactionWriter
+{
+public:
+	explicit ManualCompactionWriter(uam::AcpSessionState& session) : m_session(session), m_file(std::tmpfile())
+	{
+		UAM_ASSERT(m_file != nullptr);
+#if defined(_WIN32)
+		m_session.stdin_write = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(m_file)));
+		UAM_ASSERT(m_session.stdin_write != INVALID_HANDLE_VALUE && m_session.stdin_write != nullptr);
+#else
+		m_session.stdin_write_fd = fileno(m_file);
+		UAM_ASSERT(m_session.stdin_write_fd >= 0);
+#endif
+		m_session.stdin_writer = std::make_shared<uam::platform::AsyncByteWriter>(
+		    [this](const char* bytes, std::size_t count, std::string&) -> std::ptrdiff_t
+		    { captured.append(bytes, count); return static_cast<std::ptrdiff_t>(count); }, [] {});
+	}
+	~ManualCompactionWriter()
+	{
+		Detach();
+		std::fclose(m_file);
+	}
+	void Detach()
+	{
+		m_session.stdin_writer.reset();
+#if defined(_WIN32)
+		m_session.stdin_write = INVALID_HANDLE_VALUE;
+#else
+		m_session.stdin_write_fd = -1;
+#endif
+	}
+	std::string captured;
+private:
+	uam::AcpSessionState& m_session;
+	std::FILE* m_file;
+};
+}
+
+UAM_TEST(ManualCompactionSendsNativeRequestAndPreservesConversationAndGoal)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-manual-compact");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "compact";
+	chat.provider_id = "codex-cli";
+	Message message;
+	message.content = "Existing conversation";
+	chat.messages.push_back(message);
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.content = "Completed answer";
+	assistant.processing_time_ms = 1234;
+	assistant.stop_reason = "completed";
+	chat.messages.push_back(assistant);
+	Goal goal;
+	goal.id = "goal";
+	goal.objective = "Keep working";
+	goal.loop_count = 7;
+	chat.goals.push_back(goal);
+	chat.active_goal_id = goal.id;
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread-compact";
+	session.running = true;
+	session.session_ready = true;
+	session.turn_user_message_index = 0;
+	session.turn_first_user_message_index = 0;
+	session.current_assistant_message_index = 1;
+	session.turn_assistant_message_index = 1;
+	session.turn_checkpoint_eligible = true;
+	session.turn_started_time_s = uam::GetAppTimeSeconds() - 5.0;
+	const double previous_start = session.turn_started_time_s;
+	ManualCompactionWriter transport(session);
+	std::string error;
+	UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT_EQ(session.turn_user_message_index, -1);
+	UAM_ASSERT_EQ(session.turn_first_user_message_index, -1);
+	UAM_ASSERT_EQ(session.current_assistant_message_index, -1);
+	UAM_ASSERT_EQ(session.turn_assistant_message_index, -1);
+	UAM_ASSERT(!session.turn_checkpoint_eligible);
+	UAM_ASSERT(session.turn_started_time_s > previous_start);
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	const nlohmann::json request = nlohmann::json::parse(transport.captured);
+	UAM_ASSERT_EQ(request["method"].get<std::string>(), std::string("thread/compact/start"));
+	UAM_ASSERT_EQ(request["params"]["threadId"].get<std::string>(), session.codex_thread_id);
+	const int request_id = request["id"].get<int>();
+	UAM_ASSERT(session.manual_compaction_pending && session.processing);
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"id", request_id}, {"result", nlohmann::json::object()}}.dump()));
+	UAM_ASSERT(session.manual_compaction_pending && session.processing);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "previous-turn"}, {"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT(session.manual_compaction_pending && session.processing);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/started"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "compact-turn"}}}}}}.dump()));
+	UAM_ASSERT(!uam::SteerAcpPrompt(app, chat.id, "Follow up", {}, {}, false, &error));
+	UAM_ASSERT(error.find("compaction") != std::string::npos);
+	UAM_ASSERT(transport.captured.find("turn/steer") == std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "stale-turn"}, {"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT(session.manual_compaction_pending);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "compact-turn"}, {"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, message.content);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, assistant.content);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().processing_time_ms, assistant.processing_time_ms);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().stop_reason, assistant.stop_reason);
+	UAM_ASSERT(!app.chats.front().messages.back().interrupted);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 7);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	// Completion can arrive before the empty RPC acknowledgement.
+	session.manual_compaction_pending = true;
+	session.processing = true;
+	session.codex_turn_id = "second-compact-turn";
+	session.inactivity_timeout_pending = true;
+	session.cancel_requested = true;
+	session.cancel_requested_time_s = uam::GetAppTimeSeconds() - 10.0;
+	session.pending_request_methods[73] = "thread/compact/start";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "second-compact-turn"}, {"status", "completed"}}}}}}.dump()));
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"id", 73}, {"result", nlohmann::json::object()}}.dump()));
+	UAM_ASSERT(!session.processing && !session.manual_compaction_pending);
+	UAM_ASSERT(!session.inactivity_timeout_pending && !session.cancel_requested);
+	UAM_ASSERT_EQ(session.cancel_requested_time_s, 0.0);
+	UAM_ASSERT_EQ(uam::AcpTurnInactivityRecovery(session, uam::GetAppTimeSeconds(), 1.0), uam::AcpTurnInactivityRecoveryAction::None);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 7);
+
+#endif
+}
+
+UAM_TEST(ManualCompactionRejectsUnavailableBusyRemoteAndUnsupportedSessions)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "compact";
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = "codex-cli";
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread";
+	session.running = true;
+	session.session_ready = true;
+	for (int condition = 0; condition < 5; ++condition)
+	{
+		session.processing = condition == 0;
+		session.cancel_requested = condition == 1;
+		session.waiting_for_user_input = condition == 2;
+		session.queued_user_prompts.clear();
+		if (condition == 3) session.queued_user_prompts.emplace_back();
+		session.pending_request_methods.clear();
+		if (condition == 4) session.pending_request_methods[41] = "control";
+		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+		UAM_ASSERT(!error.empty());
+	}
+	session.pending_request_methods.clear();
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	app.chats.front().execution_host_id = "remote";
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(error.find("local") != std::string::npos);
+	app.chats.front().execution_host_id = "local";
+#endif
+	session.provider_id = "claude-cli";
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(error.find("does not support") != std::string::npos);
+	UAM_ASSERT(!session.manual_compaction_pending);
+	UAM_ASSERT(app.chats.front().messages.empty());
+}
+
+UAM_TEST(ManualCompactionTransportAndRpcFailuresDoNotLeaveSessionBusy)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "compact";
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = "codex-cli";
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread";
+	session.running = true;
+	session.session_ready = true;
+	std::string error;
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+	session.manual_compaction_pending = true;
+	session.processing = true;
+	session.pending_request_methods[42] = "thread/compact/start";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"id", 42}, {"error", {{"code", -32601}, {"message", "Unsupported compaction"}}}}.dump()));
+	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(session.last_error.find("Unsupported compaction") != std::string::npos);
+	UAM_ASSERT(app.chats.front().messages.empty());
+#endif
+}
+
+UAM_TEST(ManualCompactionCancellationAndFailurePreserveCompletedMessageMetadata)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (int settlement = 0; settlement < 4; ++settlement)
+	{
+		TempDir temp("uam-compact-settlement");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "compact";
+		chat.provider_id = "codex-cli";
+		Message message;
+		message.role = MessageRole::Assistant;
+		message.content = "Already completed";
+		message.processing_time_ms = 4567;
+		message.stop_reason = "completed";
+		chat.messages.push_back(message);
+		Goal goal;
+		goal.id = "active-provider-goal";
+		goal.objective = "Keep the provider goal active";
+		goal.execution_owner = "provider";
+		goal.provider_command = "/autopilot";
+		chat.goals.push_back(goal);
+		chat.active_goal_id = goal.id;
+		app.chats.push_back(chat);
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+		session.codex_thread_id = "thread";
+		session.session_id = "thread";
+		session.running = true;
+		session.session_ready = true;
+		session.current_assistant_message_index = 0;
+		session.turn_assistant_message_index = 0;
+		session.turn_started_time_s = uam::GetAppTimeSeconds() - 30.0;
+		session.last_turn_outcome = "completed";
+		ManualCompactionWriter transport(session);
+		std::string error;
+		UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error));
+		UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+		const int request_id = nlohmann::json::parse(transport.captured)["id"].get<int>();
+		if (settlement != 0)
+		{
+			session.codex_turn_id = "maintenance";
+			if (settlement == 1)
+				UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error));
+			else
+			{
+				app.settings.active_turn_inactivity_timeout_seconds = 1;
+				session.turn_started_time_s = 1.0;
+				session.last_runtime_activity_time_s = 1.0;
+				UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, session, app.chats.front(), 600.0));
+				UAM_ASSERT(session.inactivity_timeout_pending);
+				UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+			}
+			if (settlement == 3)
+			{
+				// Forced stop may close session descriptors; the fixture keeps its private FILE ownership.
+				UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+				transport.Detach();
+				session.cancel_requested_time_s = 1.0;
+				UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, session, app.chats.front(), 600.0));
+			}
+			else
+			{
+				UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+				    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", session.codex_thread_id}, {"turn", {{"id", "maintenance"}, {"status", "interrupted"}}}}}}.dump()));
+			}
+		}
+		else
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+			    nlohmann::json{{"id", request_id}, {"error", {{"code", -32601}, {"message", "Rejected compact"}}}}.dump()));
+		}
+		UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+		UAM_ASSERT(!session.inactivity_timeout_pending);
+		UAM_ASSERT_EQ(session.cancel_requested_time_s, 0.0);
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, message.content);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().processing_time_ms, message.processing_time_ms);
+		UAM_ASSERT_EQ(app.chats.front().messages.front().stop_reason, message.stop_reason);
+		UAM_ASSERT(!app.chats.front().messages.front().interrupted);
+		UAM_ASSERT_EQ(session.last_turn_outcome, std::string("completed"));
+		UAM_ASSERT(!session.goal_resume_suppressed);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	}
+#endif
+}
+
+UAM_TEST(ManualCompactionRejectionDrainsQueuedUserFollowup)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-compact-followup");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "compact";
+	chat.provider_id = "codex-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.memory_enabled = false;
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread";
+	session.session_id = "thread";
+	session.initialized = true;
+	session.running = true;
+	session.session_ready = true;
+	session.current_mode_id = "default";
+	ManualCompactionWriter transport(session);
+	std::string error;
+	UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	const int request_id = nlohmann::json::parse(transport.captured)["id"].get<int>();
+	uam::AcpQueuedUserPromptState queued;
+	queued.text = "Follow up after compaction";
+	session.queued_user_prompts.push_back(queued);
+	app.chats.front().acp_queued_prompts.push_back(queued);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"id", request_id}, {"error", {{"code", -32601}, {"message", "Rejected compact"}}}}.dump()));
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	UAM_ASSERT(!session.manual_compaction_pending);
+	UAM_ASSERT(session.queued_user_prompts.empty());
+	UAM_ASSERT(session.processing && session.prompt_request_id != 0);
+	UAM_ASSERT(transport.captured.find("turn/start") != std::string::npos);
+	UAM_ASSERT(transport.captured.find(queued.text) != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, queued.text);
+#endif
+}
+
+UAM_TEST(ManualCompactionStreamErrorWaitsForItsCompletionWithoutSettlingGoal)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-compact-stream-error");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "compact";
+	chat.provider_id = "codex-cli";
+	Goal goal;
+	goal.id = "goal";
+	goal.objective = "Keep working";
+	goal.loop_count = 7;
+	chat.goals.push_back(goal);
+	chat.active_goal_id = goal.id;
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+	session.codex_thread_id = "thread";
+	session.session_id = "thread";
+	session.running = true;
+	session.session_ready = true;
+	ManualCompactionWriter transport(session);
+	std::string error;
+	UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/started"}, {"params", {{"threadId", "thread"}, {"turn", {{"id", "maintenance"}}}}}}.dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "error"}, {"params", {{"threadId", "thread"}, {"turnId", "maintenance"}, {"error", {{"message", "Context compaction failed"}}}, {"willRetry", false}}}}.dump()));
+	UAM_ASSERT(session.manual_compaction_pending && session.processing);
+	UAM_ASSERT(session.last_error.find("Context compaction failed") != std::string::npos);
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+	    nlohmann::json{{"method", "turn/completed"}, {"params", {{"threadId", "thread"}, {"turn", {{"id", "maintenance"}, {"status", "failed"}, {"error", {{"message", "Context compaction failed"}}}}}}}}.dump()));
+	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 7);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	UAM_ASSERT(app.chats.front().messages.empty());
+#endif
+}
 
 UAM_TEST(CompanionLanRepairPreservesCredentialsAndRejectsCustomOrUnavailableAddresses)
 {
@@ -1760,6 +2161,62 @@ UAM_TEST(AgentRunCancellationRetriesWithoutPublishingAPhantomTerminalState)
 
 	app.data_root = data_root;
 	UAM_ASSERT(uam::AgentRunScheduler::CancelTree(app, run.id, &error));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("cancelled"));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	const auto saved = uam::AgentRunLedger::LoadAll(app.data_root).runs;
+	UAM_ASSERT_EQ(saved.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(saved.front().status, std::string("cancelled"));
+}
+
+UAM_TEST(AgentRunQueuedCancellationRetriesWithoutLaunchingAfterSaveFailure)
+{
+	TempDir temp("uam-agent-cancel-transactional");
+	uam::AppState app;
+	const fs::path data_root = temp.root / "data";
+	app.data_root = data_root;
+
+	ChatSession root;
+	root.id = "managed-root";
+	ChatSession transcript;
+	transcript.id = "managed-transcript";
+	app.chats = {root, transcript};
+
+	AgentRun run;
+	run.id = uam::AgentRunLedger::NewRunId();
+	run.root_chat_id = root.id;
+	run.transcript_chat_id = transcript.id;
+	run.agent_id = "reviewer";
+	run.provider_id = uam::provider_ids::kCodexCli;
+	run.definition_snapshot = "Review safely.";
+	run.task = "Review the turn.";
+	run.effective_workspace_access = "read";
+	run.status = "queued";
+	run.depth = 1;
+	run.created_at = uam::time::TimestampNow();
+	run.updated_at = run.created_at;
+	app.chats.back().agent_run_id = run.id;
+	UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+	app.agent_runs.push_back(run);
+	app.queued_agent_run_ids.push_back(run.id);
+
+	const fs::path blocked_root = temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "blocked"));
+	app.data_root = blocked_root;
+	std::string error;
+	UAM_ASSERT(!uam::AgentRunScheduler::CancelTree(app, run.id, &error));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("queued"));
+	UAM_ASSERT(app.agent_runs.front().finished_at.empty());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+
+	UAM_ASSERT_EQ(app.queued_agent_run_ids.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.pending_agent_run_cancellation_ids.contains(run.id));
+	(void)uam::AgentRunScheduler::PollAtForTests(app, 1000);
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("queued"));
+	UAM_ASSERT_EQ(app.queued_agent_run_ids.size(), static_cast<std::size_t>(1));
+	app.data_root = data_root;
+	UAM_ASSERT(uam::AgentRunScheduler::PollAtForTests(app, 1001));
+	UAM_ASSERT(app.queued_agent_run_ids.empty());
+	UAM_ASSERT(app.pending_agent_run_cancellation_ids.empty());
 	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("cancelled"));
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	const auto saved = uam::AgentRunLedger::LoadAll(app.data_root).runs;
@@ -7081,6 +7538,7 @@ UAM_TEST(ChatDomainServiceCreateNewChatNormalizesBoundaryIds)
 	UAM_ASSERT_EQ(chat.provider_id, std::string("codex-cli"));
 	UAM_ASSERT_EQ(chat.branch_root_chat_id, chat.id);
 	UAM_ASSERT_EQ(chat.branch_from_message_index, -1);
+	UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
 }
 
 UAM_TEST(ChatDomainServiceBranchesPastUserMessagesWithoutOverwritingHistory)
@@ -7275,6 +7733,8 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "gemini-cli");
 	source.id = "chat-source";
 	source.model_id = "gemini-2.5-pro";
+	// This fixture represents an already-running source session in its existing workspace.
+	source.workspace_isolation_kind.clear();
 	source.small_model_mode = true;
 	source.workspace_directory = workspace.string();
 	app.chats.push_back(std::move(source));
@@ -7420,6 +7880,8 @@ UAM_TEST(OpenCodeMessageBranchRetryCarriesConversationContextToFreshSession)
 
 	ChatSession source = ChatDomainService().CreateNewChat("folder-1", "opencode-cli");
 	source.id = "chat-source";
+	// Seed a historical source chat, rather than a new chat awaiting its first launch.
+	source.workspace_isolation_kind.clear();
 	source.workspace_directory = temp.root.string();
 	Message earlier_user{MessageRole::User, ""};
 	earlier_user.markdown_store_files = {"skills/original.uam"};
@@ -7640,7 +8102,7 @@ UAM_TEST(MessageBranchFromManagedWorkspaceCreatesIndependentManagedRepository)
 	UAM_ASSERT(branch_worktree != source_worktree);
 	UAM_ASSERT_EQ(ReadFile(branch_worktree / "app.txt"), std::string("source\n"));
 	UAM_ASSERT_EQ(ReadFile(source_worktree / "app.txt"), std::string("source branch baseline\n"));
-	const fs::path branch_repository = branch_worktree.parent_path() /
+	const fs::path branch_repository = branch_worktree.parent_path().parent_path() /
 	    ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(branch->id)));
 	UAM_ASSERT(fs::is_directory(branch_repository));
 	UAM_ASSERT_EQ(ReadFile(source_root / "app.txt"), std::string("source\n"));
@@ -7719,9 +8181,15 @@ UAM_TEST(MessageBranchRetryFailureCleansUpNewIsolatedWorktree)
 	UAM_ASSERT(!branch_id.empty());
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(fs::exists(source_worktree));
-	const fs::path worktree_parent = source_worktree.parent_path();
+	const fs::path worktree_parent = source_worktree.parent_path().parent_path();
 	UAM_ASSERT(!fs::exists(worktree_parent / branch_id));
 	UAM_ASSERT(!fs::exists(worktree_parent / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(branch_id)))));
+	std::size_t remaining_worktrees = 0;
+	for (const fs::directory_entry& entry : fs::recursive_directory_iterator(worktree_parent))
+	{
+		if (entry.path().filename() == ".git" && entry.is_regular_file()) ++remaining_worktrees;
+	}
+	UAM_ASSERT_EQ(remaining_worktrees, static_cast<std::size_t>(1));
 }
 
 UAM_TEST(ChatDomainServiceSortsByUpdatedThenCreatedWithoutSelectionReordering)
@@ -9016,6 +9484,75 @@ UAM_TEST(GitWorktreeCreationExplainsUnbornHeadWithoutChangingRepository)
 	}
 }
 
+UAM_TEST(GitWorktreeNamesUseAgentAndTitleWithSafeFallbacksAndCollisions)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-worktree-names");
+	const fs::path repo = temp.root / "source";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunGitForTest(repo, "init"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "initial\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add app.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const uam::GitWorktreeService service;
+	const std::vector<std::pair<std::string, std::string>> cases = {
+	    {" Fix Login! ", "review/fix-login"},
+	    {"Fix Login!", "review/fix-login-3"},
+	    {"Fix Login!", "review/fix-login-3"},
+	    {"../CON.lock / path@{name}", "review/con-lock-path-name"},
+	    {"CON", "review/chat-con"},
+	    {"New Session", "review/chat-name-5"},
+	    {"...///", "review/chat-name-6"},
+	    {"", "review/chat-name-7"},
+	    {"r\xC3\xA9parer", "review/r\xC3\xA9parer"},
+	    {std::string(200, 'A'), "review/" + std::string(80, 'a')},
+	    {"Custom chat", "agents-2/custom-chat"}};
+	UAM_ASSERT(RunGitForTest(repo, "branch review/fix-login-2"));
+	UAM_ASSERT(RunGitForTest(repo, "branch agents"));
+	for (std::size_t index = 0; index < cases.size(); ++index)
+	{
+		ChatSession chat;
+		chat.id = "chat-name-" + std::to_string(index);
+		chat.title = cases[index].first;
+		chat.uam_agent_id = index == cases.size() - 1 ? "" : "Review";
+		chat.workspace_directory = repo.string();
+		const uam::GitWorktreeOperationResult result = service.CreateForChat(app, chat);
+		if (!result.ok)
+		{
+			uam_test::Fail(("worktree case " + std::to_string(index) + " (" + chat.title + "): " + result.message).c_str(), __FILE__, __LINE__);
+		}
+		UAM_ASSERT_EQ(chat.workspace_branch_name, cases[index].second);
+		const fs::path worktree = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
+		UAM_ASSERT_EQ(uam::paths::Utf8PathString(worktree.parent_path().filename()) + "/" + uam::paths::Utf8PathString(worktree.filename()), cases[index].second);
+		UAM_ASSERT(RunGitForTest(repo, "check-ref-format --branch " + ShellQuoteForTest(chat.workspace_branch_name)));
+		chat.title = "Renamed after creation";
+		chat.uam_agent_id = "build";
+		std::string error;
+		// Retain the first worktree to exercise the filesystem collision on the next chat.
+		if (index != 0) UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, chat, &error));
+		UAM_ASSERT_EQ(fs::exists(worktree), index == 0);
+	}
+
+	ChatSession legacy;
+	legacy.id = "chat-legacy";
+	legacy.title = "Legacy compatibility";
+	legacy.workspace_directory = repo.string();
+	UAM_ASSERT(service.CreateForChat(app, legacy).ok);
+	const fs::path named_path = legacy.workspace_worktree_directory;
+	const fs::path legacy_path = named_path.parent_path().parent_path() / legacy.id;
+	UAM_ASSERT(RunGitForTest(repo, "worktree move " + ShellQuoteForTest(named_path.string()) + " " + ShellQuoteForTest(legacy_path.string())));
+	UAM_ASSERT(RunGitForTest(legacy_path, "branch -m uam/chat-legacy"));
+	legacy.workspace_worktree_directory = legacy_path.string();
+	legacy.workspace_branch_name = "uam/chat-legacy";
+	std::string error;
+	UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, legacy, &error));
+	UAM_ASSERT(!fs::exists(legacy_path));
+}
+
 UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 {
 	if (!GitAvailableForTests())
@@ -9051,6 +9588,7 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	uam::GitWorktreeOperationResult created = service.CreateForChat(app, app.chats.front());
 	UAM_ASSERT(created.ok);
 	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string("gitWorktree"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_branch_name, std::string("build/worktree-service"));
 	const fs::path worktree = uam::paths::PathFromUtf8(app.chats.front().workspace_worktree_directory);
 	const std::string branch_name = app.chats.front().workspace_branch_name;
 	UAM_ASSERT(fs::exists(worktree / "app.txt"));
@@ -9243,6 +9781,58 @@ UAM_TEST(GitWorktreeTurnCheckpointsAreAtomicIdempotentAndRollbackSafe)
 	UAM_ASSERT(!service.CanCheckpointTurn(app, isolated));
 }
 
+UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-default-worktree");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const fs::path source = temp.root / "source";
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "source\n"));
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	chat.title = "Fix login";
+	chat.workspace_directory = source.string();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const std::vector<ChatSession> restored = ChatRepository::LoadLocalChats(app.data_root);
+	UAM_ASSERT_EQ(restored.size(), static_cast<std::size_t>(1));
+	chat = restored.front();
+	UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
+	const uam::GitWorktreeService service;
+	std::string error;
+	ChatSession remote = chat;
+	remote.execution_host_id = "remote";
+	UAM_ASSERT(service.PrepareForFirstLaunch(app, remote, &error));
+	UAM_ASSERT(remote.workspace_worktree_directory.empty());
+	ChatSession legacy = chat;
+	legacy.workspace_isolation_kind.clear();
+	UAM_ASSERT(service.PrepareForFirstLaunch(app, legacy, &error));
+	UAM_ASSERT(legacy.workspace_worktree_directory.empty());
+	chat.workspace_directory = (temp.root / "missing").string();
+	app.chats.push_back(chat);
+	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Fix login", &error));
+	UAM_ASSERT(error.find("Could not create this chat's worktree") != std::string::npos);
+	UAM_ASSERT(app.chats.front().messages.empty());
+	const uam::AcpSessionState* failed_session = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(failed_session == nullptr || !failed_session->running);
+	app.chats.clear();
+	UAM_ASSERT(!service.PrepareForFirstLaunch(app, chat, &error));
+	UAM_ASSERT(error.find("Could not create this chat's worktree") != std::string::npos);
+	UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
+	chat.workspace_directory = source.string();
+	UAM_ASSERT(service.PrepareForFirstLaunch(app, chat, &error));
+	UAM_ASSERT_EQ(chat.workspace_branch_name, std::string("build/fix-login"));
+	const std::string worktree = chat.workspace_worktree_directory;
+	UAM_ASSERT(service.PrepareForFirstLaunch(app, chat, &error));
+	UAM_ASSERT_EQ(chat.workspace_worktree_directory, worktree);
+	UAM_ASSERT_EQ(ReadFile(fs::path(worktree) / "app.txt"), std::string("source\n"));
+	UAM_ASSERT(!fs::exists(source / ".git"));
+	UAM_ASSERT(service.DiscardChatChanges(app, chat).ok);
+	UAM_ASSERT(service.PrepareForFirstLaunch(app, chat, &error));
+	UAM_ASSERT(chat.workspace_worktree_directory.empty());
+}
+
 UAM_TEST(GitWorktreeServiceIsolatesSvnAndPlainFoldersWithManagedLocalGit)
 {
 	if (!GitAvailableForTests())
@@ -9277,20 +9867,32 @@ UAM_TEST(GitWorktreeServiceIsolatesSvnAndPlainFoldersWithManagedLocalGit)
 	UAM_ASSERT(created.status.managed_repository);
 	UAM_ASSERT(created.status.is_svn_workspace);
 	const fs::path svn_worktree = app.chats.front().workspace_worktree_directory;
-	const fs::path svn_repository = svn_worktree.parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.front().id)));
+	const fs::path svn_repository = svn_worktree.parent_path().parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.front().id)));
 	UAM_ASSERT_EQ(ReadFile(svn_worktree / "app.txt"), std::string("local baseline edit\n"));
 	UAM_ASSERT(!fs::exists(svn_worktree / ".svn"));
 	UAM_ASSERT(!fs::exists(svn_worktree / ".UAM"));
 	const ProcessExecutionResult remotes = PlatformServicesFactory::Instance().process_service.ExecuteCommand("git -C " + ShellQuoteForTest(svn_worktree.string()) + " remote", 120000);
 	UAM_ASSERT(remotes.ok && remotes.exit_code == 0);
 	UAM_ASSERT(uam::strings::IsBlank(remotes.output));
+	// The managed Git layer provides diffs and rollback while SVN metadata stays in the source.
+	ChatSession& isolated_svn = app.chats.front();
+	isolated_svn.messages.push_back(Message{MessageRole::User, "Update app"});
+	isolated_svn.messages.push_back(Message{MessageRole::Assistant, "Updated"});
+	UAM_ASSERT(uam::io::WriteTextFile(svn_worktree / "app.txt", "checkpoint change\n"));
+	const uam::GitTurnCheckpointResult checkpoint = service.CreateTurnCheckpoint(app, isolated_svn, 1);
+	UAM_ASSERT(checkpoint.ok && checkpoint.changed);
+	const uam::GitTurnCheckpointResult preview = service.PreviewTurnRollback(app, isolated_svn, 1);
+	UAM_ASSERT(preview.ok && preview.diff.find("app.txt") != std::string::npos);
+	UAM_ASSERT(service.RollbackTurn(app, isolated_svn, 1).ok);
+	UAM_ASSERT_EQ(ReadFile(svn_worktree / "app.txt"), std::string("local baseline edit\n"));
+	UAM_ASSERT_EQ(ReadFile(source / ".svn" / "entries"), std::string("svn metadata\n"));
 	ChatSession concurrent = ChatDomainService().CreateNewChat(folder.id, "codex-cli");
 	concurrent.id = "chat-managed-concurrent";
 	concurrent.workspace_directory = source.string();
 	app.chats.push_back(std::move(concurrent));
 	UAM_ASSERT(service.CreateForChat(app, app.chats.back()).ok);
 	const fs::path concurrent_worktree = app.chats.back().workspace_worktree_directory;
-	const fs::path concurrent_repository = concurrent_worktree.parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.back().id)));
+	const fs::path concurrent_repository = concurrent_worktree.parent_path().parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.back().id)));
 	UAM_ASSERT(concurrent_repository != svn_repository);
 
 	UAM_ASSERT(uam::io::WriteTextFile(svn_worktree / "app.txt", "discarded change\n"));
@@ -9314,7 +9916,7 @@ UAM_TEST(GitWorktreeServiceIsolatesSvnAndPlainFoldersWithManagedLocalGit)
 	UAM_ASSERT(created.status.managed_repository);
 	UAM_ASSERT(!created.status.is_svn_workspace);
 	const fs::path plain_worktree = app.chats.front().workspace_worktree_directory;
-	const fs::path plain_repository = plain_worktree.parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.front().id)));
+	const fs::path plain_repository = plain_worktree.parent_path().parent_path() / ("managed-repository-" + uam::hashing::Hex64(uam::hashing::Fnv1a64(app.chats.front().id)));
 	UAM_ASSERT(uam::io::WriteTextFile(plain_worktree / "app.txt", "ported committed change\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(plain_worktree / "new.txt", "new file\n"));
 	UAM_ASSERT(RunGitForTest(plain_worktree, "add -A"));
@@ -21747,6 +22349,56 @@ UAM_TEST(ImportedHistoryActivatesOnlyAfterUamInputAndPreservesInteractionOnRefre
 	}
 }
 
+UAM_TEST(ProviderHandoffPreservesSmallHistoryAndCompactionOrdering)
+{
+	ChatSession chat;
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Original request";
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.content = "Latest answer";
+	MessageBlock summary;
+	summary.type = "context_compaction";
+	summary.text = "Useful summary";
+	assistant.blocks.push_back(summary);
+	chat.messages = {user, assistant};
+	UAM_ASSERT_EQ(uam::BuildProviderHandoffContext(chat), std::string("User: Original request\n\nConversation summary: Useful summary\n\nAssistant: Latest answer\n\n"));
+}
+
+UAM_TEST(ProviderHandoffBoundsHistoryAndPreservesRecentRoles)
+{
+	ChatSession chat;
+	Message old;
+	old.role = MessageRole::User;
+	old.content = std::string(40000, 'x');
+	Message latest;
+	latest.role = MessageRole::Assistant;
+	latest.content = "Recent answer";
+	chat.messages = {old, latest};
+	const std::string context = uam::BuildProviderHandoffContext(chat);
+	UAM_ASSERT(context.size() <= 32768);
+	UAM_ASSERT(context.find("Earlier conversation omitted") != std::string::npos);
+	UAM_ASSERT(context.find("Assistant: Recent answer") != std::string::npos);
+	UAM_ASSERT(context.find(std::string(100, 'x')) == std::string::npos);
+	UAM_ASSERT_EQ(chat.messages.front().content.size(), static_cast<std::size_t>(40000));
+}
+
+UAM_TEST(ProviderHandoffOversizedLatestEntryKeepsUtf8AlignedSuffix)
+{
+	ChatSession chat;
+	Message latest;
+	latest.role = MessageRole::User;
+	for (int index = 0; index < 20000; ++index) latest.content += "é";
+	latest.content += " END";
+	chat.messages.push_back(latest);
+	const std::string context = uam::BuildProviderHandoffContext(chat);
+	UAM_ASSERT(context.size() <= 32768);
+	UAM_ASSERT(context.find("User: [Earlier text in this entry omitted]") != std::string::npos);
+	const std::size_t suffix = context.find("omitted]\n") + std::string("omitted]\n").size();
+	UAM_ASSERT_EQ(static_cast<unsigned char>(context[suffix]), static_cast<unsigned char>(0xc3));
+	UAM_ASSERT(context.ends_with(" END\n\n"));
+}
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 UAM_TEST(AntigravityTerminalAliasesAndCapabilitiesRemainDistinct)
 {

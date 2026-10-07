@@ -51,6 +51,31 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     return true
   }
 
+  // Opening and refreshing share ownership: only the latest visible-library request may apply.
+  async function loadMemoryLibrary(scope: Pick<MemoryScope, 'scopeType' | 'folderId'>, fallbackError: string): Promise<boolean> {
+    const requestKey = 'listMemoryEntries:visible'
+    const requestId = createRequestId('listMemoryEntries')
+    rememberPendingRequest(requestKey, requestId)
+    const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
+      action: 'listMemoryEntries',
+      payload: { scopeType: scope.scopeType, folderId: scope.folderId, requestId },
+      requestId,
+    })
+    if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+    clearPendingRequest(requestKey, response.requestId)
+    if (!response.ok || !response.data?.scope) {
+      set({ memoryLibraryLoading: false, memoryLibraryError: response.error ?? fallbackError })
+      return false
+    }
+    set({
+      memoryLibraryScope: response.data.scope,
+      memoryLibraryEntries: response.data.entries ?? [],
+      memoryLibraryLoading: false,
+      memoryLibraryError: '',
+    })
+    return true
+  }
+
   return {
     markdownStoreDirectory: '',
     memoryLibraryScope: null as MemoryScope | null,
@@ -569,7 +594,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return {
         markdownStoreAttachedBySessionId: {
           ...state.markdownStoreAttachedBySessionId,
-          [sessionId]: [...current, entry],
+          // Each attachment occurrence has its own identity, even when reusing a catalog entry.
+          [sessionId]: [...current, { ...entry }],
         },
       }
     }),
@@ -590,32 +616,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       })
 
       if (isCefContext()) {
-        const requestKey = 'listMemoryEntries:open'
-        const requestId = createRequestId(requestKey)
-        rememberPendingRequest(requestKey, requestId)
-        const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
-          action: 'listMemoryEntries',
-          payload: { scopeType: 'all', requestId },
-          requestId,
-        })
-        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
-        clearPendingRequest(requestKey, response.requestId)
-
-        if (!response.ok || !response.data?.scope) {
-          set({
-            memoryLibraryLoading: false,
-            memoryLibraryError: response.error ?? 'Failed to load memory.',
-          })
-          return false
-        }
-
-        set({
-          memoryLibraryScope: response.data.scope,
-          memoryLibraryEntries: response.data.entries ?? [],
-          memoryLibraryLoading: false,
-          memoryLibraryError: '',
-        })
-        return true
+        return loadMemoryLibrary({ scopeType: 'all', folderId: '' }, 'Failed to load memory.')
       }
 
       set({
@@ -642,32 +643,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       })
 
       if (isCefContext()) {
-        const requestKey = 'listMemoryEntries:open'
-        const requestId = createRequestId(requestKey)
-        rememberPendingRequest(requestKey, requestId)
-        const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
-          action: 'listMemoryEntries',
-          payload: { scopeType: 'global', requestId },
-          requestId,
-        })
-        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
-        clearPendingRequest(requestKey, response.requestId)
-
-        if (!response.ok || !response.data?.scope) {
-          set({
-            memoryLibraryLoading: false,
-            memoryLibraryError: response.error ?? 'Failed to load global memory.',
-          })
-          return false
-        }
-
-        set({
-          memoryLibraryScope: response.data.scope,
-          memoryLibraryEntries: response.data.entries ?? [],
-          memoryLibraryLoading: false,
-          memoryLibraryError: '',
-        })
-        return true
+        return loadMemoryLibrary({ scopeType: 'global', folderId: '' }, 'Failed to load global memory.')
       }
 
       set({
@@ -697,32 +673,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       })
 
       if (isCefContext()) {
-        const requestKey = 'listMemoryEntries:open'
-        const requestId = createRequestId('listMemoryEntries')
-        rememberPendingRequest(requestKey, requestId)
-        const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
-          action: 'listMemoryEntries',
-          payload: { scopeType: 'folder', folderId, requestId },
-          requestId,
-        })
-        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
-        clearPendingRequest(requestKey, response.requestId)
-
-        if (!response.ok || !response.data?.scope) {
-          set({
-            memoryLibraryLoading: false,
-            memoryLibraryError: response.error ?? 'Failed to load project memory.',
-          })
-          return false
-        }
-
-        set({
-          memoryLibraryScope: response.data.scope,
-          memoryLibraryEntries: response.data.entries ?? [],
-          memoryLibraryLoading: false,
-          memoryLibraryError: '',
-        })
-        return true
+        return loadMemoryLibrary({ scopeType: 'folder', folderId }, 'Failed to load project memory.')
       }
 
       if (!folder) {
@@ -763,32 +714,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       set({ memoryLibraryLoading: true, memoryLibraryError: '' })
 
       if (isCefContext()) {
-        const requestKey = `listMemoryEntries:refresh:${scope.scopeType}:${scope.folderId ?? ''}`
-        const requestId = createRequestId('listMemoryEntries')
-        rememberPendingRequest(requestKey, requestId)
-        const response = await sendToCEF<{ scope?: MemoryScope; entries?: MemoryEntry[] }>({
-          action: 'listMemoryEntries',
-          payload: { scopeType: scope.scopeType, folderId: scope.folderId, requestId },
-          requestId,
-        })
-        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
-        clearPendingRequest(requestKey, response.requestId)
-
-        if (!response.ok || !response.data?.scope) {
-          set({
-            memoryLibraryLoading: false,
-            memoryLibraryError: response.error ?? 'Failed to refresh memory library.',
-          })
-          return false
-        }
-
-        set({
-          memoryLibraryScope: response.data.scope,
-          memoryLibraryEntries: response.data.entries ?? [],
-          memoryLibraryLoading: false,
-          memoryLibraryError: '',
-        })
-        return true
+        return loadMemoryLibrary(scope, 'Failed to refresh memory library.')
       }
 
       set({ memoryLibraryLoading: false })

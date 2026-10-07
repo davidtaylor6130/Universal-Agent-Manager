@@ -143,17 +143,41 @@ std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const
 
 std::string BuildProviderHandoffContext(const ChatSession& chat)
 {
-	std::string context;
-	for (const Message& message : chat.messages)
+	constexpr std::size_t kContextBudgetBytes = 32768;
+	constexpr std::string_view kOmissionNotice = "[Earlier conversation omitted to fit the handoff budget. Full history remains in the saved chat.]\n\n";
+	constexpr std::string_view kTruncatedEntryNotice = "[Earlier text in this entry omitted]\n";
+	std::deque<std::string> entries;
+	std::size_t remaining = kContextBudgetBytes - kOmissionNotice.size();
+	bool omitted = false;
+	const auto append = [&](std::string_view label, const std::string& content)
 	{
-		for (const MessageBlock& block : message.blocks)
+		if (uam::strings::IsBlank(content)) return;
+		if (label.size() + content.size() + 2 <= remaining)
 		{
-			if (block.type == "context_compaction" && !uam::strings::IsBlank(block.text))
-				context += "Conversation summary: " + block.text + "\n\n";
+			entries.push_front(std::string(label) + content + "\n\n");
+			remaining -= entries.front().size();
+			return;
 		}
-		if ((message.role == MessageRole::User || message.role == MessageRole::Assistant) && !uam::strings::IsBlank(message.content))
-			context += (message.role == MessageRole::User ? "User: " : "Assistant: ") + message.content + "\n\n";
+		omitted = true;
+		// Keep a UTF-8 aligned suffix of the newest oversized entry, never an unlabeled fragment.
+		if (entries.empty() && remaining > label.size() + kTruncatedEntryNotice.size() + 2)
+		{
+			std::size_t start = content.size() - (remaining - label.size() - kTruncatedEntryNotice.size() - 2);
+			while (start < content.size() && (static_cast<unsigned char>(content[start]) & 0xc0) == 0x80) ++start;
+			entries.push_front(std::string(label) + std::string(kTruncatedEntryNotice) + content.substr(start) + "\n\n");
+		}
+		remaining = 0;
+	};
+	for (std::vector<Message>::const_reverse_iterator message = chat.messages.crbegin(); message != chat.messages.crend(); ++message)
+	{
+		if (message->role == MessageRole::User || message->role == MessageRole::Assistant)
+			append(message->role == MessageRole::User ? "User: " : "Assistant: ", message->content);
+		for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
+			if (block->type == "context_compaction") append("Conversation summary: ", block->text);
 	}
+	std::string context;
+	if (omitted) context = kOmissionNotice;
+	for (const std::string& entry : entries) context += entry;
 	return context;
 }
 
