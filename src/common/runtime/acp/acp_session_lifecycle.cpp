@@ -542,6 +542,13 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		}
 	}
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	const ProviderProfile* selected_provider = ProviderResolutionService().ProviderForChat(app, chat);
+	if ((selected_provider != nullptr && !selected_provider->supports_structured) ||
+	    uam::provider_ids::NormalizeCliProviderAlias(chat.provider_id) == uam::provider_ids::kAntigravityCli)
+	{
+		if (error_out != nullptr) *error_out = "This provider supports terminal chat only.";
+		return false;
+	}
 	if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat.execution_host_id); !update_error.empty())
 	{
 		if (error_out != nullptr) *error_out = update_error;

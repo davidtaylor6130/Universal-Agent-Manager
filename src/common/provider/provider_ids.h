@@ -14,9 +14,10 @@ namespace uam::provider_ids
 	inline constexpr const char* kClaudeCli = "claude-cli";
 	inline constexpr const char* kOpenCodeCli = "opencode-cli";
 	inline constexpr const char* kCopilotCli = "copilot-cli";
+	inline constexpr const char* kAntigravityCli = "antigravity-cli";
 
 	inline constexpr auto kAllCliProviderIds = std::to_array<const char*>({
-	    kGeminiCli, kCodexCli, kClaudeCli, kOpenCodeCli, kCopilotCli,
+	    kGeminiCli, kCodexCli, kClaudeCli, kOpenCodeCli, kCopilotCli, kAntigravityCli,
 	});
 
 	inline constexpr auto kVersionManagedCliProviderIds = std::to_array<const char*>({
@@ -34,6 +35,9 @@ namespace uam::provider_ids
 	};
 
 	inline constexpr auto kCliProviderAliases = std::to_array<ProviderAlias>({
+	    ProviderAlias{"agy", kAntigravityCli},
+	    ProviderAlias{"antigravity", kAntigravityCli},
+	    ProviderAlias{kAntigravityCli, kAntigravityCli},
 	    ProviderAlias{"gemini", kGeminiCli},
 	    ProviderAlias{kGeminiCli, kGeminiCli},
 	    ProviderAlias{"codex", kCodexCli},

@@ -118,6 +118,8 @@ class IProviderRuntime
 	virtual nlohmann::json ReadLocalModelCatalog() const { return nlohmann::json::array(); }
 	/// <summary>Returns CLI update and compatibility policy, or null for unsupported runtimes.</summary>
 	virtual const ProviderCliPolicy* CliVersionPolicy() const { return nullptr; }
+	/// <summary>Whether isolated text workers can run without native tools.</summary>
+	virtual bool SupportsTextWorkers() const { return true; }
 	/// <summary>Returns a local CLI compatibility error, or empty when this runtime permits launch.</summary>
 	virtual std::string LocalCliCompatibilityError(const uam::AppState&) const { return {}; }
 	/// <summary>Returns whether this runtime backend is enabled in the current build.</summary>
