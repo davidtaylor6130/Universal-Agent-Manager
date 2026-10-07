@@ -25,6 +25,7 @@ namespace uam::acp_methods
 	inline constexpr const char* kThreadStart = "thread/start";
 	inline constexpr const char* kThreadResume = "thread/resume";
 	inline constexpr const char* kTurnStart = "turn/start";
+	inline constexpr const char* kThreadCompactStart = "thread/compact/start";
 	inline constexpr const char* kTurnInterrupt = "turn/interrupt";
 	inline constexpr const char* kTurnStarted = "turn/started";
 	inline constexpr const char* kTurnCompleted = "turn/completed";

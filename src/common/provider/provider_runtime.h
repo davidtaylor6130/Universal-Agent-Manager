@@ -330,6 +330,9 @@ class IProviderRuntime
 	virtual nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
 	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const;
 
+	/// <summary>Builds native manual compaction; null means the provider has no direct request.</summary>
+	virtual nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState&, int, std::string&) const { return nullptr; }
+
 	/// <summary>True when input can be appended to an active turn without interrupting it.</summary>
 	virtual bool SupportsAcpSteering() const { return false; }
 

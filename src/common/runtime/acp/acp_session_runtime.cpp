@@ -466,6 +466,7 @@ namespace uam
 
 		bool HandleAcpTurnInactivityTimeoutInternal(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds)
 		{
+			const bool maintenance_operation = session.manual_compaction_pending;
 			const bool codex_turn_start_pending =
 			    session.protocol_kind == "codex-app-server" &&
 			    session.codex_turn_id.empty() &&
@@ -492,7 +493,7 @@ namespace uam
 			}
 			if (action == AcpTurnInactivityRecoveryAction::Stop)
 			{
-				FinalizeAcpTurnInactivityTimeout(app, session, chat);
+				FinalizeAcpTurnInactivityTimeout(app, session, chat, maintenance_operation);
 				return true;
 			}
 
@@ -507,11 +508,11 @@ namespace uam
 			session.last_error = message;
 			session.lifecycle_state = kAcpLifecycleError;
 			AppendAcpDiagnostic(session, "turn", "inactivity_cancel", "", "", false, 0, message, cancel_error);
-			BlockActiveGoalForInactivityTimeout(app, session, chat, message);
+			if (!maintenance_operation) BlockActiveGoalForInactivityTimeout(app, session, chat, message);
 			MarkAcpChatUnseenIfBackground(app, chat);
 			if (!session.inactivity_timeout_pending)
 			{
-				FinalizeAcpTurnInactivityTimeout(app, session, chat);
+				FinalizeAcpTurnInactivityTimeout(app, session, chat, maintenance_operation);
 			}
 			return true;
 		}
@@ -1304,6 +1305,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		bool SendNativeAcpSteer(AppState& app, AcpSessionState& session, ChatSession& chat,
 		    AcpQueuedUserPromptState prompt, std::string* error_out, int queued_index = -1)
 		{
+			if (session.manual_compaction_pending)
+			{
+				if (error_out != nullptr) *error_out = "Wait for context compaction to finish before steering.";
+				return false;
+			}
 			if (!session.running || !session.session_ready || !session.processing || AcpSessionHasPendingCancel(session))
 			{
 				if (error_out != nullptr) *error_out = "Wait for the provider to start the turn before steering.";
@@ -1581,6 +1587,56 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 	} // namespace
 
+	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		const auto fail = [&](const std::string& error)
+		{
+			if (error_out != nullptr) *error_out = error;
+			return false;
+		};
+		if (chat == nullptr || session == nullptr || !session->running || !session->session_ready)
+			return fail("Start this chat's provider session before compacting its context.");
+		if (AcpSessionHasActiveTurn(*session) || AcpSessionHasPendingCancel(*session) ||
+		    AcpSessionIsWaitingForInput(*session) || !session->queued_user_prompts.empty() ||
+		    !session->pending_request_methods.empty() || AcpStopInProgress(app, chat_id))
+			return fail("Wait for the current turn, queued messages and pending controls before compacting.");
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+		const int request_id = session->next_request_id;
+		std::string method;
+		const nlohmann::json request = runtime.OnAcpBuildCompact(*session, request_id, method);
+		if (request.is_null() || method.empty())
+			return fail("This provider does not support manual compaction in structured chat. Use its native CLI if available.");
+		if ((!chat->execution_host_id.empty() && chat->execution_host_id != "local") ||
+		    (!session->process_execution_host_id.empty() && session->process_execution_host_id != "local"))
+			return fail("Manual compaction currently requires a local provider session.");
+		++session->next_request_id;
+		session->pending_request_methods[request_id] = method;
+		if (!acp_detail::WriteAcpMessage(*session, request, error_out))
+		{
+			session->pending_request_methods.erase(request_id);
+			return false;
+		}
+		// Maintenance has no user/assistant turn ownership or checkpoint.
+		session->codex_turn_id.clear();
+		session->current_assistant_message_index = -1;
+		session->turn_assistant_message_index = -1;
+		session->turn_user_message_index = -1;
+		session->turn_first_user_message_index = -1;
+		session->turn_checkpoint_eligible = false;
+		session->inactivity_timeout_pending = false;
+		session->cancel_requested_time_s = 0.0;
+		session->turn_started_time_s = GetAppTimeSeconds();
+		acp_detail::ResetAcpTurnStreamState(*session);
+		session->manual_compaction_pending = true;
+		session->processing = true;
+		session->last_runtime_activity_time_s = GetAppTimeSeconds();
+		session->lifecycle_state = acp_detail::kAcpLifecycleProcessing;
+		session->last_error.clear();
+		return true;
+	}
+
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id, bool computer_use_mode)
 	{
 		ChatSession* chat_ptr = ChatDomainService().FindChatById(app, chat_id);
@@ -1774,6 +1830,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				*error_out = "Chat not found: " + chat_id;
 			}
+			return false;
+		}
+
+		if (const AcpSessionState* active_session = FindAcpSessionForChat(app, chat_id);
+		    active_session != nullptr && active_session->manual_compaction_pending)
+		{
+			if (error_out != nullptr) *error_out = "Wait for context compaction to finish before steering.";
 			return false;
 		}
 
@@ -2398,7 +2461,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			acp_detail::SaveChatQuietly(app, *chat);
 		}
-		if (update_goal_state && chat != nullptr)
+		if (update_goal_state && chat != nullptr && !session->manual_compaction_pending)
 		{
 			const std::string goal_owner_chat_id = uam::strings::NonEmptyOrFallback(chat->goal_owner_chat_id, chat_id);
 			if (!chat->goal_owner_chat_id.empty())
@@ -2434,7 +2497,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->turn_checkpoint_eligible = false;
 		session->cancel_requested = true;
 		session->cancel_requested_time_s = GetAppTimeSeconds();
-		session->goal_resume_suppressed = true;
+		if (!session->manual_compaction_pending) session->goal_resume_suppressed = true;
 		ResetAcpPendingInteractionState(*session);
 		session->current_assistant_message_index = -1;
 		session->pending_assistant_thoughts.clear();
@@ -2497,8 +2560,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return true;
 	}
 
-	void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat)
+	void FinalizeAcpTurnInactivityTimeout(AppState& app, AcpSessionState& session, ChatSession& chat, bool maintenance_operation)
 	{
+		maintenance_operation = maintenance_operation || session.manual_compaction_pending;
 		const std::string message = uam::strings::NonEmptyOrFallback(session.last_error, std::string(RuntimeDisplayName(session)) + " turn stopped after provider inactivity.");
 		std::deque<AcpQueuedUserPromptState> queued = std::move(session.queued_user_prompts);
 		(void)StopAcpSession(app, session.chat_id);
@@ -2506,7 +2570,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.inactivity_timeout_pending = false;
 		session.last_error = message;
 		session.lifecycle_state = kAcpLifecycleError;
-		BlockActiveGoalForInactivityTimeout(app, session, chat, message);
+		if (!maintenance_operation) BlockActiveGoalForInactivityTimeout(app, session, chat, message);
 		chat.remote_turn_reconnect_pending = false;
 		acp_detail::SaveChatQuietly(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
@@ -2742,7 +2806,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (active_response || session.stop_purpose != AcpStopPurpose::Interrupt)
 			{
 				chat->last_stop_reason = reason;
-				if (session.last_turn_outcome != "error") session.last_turn_outcome = reason;
+				if (!session.manual_compaction_pending && session.last_turn_outcome != "error") session.last_turn_outcome = reason;
 			}
 			const int assistant = session.current_assistant_message_index >= 0 ? session.current_assistant_message_index : session.turn_assistant_message_index;
 			if (active_response && assistant >= 0 && assistant < static_cast<int>(chat->messages.size()) && chat->messages[static_cast<std::size_t>(assistant)].role == MessageRole::Assistant)
@@ -2762,6 +2826,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.session_ready = false;
 		session.model_discovery_only = false;
 		session.processing = false;
+		session.manual_compaction_pending = false;
 		session.recovering_remote_turn = false;
 		session.recovering_remote_process = false;
 		session.turn_checkpoint_eligible = false;
