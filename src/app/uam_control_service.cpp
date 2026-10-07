@@ -3,6 +3,11 @@
 
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
+#include "app/provider_model_catalog_service.h"
+#include "common/config/execution_host_config.h"
+#include "common/provider/provider_ids.h"
+#include "common/provider/provider_runtime.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 #include "app/chat_domain_service.h"
 #include "app/computer_use_service.h"
 #include "app/goal_service.h"
@@ -414,11 +419,56 @@ namespace uam
 			return {.error = "Approved skill snapshot is unavailable."};
 		}
 
+		/// <summary>Lists bounded worker targets without probing providers or asserting authentication.</summary>
+		nlohmann::json AgentProviderTargets(const AppState& app, const ChatSession& chat)
+		{
+			nlohmann::json targets = nlohmann::json::array();
+			const std::string host_id = strings::NonEmptyOrFallback(chat.execution_host_id, "local");
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, host_id);
+			const std::string workspace = paths::ResolveWorkspaceRootPath(app, chat).generic_string();
+			const std::string parent_provider = provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
+			std::set<std::string> seen;
+			for (const ProviderProfile& profile : app.provider_profiles)
+			{
+				const std::string id = provider_ids::NormalizeCliProviderAliasOrSelf(profile.id);
+				if (!provider_ids::IsKnownCliProviderId(id) || !profile.supports_cli || !profile.supports_structured || !ProviderRuntimeRegistry::ResolveById(id).SupportsTextWorkers() || !seen.insert(id).second) continue;
+				std::string reason;
+				const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(id, host_id));
+				if (host == nullptr) reason = "Execution host unavailable.";
+				else if (host->transport == "ssh" && host->runner_status != "ready") reason = "Execution host is not ready.";
+				else if (host->transport == "ssh" && !execution_hosts::IsAbsoluteRemotePath(host->platform, workspace)) reason = "Remote workspace unavailable.";
+				else if (version == app.runtime_cli_versions_by_provider_id.end() || !version->second.checked) reason = "CLI compatibility has not been checked.";
+				else if (!execution_hosts::SameConnection(*host, version->second.execution_host)) reason = "CLI observation belongs to a different host configuration.";
+				else if (!version->second.supported || version->second.installed_version.empty() || !version->second.check_error.empty()) reason = "CLI is unavailable or incompatible.";
+				else reason = ProviderCliLaunchBlockReason(app, id, host_id);
+				nlohmann::json models = app.provider_model_catalog != nullptr
+				    ? app.provider_model_catalog->GetCachedProviderModels(id, workspace, host_id) : nlohmann::json::array();
+				nlohmann::json choices = nlohmann::json::array();
+				if (models.is_array())
+					for (const nlohmann::json& model : models)
+					{
+						if (!model.is_object() || !model.contains("id") || !model["id"].is_string()) continue;
+						const std::string model_id = model["id"].get<std::string>();
+						if (model_id.empty() || model_id.size() > 256) continue;
+						choices.push_back({{"id", model_id}});
+						if (choices.size() == 32) break;
+					}
+				const std::string default_model = id == parent_provider ? chat.model_id : std::string{};
+				targets.push_back({{"providerId", id}, {"title", profile.title}, {"executionHostId", host_id},
+				    {"eligible", reason.empty()}, {"availability", reason.empty() ? "installed-compatible" : "unavailable"},
+				    {"unavailableReason", reason}, {"authentication", "unverified"},
+				    {"defaultModelId", default_model}, {"models", std::move(choices)}});
+				if (targets.size() == 8) break;
+			}
+			return targets;
+		}
+
 		ToolResult AgentList(const AppState& app, const UamControlCapability& capability,
 		                     const ChatSession& chat)
 		{
 			ToolResult out{.ok = true, .result = nlohmann::json::array(), .reason = "Listed bounded delegate metadata."};
 			const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
+			const nlohmann::json targets = AgentProviderTargets(app, chat);
 			for (const AgentDefinition& definition : catalog.definitions)
 			{
 				if (definition.mode != "subagent" && definition.mode != "both") continue;
@@ -428,7 +478,12 @@ namespace uam
 				                          FindRun(app, capability.agent_run_id)->effective_workspace_access == "read");
 				out.result.push_back({{"id", definition.id}, {"description", definition.description},
 				                      {"workspaceAccess", forced_read ? "read" : "write"},
-				                      {"providerNeutral", true}});
+				                      {"providerNeutral", true}, {"providerTargets", targets}});
+				if (out.result.dump().size() > kMaxResponseBytes - 1024)
+				{
+					out.result.erase(out.result.end() - 1);
+					break;
+				}
 				if (out.result.size() == 64) break;
 			}
 			return out;
@@ -771,15 +826,18 @@ namespace uam
 			                       {"options", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 3}}} },
 			    {"question"});
 			user_question["description"] = "Ask the user one bounded question in UAM. The request is shown in the chat and waits for an explicit answer; free text is always available. Do not retry after timeout.";
+			nlohmann::json agent_list = ToolSchema("agent_list");
+			agent_list["description"] = "List permitted agents and providerTargets on this chat's execution host. Only eligible targets have an installed compatible worker CLI; authentication remains unverified. Same-provider defaultModelId inherits the parent; an empty cross-provider default uses that provider's default.";
+			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
+			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}}, {"agentId", "task"});
+			agent_delegate["description"] = "Start one permitted agent using optional providerId and modelId from agent_list providerTargets. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login.";
 			return nlohmann::json::array({
 			    ToolSchema("skill_list"),
 			    ToolSchema("skill_read", {{"id", {{"type", "string"}}}, {"path", {{"type", "string"}, {"description", "Relative asset path inside the installed skill; defaults to SKILL.md."}}}}, {"id"}),
-			    ToolSchema("agent_list"),
+			    std::move(agent_list),
 			    ToolSchema("agent_status", {{"runId", {{"type", "string"}}}}, {"runId"}),
 			    ToolSchema("goal_get"),
-			    MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
-			                                                 {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}},
-			                               {"agentId", "task"}),
+			    std::move(agent_delegate),
 			    MutationToolSchema("agent_cancel", {{"runId", {{"type", "string"}}}}, {"runId"}),
 			    std::move(goal_create),
 			    std::move(user_question),

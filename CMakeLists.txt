@@ -1154,6 +1154,7 @@ if(UAM_BUILD_TESTS)
     tests/core_tests.cpp
     tests/queued_prompt_tests.cpp
     tests/queued_prompt_hold_tests.cpp
+    tests/agent_target_metadata_tests.cpp
     tests/turn_finalization_ownership_tests.cpp
     tests/checkpoint_staging_tests.cpp
     tests/codex_allowance_ownership_tests.cpp
