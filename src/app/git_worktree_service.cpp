@@ -155,7 +155,7 @@ namespace uam
 			const std::string normalized_source_root = uam::paths::NormalizedPortablePathString(source_root);
 			const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(normalized_source_root));
 			const std::filesystem::path root = app.data_root / "worktrees" / repo_key;
-			return relative_name.empty() ? root : root / relative_name;
+			return relative_name.empty() ? root : root / uam::paths::PathFromUtf8(relative_name);
 		}
 
 		std::filesystem::path ManagedRepositoryRoot(const AppState& app, const std::filesystem::path& source_root, const std::string& chat_id)
