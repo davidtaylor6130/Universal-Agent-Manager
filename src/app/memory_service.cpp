@@ -945,6 +945,18 @@ namespace
 		return kMemoryWorkerFailedStatus;
 	}
 
+	bool MemoryTaskStillOwnsWorkspace(const uam::AppState& app, const ChatSession& chat, const uam::AsyncMemoryExtractionTask& task)
+	{
+		if (!task.remote_host)
+			return uam::paths::IsControllerLocalWorkspace(chat) &&
+			       uam::paths::NormalizeExistingPath(uam::paths::ResolveControllerWorkspaceRootPath(app, chat)) ==
+			           uam::paths::NormalizeExistingPath(task.workspace_root);
+		const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		const ChatFolder* folder = uam::paths::FindWorkspaceFolderById(app, chat.folder_id);
+		const std::string workspace = !chat.workspace_directory.empty() ? chat.workspace_directory : folder != nullptr ? folder->directory : std::string{};
+		return host != nullptr && uam::execution_hosts::SameConnection(*host, *task.remote_host) && workspace == task.remote_workspace;
+	}
+
 	bool ApplyCompletedMemoryWorkerResult(uam::AppState& app, ChatSession& chat, const uam::AsyncMemoryExtractionTask& task)
 	{
 		if (!task.state->result.ok)
@@ -959,6 +971,11 @@ namespace
 			return false;
 		}
 
+		if (!MemoryTaskStillOwnsWorkspace(app, chat, task))
+		{
+			RecordMemoryFailure(app, task.chat_id, "The workspace changed during the memory scan.");
+			return false;
+		}
 		RecordMemoryWorkerResult(app, task, kMemoryWorkerCompletedStatus);
 		std::string error;
 		if (task.remote_host)
@@ -1104,6 +1121,14 @@ namespace
 		task.source_persisted_message_count = chat.persisted_message_count;
 		task.source_persisted_messages_digest = chat.persisted_messages_digest;
 		task.scan_start_message_index = start_message_index;
+		task.workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			const ChatFolder* folder = uam::paths::FindWorkspaceFolderById(app, chat.folder_id);
+			if (host != nullptr) task.remote_host = *host;
+			task.remote_workspace = !chat.workspace_directory.empty() ? chat.workspace_directory : folder != nullptr ? folder->directory : std::string{};
+		}
 		task.extraction_state = std::make_shared<uam::AsyncMemoryExtractionState>();
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		auto state = task.state;
@@ -1752,63 +1777,64 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		if (chat_ptr != nullptr)
 		{
 			ChatSession& chat = *chat_ptr;
+			const bool workspace_stale = (task.prepared_from_cold || task.state->result.ok) && !MemoryTaskStillOwnsWorkspace(app, chat, task);
 			const bool preparation_stale = task.prepared_from_cold &&
 			                               (chat.messages_loaded || chat.persisted_message_count != static_cast<std::size_t>(task.source_persisted_message_count) ||
 			                                chat.persisted_messages_digest != task.source_persisted_messages_digest);
-			if (preparation_stale)
+			if (workspace_stale || preparation_stale)
 			{
 				requeue_completed_task();
-				app.memory_last_status = "Memory scan deferred because chat history changed during preparation.";
+				app.memory_last_status = workspace_stale ? "Memory scan deferred because its workspace changed." : "Memory scan deferred because chat history changed during preparation.";
 			}
 			else
 			{
-			if (task.extraction_state != nullptr && task.extraction_state->hydrated_message_count >= 0)
-			{
-				task.message_count = task.extraction_state->hydrated_message_count;
-				if (task.prepared_from_cold && !chat.messages_loaded &&
-				    chat.persisted_message_count == static_cast<std::size_t>(task.source_persisted_message_count) &&
-				    chat.persisted_messages_digest == task.source_persisted_messages_digest)
+				if (task.extraction_state != nullptr && task.extraction_state->hydrated_message_count >= 0)
 				{
-					chat.persisted_message_count = static_cast<std::size_t>(task.extraction_state->hydrated_message_count);
-					chat.persisted_messages_digest = task.extraction_state->hydrated_messages_digest;
+					task.message_count = task.extraction_state->hydrated_message_count;
+					if (task.prepared_from_cold && !chat.messages_loaded &&
+					    chat.persisted_message_count == static_cast<std::size_t>(task.source_persisted_message_count) &&
+					    chat.persisted_messages_digest == task.source_persisted_messages_digest)
+					{
+						chat.persisted_message_count = static_cast<std::size_t>(task.extraction_state->hydrated_message_count);
+						chat.persisted_messages_digest = task.extraction_state->hydrated_messages_digest;
+					}
 				}
-			}
-			if (!MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat))
-			{
-				RecordMemorySuccess(app, chat.id);
-				app.memory_last_status = kMemoryScanStoppedStatus;
-			}
-			else if (task.extraction_state != nullptr && task.extraction_state->hydration_failed)
-			{
-				const std::string failure_status = MemoryWorkerFailureStatus(task.state->result);
-				RecordMemoryFailure(app, chat.id, failure_status);
-				requeue_completed_task();
-			}
-			else if (task.extraction_state != nullptr && task.extraction_state->low_signal_skip)
-			{
-				if (MarkLowSignalMemoryDeltaSkipped(app, chat))
+				if (!MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat))
 				{
 					RecordMemorySuccess(app, chat.id);
+					app.memory_last_status = kMemoryScanStoppedStatus;
+				}
+				else if (task.extraction_state != nullptr && task.extraction_state->hydration_failed)
+				{
+					const std::string failure_status = MemoryWorkerFailureStatus(task.state->result);
+					RecordMemoryFailure(app, chat.id, failure_status);
+					requeue_completed_task();
+				}
+				else if (task.extraction_state != nullptr && task.extraction_state->low_signal_skip)
+				{
+					if (MarkLowSignalMemoryDeltaSkipped(app, chat))
+					{
+						RecordMemorySuccess(app, chat.id);
+					}
+					else
+					{
+						RecordMemoryFailure(app, chat.id, "Memory scan could not save chat progress.");
+						requeue_completed_task();
+					}
 				}
 				else
 				{
-					RecordMemoryFailure(app, chat.id, "Memory scan could not save chat progress.");
-					requeue_completed_task();
+					const bool worker_applied = ApplyCompletedMemoryWorkerResult(app, chat, task);
+					// Failed output application can follow partial writes, so its entry count needs a recount.
+					memory_entries_may_have_changed = memory_entries_may_have_changed || (task.state->result.ok && !worker_applied);
+					if (!worker_applied &&
+				         task.scan_start_message_index >= 0 && !task.state->result.canceled)
+					{
+						// Manual scans carry an explicit start index; automatic scans use -1.
+						requeue_completed_task();
+					}
 				}
-			}
-			else
-			{
-				const bool worker_applied = ApplyCompletedMemoryWorkerResult(app, chat, task);
-				// Failed output application can follow partial writes, so its entry count needs a recount.
-				memory_entries_may_have_changed = memory_entries_may_have_changed || (task.state->result.ok && !worker_applied);
-				if (!worker_applied &&
-			         task.scan_start_message_index >= 0 && !task.state->result.canceled)
-				{
-					// Manual scans carry an explicit start index; automatic scans use -1.
-					requeue_completed_task();
-				}
-			}
-			changed = true;
+				changed = true;
 			}
 		}
 		it = app.memory_extraction_tasks.erase(it);
