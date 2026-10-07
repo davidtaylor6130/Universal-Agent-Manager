@@ -1,8 +1,9 @@
+import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
 import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, X } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, Undo2, X } from 'lucide-react'
 
 /** GitHub mark (lucide dropped brand icons). */
 function GithubLogo({ size = 17 }: { size?: number }) {
@@ -46,6 +47,38 @@ const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewCha
 const MemoryLibraryModal = lazy(() => import('../settings/MemoryLibraryModal').then(({ MemoryLibraryModal }) => ({ default: MemoryLibraryModal })))
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
+
+/** Offers the latest guarded inverse without taking focus from the current draft. */
+function OrganizationUndoNotice() {
+  const undo = useAppStore((state) => state.organizationUndo)
+  const [dismissed, setDismissed] = useState<typeof undo>(null)
+  const [pending, setPending] = useState<typeof undo>(null)
+  const pendingRef = useRef(false)
+  const [failure, setFailure] = useState<{ undo: typeof undo; message: string } | null>(null)
+  if (!undo || undo === dismissed) return null
+  const label = ({ 'Pin chat': 'Chat pinned', 'Unpin chat': 'Chat unpinned', 'Move resource': 'Resource moved', 'Reorder collections': 'Collections reordered', 'Reorder references': 'Collection items reordered', 'Reorder workspaces': 'Workspaces reordered' } as Record<string, string>)[undo.label] ?? undo.label
+  const busy = pending !== null
+  return <div role="status" className="fixed bottom-4 left-16 flex items-center gap-2 rounded-md px-3 py-2 text-xs"
+    style={{ zIndex: VIEWPORT_MENU_Z_INDEX, maxWidth: 'calc(100vw - 80px)', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-bright)' }}>
+    <span>{failure?.undo === undo ? failure.message : label}</span>
+    <Button size="sm" disabled={busy} onClick={() => {
+      if (pendingRef.current || useAppStore.getState().organizationUndo !== undo) return
+      pendingRef.current = true
+      const submitted = undo
+      setPending(submitted)
+      setFailure(null)
+      void useAppStore.getState().undoOrganization().then((ok) => {
+        if (!ok && useAppStore.getState().organizationUndo === submitted) setFailure({ undo: submitted, message: 'Could not undo. The organization may have changed.' })
+      }).catch(() => {
+        if (useAppStore.getState().organizationUndo === submitted) setFailure({ undo: submitted, message: 'Could not undo. Try again.' })
+      }).finally(() => {
+        pendingRef.current = false
+        setPending((current) => current === submitted ? null : current)
+      })
+    }}><Undo2 size={13} />{pending === undo ? 'Undoing…' : 'Undo'}</Button>
+    <IconButton icon={<X size={13} />} size="sm" label="Dismiss undo" onClick={() => setDismissed(undo)} />
+  </div>
+}
 
 const SIDEBAR_WIDTH_MIN = 260
 const SIDEBAR_WIDTH_MAX = 520
@@ -687,6 +720,10 @@ export function AppShell() {
         if (!state.isSettingsOpen && focusActiveInput()) event.preventDefault()
         return
       }
+      if (shortcut === 'undoOrganization') {
+        const target = event.target instanceof Element ? event.target : document.activeElement
+        if (state.isSettingsOpen || target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]') || !useAppStore.getState().organizationUndo) return
+      }
       event.preventDefault()
       const store = useAppStore.getState()
       if (shortcut === 'newChat') {
@@ -695,6 +732,14 @@ export function AppShell() {
         state.toggleSettings()
       } else if (shortcut === 'sidebar') {
         if (!state.isSettingsOpen) store.setSidebarCollapsed(!state.sidebarCollapsed)
+      } else if (shortcut === 'undoOrganization') {
+        void store.undoOrganization()
+      } else if (shortcut === 'nextAttention') {
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-session-id]'))
+          .filter((row) => !row.closest('[hidden], [inert], [aria-hidden="true"]'))
+          .map((row) => row.dataset.sessionId ?? '')
+        const next = nextAttentionSession(store.sessions, store.acpBindingBySessionId, store.activeSessionId, rows)
+        if (next) store.setActiveSession(next)
       } else if (shortcut === 'search') {
         if (state.isSettingsOpen) setSettingsOpen(false)
         if (state.sidebarCollapsed) store.setSidebarCollapsed(false)
@@ -852,6 +897,7 @@ export function AppShell() {
         }}
       />
 
+      {!collectionToast && <OrganizationUndoNotice />}
       {collectionToast && (
         <div role="alert" className="fixed bottom-4 left-4 flex items-start gap-3 rounded-md p-3 text-xs"
           style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, width: 340, maxWidth: 'calc(100vw - 32px)', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-bright)' }}>

@@ -9,38 +9,18 @@ import type { ResourceReferenceType } from '../../types/resourceCollection'
 export const COLLECTION_MOVE_FAILURE_EVENT = 'uam-collection-move-failure'
 export type CollectionMoveFailure = { id: string; time: string; message: string; detail: string }
 
-/** Moves a resource through the store actions and reports failures to the shell after rollback. */
+/** Moves membership through one guarded native transaction and reports failures to the shell. */
 export async function moveResourceToCollection(collectionId: string | null, type: ResourceReferenceType, target: string, label: string) {
-  const { resourceCollections, addResourceReference, removeResourceReference } = useAppStore.getState()
-  const memberships = resourceCollections.flatMap((collection) => collection.references
-    .filter((reference) => reference.type === type && reference.target === target)
-    .map((reference) => ({ collectionId: collection.id, referenceId: reference.id, label: reference.label })))
-  const alreadyInTarget = memberships.some((membership) => membership.collectionId === collectionId)
-  const removed = []
-
   try {
-    for (const membership of memberships.filter((item) => item.collectionId !== collectionId)) {
-      if (!await removeResourceReference(membership.collectionId, membership.referenceId)) {
-        throw new Error('Could not remove the original collection membership.')
-      }
-      removed.push(membership)
-    }
-    if (collectionId && !alreadyInTarget && !await addResourceReference(collectionId, type, target, label)) {
-      throw new Error('Could not add the destination collection membership.')
-    }
-    return true
+    if (await useAppStore.getState().moveResourceToCollection(collectionId, type, target, label)) return true
+    throw new Error('Collection membership changed or could not be saved. Refresh and try again.')
   } catch (error) {
-    const restored = await Promise.allSettled(removed.map((item) => addResourceReference(item.collectionId, type, target, item.label)))
-    const restorationFailed = restored.some((result) => result.status === 'rejected' || !result.value)
     window.dispatchEvent(new CustomEvent<CollectionMoveFailure>(COLLECTION_MOVE_FAILURE_EVENT, {
       detail: {
         id: createRequestId('collection-move-failure'),
         time: new Date().toISOString(),
         message: `Could not move "${label}".`,
-        detail: [
-          error instanceof Error ? error.message : 'Collection move failed.',
-          restorationFailed ? 'Some memberships could not be restored. Check collections before retrying.' : 'Check collection membership and try again.',
-        ].join(' '),
+        detail: error instanceof Error ? error.message : 'Collection move failed.',
       },
     }))
     return false

@@ -8,7 +8,7 @@ import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLea
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const originalActions = { setActiveSession: useAppStore.getState().setActiveSession, setSessionPinned: useAppStore.getState().setSessionPinned }
+const originalActions = { setActiveSession: useAppStore.getState().setActiveSession, setSessionPinned: useAppStore.getState().setSessionPinned, moveResourceToCollection: useAppStore.getState().moveResourceToCollection }
 
 const now = new Date('2026-01-01T12:00:00.000Z')
 
@@ -625,10 +625,10 @@ describe('SessionItem status icons', () => {
   })
 
   it('moves a chat to a collection from its right-click menu', async () => {
-    const addResourceReference = vi.fn().mockResolvedValue(true)
+    const moveResourceToCollection = vi.fn().mockResolvedValue(true)
     useAppStore.setState({
       resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
-      addResourceReference,
+      moveResourceToCollection,
       removeResourceReference: vi.fn().mockResolvedValue(true),
     })
     const { host, root } = renderSessionItem()
@@ -637,7 +637,7 @@ describe('SessionItem status icons', () => {
     act(() => move?.click())
     const work = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === 'Work')
     await act(async () => { work?.click(); await Promise.resolve() })
-    expect(addResourceReference).toHaveBeenCalledWith('work', 'chat', 'chat-1', 'Chat 1')
+    expect(moveResourceToCollection).toHaveBeenCalledWith('work', 'chat', 'chat-1', 'Chat 1')
     act(() => root.unmount())
     host.remove()
   })
