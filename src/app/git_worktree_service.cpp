@@ -353,11 +353,22 @@ namespace uam
 		    const std::filesystem::path& repository, const ChatSession& chat, std::string& name, std::string& error)
 		{
 			std::string refs;
-			if (!GitOutput(repository, "for-each-ref --format=" + uam::shell::EscapeArg("%(refname:short)") + " refs/heads", &refs, &error)) return false;
+			if (!GitOutput(repository, "for-each-ref refs/heads", &refs, &error)) return false;
 			std::vector<std::string> branches;
 			std::istringstream lines(refs);
 			std::string ref;
-			while (std::getline(lines, ref)) branches.push_back(uam::strings::Trim(ref));
+			while (std::getline(lines, ref))
+			{
+				// Git's default output separates the object fields from the full ref with a tab.
+				const std::size_t separator = ref.find('\t');
+				const std::string full_ref = separator == std::string::npos ? std::string() : uam::strings::Trim(ref.substr(separator + 1));
+				if (!full_ref.starts_with("refs/heads/"))
+				{
+					error = "Could not read Git branch names for worktree creation.";
+					return false;
+				}
+				branches.push_back(full_ref.substr(std::string_view("refs/heads/").size()));
+			}
 			const std::string preferred = BranchNameForChat(chat);
 			const std::size_t separator = preferred.find('/');
 			const std::string agent = preferred.substr(0, separator);
