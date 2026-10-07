@@ -654,6 +654,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             role="menuitem"
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
+            onClick={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }}
+          >
+            <Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
+            {isPinned ? 'Unpin chat' : 'Pin chat'}
+          </button>
+          <button
+            role="menuitem"
+            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
+            style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
             onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text)'}
             onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-2)'}
             onClick={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }}
