@@ -5,6 +5,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Provider } from '../../types/provider'
 import { SelectionGrid } from '../shared/SelectionGrid'
+import { WorkspacePicker } from './WorkspacePicker'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
@@ -23,6 +24,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
 	const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
 	const sessions = useAppStore(useShallow((s) => s.sessions))
+	const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
 	const activeSessionId = useAppStore((s) => s.activeSessionId)
 	const acpBindingBySessionId = useAppStore(useShallow((s) => s.acpBindingBySessionId))
   const providerModelCatalogs = useAppStore(useShallow((s) => s.providerModelCatalogs))
@@ -188,9 +190,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 	const providerSessions = sessions.filter((session) => !session.temporaryParentChatId && session.providerId === providerId)
 	const workspaceKey = (value: string | undefined) => {
 	  const normalized = (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '')
-	  return isRemote && selectedExecutionHost?.platform.toLowerCase() !== 'windows'
-		? normalized
-		: normalized.toLowerCase()
+	  return selectedExecutionHost?.platform.toLowerCase() === 'windows'
+		? normalized.toLowerCase()
+		: normalized
 	}
 	const selectedWorkspace = isRemote ? selectedFolder?.directory ?? remoteWorkspace.trim() : selectedFolder?.directory ?? ''
 	const discoverySession = providerSessions.find((session) => (session.executionHostId ?? 'local') === executionHostId && workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
@@ -346,16 +348,15 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
                 Folder
               </label>
-              <MenuSelect
+              <WorkspacePicker
                 label="Folder"
-                value={folderId ?? ''}
-                options={[
-				  ...(isRemote ? [{ value: '', label: 'New remote workspace…', description: `Create on ${selectedExecutionHost?.label}` }] : []),
-				  ...folders.filter((folder) => (folder.executionHostId || 'local') === executionHostId)
-					.map((folder) => ({ value: folder.id, label: folder.name, description: folder.directory })),
-				]}
+                value={folderId}
+                folders={folders}
+                collections={resourceCollections}
+                executionHostId={executionHostId}
+                remoteEmptyOption={isRemote ? { label: 'New remote workspace…', description: `Create on ${selectedExecutionHost?.label}` } : undefined}
                 onChange={(nextFolderId) => {
-				  setFolderId(nextFolderId || null)
+				  setFolderId(nextFolderId)
 				  const folder = folders.find((candidate) => candidate.id === nextFolderId)
 				  if (folder && isRemote) setRemoteWorkspace(folder.directory)
 				}}

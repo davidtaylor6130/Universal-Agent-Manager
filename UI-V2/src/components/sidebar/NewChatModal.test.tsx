@@ -22,6 +22,7 @@ describe('NewChatModal', () => {
       defaultNewChatProviderId: 'gemini-cli',
       providerChatDefaults: {},
       newChatFolderId: 'project',
+      resourceCollections: [],
 	  sessions: [],
 	  acpBindingBySessionId: {},
       providerModelCatalogs: [],
@@ -324,6 +325,52 @@ describe('NewChatModal', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('searches sidebar groups and creates in the selected durable workspace', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ addSession, folders: [
+      ...useAppStore.getState().folders,
+      { id: 'backend', name: 'Project', parentId: null, directory: '/tmp/backend', isExpanded: false, createdAt: new Date() },
+    ], resourceCollections: [{ id: 'services', name: 'Services', collapsed: true, references: [
+      { id: 'ref', type: 'workspace-folder', target: 'backend', label: 'Backend' },
+    ] }] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      act(() => host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Folder"]')!.click())
+      const search = document.querySelector<HTMLInputElement>('[aria-label="Search workspaces"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'services backend')
+        search.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(document.querySelectorAll('[role="option"]')).toHaveLength(1)
+      act(() => search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+      await act(async () => { create.click(); await Promise.resolve() })
+      expect(addSession).toHaveBeenCalledWith('New chat', 'backend', 'gemini-cli', '', '', 'chat')
+      expect(useAppStore.getState().resourceCollections[0].collapsed).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps case-sensitive local workspace model catalogues isolated', () => {
+    useAppStore.setState({ folders: [{ id: 'project', name: 'Project', parentId: null, directory: '/tmp/Project', isExpanded: true, createdAt: new Date() }],
+      providerModelCatalogs: ['/tmp/project', '/tmp/Project'].map((workspaceDirectory, index) => ({
+        providerId: 'gemini-cli', executionHostId: 'local', workspaceDirectory, currentModelId: '', modelsLoading: false, modelRefreshError: '',
+        availableModels: [{ id: `scoped-${index}`, name: index ? 'Correct workspace' : 'Different workspace', description: '' }],
+      })),
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Model"]')!.click())
+      expect(document.body.textContent).toContain('Correct workspace')
+      expect(document.body.textContent).not.toContain('Different workspace')
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('uses explicit ephemeral discovery on the selected remote host even when a matching chat exists', async () => {
