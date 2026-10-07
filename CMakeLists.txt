@@ -432,6 +432,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
+  src/app/chat_file_change_receipt_service.cpp
   src/app/execution_routing_service.cpp
   src/app/resource_collection_service.cpp
     src/app/provider_worker_command.cpp
@@ -451,6 +452,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
   src/cef/chat_handlers.cpp
+  src/cef/chat_receipt_handlers.cpp
   src/cef/chat_config_handlers.cpp
   src/cef/settings_handlers.cpp
   src/cef/remote_host_handlers.cpp
@@ -1156,6 +1158,7 @@ if(UAM_BUILD_TESTS)
     tests/workspace_import_policy_tests.cpp
     tests/workspace_migration_alias_tests.cpp
     tests/native_chat_identity_tests.cpp
+    tests/chat_file_change_receipt_tests.cpp
     tests/provider_configuration_tests.cpp
     src/common/utils/diagnostic_log.cpp
 	    tests/computer_use_tests.cpp
@@ -1188,6 +1191,7 @@ if(UAM_BUILD_TESTS)
     src/app/native_session_link_service.cpp
     src/app/persistence_coordinator.cpp
     src/app/provider_resolution_service.cpp
+    src/app/chat_file_change_receipt_service.cpp
     src/app/execution_routing_service.cpp
     src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
