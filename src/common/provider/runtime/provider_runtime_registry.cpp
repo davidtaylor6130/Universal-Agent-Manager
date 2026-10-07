@@ -19,6 +19,10 @@
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 #endif
 
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+#include "common/provider/antigravity/cli/antigravity_cli_provider_runtime.h"
+#endif
+
 namespace
 {
 	class UnsupportedProviderRuntime final : public IProviderRuntime
@@ -29,6 +33,10 @@ namespace
 			return "unsupported";
 		}
 		bool IsEnabled() const override
+		{
+			return false;
+		}
+		bool SupportsTextWorkers() const override
 		{
 			return false;
 		}
@@ -106,6 +114,12 @@ namespace
 		if (normalized == uam::provider_ids::kCopilotCli)
 		{
 			return &GetCopilotCliProviderRuntime();
+		}
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+		if (normalized == uam::provider_ids::kAntigravityCli)
+		{
+			return &GetAntigravityCliProviderRuntime();
 		}
 #endif
 		return nullptr;

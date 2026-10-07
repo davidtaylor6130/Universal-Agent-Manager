@@ -33,6 +33,35 @@ describe('NewChatModal', () => {
     })
   })
 
+  it('creates terminal-only Antigravity without requesting structured model discovery', async () => {
+    const addSession = vi.fn().mockResolvedValue(true)
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    const originalAddSession = useAppStore.getState().addSession
+    useAppStore.setState({
+      providers: [{ id: 'antigravity-cli', name: 'Antigravity CLI', shortName: 'Antigravity', color: '', description: '', supportsCli: true, supportsStructured: false, structuredProtocol: 'none' }],
+      defaultNewChatProviderId: 'antigravity-cli',
+      addSession,
+      discoverProviderModels,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      expect(host.textContent).toContain('Creates a terminal chat.')
+      expect(host.textContent).not.toContain('Settings > CLI Version')
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')
+      expect(create?.disabled).toBe(false)
+      await act(async () => { create?.click(); await Promise.resolve() })
+      expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'antigravity-cli', '', '', 'cli')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ addSession: originalAddSession, discoverProviderModels: originalDiscoverProviderModels })
+    }
+  })
+
   it.each(['unknown', 'verified', 'untested', 'untested-newer', 'provider-managed'] as const)(
     'allows structured creation when provider readiness is %s',
     (status) => {

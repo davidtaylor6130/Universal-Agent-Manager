@@ -141,9 +141,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     const issues: string[] = []
     if (!provider) issues.push('No provider is available. Configure a provider in Settings.')
     else {
-      if (provider.supportsStructured === false) issues.push('This provider does not support structured chat. Choose another provider or check Settings.')
+      if (provider.supportsStructured === false) issues.push(provider.supportsCli !== false ? 'This provider supports terminal chat only.' : 'This provider does not support structured chat. Choose another provider or check Settings.')
       if (provider.supportsCli === false) issues.push('This provider does not support terminal chat. Choose another provider or check Settings.')
-      if (!isRemote && !['verified', 'provider-managed'].includes(status)) {
+      if (!isRemote && (provider.supportsStructured !== false || readiness) && !['verified', 'provider-managed'].includes(status)) {
         const message = readiness?.message || ({
           unknown: 'Provider readiness has not been checked.',
           checking: 'Checking provider compatibility.',

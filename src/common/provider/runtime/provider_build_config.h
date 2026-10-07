@@ -20,6 +20,10 @@
 #error "UAM_ENABLE_RUNTIME_COPILOT_CLI must be defined by CMake. Use 0 or 1."
 #endif
 
+#ifndef UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+#error "UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI must be defined by CMake. Use 0 or 1."
+#endif
+
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/utils/string_utils.h"
@@ -48,6 +52,9 @@ namespace provider_build_config
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
 		    provider_id == uam::provider_ids::kCopilotCli ||
 #endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+		    provider_id == uam::provider_ids::kAntigravityCli ||
+#endif
 		    false;
 	}
 
@@ -63,6 +70,8 @@ namespace provider_build_config
 		return uam::provider_ids::kOpenCodeCli;
 #elif UAM_ENABLE_RUNTIME_COPILOT_CLI
 		return uam::provider_ids::kCopilotCli;
+#elif UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+		return uam::provider_ids::kAntigravityCli;
 #else
 		return "";
 #endif
