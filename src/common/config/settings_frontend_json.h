@@ -10,6 +10,7 @@
 #include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/config/settings_normalization.h"
+#include "common/config/settings_store.h"
 #include "common/models/app_models.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
@@ -127,6 +128,7 @@ namespace uam::settings_frontend_json
 		settings_json["centralProviderConfiguration"] = uam::central_configuration::Serialize(settings.central_provider_configuration);
 		settings_json["mcpServers"] = uam::mcp_server_config::Serialize(settings.mcp_servers);
 		settings_json["executionHosts"] = uam::execution_hosts::Serialize(settings.execution_hosts);
+		settings_json["executionRouting"] = SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing);
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
 		settings_json["uamAgentCycleShortcut"] = settings.uam_agent_cycle_shortcut;
 		settings_json["computerUseAllowlistEnabled"] = settings.computer_use_allowlist_enabled;

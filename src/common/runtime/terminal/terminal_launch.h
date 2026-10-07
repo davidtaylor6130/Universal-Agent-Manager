@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app/execution_routing_integration.h"
+
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -106,6 +108,20 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
 			                            "Imported transcripts are read-only. Create a new chat in a workspace to continue.");
+		}
+		if (chat.routing_mode == "automatic")
+		{
+			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, chat, true);
+			if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
+			{
+				terminal.last_error.clear();
+				terminal.should_launch = true;
+				return true;
+			}
+		}
+		else if (app.settings.execution_routing.enabled)
+		{
+			(void)AdmitExecutionRouting(app, chat, true);
 		}
 		const ExecutionHost* execution_host =
 		    uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);

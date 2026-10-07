@@ -960,6 +960,12 @@ namespace
 		       lhs.remote_restart_pending == rhs.remote_restart_pending &&
 		       lhs.remote_recovery_enabled == rhs.remote_recovery_enabled &&
 		       lhs.remote_recovery_state == rhs.remote_recovery_state &&
+		       lhs.routing_mode == rhs.routing_mode &&
+		       lhs.routing_source_folder_id == rhs.routing_source_folder_id &&
+		       lhs.routing_source_directory == rhs.routing_source_directory &&
+		       lhs.routing_assigned_connection_identity == rhs.routing_assigned_connection_identity &&
+		       lhs.routing_assigned_provider_configuration_identity == rhs.routing_assigned_provider_configuration_identity &&
+		       lhs.routing_reservation_pending == rhs.routing_reservation_pending &&
 		       lhs.remote_process_control_token == rhs.remote_process_control_token &&
 		       lhs.remote_delivered_stdout_cursor == rhs.remote_delivered_stdout_cursor &&
 		       lhs.remote_delivered_stderr_cursor == rhs.remote_delivered_stderr_cursor &&
@@ -1089,6 +1095,13 @@ namespace
 		chat.provider_handoff_session_id = JsonStringOrEmpty(root.Find("provider_handoff_session_id"));
 		chat.remote_recovery_enabled = JsonBoolOrDefault(root.Find("remote_recovery_enabled"), false);
 		chat.remote_recovery_state = JsonStringOrEmpty(root.Find("remote_recovery_state"));
+		chat.routing_mode = JsonStringOrEmpty(root.Find("routing_mode"));
+		chat.routing_source_folder_id = JsonStringOrEmpty(root.Find("routing_source_folder_id"));
+		chat.routing_source_directory = JsonStringOrEmpty(root.Find("routing_source_directory"));
+		chat.routing_assigned_connection_identity = JsonStringOrEmpty(root.Find("routing_assigned_connection_identity"));
+		chat.routing_assigned_provider_configuration_identity = JsonStringOrEmpty(root.Find("routing_assigned_provider_configuration_identity"));
+		if (chat.routing_mode != "automatic") chat.routing_mode = "explicit";
+		chat.routing_reservation_pending = JsonBoolOrDefault(root.Find("routing_reservation_pending"), false);
 		chat.remote_restart_pending = JsonBoolOrDefault(
 		    root.Find(kChatRemoteRestartPendingField), false);
 		if (root.Find(kChatRemoteProcessExistsField) == nullptr)
@@ -1629,6 +1642,12 @@ try
 	uam::json::SetString(root, "provider_handoff_session_id", chat.provider_handoff_session_id);
 	uam::json::SetBool(root, "remote_recovery_enabled", chat.remote_recovery_enabled);
 	uam::json::SetString(root, "remote_recovery_state", chat.remote_recovery_state);
+	uam::json::SetString(root, "routing_mode", chat.routing_mode);
+	uam::json::SetString(root, "routing_source_folder_id", chat.routing_source_folder_id);
+	uam::json::SetString(root, "routing_source_directory", chat.routing_source_directory);
+	uam::json::SetString(root, "routing_assigned_connection_identity", chat.routing_assigned_connection_identity);
+	uam::json::SetString(root, "routing_assigned_provider_configuration_identity", chat.routing_assigned_provider_configuration_identity);
+	uam::json::SetBool(root, "routing_reservation_pending", chat.routing_reservation_pending);
 	uam::json::SetBool(root, kChatRemoteRestartPendingField,
 	                   chat.remote_restart_pending);
 	uam::json::SetString(root, kChatRemoteProcessControlTokenField,
@@ -2188,6 +2207,12 @@ namespace
 		hydrated.remote_recovery_enabled = summary.remote_recovery_enabled;
 		hydrated.remote_recovery_state = summary.remote_recovery_state;
 		hydrated.remote_process_control_token = summary.remote_process_control_token;
+		hydrated.routing_mode = summary.routing_mode;
+		hydrated.routing_source_folder_id = summary.routing_source_folder_id;
+		hydrated.routing_source_directory = summary.routing_source_directory;
+		hydrated.routing_assigned_connection_identity = summary.routing_assigned_connection_identity;
+		hydrated.routing_assigned_provider_configuration_identity = summary.routing_assigned_provider_configuration_identity;
+		hydrated.routing_reservation_pending = summary.routing_reservation_pending;
 		hydrated.remote_delivered_stdout_cursor = summary.remote_delivered_stdout_cursor;
 		hydrated.remote_delivered_stderr_cursor = summary.remote_delivered_stderr_cursor;
 		hydrated.remote_source_exit_pending = summary.remote_source_exit_pending;

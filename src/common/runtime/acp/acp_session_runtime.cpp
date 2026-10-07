@@ -1,3 +1,4 @@
+#include "app/execution_routing_integration.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/config/build_features.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -338,6 +339,12 @@ namespace uam
 			{
 				return false;
 			}
+			if (chat.routing_mode == "automatic" && !ExecutionRoutingOwnsWork(app, chat) && !session.queued_user_prompts.empty())
+			{
+				const bool dispatched = DrainNextQueuedAcpUserPrompt(app, session, chat);
+				if (!dispatched) session.reconnect_not_before_time_s = now_seconds + 1.0;
+				return true;
+			}
 			if (session.restart_after_remote_stop_cleanup)
 			{
 				if (!acp_detail::SaveChatQuietly(app, chat))
@@ -371,6 +378,11 @@ namespace uam
 				return true;
 			}
 
+			if (app.execution_routing_waits.contains(chat.id))
+			{
+				session.reconnect_not_before_time_s = now_seconds + 1.0;
+				return true;
+			}
 			RecordAcpReconnectFailure(app, session, chat, now_seconds, error);
 			return true;
 		}
@@ -1769,7 +1781,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 		}
-		if (session.processing || session.turn_checkpoint_commit_pending || !session.queued_user_prompts.empty() || restart_remote_cancellation)
+		if (session.processing || session.turn_checkpoint_commit_pending || !session.queued_user_prompts.empty() || restart_remote_cancellation || chat.routing_mode == "automatic")
 		{
 			const std::deque<AcpQueuedUserPromptState> previous_queue =
 			    session.queued_user_prompts;
@@ -2126,6 +2138,18 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (session.queued_user_prompts.empty())
 		{
 			return false;
+		}
+		if (chat.routing_mode == "automatic")
+		{
+			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, chat);
+			if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
+			{
+				session.last_error.clear();
+				session.lifecycle_state = "waiting_routing";
+				session.reconnect_pending = !session.running;
+				session.reconnect_not_before_time_s = GetAppTimeSeconds() + 1.0;
+				return false;
+			}
 		}
 		std::deque<AcpQueuedUserPromptState> batch;
 		for (const AcpQueuedUserPromptState& queued : session.queued_user_prompts)

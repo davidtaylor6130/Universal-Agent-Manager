@@ -149,6 +149,15 @@ inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession
 		defaults = DefaultsFromPayload(*payload_defaults, defaults, chat.provider_id);
 	}
 	uam::provider_chat_defaults::ApplyToChat(chat, std::move(defaults));
+	if (chat.routing_mode == "automatic")
+	{
+		// The assigned computer owns model and account defaults.
+		chat.model_id.clear();
+		chat.reviewer_model_id.clear();
+		chat.reasoning_effort.clear();
+		chat.service_tier.clear();
+		chat.service_tier_explicit = false;
+	}
 }
 
 // ---- Chat domain helpers (use ChatDomainService) ----------

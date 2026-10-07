@@ -273,6 +273,12 @@ struct ChatSession
 {
 	std::string id;
 	std::string execution_host_id = "local";
+	std::string routing_mode = "explicit";
+	std::string routing_source_folder_id;
+	std::string routing_source_directory;
+	std::string routing_assigned_connection_identity;
+	std::string routing_assigned_provider_configuration_identity;
+	bool routing_reservation_pending = false;
 	std::string provider_id;
 	std::string native_session_id;
 	bool native_session_reset_pending = false;
@@ -503,6 +509,35 @@ struct McpServerConfiguration
 	bool enabled = true;
 };
 
+struct ExecutionRoutingProviderConfirmation
+{
+	std::string provider_id;
+	std::string connection_identity;
+	std::string provider_configuration_identity;
+};
+
+struct ExecutionRoutingWorkspaceMapping
+{
+	std::string source_folder_id;
+	std::string source_directory;
+	std::string destination_folder_id;
+};
+
+struct ExecutionRoutingHostPolicy
+{
+	std::string host_id;
+	bool enabled = false;
+	std::size_t max_active_turns = 0;
+	std::vector<ExecutionRoutingProviderConfirmation> provider_confirmations;
+	std::vector<ExecutionRoutingWorkspaceMapping> workspace_mappings;
+};
+
+struct ExecutionRoutingSettings
+{
+	bool enabled = false;
+	std::vector<ExecutionRoutingHostPolicy> hosts;
+};
+
 struct ExecutionHost
 {
 	std::string id = "local";
@@ -589,6 +624,7 @@ struct AppSettings
 	CentralProviderConfiguration central_provider_configuration;
 	std::vector<McpServerConfiguration> mcp_servers;
 	std::vector<ExecutionHost> execution_hosts;
+	ExecutionRoutingSettings execution_routing;
 	std::vector<std::string> favorite_uam_agent_ids;
 	std::string uam_agent_cycle_shortcut = "shift+tab";
 	std::string memory_level_default = "strict";

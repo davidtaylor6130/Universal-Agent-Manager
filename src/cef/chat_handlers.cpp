@@ -587,11 +587,24 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 {
 	const std::string title = payload.value("title", "New Chat");
 	const std::string requested_folder_id = payload.value("folderId", "");
+	const std::string routing_mode = payload.value("routingMode", "explicit");
+	if (routing_mode != "explicit" && routing_mode != "automatic")
+	{
+		cb->Failure(400, "Routing mode must be explicit or automatic.");
+		return;
+	}
+
 	const ProviderProfile* preferred_provider = uam::query_handler_internal::ResolvePreferredCliProvider(m_app);
 	const std::string default_provider_id = uam::query_handler_internal::DefaultNewChatProviderId(m_app, preferred_provider);
 	const std::string requested_provider_id = payload.value("providerId", default_provider_id);
 	const std::string provider_id = uam::query_handler_internal::ResolveNewChatProviderId(m_app, requested_provider_id, preferred_provider);
-	const std::string execution_host_id = uam::strings::Trim(payload.value("executionHostId", "local"));
+	const ChatFolder* routing_source = routing_mode == "automatic" ? ChatDomainService().FindFolderById(m_app, requested_folder_id) : nullptr;
+	if (routing_mode == "automatic" && routing_source == nullptr)
+	{
+		cb->Failure(400, "Automatic routing requires an existing source workspace.");
+		return;
+	}
+	const std::string execution_host_id = routing_source != nullptr ? uam::strings::NonEmptyOrFallback(routing_source->execution_host_id, "local") : uam::strings::Trim(payload.value("executionHostId", "local"));
 	const ExecutionHost* execution_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, execution_host_id);
 	if (execution_host == nullptr)
 	{
@@ -656,6 +669,12 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 
 	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
 	chat.execution_host_id = execution_host->id;
+	chat.routing_mode = routing_mode;
+	if (routing_mode == "automatic")
+	{
+		chat.routing_source_folder_id = target_folder_id;
+		chat.routing_source_directory = requested_workspace;
+	}
 	if (!title.empty())
 	{
 		chat.title = title;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/provider_model_catalog_service.h"
+#include "app/execution_routing_service.h"
 #include "common/models/app_models.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
@@ -853,6 +854,12 @@ namespace uam
 	/// </summary>
 	struct AppState
 	{
+		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
+		std::unordered_map<std::string, std::string> execution_routing_waits;
+		std::unordered_map<std::string, double> execution_routing_retry_at_by_chat_id;
+		std::unordered_set<std::string> execution_routing_reserved_chat_ids;
+		std::unordered_set<std::string> execution_routing_restored_unresolved_chat_ids;
+		double execution_routing_next_poll_s = 0.0;
 		fs::path data_root;
 		fs::path native_history_chats_dir;
 		AppSettings settings;

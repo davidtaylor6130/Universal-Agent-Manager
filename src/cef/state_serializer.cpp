@@ -1,3 +1,4 @@
+#include "app/execution_routing_integration.h"
 #include "cef/state_serializer.h"
 #include "common/config/custom_icon.h"
 
@@ -231,6 +232,12 @@ namespace uam
 			session_json["executionHostId"] = uam::strings::NonEmptyOrFallback(session.execution_host_id, "local");
 			session_json["remoteRecoveryEnabled"] = session.remote_recovery_enabled;
 			session_json["remoteRecoveryState"] = session.remote_recovery_state;
+			session_json["routingMode"] = session.routing_mode;
+			session_json["routingSourceFolderId"] = session.routing_source_folder_id;
+			session_json["routingSourceDirectory"] = session.routing_source_directory;
+			session_json["routingReservationPending"] = session.routing_reservation_pending;
+			session_json["routingAssignedConnectionIdentity"] = session.routing_assigned_connection_identity;
+			session_json["routingAssignedProviderConfigurationIdentity"] = session.routing_assigned_provider_configuration_identity;
 			session_json["title"] = session.title;
 			session_json["folderId"] = session.folder_id;
 			session_json["pinned"] = session.pinned;
@@ -1088,6 +1095,9 @@ namespace uam
 		{
 			nlohmann::json chat_json;
 			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
+			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
+			chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
+			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
 			chat_json["attentionRevision"] = ChatDomainService().AttentionRevision(app, chat);
 			chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 			chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat, cache);
@@ -1281,6 +1291,9 @@ namespace uam
 
 			nlohmann::json provider_json;
 			provider_json["providerId"] = provider_id;
+			provider_json["routingConnectionIdentity"] = ExecutionRoutingConnectionIdentity(execution_host);
+			if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, provider_id); profile != nullptr)
+				provider_json["routingProviderConfigurationIdentity"] = ExecutionRoutingProviderIdentity(app, *profile);
 			if (execution_host.id != execution_hosts::kLocalHostId)
 			{
 				provider_json["executionHostId"] = execution_host.id;
@@ -1459,6 +1472,9 @@ namespace uam
 			if (selected_chat && chat.messages_loaded && !summary_only)
 			{
 				chat_json = SerializeSession(chat);
+				const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
+				chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
+			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
 				chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
 				chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 				chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat, catalog_cache);

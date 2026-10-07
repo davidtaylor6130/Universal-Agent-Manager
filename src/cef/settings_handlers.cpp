@@ -1,3 +1,6 @@
+#include "app/execution_routing_integration.h"
+#include "common/config/settings_store.h"
+#include <stdexcept>
 #include "common/config/central_provider_configuration.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
@@ -762,4 +765,90 @@ void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser
 	}
 	cb->Success("{}");
 	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+void UamQueryHandler::HandleSetExecutionRoutingSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	nlohmann::json confirmed_payload = payload;
+	try
+	{
+		if (confirmed_payload.contains("hosts") && confirmed_payload["hosts"].is_array())
+			for (nlohmann::json& host_entry : confirmed_payload["hosts"])
+			{
+				const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_entry.at("hostId").get<std::string>());
+				if (host == nullptr || host->id == "local") throw std::runtime_error("Select an existing remote host.");
+				for (nlohmann::json& provider_entry : host_entry.at("providers"))
+					if (provider_entry.value("confirm", false))
+					{
+						const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, provider_entry.at("providerId").get<std::string>());
+						if (provider == nullptr) throw std::runtime_error("Select an available provider.");
+						provider_entry["connectionIdentity"] = uam::ExecutionRoutingConnectionIdentity(*host);
+						provider_entry["providerConfigurationIdentity"] = uam::ExecutionRoutingProviderIdentity(m_app, *provider);
+					}
+			}
+	}
+	catch (const std::exception& exception)
+	{
+		cb->Failure(400, exception.what());
+		return;
+	}
+	ExecutionRoutingSettings settings;
+	std::string error;
+	if (!SettingsStore::ParseExecutionRoutingSettings(confirmed_payload, settings, error))
+	{
+		cb->Failure(400, error);
+		return;
+	}
+	for (const ExecutionRoutingHostPolicy& policy : settings.hosts)
+		for (const ExecutionRoutingWorkspaceMapping& mapping : policy.workspace_mappings)
+		{
+			const ChatFolder* source = ChatDomainService().FindFolderById(m_app, mapping.source_folder_id);
+			const ChatFolder* destination = ChatDomainService().FindFolderById(m_app, mapping.destination_folder_id);
+			if (source == nullptr || destination == nullptr || destination->execution_host_id != policy.host_id)
+			{
+				cb->Failure(400, "Routing mappings require existing source and destination workspaces on the selected host.");
+				return;
+			}
+		}
+	const ExecutionRoutingSettings previous = m_app.settings.execution_routing;
+	m_app.settings.execution_routing = std::move(settings);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings.execution_routing = previous;
+		cb->Failure(500, "Routing settings could not be saved.");
+		return;
+	}
+	m_app.execution_routing_retry_at_by_chat_id.clear();
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	uam::ExecutionRoutingAssignment expected;
+	bool acknowledged = false;
+	try
+	{
+		expected.chat_id = payload.at("chatId").get<std::string>();
+		expected.host_id = payload.at("executionHostId").get<std::string>();
+		expected.connection_identity = payload.at("connectionIdentity").get<std::string>();
+		expected.provider_configuration_identity = payload.at("providerConfigurationIdentity").get<std::string>();
+		expected.destination_folder_id = payload.at("destinationFolderId").get<std::string>();
+		expected.destination_directory = payload.at("destinationDirectory").get<std::string>();
+		expected.automatic = true;
+		acknowledged = payload.at("acknowledgeUnresolvedOwnership").get<bool>();
+	}
+	catch (const std::exception&)
+	{
+		cb->Failure(400, "Release requires the current chat assignment.");
+		return;
+	}
+	std::string error;
+	if (!uam::ReleaseUnresolvedExecutionRouting(m_app, expected, acknowledged, error))
+	{
+		cb->Failure(409, error);
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
 }

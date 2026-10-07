@@ -142,6 +142,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setUpdateSettings", &UamQueryHandler::HandleSetUpdateSettings},
 		{"setProviderChatDefaults", &UamQueryHandler::HandleSetProviderChatDefaults},
 		{"setEditorSettings", &UamQueryHandler::HandleSetEditorSettings},
+		{"setExecutionRoutingSettings", &UamQueryHandler::HandleSetExecutionRoutingSettings},
+		{"releaseExecutionRoutingReservation", &UamQueryHandler::HandleReleaseExecutionRoutingReservation},
 		{"exportLocalChats", &UamQueryHandler::HandleExportLocalChats},
 		{"importLocalChats", &UamQueryHandler::HandleImportLocalChats},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},

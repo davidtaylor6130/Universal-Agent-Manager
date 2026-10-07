@@ -1,3 +1,4 @@
+#include "app/execution_routing_integration.h"
 #include "app/agent_run_scheduler.h"
 
 #include "app/agent_definition_service.h"
@@ -324,6 +325,20 @@ namespace uam
 		transcript.title = "Agent: " + requested_agent;
 		transcript.execution_host_id = root_chat->execution_host_id;
 		transcript.workspace_directory = root_chat->workspace_directory;
+		transcript.routing_mode = root_chat->routing_mode;
+		if (transcript.routing_mode == "automatic")
+		{
+			transcript.routing_source_folder_id = root_chat->routing_source_folder_id;
+			transcript.routing_source_directory = root_chat->routing_source_directory;
+			const ChatFolder* source = ChatDomainService().FindFolderById(app, transcript.routing_source_folder_id);
+			if (source != nullptr)
+			{
+				transcript.folder_id = source->id;
+				transcript.execution_host_id = source->execution_host_id;
+				transcript.workspace_directory = transcript.routing_source_directory;
+			}
+		}
+
 		const bool same_provider = selected_provider == provider_ids::NormalizeCliProviderAliasOrSelf(root_chat->provider_id);
 		transcript.model_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(model_id), same_provider ? root_chat->model_id : std::string{});
 		if (same_provider)
@@ -530,6 +545,23 @@ namespace uam
 		transcript.execution_host_id = root_chat->execution_host_id;
 		transcript.workspace_directory = root_chat->workspace_directory;
 		transcript.native_session_id.clear();
+		transcript.routing_mode = root_chat->routing_mode;
+		transcript.routing_source_folder_id = root_chat->routing_source_folder_id;
+		transcript.routing_source_directory = root_chat->routing_source_directory;
+		transcript.routing_assigned_connection_identity.clear();
+		transcript.routing_assigned_provider_configuration_identity.clear();
+		transcript.routing_reservation_pending = false;
+		if (transcript.routing_mode == "automatic")
+		{
+			const ChatFolder* source = ChatDomainService().FindFolderById(app, transcript.routing_source_folder_id);
+			if (source != nullptr)
+			{
+				transcript.folder_id = source->id;
+				transcript.execution_host_id = source->execution_host_id;
+				transcript.workspace_directory = transcript.routing_source_directory;
+				transcript.workspace_worktree_directory.clear();
+			}
+		}
 		transcript.parent_chat_id.clear();
 		transcript.branch_root_chat_id.clear();
 		transcript.branch_from_message_index = -1;
@@ -671,6 +703,13 @@ namespace uam
 				continue;
 			}
 
+			const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, *transcript);
+			if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
+			{
+				app.queued_agent_run_ids.push_back(id);
+				changed = true;
+				continue;
+			}
 			run->status = "running";
 			run->started_at = uam::time::TimestampNow();
 			run->updated_at = run->started_at;

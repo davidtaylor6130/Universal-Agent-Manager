@@ -1,3 +1,4 @@
+#include "app/execution_routing_integration.h"
 #include "app/provider_configuration_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -525,6 +526,22 @@ bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSessi
 
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out)
 {
+	if (!session.model_discovery_only && chat.routing_mode == "automatic")
+	{
+		if (!ExecutionRoutingOwnsWork(app, chat) && chat.routing_assigned_connection_identity.empty())
+		{
+			app.execution_routing_waits[chat.id] = "Waiting for routing admission before the first turn.";
+			session.lifecycle_state = "waiting_routing";
+			return false;
+		}
+		const ExecutionRoutingDecision routing = AdmitExecutionRouting(app, chat);
+		if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
+		{
+			session.lifecycle_state = "waiting_routing";
+			return false;
+		}
+	}
+
 	if (chat.side_cleanup_requested)
 	{
 		if (error_out != nullptr) *error_out = "This side chat is closing.";

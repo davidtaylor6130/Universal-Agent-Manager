@@ -202,3 +202,303 @@ UAM_TEST(ExecutionRoutingOnlyOwnedRecoveryBypassesChangedOptInAndFullCapacity)
 	request.assigned = {};
 	UAM_ASSERT_EQ(restored.Admit(request, {RoutingHost("b")}, {}).status, uam::ExecutionRoutingStatus::Invalid);
 }
+
+#include "app/execution_routing_integration.h"
+#include "remote/runner_protocol.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
+
+namespace
+{
+	void ConfigureRoutingFixture(uam::AppState& app, const fs::path& root)
+	{
+		app.data_root = root / "data";
+		app.provider_profiles.push_back(ProviderProfileStore::DefaultCodexProfile());
+		ExecutionHost host;
+		host.id = "remote";
+		host.transport = "ssh";
+		host.ssh_alias = "fixture-no-ssh";
+		host.platform = "linux";
+		host.architecture = "x86_64";
+		host.runner_status = "ready";
+		host.runner_version = "test-version";
+		host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+		app.settings.execution_hosts.push_back(host);
+		uam::CliProviderVersionState version;
+		version.provider_id = "codex-cli";
+		version.execution_host = host;
+		version.checked = version.supported = true;
+		version.installed_version = "0.114.0";
+		app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", host.id)] = version;
+		app.folders.push_back({"source", "Source", (root / "repo").string(), false, "local"});
+		app.folders.push_back({"destination", "Destination", "/mapped/repo", false, "remote"});
+		app.settings.execution_routing.enabled = true;
+		ExecutionRoutingHostPolicy policy;
+		policy.host_id = "remote";
+		policy.enabled = true;
+		policy.max_active_turns = 1;
+		policy.provider_confirmations.push_back({"codex-cli", uam::ExecutionRoutingConnectionIdentity(host),
+		    uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front())});
+		policy.workspace_mappings.push_back({"source", (root / "repo").string(), "destination"});
+		app.settings.execution_routing.hosts.push_back(policy);
+		ChatSession chat = ChatDomainService().CreateNewChat("source", "codex-cli");
+		chat.id = "automatic-chat";
+		chat.workspace_directory = (root / "repo").string();
+		chat.routing_mode = "automatic";
+		chat.routing_source_folder_id = "source";
+		chat.routing_source_directory = chat.workspace_directory;
+		app.chats.push_back(chat);
+	}
+}
+
+UAM_TEST(ExecutionRoutingSettingsRoundTripAndInvalidInputAreAtomic)
+{
+	TempDir temp("uam-routing-settings");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	const nlohmann::json original = SettingsStore::SerializeExecutionRoutingSettings(app.settings.execution_routing);
+	UAM_ASSERT(SettingsStore::Save(temp.root / "settings.txt", app.settings));
+	AppSettings loaded;
+	UAM_ASSERT(SettingsStore::Load(temp.root / "settings.txt", loaded).loaded);
+	UAM_ASSERT_EQ(SettingsStore::SerializeExecutionRoutingSettings(loaded.execution_routing), original);
+	std::string error;
+	nlohmann::json invalid = original;
+	invalid["hosts"][0]["maxActiveTurns"] = -1;
+	UAM_ASSERT(!SettingsStore::ParseExecutionRoutingSettings(invalid, loaded.execution_routing, error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT_EQ(SettingsStore::SerializeExecutionRoutingSettings(loaded.execution_routing), original);
+	invalid = original;
+	invalid["hosts"].push_back(original["hosts"][0]);
+	UAM_ASSERT(!SettingsStore::ParseExecutionRoutingSettings(invalid, loaded.execution_routing, error));
+	UAM_ASSERT_EQ(SettingsStore::SerializeExecutionRoutingSettings(loaded.execution_routing), original);
+}
+
+UAM_TEST(ExecutionRoutingPersistsRemoteAssignmentWithExplicitSshWorktreeParity)
+{
+	TempDir temp("uam-routing-assignment");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
+	const uam::ExecutionRoutingDecision decision = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT_EQ(decision.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote"));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("destination"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/mapped/repo"));
+	UAM_ASSERT(app.chats.front().workspace_worktree_directory.empty());
+	UAM_ASSERT(!fs::exists(temp.root / "repo"));
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, "automatic-chat");
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->routing_mode, std::string("automatic"));
+	UAM_ASSERT_EQ(persisted->routing_source_directory, (temp.root / "repo").string());
+	UAM_ASSERT_EQ(persisted->execution_host_id, std::string("remote"));
+	UAM_ASSERT(persisted->routing_reservation_pending);
+	UAM_ASSERT(!persisted->routing_assigned_connection_identity.empty());
+	UAM_ASSERT(app.acp_sessions.empty());
+	UAM_ASSERT(app.cli_terminals.empty());
+}
+
+UAM_TEST(ExecutionRoutingMaterializedWorktreeWithoutExactMappingWaitsWithoutMutation)
+{
+	TempDir temp("uam-routing-worktree-mapping");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	app.chats.front().workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	app.chats.front().workspace_worktree_directory = (temp.root / "repo-worktree").string();
+	const uam::ExecutionRoutingDecision decision = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT_EQ(decision.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("local"));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("source"));
+	UAM_ASSERT(app.chats.front().routing_assigned_connection_identity.empty());
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, "automatic-chat")));
+	UAM_ASSERT(!app.execution_routing_waits["automatic-chat"].empty());
+}
+
+UAM_TEST(ExecutionRoutingFailedAssignmentSaveReleasesOnlyPrelaunchReservation)
+{
+	TempDir temp("uam-routing-save-failure");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	std::ofstream blocked(app.data_root);
+	blocked << "not-a-directory";
+	blocked.close();
+	const uam::ExecutionRoutingDecision failed = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT_EQ(failed.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("local"));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("source"));
+	UAM_ASSERT(!app.chats.front().routing_reservation_pending);
+	UAM_ASSERT(app.chats.front().routing_assigned_connection_identity.empty());
+	app.data_root = temp.root / "repaired-data";
+	app.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingIdleNativeIdDoesNotOccupyButLiveTerminalDoes)
+{
+	TempDir temp("uam-routing-occupancy");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	ChatSession idle;
+	idle.id = "idle-native";
+	idle.execution_host_id = "remote";
+	idle.native_session_id = "persisted-native";
+	idle.remote_process_exists = true;
+	app.chats.push_back(idle);
+	UAM_ASSERT(!uam::ExecutionRoutingOwnsWork(app, app.chats.back()));
+	std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->attached_chat_id = "idle-native";
+	terminal->running = true;
+	terminal->generation_in_progress = false;
+	app.cli_terminals.push_back(std::move(terminal));
+	UAM_ASSERT(uam::ExecutionRoutingOwnsWork(app, app.chats.back()));
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+	app.cli_terminals.front()->running = false;
+	app.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingRestartRestoresOutboxOwnershipButNotIdleNativeAssignments)
+{
+	TempDir temp("uam-routing-restart");
+	uam::AppState original;
+	ConfigureRoutingFixture(original, temp.root);
+	const ChatSession fresh = original.chats.front();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(original, original.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	ChatSession idle = original.chats.front();
+	idle.routing_reservation_pending = false;
+	idle.native_session_id = "owned-native-id";
+	idle.remote_process_exists = true;
+	UAM_ASSERT(ChatRepository::SaveChat(original.data_root, idle));
+
+	uam::AppState restored;
+	ConfigureRoutingFixture(restored, temp.root);
+	restored.chats.front() = idle;
+	ChatSession next = fresh;
+	next.id = "next-chat";
+	restored.chats.push_back(next);
+	UAM_ASSERT(uam::RestoreExecutionRoutingReservations(restored));
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.back()).status, uam::ExecutionRoutingStatus::Assigned);
+
+	uam::AppState uncertain;
+	ConfigureRoutingFixture(uncertain, temp.root);
+	idle.remote_prompt_delivery_id = "accepted-receipt-not-confirmed";
+	idle.remote_prompt_delivery_payload = "exact-owned-payload";
+	uncertain.chats.front() = idle;
+	uncertain.chats.push_back(next);
+	UAM_ASSERT(uam::RestoreExecutionRoutingReservations(uncertain));
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(uncertain, uncertain.chats.back()).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(uncertain.chats.front().execution_host_id, std::string("remote"));
+	UAM_ASSERT_EQ(uncertain.chats.front().remote_prompt_delivery_payload, std::string("exact-owned-payload"));
+}
+
+UAM_TEST(ExecutionRoutingUnavailableOrStaleProviderObservationCannotBeAdmitted)
+{
+	TempDir temp("uam-routing-provider-readiness");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	const std::string key = CliProviderVersionStateKey("codex-cli", "remote");
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id.at(key);
+	version.checked = false;
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+	version.checked = true;
+	version.supported = false;
+	app.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+	version.supported = true;
+	version.execution_host.ssh_alias = "old-connection";
+	app.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+	version.execution_host = app.settings.execution_hosts.back();
+	app.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingUnknownRestartReservationRequiresDurableAcknowledgedRelease)
+{
+	TempDir temp("uam-routing-unknown-reservation");
+	uam::AppState original;
+	ConfigureRoutingFixture(original, temp.root);
+	const ChatSession fresh = original.chats.front();
+	const uam::ExecutionRoutingDecision assigned = uam::AdmitExecutionRouting(original, original.chats.front(), true);
+	UAM_ASSERT_EQ(assigned.status, uam::ExecutionRoutingStatus::Assigned);
+	uam::AppState restored;
+	ConfigureRoutingFixture(restored, temp.root);
+	restored.chats.front() = original.chats.front();
+	ChatSession next = fresh;
+	next.id = "next-chat";
+	restored.chats.push_back(next);
+	UAM_ASSERT(uam::RestoreExecutionRoutingReservations(restored));
+	(void)uam::PollExecutionRouting(restored);
+	UAM_ASSERT(restored.chats.front().routing_reservation_pending);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.front(), true).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.back()).status, uam::ExecutionRoutingStatus::Waiting);
+	std::string error;
+	UAM_ASSERT(!uam::ReleaseUnresolvedExecutionRouting(restored, assigned.assignment, false, error));
+	uam::ExecutionRoutingAssignment stale = assigned.assignment;
+	stale.connection_identity = "stale";
+	UAM_ASSERT(!uam::ReleaseUnresolvedExecutionRouting(restored, stale, true, error));
+	std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->attached_chat_id = restored.chats.front().id;
+	terminal->running = true;
+	restored.cli_terminals.push_back(std::move(terminal));
+	UAM_ASSERT(!uam::ReleaseUnresolvedExecutionRouting(restored, assigned.assignment, true, error));
+	restored.cli_terminals.front()->running = false;
+	const fs::path valid_data = restored.data_root;
+	restored.data_root = temp.root / "blocked";
+	std::ofstream blocked(restored.data_root);
+	blocked << "not-a-directory";
+	blocked.close();
+	UAM_ASSERT(!uam::ReleaseUnresolvedExecutionRouting(restored, assigned.assignment, true, error));
+	UAM_ASSERT(restored.chats.front().routing_reservation_pending);
+	restored.data_root = valid_data;
+	UAM_ASSERT(uam::ReleaseUnresolvedExecutionRouting(restored, assigned.assignment, true, error));
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(restored.data_root, assigned.assignment.chat_id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT(!persisted->routing_reservation_pending);
+	restored.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.back()).status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingVerifiedReattachedOwnerSettlesAndReleasesReservation)
+{
+	TempDir temp("uam-routing-reattached-owner");
+	uam::AppState original;
+	ConfigureRoutingFixture(original, temp.root);
+	const ChatSession fresh = original.chats.front();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(original, original.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	uam::AppState restored;
+	ConfigureRoutingFixture(restored, temp.root);
+	restored.chats.front() = original.chats.front();
+	ChatSession next = fresh;
+	next.id = "next-chat";
+	restored.chats.push_back(next);
+	UAM_ASSERT(uam::RestoreExecutionRoutingReservations(restored));
+	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = restored.chats.front().id;
+	session->provider_id = restored.chats.front().provider_id;
+	session->process_execution_host_id = "remote";
+	session->running = session->session_ready = session->processing = true;
+	restored.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(uam::PollExecutionRouting(restored));
+	UAM_ASSERT(!restored.execution_routing_restored_unresolved_chat_ids.contains(restored.chats.front().id));
+	UAM_ASSERT(restored.chats.front().routing_reservation_pending);
+	restored.acp_sessions.front()->processing = false;
+	restored.execution_routing_next_poll_s = 0;
+	UAM_ASSERT(uam::PollExecutionRouting(restored));
+	UAM_ASSERT(!restored.chats.front().routing_reservation_pending);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.back()).status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingAssignedWorktreeKeepsRegisteredBaseOwnership)
+{
+	TempDir temp("uam-routing-assigned-worktree");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	app.chats.front().workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	app.chats.front().workspace_worktree_directory = "/mapped/worktree";
+	app.chats.front().routing_reservation_pending = false;
+	app.execution_routing_service = std::make_shared<uam::ExecutionRoutingService>();
+	app.execution_routing_reserved_chat_ids.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/mapped/repo"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string("/mapped/worktree"));
+}

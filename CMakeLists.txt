@@ -437,6 +437,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/transcript_retention_service.cpp
   src/app/chat_search_service.cpp
   src/app/execution_routing_service.cpp
+  src/app/execution_routing_integration.cpp
   src/app/resource_collection_service.cpp
     src/app/provider_worker_command.cpp
   src/app/provider_profile_migration_service.cpp
@@ -1156,6 +1157,7 @@ if(UAM_BUILD_TESTS)
     tests/codex_allowance_ownership_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp
+    tests/routing_default_scope_tests.cpp
     tests/model_discovery_startup_tests.cpp
     tests/remote_delivery_exit_tests.cpp
     tests/agent_provider_inheritance_tests.cpp
@@ -1203,6 +1205,7 @@ if(UAM_BUILD_TESTS)
     src/app/transcript_retention_service.cpp
     src/app/chat_search_service.cpp
     src/app/execution_routing_service.cpp
+    src/app/execution_routing_integration.cpp
     src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
     src/app/provider_profile_migration_service.cpp

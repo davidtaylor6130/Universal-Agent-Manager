@@ -25,6 +25,8 @@
 #include <sstream>
 #include <string_view>
 #include <vector>
+#include <unordered_set>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp>
 
@@ -76,6 +78,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
 	constexpr std::string_view kMcpServersKey = "mcp_servers";
 	constexpr std::string_view kExecutionHostsKey = "execution_hosts";
+	constexpr std::string_view kExecutionRoutingKey = "execution_routing";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
 	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
@@ -124,6 +127,12 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			else if (key == kActiveProviderIdKey)
 			{
 				saw_active_provider = !uam::strings::IsBlank(uam::DecodeLineValue(value));
+			}
+			else if (key == kExecutionRoutingKey)
+			{
+				ExecutionRoutingSettings routing;
+				std::string error;
+				if (!SettingsStore::ParseExecutionRoutingSettings(nlohmann::json::parse(uam::DecodeLineValue(value), nullptr, false), routing, error)) return false;
 			}
 			else if (key == kExecutionHostsKey)
 			{
@@ -515,6 +524,10 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
+		std::string routing_error;
+		ExecutionRoutingSettings validated_routing;
+		if (SettingsStore::ParseExecutionRoutingSettings(SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing), validated_routing, routing_error)) settings.execution_routing = std::move(validated_routing);
+		else settings.execution_routing = {};
 		uam::settings::NormalizeUamAgentPreferences(settings);
 		std::vector<ComputerUseApplicationRule> allowed;
 		for (const ComputerUseApplicationRule& rule : settings.computer_use_allowed_applications)
@@ -597,6 +610,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
 	WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
 	WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
+	WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
 	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
 	WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
@@ -829,6 +843,11 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
 			settings.execution_hosts = uam::execution_hosts::Parse(parsed);
 		}
+		else if (key == kExecutionRoutingKey)
+		{
+			std::string error;
+			(void)SettingsStore::ParseExecutionRoutingSettings(nlohmann::json::parse(decoded_value, nullptr, false), settings.execution_routing, error);
+		}
 		else if (key == kFavoriteUamAgentIdsKey)
 		{
 			DecodeFavoriteUamAgentIds(decoded_value, settings.favorite_uam_agent_ids);
@@ -866,4 +885,84 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		}
 	}
 	return result;
+}
+
+nlohmann::json SettingsStore::SerializeExecutionRoutingSettings(const ExecutionRoutingSettings& settings)
+{
+	nlohmann::json hosts = nlohmann::json::array();
+	for (const ExecutionRoutingHostPolicy& host : settings.hosts)
+	{
+		nlohmann::json providers = nlohmann::json::array();
+		for (const ExecutionRoutingProviderConfirmation& provider : host.provider_confirmations)
+			providers.push_back({{"providerId", provider.provider_id}, {"connectionIdentity", provider.connection_identity},
+			    {"providerConfigurationIdentity", provider.provider_configuration_identity}});
+		nlohmann::json mappings = nlohmann::json::array();
+		for (const ExecutionRoutingWorkspaceMapping& mapping : host.workspace_mappings)
+			mappings.push_back({{"sourceFolderId", mapping.source_folder_id}, {"sourceDirectory", mapping.source_directory},
+			    {"destinationFolderId", mapping.destination_folder_id}});
+		hosts.push_back({{"hostId", host.host_id}, {"enabled", host.enabled}, {"maxActiveTurns", host.max_active_turns},
+		    {"providers", providers}, {"workspaceMappings", mappings}});
+	}
+	return {{"enabled", settings.enabled}, {"hosts", hosts}};
+}
+
+bool SettingsStore::ParseExecutionRoutingSettings(const nlohmann::json& value, ExecutionRoutingSettings& settings, std::string& error)
+{
+	ExecutionRoutingSettings parsed;
+	try
+	{
+		if (!value.is_object() || !value.contains("enabled") || !value["enabled"].is_boolean() ||
+		    !value.contains("hosts") || !value["hosts"].is_array() || value["hosts"].size() > 128)
+			throw std::runtime_error("Routing requires enabled and a bounded host list.");
+		parsed.enabled = value["enabled"].get<bool>();
+		std::unordered_set<std::string> host_ids;
+		for (const nlohmann::json& entry : value["hosts"])
+		{
+			ExecutionRoutingHostPolicy host;
+			host.host_id = entry.at("hostId").get<std::string>();
+			if (!uam::execution_hosts::IsPortableId(host.host_id) || host.host_id == "local" || !host_ids.insert(host.host_id).second)
+				throw std::runtime_error("Routing host IDs must be unique remote hosts.");
+			if (!entry.at("enabled").is_boolean() || !entry.at("maxActiveTurns").is_number_integer())
+				throw std::runtime_error("Routing host slots must be an integer.");
+			host.enabled = entry["enabled"].get<bool>();
+			const std::int64_t slots = entry["maxActiveTurns"].get<std::int64_t>();
+			if (slots < 0 || slots > 1024 || (host.enabled && slots == 0)) throw std::runtime_error("Enabled routing hosts need 1 to 1024 slots.");
+			host.max_active_turns = static_cast<std::size_t>(slots);
+			const nlohmann::json& providers = entry.at("providers");
+			const nlohmann::json& mappings = entry.at("workspaceMappings");
+			if (!providers.is_array() || !mappings.is_array() || providers.size() > 64 || mappings.size() > 256)
+				throw std::runtime_error("Routing providers and workspace mappings must be bounded lists.");
+			std::unordered_set<std::string> provider_ids;
+			for (const nlohmann::json& confirmation : providers)
+			{
+				ExecutionRoutingProviderConfirmation provider{confirmation.at("providerId").get<std::string>(),
+				    confirmation.at("connectionIdentity").get<std::string>(), confirmation.at("providerConfigurationIdentity").get<std::string>()};
+				if (!uam::execution_hosts::IsPortableId(provider.provider_id) || !provider_ids.insert(provider.provider_id).second ||
+				    provider.connection_identity.empty() || provider.connection_identity.size() > 128 ||
+				    provider.provider_configuration_identity.empty() || provider.provider_configuration_identity.size() > 128)
+					throw std::runtime_error("Routing confirmations must identify a unique provider and current configuration.");
+				host.provider_confirmations.push_back(std::move(provider));
+			}
+			std::unordered_set<std::string> workspace_ids;
+			for (const nlohmann::json& entry_mapping : mappings)
+			{
+				ExecutionRoutingWorkspaceMapping mapping{entry_mapping.at("sourceFolderId").get<std::string>(),
+				    entry_mapping.at("sourceDirectory").get<std::string>(), entry_mapping.at("destinationFolderId").get<std::string>()};
+				if (mapping.source_folder_id.empty() || mapping.source_folder_id.size() > 256 || mapping.destination_folder_id.empty() ||
+				    mapping.destination_folder_id.size() > 256 || mapping.source_directory.empty() || mapping.source_directory.size() > 4096 ||
+				    !workspace_ids.insert(mapping.source_folder_id + "\n" + mapping.source_directory).second)
+					throw std::runtime_error("Routing workspace mappings must be exact and unique.");
+				host.workspace_mappings.push_back(std::move(mapping));
+			}
+			parsed.hosts.push_back(std::move(host));
+		}
+	}
+	catch (const std::exception& exception)
+	{
+		error = exception.what();
+		return false;
+	}
+	settings = std::move(parsed);
+	error.clear();
+	return true;
 }
