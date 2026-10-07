@@ -9521,10 +9521,13 @@ UAM_TEST(GitWorktreeNamesUseAgentAndTitleWithSafeFallbacksAndCollisions)
 		chat.uam_agent_id = index == cases.size() - 1 ? "" : "Review";
 		chat.workspace_directory = repo.string();
 		const uam::GitWorktreeOperationResult result = service.CreateForChat(app, chat);
-		UAM_ASSERT(result.ok);
+		if (!result.ok)
+		{
+			uam_test::Fail(("worktree case " + std::to_string(index) + " (" + chat.title + "): " + result.message).c_str(), __FILE__, __LINE__);
+		}
 		UAM_ASSERT_EQ(chat.workspace_branch_name, cases[index].second);
-		const fs::path worktree = chat.workspace_worktree_directory;
-		UAM_ASSERT_EQ(worktree.parent_path().filename().string() + "/" + worktree.filename().string(), cases[index].second);
+		const fs::path worktree = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
+		UAM_ASSERT_EQ(uam::paths::Utf8PathString(worktree.parent_path().filename()) + "/" + uam::paths::Utf8PathString(worktree.filename()), cases[index].second);
 		UAM_ASSERT(RunGitForTest(repo, "check-ref-format --branch " + ShellQuoteForTest(chat.workspace_branch_name)));
 		chat.title = "Renamed after creation";
 		chat.uam_agent_id = "build";
