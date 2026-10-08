@@ -3946,7 +3946,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const bool remote_turn_recovery = turn_was_active &&
 				    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
 				    !remote_source_exit;
-				const bool recovering_remote_process = session.recovering_remote_process;
 				const bool remote_process_missing = exit_code == 70 &&
 				    RemoteProxyExitConfirmsMissingProcess(session.recent_stderr);
 				const bool remote_process_duplicate =
@@ -3954,6 +3953,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 				    exit_code == 70 &&
 				    RemoteProxyExitLine(session.recent_stderr) ==
 				        "A remote process already uses this sessionId.";
+				// An idle parent can still own native background tasks. Reattach their surviving
+				// helper process instead of resetting ownership for a fresh launch.
+				if (!turn_was_active && !remote_source_exit && !remote_process_missing &&
+				    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+				    chat.remote_process_exists && !session.claude_live_background_task_ids.empty())
+					session.recovering_remote_process = true;
+				const bool recovering_remote_process = session.recovering_remote_process;
 				const bool remote_turn_missing = remote_turn_recovery && remote_process_missing;
 				const bool remote_stop_cleanup_missing =
 				    session.remote_stop_unconfirmed && remote_process_missing;

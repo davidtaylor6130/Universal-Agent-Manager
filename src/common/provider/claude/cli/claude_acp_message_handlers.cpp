@@ -134,6 +134,14 @@ namespace uam::acp_detail
 			}
 			else if (tool.status.empty() || tool.status == "paused" || uam::acp_statuses::IsActiveStatus(tool.status) ||
 			         (first_task_event && !uam::AcpSessionHasPendingCancel(session))) tool.status = uam::acp_statuses::kRunning;
+			if (!tool.task_id.empty())
+			{
+				if (uam::acp_statuses::IsActiveStatus(tool.status) || uam::strings::TrimAsciiView(tool.status) == "paused")
+				{
+					if (!task_id.empty()) session.claude_live_background_task_ids.insert(tool.task_id);
+				}
+				else session.claude_live_background_task_ids.erase(tool.task_id);
+			}
 			AppendToolTurnEventIfNeeded(session, tool_id);
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 			SaveChatQuietly(app, chat);

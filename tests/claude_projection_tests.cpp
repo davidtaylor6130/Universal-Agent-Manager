@@ -1,5 +1,7 @@
 #include "test_harness.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/acp/acp_polling.h"
 
 using namespace uam_test;
 
@@ -258,4 +260,178 @@ UAM_TEST(LegacyToolApprovalDoesNotInventPendingExecution)
 	UAM_ASSERT_EQ(tool.approval_status, std::string("auto_approved"));
 	UAM_ASSERT_EQ(tool.status, std::string("unknown"));
 	UAM_ASSERT(!uam::acp_statuses::IsActiveStatus(tool.status));
+}
+
+
+UAM_TEST(ClaudeNativeBackgroundTasksPreventIdleShutdownUntilTheirOwnTerminalEvent)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string terminal : {"completed", "failed", "cancelled", "killed"})
+	{
+		TempDir temp("uam-claude-background-idle");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "claude-background-idle";
+		chat.provider_id = "claude-cli";
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.running = true;
+		session.session_ready = true;
+		session.processing = true;
+		const auto send = [&](const nlohmann::json& frame)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+		};
+		send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", "background-owned"}, {"tool_use_id", "agent-owned"}, {"task_type", "local_agent"}});
+		send({{"type", "result"}, {"subtype", "success"}, {"result", "Parent finished"}});
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT_EQ(session.lifecycle_state, std::string("ready"));
+		UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("running"));
+		UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		// A new parent turn resets streamed tools, but does not end the existing native task.
+		uam::acp_detail::ResetAcpTurnStreamState(session);
+		UAM_ASSERT(session.tool_calls.empty());
+		UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		// Saved running tools do not establish ownership for a fresh or resumed process.
+		uam::AcpSessionState fresh;
+		fresh.provider_id = session.provider_id;
+		fresh.running = true;
+		fresh.session_ready = true;
+		fresh.lifecycle_state = "ready";
+		UAM_ASSERT(uam::AcpSessionCanIdleShutdown(fresh, app.chats.front()));
+		// The idle parent is disconnected, but an unauthenticated proxy exit proves nothing about its tasks.
+		session.process_execution_host_id = "ssh-fixture";
+		uam::acp_detail::MarkAcpProcessExited(session, &app.chats.front(), true, 70, false);
+		UAM_ASSERT(session.claude_live_background_task_ids.contains("background-owned"));
+		session.running = true;
+		session.session_ready = true;
+		session.lifecycle_state = "ready";
+		UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", "background-owned"}, {"patch", {{"status", "paused"}}}});
+		UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		send({{"type", "system"}, {"subtype", "task_notification"}, {"task_id", "unrelated-task"}, {"status", "completed"}});
+		UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		send({{"type", "system"}, {"subtype", "task_notification"}, {"task_id", "background-owned"}, {"status", terminal}});
+		UAM_ASSERT(uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		// A replayed progress frame cannot resurrect a settled task's idle ownership.
+		send({{"type", "system"}, {"subtype", "task_progress"}, {"task_id", "background-owned"}});
+		UAM_ASSERT(uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		// Fresh runtime reset and authenticated native exit both discard this process's task ownership.
+		send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", "reset-task"}});
+		UAM_ASSERT(!session.claude_live_background_task_ids.empty());
+		uam::acp_detail::ResetAcpRuntimeState(app, session, app.chats.front());
+		UAM_ASSERT(session.claude_live_background_task_ids.empty());
+		session.running = true;
+		session.session_ready = true;
+		session.lifecycle_state = "ready";
+		UAM_ASSERT(uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", "native-exit-task"}});
+		session.remote_source_exit_reported = true;
+		uam::acp_detail::MarkAcpProcessExited(session, &app.chats.front(), true, 0, false);
+		UAM_ASSERT(session.claude_live_background_task_ids.empty());
+		session.remote_source_exit_reported = false;
+		session.process_execution_host_id = "local";
+		session.running = true;
+		session.session_ready = true;
+		session.lifecycle_state = "ready";
+		send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", "local-exit-task"}});
+		uam::acp_detail::MarkAcpProcessExited(session, &app.chats.front(), true, 0, false);
+		UAM_ASSERT(session.claude_live_background_task_ids.empty());
+	}
+	// Exercise the real idle-exit and startup reset paths, without launching SSH or a provider.
+	for (const std::string exit_kind : {"proxy", "missing", "native"})
+	{
+		TempDir temp("uam-claude-background-reconnect");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "background-fixture-host";
+		host.transport = "ssh";
+		host.ssh_alias = "background-fixture-host";
+		host.platform = "linux";
+		host.runner_status = "ready";
+		host.runner_protocol_version = -1; // Rejected before StartStdioProcess, even with a packaged runner.
+		app.settings.execution_hosts = {host};
+		ChatSession chat;
+		chat.id = "background-reconnect";
+		chat.provider_id = "claude-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = "/fixture/background-workspace";
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "fixture-authority";
+		chat.uam_control_enabled = false;
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.process_execution_host_id = host.id;
+		session.running = true;
+		session.session_ready = true;
+		session.lifecycle_state = "ready";
+		app.acp_sessions.push_back(std::move(owned));
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		struct ProcessCleanup
+		{
+			IPlatformProcessService& process;
+			uam::AcpSessionState& session;
+			~ProcessCleanup()
+			{
+				process.StopStdioProcess(session, true);
+				process.CloseStdioProcessHandles(session);
+			}
+		} cleanup{process, session};
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/c", exit_kind == "native" ? "exit /b 0" : exit_kind == "missing" ? "echo The remote process does not exist. 1>&2 & exit /b 70" : "exit /b 70"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", exit_kind == "native" ? "exit 0" : exit_kind == "missing" ? "printf 'The remote process does not exist.\\n' >&2; exit 70" : "exit 70"};
+#endif
+		std::string launch_error;
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, argv, &launch_error));
+		session.process_execution_host_id = host.id;
+		int exit_code = -1;
+		bool exited = false;
+		for (int attempt = 0; attempt < 200 && !exited; ++attempt)
+		{
+			exited = process.PollStdioProcessExited(session, &exit_code);
+			if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(exited);
+		UAM_ASSERT_EQ(exit_code, exit_kind == "native" ? 0 : 70);
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"system","subtype":"task_started","task_id":"surviving-task"})"));
+		session.process_exit_observed = true;
+		session.observed_process_exit_code = exit_kind == "native" ? 0 : 70;
+		session.remote_source_exit_reported = exit_kind == "native";
+		for (int attempt = 0; attempt < 200 && session.running; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			if (session.running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!session.running);
+		const bool surviving_process = exit_kind == "proxy";
+		UAM_ASSERT_EQ(session.recovering_remote_process, surviving_process);
+		UAM_ASSERT(!session.recovering_remote_turn);
+		UAM_ASSERT_EQ(app.chats.front().remote_process_exists, surviving_process);
+		UAM_ASSERT(session.queued_prompt.empty());
+		UAM_ASSERT(session.queued_user_prompts.empty());
+		UAM_ASSERT(app.chats.front().remote_pending_requests.empty());
+		UAM_ASSERT(app.chats.front().remote_interaction_responses.empty());
+		UAM_ASSERT(app.chats.front().remote_prompt_delivery_id.empty());
+		std::string error;
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(session.claude_live_background_task_ids.contains("surviving-task"), surviving_process);
+		UAM_ASSERT_EQ(app.chats.front().remote_process_exists, surviving_process);
+		UAM_ASSERT(!session.running);
+		UAM_ASSERT(session.queued_prompt.empty());
+		UAM_ASSERT(app.chats.front().remote_pending_requests.empty());
+		UAM_ASSERT(app.chats.front().remote_interaction_responses.empty());
+	}
+#endif
 }

@@ -584,6 +584,8 @@ namespace uam
 		std::unordered_map<std::string, int> tool_call_message_indices;
 		std::vector<AcpToolCallState> tool_calls;
 		std::unordered_set<std::string> claude_seen_child_messages;
+		/// <summary>Observed tasks owned by this native process, retained across parent turns but never persisted.</summary>
+		std::unordered_set<std::string> claude_live_background_task_ids;
 		std::vector<AcpPlanEntryState> plan_entries;
 		std::string plan_summary;
 		std::unordered_map<std::string, std::string> codex_agent_message_text_by_item_id;

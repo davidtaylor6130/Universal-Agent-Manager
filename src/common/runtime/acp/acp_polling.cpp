@@ -745,6 +745,11 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 		detail << "pending_requests=" << pending_summary;
 	}
 	AppendAcpDiagnostic(session, "process_exit", active_turn ? "active_turn" : "idle", "", "", has_exit_code, exit_code, "", detail.str());
+	const bool remote_process = !session.process_execution_host_id.empty()
+	    ? session.process_execution_host_id != uam::execution_hosts::kLocalHostId
+	    : chat != nullptr && !uam::paths::IsControllerLocalWorkspace(*chat);
+	// A proxy exit alone does not establish that its runner-owned native process exited.
+	if (!remote_process || session.remote_source_exit_reported) session.claude_live_background_task_ids.clear();
 	session.running = false;
 	session.initialized = false;
 	session.session_ready = false;

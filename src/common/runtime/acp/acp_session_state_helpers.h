@@ -82,6 +82,7 @@ inline bool AcpSessionCanIdleShutdown(const AcpSessionState& session, const Chat
 	    !session.recovering_remote_turn && !session.recovering_remote_process &&
 	    !session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed &&
 	    session.managed_agent_run_id.empty() && !session.goal_review_scheduled &&
+	    session.claude_live_background_task_ids.empty() &&
 	    !AcpSessionHasBlockingRuntimeWork(session) &&
 	    !chat.remote_turn_reconnect_pending && !chat.remote_restart_pending &&
 	    !chat.remote_stop_cleanup_pending && chat.acp_queued_prompts.empty() &&
