@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "core/chat_import_utils.h"
+#include <memory>
 
 using namespace uam_test;
 
@@ -156,7 +157,15 @@ UAM_TEST(FailedSynchronousHistoryImportRetainsExistingWorkspaceOwner)
 	updated.messages.push_back(Message{MessageRole::Assistant, "new native tail"});
 	ChatHistorySyncService::LocalHistoryDiscovery discovery;
 	discovery.chats.push_back(updated);
+#if defined(_WIN32)
+	// Permit history reads while denying writes and atomic replacement of the existing chat.
+	const HANDLE chat_file = CreateFileW(AppPaths::UamChatFilePath(app.data_root, original.id).c_str(),
+	    GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	UAM_ASSERT(chat_file != INVALID_HANDLE_VALUE);
+	const std::unique_ptr<void, decltype(&CloseHandle)> block_chat_write(chat_file, &CloseHandle);
+#else
 	ScopedDirectoryNoWrite block_chat_write(AppPaths::UamChatsRootPath(app.data_root));
+#endif
 	const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, {}, std::move(discovery), true);
 	UAM_ASSERT(!result.success);
 	UAM_ASSERT_EQ(result.imported_count, 0);
