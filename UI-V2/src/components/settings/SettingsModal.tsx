@@ -2182,7 +2182,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         </label>
                         <div style={{ color: 'var(--text-3)' }}>Read on this host before project context. Leave empty to skip.</div>
                         <div className="flex gap-2">
-                          <Button size="sm" disabled={remoteBusy} onClick={(event) => {
+                          <Button size="sm" type="button" disabled={remoteBusy} onClick={(event) => {
                             const form = event.currentTarget.closest('form')
                             if (!form) return
                             setRemoteBusy(true)

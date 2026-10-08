@@ -417,6 +417,43 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it.each(['default submitter', 'Check file'] as const)('owns remote host options actions for %s', async (interaction) => {
+    useAppStore.setState({
+      executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' }],
+    })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      requests.push(parsed)
+      onSuccess(JSON.stringify(parsed.action === 'checkRemoteHostInstruction' ? { bytes: 12 } : {}))
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      const input = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Fixture host"]')!
+      input.value = '/tmp/new-instructions.md'
+      const form = input.form!
+      requests.length = 0
+      const buttons = Array.from(form.querySelectorAll('button'))
+      // jsdom lacks implicit Enter submission; Chromium separately verifies this default-submitter journey.
+      const button = interaction === 'default submitter'
+        ? buttons.find((candidate) => candidate.type === 'submit')
+        : buttons.find((candidate) => candidate.textContent === 'Check file')
+      expect(button).toBeTruthy()
+      await act(async () => { button!.click() })
+      const actions = requests.filter((request) => ['saveRemoteHostOptions', 'checkRemoteHostInstruction'].includes(request.action)).map(({ action, payload }) => ({ action, payload }))
+      expect(actions).toEqual([{
+        action: interaction === 'default submitter' ? 'saveRemoteHostOptions' : 'checkRemoteHostInstruction',
+        payload: interaction === 'default submitter'
+          ? { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md', startupEnabled: false }
+          : { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md' },
+      }])
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   function openMemorySettingsSection(host: HTMLElement) {
     const memorySectionButton = Array.from(host.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('Memory Settings')
