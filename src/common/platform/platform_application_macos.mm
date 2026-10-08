@@ -34,9 +34,26 @@
 /// AppKit termination exits directly; let CEF close first so Application::Shutdown runs.
 - (void)terminate:(id)sender
 {
-	NSWindow* window = [self keyWindow];
-	if (window == nil) window = [self mainWindow];
-	if (window == nil) window = [[self windows] firstObject];
+	if ([[self modalWindow] isKindOfClass:[NSOpenPanel class]])
+	{
+		[(NSOpenPanel*)[self modalWindow] cancel:sender];
+		// Unwind BrowsePath and its CEF query callback before closing the browser.
+		[self performSelector:@selector(terminate:) withObject:sender afterDelay:0];
+		return;
+	}
+	NSWindow* window = [self mainWindow];
+	if (window == nil || [window isKindOfClass:[NSPanel class]])
+	{
+		window = nil;
+		for (NSWindow* candidate in [self windows])
+		{
+			if (![candidate isKindOfClass:[NSPanel class]])
+			{
+				window = candidate;
+				break;
+			}
+		}
+	}
 	if (window != nil) [window performClose:sender];
 }
 
