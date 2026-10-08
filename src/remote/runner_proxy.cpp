@@ -731,6 +731,10 @@ namespace uam::remote
 		bool input_rejected_after_exit = false;
 		int source_exit_code = -1;
 		bool source_exit_announced = false;
+		bool source_exit_acknowledged = false;
+		bool source_output_drained = false;
+		std::optional<ProcessPollResult> source_status_cursor;
+		std::chrono::steady_clock::time_point next_source_status_poll{};
 		bool legacy_exit_observed = false;
 		int legacy_exit_code = -1;
 		int legacy_quiet_polls = 0;
@@ -771,6 +775,7 @@ namespace uam::remote
 			}
 			awaiting_stdout_bytes = stdout_bytes;
 			awaiting_output_ack = std::move(delivery);
+			source_status_cursor.reset();
 			return true;
 		};
 		const auto write_remote = [&](std::string_view bytes)
@@ -897,13 +902,12 @@ namespace uam::remote
 					                spec->delivery_token + " " +
 					                std::to_string(source_exit_code) + "\n")
 					{
-						if (!client.RemoveProcess(session_id, &error))
-						{
-							std::cerr << error << '\n';
-							return 70;
-						}
-						return source_exit_code < 0 ? 70 : source_exit_code;
+						// Completion can be acknowledged before the final output batch. Keep
+						// its helper-owned spool until every delivered byte is acknowledged.
+						source_exit_acknowledged = true;
+						continue;
 					}
+					if (line.starts_with(kRemoteSourceExitAckPrefix)) continue;
 					// Rejected input is never acknowledged or replayed. Keep reading only
 					// to drain provider output and complete its authenticated exit handshake.
 					if (input_rejected_after_exit) continue;
@@ -1000,6 +1004,37 @@ namespace uam::remote
 					return 0;
 				}
 			}
+			if (awaiting_output_ack.has_value() && !source_exited &&
+			    std::chrono::steady_clock::now() >= next_source_status_poll)
+			{
+				ProcessPollResult observed;
+				bool interrupted = false;
+				if (!poll_channel->PollProcess(session_id, observed, &error,
+				        poll_channel == &poll_client ? stop_while_polling : std::function<bool()>{},
+				        &interrupted, source_status_cursor ? &*source_status_cursor : &latest_cursor))
+				{
+					if (interrupted && stop_completed) return 0;
+					std::cerr << (error.empty() ? "Remote process status polling failed." : error) << '\n';
+					return 70;
+				}
+				// This probe cursor only scans for source death. Polling never ACKs
+				// bytes; normal delivery retains its original cursor and reads them later.
+				source_status_cursor = std::move(observed);
+				if (!source_status_cursor->running)
+				{
+					source_exited = true;
+					source_exit_code = source_status_cursor->exit_code;
+				}
+				next_source_status_poll = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+			}
+			if (source_exited && !source_exit_announced && !spec->delivery_token.empty() &&
+			    (awaiting_output_ack.has_value() || (pending_stdout.empty() && pending_stderr.empty())))
+			{
+				std::cout << kRemoteSourceExitPrefix << spec->delivery_token << ' ' << source_exit_code << '\n';
+				std::cout.flush();
+				if (!std::cout) return 70;
+				source_exit_announced = true;
+			}
 			if (awaiting_output_ack.has_value())
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1007,7 +1042,7 @@ namespace uam::remote
 			}
 			if (source_exited)
 			{
-				if (!pending_stdout.empty() || !pending_stderr.empty())
+				if (source_output_drained && (!pending_stdout.empty() || !pending_stderr.empty()))
 				{
 					if (!queue_output_delivery(pending_stdout.size(), !pending_stdout.empty()))
 					{
@@ -1016,21 +1051,20 @@ namespace uam::remote
 					}
 					continue;
 				}
-				if (!spec->delivery_token.empty())
+				if (source_output_drained)
 				{
-					if (!source_exit_announced)
+					if (!spec->delivery_token.empty() && !source_exit_acknowledged)
 					{
-						std::cout << kRemoteSourceExitPrefix << spec->delivery_token << ' '
-						          << source_exit_code << '\n';
-						std::cout.flush();
-						if (!std::cout) return 70;
-						source_exit_announced = true;
+						std::this_thread::sleep_for(std::chrono::milliseconds(10));
+						continue;
 					}
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
-					continue;
+					if (!client.RemoveProcess(session_id, &error))
+					{
+						std::cerr << error << '\n';
+						return 70;
+					}
+					return source_exit_code < 0 ? 70 : source_exit_code;
 				}
-				(void)client.RemoveProcess(session_id);
-				return source_exit_code < 0 ? 70 : source_exit_code;
 			}
 
 			ProcessPollResult polled;
@@ -1058,6 +1092,7 @@ namespace uam::remote
 					        protocol_version, spec->delivery_token) && !polled.running)
 				{
 					source_exited = true;
+					source_output_drained = true;
 					source_exit_code = polled.exit_code;
 					continue;
 				}
@@ -1104,8 +1139,12 @@ namespace uam::remote
 			pending_stderr += polled.standard_error;
 			latest_cursor = polled;
 			has_latest_cursor = true;
-			source_exited = !polled.running;
-			source_exit_code = polled.exit_code;
+			if (!polled.running)
+			{
+				source_exited = true;
+				source_output_drained = true;
+				source_exit_code = polled.exit_code;
+			}
 			const std::size_t newline = pending_stdout.rfind('\n');
 			if (newline != std::string::npos || !pending_stderr.empty())
 			{

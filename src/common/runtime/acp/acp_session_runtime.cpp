@@ -86,6 +86,16 @@ namespace uam
 	namespace
 	{
 		using namespace acp_detail;
+
+		bool RemoteSourceCleanupPending(const AcpSessionState& session, const ChatSession& chat)
+		{
+			return session.remote_source_exit_reported &&
+			    (session.running || chat.remote_process_exists || chat.remote_source_exit_pending ||
+			     !session.pending_remote_output_ack_line.empty() ||
+			     !session.pending_remote_source_exit_ack_line.empty() ||
+			     !session.stdout_buffer.empty() || !session.stderr_buffer.empty());
+		}
+
 		constexpr int kAcpReconnectMaxAttempts = 3;
 		constexpr double kAcpReconnectBaseDelaySeconds = 0.25;
 		constexpr double kRemoteTurnReconnectBaseDelaySeconds = 0.5;
@@ -1150,6 +1160,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out)
 		{
+			if (RemoteSourceCleanupPending(session, chat))
+			{
+				if (error_out != nullptr) *error_out = "Wait for the exited remote provider to finish cleanup.";
+				return false;
+			}
 			if (session.queue_held)
 			{
 				if (error_out != nullptr) *error_out = "Resume the restored queue before sending prompts.";
@@ -1707,6 +1722,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		ChatSession& chat = *chat_ptr;
+		const AcpSessionState* existing_session = FindAcpSessionForChat(app, chat_id);
+		if (existing_session != nullptr && RemoteSourceCleanupPending(*existing_session, chat))
+		{
+			if (error_out != nullptr) *error_out = "Wait for the exited remote provider to finish cleanup.";
+			return false;
+		}
+
 		if (chat.side_cleanup_requested)
 		{
 			if (error_out != nullptr) *error_out = "The temporary side chat is closing.";
@@ -2344,7 +2366,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat)
 	{
-		if (session.turn_checkpoint_commit_pending || session.queue_held) return false;
+		if (RemoteSourceCleanupPending(session, chat) || session.turn_checkpoint_commit_pending || session.queue_held) return false;
 		if (session.queued_user_prompts.empty())
 		{
 			return false;

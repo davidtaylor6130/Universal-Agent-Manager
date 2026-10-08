@@ -3409,3 +3409,189 @@ UAM_TEST(RemoteFreshStartupWriteRejectionDrainsOriginalProviderErrorWithoutInput
 	}
 #endif
 }
+
+namespace
+{
+	/// <summary>Exercises unanswered request delivery through the real proxy and a local helper, without any external provider or SSH host.</summary>
+	void VerifyRemoteExitNoticeBeforeUnansweredOutputAcknowledgement(bool exit_before_attach)
+	{
+#if !defined(_WIN32)
+		for (const std::string& request_method : {std::string("session/request_permission"), std::string("item/tool/requestUserInput")})
+		{
+			TempDir temp("uam-r10");
+			IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+			const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+			const fs::path socket = temp.root / "runner.sock";
+			const std::string version = std::string(uam::constants::kAppVersion).substr(1);
+			uam::platform::StdioProcessPlatformFields helper;
+			std::string error;
+			UAM_ASSERT(service.StartStdioProcess(helper, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
+			struct ProcessGuard
+			{
+				uam::platform::StdioProcessPlatformFields& process;
+				~ProcessGuard()
+				{
+					PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
+					PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
+				}
+			} helper_guard{helper};
+			const std::chrono::steady_clock::time_point startup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (!fs::exists(socket) && std::chrono::steady_clock::now() < startup_deadline) std::this_thread::yield();
+			UAM_ASSERT(fs::exists(socket));
+			const fs::path fake_ssh = temp.root / "ssh";
+			UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
+			fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+			const std::string token = "unanswered-source-exit-authority";
+			const std::string session_id = "unanswered-source-exit";
+			const std::string request = nlohmann::json({{"jsonrpc", "2.0"}, {"id", 17}, {"method", request_method}, {"params", {{"question", "Fixture unanswered request"}}}}).dump() + "\n";
+			const std::string tail = request_method == "session/request_permission"
+			    ? std::string("{\"long\":\"") + std::string(300 * 1024, 'x') + "\"}" : "retained-tail";
+			const fs::path tail_file = temp.root / "tail";
+			UAM_ASSERT(uam::io::WriteTextFile(tail_file, tail));
+			const fs::path request_file = temp.root / "request.jsonl";
+			UAM_ASSERT(uam::io::WriteTextFile(request_file, request));
+			const std::vector<std::string> arguments = {"/bin/sh", "-c", "cat \"$1\"; IFS= read -r line; cat \"$2\"; exit 23", "fixture", request_file.string(), tail_file.string()};
+			uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()}, version);
+			UAM_ASSERT(client.StartProcess(session_id, temp.root, arguments, {}, &error, false, token));
+			struct OwnedProviderGuard
+			{
+				uam::remote::RunnerClient& client;
+				const std::string& session_id;
+				~OwnedProviderGuard()
+				{
+					(void)client.StopProcess(session_id);
+					(void)client.RemoveProcess(session_id);
+				}
+			} provider_guard{client, session_id};
+			const auto wait_for_helper = [&](bool running)
+			{
+				uam::remote::ProcessPollResult polled;
+				uam::remote::ProcessPollResult cursor;
+				std::string retained_output;
+				bool have_cursor = false;
+				const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+				do
+				{
+					UAM_ASSERT(client.PollProcess(session_id, polled, &error, {}, nullptr, have_cursor ? &cursor : nullptr));
+					retained_output += polled.standard_output;
+					cursor = polled;
+					have_cursor = true;
+					if (polled.running == running && retained_output == request + (running ? "" : tail))
+					{
+						polled.standard_output = retained_output;
+						return polled;
+					}
+					std::this_thread::yield();
+				} while (std::chrono::steady_clock::now() < deadline);
+				UAM_ASSERT(polled.running == running && retained_output == request + (running ? "" : tail));
+				return polled;
+			};
+			(void)wait_for_helper(true);
+			if (exit_before_attach)
+			{
+				UAM_ASSERT(client.CloseProcessInput(session_id, &error));
+				UAM_ASSERT_EQ(wait_for_helper(false).exit_code, 23);
+			}
+			uam::platform::StdioProcessPlatformFields proxy;
+			const std::string spec = uam::remote::BuildProcessProxySpec(session_id, temp.root, arguments, {}, true, token);
+			UAM_ASSERT(service.StartStdioProcess(proxy, temp.root, {runner.string(), "proxy", "--alias", "fixture-host", "--platform", "linux", "--version", version}, &error,
+			    {{uam::remote::kRemoteProcessSpecEnvironment, spec}, {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")}, {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
+			ProcessGuard proxy_guard{proxy};
+			std::string output;
+			std::array<char, 4096> buffer{};
+			const std::string output_marker = std::string(uam::remote::kRemoteOutputMarkerPrefix) + token + " ";
+			const std::string source_marker = std::string(uam::remote::kRemoteSourceExitPrefix) + token + " 23\n";
+			const auto read_until = [&](const std::string& marker)
+			{
+				const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+				while (output.find(marker) == std::string::npos && std::chrono::steady_clock::now() < deadline)
+				{
+					const std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+					if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+					else std::this_thread::yield();
+				}
+			};
+			read_until(output_marker);
+			UAM_ASSERT(output.find(request) != std::string::npos);
+			UAM_ASSERT(output.find(output_marker) != std::string::npos);
+			if (!exit_before_attach)
+			{
+				// The same unanswered delivery is healthy until this owned control causes actual source death.
+				UAM_ASSERT(output.find(uam::remote::kRemoteSourceExitPrefix) == std::string::npos);
+				UAM_ASSERT(wait_for_helper(true).running);
+				UAM_ASSERT(client.CloseProcessInput(session_id, &error));
+				UAM_ASSERT_EQ(wait_for_helper(false).exit_code, 23);
+			}
+			read_until(source_marker);
+			uam::remote::ProcessPollResult retained;
+			retained = wait_for_helper(false);
+			UAM_ASSERT(!retained.running && retained.exit_code == 23);
+			UAM_ASSERT_EQ(retained.standard_output, request + tail);
+			UAM_ASSERT(retained.acknowledgement_required);
+			int proxy_exit = -1;
+			UAM_ASSERT(!service.PollStdioProcessExited(proxy, &proxy_exit));
+			// No output ACK was sent: authenticated death must still be visible, without consuming or removing the unanswered bytes.
+			UAM_ASSERT(output.find(source_marker) != std::string::npos);
+			const std::string forged_exit_ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) + "wrong-authority 23\n";
+			UAM_ASSERT(service.WriteToStdioProcess(proxy, forged_exit_ack.data(), forged_exit_ack.size(), &error));
+			const std::string premature_exit_ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) + token + " 23\n";
+			UAM_ASSERT(service.WriteToStdioProcess(proxy, premature_exit_ack.data(), premature_exit_ack.size(), &error));
+			const std::chrono::steady_clock::time_point early_ack_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+			while (std::chrono::steady_clock::now() < early_ack_deadline)
+			{
+				retained = wait_for_helper(false);
+				UAM_ASSERT_EQ(retained.standard_output, request + tail);
+				UAM_ASSERT(!service.PollStdioProcessExited(proxy, &proxy_exit));
+			}
+			const auto acknowledge_marker = [&](std::size_t marker)
+			{
+				const std::size_t end = output.find('\n', marker);
+				UAM_ASSERT(end != std::string::npos);
+				const std::string ack = std::string(uam::remote::kRemoteOutputAckPrefix) + output.substr(marker + uam::remote::kRemoteOutputMarkerPrefix.size(), end - marker - uam::remote::kRemoteOutputMarkerPrefix.size()) + "\n";
+				UAM_ASSERT(service.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+			};
+			const std::size_t first_marker = output.find(output_marker);
+			acknowledge_marker(first_marker);
+			read_until(tail);
+			UAM_ASSERT(output.find(tail) != std::string::npos);
+			const std::chrono::steady_clock::time_point tail_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			std::size_t final_marker = output.find(output_marker, first_marker + output_marker.size());
+			while (final_marker == std::string::npos && std::chrono::steady_clock::now() < tail_deadline)
+			{
+				const std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+				if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+				else std::this_thread::yield();
+				final_marker = output.find(output_marker, first_marker + output_marker.size());
+			}
+			UAM_ASSERT(final_marker != std::string::npos);
+			uam::remote::ProcessPollResult tail_cursor;
+			std::string retained_tail;
+			bool first_tail_chunk = true;
+			do
+			{
+				UAM_ASSERT(client.PollProcess(session_id, retained, &error, {}, nullptr, first_tail_chunk ? nullptr : &tail_cursor));
+				retained_tail += retained.standard_output;
+				tail_cursor = retained;
+				first_tail_chunk = false;
+			} while (retained.running);
+			UAM_ASSERT_EQ(retained_tail, tail);
+			acknowledge_marker(final_marker);
+			const std::chrono::steady_clock::time_point exit_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!service.PollStdioProcessExited(proxy, &proxy_exit) && std::chrono::steady_clock::now() < exit_deadline) std::this_thread::yield();
+			UAM_ASSERT_EQ(proxy_exit, 23);
+		}
+#else
+		(void)exit_before_attach;
+#endif
+	}
+}
+
+UAM_TEST(RemoteDeadSourceBeforeAttachNotifiesWhileUnansweredOutputRemainsDurable)
+{
+	VerifyRemoteExitNoticeBeforeUnansweredOutputAcknowledgement(true);
+}
+
+UAM_TEST(RemoteDeadSourceAfterUnansweredBatchNotifiesWithoutAcknowledgingOrRemovingIt)
+{
+	VerifyRemoteExitNoticeBeforeUnansweredOutputAcknowledgement(false);
+}

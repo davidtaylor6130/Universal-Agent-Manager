@@ -299,6 +299,17 @@ namespace uam::acp_detail
 				{
 					session.remote_source_exit_reported = true;
 					session.remote_source_exit_code = *source_exit;
+					// Persist the death and resolved wait in the same save as delivered output.
+					chat.remote_source_exit_pending = true;
+					chat.remote_source_exit_code = *source_exit;
+					if (session.waiting_for_permission || session.waiting_for_user_input)
+					{
+						(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+						// Keep turn correlation until retained final output has been projected.
+						session.last_error = std::string(RuntimeDisplayName(session)) +
+						    " exited before the pending interaction could be answered.";
+						ResetAcpPendingInteractionState(session);
+					}
 					session.pending_remote_source_exit_ack_line =
 					    std::string(uam::remote::kRemoteSourceExitAckPrefix) +
 					    session.remote_output_delivery_token + " " +
@@ -444,6 +455,27 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		ReactivateConfirmedRemoteGoal(app, chat);
 		session.reconnect_attempts = 0;
 		return true;
+	}
+
+	// Retained output may include another unanswered request. Its source is dead,
+	// so project ordinary final output but never reopen a wait or auto-answer it.
+	if (session.remote_source_exit_reported)
+	{
+		const std::string method = JsonDiagnosticStringValue(message, "method");
+		const bool interaction = method == uam::acp_methods::kSessionRequestPermission ||
+		    method == uam::acp_methods::kItemCommandExecutionRequestApproval ||
+		    method == uam::acp_methods::kItemFileChangeRequestApproval ||
+		    method == uam::acp_methods::kItemPermissionsRequestApproval ||
+		    method == uam::acp_methods::kItemToolRequestUserInput ||
+		    (JsonDiagnosticStringValue(message, "type") == "control_request" &&
+		     JsonDiagnosticStringValue(JsonObjectValue(message, "request"), "subtype") == "can_use_tool");
+		if (interaction)
+		{
+			AppendAcpDiagnostic(session, "process_exit", "unanswerable_interaction", method,
+			                    "", true, session.remote_source_exit_code,
+			                    "Discarded an interaction request from the confirmed exited provider.");
+			return true;
+		}
 	}
 
 	{

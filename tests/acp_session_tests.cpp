@@ -11774,3 +11774,183 @@ UAM_TEST(CentralNativeAgentInstructionsStayOutOfTheUserPrompt)
 	UAM_ASSERT_EQ(session.queued_prompt, std::string("Only the user task"));
 	UAM_ASSERT(uam::StopAcpSession(app, chat.id));
 }
+
+namespace
+{
+	/// <summary>Simulates only the local proxy stream and sink, so source-death wait settlement is checked without a provider or SSH connection.</summary>
+	void VerifyAuthenticatedRemoteDeathSettlesUnansweredWait(bool fail_initial_save)
+	{
+#if !defined(_WIN32)
+		for (const bool user_input : {false, true})
+		{
+			TempDir temp("uam-r10-wait");
+			uam::AppState app;
+			app.data_root = temp.root / "data";
+			app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
+			ChatSession chat;
+			chat.id = "dead-source-wait";
+			chat.provider_id = "codex-cli";
+			chat.execution_host_id = "ssh-fixture";
+			chat.remote_process_exists = true;
+			chat.remote_turn_reconnect_pending = true;
+			chat.command_safety_tier = "off";
+			Message user;
+			user.role = MessageRole::User;
+			user.content = "Preserve this original user message.";
+			chat.messages.push_back(user);
+			app.chats.push_back(chat);
+			std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+			uam::AcpSessionState& session = *owned;
+			session.chat_id = chat.id;
+			session.provider_id = "codex-cli";
+			session.protocol_kind = "codex-app-server";
+			session.running = true;
+			session.initialized = true;
+			session.session_ready = true;
+			session.processing = true;
+			session.remote_runner_protocol_version = 3;
+			session.remote_output_delivery_token = "death-fixture-authority";
+			const fs::path acknowledgements = temp.root / "acknowledgements";
+			std::string error;
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(session, temp.root,
+			    {"/bin/sh", "-c", "cat > \"$1\"", "fixture", acknowledgements.string()}, &error));
+			app.acp_sessions.push_back(std::move(owned));
+			struct ProcessGuard
+			{
+				uam::AcpSessionState& session;
+				~ProcessGuard()
+				{
+					PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+					PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+				}
+			} guard{session};
+			nlohmann::json request = nlohmann::json::parse(user_input
+			    ? R"({"jsonrpc":"2.0","id":17,"method":"item/tool/requestUserInput","params":{"itemId":"question-1","questions":[{"id":"scope","header":"Scope","question":"Which scope?","isOther":false,"isSecret":false,"options":null}]}})"
+			    : R"({"jsonrpc":"2.0","id":17,"method":"item/commandExecution/requestApproval","params":{"itemId":"command-1","command":"fixture command","availableDecisions":["accept","decline"]}})");
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), request.dump()));
+			UAM_ASSERT(user_input ? session.waiting_for_user_input : session.waiting_for_permission);
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			// Wrong authority is not an authenticated source exit. It retains the
+			// existing fail-closed invalid-provider-JSON behavior in separate state.
+			uam::AppState forged_app;
+			forged_app.data_root = temp.root / "forged";
+			forged_app.chats.push_back(chat);
+			uam::AcpSessionState forged_session;
+			forged_session.chat_id = chat.id;
+			forged_session.provider_id = "codex-cli";
+			forged_session.protocol_kind = "codex-app-server";
+			forged_session.running = true;
+			forged_session.processing = true;
+			forged_session.remote_output_delivery_token = "death-fixture-authority";
+			forged_session.stdout_buffer = std::string(uam::remote::kRemoteSourceExitPrefix) + "wrong-authority 23\n";
+			UAM_ASSERT_EQ(uam::acp_detail::ProcessBufferedAcpStdoutForTests(forged_app, forged_session, forged_app.chats.front(), nullptr, 1), std::size_t{1});
+			UAM_ASSERT(!forged_session.remote_source_exit_reported);
+			UAM_ASSERT(forged_session.pending_remote_source_exit_ack_line.empty());
+			UAM_ASSERT(forged_session.last_error.find("Invalid JSON") != std::string::npos);
+			UAM_ASSERT(user_input ? session.waiting_for_user_input : session.waiting_for_permission);
+			if (fail_initial_save)
+			{
+				app.data_root = temp.root / "blocked-data";
+				UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Blocks local persistence."));
+			}
+			request["id"] = 18;
+			request["params"]["itemId"] = "late-unanswerable-request";
+			session.stdout_buffer = std::string(uam::remote::kRemoteSourceExitPrefix) + "death-fixture-authority 23\n" +
+			    request.dump() + "\n" + R"({"method":"item/agentMessage/delta","params":{"itemId":"retained-message","delta":"Retained final text."}})" + "\n" + std::string(uam::remote::kRemoteOutputMarkerPrefix) + "death-fixture-authority 321 0\n";
+			UAM_ASSERT(uam::acp_detail::DrainStdout(app, session, app.chats.front(), nullptr));
+			UAM_ASSERT(session.remote_source_exit_reported);
+			if (fail_initial_save)
+			{
+				UAM_ASSERT_EQ(app.chats.front().remote_delivered_stdout_cursor, std::uintmax_t{0});
+				UAM_ASSERT(!session.pending_remote_output_ack_line.empty());
+				UAM_ASSERT(!session.pending_remote_source_exit_ack_line.empty());
+				UAM_ASSERT(uam::io::ReadTextFile(acknowledgements).empty());
+				// Losing the proxy alone must not release unpersisted output ownership.
+				session.running = false;
+				UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Do not replace unacknowledged output", &error));
+				UAM_ASSERT(error.find("finish cleanup") != std::string::npos);
+				session.running = true;
+				app.data_root = temp.root / "data";
+				(void)uam::acp_detail::DrainStdout(app, session, app.chats.front(), nullptr);
+			}
+			UAM_ASSERT(!session.waiting_for_permission && !session.waiting_for_user_input);
+			UAM_ASSERT(session.pending_permission.request_id_json.empty() && session.pending_user_input.request_id_json.empty());
+			UAM_ASSERT(session.queued_permissions.empty());
+			UAM_ASSERT(session.pending_remote_output_ack_line.empty() && session.pending_remote_source_exit_ack_line.empty());
+			UAM_ASSERT_EQ(app.chats.front().remote_delivered_stdout_cursor, std::uintmax_t{321});
+			UAM_ASSERT_EQ(app.chats.front().messages.front().content, user.content);
+			for (const Message& message : app.chats.front().messages)
+				for (const ToolCall& tool : message.tool_calls)
+					UAM_ASSERT(tool.status != "running" && tool.status != "pending");
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(saved.has_value());
+			UAM_ASSERT_EQ(saved->remote_delivered_stdout_cursor, std::uintmax_t{321});
+			UAM_ASSERT(saved->remote_source_exit_pending && saved->remote_source_exit_code == 23);
+			// Even if retained output settles the turn before the proxy exits,
+			// no new queue, setup, or goal request may target that dead source.
+			session.processing = false;
+			session.prompt_request_id = 0;
+			UAM_ASSERT(!uam::acp_detail::CanQueueGoalInternalPrompt(session));
+			std::string goal_id;
+			UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Retain this goal until a live provider is available.", 0, &goal_id));
+			UAM_ASSERT(uam::GoalService::SetActiveGoal(app, chat.id, goal_id));
+			uam::GoalService::FindActiveGoal(app, chat.id)->loop_count = 1;
+			session.last_runtime_activity_time_s = 1.0;
+			UAM_ASSERT(!uam::ResumeStalledGoalLoopForTests(app, session, app.chats.front(), 100.0));
+			UAM_ASSERT(session.queued_prompt.empty());
+			uam::AcpQueuedUserPromptState queued;
+			queued.id = "later-queued-intent";
+			queued.text = "Must wait for a new provider.";
+			session.queued_user_prompts.push_back(queued);
+			UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, app.chats.front()));
+			UAM_ASSERT_EQ(session.queued_user_prompts.front().id, queued.id);
+			session.queued_prompt = "Undelivered later prompt";
+			UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front()));
+			session.session_ready = false;
+			UAM_ASSERT(!uam::acp_detail::SendSessionSetupIfReady(app, session, app.chats.front()));
+
+			UAM_ASSERT(std::any_of(saved->messages.begin(), saved->messages.end(), [](const Message& message)
+			    { return message.role == MessageRole::Assistant && message.content.find("Retained final text.") != std::string::npos; }));
+			const std::string output_ack = std::string(uam::remote::kRemoteOutputAckPrefix) + "death-fixture-authority 321 0\n";
+			const std::string source_ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) + "death-fixture-authority 23\n";
+			const std::chrono::steady_clock::time_point ack_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (uam::io::ReadTextFile(acknowledgements).find(source_ack) == std::string::npos && std::chrono::steady_clock::now() < ack_deadline) std::this_thread::yield();
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(acknowledgements), output_ack + source_ack);
+			UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "New explicit prompt", &error));
+			UAM_ASSERT(error.find("finish cleanup") != std::string::npos);
+			// Observe an actual owned proxy EOF through the normal poll cleanup path.
+			session.queued_prompt.clear();
+			session.queued_user_prompts.clear();
+			session.session_ready = true;
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(session);
+			const std::chrono::steady_clock::time_point exit_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (session.running && std::chrono::steady_clock::now() < exit_deadline)
+			{
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(!session.running);
+			UAM_ASSERT(!app.chats.front().remote_process_exists && !app.chats.front().remote_source_exit_pending);
+			error.clear();
+			UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Retry after confirmed cleanup", &error));
+			UAM_ASSERT_EQ(error, std::string("The selected execution host no longer exists."));
+			session.queued_user_prompts.push_back(queued);
+			UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, app.chats.front()));
+			UAM_ASSERT_EQ(session.last_error, std::string("The selected execution host no longer exists."));
+
+		}
+#else
+		(void)fail_initial_save;
+#endif
+	}
+}
+
+UAM_TEST(RemoteAuthenticatedSourceDeathSettlesUnansweredWaitWithoutCreatingLaterQuestions)
+{
+	VerifyAuthenticatedRemoteDeathSettlesUnansweredWait(false);
+}
+
+UAM_TEST(RemoteDeadQuestionAcknowledgementsWaitForDurableLocalInterruption)
+{
+	VerifyAuthenticatedRemoteDeathSettlesUnansweredWait(true);
+}

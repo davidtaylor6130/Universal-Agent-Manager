@@ -981,6 +981,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (session.remote_source_exit_reported) return false;
 	if (!session.running || !session.initialized || session.session_ready || session.session_setup_request_id != 0)
 	{
 		return false;
@@ -1201,6 +1202,7 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (session.remote_source_exit_reported) return false;
 	// A command made while startup was pending may invalidate an unsent goal turn.
 	if (!session.goal_turn_kind.empty() && session.prompt_request_id == 0 && !session.queued_prompt.empty())
 	{
