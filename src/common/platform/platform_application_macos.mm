@@ -31,6 +31,15 @@
 	handlingSendEvent_ = handlingSendEvent;
 }
 
+/// AppKit termination exits directly; let CEF close first so Application::Shutdown runs.
+- (void)terminate:(id)sender
+{
+	NSWindow* window = [self keyWindow];
+	if (window == nil) window = [self mainWindow];
+	if (window == nil) window = [[self windows] firstObject];
+	if (window != nil) [window performClose:sender];
+}
+
 - (void)sendEvent:(NSEvent*)event
 {
 	const NSEventModifierFlags modifiers =
@@ -38,10 +47,7 @@
 	if ([event type] == NSEventTypeKeyDown && modifiers == NSEventModifierFlagCommand &&
 	    [[event charactersIgnoringModifiers] caseInsensitiveCompare:@"q"] == NSOrderedSame)
 	{
-		NSWindow* window = [self keyWindow];
-		if (window == nil) window = [self mainWindow];
-		if (window == nil) window = [[self windows] firstObject];
-		if (window != nil) [window performClose:self];
+		[self terminate:self];
 		return;
 	}
 	CefScopedSendingEvent sendingEvent;
