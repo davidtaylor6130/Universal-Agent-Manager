@@ -3343,7 +3343,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			auto pending = std::make_unique<PendingAcpRemoteStop>();
 			pending->chat_id = chat_id;
-			pending->deadline_time_s = GetAppTimeSeconds() + (session->stop_purpose == AcpStopPurpose::Timeout ? 3.0 : 1.0);
+			pending->deadline_time_s = GetAppTimeSeconds() + acp_detail::kRemoteStopConfirmationTimeoutSeconds;
 			pending->recoverable_turn = recoverable_remote_turn;
 			pending->restart_after_stop = session->restart_after_remote_stop_cleanup;
 			TransferStdioProcessFields(*session, *pending);

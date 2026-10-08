@@ -12237,3 +12237,115 @@ UAM_TEST(RemoteDeadQuestionAcknowledgementsWaitForDurableLocalInterruption)
 {
 	VerifyAuthenticatedRemoteDeathSettlesUnansweredWait(true);
 }
+
+namespace
+{
+	struct SlowRemoteStopOutcome
+	{
+		bool natural_exit = false;
+		bool unconfirmed = false;
+		bool cleanup_pending = false;
+		bool saved_cleanup_pending = false;
+		bool restart_pending = false;
+		bool reconnect_pending = false;
+		bool control_authority_retained = false;
+		std::string queued_prompt;
+		std::chrono::steady_clock::duration first_poll_duration{};
+	};
+
+	SlowRemoteStopOutcome RunSlowOwnedRemoteStop(bool restart, uam::AcpStopPurpose purpose, int exit_code, bool expire)
+	{
+		TempDir temp("uam-slow-owned-stop-proxy");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "owned-delayed-stop";
+		chat.provider_id = "codex-cli";
+		chat.execution_host_id = "ssh-owned-missing-host";
+		chat.workspace_directory = temp.root.string();
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "owned-stop-authority";
+		chat.memory_enabled = false;
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->protocol_kind = "codex-app-server";
+		session->running = true;
+		session->initialized = true;
+		session->session_ready = true;
+		session->remote_output_delivery_token = chat.remote_process_control_token;
+		session->queued_prompt = "Retain the queued restart intent.";
+		uam::AcpSessionState* target = session.get();
+		app.acp_sessions.push_back(std::move(session));
+		const fs::path natural_exit = temp.root / "natural-exit";
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
+		    "set /p line= & echo UAM_REMOTE_STOP_OUTCOME owned-stop-authority graceful 1>&2 & ping -n 3 127.0.0.1 >nul & type nul >\"" + natural_exit.string() + "\" & exit /b " + std::to_string(exit_code)};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c",
+		    "IFS= read -r line; printf 'UAM_REMOTE_STOP_OUTCOME %s graceful\\n' \"$2\" >&2; sleep 1.5; : >\"$1\"; exit \"$3\"",
+		    "owned-stop-fixture", natural_exit.string(), chat.remote_process_control_token, std::to_string(exit_code)};
+#endif
+		std::string error;
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		UAM_ASSERT(process.StartStdioProcess(*target, temp.root, argv, &error));
+		if (restart) (void)uam::acp_detail::StopAcpProcessForRestart(app, *target, app.chats.front());
+		else (void)uam::StopAcpSession(app, chat.id, purpose);
+		UAM_ASSERT(target->remote_stop_pending);
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t(1));
+		if (expire) app.pending_acp_remote_stops.front()->deadline_time_s = 0.0;
+		const std::chrono::steady_clock::time_point first_poll = std::chrono::steady_clock::now();
+		(void)uam::PollAllAcpSessions(app);
+		SlowRemoteStopOutcome outcome;
+		outcome.first_poll_duration = std::chrono::steady_clock::now() - first_poll;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+		while (target->remote_stop_pending && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		const bool finished = !target->remote_stop_pending;
+		outcome.natural_exit = fs::exists(natural_exit);
+		outcome.unconfirmed = target->remote_stop_unconfirmed;
+		outcome.cleanup_pending = app.chats.front().remote_stop_cleanup_pending;
+		outcome.restart_pending = app.chats.front().remote_restart_pending;
+		outcome.reconnect_pending = target->reconnect_pending;
+		outcome.control_authority_retained = !app.chats.front().remote_process_control_token.empty();
+		outcome.queued_prompt = target->queued_prompt;
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		if (saved) outcome.saved_cleanup_pending = saved->remote_stop_cleanup_pending;
+		uam::FastStopAcpSessionsForExit(app);
+		UAM_ASSERT(finished && saved.has_value());
+		return outcome;
+	}
+}
+
+UAM_TEST(AcpRemoteStopAllowsSlowConfirmedExitAndStillRejectsFailureOrExpiry)
+{
+	for (const uam::AcpStopPurpose purpose : {uam::AcpStopPurpose::Interrupt, uam::AcpStopPurpose::Timeout})
+	{
+		const SlowRemoteStopOutcome stopped = RunSlowOwnedRemoteStop(false, purpose, 0, false);
+		UAM_ASSERT(stopped.natural_exit);
+		UAM_ASSERT(!stopped.unconfirmed && !stopped.cleanup_pending && !stopped.saved_cleanup_pending);
+		UAM_ASSERT(stopped.first_poll_duration < std::chrono::milliseconds(500));
+	}
+	const SlowRemoteStopOutcome failed = RunSlowOwnedRemoteStop(false, uam::AcpStopPurpose::Interrupt, 70, false);
+	UAM_ASSERT(failed.natural_exit);
+	UAM_ASSERT(failed.unconfirmed && failed.cleanup_pending && failed.saved_cleanup_pending);
+	UAM_ASSERT(failed.control_authority_retained);
+	const SlowRemoteStopOutcome expired = RunSlowOwnedRemoteStop(false, uam::AcpStopPurpose::Interrupt, 0, true);
+	UAM_ASSERT(expired.unconfirmed && expired.cleanup_pending && expired.saved_cleanup_pending);
+	UAM_ASSERT(expired.control_authority_retained);
+	UAM_ASSERT(expired.first_poll_duration < std::chrono::milliseconds(500));
+}
+
+UAM_TEST(AcpRemoteRestartAllowsSlowConfirmedExitWithoutDroppingIntent)
+{
+	const SlowRemoteStopOutcome restarted = RunSlowOwnedRemoteStop(true, uam::AcpStopPurpose::Interrupt, 0, false);
+	UAM_ASSERT(restarted.natural_exit);
+	UAM_ASSERT(!restarted.unconfirmed && !restarted.cleanup_pending && !restarted.saved_cleanup_pending);
+	UAM_ASSERT(restarted.restart_pending && restarted.reconnect_pending);
+	UAM_ASSERT_EQ(restarted.queued_prompt, std::string("Retain the queued restart intent."));
+	UAM_ASSERT(restarted.first_poll_duration < std::chrono::milliseconds(500));
+}

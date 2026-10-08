@@ -427,7 +427,7 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 		    uam::remote::kRemoteStopControlLine.size(), &ignored_error);
 		auto pending = std::make_unique<PendingAcpRemoteStop>();
 		pending->chat_id = chat.id;
-		pending->deadline_time_s = GetAppTimeSeconds() + (stop_requested ? 1.0 : 0.0);
+		pending->deadline_time_s = GetAppTimeSeconds() + (stop_requested ? kRemoteStopConfirmationTimeoutSeconds : 0.0);
 		pending->recoverable_turn = AcpSessionHasActiveTurn(session);
 		pending->restart_after_stop = true;
 		TransferStdioProcessFields(session, *pending);

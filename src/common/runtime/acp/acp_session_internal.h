@@ -22,6 +22,9 @@
 namespace uam::acp_detail
 {
 
+/// <summary>Bounds asynchronous remote Stop confirmation: a runner RPC permits 15 seconds, followed by retained-output drain and removal.</summary>
+inline constexpr double kRemoteStopConfirmationTimeoutSeconds = 30.0;
+
 // Plain data: ACP failure detail bag (used by FormatAcpFailureMessage)
 struct AcpFailureDetails
 {
