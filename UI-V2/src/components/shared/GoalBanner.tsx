@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil, X, ChevronRight } from 'lucide-react'
 import type { Goal } from '../../types/goal'
 import { StatusDot, Tooltip, ViewportMenu, type StatusTone } from '../ui'
+import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
 interface GoalBannerProps {
   goal: Goal
@@ -89,38 +90,59 @@ function MenuItem({ icon, label, onClick, danger, disabled }: { icon: ReactNode;
   )
 }
 
-function EditGoalDialog({ objective, onClose, onSave }: { objective: string; onClose: () => void; onSave: (objective: string) => Promise<boolean> }) {
+function EditGoalDialog({ objective, onClose, onSave, returnFocusElement }: { objective: string; onClose: () => void; onSave: (objective: string) => Promise<boolean>; returnFocusElement: HTMLButtonElement | null }) {
   const [draft, setDraft] = useState(objective)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const dialogRef = useRef<HTMLFormElement>(null)
+  const closeRef = useRef(onClose); closeRef.current = onClose
+  const savingRef = useRef(false)
+  const mountedRef = useRef(false)
 
   useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null
+    const previouslyFocused = returnFocusElement ?? document.activeElement as HTMLElement | null
+    const dialog = dialogRef.current
+    mountedRef.current = true
     inputRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !saving) onClose()
+      if (event.defaultPrevented || getTopmostModal() !== dialog) return
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation()
+        if (!savingRef.current) closeRef.current()
+      } else trapModalTab(event)
     }
-    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keydown', onKeyDown, true)
     return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      previouslyFocused?.focus?.()
+      mountedRef.current = false
+      window.removeEventListener('keydown', onKeyDown, true)
+      if (previouslyFocused?.isConnected && (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement))) previouslyFocused.focus()
     }
-  }, [onClose, saving])
+  }, [])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
+    event.stopPropagation()
+    if (savingRef.current) return
     const nextObjective = draft.trim()
     if (!nextObjective) {
       setError('Goal objective is required.')
       return
     }
+    savingRef.current = true
     setSaving(true)
     setError('')
-    const saved = await onSave(nextObjective)
-    setSaving(false)
-    if (saved) onClose()
-    else setError('Failed to update goal.')
+    try {
+      const saved = await onSave(nextObjective)
+      if (!mountedRef.current) return
+      if (saved) closeRef.current()
+      else setError('Failed to update goal.')
+    } catch {
+      if (mountedRef.current) setError('Failed to update goal.')
+    } finally {
+      savingRef.current = false
+      if (mountedRef.current) setSaving(false)
+    }
   }
 
   return createPortal(
@@ -130,6 +152,7 @@ function EditGoalDialog({ objective, onClose, onSave }: { objective: string; onC
       onMouseDown={() => { if (!saving) onClose() }}
     >
       <form
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Edit goal"
@@ -320,7 +343,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
           </ViewportMenu>
         )}
       </div>
-      {editing && onEdit && <EditGoalDialog objective={goal.objective} onClose={() => setEditing(false)} onSave={onEdit} />}
+      {editing && onEdit && <EditGoalDialog objective={goal.objective} onClose={() => setEditing(false)} onSave={onEdit} returnFocusElement={triggerRef.current} />}
     </div>
   )
 }

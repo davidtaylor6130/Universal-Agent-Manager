@@ -26,6 +26,7 @@ import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '..
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
+import { getTopmostModal } from '../../utils/modalFocus'
 
 interface ChatViewProps {
   session: Session
@@ -435,6 +436,12 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
 export const ChatView = memo(function ChatView({ session, accentColor }: ChatViewProps) {
   const slashListboxId = useId()
   const workspaceMenuId = useId()
+  const goalsPopupId = useId()
+  const [goalsPopupOwner, setGoalsPopupOwner] = useState<string | null>(null)
+  const goalsTriggerRef = useRef<HTMLButtonElement>(null)
+  const goalsPopupRef = useRef<HTMLDivElement>(null)
+  const goalMutationGenerationRef = useRef(0)
+  const goalMutationOwnerRef = useRef<string | null>(null)
   const [draft, setDraft] = useState(() => readChatComposerDraft(session.id).text)
   const [composerSelection, setComposerSelection] = useState({ start: 0, end: 0 })
   const [submitting, setSubmitting] = useState(false)
@@ -871,6 +878,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setSteering(false)
     setAttachmentError('')
     setGoalError('')
+    goalMutationGenerationRef.current += 1
+    goalMutationOwnerRef.current = null
+    goalMutationInFlightRef.current = false
+    setGoalSubmitting(false)
     setWorkspaceFeedback(null)
     setWorkspaceActionBusy(false)
     setWorkspaceMenuOpen(false)
@@ -924,6 +935,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       const target = event.target
       if (!(target instanceof Node)) return
       if (target instanceof Element && target.closest('[data-viewport-menu]')) return
+      if (target instanceof Element && target.closest('[aria-modal="true"]')) return
+      if (!goalsTriggerRef.current?.contains(target)) setGoalsPopupOwner(null)
 
       if (modelOpen && modelMenuRef.current && !modelMenuRef.current.contains(target)) {
         setModelOpen(false)
@@ -935,7 +948,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     }
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || event.defaultPrevented || getTopmostModal()) return
       setModelOpen(false)
       setWorkspaceMenuOpen(false)
       setSelectedToolCallRef(null)
@@ -1093,43 +1106,55 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     void stageFiles(files)
   }
 
+  const createGoalAndSend = async (request: {
+    objective: string; tokenBudget: number; executionOwner: 'uam' | 'provider'; prompt: string;
+    attachments: Attachment[]; sendFailure: string; steerNow?: boolean; disarm?: boolean;
+  }) => {
+    const submittedSessionId = session.id
+    const submittedDraft = draft
+    const generation = ++goalMutationGenerationRef.current
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === submittedSessionId && goalMutationGenerationRef.current === generation
+    submitInFlightRef.current = true
+    goalMutationInFlightRef.current = true
+    setSubmitting(true)
+    setGoalSubmitting(true)
+    try {
+      const result = await setGoalStore(submittedSessionId, request.objective, request.tokenBudget, request.executionOwner)
+      // Creation already admitted this prompt; changing panes must not cancel its native operation.
+      const sent = result.ok ? await (request.steerNow
+        ? sendAcpPrompt(submittedSessionId, request.prompt, request.attachments, true)
+        : sendAcpPrompt(submittedSessionId, request.prompt, request.attachments)) : false
+      if (!ownsFeedback()) return
+      if (!sent) { setGoalError(result.ok ? request.sendFailure : result.error || 'Failed to create goal.'); return }
+      setGoalError('')
+      if (request.disarm) setGoalArmNextMessage(false)
+      setDraft((current) => current === submittedDraft ? '' : current)
+      setComposerAttachments((current) => current.filter((attachment) => !request.attachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
+      setAttachmentError('')
+    } catch {
+      if (ownsFeedback()) setGoalError('Failed to create goal.')
+    } finally {
+      if (ownsFeedback()) {
+        submitInFlightRef.current = false
+        goalMutationInFlightRef.current = false
+        setSubmitting(false)
+        setGoalSubmitting(false)
+      }
+    }
+  }
+
   const submitGoal = async (prompt: string) => {
     const goalMatch = prompt.match(/^\/goal\s+(.+?)(?:\s+--budget\s+(\d+))?\s*$/s)
     if (!goalMatch) return false
-
     const objective = goalMatch[1].trim()
+    if (!objective) { setGoalError('Goal objective is required.'); return true }
     const tokenBudget = goalMatch[2] ? parseInt(goalMatch[2], 10) : defaultGoalTokenBudget
-
-    if (!objective) {
-      setGoalError('Goal objective is required.')
-      return true
-    }
-
-	goalMutationInFlightRef.current = true
-    setGoalSubmitting(true)
-	try {
-	  const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
-	  const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
-	  const goalResult = await setGoalStore(session.id, objective, tokenBudget, providerManaged ? 'provider' : 'uam')
-	  const goalAttachments = composerAttachments
-	    .filter((attachment) => attachment.status === 'ready')
-	    .map(({ status, error, ...attachment }) => attachment)
-	  const sent = goalResult.ok ? await sendAcpPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
-
-	  if (goalResult.ok && sent && currentSessionIdRef.current === session.id) {
-        setDraft((current) => current === draft ? '' : current)
-	    setComposerAttachments((current) => current.filter((attachment) => !goalAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
-	    setAttachmentError('')
-        setGoalError('')
-      } else {
-	    setGoalError(goalResult.ok ? 'Goal was created, but the first prompt failed to send.' : (goalResult.error || 'Failed to create goal.'))
-      }
-	} catch {
-	  setGoalError('Failed to create goal.')
-	} finally {
-	  goalMutationInFlightRef.current = false
-	  setGoalSubmitting(false)
-	}
+    const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+    const providerManaged = featurePreference === 'provider' && Boolean(nativeGoalCommand)
+    await createGoalAndSend({ objective, tokenBudget, executionOwner: providerManaged ? 'provider' : 'uam',
+      prompt: providerManaged ? `${nativeGoalCommand} ${objective}` : objective,
+      attachments: composerAttachments.filter((attachment) => attachment.status === 'ready').map(({ status, error, ...attachment }) => attachment),
+      sendFailure: 'Goal was created, but the first prompt failed to send.' })
     return true
   }
 
@@ -1188,87 +1213,20 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     if (prompt === '/side' && !session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(); return }
     if ((prompt === '/side-return' || prompt === '/side-dismiss') && session.temporaryParentChatId && !isCompanionContext()) { setDraft(''); await navigateSide(prompt === '/side-return' ? 'return' : 'dismiss'); return }
     // Handle /goal command
-    if (prompt.startsWith('/goal ')) {
-      const submittedSessionId = session.id
-      submitInFlightRef.current = true
-      setSubmitting(true)
-      try {
-        await submitGoal(prompt)
-      } finally {
-        submitInFlightRef.current = false
-        if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
-      }
+    if (prompt.startsWith('/goal ')) { await submitGoal(prompt); return }
+    const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
+    if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
+      const objective = prompt.slice(nativeGoalCommand.length).trim()
+      if (!objective) { setGoalError('Goal objective is required.'); return }
+      await createGoalAndSend({ objective, tokenBudget: defaultGoalTokenBudget, executionOwner: 'provider',
+        prompt, attachments: readyAttachments, sendFailure: 'Goal was created, but the provider command failed to send.' })
       return
     }
-	const nativeGoalCommand = currentProvider.nativeGoalCommand?.trim() ?? ''
-	if (nativeGoalCommand && (prompt === nativeGoalCommand || prompt.startsWith(`${nativeGoalCommand} `))) {
-	  const objective = prompt.slice(nativeGoalCommand.length).trim()
-	  if (!objective) {
-		setGoalError('Goal objective is required.')
-		return
-	  }
-	  const submittedSessionId = session.id
-	  submitInFlightRef.current = true
-	  goalMutationInFlightRef.current = true
-	  setSubmitting(true)
-	  setGoalSubmitting(true)
-	  try {
-		const goalResult = await setGoalStore(session.id, objective, defaultGoalTokenBudget, 'provider')
-		const ok = goalResult.ok ? await sendAcpPrompt(session.id, prompt, readyAttachments) : false
-		if (!ok) {
-		  setGoalError(goalResult.ok ? 'Goal was created, but the provider command failed to send.' : (goalResult.error || 'Failed to create goal.'))
-		  return
-		}
-		if (currentSessionIdRef.current !== submittedSessionId) return
-		setGoalError('')
-		setDraft((current) => current === draft ? '' : current)
-		setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
-		setAttachmentError('')
-	  } catch {
-		setGoalError('Failed to create goal.')
-	  } finally {
-		goalMutationInFlightRef.current = false
-		setGoalSubmitting(false)
-		submitInFlightRef.current = false
-		if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
-	  }
-	  return
-	}
-
     if (goalArmNextMessage) {
-      const submittedSessionId = session.id
-      submitInFlightRef.current = true
-	  goalMutationInFlightRef.current = true
-      setSubmitting(true)
-      setGoalSubmitting(true)
-	  try {
-		const providerGoalCommand = featurePreference === 'provider' ? currentProvider.nativeGoalCommand?.trim() ?? '' : ''
-		const goalResult = await setGoalStore(session.id, prompt, defaultGoalTokenBudget, providerGoalCommand ? 'provider' : 'uam')
-		if (!goalResult.ok) {
-		  setGoalError(goalResult.error || 'Failed to create goal.')
-		  return
-		}
-		const ok = steerNow
-		  ? await sendAcpPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments, true)
-		  : await sendAcpPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments)
-		if (!ok) {
-		  setGoalError('Goal was created, but the first prompt failed to send.')
-		  return
-		}
-		if (currentSessionIdRef.current !== submittedSessionId) return
-		setGoalError('')
-		setGoalArmNextMessage(false)
-		setDraft((current) => current === draft ? '' : current)
-		setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
-		setAttachmentError('')
-	  } catch {
-		setGoalError('Failed to create goal.')
-	  } finally {
-		goalMutationInFlightRef.current = false
-		setGoalSubmitting(false)
-		submitInFlightRef.current = false
-		if (currentSessionIdRef.current === submittedSessionId) setSubmitting(false)
-	  }
+      const providerGoalCommand = featurePreference === 'provider' ? currentProvider.nativeGoalCommand?.trim() ?? '' : ''
+      await createGoalAndSend({ objective: prompt, tokenBudget: defaultGoalTokenBudget, executionOwner: providerGoalCommand ? 'provider' : 'uam',
+        prompt: providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, attachments: readyAttachments,
+        sendFailure: 'Goal was created, but the first prompt failed to send.', steerNow, disarm: true })
       return
     }
 
@@ -1812,6 +1770,22 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [planActionsDisabled, sendAcpPrompt, session.id, setSessionApprovalMode])
   const activeGoal = activeGoalId ? goals.find((g) => g.id === activeGoalId) ?? null : null
   const displayedGoal = activeGoal ?? (goals.length > 0 ? goals[goals.length - 1] : null)
+  const goalOwner = displayedGoal ? `${session.id}:${displayedGoal.id}` : ''
+  const goalOwnerRef = useRef(goalOwner); goalOwnerRef.current = goalOwner
+  const goalsPopupOpen = Boolean(goalOwner && goalsPopupOwner === goalOwner)
+  useEffect(() => {
+    setGoalsPopupOwner(null)
+    if (goalMutationOwnerRef.current !== null && goalMutationOwnerRef.current !== goalOwner) {
+      goalMutationGenerationRef.current += 1
+      goalMutationOwnerRef.current = null
+      goalMutationInFlightRef.current = false
+      setGoalSubmitting(false)
+      setGoalError('')
+    }
+  }, [goalOwner])
+  useEffect(() => {
+    if (goalsPopupOpen) goalsPopupRef.current?.querySelector<HTMLElement>('summary')?.focus()
+  }, [goalsPopupOpen])
   const displayedGoalWorkerLabel = session.smallModelMode && displayedGoal?.workerModelId
     ? modelOptionFor(buildModelOptions(providerAcp, displayedGoal.workerModelId, currentProvider, currentProviderId), displayedGoal.workerModelId).label
     : ''
@@ -1824,19 +1798,27 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     fallbackError: string,
   ) => {
     if (goalSubmitting || goalMutationInFlightRef.current) return false
+    const mutationGeneration = ++goalMutationGenerationRef.current
+    const owner = goalOwner
+    goalMutationOwnerRef.current = owner
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id &&
+      goalMutationGenerationRef.current === mutationGeneration && goalOwnerRef.current === owner
     goalMutationInFlightRef.current = true
     setGoalError('')
     setGoalSubmitting(true)
     try {
       const result = await mutation()
-      if (!result.ok) setGoalError(result.error || fallbackError)
+      if (!result.ok && ownsFeedback()) setGoalError(result.error || fallbackError)
       return result.ok
     } catch {
-      setGoalError(fallbackError)
+      if (ownsFeedback()) setGoalError(fallbackError)
       return false
     } finally {
-      goalMutationInFlightRef.current = false
-      setGoalSubmitting(false)
+      if (ownsFeedback()) {
+        goalMutationInFlightRef.current = false
+        goalMutationOwnerRef.current = null
+        setGoalSubmitting(false)
+      }
     }
   }
   const handleCompleteGoal = () => {
@@ -2599,8 +2581,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         </div>
 
         <div ref={composerDockRef} className="uam-composer-dock">
-        {displayedGoal && (
-          <GoalBanner
+        {displayedGoal && goalsPopupOpen && (
+          <ViewportMenu ref={goalsPopupRef} anchorRef={goalsTriggerRef} side="top" role="region" aria-label="Chat goals" id={goalsPopupId} manageFocus={false}
+            onKeyDownCapture={(event) => {
+              if (event.key !== 'Escape' || getTopmostModal() || !event.currentTarget.contains(event.target as Node)) return
+              event.preventDefault(); event.stopPropagation()
+              setGoalsPopupOwner(null)
+              goalsTriggerRef.current?.focus()
+            }}
+            style={{ width: 560, maxHeight: 'min(360px, calc(100vh - 16px))', background: '#000', color: '#fff', border: '1px solid var(--border)' }}>
+          <GoalBanner key={goalOwner}
             goal={displayedGoal}
             onComplete={handleCompleteGoal}
             onPause={handlePauseGoal}
@@ -2615,6 +2605,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             workerModelLabel={displayedGoalWorkerLabel}
             reviewerModelLabel={displayedGoalReviewerLabel}
           />
+          </ViewportMenu>
         )}
 
         <form
@@ -2777,14 +2768,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 </>}
               </div>
             )}
+            {(!isCompanionContext() || displayedGoal) && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
             {!isCompanionContext() && (
-              <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
+              <>
                 <div ref={workspaceMenuRef} className="relative shrink-0">
                   <IconButton
                     size="sm"
                     disabled={!workspaceDirectory}
                     onClick={() => {
                       setWorkspaceMenuOpen((open) => !open)
+                      setGoalsPopupOwner(null)
                       setModelOpen(false)
                     }}
                     icon={<ComposerIcon name="folder" size={14} />}
@@ -2858,8 +2851,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   {composerBranch && <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate">{composerBranch}</span></span>}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
-              </div>
+              </>
             )}
+            {displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
+              aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="true"
+              className="inline-flex min-w-0 items-center gap-1 text-left text-xs" title={displayedGoal.objective}
+              onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalsPopupOwner(goalOwner) }
+                else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGoalsPopupOwner(null) }
+              }}>
+              <Target size={14} aria-hidden /><span>Goals · {displayedGoal.status}</span><span className="min-w-0 truncate">{displayedGoal.objective}</span>
+            </button>}
+            </div>}
             {pendingUserInput && !session.importedReadOnly && (
               <UserInputInlineCard
                 key={`${session.id}:${pendingUserInput.requestId}:${pendingUserInput.itemId}`}

@@ -46,6 +46,38 @@ afterEach(() => {
 })
 
 describe('GoalBanner', () => {
+  it('isolates edit Save from an ancestor composer form', async () => {
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    const submitComposer = vi.fn((event: React.FormEvent) => event.preventDefault())
+    const save = vi.fn(async () => true)
+    act(() => root.render(<form onSubmit={submitComposer}><GoalBanner goal={goal} onComplete={() => {}} onRemove={() => {}} onEdit={save} /></form>))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
+    act(() => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"]')!.click())
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Edit goal"] button[type="submit"]')!.click())
+    expect(save).toHaveBeenCalledWith(goal.objective)
+    expect(submitComposer).not.toHaveBeenCalled()
+    act(() => root.unmount())
+  })
+
+  it('traps edit-dialog Tab and owns Escape without closing a parent keyboard handler', () => {
+    const { host, root } = renderGoal()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
+    act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Edit goal"]')!
+    const parentEscape = vi.fn()
+    const listener = (event: KeyboardEvent) => { if (event.key === 'Escape') parentEscape() }
+    document.addEventListener('keydown', listener)
+    try {
+      act(() => dialog.querySelector<HTMLButtonElement>('button[type="submit"]')!.focus())
+      act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })))
+      expect(dialog.contains(document.activeElement)).toBe(true)
+      expect(document.activeElement).toBe(dialog.querySelector('[aria-label="Close edit goal"]'))
+      act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
+      expect(document.querySelector('[role="dialog"][aria-label="Edit goal"]')).toBeNull()
+      expect(parentEscape).not.toHaveBeenCalled()
+      expect(document.activeElement).toBe(host.querySelector('[aria-label="Goal actions"]'))
+    } finally { document.removeEventListener('keydown', listener); act(() => root.unmount()) }
+  })
   it('offers restart while a turn runs and shows its pending continuation', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
