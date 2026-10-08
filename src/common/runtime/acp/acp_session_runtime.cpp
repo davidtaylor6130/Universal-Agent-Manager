@@ -134,17 +134,17 @@ namespace uam
 		}
 
 		// Bounded, nonblocking reads keep the proxy's exit diagnostic after handle transfer.
-		bool DrainPendingRemoteStopStderr(PendingAcpRemoteStop& pending)
+		bool DrainRemoteStopStderr(platform::StdioProcessPlatformFields& process, std::string& stderr_tail)
 		{
 			std::array<char, 4096> buffer{};
 			for (int chunk = 0; chunk < 4; ++chunk)
 			{
 				const std::ptrdiff_t count = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStderr(
-				    pending, buffer.data(), buffer.size());
+				    process, buffer.data(), buffer.size());
 				if (count <= 0) return false;
-				pending.stderr_tail.append(buffer.data(), static_cast<std::size_t>(count));
-				if (pending.stderr_tail.size() > 4096)
-					pending.stderr_tail.erase(0, pending.stderr_tail.size() - 4096);
+				stderr_tail.append(buffer.data(), static_cast<std::size_t>(count));
+				if (stderr_tail.size() > 4096)
+					stderr_tail.erase(0, stderr_tail.size() - 4096);
 			}
 			return true;
 		}
@@ -3763,7 +3763,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			int exit_code = -1;
 			const bool exited = PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(
 			    pending, &exit_code);
-			const bool stderr_pending = DrainPendingRemoteStopStderr(pending);
+			const bool stderr_pending = DrainRemoteStopStderr(pending, pending.stderr_tail);
 			const bool stdout_pending = DrainPendingRemoteStopStdout(app, pending, browser);
 			if (exited && (stderr_pending || stdout_pending))
 			{
@@ -4241,9 +4241,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			int exit_code = -1;
 			const bool exited = PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(
 			    *stop, &exit_code);
-			bool stderr_pending = DrainPendingRemoteStopStderr(*stop);
+			bool stderr_pending = DrainRemoteStopStderr(*stop, stop->stderr_tail);
 			// An exited proxy's final diagnostic must be read before confirming its Stop.
-			while (exited && stderr_pending) stderr_pending = DrainPendingRemoteStopStderr(*stop);
+			while (exited && stderr_pending) stderr_pending = DrainRemoteStopStderr(*stop, stop->stderr_tail);
 			while (DrainPendingRemoteStopStdout(app, *stop, nullptr)) {}
 			if (!exited)
 				PlatformServicesFactory::Instance().process_service.StopStdioProcess(*stop, true);
@@ -4288,6 +4288,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			AcpSessionState* session = nullptr;
 			ChatSession* chat = nullptr;
 			bool confirmed = false;
+			std::string stderr_tail;
 		};
 		std::vector<IdleRemoteStop> idle_remote_stops;
 		for (auto& owned_session : app.acp_sessions)
@@ -4320,8 +4321,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				if (stop.confirmed) continue;
 				int exit_code = -1;
-				stop.confirmed = PlatformServicesFactory::Instance().process_service.
-				    PollStdioProcessExited(*stop.session, &exit_code) && exit_code == 0;
+				const bool exited = PlatformServicesFactory::Instance().process_service.
+				    PollStdioProcessExited(*stop.session, &exit_code);
+				bool stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail);
+				// Drain while running to release pipe pressure, then read the final diagnostic.
+				while (exited && stderr_pending)
+					stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail);
+				stop.confirmed = RemoteStopExitConfirmed(exited, exit_code, stop.stderr_tail);
 				all_settled = all_settled && stop.confirmed;
 			}
 			if (all_settled) break;

@@ -7371,6 +7371,86 @@ UAM_TEST(FastShutdownLeavesCleanupMarkerWhenIdleRemoteStopIsUnconfirmed)
 	UAM_ASSERT(reloaded->remote_stop_cleanup_pending);
 }
 
+namespace
+{
+	void CheckIdleRemoteShutdownConfirmation(int exit_code, const std::string& stderr_text, bool confirmed)
+	{
+		TempDir temp("uam-idle-remote-stop-confirmation");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "idle-remote-stop-confirmation";
+		chat.execution_host_id = "ssh-fixture";
+		chat.remote_process_exists = true;
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = "Retain this response."});
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "stderr.txt", stderr_text));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {
+		    "cmd.exe", "/d", "/s", "/c",
+		    "set /p line= & type stderr.txt 1>&2 & exit /b " + std::to_string(exit_code)};
+#else
+		const std::vector<std::string> argv = {
+		    "/bin/sh", "-c", "IFS= read -r line; cat stderr.txt >&2; exit " + std::to_string(exit_code)};
+#endif
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+		    *session, temp.root, argv, &error));
+		session->running = true;
+		app.acp_sessions.push_back(std::move(session));
+
+		uam::FastStopAcpSessionsForExit(app);
+		UAM_ASSERT(app.acp_sessions.empty());
+		UAM_ASSERT_EQ(app.chats.front().remote_stop_cleanup_pending, !confirmed);
+		UAM_ASSERT_EQ(app.chats.front().remote_process_exists, !confirmed);
+		const std::optional<ChatSession> reloaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(reloaded.has_value());
+		UAM_ASSERT_EQ(reloaded->remote_stop_cleanup_pending, !confirmed);
+		UAM_ASSERT_EQ(reloaded->remote_process_exists, !confirmed);
+		UAM_ASSERT_EQ(reloaded->messages.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(reloaded->messages.front().content, std::string("Retain this response."));
+	}
+}
+
+UAM_TEST(FastShutdownConfirmsExactIdleRemoteMissingProcessDiagnostics)
+{
+	for (const std::string& diagnostic : {
+	         "The remote process does not exist.\n",
+	         "The remote process is no longer available.\n",
+	         "The remote process has exited.\r\n\r\n",
+	         "The remote process has exited."})
+		CheckIdleRemoteShutdownConfirmation(70, diagnostic, true);
+}
+
+UAM_TEST(FastShutdownDrainsLongIdleRemoteStopStderrBeforeConfirmation)
+{
+	CheckIdleRemoteShutdownConfirmation(0, std::string(128 * 1024, 'x') + "\n", true);
+	CheckIdleRemoteShutdownConfirmation(70, std::string(128 * 1024, 'x') +
+	    "\nThe remote process does not exist.\n", true);
+}
+
+UAM_TEST(FastShutdownPreservesUncertainIdleRemoteStopDiagnostics)
+{
+	CheckIdleRemoteShutdownConfirmation(0, "", true);
+	CheckIdleRemoteShutdownConfirmation(70, "", false);
+	CheckIdleRemoteShutdownConfirmation(70, "The remote process does not exist. maybe\n", false);
+	CheckIdleRemoteShutdownConfirmation(71, "The remote process does not exist.\n", false);
+	CheckIdleRemoteShutdownConfirmation(70,
+	    "The remote process does not exist.\nRemote bridge connection failed.\n", false);
+}
+
+UAM_TEST(FastShutdownDrainsPastIdleRemoteStopMissingDiagnosticBeforeTrailingFailure)
+{
+	const std::string missing = "The remote process does not exist.\n";
+	// The misleading exact line ends at the drain budget, before the real failure.
+	const std::string stderr_text = std::string(16384 - missing.size() - 1, 'x') + "\n" + missing +
+	    std::string(128 * 1024, 'x') + "\nRemote bridge connection failed.\n";
+	CheckIdleRemoteShutdownConfirmation(70, stderr_text, false);
+}
+
 UAM_TEST(FastShutdownPreservesQueuedRemotePromptsForRestart)
 {
 	TempDir temp("uam-fast-shutdown-remote-queue");
