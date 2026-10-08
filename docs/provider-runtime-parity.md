@@ -244,3 +244,12 @@ Antigravity uses `--input-format stream-json --output-format stream-json`, not A
 Managed instructions and MCP servers load from a private `--add-dir` directory, preserving the selected working directory and existing user configuration. Native policy owns permission decisions. Headless MCP discovery can succeed while tool calls remain denied; UAM does not substitute its Claude permission callback or add permission bypass flags. Native history import, text workers and `/compact` remain unavailable.
 
 The implementation has captured-event regression coverage. Live text, saved-ID resume, private instructions and isolated MCP discovery were probed with `agy` 1.3.1 on macOS. Windows and SSH runtime acceptance require separate evidence.
+
+### Installed CLI capability checks, 2026-10-08
+
+| CLI | Observed version | Actual local evidence | Limits |
+| --- | --- | --- | --- |
+| Codex | 0.160.0 | Installed Homebrew executable returned initialization, all seven model entries and account metadata through app-server. No prompt was sent. | A configuration diagnostic was emitted. This check does not establish turn/tool/Windows/SSH acceptance or widen the verified version range. |
+| Gemini | 0.38.1 | Installed Homebrew executable returned its version. | Below the current 0.55.1 minimum. Initialization was not run because startup can refresh credentials. |
+
+New-chat creation keeps ordinary unknown/unverified version metadata in Settings rather than repeating a warning. Missing or incompatible executables and failed compatibility probes remain visible. Existing verified-range dates still describe their original version evidence.

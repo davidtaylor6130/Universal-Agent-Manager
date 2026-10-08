@@ -163,6 +163,21 @@ describe('NewChatModal', () => {
     }
   })
 
+  it('keeps an actual compatibility probe failure visible for a newer unverified version', () => {
+    useAppStore.setState({ cliVersionManager: { providers: [{ providerId: 'gemini-cli', installedVersion: '1.0.0', selectedVersion: '1.0.0', availableVersions: [], preferredVersion: '1.0.0', status: 'untested-newer', message: 'Newer than the verified range.', checkError: 'The executable failed its compatibility probe.', running: false, lastCommand: '', lastOutput: '' }] } })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      expect(host.textContent).toContain('The executable failed its compatibility probe.')
+      expect(host.textContent).not.toContain('Newer than the verified range.')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it.each(['unknown', 'verified', 'untested', 'untested-newer', 'provider-managed'] as const)(
     'allows structured creation when provider readiness is %s',
     (status) => {
@@ -172,6 +187,7 @@ describe('NewChatModal', () => {
       const root = createRoot(host)
       act(() => root.render(<NewChatModal />))
       expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')?.disabled).toBe(false)
+      expect(host.textContent).not.toContain('Check Settings > CLI Version.')
       act(() => root.unmount())
       host.remove()
     },
