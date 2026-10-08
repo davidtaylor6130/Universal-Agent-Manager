@@ -1146,6 +1146,9 @@ if(UAM_BUILD_TESTS)
   endforeach()
 
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME uam_runner_binary_stdio
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/runner_binary_stdio_test.py" "$<TARGET_FILE:uam_runner>")
+  set_tests_properties(uam_runner_binary_stdio PROPERTIES TIMEOUT 40)
   add_test(NAME uam_local_build_version
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/build-configurator/test_local_build_version.py")
   foreach(parent_stop terminate kill)

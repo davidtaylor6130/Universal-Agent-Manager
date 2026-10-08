@@ -396,14 +396,20 @@ namespace uam::remote
 		return 2;
 	}
 
-	int RunRunnerBridge(std::string_view runner_version)
+	bool EnableRunnerBinaryStdio()
 	{
 		if (_setmode(_fileno(stdin), _O_BINARY) == -1 ||
 		    _setmode(_fileno(stdout), _O_BINARY) == -1)
 		{
 			std::cerr << "Runner bridge could not enable binary stdio.\n";
-			return 2;
+			return false;
 		}
+		return true;
+	}
+
+	int RunRunnerBridge(std::string_view runner_version)
+	{
+		if (!EnableRunnerBinaryStdio()) return 2;
 		Handle service = ConnectPipe(runner_version);
 		if (service.Get() == INVALID_HANDLE_VALUE)
 		{
