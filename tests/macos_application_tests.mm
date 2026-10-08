@@ -19,6 +19,20 @@
 }
 @end
 
+static NSEvent* QuitEvent(NSWindow* window, NSEventModifierFlags modifiers)
+{
+	return [NSEvent keyEventWithType:NSEventTypeKeyDown
+	                     location:NSZeroPoint
+	                modifierFlags:modifiers
+	                    timestamp:0
+	                 windowNumber:window.windowNumber
+	                      context:nil
+	                   characters:@"q"
+	  charactersIgnoringModifiers:@"q"
+	                    isARepeat:NO
+	                      keyCode:12];
+}
+
 int main(int argc, char* argv[])
 {
 	@autoreleasepool
@@ -27,7 +41,7 @@ int main(int argc, char* argv[])
 		const bool picker_probe = argc == 2 && std::string_view(argv[1]).find("--picker-") == 0;
 		if (!terminate_probe && !picker_probe)
 		{
-			for (NSString* argument in @[@"--picker-folder-terminate", @"--picker-file-terminate", @"--picker-folder-keyboard", @"--picker-file-keyboard", @"--picker-folder-cancel", @"--picker-file-cancel"])
+			for (NSString* argument in @[@"--picker-folder-terminate", @"--picker-file-terminate", @"--picker-folder-keyboard", @"--picker-file-keyboard", @"--picker-folder-caps-keyboard", @"--picker-file-caps-keyboard", @"--picker-folder-cancel", @"--picker-file-cancel"])
 			{
 				NSTask* task = [[NSTask alloc] init];
 				task.launchPath = [NSString stringWithUTF8String:argv[0]];
@@ -84,16 +98,8 @@ int main(int argc, char* argv[])
 			            backing:NSBackingStoreBuffered
 			              defer:NO];
 		[window makeKeyAndOrderFront:nil];
-		NSEvent* quit = [NSEvent keyEventWithType:NSEventTypeKeyDown
-			                         location:NSZeroPoint
-			                    modifierFlags:NSEventModifierFlagCommand
-			                        timestamp:0
-			                     windowNumber:window.windowNumber
-			                          context:nil
-			                       characters:@"q"
-			      charactersIgnoringModifiers:@"q"
-			                        isARepeat:NO
-			                          keyCode:12];
+		const bool caps = argc == 2 && std::string_view(argv[1]).find("caps") != std::string_view::npos;
+		NSEvent* quit = QuitEvent(window, NSEventModifierFlagCommand | (caps ? NSEventModifierFlagCapsLock : 0));
 		if (picker_probe)
 		{
 			const bool directory = std::string_view(argv[1]).find("folder") != std::string_view::npos;
@@ -135,7 +141,18 @@ int main(int argc, char* argv[])
 			window.closeRequested = NO;
 			[application terminate:nil];
 		}
-		else [application sendEvent:quit];
+		else
+		{
+			[application sendEvent:QuitEvent(window, NSEventModifierFlagCommand | NSEventModifierFlagCapsLock)];
+			if (!window.closeRequested) return 17;
+			window.closeRequested = NO;
+			for (NSEventModifierFlags extra : {NSEventModifierFlagShift, NSEventModifierFlagOption, NSEventModifierFlagControl})
+			{
+				[application sendEvent:QuitEvent(window, NSEventModifierFlagCommand | NSEventModifierFlagCapsLock | extra)];
+				if (window.closeRequested) return 18;
+			}
+			[application sendEvent:quit];
+		}
 		const BOOL close_requested = window.closeRequested;
 		[window orderOut:nil];
 		[window release];

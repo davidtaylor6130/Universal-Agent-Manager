@@ -60,7 +60,7 @@
 - (void)sendEvent:(NSEvent*)event
 {
 	const NSEventModifierFlags modifiers =
-		[event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask;
+		[event modifierFlags] & NSEventModifierFlagDeviceIndependentFlagsMask & ~NSEventModifierFlagCapsLock;
 	if ([event type] == NSEventTypeKeyDown && modifiers == NSEventModifierFlagCommand &&
 	    [[event charactersIgnoringModifiers] caseInsensitiveCompare:@"q"] == NSOrderedSame)
 	{
