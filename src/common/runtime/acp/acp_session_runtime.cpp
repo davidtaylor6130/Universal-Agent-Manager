@@ -149,17 +149,14 @@ namespace uam
 			return true;
 		}
 
-		bool DrainPendingRemoteStopStdout(AppState& app, PendingAcpRemoteStop& pending, CefRefPtr<CefBrowser> browser)
+		bool DrainRemoteStopStdout(AppState& app, platform::StdioProcessPlatformFields& process,
+		                           AcpSessionState* session, ChatSession* chat, CefRefPtr<CefBrowser> browser)
 		{
-			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
-			// A replacement session cannot consume output from the old Stop proxy.
-			if (session != nullptr && !session->remote_stop_pending) session = nullptr;
-			ChatSession* chat = ChatDomainService().FindChatById(app, pending.chat_id);
 			std::array<char, 16384> buffer{};
 			bool more = true;
 			for (int chunk = 0; chunk < 4; ++chunk)
 			{
-				const std::ptrdiff_t count = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(pending, buffer.data(), buffer.size());
+				const std::ptrdiff_t count = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size());
 				if (count <= 0) { more = false; break; }
 				if (session != nullptr && chat != nullptr && !acp_detail::AppendAcpStdoutChunk(*session, std::string_view(buffer.data(), static_cast<std::size_t>(count))))
 					session->last_error = "Remote shutdown output exceeded the limit.";
@@ -170,6 +167,15 @@ namespace uam
 				more = more || session->stdout_buffer.find('\n') != std::string::npos;
 			}
 			return more;
+		}
+
+		bool DrainPendingRemoteStopStdout(AppState& app, PendingAcpRemoteStop& pending, CefRefPtr<CefBrowser> browser)
+		{
+			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
+			// A replacement session cannot consume output from the old Stop proxy.
+			if (session != nullptr && !session->remote_stop_pending) session = nullptr;
+			return DrainRemoteStopStdout(app, pending, session,
+			    ChatDomainService().FindChatById(app, pending.chat_id), browser);
 		}
 
 		bool PersistQueuedPromptOutbox(AppState& app, const AcpSessionState& session,
@@ -4324,9 +4330,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const bool exited = PlatformServicesFactory::Instance().process_service.
 				    PollStdioProcessExited(*stop.session, &exit_code);
 				bool stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail);
-				// Drain while running to release pipe pressure, then read the final diagnostic.
-				while (exited && stderr_pending)
+				bool stdout_pending = DrainRemoteStopStdout(app, *stop.session, stop.session, stop.chat, nullptr);
+				// Both pipes must drain so the proxy can flush its final output and exit.
+				while (exited && (stderr_pending || stdout_pending))
+				{
 					stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail);
+					stdout_pending = DrainRemoteStopStdout(app, *stop.session, stop.session, stop.chat, nullptr);
+				}
 				stop.confirmed = RemoteStopExitConfirmed(exited, exit_code, stop.stderr_tail);
 				all_settled = all_settled && stop.confirmed;
 			}

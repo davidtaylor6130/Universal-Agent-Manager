@@ -3604,6 +3604,13 @@ UAM_TEST(RemoteDeadSourceAfterUnansweredBatchNotifiesWithoutAcknowledgingOrRemov
 UAM_TEST(RemoteStopProjectsAndPersistsTheFinalUnterminatedProviderMessage)
 {
 #if !defined(_WIN32) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	std::vector<std::string> providers = {uam::provider_ids::kCodexCli};
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	providers.push_back(uam::provider_ids::kClaudeCli);
+#endif
+	for (const std::string& provider : providers)
+	for (const bool shutdown : {false, true})
+	for (const bool pressure : {false, true})
 	for (const bool terminated : {false, true})
 	{
 		TempDir temp("uam-stop-final-line");
@@ -3613,45 +3620,69 @@ UAM_TEST(RemoteStopProjectsAndPersistsTheFinalUnterminatedProviderMessage)
 		UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
 		fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
 		const fs::path tail = temp.root / "final.json";
-		const std::string final_message = R"({"method":"item/agentMessage/delta","params":{"itemId":"stop-tail","delta":"Final shutdown text."}})";
+		const std::string expected = (pressure ? std::string(128 * 1024, 'x') : "") + "Final shutdown text.";
+		const std::string final_message = (provider == uam::provider_ids::kCodexCli
+		    ? nlohmann::json{{"method", "item/agentMessage/delta"}, {"params", {{"itemId", "stop-tail"}, {"delta", expected}}}}
+		    : nlohmann::json{{"type", "assistant"}, {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", expected}}})}}}}).dump();
+		const fs::path noise = temp.root / "stderr.txt";
+		const fs::path ready = temp.root / "ready";
+		UAM_ASSERT(uam::io::WriteTextFile(noise, pressure ? std::string(128 * 1024, 'e') + "\n" : ""));
 		UAM_ASSERT(uam::io::WriteTextFile(tail, final_message + (terminated ? "\n" : "")));
 		uam::AppState app;
 		app.data_root = temp.root / "data";
-		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+		ChatSession chat = ChatDomainService().CreateNewChat("", provider);
 		chat.execution_host_id = "ssh-fixture";
 		app.chats.push_back(chat);
 		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
 		session->chat_id = chat.id;
 		session->provider_id = chat.provider_id;
-		session->protocol_kind = "codex-app-server";
-		session->processing = true;
-		session->remote_stop_pending = true;
+		session->protocol_kind = provider == uam::provider_ids::kCodexCli ? "codex-app-server" : "claude-stream-json";
+		session->processing = !shutdown;
+		session->running = shutdown;
+		session->remote_stop_pending = !shutdown;
 		session->remote_output_delivery_token = "final-line-authority";
+		uam::AcpSessionState* raw_session = session.get();
 		app.acp_sessions.push_back(std::move(session));
 		std::unique_ptr<uam::PendingAcpRemoteStop> pending = std::make_unique<uam::PendingAcpRemoteStop>();
 		pending->chat_id = chat.id;
 		pending->deadline_time_s = uam::GetAppTimeSeconds() + 5.0;
 		const std::string spec = uam::remote::BuildProcessProxySpec(chat.id, temp.root,
-		    {"/bin/sh", "-c", "cat >/dev/null; cat \"$1\"", "fixture", tail.string()}, {}, false, "final-line-authority");
+		    {"/bin/sh", "-c", "printf ready > \"$3\"; cat >/dev/null; cat \"$2\" >&2; cat \"$1\"", "fixture", tail.string(), noise.string(), ready.string()}, {}, false, "final-line-authority");
 		std::string error;
-		UAM_ASSERT(service.StartStdioProcess(*pending, temp.root,
+		UAM_ASSERT(service.StartStdioProcess(shutdown ? static_cast<uam::platform::StdioProcessPlatformFields&>(*raw_session) : *pending, temp.root,
 		    {runner.string(), "proxy", "--alias", "fixture-host", "--platform", "linux", "--version", std::string(uam::constants::kAppVersion).substr(1)}, &error,
 		    {{uam::remote::kRemoteProcessSpecEnvironment, spec}, {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")}, {"UAM_TEST_RUNNER", runner.string()}}));
-		UAM_ASSERT(service.WriteToStdioProcess(*pending, uam::remote::kRemoteStopControlLine.data(), uam::remote::kRemoteStopControlLine.size(), &error));
-		app.pending_acp_remote_stops.push_back(std::move(pending));
-		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
-		while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+		const std::chrono::steady_clock::time_point ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (!fs::exists(ready) && std::chrono::steady_clock::now() < ready_deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		UAM_ASSERT(fs::exists(ready));
+		if (shutdown) uam::FastStopAcpSessionsForExit(app);
+		else
 		{
-			(void)uam::PollAllAcpSessions(app);
-			std::this_thread::yield();
+			UAM_ASSERT(service.WriteToStdioProcess(*pending, uam::remote::kRemoteStopControlLine.data(), uam::remote::kRemoteStopControlLine.size(), &error));
+			app.pending_acp_remote_stops.push_back(std::move(pending));
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(app.pending_acp_remote_stops.empty());
+			UAM_ASSERT(!app.acp_sessions.front()->remote_stop_unconfirmed);
 		}
-		UAM_ASSERT(app.pending_acp_remote_stops.empty());
-		UAM_ASSERT(!app.acp_sessions.front()->remote_stop_unconfirmed);
-		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
-		UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Final shutdown text."));
+		std::cout << "proxy provider=" << provider << " shutdown=" << shutdown << " pressure=" << pressure << " terminated=" << terminated << " messages=" << app.chats.front().messages.size() << " cleanup=" << app.chats.front().remote_stop_cleanup_pending << std::endl;
+		// Codex deliberately rejects item deltas without an active turn; keep that control.
+		const std::size_t expected_messages = shutdown && provider == uam::provider_ids::kCodexCli ? 0 : 1;
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), expected_messages);
+		if (expected_messages != 0) UAM_ASSERT_EQ(app.chats.front().messages.front().content, expected);
+		UAM_ASSERT(!app.chats.front().remote_stop_cleanup_pending);
+		UAM_ASSERT(!app.chats.front().remote_process_exists);
 		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
 		UAM_ASSERT(loaded.has_value());
-		UAM_ASSERT_EQ(loaded->messages.front().content, app.chats.front().messages.front().content);
+		UAM_ASSERT(!loaded->remote_stop_cleanup_pending);
+		UAM_ASSERT(!loaded->remote_process_exists);
+		UAM_ASSERT_EQ(loaded->messages.size(), expected_messages);
+		if (expected_messages != 0) UAM_ASSERT_EQ(loaded->messages.front().content, expected);
 	}
 #endif
 }

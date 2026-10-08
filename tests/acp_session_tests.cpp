@@ -7451,6 +7451,102 @@ UAM_TEST(FastShutdownDrainsPastIdleRemoteStopMissingDiagnosticBeforeTrailingFail
 	CheckIdleRemoteShutdownConfirmation(70, stderr_text, false);
 }
 
+UAM_TEST(IdleShutdownAndOrdinaryStopRetainOutputAndAgreeOnCleanup)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	struct StopCase
+	{
+		std::string name;
+		int exit_code;
+		std::string stderr_tail;
+		bool confirmed;
+		std::size_t stdout_bytes;
+		bool mixed;
+	};
+	const std::vector<StopCase> cases = {
+	    {"silent-success", 0, "", true, 0, false},
+	    {"small-final", 0, "", true, 16, false},
+	    {"stdout-pressure", 0, "", true, 128 * 1024, false},
+	    {"mixed-pressure", 0, "", true, 128 * 1024, true},
+	    {"missing", 70, "The remote process does not exist.\n", true, 128 * 1024, true},
+	    {"unavailable", 70, "The remote process is no longer available.\n", true, 128 * 1024, true},
+	    {"exited", 70, "The remote process has exited.", true, 128 * 1024, true},
+	    {"trailing-failure", 70, "The remote process does not exist.\nRemote bridge connection failed.\n", false, 128 * 1024, true},
+	    {"ambiguous", 70, "The remote process does not exist. maybe\n", false, 128 * 1024, true},
+	    {"silent-70", 70, "", false, 128 * 1024, false},
+	    {"other-exit", 71, "The remote process does not exist.\n", false, 128 * 1024, true},
+	};
+	int failures = 0;
+	for (const StopCase& test : cases)
+	{
+		for (const bool shutdown : {false, true})
+		{
+			TempDir temp("uam-idle-stop-output");
+			uam::AppState app;
+			app.data_root = temp.root;
+			ChatSession chat;
+			chat.id = "idle-stop-output";
+			chat.provider_id = uam::provider_ids::kClaudeCli;
+			chat.execution_host_id = "ssh-fixture";
+			chat.remote_process_exists = true;
+			chat.messages.push_back({.role = MessageRole::Assistant, .content = "Retain this response."});
+			app.chats.push_back(chat);
+			UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+			const std::string delta(test.stdout_bytes, 'x');
+			const auto message = [](const std::string& text)
+			{
+				return nlohmann::json{{"type", "assistant"}, {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", text}}})}}}}.dump() + "\n";
+			};
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "stdout.txt", delta.empty() ? "" : message(delta)));
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "final.txt", delta.empty() ? "" : message("Final shutdown text.")));
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "stderr.txt", test.stderr_tail));
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "noise.txt", test.mixed ? std::string(128 * 1024, 'e') + "\n" : ""));
+			std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = chat.id;
+			session->provider_id = chat.provider_id;
+			session->protocol_kind = "claude-stream-json";
+#if defined(_WIN32)
+			const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
+			    "set /p line= & type stdout.txt & type noise.txt 1>&2 & type final.txt & type stderr.txt 1>&2 & exit /b " + std::to_string(test.exit_code)};
+#else
+			const std::vector<std::string> argv = {"/bin/sh", "-c",
+			    "IFS= read -r line; cat stdout.txt; cat noise.txt >&2; cat final.txt; cat stderr.txt >&2; exit " + std::to_string(test.exit_code)};
+#endif
+			std::string error;
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+			session->running = true;
+			app.acp_sessions.push_back(std::move(session));
+			if (shutdown) uam::FastStopAcpSessionsForExit(app);
+			else
+			{
+				UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+				const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+				while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+				{
+					(void)uam::PollAllAcpSessions(app);
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				}
+				UAM_ASSERT(app.pending_acp_remote_stops.empty());
+			}
+			const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+			UAM_ASSERT(loaded.has_value());
+			const auto retained = [&](const ChatSession& saved)
+			{
+				return saved.messages.front().content == "Retain this response." &&
+				    (delta.empty() ? saved.messages.size() == 1 : saved.messages.size() == 2 && saved.messages.back().content == delta + "Final shutdown text.");
+			};
+			const bool transcript = retained(*loaded) && retained(app.chats.front());
+			const bool flags = loaded->remote_stop_cleanup_pending == !test.confirmed && loaded->remote_process_exists == !test.confirmed &&
+			    app.chats.front().remote_stop_cleanup_pending == !test.confirmed && app.chats.front().remote_process_exists == !test.confirmed;
+			std::cout << test.name << (shutdown ? "-idle" : "-stop") << " expected=" << test.confirmed << " cleanup=" << loaded->remote_stop_cleanup_pending
+			          << " exists=" << loaded->remote_process_exists << " transcript=" << transcript << " messages=" << loaded->messages.size() << " last_bytes=" << loaded->messages.back().content.size() << '\n';
+			if (!transcript || !flags) ++failures;
+		}
+	}
+	UAM_ASSERT_EQ(failures, 0);
+#endif
+}
+
 UAM_TEST(FastShutdownPreservesQueuedRemotePromptsForRestart)
 {
 	TempDir temp("uam-fast-shutdown-remote-queue");
