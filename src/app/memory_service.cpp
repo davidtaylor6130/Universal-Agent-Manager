@@ -15,6 +15,7 @@
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
+#include "common/provider/provider_text_worker.h"
 #include "common/provider/provider_runtime.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
@@ -959,9 +960,9 @@ namespace
 
 	bool ApplyCompletedMemoryWorkerResult(uam::AppState& app, ChatSession& chat, const uam::AsyncMemoryExtractionTask& task)
 	{
-		if (!task.state->result.ok)
+		if (!task.state->result.ok || task.state->result.output_truncated)
 		{
-			const std::string failure_status = MemoryWorkerFailureStatus(task.state->result);
+			const std::string failure_status = task.state->result.output_truncated ? "Memory worker output was truncated." : MemoryWorkerFailureStatus(task.state->result);
 			RecordMemoryWorkerResult(app, task, failure_status);
 			RecordMemoryFailure(app, task.chat_id, failure_status);
 			if (!task.state->result.canceled)
@@ -992,7 +993,11 @@ namespace
 			RecordMemorySuccess(app, task.chat_id);
 			return true;
 		}
-		if (MemoryService::ApplyWorkerOutput(app, chat, task.workspace_root, task.state->result.output, task.message_count, &error))
+		bool tool_activity = false;
+		(void)ExtractMemoryJsonObject(task.state->result.output, &tool_activity);
+		const std::optional<std::string> text = tool_activity ? std::nullopt : uam::provider_workers::CompletedTextWorkerOutput(task.state->provider_id, task.state->result.output, uam::platform::kCapturedCommandMaxOutputBytes);
+		if (!text) error = tool_activity ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return a completed text response.";
+		if (text && MemoryService::ApplyWorkerOutput(app, chat, task.workspace_root, *text, task.message_count, &error))
 		{
 			RecordMemorySuccess(app, task.chat_id);
 			ResetGlobalMemoryFailure(app);
@@ -1125,8 +1130,11 @@ namespace
 		std::string cleanup_error;
 		if (!client.RemoveTextWorker(id, &cleanup_error) && result.ok) { result.ok = false; result.error = cleanup_error; }
 		if (!result.ok) return result;
+		if (result.output_truncated) { result.ok = false; result.error = "Memory worker output was truncated."; return result; }
 		bool tools = false;
-		const std::optional<nlohmann::json> parsed = ExtractMemoryJsonObject(result.output, &tools);
+		(void)ExtractMemoryJsonObject(result.output, &tools);
+		const std::optional<std::string> text = tools ? std::nullopt : uam::provider_workers::CompletedTextWorkerOutput(provider_id, result.output, uam::platform::kCapturedCommandMaxOutputBytes);
+		const std::optional<nlohmann::json> parsed = text ? ExtractMemoryJsonObject(*text, &tools) : std::nullopt;
 		if (tools || !parsed) { result.ok = false; result.error = tools ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return the required JSON object."; return result; }
 		for (const nlohmann::json& entry : (*parsed)["memories"])
 		{

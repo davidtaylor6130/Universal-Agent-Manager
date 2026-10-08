@@ -6,11 +6,72 @@
 #include <algorithm>
 #include <iterator>
 #include <vector>
+#include <optional>
+#include <sstream>
+#include <nlohmann/json.hpp>
+#include "common/utils/string_utils.h"
 namespace uam::provider_workers
 {
 	inline bool IsProvider(const ProviderProfile& profile, std::string_view provider_id)
 	{
 		return uam::provider_ids::IsCliProviderAliasOf(profile.id, provider_id);
+	}
+
+	/// <summary>Extracts the sole completed Codex assistant response; rejects incomplete or tool-bearing streams before domain parsing.</summary>
+	inline std::optional<std::string> CompletedTextWorkerOutput(std::string_view provider_id, std::string_view output, std::size_t max_output_bytes)
+	{
+		if (output.size() > max_output_bytes) return std::nullopt;
+		if (!uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli)) return std::string(output);
+		const nlohmann::json direct = nlohmann::json::parse(output, nullptr, false);
+		// Legacy plain domain JSON is supported, but a single protocol event is not a completed response.
+		if (direct.is_object() && !direct.contains("type") && !direct.contains("item") && !direct.contains("error")) return std::string(output);
+
+		enum class Phase { Thread, Turn, Items, Complete };
+		Phase phase = Phase::Thread;
+		bool preamble_seen = false;
+		bool final_seen = false;
+		std::string final_text;
+		std::istringstream stream{std::string(output)};
+		std::string line;
+		while (std::getline(stream, line))
+		{
+			line = uam::strings::Trim(line);
+			if (line.empty()) continue;
+			if (line == "Reading prompt from stdin..." && phase == Phase::Thread && !preamble_seen)
+			{
+				preamble_seen = true;
+				continue;
+			}
+			const nlohmann::json event = nlohmann::json::parse(line, nullptr, false);
+			if (!event.is_object() || !event.contains("type") || !event["type"].is_string() || event.contains("error")) return std::nullopt;
+			const std::string type = event["type"].get<std::string>();
+			if (type == "thread.started" && phase == Phase::Thread)
+			{
+				if (!event.contains("thread_id") || !event["thread_id"].is_string() || event["thread_id"].get_ref<const std::string&>().empty()) return std::nullopt;
+				phase = Phase::Turn;
+			}
+			else if (type == "turn.started" && phase == Phase::Turn)
+			{
+				phase = Phase::Items;
+			}
+			else if (type == "item.completed" && phase == Phase::Items)
+			{
+				if (!event.contains("item") || !event["item"].is_object()) return std::nullopt;
+				const nlohmann::json& item = event["item"];
+				if (!item.contains("type") || !item["type"].is_string() || item.contains("error")) return std::nullopt;
+				const std::string item_type = item["type"].get<std::string>();
+				if (item_type == "reasoning") continue;
+				if (item_type != "agent_message" || final_seen || !item.contains("text") || !item["text"].is_string()) return std::nullopt;
+				final_seen = true;
+				final_text = item["text"].get<std::string>();
+			}
+			else if (type == "turn.completed" && phase == Phase::Items && final_seen)
+			{
+				phase = Phase::Complete;
+			}
+			else return std::nullopt;
+		}
+		return phase == Phase::Complete ? std::optional<std::string>(std::move(final_text)) : std::nullopt;
 	}
 
 	inline bool ApplyWorkerIsolationPolicy(const ProviderProfile& profile, const std::filesystem::path& workspace, std::vector<std::string>& argv)

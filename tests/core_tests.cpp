@@ -10349,6 +10349,37 @@ UAM_TEST(VcsCommitServiceTrimsSelectedFilesForCommitMessagePrompt)
 	UAM_ASSERT(prompt.find("other.txt") == std::string::npos);
 }
 
+UAM_TEST(CodexCommitSuggestionUsesCompletedAssistantRatherThanReasoningDraft)
+{
+	const std::string draft = R"({"title":"Draft","description":"Reasoning candidate"})";
+	const std::string final = R"({"title":"Final","description":"Actual assistant result"})";
+	const std::string stream = R"({"type":"thread.started","thread_id":"owned-review"})" + std::string("\n") +
+	    R"({"type":"turn.started"})" + "\n" +
+	    nlohmann::json({{"type", "item.completed"}, {"item", {{"type", "reasoning"}, {"text", draft}}}}).dump() + "\n" +
+	    nlohmann::json({{"type", "item.completed"}, {"item", {{"type", "agent_message"}, {"text", final}}}}).dump() + "\n" +
+	    R"({"type":"turn.completed"})" + "\n";
+	const uam::VcsCommitMessageSuggestion suggestion = uam::VcsCommitService::ParseWorkerOutputForTests(stream, "codex-cli");
+	UAM_ASSERT(suggestion.ok);
+	UAM_ASSERT_EQ(suggestion.title, std::string("Final"));
+	UAM_ASSERT_EQ(uam::VcsCommitService::ParseWorkerOutputForTests(final, "codex-cli").title, std::string("Final"));
+	UAM_ASSERT(!uam::VcsCommitService::ParseWorkerOutputForTests(stream.substr(0, stream.find(R"({"type":"turn.completed")")), "codex-cli").ok);
+	UAM_ASSERT(!uam::VcsCommitService::ParseWorkerOutputForTests(stream + R"({"type":"error","message":"failed"})", "codex-cli").ok);
+	for (const std::string text : {std::string{}, std::string("No commit message can be suggested.")})
+	{
+		const std::string failed = std::string("{\"type\":\"thread.started\",\"thread_id\":\"owned\"}\n{\"type\":\"turn.started\"}\n") +
+		    nlohmann::json({{"type", "item.completed"}, {"item", {{"type", "reasoning"}, {"text", draft}}}}).dump() + "\n" +
+		    nlohmann::json({{"type", "item.completed"}, {"item", {{"type", "agent_message"}, {"text", text}}}}).dump() + "\n{\"type\":\"turn.completed\"}\n";
+		UAM_ASSERT(!uam::VcsCommitService::ParseWorkerOutputForTests(failed, "codex-cli").ok);
+	}
+	for (const std::string type : {"reasoning", "command_execution"})
+	{
+		const std::string single = nlohmann::json({{"type", "item.completed"}, {"item", {{"type", type}, {"text", final}}}}).dump();
+		UAM_ASSERT(!uam::VcsCommitService::ParseWorkerOutputForTests(single, "codex-cli").ok);
+	}
+	const std::string tool = R"({"type":"item.completed","item":{"type":"command_execution","command":"unsafe"}})" + std::string("\n");
+	UAM_ASSERT(!uam::VcsCommitService::ParseWorkerOutputForTests(stream.substr(0, stream.find(R"({"type":"turn.completed")")) + tool + R"({"type":"turn.completed"})", "codex-cli").ok);
+}
+
 UAM_TEST(VcsCommitServiceParsesWorkerSuggestionOutputShapes)
 {
 	uam::VcsCommitMessageSuggestion direct = uam::VcsCommitService::ParseWorkerOutputForTests(R"({"title":"  Update worker parsing  ","description":"  - Keep JSON robust  "})");

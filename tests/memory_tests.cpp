@@ -1916,3 +1916,60 @@ printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","ti
 	UAM_ASSERT(uam::io::ReadTextFile(target / ".UAM/Lessons/User_Lessons/target-lesson.md").find("Occurrence count: 1") != std::string::npos);
 }
 #endif
+
+UAM_TEST(CodexMemoryCompletionCannotPersistReasoningWhenAssistantRefuses)
+{
+	for (const std::string scenario : {"refusal", "empty", "direct", "tool", "error", "truncated", "single-reasoning", "single-tool"})
+	{
+		const std::string final = scenario == "refusal" ? "No durable memories were established." : R"({"memories":[]})";
+		TempDir temp("uam-codex-memory-final-authority");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 9999.0;
+		const fs::path workspace = temp.root / "workspace";
+		fs::create_directories(workspace);
+		ChatSession chat;
+		chat.id = "owned-memory-result";
+		chat.provider_id = "claude-cli"; // Actual worker metadata differs from the parent provider.
+		chat.workspace_directory = workspace.string();
+		chat.memory_enabled = true;
+		chat.messages_loaded = true;
+		chat.messages.push_back({MessageRole::User, "Please remember that this project uses Allman braces.", "now"});
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		const std::string draft = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Reasoning draft","memory":"Prefer Allman brace style in this project.","evidence":"User said: Please remember that this project uses Allman braces.","confidence":"high"}]})";
+		std::string output = R"({"type":"thread.started","thread_id":"owned-worker"})" + std::string("\n") + R"({"type":"turn.started"})" + "\n" +
+		    nlohmann::json({{"type", "item.completed"}, {"item", {{"type", "reasoning"}, {"text", draft}}}}).dump() + "\n" +
+		    nlohmann::json({{"type", "item.completed"}, {"item", {{"type", "agent_message"}, {"text", final}}}}).dump() + "\n" + R"({"type":"turn.completed"})" + "\n";
+		if (scenario == "direct") output = final;
+		if (scenario == "tool") output.insert(output.find(R"({"type":"turn.completed")"), R"({"type":"item.completed","item":{"type":"command_execution","text":"attempted command"}})" + std::string("\n"));
+		if (scenario == "error") output += R"({"type":"error","message":"failed"})";
+		if (scenario == "single-reasoning" || scenario == "single-tool") output = nlohmann::json({{"type", "item.completed"}, {"item", {{"type", scenario == "single-tool" ? "command_execution" : "reasoning"}, {"text", draft}}}}).dump();
+		uam::AsyncMemoryExtractionTask task;
+		task.running = true;
+		task.chat_id = chat.id;
+		task.workspace_root = workspace;
+		task.message_count = 1;
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->provider_id = "codex-cli";
+		task.state->result.ok = true;
+		task.state->result.exit_code = 0;
+		task.state->result.output = output;
+		task.state->result.output_truncated = scenario == "truncated";
+		task.state->completed = true;
+		app.memory_extraction_tasks.push_back(std::move(task));
+		app.settings.memory_worker_bindings[chat.provider_id] = {"claude-cli", "different-model-after-launch"};
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		std::size_t memory_files = 0;
+		if (fs::exists(workspace / ".UAM"))
+			for (const fs::directory_entry& entry : fs::recursive_directory_iterator(workspace / ".UAM"))
+				if (entry.is_regular_file() && entry.path().extension() == ".md") ++memory_files;
+		UAM_ASSERT_EQ(memory_files, std::size_t(0));
+		const bool valid_empty = scenario == "empty" || scenario == "direct";
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, valid_empty ? 1 : 0);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->memory_last_processed_message_count, valid_empty ? 1 : 0);
+		if (!valid_empty) UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[chat.id], 1);
+	}
+}

@@ -8,6 +8,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_ids.h"
+#include "common/provider/provider_text_worker.h"
 #include "common/runtime/acp/acp_json_rpc.h"
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_statuses.h"
@@ -23,7 +24,6 @@
 #include <chrono>
 #include <map>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -326,61 +326,10 @@ std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_
 
 namespace
 {
-	/// <summary>Accepts a completed Codex exec text response without treating tool or reasoning text as a review decision.</summary>
 	std::optional<PermissionReviewDecision> ParsePermissionReviewWorkerOutput(std::string_view provider_id, std::string_view output)
 	{
-		if (const std::optional<PermissionReviewDecision> plain = ParsePermissionReviewOutput(output)) return plain;
-		if (!uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli) || output.size() > kPermissionReviewOutputLimit) return std::nullopt;
-
-		enum class Phase { Thread, Turn, Items, Complete };
-		Phase phase = Phase::Thread;
-		bool preamble_seen = false;
-		std::string final_text;
-		std::istringstream stream{std::string(output)};
-		std::string line;
-		while (std::getline(stream, line))
-		{
-			line = uam::strings::Trim(line);
-			if (line.empty()) continue;
-			// Codex prints this fixed stdin diagnostic before its JSONL events.
-			if (line == "Reading prompt from stdin..." && phase == Phase::Thread && !preamble_seen)
-			{
-				preamble_seen = true;
-				continue;
-			}
-			const nlohmann::json event = nlohmann::json::parse(line, nullptr, false);
-			if (!event.is_object() || !event.contains("type") || !event["type"].is_string() || event.contains("error")) return std::nullopt;
-			const std::string type = event["type"].get<std::string>();
-			if (type == "thread.started" && phase == Phase::Thread)
-			{
-				if (!event.contains("thread_id") || !event["thread_id"].is_string() || event["thread_id"].get_ref<const std::string&>().empty()) return std::nullopt;
-				phase = Phase::Turn;
-			}
-			else if (type == "turn.started" && phase == Phase::Turn)
-			{
-				phase = Phase::Items;
-			}
-			else if (type == "item.completed" && phase == Phase::Items)
-			{
-				if (!event.contains("item") || !event["item"].is_object()) return std::nullopt;
-				const nlohmann::json& item = event["item"];
-				if (!item.contains("type") || !item["type"].is_string() || item.contains("error")) return std::nullopt;
-				const std::string item_type = item["type"].get<std::string>();
-				if (item_type == "reasoning") continue;
-				if (item_type != "agent_message" || !final_text.empty() || !item.contains("text") || !item["text"].is_string()) return std::nullopt;
-				final_text = item["text"].get<std::string>();
-				if (final_text.empty()) return std::nullopt;
-			}
-			else if (type == "turn.completed" && phase == Phase::Items && !final_text.empty())
-			{
-				phase = Phase::Complete;
-			}
-			else
-			{
-				return std::nullopt;
-			}
-		}
-		return phase == Phase::Complete ? ParsePermissionReviewOutput(final_text) : std::nullopt;
+		const std::optional<std::string> text = uam::provider_workers::CompletedTextWorkerOutput(provider_id, output, kPermissionReviewOutputLimit);
+		return text ? ParsePermissionReviewOutput(*text) : std::nullopt;
 	}
 }
 

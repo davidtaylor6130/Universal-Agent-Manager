@@ -8,6 +8,7 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/provider_text_worker.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -1127,9 +1128,10 @@ namespace uam
 			return suggestion;
 		}
 
-		VcsCommitMessageSuggestion SuggestionFromWorkerOutput(const std::string& output)
+		VcsCommitMessageSuggestion SuggestionFromWorkerOutput(const std::string& output, std::string_view worker_provider_id = {})
 		{
-			const std::optional<nlohmann::json> parsed = ExtractSuggestionJson(output);
+			const std::optional<std::string> text = uam::provider_workers::CompletedTextWorkerOutput(worker_provider_id, output, uam::platform::kCapturedCommandMaxOutputBytes);
+			const std::optional<nlohmann::json> parsed = text ? ExtractSuggestionJson(*text) : std::nullopt;
 			if (!parsed || !parsed->is_object())
 			{
 				VcsCommitMessageSuggestion suggestion;
@@ -1698,7 +1700,12 @@ namespace uam
 			return suggestion;
 		}
 
-		return SuggestionFromWorkerOutput(result.output);
+		if (result.output_truncated)
+		{
+			suggestion.error = "Commit message worker output was truncated.";
+			return suggestion;
+		}
+		return SuggestionFromWorkerOutput(result.output, worker_provider->id);
 	}
 
 	std::string VcsCommitService::BuildCommitMessagePromptForTests(const VcsCommitStatus& status, const std::vector<std::string>& selected_files)
@@ -1706,8 +1713,8 @@ namespace uam
 		return BuildCommitMessagePrompt(status, selected_files);
 	}
 
-	VcsCommitMessageSuggestion VcsCommitService::ParseWorkerOutputForTests(const std::string& output)
+	VcsCommitMessageSuggestion VcsCommitService::ParseWorkerOutputForTests(const std::string& output, std::string_view worker_provider_id)
 	{
-		return SuggestionFromWorkerOutput(output);
+		return SuggestionFromWorkerOutput(output, worker_provider_id);
 	}
 } // namespace uam

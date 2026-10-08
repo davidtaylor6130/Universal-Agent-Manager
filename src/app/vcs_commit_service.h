@@ -66,6 +66,6 @@ namespace uam
 		VcsCommitResult Commit(const AppState& app, const ChatSession& chat, VcsType type, const std::string& message, const std::vector<std::string>& files) const;
 		VcsCommitMessageSuggestion GenerateMessage(const AppState& app, const ChatSession& chat, VcsType type, const std::vector<std::string>& files) const;
 		static std::string BuildCommitMessagePromptForTests(const VcsCommitStatus& status, const std::vector<std::string>& selected_files);
-		static VcsCommitMessageSuggestion ParseWorkerOutputForTests(const std::string& output);
+		static VcsCommitMessageSuggestion ParseWorkerOutputForTests(const std::string& output, std::string_view worker_provider_id = {});
 	};
 } // namespace uam
