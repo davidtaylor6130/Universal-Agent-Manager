@@ -657,9 +657,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const mountedRef = useRef(true)
   const removedAttachmentIdsRef = useRef(new Set<string>())
 
-  useEffect(() => () => {
-    mountedRef.current = false
-	if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current)
+    }
   }, [])
 
   useEffect(() => {

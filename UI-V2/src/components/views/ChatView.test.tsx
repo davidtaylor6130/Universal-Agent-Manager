@@ -1,5 +1,5 @@
 import { parseUamPushPayload } from '../../store/push/uamPush'
-import { act } from 'react'
+import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, reviewAssistantLabel } from './ChatView'
@@ -32,6 +32,32 @@ function openWorkspaceActions(host: HTMLElement) {
 }
 
 describe('ChatView', () => {
+  it('settles goal creation and permits the next submission after StrictMode effect replay', async () => {
+    const session = { ...useAppStore.getState().sessions[0], providerId: 'gemini-cli' }
+    const originalCreate = useAppStore.getState().setGoal
+    const originalSend = useAppStore.getState().sendAcpPrompt
+    let finishCreate!: (value: { ok: boolean; goalId: string }) => void
+    const create = vi.fn(() => new Promise<{ ok: boolean; goalId: string }>((resolve) => { finishCreate = resolve }))
+    const send = vi.fn(async () => true)
+    useAppStore.setState({ setGoal: create, sendAcpPrompt: send })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    const enter = (text: string) => act(() => {
+      const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const submit = () => act(() => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+    try {
+      act(() => root.render(<StrictMode><ChatView session={session} /></StrictMode>))
+      enter('/goal First objective'); submit()
+      expect(create).toHaveBeenCalledTimes(1)
+      await act(async () => finishCreate({ ok: true, goalId: 'strict-goal' }))
+      expect(send).toHaveBeenCalledWith(session.id, 'First objective', [])
+      expect(host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
+      enter('/goal Next objective'); submit()
+      expect(create).toHaveBeenCalledTimes(2)
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ setGoal: originalCreate, sendAcpPrompt: originalSend }) }
+  })
   it('shows goals in a bounded composer popup and keeps edits separate from its unsent draft', async () => {
     const goal = { id: 'goal-popup', chatId: 'chat-1', objective: 'Ship the popup', status: 'active' as const, executionOwner: 'uam' as const, createdAt: new Date(), updatedAt: new Date() }
     const send = vi.fn(async () => true)
