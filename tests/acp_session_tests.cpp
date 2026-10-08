@@ -7110,6 +7110,113 @@ UAM_TEST(AiPermissionReviewIsBoundedFailClosedAndUsesOnlyOneTimeChoices)
 	UAM_ASSERT_EQ(fifo.queued, static_cast<std::size_t>(0));
 }
 
+UAM_TEST(CodexPermissionReviewerUsesOnlyCompletedTextDecisionAndRejectsUnsafeStreams)
+{
+	const std::string deny = R"({"decision":"deny","reason":"Destructively deletes an important project without a backup."})";
+	const auto envelope = [](std::string_view text)
+	{
+		return std::string("Reading prompt from stdin...\n") +
+			R"({"type":"thread.started","thread_id":"fixture-owned-review"})" + "\n" +
+			R"({"type":"turn.started"})" + "\n" +
+			nlohmann::json({{"type", "item.completed"}, {"item", {{"id", "item_0"}, {"type", "agent_message"}, {"text", text}}}}).dump() + "\n" +
+			R"({"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":23}})" + "\n";
+	};
+	const auto review = [](std::string output, std::string reviewer = "codex-cli", bool truncated = false)
+	{
+		TempDir temp("uam-codex-review-envelope");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "owned-review-target";
+		chat.provider_id = "gemini-cli";
+		chat.command_safety_tier = "aiReview";
+		chat.messages_loaded = true;
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->protocol_kind = "gemini-acp";
+		session->running = true;
+		session->processing = true;
+		session->waiting_for_permission = true;
+		session->pending_permission.request_id_json = "7";
+		session->pending_permission.tool_call_id = "review-tool";
+		session->pending_permission.options = {{"allow-once", "Allow once", "allow_once"}, {"deny", "Deny", "reject_once"}};
+		uam::AcpSessionState* target = session.get();
+		auto& process = PlatformServicesFactory::Instance().process_service;
+#if defined(_WIN32)
+		const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+		const std::vector<std::string> sink = {"/bin/sh", "-c", "exec /bin/cat >/dev/null"};
+#endif
+		std::string error;
+		UAM_ASSERT(process.StartStdioProcess(*target, temp.root, sink, &error));
+		app.acp_sessions.push_back(std::move(session));
+		uam::AsyncPermissionReviewTask task;
+		task.chat_id = chat.id;
+		task.request_id_json = "7";
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->provider_id = std::move(reviewer);
+		task.state->result.ok = true;
+		task.state->result.output = std::move(output);
+		task.state->result.output_truncated = truncated;
+		task.state->completed = true;
+		app.permission_review_tasks.push_back(std::move(task));
+		const bool changed = uam::acp_detail::PollPermissionReviewTasks(app);
+		const std::string pending = target->pending_permission.request_id_json;
+		const std::string decision = target->tool_calls.empty() ? "" : target->tool_calls.front().permission_review_decision;
+		process.StopStdioProcess(*target, true);
+		process.CloseStdioProcessHandles(*target);
+		UAM_ASSERT(changed && app.permission_review_tasks.empty());
+		return std::pair<std::string, std::string>{pending, decision};
+	};
+	// Captured native Codex 0.161.0 output shape; thread identity and usage are sanitized.
+	const std::pair<std::string, std::string> denied = review(envelope(deny));
+	UAM_ASSERT(denied.first.empty());
+	UAM_ASSERT_EQ(denied.second, std::string("deny"));
+	const std::pair<std::string, std::string> approved = review(envelope(R"({"decision":"approve","reason":"Read-only status check."})"));
+	UAM_ASSERT(approved.first.empty());
+	UAM_ASSERT_EQ(approved.second, std::string("approve"));
+	const std::pair<std::string, std::string> uncertain = review(envelope(R"({"decision":"uncertain","reason":"Missing context."})"));
+	UAM_ASSERT_EQ(uncertain.first, std::string("7"));
+	UAM_ASSERT_EQ(uncertain.second, std::string("uncertain"));
+	const std::string valid = envelope(deny);
+	for (const std::string unsafe : {
+		valid.substr(0, valid.find(R"({"type":"turn.completed")")),
+		valid + R"({"type":"error","message":"upstream failure"})",
+		valid + R"({"type":"item.completed","item":{"type":"agent_message","text":"{\"decision\":\"approve\",\"reason\":\"safe\"}"}})",
+		std::string("Unexpected diagnostic\n") + valid,
+		valid + "{broken",
+		envelope("```json\n" + deny + "\n```"),
+		envelope(R"({"decision":"approve","reason":"safe","extra":true})")})
+	{
+		const std::pair<std::string, std::string> rejected = review(unsafe);
+		UAM_ASSERT_EQ(rejected.first, std::string("7"));
+		UAM_ASSERT_EQ(rejected.second, std::string("error"));
+	}
+	for (const std::string kind : {"command_execution", "mcp_tool_call", "file_change"})
+	{
+		const std::string item = nlohmann::json({{"type", "item.completed"}, {"item", {{"id", "tool"}, {"type", kind}, {"text", deny}}}}).dump() + "\n";
+		const std::string unsafe = valid.substr(0, valid.find(R"({"type":"turn.completed")")) + item + valid.substr(valid.find(R"({"type":"turn.completed")"));
+		const std::pair<std::string, std::string> rejected = review(unsafe);
+		UAM_ASSERT_EQ(rejected.first, std::string("7"));
+		UAM_ASSERT_EQ(rejected.second, std::string("error"));
+	}
+	const std::size_t item_offset = valid.find(R"({"item":)");
+	UAM_ASSERT(item_offset != std::string::npos);
+	const std::string reasoning = R"({"type":"item.completed","item":{"type":"reasoning","text":"{\"decision\":\"approve\",\"reason\":\"not authoritative\"}"}})" + std::string("\n");
+	UAM_ASSERT_EQ(review(valid.substr(0, item_offset) + reasoning + valid.substr(item_offset)).second, std::string("deny"));
+	const std::string reasoning_only = valid.substr(0, item_offset) + reasoning + valid.substr(valid.find(R"({"type":"turn.completed")"));
+	UAM_ASSERT_EQ(review(reasoning_only).second, std::string("error"));
+	UAM_ASSERT_EQ(review(valid.substr(valid.find(R"({"type":"turn.started")"))).second, std::string("error"));
+	UAM_ASSERT_EQ(review(valid + R"({"type":"turn.started"})").second, std::string("error"));
+	UAM_ASSERT_EQ(review(valid + R"({"type":"turn.failed","error":{"message":"failed"}})").second, std::string("error"));
+	UAM_ASSERT_EQ(review(deny, "codex-cli").second, std::string("deny"));
+	UAM_ASSERT_EQ(review(valid, "claude-cli").second, std::string("error"));
+	UAM_ASSERT_EQ(review(valid, "codex-cli", true).second, std::string("error"));
+	UAM_ASSERT_EQ(review(deny, "claude-cli").second, std::string("deny"));
+}
+
 UAM_TEST(DefaultAndAcceptEditsPermissionModesStayWithinTheirExactBoundary)
 {
 	TempDir temp("uam-permission-mode-boundary");

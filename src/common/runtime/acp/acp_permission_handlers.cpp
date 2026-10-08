@@ -23,6 +23,7 @@
 #include <chrono>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -323,6 +324,66 @@ std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_
 	}
 }
 
+namespace
+{
+	/// <summary>Accepts a completed Codex exec text response without treating tool or reasoning text as a review decision.</summary>
+	std::optional<PermissionReviewDecision> ParsePermissionReviewWorkerOutput(std::string_view provider_id, std::string_view output)
+	{
+		if (const std::optional<PermissionReviewDecision> plain = ParsePermissionReviewOutput(output)) return plain;
+		if (!uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli) || output.size() > kPermissionReviewOutputLimit) return std::nullopt;
+
+		enum class Phase { Thread, Turn, Items, Complete };
+		Phase phase = Phase::Thread;
+		bool preamble_seen = false;
+		std::string final_text;
+		std::istringstream stream{std::string(output)};
+		std::string line;
+		while (std::getline(stream, line))
+		{
+			line = uam::strings::Trim(line);
+			if (line.empty()) continue;
+			// Codex prints this fixed stdin diagnostic before its JSONL events.
+			if (line == "Reading prompt from stdin..." && phase == Phase::Thread && !preamble_seen)
+			{
+				preamble_seen = true;
+				continue;
+			}
+			const nlohmann::json event = nlohmann::json::parse(line, nullptr, false);
+			if (!event.is_object() || !event.contains("type") || !event["type"].is_string() || event.contains("error")) return std::nullopt;
+			const std::string type = event["type"].get<std::string>();
+			if (type == "thread.started" && phase == Phase::Thread)
+			{
+				if (!event.contains("thread_id") || !event["thread_id"].is_string() || event["thread_id"].get_ref<const std::string&>().empty()) return std::nullopt;
+				phase = Phase::Turn;
+			}
+			else if (type == "turn.started" && phase == Phase::Turn)
+			{
+				phase = Phase::Items;
+			}
+			else if (type == "item.completed" && phase == Phase::Items)
+			{
+				if (!event.contains("item") || !event["item"].is_object()) return std::nullopt;
+				const nlohmann::json& item = event["item"];
+				if (!item.contains("type") || !item["type"].is_string() || item.contains("error")) return std::nullopt;
+				const std::string item_type = item["type"].get<std::string>();
+				if (item_type == "reasoning") continue;
+				if (item_type != "agent_message" || !final_text.empty() || !item.contains("text") || !item["text"].is_string()) return std::nullopt;
+				final_text = item["text"].get<std::string>();
+				if (final_text.empty()) return std::nullopt;
+			}
+			else if (type == "turn.completed" && phase == Phase::Items && !final_text.empty())
+			{
+				phase = Phase::Complete;
+			}
+			else
+			{
+				return std::nullopt;
+			}
+		}
+		return phase == Phase::Complete ? ParsePermissionReviewOutput(final_text) : std::nullopt;
+	}
+}
+
 bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out)
 {
 	const auto tier = uam::command_safety::ParseTier(chat.command_safety_tier);
@@ -493,7 +554,7 @@ bool PollPermissionReviewTasks(AppState& app)
 		ChatSession* chat = ChatDomainService().FindChatById(app, it->chat_id);
 		if (session != nullptr && chat != nullptr && session->running && session->pending_permission.request_id_json == it->request_id_json && uam::command_safety::ParseTier(chat->command_safety_tier) == uam::command_safety::Tier::AiReview)
 		{
-			const auto decision = result.ok && !result.output_truncated ? ParsePermissionReviewOutput(result.output) : std::nullopt;
+			const auto decision = result.ok && !result.output_truncated ? ParsePermissionReviewWorkerOutput(it->state->provider_id, result.output) : std::nullopt;
 			if (!decision)
 			{
 				const std::string reason = "AI Review could not make a valid decision; the request remains for the user.";
