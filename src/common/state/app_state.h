@@ -449,6 +449,8 @@ namespace uam
 		std::string chat_id;
 		std::string provider_id;
 		std::string process_execution_host_id;
+		/// Catalog ownership captured when this provider process is launched; never persisted.
+		std::string model_catalog_scope_key;
 		std::string protocol_kind = uam::provider_profile_constants::kProtocolGeminiAcp;
 		std::string session_id;
 		std::string codex_thread_id;

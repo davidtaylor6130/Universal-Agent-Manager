@@ -10597,6 +10597,14 @@ UAM_TEST(StateSerializerCachesCatalogsPerScopeAndRefreshesBetweenSerializations)
 	app.data_root = temp.root;
 	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	app.provider_model_catalog->Initialize(app.data_root);
+	ExecutionHost host_a;
+	host_a.id = "host-a";
+	host_a.transport = "ssh";
+	host_a.ssh_alias = "fixture-a";
+	ExecutionHost host_b = host_a;
+	host_b.id = "host-b";
+	host_b.ssh_alias = "fixture-b";
+	app.provider_model_catalog->SetExecutionHostContext({host_a, host_b});
 	const std::string provider = uam::provider_ids::kOpenCodeCli;
 	const std::string workspace = (temp.root / "workspace").generic_string();
 	const nlohmann::json first_models = nlohmann::json::array({{{"id", "first/model"}}});
@@ -15772,6 +15780,8 @@ UAM_TEST(ClaudeControlHandshakeDiscoversModelsAndRoutesPermissionsAndQuestions)
 	chat.workspace_directory = temp.root.string();
 	app.chats.push_back(chat);
 	uam::AcpSessionState session;
+	// Simulated launch captures the same catalog ownership as StartAcpProcessForChat.
+	session.model_catalog_scope_key = app.provider_model_catalog->CaptureScopeKey(chat.provider_id, chat.workspace_directory);
 	session.provider_id = chat.provider_id;
 	session.chat_id = chat.id;
 	session.running = true;
@@ -15894,6 +15904,8 @@ UAM_TEST(ClaudeInstalledCliHandshakeSmoke)
 	chat.workspace_directory = temp.root.string();
 	app.chats.push_back(chat);
 	uam::AcpSessionState session;
+	// Simulated launch captures the same catalog ownership as StartAcpProcessForChat.
+	session.model_catalog_scope_key = app.provider_model_catalog->CaptureScopeKey(chat.provider_id, chat.workspace_directory);
 	session.chat_id = chat.id;
 	session.provider_id = chat.provider_id;
 	session.protocol_kind = "claude-code-stream-json";
@@ -18901,6 +18913,8 @@ UAM_TEST(CopilotEphemeralDiscoveryPopulatesFirstChatCatalog)
 	ephemeral.provider_id = uam::provider_ids::kCopilotCli;
 	ephemeral.workspace_directory = temp.root.string();
 	uam::AcpSessionState session;
+	// Simulated launch captures the same catalog ownership as StartAcpProcessForChat.
+	session.model_catalog_scope_key = app.provider_model_catalog->CaptureScopeKey(ephemeral.provider_id, ephemeral.workspace_directory);
 	session.chat_id = ephemeral.id;
 	session.provider_id = ephemeral.provider_id;
 	session.protocol_kind = uam::provider_profile_constants::kProtocolCopilotAcp;

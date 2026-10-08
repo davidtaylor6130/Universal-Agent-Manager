@@ -443,7 +443,7 @@ namespace uam
 				if (app.provider_model_catalog != nullptr)
 				{
 					app.provider_model_catalog->RememberRefreshFailure(session.provider_id, message,
-					    AcpWorkspaceDirectory(app, chat), chat.execution_host_id);
+					    AcpWorkspaceDirectory(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
 				}
 			}
 			else
@@ -2194,6 +2194,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		AcpSessionState& session = EnsureAcpSessionForChat(app, *chat);
+		if (session.running && app.provider_model_catalog != nullptr &&
+		    (session.model_catalog_scope_key.empty() || session.model_catalog_scope_key !=
+		        app.provider_model_catalog->CaptureScopeKey(session.provider_id, AcpWorkspaceDirectory(app, *chat), chat->execution_host_id)))
+		{
+			if (error_out != nullptr) *error_out = "The running provider belongs to an earlier model configuration. Refresh models in a new provider session.";
+			return false;
+		}
 		if (session.running)
 		{
 			if (!session.available_models.empty())
@@ -2207,7 +2214,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					}
 					(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id,
 					    models, AcpWorkspaceDirectory(app, *chat), nlohmann::json::array(),
-					    chat->execution_host_id);
+					    chat->execution_host_id, session.model_catalog_scope_key);
 				}
 				return true;
 			}
@@ -4079,7 +4086,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
 						    std::string(RuntimeDisplayName(session)) +
 						        " exited before model discovery completed.",
-						    AcpWorkspaceDirectory(app, chat), chat.execution_host_id);
+						    AcpWorkspaceDirectory(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
 					}
 					changed = true;
 					continue;

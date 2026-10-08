@@ -704,6 +704,12 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	session.chat_id = chat.id;
 	session.provider_id = provider.id;
 	session.process_execution_host_id = chat.execution_host_id;
+	if (!recovering_remote_turn && !recovering_remote_process)
+	{
+		session.model_catalog_scope_key = app.provider_model_catalog == nullptr ? std::string{} :
+		    app.provider_model_catalog->CaptureScopeKey(session.provider_id,
+		        uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id);
+	}
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 	const std::string codex_resume_id = !session.goal_internal_session && std::strcmp(runtime.AcpProtocolKind(), "codex-app-server") == 0 ? runtime.OnAcpValidateResumeId(chat) : std::string{};

@@ -257,7 +257,7 @@ void RememberDiscoveredModels(AppState& app, const AcpSessionState& session, con
 		(void)app.provider_model_catalog->RememberSuccessfulModels(session.provider_id,
 		    ModelsForPersistentCache(session.available_models), DiscoveryWorkspace(app, chat),
 		    ConfigOptionsForPersistentCache(session.available_config_options),
-		    chat.execution_host_id);
+		    chat.execution_host_id, session.model_catalog_scope_key);
 	}
 }
 
@@ -270,7 +270,7 @@ void FinishModelDiscoveryWithoutResults(AppState& app, const AcpSessionState& se
 	{
 		app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
 		    "Provider model discovery completed without reporting any models.", workspace,
-		    chat.execution_host_id);
+		    chat.execution_host_id, session.model_catalog_scope_key);
 	}
 }
 
@@ -393,7 +393,7 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		if (app.provider_model_catalog != nullptr && (model_discovery_request || (session.model_discovery_only && method == uam::acp_methods::kInitialize)))
 		{
 			app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
-			    formatted_error, DiscoveryWorkspace(app, chat), chat.execution_host_id);
+			    formatted_error, DiscoveryWorkspace(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
 		}
 		AppendAcpDiagnostic(session, "response", "jsonrpc_error", method, request_id, has_code, code, error_message, detail_text);
 		const AcpResponseFailureDetails details{failure, error_data, detail_text, formatted_error};

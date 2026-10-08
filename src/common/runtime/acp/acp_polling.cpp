@@ -125,7 +125,7 @@ namespace uam::acp_detail
 				if (app.provider_model_catalog != nullptr)
 				{
 					app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
-					    message, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id);
+					    message, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id, session.model_catalog_scope_key);
 				}
 			}
 			session.queued_user_prompts = std::move(queued_prompts);

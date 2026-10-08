@@ -1,4 +1,5 @@
 #include "persistence_coordinator.h"
+#include "app/provider_model_catalog_service.h"
 
 #include "app/chat_domain_service.h"
 
@@ -83,6 +84,7 @@ bool PersistenceCoordinator::SaveSettings(uam::AppState& app) const
 		return false;
 	}
 
+	if (app.provider_model_catalog != nullptr) app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
 	return true;
 }
 
@@ -99,6 +101,7 @@ bool PersistenceCoordinator::LoadSettings(uam::AppState& app) const
 		app.status_line = result.warning;
 	}
 	NormalizeProviderCliSettings(app.settings);
+	if (app.provider_model_catalog != nullptr) app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
 	return true;
 }
 

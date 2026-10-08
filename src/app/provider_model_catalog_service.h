@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <memory>
 #include <map>
+#include <optional>
 #include <set>
 #include <thread>
 
@@ -29,6 +30,11 @@ class ProviderModelCatalogService
 
 	/// Initialize with data root path. Must be called before any other methods.
 	void Initialize(const std::filesystem::path& data_root, const std::vector<ProviderProfile>& profiles = {}, std::string_view configuration_context = {});
+
+	/// Bind remote catalogs to configured connection ownership; labels and health do not invalidate caches.
+	void SetExecutionHostContext(const std::vector<ExecutionHost>& hosts);
+	/// Capture the immutable catalog scope before launching a provider process.
+	std::string CaptureScopeKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 
 	/// Start an async refresh of OpenCode Zen free models if needed (respects 10-min throttle).
 	/// Returns true if a refresh was started, false if skipped (throttled/disabled/fixture).
@@ -48,10 +54,10 @@ class ProviderModelCatalogService
 	std::string GetConfiguredOpenCodeDefaultModel() const;
 
 	/// Persist a provider's latest successful runtime model discovery without replacing a valid cache on empty results.
-	bool RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models, std::string_view workspace_directory = {}, const nlohmann::json& config_options = nlohmann::json::array(), std::string_view execution_host_id = "local");
+	bool RememberSuccessfulModels(const std::string& provider_id, const nlohmann::json& models, std::string_view workspace_directory = {}, const nlohmann::json& config_options = nlohmann::json::array(), std::string_view execution_host_id = "local", std::optional<std::string_view> expected_scope_key = std::nullopt);
 
 	/// Record a refresh failure while retaining the last successful provider cache.
-	void RememberRefreshFailure(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	void RememberRefreshFailure(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local", std::optional<std::string_view> expected_scope_key = std::nullopt);
 
 	/// Return the isolated persistent cache for the provider's current configuration.
 	nlohmann::json GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
@@ -105,6 +111,7 @@ class ProviderModelCatalogService
 	nlohmann::json m_cached_codex_models;
 	nlohmann::json m_persistent_catalogs;
 	std::map<std::string, std::string> m_catalog_key_by_provider_id;
+	std::map<std::string, std::string> m_connection_key_by_host_id;
 	std::map<std::string, std::string> m_refresh_error_by_provider_id;
 	std::map<std::string, nlohmann::json> m_scope_by_catalog_key;
 	std::set<std::string> m_pending_discovery_provider_ids;

@@ -447,7 +447,7 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 		if (app.provider_model_catalog != nullptr)
 		{
 			app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
-			    formatted_error, DiscoveryWorkspace(app, chat), chat.execution_host_id);
+			    formatted_error, DiscoveryWorkspace(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
 		}
 		// Catalog failures must not terminate an independent chat turn.
 		session.codex_model_discovery = {};
@@ -604,7 +604,7 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 			if (app.provider_model_catalog != nullptr)
 			{
 				app.provider_model_catalog->RememberRefreshFailure(session.provider_id, error,
-				    DiscoveryWorkspace(app, chat), chat.execution_host_id);
+				    DiscoveryWorkspace(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
 			}
 			session.codex_model_discovery = {};
 			StopBackgroundModelDiscovery(app, session);

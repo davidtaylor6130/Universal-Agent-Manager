@@ -1836,6 +1836,7 @@ done
 	uam::execution_hosts::Normalize(app.settings.execution_hosts);
 	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+	app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
 	const std::string workspace = temp.root.string();
 	UAM_ASSERT(app.provider_model_catalog->BeginDiscovery(
 	    uam::provider_ids::kOpenCodeCli, workspace, host.id));
@@ -3011,6 +3012,8 @@ UAM_TEST(MalformedEphemeralModelDiscoveryClearsPendingAndAllowsRetry)
 	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = chat.id;
 	session->provider_id = chat.provider_id;
+	session->model_catalog_scope_key = app.provider_model_catalog->CaptureScopeKey(
+	    chat.provider_id, chat.workspace_directory, chat.execution_host_id);
 	session->running = true;
 	session->model_discovery_only = true;
 	session->ephemeral_model_discovery = true;
@@ -4924,9 +4927,15 @@ UAM_TEST(ProviderModelCatalogPersistsSuccessfulRefreshAndIsolatesConfigurations)
 	    {{"id", "effort"}, {"name", "Effort"}, {"category", "thought_level"}, {"currentValue", "high"}, {"options", nlohmann::json::array({{{"value", "low"}, {"name", "Low"}}, {{"value", "high"}, {"name", "High"}}})}},
 	});
 
+	ExecutionHost remote;
+	remote.id = "ssh-lab";
+	remote.transport = "ssh";
+	remote.ssh_alias = "fixture-lab";
+
 	{
 		uam::ProviderModelCatalogService catalog;
 		catalog.Initialize(temp.root, {first});
+		catalog.SetExecutionHostContext({remote});
 		const auto assert_snapshot = [&](const std::string& workspace = "", const std::string& host = "local")
 		{
 			const nlohmann::json snapshot = catalog.GetCatalogSnapshot(first.id, workspace, host);
@@ -4988,6 +4997,7 @@ UAM_TEST(ProviderModelCatalogPersistsSuccessfulRefreshAndIsolatesConfigurations)
 	{
 		uam::ProviderModelCatalogService restarted;
 		restarted.Initialize(temp.root, {first});
+		restarted.SetExecutionHostContext({remote});
 		UAM_ASSERT_EQ(restarted.GetCachedProviderModels(first.id), models);
 		UAM_ASSERT_EQ(restarted.GetCachedProviderConfigOptions(first.id), updated_config_options);
 		UAM_ASSERT_EQ(restarted.GetCachedProviderModels(
@@ -5289,6 +5299,11 @@ UAM_TEST(LiveModelCapabilitiesSurviveCatalogPersistenceFailure)
 			app.chats.push_back(chat);
 			app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 			app.provider_model_catalog->Initialize(app.data_root);
+			ExecutionHost execution_host;
+			execution_host.id = host;
+			execution_host.transport = host == "local" ? "local" : "ssh";
+			execution_host.ssh_alias = "fixture";
+			app.provider_model_catalog->SetExecutionHostContext({execution_host});
 			const nlohmann::json cached = nlohmann::json::array({
 			    {{"id", "fixture/model"}, {"name", "Stale"}, {"supportedReasoningEfforts", {"low"}}, {"additionalSpeedTiers", {"fast"}}},
 			    {{"id", "fixture/offline"}, {"name", "Offline fallback"}},
@@ -5399,6 +5414,9 @@ UAM_TEST(CodexModelDiscoveryFailurePreservesTheActiveTurnAndCache)
 	uam::AcpSessionState session;
 	session.chat_id = chat.id;
 	session.provider_id = chat.provider_id;
+	// Model the scope captured by the actual process launch.
+	session.model_catalog_scope_key = app.provider_model_catalog->CaptureScopeKey(
+	    chat.provider_id, chat.workspace_directory, chat.execution_host_id);
 	session.running = true;
 	session.session_ready = true;
 	session.processing = true;
@@ -5440,6 +5458,9 @@ UAM_TEST(CodexModelPaginationPublishesOnlyCompleteCatalogs)
 		uam::AcpSessionState session;
 		session.chat_id = chat.id;
 		session.provider_id = chat.provider_id;
+		// Model the scope captured by the actual process launch.
+		session.model_catalog_scope_key = app.provider_model_catalog->CaptureScopeKey(
+		    chat.provider_id, chat.workspace_directory, chat.execution_host_id);
 		session.available_models.push_back(uam::AcpModelState{});
 		session.available_models.back().id = "cached";
 		session.current_model_id = "user-selected";
@@ -5521,6 +5542,8 @@ UAM_TEST(BackgroundCodexModelDiscoveryStopsAfterCachingModels)
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = "chat-discovery";
 	session->provider_id = "codex-cli";
+	session->model_catalog_scope_key = app.provider_model_catalog->CaptureScopeKey(
+	    "codex-cli", discovery_workspace, "local");
 	session->protocol_kind = "codex-app-server";
 	session->running = true;
 	session->model_discovery_only = true;
@@ -5589,8 +5612,21 @@ UAM_TEST(ProviderModelCatalogSerializesForAWorkspaceWithZeroChats)
 	app.folders.push_back(ChatFolder{"workspace", "Workspace", temp.root.string(), false});
 	app.folders.push_back(ChatFolder{"remote", "Remote", "/srv/project/", false, "ssh-lab"});
 	app.folders.push_back(ChatFolder{"windows", "Windows", "C:/project", false, "ssh-windows"});
+	ExecutionHost remote_host;
+	remote_host.id = "ssh-lab";
+	remote_host.transport = "ssh";
+	remote_host.ssh_alias = "fixture-lab";
+	remote_host.platform = "linux";
+	ExecutionHost windows_host;
+	windows_host.id = "ssh-windows";
+	windows_host.transport = "ssh";
+	windows_host.ssh_alias = "fixture-windows";
+	windows_host.platform = "windows";
+	app.settings.execution_hosts = {remote_host, windows_host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
 	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+	app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
 	const nlohmann::json models = nlohmann::json::array({{{"id", "gpt-zero-chat"}, {"name", "GPT Zero Chat"}}});
 	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli", models, temp.root.string()));
 	const nlohmann::json remote_models = nlohmann::json::array({
@@ -9485,6 +9521,8 @@ UAM_TEST(CodexInitializeWriteFailureClearsStartupAndPreservesQueuedWork)
 		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
 		session->chat_id = chat.id;
 		session->provider_id = chat.provider_id;
+		session->model_catalog_scope_key = app.provider_model_catalog->CaptureScopeKey(
+		    chat.provider_id, chat.workspace_directory, chat.execution_host_id);
 		session->protocol_kind = "codex-app-server";
 		session->running = true;
 		session->processing = !discovery;

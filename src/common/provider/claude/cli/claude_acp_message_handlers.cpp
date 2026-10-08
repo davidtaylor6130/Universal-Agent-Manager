@@ -540,7 +540,7 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 			RememberDiscoveredModels(app, session, chat);
 			if (app.provider_model_catalog != nullptr && session.available_models.empty())
 			{
-				app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Claude reported no available models.", chat.workspace_directory, chat.execution_host_id);
+				app.provider_model_catalog->RememberRefreshFailure(session.provider_id, "Claude reported no available models.", chat.workspace_directory, chat.execution_host_id, session.model_catalog_scope_key);
 			}
 			StopBackgroundModelDiscovery(app, session);
 		}

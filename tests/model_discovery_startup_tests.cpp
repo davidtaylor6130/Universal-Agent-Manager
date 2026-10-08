@@ -1,4 +1,8 @@
 #include "app/model_discovery_service.h"
+#include "app/persistence_coordinator.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/paths/app_paths.h"
+#include "common/config/settings_store.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/paths/workspace_root.h"
 #include "test_harness.h"
@@ -112,6 +116,7 @@ UAM_TEST(StartupModelDiscoveryDefersOfflineAndVersionChecksWithoutBlockingReadyS
 	remote.platform = "linux";
 	remote.runner_status = "offline";
 	fixture.app.settings.execution_hosts.push_back(remote);
+	fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
 	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", "remote")].checked = true;
 	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", "remote")].supported = true;
 	ChatFolder remote_folder{"remote-folder", "Remote", "/srv/project", false};
@@ -320,6 +325,7 @@ UAM_TEST(StartupModelDiscoveryPreservesRemoteLinuxLiteralBackslashesInScopeAndLa
 	host.platform = "linux";
 	host.runner_status = "ready";
 	fixture.app.settings.execution_hosts.push_back(host);
+	fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
 	const std::vector<std::string> paths = {"/srv/Project\\literal", "/srv/Project/literal"};
 	for (std::size_t index = 0; index < paths.size(); ++index)
 	{
@@ -345,6 +351,15 @@ UAM_TEST(ModelCatalogSeparatesRemotePosixLiteralBackslashesAndPreservesWindowsAl
 {
 	StartupDiscoveryFixture fixture;
 	uam::ProviderModelCatalogService& catalog = *fixture.app.provider_model_catalog;
+	ExecutionHost remote;
+	remote.id = "remote-a";
+	remote.transport = "ssh";
+	remote.ssh_alias = "fixture-remote";
+	ExecutionHost windows = remote;
+	windows.id = "windows-host";
+	windows.platform = "windows";
+	const std::vector<ExecutionHost> hosts{remote, windows};
+	catalog.SetExecutionHostContext(hosts);
 	const std::string literal = "/srv/Project\\literal";
 	const std::string nested = "/srv/Project/literal";
 	UAM_ASSERT(catalog.BeginDiscovery("codex-cli", literal, "remote-a"));
@@ -366,6 +381,171 @@ UAM_TEST(ModelCatalogSeparatesRemotePosixLiteralBackslashesAndPreservesWindowsAl
 	// Reload persisted scope keys rather than relying only on the in-memory cache.
 	uam::ProviderModelCatalogService reloaded;
 	reloaded.Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+	reloaded.SetExecutionHostContext(hosts);
 	UAM_ASSERT_EQ(reloaded.GetCachedProviderModels("codex-cli", literal, "remote-a")[0].value("id", ""), std::string("literal-model"));
 	UAM_ASSERT_EQ(reloaded.GetCachedProviderModels("codex-cli", nested, "remote-a")[0].value("id", ""), std::string("nested-model"));
+}
+
+namespace
+{
+	ExecutionHost CatalogRemoteHost(const std::string& alias)
+	{
+		ExecutionHost host;
+		host.id = "ssh-lab-a";
+		host.transport = "ssh";
+		host.ssh_alias = alias;
+		host.platform = "linux";
+		host.runner_status = "ready";
+		return host;
+	}
+}
+
+UAM_TEST(ModelCatalogSettingsSaveRebindsReusedRemoteHostIdentity)
+{
+	StartupDiscoveryFixture fixture;
+	PersistenceCoordinator persistence;
+	fixture.app.settings.execution_hosts.push_back(CatalogRemoteHost("lab.a"));
+	UAM_ASSERT(persistence.SaveSettings(fixture.app));
+	uam::ProviderModelCatalogService& catalog = *fixture.app.provider_model_catalog;
+	const nlohmann::json models = nlohmann::json::array({{{"id", "old-server"}}});
+	const nlohmann::json options = nlohmann::json::array({{{"id", "old-config"}}});
+	UAM_ASSERT(catalog.RememberSuccessfulModels("codex-cli", models, "/project", options, "ssh-lab-a"));
+	fixture.app.settings.execution_hosts.back().label = "Renamed label";
+	fixture.app.settings.execution_hosts.back().runner_status = "offline";
+	UAM_ASSERT(persistence.SaveSettings(fixture.app));
+	UAM_ASSERT_EQ(catalog.GetCachedProviderModels("codex-cli", "/project", "ssh-lab-a"), models);
+	fixture.app.settings.execution_hosts.pop_back();
+	UAM_ASSERT(persistence.SaveSettings(fixture.app));
+	fixture.app.settings.execution_hosts.push_back(CatalogRemoteHost("lab-a"));
+	UAM_ASSERT(persistence.SaveSettings(fixture.app));
+	UAM_ASSERT(catalog.GetCachedProviderModels("codex-cli", "/project", "ssh-lab-a").empty());
+	UAM_ASSERT(catalog.GetCachedProviderConfigOptions("codex-cli", "/project", "ssh-lab-a").empty());
+	UAM_ASSERT(catalog.BeginDiscoveryIfStale("codex-cli", "/project", "ssh-lab-a"));
+	const nlohmann::json replacement_models = nlohmann::json::array({{{"id", "new-server"}}});
+	UAM_ASSERT(catalog.RememberSuccessfulModels("codex-cli", replacement_models, "/project", options, "ssh-lab-a"));
+	uam::ProviderModelCatalogService reloaded;
+	reloaded.Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+	reloaded.SetExecutionHostContext(fixture.app.settings.execution_hosts);
+	UAM_ASSERT_EQ(reloaded.GetCachedProviderModels("codex-cli", "/project", "ssh-lab-a"), replacement_models);
+	UAM_ASSERT_EQ(reloaded.GetCachedProviderConfigOptions("codex-cli", "/project", "ssh-lab-a"), options);
+	UAM_ASSERT(!reloaded.BeginDiscoveryIfStale("codex-cli", "/project", "ssh-lab-a"));
+	UAM_ASSERT(reloaded.CaptureScopeKey("codex-cli", "/project", "unknown-host").empty());
+	UAM_ASSERT(!reloaded.BeginDiscovery("codex-cli", "/project", "unknown-host"));
+	UAM_ASSERT(!reloaded.RememberSuccessfulModels("codex-cli", models, "/project", options, "unknown-host"));
+
+}
+
+UAM_TEST(ModelCatalogSettingsLoadRejectsPersistedDifferentRemoteConnection)
+{
+	StartupDiscoveryFixture fixture;
+	PersistenceCoordinator persistence;
+	fixture.app.settings.execution_hosts.push_back(CatalogRemoteHost("lab.a"));
+	UAM_ASSERT(persistence.SaveSettings(fixture.app));
+	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "old-server"}}}), "/project", nlohmann::json::array({{{"id", "old-config"}}}), "ssh-lab-a"));
+	// Simulate the pre-fingerprint on-disk format, retaining valid model metadata.
+	const fs::path cache_file = fixture.app.data_root / "provider_model_catalog_cache.json";
+	nlohmann::json legacy = nlohmann::json::parse(uam::io::ReadTextFile(cache_file));
+	const std::string owned_key = fixture.app.provider_model_catalog->CaptureScopeKey("codex-cli", "/project", "ssh-lab-a");
+	const std::size_t connection_suffix = owned_key.find("-connection-");
+	if (connection_suffix != std::string::npos)
+	{
+		legacy["catalogs"][owned_key.substr(0, connection_suffix)] = legacy["catalogs"][owned_key];
+		legacy["catalogs"].erase(owned_key);
+		legacy["catalogs"][""] = legacy["catalogs"][owned_key.substr(0, connection_suffix)];
+		const fs::path legacy_root = fixture.temp.root / "legacy-data";
+		fs::create_directories(legacy_root);
+		UAM_ASSERT(uam::io::WriteTextFile(legacy_root / "provider_model_catalog_cache.json", legacy.dump()));
+		uam::ProviderModelCatalogService legacy_catalog;
+		legacy_catalog.Initialize(legacy_root, fixture.app.provider_profiles);
+		legacy_catalog.SetExecutionHostContext(fixture.app.settings.execution_hosts);
+		UAM_ASSERT(legacy_catalog.GetCachedProviderModels("codex-cli", "/project", "unknown-host").empty());
+		UAM_ASSERT(legacy_catalog.GetCachedProviderConfigOptions("codex-cli", "/project", "unknown-host").empty());
+		UAM_ASSERT(legacy_catalog.GetCatalogSnapshot("codex-cli", "/project", "unknown-host")["availableModels"].empty());
+		UAM_ASSERT(legacy_catalog.GetCachedProviderModels("codex-cli", "/project", "ssh-lab-a").empty());
+		UAM_ASSERT(legacy_catalog.GetCachedProviderConfigOptions("codex-cli", "/project", "ssh-lab-a").empty());
+	}
+	AppSettings replacement = fixture.app.settings;
+	replacement.execution_hosts.back() = CatalogRemoteHost("lab-a");
+	UAM_ASSERT(SettingsStore::Save(AppPaths::SettingsFilePath(fixture.app.data_root), replacement));
+	fixture.app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	fixture.app.provider_model_catalog->Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+	UAM_ASSERT(persistence.LoadSettings(fixture.app));
+	UAM_ASSERT_EQ(fixture.app.settings.execution_hosts.back().ssh_alias, std::string("lab-a"));
+	// A catalog without connection metadata belongs to neither configured server.
+	UAM_ASSERT(fixture.app.provider_model_catalog->CaptureScopeKey("codex-cli", "/project", "ssh-lab-a") != std::string{});
+
+	UAM_ASSERT(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", "/project", "ssh-lab-a").empty());
+	UAM_ASSERT(fixture.app.provider_model_catalog->GetCachedProviderConfigOptions("codex-cli", "/project", "ssh-lab-a").empty());
+}
+
+UAM_TEST(ModelCatalogLateClaudeResponseCannotRepublishRemovedRemoteHost)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	StartupDiscoveryFixture fixture;
+	PersistenceCoordinator persistence;
+	fixture.app.settings.execution_hosts.push_back(CatalogRemoteHost("lab.a"));
+	UAM_ASSERT(persistence.SaveSettings(fixture.app));
+	ChatSession chat;
+	chat.id = "discovery-old-host";
+	chat.provider_id = "claude-cli";
+	chat.workspace_directory = "/project";
+	chat.execution_host_id = "ssh-lab-a";
+	fixture.app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.chat_id = chat.id;
+	session.protocol_kind = "claude-code-stream-json";
+	// Simulate launch metadata; responses still pass through the real Claude projection.
+	session.model_catalog_scope_key = fixture.app.provider_model_catalog->CaptureScopeKey(chat.provider_id, chat.workspace_directory, chat.execution_host_id);
+	session.initialize_request_id = 7;
+	session.pending_request_methods[7] = "initialize";
+	fixture.app.settings.execution_hosts.pop_back();
+	UAM_ASSERT(persistence.SaveSettings(fixture.app));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, session, fixture.app.chats.front(), R"({"type":"control_response","response":{"subtype":"success","request_id":"7","response":{"models":[{"value":"obsolete-server-model","displayName":"Old server"}]}}})"));
+	UAM_ASSERT_EQ(session.available_models.size(), std::size_t{1});
+	UAM_ASSERT(fixture.app.provider_model_catalog->GetCachedProviderModels("claude-cli", "/project", "ssh-lab-a").empty());
+	fixture.app.settings.execution_hosts.push_back(CatalogRemoteHost("lab-a"));
+	UAM_ASSERT(persistence.SaveSettings(fixture.app));
+	uam::ProviderModelCatalogService& catalog = *fixture.app.provider_model_catalog;
+	UAM_ASSERT(catalog.BeginDiscovery("claude-cli", "/project", "ssh-lab-a"));
+	session.initialized = false;
+	session.initialize_request_id = 8;
+	session.pending_request_methods[8] = "initialize";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, session, fixture.app.chats.front(), R"({"type":"control_response","response":{"subtype":"success","request_id":"8","response":{"models":[{"value":"obsolete-server-model","displayName":"Old server"}]}}})"));
+	UAM_ASSERT(catalog.GetCachedProviderModels("claude-cli", "/project", "ssh-lab-a").empty());
+	UAM_ASSERT(catalog.IsDiscoveryPending("claude-cli", "/project", "ssh-lab-a"));
+	session.model_discovery_only = true;
+	session.initialize_request_id = 9;
+	session.pending_request_methods[9] = "initialize";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, session, fixture.app.chats.front(), R"({"type":"control_response","response":{"subtype":"error","request_id":"9","error":"Old connection failed"}})"));
+	UAM_ASSERT(catalog.IsDiscoveryPending("claude-cli", "/project", "ssh-lab-a"));
+	UAM_ASSERT(catalog.GetProviderRefreshError("claude-cli", "/project", "ssh-lab-a").empty());
+	UAM_ASSERT(!catalog.RememberSuccessfulModels("claude-cli", nlohmann::json::array({{{"id", "missing-owner"}}}), "/project", {}, "ssh-lab-a", std::string_view{}));
+	std::unique_ptr<uam::AcpSessionState> running = std::make_unique<uam::AcpSessionState>();
+	running->chat_id = chat.id;
+	running->provider_id = chat.provider_id;
+	running->running = true;
+	running->session_ready = true;
+	running->model_catalog_scope_key = session.model_catalog_scope_key;
+	running->available_models = session.available_models;
+	fixture.app.acp_sessions.push_back(std::move(running));
+	std::string error;
+	UAM_ASSERT(!uam::StartAcpModelDiscovery(fixture.app, chat.id, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(fixture.app.acp_sessions.front()->running);
+	UAM_ASSERT(catalog.IsDiscoveryPending("claude-cli", "/project", "ssh-lab-a"));
+	// A current producer may settle that pending request; a later local/profile
+	// reinitialization must still reject results owned by its previous scope.
+	const std::string current = catalog.CaptureScopeKey("claude-cli", "/project", "ssh-lab-a");
+	UAM_ASSERT(catalog.RememberSuccessfulModels("claude-cli", nlohmann::json::array({{{"id", "new-server"}}}), "/project", {}, "ssh-lab-a", current));
+	UAM_ASSERT(!catalog.IsDiscoveryPending("claude-cli", "/project", "ssh-lab-a"));
+	const std::string local_scope = catalog.CaptureScopeKey("claude-cli", fixture.app.folders.front().directory);
+	catalog.Initialize(fixture.app.data_root, fixture.app.provider_profiles, "changed-provider-flags");
+	UAM_ASSERT(catalog.BeginDiscovery("claude-cli", fixture.app.folders.front().directory));
+	UAM_ASSERT(!catalog.RememberSuccessfulModels("claude-cli", nlohmann::json::array({{{"id", "old-local"}}}), fixture.app.folders.front().directory, {}, "local", local_scope));
+	catalog.RememberRefreshFailure("claude-cli", "old-local-error", fixture.app.folders.front().directory, "local", local_scope);
+	UAM_ASSERT(catalog.IsDiscoveryPending("claude-cli", fixture.app.folders.front().directory));
+	UAM_ASSERT(catalog.GetProviderRefreshError("claude-cli", fixture.app.folders.front().directory).empty());
+
+#endif
 }

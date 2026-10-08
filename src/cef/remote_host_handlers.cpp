@@ -93,7 +93,9 @@ namespace
 		const auto chat_uses_host = [&](const std::string& chat_id)
 		{
 			const auto chat = std::ranges::find(app.chats, chat_id, &ChatSession::id);
-			return chat != app.chats.end() && chat->execution_host_id == host_id;
+			if (chat != app.chats.end() && chat->execution_host_id == host_id) return true;
+			const auto discovery = std::ranges::find(app.model_discovery_chats, chat_id, &ChatSession::id);
+			return discovery != app.model_discovery_chats.end() && discovery->execution_host_id == host_id;
 		};
 		if (std::ranges::any_of(app.chats, [&](const ChatSession& chat)
 		    { return chat.execution_host_id == host_id &&
@@ -101,7 +103,7 @@ namespace
 		              chat.remote_restart_pending); }))
 			return true;
 		if (std::ranges::any_of(app.acp_sessions, [&](const auto& session)
-		    { return session != nullptr && chat_uses_host(session->chat_id) &&
+		    { return session != nullptr && (session->process_execution_host_id == host_id || chat_uses_host(session->chat_id)) &&
 		             (session->running || session->remote_stop_pending ||
 		              session->remote_stop_unconfirmed || session->reconnect_pending ||
 		              session->recovering_remote_turn || session->recovering_remote_process); }))
@@ -530,6 +532,11 @@ void UamQueryHandler::HandleRemoveRemoteHost(CefRefPtr<CefBrowser> browser,
 	if (g_remote_install_tokens.contains(id))
 	{
 		cb->Failure(409, "Wait for the remote helper install to finish before removing it.");
+		return;
+	}
+	if (HostHasActiveRuntimeWork(m_app, id))
+	{
+		cb->Failure(409, "Wait for active remote work to finish before removing this host.");
 		return;
 	}
 	if (std::ranges::any_of(m_app.chats, [&id](const ChatSession& chat)

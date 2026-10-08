@@ -285,6 +285,38 @@ std::string ProviderModelCatalogService::GetConfiguredOpenCodeDefaultModel() con
 }
 
 
+void ProviderModelCatalogService::SetExecutionHostContext(const std::vector<ExecutionHost>& hosts)
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	m_connection_key_by_host_id.clear();
+	for (const ExecutionHost& host : hosts)
+	{
+		if (host.id.empty() || host.id == "local" || host.transport != "ssh") continue;
+		const nlohmann::json connection = nlohmann::json::array({host.id, host.transport,
+		    host.ssh_alias, host.platform, host.architecture, host.runner_version,
+		    host.runner_protocol_version, host.runner_directory, host.instruction_file});
+		m_connection_key_by_host_id[host.id] = StableCatalogFingerprint(connection.dump());
+	}
+	for (auto scope = m_scope_by_catalog_key.begin(); scope != m_scope_by_catalog_key.end();)
+	{
+		const nlohmann::json& metadata = scope->second;
+		const std::string current_key = CatalogKey(metadata.value("providerId", ""),
+		    metadata.value("workspaceDirectory", ""), metadata.value("executionHostId", "local"));
+		if (current_key == scope->first) { ++scope; continue; }
+		m_pending_discovery_provider_ids.erase(scope->first);
+		m_refresh_attempted_provider_ids.erase(scope->first);
+		m_refresh_error_by_provider_id.erase(scope->first);
+		scope = m_scope_by_catalog_key.erase(scope);
+	}
+}
+
+std::string ProviderModelCatalogService::CaptureScopeKey(const std::string& provider_id,
+	std::string_view workspace_directory, std::string_view execution_host_id) const
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	return CatalogKey(provider_id, workspace_directory, execution_host_id);
+}
+
 std::string ProviderModelCatalogService::CatalogKey(const std::string& provider_id,
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
@@ -295,7 +327,12 @@ std::string ProviderModelCatalogService::CatalogKey(const std::string& provider_
 	    uam::strings::Trim(std::string(execution_host_id)), "local");
 	const std::string workspace = NormalizedCatalogWorkspace(workspace_directory, host);
 	std::string key = workspace.empty() ? provider_key : provider_key + "-workspace-" + StableCatalogFingerprint(workspace);
-	if (host != "local") key += "-host-" + StableCatalogFingerprint(host);
+	if (host != "local")
+	{
+		const auto connection = m_connection_key_by_host_id.find(host);
+		if (connection == m_connection_key_by_host_id.end()) return {};
+		key += "-host-" + StableCatalogFingerprint(host) + "-connection-" + connection->second;
+	}
 	return key;
 }
 
@@ -331,7 +368,8 @@ bool ProviderModelCatalogService::WritePersistentCatalogs() const
 
 bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& provider_id,
 	const nlohmann::json& models, std::string_view workspace_directory,
-	const nlohmann::json& config_options, std::string_view execution_host_id)
+	const nlohmann::json& config_options, std::string_view execution_host_id,
+	std::optional<std::string_view> expected_scope_key)
 {
 	const bool has_models = models.is_array() && !models.empty();
 	const bool has_config_options = config_options.is_array() && !config_options.empty();
@@ -346,6 +384,7 @@ bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& pr
 	    uam::strings::Trim(std::string(execution_host_id)), "local");
 	const std::string workspace = NormalizedCatalogWorkspace(workspace_directory, host);
 	const std::string key = CatalogKey(normalized_provider_id, workspace, host);
+	if (key.empty() || (expected_scope_key.has_value() && (expected_scope_key->empty() || *expected_scope_key != key))) return false;
 	m_scope_by_catalog_key[key] = CatalogScope(normalized_provider_id, workspace, host);
 	m_pending_discovery_provider_ids.erase(key);
 	m_refresh_attempted_provider_ids.insert(key);
@@ -385,10 +424,12 @@ bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& pr
 }
 
 void ProviderModelCatalogService::RememberRefreshFailure(const std::string& provider_id,
-	std::string error, std::string_view workspace_directory, std::string_view execution_host_id)
+	std::string error, std::string_view workspace_directory, std::string_view execution_host_id,
+	std::optional<std::string_view> expected_scope_key)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty() || (expected_scope_key.has_value() && (expected_scope_key->empty() || *expected_scope_key != key))) return;
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
 	m_pending_discovery_provider_ids.erase(key);
 	m_refresh_error_by_provider_id[key] = uam::strings::Trim(std::move(error));
@@ -400,6 +441,8 @@ nlohmann::json ProviderModelCatalogService::GetCatalogSnapshot(const std::string
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
 	const std::string key = CatalogKey(provider_id, workspace_directory, host);
+	if (key.empty()) return {{"availableModels", nlohmann::json::array()}, {"configOptions", nlohmann::json::array()}, {"modelsLoading", false}, {"modelRefreshError", ""}};
+
 	nlohmann::json models = nlohmann::json::array();
 	nlohmann::json options = nlohmann::json::array();
 	if (const nlohmann::json* catalog = uam::nlohmann_json::FindObjectField(m_persistent_catalogs, key))
@@ -422,6 +465,7 @@ nlohmann::json ProviderModelCatalogService::GetCachedProviderModels(const std::s
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty()) return nlohmann::json::array();
 	const auto entry = m_persistent_catalogs.find(key);
 	if (entry == m_persistent_catalogs.end() || !entry->is_object())
 	{
@@ -435,7 +479,9 @@ nlohmann::json ProviderModelCatalogService::GetCachedProviderConfigOptions(const
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
-	const auto entry = m_persistent_catalogs.find(CatalogKey(provider_id, workspace_directory, execution_host_id));
+	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty()) return nlohmann::json::array();
+	const auto entry = m_persistent_catalogs.find(key);
 	if (entry == m_persistent_catalogs.end() || !entry->is_object()) return nlohmann::json::array();
 	const nlohmann::json* options = uam::nlohmann_json::FindArrayField(*entry, "configOptions");
 	return options == nullptr ? nlohmann::json::array() : *options;
@@ -445,7 +491,9 @@ std::string ProviderModelCatalogService::GetProviderRefreshError(const std::stri
 	std::string_view workspace_directory, std::string_view execution_host_id) const
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
-	const auto error = m_refresh_error_by_provider_id.find(CatalogKey(provider_id, workspace_directory, execution_host_id));
+	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty()) return {};
+	const auto error = m_refresh_error_by_provider_id.find(key);
 	return error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second;
 }
 
@@ -453,7 +501,8 @@ nlohmann::json ProviderModelCatalogService::GetCatalogScopes() const
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	nlohmann::json scopes = nlohmann::json::array();
-	for (const auto& [key, scope] : m_scope_by_catalog_key) scopes.push_back(scope);
+	for (const auto& [key, scope] : m_scope_by_catalog_key)
+		if (!key.empty() && key == CatalogKey(scope.value("providerId", ""), scope.value("workspaceDirectory", ""), scope.value("executionHostId", "local"))) scopes.push_back(scope);
 	return scopes;
 }
 
@@ -463,6 +512,7 @@ bool ProviderModelCatalogService::BeginDiscoveryIfStale(const std::string& provi
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 	const std::string key = CatalogKey(normalized, workspace_directory, execution_host_id);
+	if (key.empty()) return false;
 	m_scope_by_catalog_key[key] = CatalogScope(normalized, workspace_directory, execution_host_id);
 	const auto entry = m_persistent_catalogs.find(key);
 	const nlohmann::json* models = entry == m_persistent_catalogs.end() ? nullptr : uam::nlohmann_json::FindArrayField(entry.value(), "models");
@@ -482,6 +532,7 @@ bool ProviderModelCatalogService::BeginDiscovery(const std::string& provider_id,
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty()) return false;
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
 	if (m_pending_discovery_provider_ids.contains(key)) return false;
 	m_pending_discovery_provider_ids.insert(key);
@@ -507,6 +558,7 @@ void ProviderModelCatalogService::MarkDiscoveryLaunchStarted(const std::string& 
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty()) return;
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
 	m_refresh_attempted_provider_ids.insert(key);
 	m_refresh_error_by_provider_id.erase(key);
@@ -517,6 +569,7 @@ void ProviderModelCatalogService::RememberDiscoveryCompatibilityBlocked(const st
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty()) return;
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
 	m_pending_discovery_provider_ids.insert(key);
 	m_refresh_error_by_provider_id[key] = uam::strings::Trim(std::move(error));
