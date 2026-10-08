@@ -163,4 +163,21 @@ describe('startup native history chooser', () => {
     expect(requests).toHaveLength(index + 1)
   })
 
+  it('keeps a discarded selected import visible when publication completes without saving it', async () => {
+    useAppStore.setState({ startupNativeImports: page('scan-1', ['one']) })
+    mount(); await answer(0, page('scan-1', ['one']))
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.click())
+    await click('Import selected'); await answer(1, { ...page('scan-1', []), phase: 'importing' })
+    act(() => useAppStore.setState({ startupNativeImports: { ...page('scan-1', []), phase: 'complete' } }))
+    await answer(2, { ...page('scan-1', []), phase: 'complete' })
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('no longer available')
+    expect(document.body.querySelector('[role="alert"]')?.textContent).not.toContain('retry')
+    expect(button('Import selected').disabled).toBe(true)
+    expect(requests).toHaveLength(3)
+    await click('Later')
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(requests).toHaveLength(3)
+  })
+
 })

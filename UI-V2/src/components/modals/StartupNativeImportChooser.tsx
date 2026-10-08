@@ -58,6 +58,12 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (previous?.isConnected && (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement))) previous.focus()
     }
   }, [])
+  function publicationFailure(data: StartupNativeImportPage): string {
+    const pending = publication.current
+    if (data.importedCount - pending.importedCount >= pending.selectedIds.length) return ''
+    if (data.totalCount === 0) return 'Some selected chats could not be imported. They are no longer available.'
+    return 'Some selected chats could not be imported. Review the remaining history to retry.'
+  }
   async function load(nextOffset: number, afterPublication = false) {
     if (busyRef.current) return
     const request = ++requestSequence.current
@@ -77,8 +83,9 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       }
       if (afterPublication && data.phase !== 'importing') {
         setAwaitingPublication(false)
-        if (data.phase === 'ready' && data.importedCount - publication.current.importedCount < publication.current.selectedIds.length) setError('Some selected chats could not be imported. Select them to retry.')
-        if (data.phase === 'complete' && data.totalCount === 0) closeRef.current()
+        const failure = publicationFailure(data)
+        if (failure) setError(failure)
+        else if (data.phase === 'complete' && data.totalCount === 0) closeRef.current()
       }
     } catch (failure) { if (owns(request)) setError(failure instanceof Error ? failure.message : 'History could not be loaded.') }
     finally { if (owns(request)) { busyRef.current = false; setBusy(false) } }
@@ -110,7 +117,11 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       data.errors.forEach((message) => console.warn(`[Startup history] ${message}`))
       setPage(data); setOffset(0); setSelected([])
       if (importSelected && data.phase !== 'complete') setAwaitingPublication(true)
-      if (data.phase === 'complete' && data.totalCount === 0) closeRef.current()
+      if (data.phase === 'complete' && data.totalCount === 0) {
+        const failure = importSelected ? publicationFailure(data) : ''
+        if (failure) setError(failure)
+        else closeRef.current()
+      }
     } catch (failure) { if (owns(request)) setError(failure instanceof Error ? failure.message : 'History decisions could not be saved.') }
     finally { if (owns(request)) { busyRef.current = false; setBusy(false) } }
   }
