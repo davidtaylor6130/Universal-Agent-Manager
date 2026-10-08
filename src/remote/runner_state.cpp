@@ -1471,9 +1471,9 @@ namespace uam::remote
 					}
 				}
 				else ProcessService().TerminateStdioProcess(process.fields, true);
+				process.exit_code.store(exit_code, std::memory_order_release);
+				process.exited.store(true, std::memory_order_release);
 			}
-			process.exited.store(true, std::memory_order_release);
-			process.exit_code.store(exit_code, std::memory_order_release);
 			return ProcessSuccess(request, {{"sessionId", session_id}, {"running", false}, {"stopOutcome", outcome}, {"exitCode", exit_code}});
 		}
 
@@ -1487,6 +1487,8 @@ namespace uam::remote
 			std::uintmax_t stderr_cursor = 0;
 			std::uint64_t input_sequence = 0;
 			bool output_pending = false;
+			bool exited = false;
+			int exit_code = -1;
 			{
 				std::scoped_lock lock(process.mutex);
 				if (!process.spool_error.empty()) output_error = process.spool_error;
@@ -1534,11 +1536,11 @@ namespace uam::remote
 				                 SpoolHasUnread(process.stderr_spool, stderr_cursor,
 				                                 process.stderr_base_cursor);
 				input_sequence = process.input_sequence;
+				exited = process.exited.load(std::memory_order_acquire);
+				exit_code = process.exit_code.load(std::memory_order_acquire);
 			}
 			if (!output_error.empty())
 				return ProcessError(request, "read_failed", std::move(output_error));
-			const bool exited = process.exited.load(std::memory_order_acquire);
-			const int exit_code = process.exit_code.load(std::memory_order_acquire);
 			return ProcessSuccess(request,
 			                      {{"sessionId", session_id},
 			                       {"running", !exited || output_pending},
