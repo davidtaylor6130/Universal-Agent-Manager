@@ -1322,7 +1322,7 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('rescans chats from the folder context menu', () => {
+  it('opens native history review from the folder context menu', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -1333,7 +1333,7 @@ describe('FolderTree', () => {
         ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }))
     })
     const rescan = Array.from(document.body.querySelectorAll('button')).find((button) =>
-      button.textContent?.includes('Rescan chats')
+      button.textContent?.includes('Review native chats')
     )
     act(() => rescan?.click())
 
@@ -1343,7 +1343,7 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('offers the same rescan action for a remote workspace', () => {
+  it('offers the same native history review for a remote workspace', () => {
     useAppStore.setState({
       executionHosts: [
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
@@ -1359,7 +1359,7 @@ describe('FolderTree', () => {
 
     act(() => host.querySelector('[data-testid="folder-header-project"]')
       ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review native chats'))
     act(() => rescan?.click())
 
     expect(useAppStore.getState().rescanFolderChats).toHaveBeenCalledWith('project')
@@ -1368,7 +1368,7 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('keeps a failed rescan visible instead of looking empty', async () => {
+  it('keeps a failed native history review visible instead of looking empty', async () => {
     useAppStore.setState({ rescanFolderChats: vi.fn(() => Promise.resolve(false)) })
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -1376,10 +1376,10 @@ describe('FolderTree', () => {
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector('[data-testid="folder-header-project"]')
       ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review native chats'))
     await act(async () => { rescan?.click(); await Promise.resolve() })
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan Project')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not open native history for Project')
     const dismiss = host.querySelector<HTMLButtonElement>('[aria-label="Dismiss folder action error"]')
     expect(dismiss).not.toBeNull()
     act(() => dismiss?.click())
@@ -1387,9 +1387,9 @@ describe('FolderTree', () => {
 
     act(() => host.querySelector('[data-testid="folder-header-project"]')
       ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-    const retry = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Rescan chats'))
+    const retry = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review native chats'))
     await act(async () => { retry?.click(); await Promise.resolve() })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan Project')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not open native history for Project')
 
 
     act(() => root.unmount())

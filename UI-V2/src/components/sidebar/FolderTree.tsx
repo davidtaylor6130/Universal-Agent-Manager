@@ -726,7 +726,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onRescan={() => {
         setActionError('')
         void rescanFolderChats(folder.id).then((rescanned) => {
-          if (!rescanned) setActionError(`Could not rescan ${folder.name}. Try again.`)
+          if (!rescanned) setActionError(`Could not open native history for ${folder.name}. Try again.`)
         })
       }}
       onEditNameChange={setEditFolderName}
@@ -1959,7 +1959,7 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
-          <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Rescan chats" onClick={() => { setMenuPos(null); onRescan() }} />
+          <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" onClick={() => { setMenuPos(null); onRescan() }} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
           <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
