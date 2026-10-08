@@ -16,6 +16,7 @@
 @interface UamApplication : NSApplication <CefAppProtocol>
 {
 	BOOL handlingSendEvent_;
+	BOOL pickerQuitPending_;
 }
 @end
 
@@ -34,11 +35,13 @@
 /// AppKit termination exits directly; let CEF close first so Application::Shutdown runs.
 - (void)terminate:(id)sender
 {
+	if (pickerQuitPending_) return;
 	if ([[self modalWindow] isKindOfClass:[NSOpenPanel class]])
 	{
+		pickerQuitPending_ = YES;
 		[(NSOpenPanel*)[self modalWindow] cancel:sender];
 		// Unwind BrowsePath and its CEF query callback before closing the browser.
-		[self performSelector:@selector(terminate:) withObject:sender afterDelay:0];
+		[self performSelector:@selector(completePickerQuit:) withObject:nil afterDelay:0];
 		return;
 	}
 	NSWindow* window = [self mainWindow];
@@ -55,6 +58,12 @@
 		}
 	}
 	if (window != nil) [window performClose:sender];
+}
+
+- (void)completePickerQuit:(id)sender
+{
+	pickerQuitPending_ = NO;
+	[self terminate:sender];
 }
 
 - (void)sendEvent:(NSEvent*)event

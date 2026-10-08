@@ -9,6 +9,7 @@
 
 @interface UamCloseProbeWindow : NSWindow
 @property(nonatomic, assign) BOOL closeRequested;
+@property(nonatomic, assign) NSUInteger closeRequestCount;
 @end
 
 @implementation UamCloseProbeWindow
@@ -16,6 +17,7 @@
 {
 	(void)sender;
 	self.closeRequested = YES;
+	++self.closeRequestCount;
 }
 @end
 
@@ -41,7 +43,7 @@ int main(int argc, char* argv[])
 		const bool picker_probe = argc == 2 && std::string_view(argv[1]).find("--picker-") == 0;
 		if (!terminate_probe && !picker_probe)
 		{
-			for (NSString* argument in @[@"--picker-folder-terminate", @"--picker-file-terminate", @"--picker-folder-keyboard", @"--picker-file-keyboard", @"--picker-folder-caps-keyboard", @"--picker-file-caps-keyboard", @"--picker-folder-cancel", @"--picker-file-cancel"])
+			for (NSString* argument in @[@"--picker-folder-terminate", @"--picker-file-terminate", @"--picker-folder-keyboard", @"--picker-file-keyboard", @"--picker-folder-caps-keyboard", @"--picker-file-caps-keyboard", @"--picker-folder-repeat-terminate", @"--picker-file-repeat-terminate", @"--picker-folder-repeat-keyboard", @"--picker-file-repeat-keyboard", @"--picker-folder-cancel", @"--picker-file-cancel"])
 			{
 				NSTask* task = [[NSTask alloc] init];
 				task.launchPath = [NSString stringWithUTF8String:argv[0]];
@@ -105,6 +107,7 @@ int main(int argc, char* argv[])
 			const bool directory = std::string_view(argv[1]).find("folder") != std::string_view::npos;
 			const bool keyboard = std::string_view(argv[1]).find("keyboard") != std::string_view::npos;
 			const bool cancel = std::string_view(argv[1]).find("cancel") != std::string_view::npos;
+			const bool repeat = std::string_view(argv[1]).find("repeat") != std::string_view::npos;
 			__block BOOL saw_picker = NO;
 			__block BOOL timed_out = NO;
 			__block BOOL closed_inside_modal = NO;
@@ -114,6 +117,16 @@ int main(int argc, char* argv[])
 				if (cancel) [(NSOpenPanel*)application.modalWindow cancel:nil];
 				else if (keyboard) [application postEvent:quit atStart:NO];
 				else [application terminate:nil];
+				if (repeat && !keyboard)
+				{
+					[application terminate:nil];
+					[application terminate:nil];
+				}
+				if (repeat && keyboard)
+				{
+					[application postEvent:quit atStart:NO];
+					[application postEvent:quit atStart:NO];
+				}
 				closed_inside_modal = window.closeRequested;
 			}];
 			NSTimer* watchdog = [NSTimer timerWithTimeInterval:2.0 repeats:NO block:^(NSTimer*)
@@ -128,9 +141,19 @@ int main(int argc, char* argv[])
 			const bool accepted = uam::platform::BrowsePath(directory, std::filesystem::temp_directory_path(), &selected, &error);
 			[request invalidate];
 			[watchdog invalidate];
+			if (repeat)
+			{
+				// A second Quit can arrive in the query callback before default-mode close.
+				[application terminate:nil];
+				closed_inside_modal = closed_inside_modal || window.closeRequested;
+			}
 			[[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
 			const BOOL expected_close = cancel ? NO : YES;
-			if (!saw_picker || timed_out || closed_inside_modal || accepted || !selected.empty() || !error.empty() || window.closeRequested != expected_close) return 16;
+			if (!saw_picker || timed_out || closed_inside_modal || accepted || !selected.empty() || !error.empty() || window.closeRequested != expected_close)
+			{
+				std::fprintf(stderr, "picker=%d timeout=%d inside=%d accepted=%d close=%d count=%lu\n", saw_picker, timed_out, closed_inside_modal, accepted, window.closeRequested, static_cast<unsigned long>(window.closeRequestCount));
+				return 16;
+			}
 			std::puts("picker-close-routing-returned");
 		}
 		else if (terminate_probe)
