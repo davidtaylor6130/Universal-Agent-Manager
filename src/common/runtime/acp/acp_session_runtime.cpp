@@ -146,6 +146,8 @@ namespace uam
 		bool DrainPendingRemoteStopStdout(AppState& app, PendingAcpRemoteStop& pending, CefRefPtr<CefBrowser> browser)
 		{
 			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
+			// A replacement session cannot consume output from the old Stop proxy.
+			if (session != nullptr && !session->remote_stop_pending) session = nullptr;
 			ChatSession* chat = ChatDomainService().FindChatById(app, pending.chat_id);
 			std::array<char, 16384> buffer{};
 			bool more = true;
@@ -3772,6 +3774,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(pending);
 
 			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
+			if (session != nullptr && !session->remote_stop_pending)
+			{
+				stop = app.pending_acp_remote_stops.erase(stop);
+				changed = true;
+				continue;
+			}
 			ChatSession* chat = ChatDomainService().FindChatById(app, pending.chat_id);
 			if (session != nullptr && session->remote_stop_pending && !pending.stderr_tail.empty())
 				acp_detail::AppendRecentStderr(*session, pending.stderr_tail);

@@ -3650,3 +3650,60 @@ UAM_TEST(RemoteStopProjectsAndPersistsTheFinalUnterminatedProviderMessage)
 	}
 #endif
 }
+
+UAM_TEST(RemoteStopOutputCannotChangeTheReplacementSessionDuringPollOrShutdown)
+{
+#if !defined(_WIN32) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const bool shutdown : {false, true})
+	{
+		TempDir temp("uam-stop-replacement-output");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+		chat.execution_host_id = "ssh-fixture";
+		Message assistant;
+		assistant.role = MessageRole::Assistant;
+		assistant.content = "Replacement answer.";
+		chat.messages.push_back(assistant);
+		app.chats.push_back(chat);
+		const fs::path tail = temp.root / "old-proxy.jsonl";
+		const fs::path finished = temp.root / "old-proxy-finished";
+		UAM_ASSERT(uam::io::WriteTextFile(tail, R"({"method":"item/agentMessage/delta","params":{"itemId":"old-stop","delta":"Old provider tail."}})" "\n"));
+		std::unique_ptr<uam::AcpSessionState> original = std::make_unique<uam::AcpSessionState>();
+		original->chat_id = chat.id;
+		original->running = true;
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*original, temp.root, {"/bin/sh", "-c", "IFS= read -r line; cat \"$1\"; printf done > \"$2\"", "fixture", tail.string(), finished.string()}, &error));
+		app.acp_sessions.push_back(std::move(original));
+		UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		app.acp_sessions.clear();
+		std::unique_ptr<uam::AcpSessionState> replacement = std::make_unique<uam::AcpSessionState>();
+		replacement->chat_id = chat.id;
+		replacement->provider_id = chat.provider_id;
+		replacement->protocol_kind = "codex-app-server";
+		replacement->session_ready = true;
+		replacement->processing = true;
+		replacement->current_assistant_message_index = 0;
+		app.acp_sessions.push_back(std::move(replacement));
+		app.chats.front().remote_turn_reconnect_pending = true;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (!fs::exists(finished) && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		UAM_ASSERT(fs::exists(finished));
+		if (shutdown) uam::FinalizePendingAcpRemoteStopsForExit(app);
+		else
+		{
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+				(void)uam::PollAllAcpSessions(app);
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT(app.acp_sessions.front()->session_ready);
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), chat.messages.size());
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, assistant.content);
+		UAM_ASSERT(app.acp_sessions.front()->stdout_buffer.empty());
+		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
+		UAM_ASSERT_EQ(app.acp_sessions.front()->stop_outcome, uam::platform::ProcessStopOutcome::Unknown);
+	}
+#endif
+}
