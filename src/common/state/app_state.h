@@ -709,8 +709,6 @@ namespace uam
 		std::filesystem::path workspace_root;
 		std::optional<ExecutionHost> remote_host;
 		std::string remote_workspace;
-		std::filesystem::path native_history_chats_dir;
-		std::vector<std::string> native_history_files_before;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::shared_ptr<AsyncMemoryExtractionState> extraction_state;
 		std::unique_ptr<std::jthread> worker;

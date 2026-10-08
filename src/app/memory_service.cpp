@@ -1052,65 +1052,6 @@ namespace
 		return out.str();
 	}
 
-	std::vector<std::string> SnapshotJsonFiles(const fs::path& directory)
-	{
-		std::vector<std::string> files;
-		if (directory.empty())
-		{
-			return files;
-		}
-
-		if (!uam::paths::IsDirectoryNoThrow(directory))
-		{
-			return files;
-		}
-
-		std::error_code ec;
-		for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec))
-		{
-			const fs::directory_entry& item = *it;
-			if (!uam::paths::IsRegularFileWithExtensionNoThrow(item, ".json"))
-			{
-				continue;
-			}
-			files.push_back(uam::paths::Utf8PathString(item.path().filename()));
-		}
-		std::ranges::sort(files);
-		return files;
-	}
-
-	bool NativeHistoryFileLooksLikeMemoryWorkerChat(const fs::path& path)
-	{
-		const std::string text = uam::io::ReadTextFile(path);
-		return uam::strings::Contains(text, kMemoryWorkerPromptPrefix);
-	}
-
-	void RemoveNewMemoryWorkerNativeHistoryFiles(const uam::AsyncMemoryExtractionTask& task)
-	{
-		if (task.native_history_chats_dir.empty())
-		{
-			return;
-		}
-
-		const std::vector<std::string> after = SnapshotJsonFiles(task.native_history_chats_dir);
-		for (const std::string& file_name : after)
-		{
-			if (std::ranges::binary_search(task.native_history_files_before, file_name))
-			{
-				continue;
-			}
-
-			const fs::path candidate = task.native_history_chats_dir / file_name;
-			if (!NativeHistoryFileLooksLikeMemoryWorkerChat(candidate))
-			{
-				continue;
-			}
-
-			std::error_code ec;
-			uam::paths::RemoveFileNoThrow(candidate, &ec);
-		}
-	}
-
 	bool StartColdMemoryPreparationTask(uam::AppState& app, const ChatSession& chat, int start_message_index, std::string preflight_error)
 	{
 		uam::AsyncMemoryExtractionTask task;
@@ -1249,14 +1190,6 @@ namespace
 		task.workspace_root = workspace_root;
 		task.remote_host = remote_host;
 		task.remote_workspace = remote_workspace;
-		if (!remote_host && ProviderRuntime::UsesNativeOverlayHistory(*worker_provider))
-		{
-			ChatSession worker_chat = chat;
-			worker_chat.provider_id = worker_provider->id;
-			worker_chat.workspace_directory = uam::paths::Utf8PathString(workspace_root);
-			task.native_history_chats_dir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, worker_chat);
-			task.native_history_files_before = SnapshotJsonFiles(task.native_history_chats_dir);
-		}
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		task.extraction_state = std::make_shared<uam::AsyncMemoryExtractionState>();
 		task.state->launch_time = std::chrono::steady_clock::now();
@@ -1763,7 +1696,6 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		}
 
 		uam::StopAsyncMemoryExtractionWorker(task);
-		RemoveNewMemoryWorkerNativeHistoryFiles(task);
 		auto requeue_completed_task = [&app, &task]
 		{
 			uam::QueuedMemoryExtractionTask queued;
@@ -2015,7 +1947,6 @@ void MemoryService::StopMemoryTasks(uam::AppState& app)
 	for (uam::AsyncMemoryExtractionTask& task : app.memory_extraction_tasks)
 	{
 		uam::StopAsyncMemoryExtractionWorker(task);
-		RemoveNewMemoryWorkerNativeHistoryFiles(task);
 		task.state.reset();
 	}
 	app.memory_extraction_tasks.clear();
