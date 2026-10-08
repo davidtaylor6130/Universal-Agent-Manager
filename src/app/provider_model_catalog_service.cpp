@@ -1,5 +1,6 @@
 #include "provider_model_catalog_service.h"
 
+#include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_runtime.h"
@@ -132,7 +133,8 @@ namespace
 		if (execution_host_id.empty() || execution_host_id == "local")
 			return NormalizedWorkspace(workspace_directory);
 		std::string workspace = uam::strings::Trim(std::string(workspace_directory));
-		std::ranges::replace(workspace, '\\', '/');
+		if (uam::execution_hosts::IsAbsoluteRemotePath("windows", workspace))
+			std::ranges::replace(workspace, '\\', '/');
 		while (workspace.size() > 1 && workspace.back() == '/') workspace.pop_back();
 		return workspace;
 	}

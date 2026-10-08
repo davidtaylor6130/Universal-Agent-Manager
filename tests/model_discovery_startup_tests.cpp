@@ -309,3 +309,63 @@ UAM_TEST(StartupModelDiscoverySkipsUnavailableCliAndNeverPreemptsVersionCheck)
 	UAM_ASSERT(fixture.app.runtime_cli_versions_by_provider_id.empty());
 	fixture.app.runtime_cli_version_check_task.running = false;
 }
+
+UAM_TEST(StartupModelDiscoveryPreservesRemoteLinuxLiteralBackslashesInScopeAndLaunch)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.folders.clear();
+	ExecutionHost host;
+	host.id = "literal-path-host";
+	host.transport = "ssh";
+	host.platform = "linux";
+	host.runner_status = "ready";
+	fixture.app.settings.execution_hosts.push_back(host);
+	const std::vector<std::string> paths = {"/srv/Project\\literal", "/srv/Project/literal"};
+	for (std::size_t index = 0; index < paths.size(); ++index)
+	{
+		ChatFolder folder{"literal-" + std::to_string(index), "Remote", paths[index], false};
+		folder.execution_host_id = host.id;
+		fixture.app.folders.push_back(folder);
+	}
+	const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
+	UAM_ASSERT_EQ(scopes.size(), std::size_t{2});
+	UAM_ASSERT_EQ(scopes[0].workspace_directory, paths[0]);
+	UAM_ASSERT_EQ(scopes[1].workspace_directory, paths[1]);
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", host.id)].checked = true;
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", host.id)].supported = true;
+	uam::StartupModelDiscoveryService service(fixture.Launcher());
+	service.Initialize(fixture.app);
+	UAM_ASSERT(service.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
+	UAM_ASSERT_EQ(fixture.launched[0].workspace_directory, paths[0]);
+	UAM_ASSERT_EQ(fixture.launched[1].workspace_directory, paths[1]);
+}
+
+UAM_TEST(ModelCatalogSeparatesRemotePosixLiteralBackslashesAndPreservesWindowsAliases)
+{
+	StartupDiscoveryFixture fixture;
+	uam::ProviderModelCatalogService& catalog = *fixture.app.provider_model_catalog;
+	const std::string literal = "/srv/Project\\literal";
+	const std::string nested = "/srv/Project/literal";
+	UAM_ASSERT(catalog.BeginDiscovery("codex-cli", literal, "remote-a"));
+	UAM_ASSERT(!catalog.IsDiscoveryPending("codex-cli", nested, "remote-a"));
+	UAM_ASSERT(catalog.BeginDiscovery("codex-cli", nested, "remote-a"));
+	UAM_ASSERT(catalog.RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "literal-model"}}}), literal, nlohmann::json::array(), "remote-a"));
+	UAM_ASSERT(catalog.IsDiscoveryPending("codex-cli", nested, "remote-a"));
+	UAM_ASSERT(catalog.RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "nested-model"}}}), nested, nlohmann::json::array(), "remote-a"));
+	UAM_ASSERT_EQ(catalog.GetCachedProviderModels("codex-cli", literal, "remote-a")[0].value("id", ""), std::string("literal-model"));
+	UAM_ASSERT_EQ(catalog.GetCachedProviderModels("codex-cli", nested, "remote-a")[0].value("id", ""), std::string("nested-model"));
+	UAM_ASSERT(catalog.GetCachedProviderModels("codex-cli", literal, "remote-b").empty());
+	for (const std::pair<std::string, std::string>& paths : {
+	    std::pair<std::string, std::string>{"C:\\Project\\", "C:/Project"},
+	    std::pair<std::string, std::string>{"\\\\server\\share\\Project", "//server/share/Project"}})
+	{
+		UAM_ASSERT(catalog.RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "windows-model"}}}), paths.first, nlohmann::json::array(), "windows-host"));
+		UAM_ASSERT_EQ(catalog.GetCachedProviderModels("codex-cli", paths.second, "windows-host")[0].value("id", ""), std::string("windows-model"));
+	}
+	// Reload persisted scope keys rather than relying only on the in-memory cache.
+	uam::ProviderModelCatalogService reloaded;
+	reloaded.Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+	UAM_ASSERT_EQ(reloaded.GetCachedProviderModels("codex-cli", literal, "remote-a")[0].value("id", ""), std::string("literal-model"));
+	UAM_ASSERT_EQ(reloaded.GetCachedProviderModels("codex-cli", nested, "remote-a")[0].value("id", ""), std::string("nested-model"));
+}

@@ -25,19 +25,21 @@ namespace uam
 			return strings::NonEmptyOrFallback(strings::Trim(id), "local");
 		}
 
-		std::string Workspace(const std::string& path, const std::string& host)
+		std::string Workspace(const AppState& app, const std::string& path, const std::string& host)
 		{
 			if (host == execution_hosts::kLocalHostId)
 				return paths::NormalizeExistingPath(paths::AbsolutePathNoThrow(path)).generic_string();
 			std::string normalized = strings::Trim(path);
-			std::ranges::replace(normalized, '\\', '/');
+			const ExecutionHost* execution_host = execution_hosts::Find(app.settings.execution_hosts, host);
+			if (execution_host != nullptr && strings::ToLowerAscii(execution_host->platform) == "windows")
+				std::ranges::replace(normalized, '\\', '/');
 			while (normalized.size() > 1 && normalized.back() == '/') normalized.pop_back();
 			return normalized;
 		}
 
 		std::string WorkspaceIdentity(const AppState& app, const std::string& path, const std::string& host_id)
 		{
-			const std::string normalized = Workspace(path, host_id);
+			const std::string normalized = Workspace(app, path, host_id);
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, host_id);
 			return host_id != execution_hosts::kLocalHostId && host != nullptr && strings::ToLowerAscii(host->platform) == "windows"
 			    ? strings::ToLowerAscii(normalized) : normalized;
@@ -65,7 +67,7 @@ namespace uam
 		{
 			if (strings::IsBlank(directory)) return;
 			ModelDiscoveryScope scope{provider_ids::NormalizeCliProviderAliasOrSelf(provider_id), {}, HostId(host_id)};
-			scope.workspace_directory = Workspace(directory, scope.execution_host_id);
+			scope.workspace_directory = Workspace(app, directory, scope.execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
 			if (provider == nullptr || !provider->supports_structured || scope.provider_id == provider_ids::kAntigravityCli || !RegisteredWorkspace(app, scope)) return;
 			if (std::ranges::find_if(scopes, [&](const ModelDiscoveryScope& existing) {
