@@ -3126,27 +3126,36 @@ UAM_TEST(RemoteBootstrapAbandonedUiResultRollsBackWithoutWaitingOnTheOwnerThread
 UAM_TEST(RemoteContextReadUsesTargetFilesAndRejectsUnsafeOrUnboundedInputs)
 {
 	TempDir temp("uam-remote-context");
-	uam::remote::RunnerState state;
-	const fs::path file = fs::canonical(temp.root) / "host instructions.md";
-	UAM_ASSERT(uam::io::WriteTextFile(file, "Host instructions\n"));
-	const auto read = [&state](const fs::path& path)
+	for (const std::pair<std::string, std::string>& names :
+	     std::vector<std::pair<std::string, std::string>>{{"ASCII workspace", "host instructions.md"}, {"Unicode café workspace", "host café instructions.md"}})
 	{
-		return uam::remote::HandleRunnerRequest({{"id", "context"}, {"type", "context.read"},
-		    {"path", uam::paths::Utf8PathString(path)}}, "4.9.0", &state);
-	};
-	UAM_ASSERT_EQ(read(file)["result"].value("text", ""), "Host instructions\n");
-	UAM_ASSERT(!read("relative.md").value("ok", true));
-	UAM_ASSERT(!read(temp.root / "missing.md").value("ok", true));
-	UAM_ASSERT(!read(temp.root).value("ok", true));
-	UAM_ASSERT(uam::io::WriteTextFile(file, std::string(256 * 1024 + 1, 'x')));
-	UAM_ASSERT_EQ(read(file)["error"].value("code", ""), "too_large");
-	UAM_ASSERT(uam::io::WriteTextFile(file, std::string("bad\0text", 8)));
-	UAM_ASSERT(!read(file).value("ok", true));
+		uam::remote::RunnerState state;
+		const fs::path workspace = fs::canonical(temp.root) / uam::paths::PathFromUtf8(names.first);
+		UAM_ASSERT(fs::create_directory(workspace));
+		const fs::path file = workspace / uam::paths::PathFromUtf8(names.second);
+		UAM_ASSERT(uam::io::WriteTextFile(file, "Host instructions\n"));
+		const auto read = [&state](const fs::path& path)
+		{
+			return uam::remote::HandleRunnerRequest({{"id", "context"}, {"type", "context.read"},
+			    {"path", uam::paths::Utf8PathString(path)}}, "4.9.0", &state);
+		};
+		UAM_ASSERT_EQ(read(file)["result"].value("text", ""), "Host instructions\n");
+		UAM_ASSERT(!read("relative.md").value("ok", true));
+		UAM_ASSERT(!read(temp.root / "missing.md").value("ok", true));
+		UAM_ASSERT(!read(temp.root).value("ok", true));
+		UAM_ASSERT(uam::io::WriteTextFile(file, std::string(256 * 1024 + 1, 'x')));
+		UAM_ASSERT_EQ(read(file)["error"].value("code", ""), "too_large");
+		UAM_ASSERT(uam::io::WriteTextFile(file, std::string("bad\0text", 8)));
+		UAM_ASSERT(!read(file).value("ok", true));
 #if !defined(_WIN32)
-	const fs::path link = temp.root / "linked.md";
-	fs::create_symlink(file, link);
-	UAM_ASSERT_EQ(read(link)["error"].value("code", ""), "unsafe_path");
+		const fs::path link = workspace / "linked.md";
+		fs::create_symlink(file, link);
+		UAM_ASSERT_EQ(read(link)["error"].value("code", ""), "unsafe_path");
+		const fs::path linked_directory = workspace / "linked directory";
+		fs::create_directory_symlink(workspace, linked_directory);
+		UAM_ASSERT_EQ(read(linked_directory / file.filename())["error"].value("code", ""), "unsafe_path");
 #endif
+	}
 }
 
 UAM_TEST(RemoteProjectMemoryReadsOnlyTheSelectedTargetAndUsesTheRecallBudget)
@@ -3207,31 +3216,39 @@ UAM_TEST(RemoteLinuxStartupIsReversibleIdempotentAndRollsBackFailedRegistration)
 UAM_TEST(RemoteProjectMemoryLibraryUsesTargetStorageAndRejectsEscapes)
 {
 	TempDir temp("uam-target-memory-library");
-	const fs::path workspace = fs::canonical(temp.root);
-	uam::remote::RunnerState state;
-	const std::string path = uam::paths::Utf8PathString(workspace);
-	const nlohmann::json draft = {{"category", "Lessons/User_Lessons"}, {"title", "Target lesson"},
-	    {"memory", "Only this host"}, {"evidence", "Fixture"}, {"confidence", "high"}, {"sourceChatId", "chat"}};
-	const nlohmann::json created = uam::remote::HandleRunnerRequest({{"id", "create"}, {"type", "memory.create"}, {"workspace", path}, {"draft", draft}}, "4.9.0", &state);
-	UAM_ASSERT(created.value("ok", false));
-	const std::string id = created["result"]["entry"].value("id", "");
-	UAM_ASSERT(!id.empty());
-	UAM_ASSERT(fs::exists(workspace / ".UAM" / uam::paths::PathFromUtf8(id)));
-	const nlohmann::json listed = uam::remote::HandleRunnerRequest({{"id", "list"}, {"type", "memory.list"}, {"workspace", path}}, "4.9.0", &state);
-	UAM_ASSERT(listed.value("ok", false));
-	UAM_ASSERT_EQ(listed["result"]["entries"].size(), 1U);
-	UAM_ASSERT_EQ(listed["result"]["entries"][0].value("preview", ""), "Only this host");
-	UAM_ASSERT(!uam::remote::HandleRunnerRequest({{"id", "escape"}, {"type", "memory.delete"}, {"workspace", path}, {"entryId", "../outside.md"}}, "4.9.0", &state).value("ok", true));
-	UAM_ASSERT(uam::remote::HandleRunnerRequest({{"id", "delete"}, {"type", "memory.delete"}, {"workspace", path}, {"entryId", id}}, "4.9.0", &state).value("ok", false));
-	UAM_ASSERT(!fs::exists(workspace / ".UAM" / uam::paths::PathFromUtf8(id)));
+	for (const std::string& workspace_name : {std::string("ASCII workspace"), std::string("Unicode café workspace")})
+	{
+		const fs::path workspace = fs::canonical(temp.root) / uam::paths::PathFromUtf8(workspace_name);
+		UAM_ASSERT(fs::create_directory(workspace));
+		uam::remote::RunnerState state;
+		const std::string path = uam::paths::Utf8PathString(workspace);
+		const nlohmann::json draft = {{"category", "Lessons/User_Lessons"}, {"title", "Target lesson"},
+		    {"memory", "Only this host"}, {"evidence", "Fixture"}, {"confidence", "high"}, {"sourceChatId", "chat"}};
+		const nlohmann::json created = uam::remote::HandleRunnerRequest({{"id", "create"}, {"type", "memory.create"}, {"workspace", path}, {"draft", draft}}, "4.9.0", &state);
+		UAM_ASSERT(created.value("ok", false));
+		const std::string id = created["result"]["entry"].value("id", "");
+		UAM_ASSERT(!id.empty());
+		UAM_ASSERT(fs::exists(workspace / ".UAM" / uam::paths::PathFromUtf8(id)));
+		const nlohmann::json listed = uam::remote::HandleRunnerRequest({{"id", "list"}, {"type", "memory.list"}, {"workspace", path}}, "4.9.0", &state);
+		UAM_ASSERT(listed.value("ok", false));
+		UAM_ASSERT_EQ(listed["result"]["entries"].size(), 1U);
+		UAM_ASSERT_EQ(listed["result"]["entries"][0].value("preview", ""), "Only this host");
+		UAM_ASSERT(!uam::remote::HandleRunnerRequest({{"id", "escape"}, {"type", "memory.delete"}, {"workspace", path}, {"entryId", "../outside.md"}}, "4.9.0", &state).value("ok", true));
+		UAM_ASSERT(uam::remote::HandleRunnerRequest({{"id", "delete"}, {"type", "memory.delete"}, {"workspace", path}, {"entryId", id}}, "4.9.0", &state).value("ok", false));
+		UAM_ASSERT(!fs::exists(workspace / ".UAM" / uam::paths::PathFromUtf8(id)));
 #if !defined(_WIN32)
-	const fs::path other = workspace / "other";
-	fs::create_directories(other);
-	fs::remove_all(workspace / ".UAM");
-	fs::create_directory_symlink(other, workspace / ".UAM");
-	UAM_ASSERT_EQ(uam::remote::HandleRunnerRequest({{"id", "linked"}, {"type", "memory.create"}, {"workspace", path}, {"draft", draft}}, "4.9.0", &state)["error"].value("code", ""), "unsafe_path");
-	UAM_ASSERT(fs::is_empty(other));
+		const fs::path linked_workspace = fs::canonical(temp.root) / uam::paths::PathFromUtf8("linked " + workspace_name);
+		fs::create_directory_symlink(workspace, linked_workspace);
+		UAM_ASSERT_EQ(uam::remote::HandleRunnerRequest({{"id", "linked-workspace"}, {"type", "memory.list"},
+		    {"workspace", uam::paths::Utf8PathString(linked_workspace)}}, "4.9.0", &state)["error"].value("code", ""), "unsafe_path");
+		const fs::path other = workspace / "other";
+		fs::create_directories(other);
+		fs::remove_all(workspace / ".UAM");
+		fs::create_directory_symlink(other, workspace / ".UAM");
+		UAM_ASSERT_EQ(uam::remote::HandleRunnerRequest({{"id", "linked"}, {"type", "memory.create"}, {"workspace", path}, {"draft", draft}}, "4.9.0", &state)["error"].value("code", ""), "unsafe_path");
+		UAM_ASSERT(fs::is_empty(other));
 #endif
+	}
 }
 
 UAM_TEST(RemoteTextWorkersUseOwnedPrivatePoliciesAndRejectUnknownProviders)

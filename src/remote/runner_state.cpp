@@ -630,8 +630,10 @@ namespace uam::remote
 			const std::filesystem::path root = workspace / ".UAM";
 			for (const std::string& category : uam::memory::SupportedCategories())
 			{
-				std::filesystem::path ancestor;
-				for (const std::filesystem::path& part : root / category)
+				// Root-name fragments such as C: and UNC server names are not absolute ancestors.
+				const std::filesystem::path category_path = root / category;
+				std::filesystem::path ancestor = category_path.root_path();
+				for (const std::filesystem::path& part : category_path.relative_path())
 				{
 					ancestor /= part;
 					const std::filesystem::file_status status = std::filesystem::symlink_status(ancestor, ec);
@@ -750,8 +752,9 @@ namespace uam::remote
 			if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !path.is_absolute())
 				return ProcessError(request, "invalid_request", "An absolute bounded context file path is required.");
 			std::error_code error;
-			std::filesystem::path ancestor;
-			for (const std::filesystem::path& part : path)
+			// Begin with the complete root so drive-relative and incomplete UNC names are never probed.
+			std::filesystem::path ancestor = path.root_path();
+			for (const std::filesystem::path& part : path.relative_path())
 			{
 				ancestor /= part;
 				if (std::filesystem::is_symlink(std::filesystem::symlink_status(ancestor, error)))
