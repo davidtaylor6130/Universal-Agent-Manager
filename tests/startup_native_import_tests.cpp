@@ -406,3 +406,151 @@ UAM_TEST(StartupNativeRemoteDecisionsAndPreparedPublicationRejectChangedConnecti
 	UAM_ASSERT(app.chats.empty());
 	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, "ses_prepared")));
 }
+
+UAM_TEST(StartupSelectedRemoteAliasesPreserveSingleNativeOwnerAcrossPreparationAndPublication)
+{
+	struct ImportCase
+	{
+		std::string directory;
+		std::string host;
+		std::string native_id;
+		bool duplicate;
+		bool tombstoned;
+		std::string platform = "linux";
+		std::string owner_directory = "/srv/Project";
+	};
+	const std::vector<ImportCase> cases = {
+	    {"/srv/Project/.", "runner", "ses_owned", true, false},
+	    {"/srv//Project", "runner", "ses_owned", true, false},
+	    {"/srv/Project/./", "runner", "ses_owned", true, false},
+	    {"/srv/Project/.", "runner", "ses_different", false, false},
+	    {"/srv/Project/.", "other-runner", "ses_owned", false, false},
+	    {"/srv/project", "runner", "ses_owned", false, false},
+	    {"/srv/Project\\literal", "runner", "ses_owned", false, false},
+	    {"/srv/Project/nested", "runner", "ses_owned", false, false},
+	    {"/srv/Project/link/..", "runner", "ses_owned", false, false},
+	    {"//srv/Project", "runner", "ses_owned", false, false},
+	    {"/srv/Project/.", "runner", "ses_declined", false, true},
+	    {"c:\\PROJECT\\.\\", "runner", "ses_owned", true, false, "windows", "C:/Project"},
+	    {"C:\\.", "runner", "ses_owned", true, false, "windows", "C:/"},
+	    {"\\\\SERVER\\share\\.", "runner", "ses_owned", true, false, "windows", "\\\\server\\share\\"},
+	    {"D:/", "runner", "ses_owned", false, false, "windows", "C:/"},
+	    {"\\\\other\\share", "runner", "ses_owned", false, false, "windows", "\\\\server\\share\\"}};
+	for (const int owner_timing : {0, 1, 2})
+	{
+		const bool publication_race = owner_timing == 1;
+		const bool disk_only = owner_timing == 2;
+		for (const ImportCase& item : cases)
+		{
+			TempDir temp("uam-selected-remote-alias");
+			uam::AppState app;
+			app.data_root = temp.root / "data";
+			for (const std::string host_id : {"runner", "other-runner"})
+			{
+				ExecutionHost host = StartupRemoteHost(host_id);
+				host.platform = item.platform;
+				app.settings.execution_hosts.push_back(host);
+			}
+			app.folders = {{"canonical", "Canonical", item.owner_directory, false, "runner"},
+			               {"legacy", "Legacy title", item.directory, false, item.host}};
+			UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+			const std::string folder_bytes = ChatFolderStore::Serialize(app.folders);
+			ChatSession owner = StartupRemoteHistory("runner", "canonical", item.owner_directory, "ses_owned");
+			owner.id = "chat-intentional-branch";
+			owner.parent_chat_id = "chat-parent";
+			owner.branch_root_chat_id = "chat-parent";
+			owner.branch_from_message_index = 3;
+			owner.created_at = "2026-01-01T00:00:00Z";
+			owner.updated_at = owner.created_at;
+			owner.messages.push_back({MessageRole::User, "Preserve existing branch"});
+			const std::string owner_bytes = uam::StateSerializer::SerializeSession(owner).dump();
+			const auto add_owner = [&]()
+			{
+				if (!disk_only) app.chats.push_back(owner);
+				UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+			};
+			if (!publication_race) add_owner();
+			ChatSession candidate = StartupRemoteHistory(item.host, "legacy", item.directory, item.native_id);
+			ChatHistorySyncService::LocalHistoryDiscovery discovery;
+			discovery.chats.push_back(candidate);
+			discovery.expected_hosts.emplace(item.host, *uam::execution_hosts::Find(app.settings.execution_hosts, item.host));
+			discovery.selected_folder_snapshots.emplace("legacy", app.folders.back());
+			const ChatHistorySyncService sync;
+			std::string tombstone_bytes;
+			if (item.tombstoned)
+			{
+				std::vector<std::string> added;
+				UAM_ASSERT(sync.AddNativeImportTombstones(app.data_root, {candidate}, added));
+				UAM_ASSERT_EQ(added.size(), std::size_t{1});
+				tombstone_bytes = uam::io::ReadTextFile(app.data_root / "native-import-tombstones.json");
+			}
+			ChatHistorySyncService::ImportResult result = sync.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
+			if (publication_race)
+			{
+				if (discovery.preparation.valid()) discovery.preparation.wait();
+				add_owner();
+			}
+			while (discovery.preparation.valid() || discovery.publication_sync.valid() || !discovery.chats.empty())
+			{
+				if (discovery.preparation.valid()) discovery.preparation.wait();
+				if (discovery.publication_sync.valid()) discovery.publication_sync.wait();
+				result.Merge(sync.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly));
+			}
+			UAM_ASSERT(result.success);
+			const int expected_imports = item.duplicate || item.tombstoned ? 0 : 1;
+			if (result.imported_count != expected_imports)
+				throw std::runtime_error("Remote ownership case " + item.directory + " timing " + std::to_string(owner_timing) + ": expected imports " + std::to_string(expected_imports) + ", got " + std::to_string(result.imported_count));
+			UAM_ASSERT_EQ(app.chats.size(), (disk_only ? std::size_t{0} : std::size_t{1}) + (item.duplicate || item.tombstoned ? std::size_t{0} : std::size_t{1}));
+			const ChatSession* retained = ChatDomainService().FindChatById(app, owner.id);
+			if (!disk_only)
+			{
+				UAM_ASSERT(retained != nullptr);
+				UAM_ASSERT_EQ(uam::StateSerializer::SerializeSession(*retained).dump(), owner_bytes);
+			}
+			else UAM_ASSERT(retained == nullptr);
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, owner.id);
+			UAM_ASSERT(saved.has_value());
+			UAM_ASSERT_EQ(uam::StateSerializer::SerializeSession(*saved).dump(), owner_bytes);
+			UAM_ASSERT_EQ(ChatFolderStore::Serialize(app.folders), folder_bytes);
+			if (item.tombstoned)
+				UAM_ASSERT_EQ(uam::io::ReadTextFile(app.data_root / "native-import-tombstones.json"), tombstone_bytes);
+		}
+	}
+	for (const bool registered_alias : {false, true})
+	{
+		TempDir temp("uam-selected-remote-batch-alias");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ExecutionHost host = StartupRemoteHost("runner");
+		host.platform = "linux";
+		app.settings.execution_hosts.push_back(host);
+		app.folders = {{"canonical", "Canonical", "/srv/Project", false, "runner"}};
+		if (registered_alias)
+		{
+			app.folders.push_back({"dot", "Legacy dot", "/srv/Project/.", false, "runner"});
+			app.folders.push_back({"separator", "Legacy separator", "/srv//Project", false, "runner"});
+		}
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.chats.push_back(StartupRemoteHistory("runner", "dot", "/srv/Project/.", "ses_new"));
+		ChatSession second = StartupRemoteHistory("runner", "separator", "/srv//Project", "ses_new");
+		second.id = "different-import-id";
+		discovery.chats.push_back(second);
+		discovery.expected_hosts.emplace(host.id, host);
+		const ChatHistorySyncService sync;
+		ChatHistorySyncService::LocalHistoryDiscovery chooser;
+		chooser.chats = discovery.chats;
+		UAM_ASSERT(sync.FilterStartupImportCandidates(app, chooser));
+		UAM_ASSERT_EQ(chooser.chats.size(), registered_alias ? std::size_t{1} : std::size_t{0});
+		ChatHistorySyncService::ImportResult result;
+		while (!discovery.chats.empty() || discovery.preparation.valid() || discovery.publication_sync.valid())
+		{
+			if (discovery.preparation.valid()) discovery.preparation.wait();
+			if (discovery.publication_sync.valid()) discovery.publication_sync.wait();
+			result.Merge(sync.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly));
+		}
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.imported_count, registered_alias ? 1 : 0);
+		UAM_ASSERT_EQ(app.chats.size(), registered_alias ? std::size_t{1} : std::size_t{0});
+		UAM_ASSERT_EQ(app.folders.size(), registered_alias ? std::size_t{3} : std::size_t{1});
+	}
+}

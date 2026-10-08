@@ -356,11 +356,50 @@ namespace
 		return candidate;
 	}
 
+	/// <summary>Compares remote import ownership without changing persisted native identities or exclusion keys.</summary>
+	std::string RemoteImportOwnershipKey(const uam::AppState& app, const ChatSession& chat, bool workspace_only = false)
+	{
+		const std::string host_id = uam::strings::Trim(chat.execution_host_id);
+		if (host_id.empty() || host_id == uam::execution_hosts::kLocalHostId) return {};
+		const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, host_id);
+		if (host == nullptr || host->transport != "ssh") return {};
+		const std::string native_id = workspace_only ? std::string{} : uam::strings::Trim(chat.native_session_id);
+		if (!workspace_only && native_id.empty()) return {};
+		const std::string_view directory = uam::strings::IsBlank(chat.workspace_worktree_directory)
+		    ? std::string_view(chat.workspace_directory) : std::string_view(chat.workspace_worktree_directory);
+		const std::string platform = uam::strings::ToLowerAscii(host->platform);
+		if (!uam::execution_hosts::IsAbsoluteRemotePath(platform, directory)) return {};
+		const bool windows = platform == "windows";
+		std::string path = uam::execution_hosts::NormalizeRemotePath(platform, directory);
+		if (!windows && uam::strings::TrimAsciiView(directory) == "//") path = "//";
+		std::size_t root_length = 0;
+		while (root_length < path.size() && path[root_length] == '/') ++root_length;
+		if (windows && root_length == 0 && path.size() >= 3 && path[1] == ':' && path[2] == '/') root_length = 3;
+		std::string normalized = !windows && root_length > 2 ? "/" : path.substr(0, root_length);
+		for (std::size_t position = root_length; position < path.size();)
+		{
+			const std::size_t separator = path.find('/', position);
+			const std::size_t end = separator == std::string::npos ? path.size() : separator;
+			const std::string_view component(path.data() + position, end - position);
+			// '..' can cross a remote symlink, so only remove '.' and redundant separators.
+			if (!component.empty() && component != ".")
+			{
+				if (!normalized.empty() && normalized.back() != '/') normalized.push_back('/');
+				normalized.append(component);
+			}
+			if (separator == std::string::npos) break;
+			position = separator + 1;
+		}
+		return nlohmann::json::array({uam::provider_ids::CanonicalCliProviderLookupId(chat.provider_id), host_id, normalized, native_id}).dump();
+	}
+
 	struct NativeImportIndex
 	{
 		std::unordered_set<std::string> existing_ids;
 		std::unordered_set<std::string> owned_native_keys;
 		std::unordered_set<std::string> pending_native_workspace_keys;
+		std::unordered_set<std::string> remote_owned_native_keys;
+		std::unordered_set<std::string> remote_pending_workspace_keys;
 		std::unordered_map<std::string, std::string> existing_id_by_native_key;
 		std::unordered_map<std::string, ChatSession> existing_summary_by_native_key;
 		bool tombstones_available = false;
@@ -392,6 +431,8 @@ namespace
 			{
 
 				const std::string native_key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+				const std::string remote_key = RemoteImportOwnershipKey(app, chat);
+				if (!remote_key.empty()) import_index.remote_owned_native_keys.insert(remote_key);
 				if (uam::strings::StartsWith(chat.id, "chat-")) import_index.owned_native_keys.insert(native_key);
 				const auto existing = selected_chats.find(native_key);
 				if (existing == selected_chats.end() ||
@@ -422,7 +463,11 @@ namespace
 			const auto resolved = app.resolved_native_sessions_by_chat_id.find(chat.id);
 			if (resolved != app.resolved_native_sessions_by_chat_id.end()) linked.native_session_id = resolved->second;
 			if (NativeSessionLinkService().HasRealNativeSessionId(linked))
+			{
 				import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(linked));
+				const std::string remote_key = RemoteImportOwnershipKey(app, linked);
+				if (!remote_key.empty()) import_index.remote_owned_native_keys.insert(remote_key);
+			}
 			else if (uam::ChatHasActiveCliTerminal(app, chat.id) ||
 			    std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<uam::AcpSessionState>& session)
 			    { return session != nullptr && session->chat_id == chat.id && session->running; }))
@@ -431,15 +476,19 @@ namespace
 				// Defer imports in this workspace until the live attachment settles.
 				linked.native_session_id.clear();
 				import_index.pending_native_workspace_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(linked));
+				const std::string remote_key = RemoteImportOwnershipKey(app, linked, true);
+				if (!remote_key.empty()) import_index.remote_pending_workspace_keys.insert(remote_key);
 			}
 		}
 		return import_index;
 	}
 
-	bool StartupCandidateIsOwned(const NativeImportIndex& index, const ChatSession& chat)
+	bool StartupCandidateIsOwned(const uam::AppState& app, const NativeImportIndex& index, const ChatSession& chat)
 	{
 		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 		if (index.existing_id_by_native_key.contains(key) || index.owned_native_keys.contains(key)) return true;
+		if (index.remote_owned_native_keys.contains(RemoteImportOwnershipKey(app, chat)) ||
+		    index.remote_pending_workspace_keys.contains(RemoteImportOwnershipKey(app, chat, true))) return true;
 		ChatSession workspace;
 		workspace.provider_id = chat.provider_id;
 		workspace.execution_host_id = chat.execution_host_id;
@@ -2207,9 +2256,10 @@ bool ChatHistorySyncService::FilterStartupImportCandidates(const uam::AppState& 
 	{
 		const ChatFolder* owner = StartupImportWorkspaceOwner(app, chat);
 		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+		const std::string remote_key = RemoteImportOwnershipKey(app, chat);
 		if (owner == nullptr || (!uam::paths::IsControllerLocalWorkspace(chat) && owner->id != chat.folder_id) ||
 		    uam::strings::IsBlank(chat.native_session_id) || index.tombstoned_native_keys.contains(key) ||
-		    StartupCandidateIsOwned(index, chat) || !seen.insert(key).second) return true;
+		    StartupCandidateIsOwned(app, index, chat) || !seen.insert(remote_key.empty() ? key : remote_key).second) return true;
 		chat.folder_id = owner->id;
 		return false;
 	};
@@ -2258,7 +2308,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			const ChatFolder* owner = policy == ImportPolicy::SelectedNewChatsOnly ? StartupImportWorkspaceOwner(app, candidate.chat) : nullptr;
 			const ExecutionHost* host = candidate.expected_host ? uam::execution_hosts::Find(app.settings.execution_hosts, candidate.expected_host->id) : nullptr;
 			return candidate.skipped || !candidate.files || tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)) ||
-			    (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(current_index, candidate.chat)) ||
+			    (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(app, current_index, candidate.chat)) ||
 			    (policy == ImportPolicy::SelectedNewChatsOnly &&
 			     (owner == nullptr || owner->id != candidate.chat.folder_id ||
 			      (candidate.expected_folder && (owner->directory != candidate.expected_folder->directory || owner->execution_host_id != candidate.expected_folder->execution_host_id)) ||
@@ -2389,7 +2439,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 		const auto existing = index.existing_id_by_native_key.find(key);
 		if (index.tombstoned_native_keys.contains(key)) continue;
-		if (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(index, chat)) continue;
+		if (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(app, index, chat)) continue;
 		if (existing != index.existing_id_by_native_key.end())
 		{
 			chat.id = existing->second;
@@ -2417,6 +2467,8 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		index.existing_ids.insert(candidate.chat.id);
 		index.existing_id_by_native_key[key] = candidate.chat.id;
 		index.existing_summary_by_native_key[key].id = candidate.chat.id;
+		const std::string remote_key = RemoteImportOwnershipKey(app, candidate.chat);
+		if (!remote_key.empty()) index.remote_owned_native_keys.insert(remote_key);
 		candidates.chats.push_back(std::move(candidate));
 	}
 	if (folder_plan.folders.size() != app.folders.size())
@@ -2426,10 +2478,28 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 	}
 	if (!candidates.chats.empty())
 	{
-		discovery.preparation = std::async(std::launch::async, [root = app.data_root, candidates = std::move(candidates)]() mutable
+		discovery.preparation = std::async(std::launch::async, [root = app.data_root, candidates = std::move(candidates),
+		    selected_only = policy == ImportPolicy::SelectedNewChatsOnly,
+		    hosts = policy == ImportPolicy::SelectedNewChatsOnly ? app.settings.execution_hosts : std::vector<ExecutionHost>{}]() mutable
 		{
+			uam::AppState ownership_snapshot;
+			std::optional<NativeImportIndex> persisted_ownership;
+			if (selected_only)
+			{
+				ownership_snapshot.data_root = root;
+				ownership_snapshot.settings.execution_hosts = std::move(hosts);
+				// Persisted summaries are read only by this existing background preparation task.
+				persisted_ownership = LoadNativeImportIndex(ownership_snapshot);
+			}
 			for (PreparedHistoryChat& candidate : candidates.chats)
 			{
+				if (persisted_ownership && (!persisted_ownership->tombstones_available ||
+				    StartupCandidateIsOwned(ownership_snapshot, *persisted_ownership, candidate.chat)))
+				{
+					candidate.skipped = true;
+					if (!persisted_ownership->tombstones_available) candidate.error = "Deletion records could not be read; import stopped.";
+					continue;
+				}
 				if (!candidate.codex_rollout.empty())
 				{
 					ChatFolder source;
