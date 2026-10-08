@@ -728,6 +728,7 @@ namespace uam::remote
 		std::optional<ProcessPollResult> awaiting_output_ack;
 		std::size_t awaiting_stdout_bytes = 0;
 		bool source_exited = false;
+		bool input_rejected_after_exit = false;
 		int source_exit_code = -1;
 		bool source_exit_announced = false;
 		bool legacy_exit_observed = false;
@@ -903,6 +904,9 @@ namespace uam::remote
 						}
 						return source_exit_code < 0 ? 70 : source_exit_code;
 					}
+					// Rejected input is never acknowledged or replayed. Keep reading only
+					// to drain provider output and complete its authenticated exit handshake.
+					if (input_rejected_after_exit) continue;
 					if (line.starts_with(kRemoteInputDeliveryPrefix))
 					{
 						if (protocol_version < 3)
@@ -927,11 +931,20 @@ namespace uam::remote
 						std::string payload;
 						if (!IsControlField(delivery_id, 96) ||
 						    !uam::base64::Decode(fields.substr(id_end + 1), payload) ||
-						    payload.empty() || payload.size() > 2 * 1024 * 1024 ||
-						    !write_remote_delivery(payload, delivery_id))
+						    payload.empty() || payload.size() > 2 * 1024 * 1024)
 						{
 							std::cerr << (error.empty()
 							    ? "Remote input delivery is invalid.\n" : error + "\n");
+							return 70;
+						}
+						if (!write_remote_delivery(payload, delivery_id))
+						{
+							if (error == "The remote process has exited.")
+							{
+								input_rejected_after_exit = true;
+								continue;
+							}
+							std::cerr << error << '\n';
 							return 70;
 						}
 						std::cout << kRemoteInputReceiptPrefix << spec->delivery_token << ' '
@@ -958,16 +971,26 @@ namespace uam::remote
 					}
 					if (!write_remote(line))
 					{
+						if (error == "The remote process has exited.")
+						{
+							input_rejected_after_exit = true;
+							continue;
+						}
 						std::cerr << error << '\n';
 						return 70;
 					}
 				}
-				if (!pending_input.starts_with('\x1e') &&
+				if (!input_rejected_after_exit && !pending_input.starts_with('\x1e') &&
 				    pending_input.size() > kRemoteStopControlLine.size() &&
 				    !write_remote(std::exchange(pending_input, {})))
 				{
-					std::cerr << error << '\n';
-					return 70;
+					if (error == "The remote process has exited.")
+						input_rejected_after_exit = true;
+					else
+					{
+						std::cerr << error << '\n';
+						return 70;
+					}
 				}
 				if (input_state == 0)
 				{

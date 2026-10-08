@@ -34,7 +34,17 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		nlohmann::json result = nlohmann::json::object();
 		if (mode == "command-lost-start" && type == "process.start") return 0;
 		if (mode == "teardown-lost-reply" && type == "process.closeInput") return 0;
-		if (mode == "command-lost-start" && type == "process.poll")
+		if (mode == "startup-write-exited" && type == "process.poll")
+		{
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (!fs::exists(log_path + ".input-sent") && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::yield();
+			const std::string startup_error = "fixture Codex startup: invalid provider configuration\n";
+			result = {{"running", false}, {"exitCode", 23}, {"stdoutBase64", ""},
+			          {"stderrBase64", uam::base64::Encode(startup_error)},
+			          {"stdoutCursor", std::uint64_t{0}}, {"stderrCursor", startup_error.size()}};
+		}
+		else if (mode == "command-lost-start" && type == "process.poll")
 		{
 			++command_poll_count;
 			result = {{"running", command_poll_count == 1}, {"exitCode", 7},
@@ -80,6 +90,9 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
 		    : nlohmann::json{{"id", request["id"]}, {"ok", true}, {"result", result}};
 		if (mode == "old-context-capability" && type == "hello") response["capabilities"].erase("providerNativeContext");
+		if (mode == "startup-write-exited" && type == "process.write")
+			response = {{"id", request["id"]}, {"ok", false},
+			            {"error", {{"code", "process_exited"}, {"message", "The remote process has exited."}}}};
 		if (!uam::remote::WriteFrame(std::cout, response)) return 5;
 		std::cout.flush();
 	}
@@ -3303,3 +3316,96 @@ UAM_TEST(RemoteWindowsStartupOwnsOnlyItsPrivateRegistryEntryAndAllowsVersionRepl
 	UAM_ASSERT(error.find("Another entry owns") != std::string::npos);
 }
 #endif
+
+
+UAM_TEST(RemoteFreshStartupWriteRejectionDrainsOriginalProviderErrorWithoutInputReceipt)
+{
+#if !defined(_WIN32)
+	for (int input_kind = 0; input_kind < 3; ++input_kind)
+	{
+		TempDir temp("uam-proxy-startup-error");
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		const fs::path executable = service.ResolveCurrentExecutablePath();
+		const fs::path runner = executable.parent_path() / "uam-runner";
+		const fs::path log = temp.root / "requests.jsonl";
+		const fs::path fake_ssh = temp.root / "ssh";
+		UAM_ASSERT(uam::io::WriteTextFile(fake_ssh,
+		    "#!/bin/sh\nexec \"$UAM_TEST_FIXTURE\" --uam-test-remote-opencode-create\n"));
+		fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		const std::string version = "development";
+		const std::string token = "startup-fixture-token";
+		const std::string spec = uam::remote::BuildProcessProxySpec(
+		    "fresh-startup-fixture", temp.root, {"fixture-codex"}, {}, false, token);
+		uam::platform::StdioProcessPlatformFields proxy;
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(proxy, temp.root,
+		    {runner.string(), "proxy", "--alias", "fixture-host", "--platform", "linux", "--version", version},
+		    &error, {{uam::remote::kRemoteProcessSpecEnvironment, spec},
+		             {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")},
+		             {"UAM_TEST_FIXTURE", executable.string()}, {"UAM_TEST_CREATE_LOG", log.string()},
+		             {"UAM_TEST_CREATE_MODE", "startup-write-exited"}}));
+		struct ProcessGuard
+		{
+			uam::platform::StdioProcessPlatformFields& process;
+			~ProcessGuard()
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
+			}
+		} guard{proxy};
+		const std::string initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n";
+		const std::string input = input_kind == 0
+		    ? std::string(uam::remote::kRemoteInputDeliveryPrefix) + token + " startup-init " + uam::base64::Encode(initialize) + "\n"
+		    : input_kind == 1 ? initialize : initialize.substr(0, initialize.size() - 1);
+		UAM_ASSERT(service.WriteToStdioProcess(proxy, input.data(), input.size(), &error));
+		UAM_ASSERT(uam::io::WriteTextFile(log.string() + ".input-sent", "ready"));
+		std::string output, stderr_output;
+		std::array<char, 4096> buffer{};
+		int exit_code = -1;
+		bool exit_acknowledged = false;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const std::ptrdiff_t stdout_bytes = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+			if (stdout_bytes > 0) output.append(buffer.data(), static_cast<std::size_t>(stdout_bytes));
+			const std::ptrdiff_t stderr_bytes = service.ReadStdioProcessStderr(proxy, buffer.data(), buffer.size(), &error);
+			if (stderr_bytes > 0) stderr_output.append(buffer.data(), static_cast<std::size_t>(stderr_bytes));
+			for (std::size_t marker = output.find(uam::remote::kRemoteOutputMarkerPrefix); marker != std::string::npos; marker = output.find(uam::remote::kRemoteOutputMarkerPrefix))
+			{
+				const std::size_t end = output.find('\n', marker);
+				if (end == std::string::npos) break;
+				const std::string ack = std::string(uam::remote::kRemoteOutputAckPrefix) + output.substr(marker + uam::remote::kRemoteOutputMarkerPrefix.size(), end - marker - uam::remote::kRemoteOutputMarkerPrefix.size()) + "\n";
+				UAM_ASSERT(service.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+				output.erase(marker, end - marker + 1);
+			}
+			const std::size_t exit_marker = output.find(uam::remote::kRemoteSourceExitPrefix);
+			if (!exit_acknowledged && exit_marker != std::string::npos)
+			{
+				const std::size_t end = output.find('\n', exit_marker);
+				if (end != std::string::npos)
+				{
+					const std::string ack = std::string(uam::remote::kRemoteSourceExitAckPrefix) + output.substr(exit_marker + uam::remote::kRemoteSourceExitPrefix.size(), end - exit_marker - uam::remote::kRemoteSourceExitPrefix.size()) + "\n";
+					UAM_ASSERT(service.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+					exit_acknowledged = true;
+				}
+			}
+			if (service.PollStdioProcessExited(proxy, &exit_code)) break;
+			std::this_thread::yield();
+		}
+		int starts = 0, writes = 0;
+		std::ifstream requests(log);
+		std::string line;
+		while (std::getline(requests, line))
+		{
+			const nlohmann::json request = nlohmann::json::parse(line);
+			if (request.value("type", "") == "process.start") ++starts;
+			if (request.value("type", "") == "process.write") ++writes;
+		}
+		UAM_ASSERT_EQ(starts, 1);
+		UAM_ASSERT_EQ(writes, 1);
+		UAM_ASSERT(stderr_output.find("fixture Codex startup: invalid provider configuration") != std::string::npos);
+		UAM_ASSERT_EQ(exit_code, 23);
+		UAM_ASSERT(output.find(uam::remote::kRemoteInputReceiptPrefix) == std::string::npos);
+	}
+#endif
+}
