@@ -154,6 +154,14 @@ int main(int argc, char* argv[])
 				std::fprintf(stderr, "picker=%d timeout=%d inside=%d accepted=%d close=%d count=%lu\n", saw_picker, timed_out, closed_inside_modal, accepted, window.closeRequested, static_cast<unsigned long>(window.closeRequestCount));
 				return 16;
 			}
+			if (repeat)
+			{
+				if (window.closeRequestCount != 1) return 19;
+				// Like CEF while TryCloseBrowser is pending, this window refuses to close.
+				[application terminate:nil];
+				[application terminate:nil];
+				if (window.closeRequestCount != 3) return 20;
+			}
 			std::puts("picker-close-routing-returned");
 		}
 		else if (terminate_probe)
