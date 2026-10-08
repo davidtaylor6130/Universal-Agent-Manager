@@ -510,6 +510,11 @@ namespace uam
 
 		void StripImportedExecutionAuthority(ChatSession& chat)
 		{
+			chat.temporary_parent_chat_id.clear();
+			chat.side_cleanup_requested = false;
+			chat.provider_handoff_context.clear();
+			chat.provider_handoff_session_id.clear();
+			chat.provider_handoff_cli_contexts.clear();
 			chat.native_session_id.clear();
 			chat.execution_host_id = "local";
 			chat.remote_turn_reconnect_pending = false;

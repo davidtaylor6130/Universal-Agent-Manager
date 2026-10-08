@@ -1422,6 +1422,16 @@ namespace
 		// Load active_goal_id
 		chat.active_goal_id = JsonStringOrEmpty(root.Find("activeGoalId"));
 
+		// Older bundle imports may still carry source-owned temporary cleanup metadata.
+		if (chat.imported_read_only)
+		{
+			chat.temporary_parent_chat_id.clear();
+			chat.side_cleanup_requested = false;
+			chat.provider_handoff_context.clear();
+			chat.provider_handoff_session_id.clear();
+			chat.provider_handoff_cli_contexts.clear();
+		}
+
 		ApplyChatTimestampFallbacks(chat, root.Find("interaction_at") == nullptr);
 		ProviderRuntimeRegistry::ResolveById(chat.provider_id).NormalizeLoadedNativeSessionId(chat);
 		if (chat.branch_root_chat_id.empty())
