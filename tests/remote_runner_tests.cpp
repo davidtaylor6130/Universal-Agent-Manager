@@ -4,6 +4,7 @@
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_native_context.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "remote/runner_service_posix.h"
 
 #if defined(__APPLE__)
@@ -3800,6 +3801,120 @@ namespace
 UAM_TEST(MacRemoteStopRetainsSuccessfulExitAcrossMultipleDrainPolls)
 {
 	VerifyMacRemoteStopExitAfterMultipleDrainPolls(false, 0);
+}
+
+namespace
+{
+	void VerifyPendingRemoteStopConfirmation(bool shutdown, int helper_exit_code, const std::string& diagnostic, bool confirmed, bool restart = false)
+	{
+		TempDir temp("uam-stop-confirmation");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "stop-confirmation";
+		chat.execution_host_id = "disposable-helper";
+		chat.remote_turn_reconnect_pending = true;
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retry safely."});
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = ""});
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->running = true;
+		session->processing = true;
+		session->queued_prompt = "Retry safely.";
+		session->current_assistant_message_index = 1;
+		session->turn_assistant_message_index = 1;
+		uam::AcpSessionState* raw_session = session.get();
+		const fs::path stderr_file = temp.root / "diagnostic.txt";
+		UAM_ASSERT(uam::io::WriteTextFile(stderr_file, diagnostic));
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "set /p line= & type \"" + stderr_file.string() + "\" 1>&2 & exit /b " + std::to_string(helper_exit_code)};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; cat \"$1\" >&2; exit \"$2\"", "fixture", stderr_file.string(), std::to_string(helper_exit_code)};
+#endif
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		struct StopCleanup
+		{
+			uam::AppState& app;
+			IPlatformProcessService& service;
+			~StopCleanup()
+			{
+				for (const std::unique_ptr<uam::PendingAcpRemoteStop>& pending : app.pending_acp_remote_stops)
+					if (pending != nullptr) service.StopStdioProcess(*pending, true);
+			}
+		} cleanup{app, service};
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(!(restart ? uam::acp_detail::StopAcpProcessForRestart(app, *raw_session, app.chats.front()) : uam::StopAcpSession(app, chat.id)));
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		int exit_code = -1;
+		bool exited = false;
+		while (!(exited = service.PollStdioProcessExited(*app.pending_acp_remote_stops.front(), &exit_code)) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::yield();
+		UAM_ASSERT(exited);
+		UAM_ASSERT_EQ(exit_code, helper_exit_code);
+		if (shutdown) uam::FinalizePendingAcpRemoteStopsForExit(app);
+		else
+		{
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+				(void)uam::PollAllAcpSessions(app);
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT(!raw_session->remote_stop_pending);
+		UAM_ASSERT_EQ(raw_session->remote_stop_unconfirmed, !confirmed);
+		UAM_ASSERT_EQ(app.chats.front().remote_stop_cleanup_pending, !confirmed);
+		UAM_ASSERT_EQ(app.chats.front().remote_process_exists, !confirmed);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->remote_stop_cleanup_pending, !confirmed);
+		if (shutdown && confirmed && restart) UAM_ASSERT(saved->messages.back().interrupted);
+	}
+}
+
+UAM_TEST(PendingRemoteStopConfirmsExactMissingDiagnosticsDuringPollAndShutdown)
+{
+	for (const bool shutdown : {false, true})
+	{
+		VerifyPendingRemoteStopConfirmation(shutdown, 0, "", true);
+		for (const std::string& diagnostic : {"The remote process does not exist.\n", "The remote process is no longer available.\r\n", "The remote process has exited."})
+			VerifyPendingRemoteStopConfirmation(shutdown, 70, diagnostic, true);
+	}
+}
+
+UAM_TEST(PendingRemoteStopRejectsUncertainDiagnosticsDuringPollAndShutdown)
+{
+	for (const bool shutdown : {false, true})
+	{
+		for (const std::string& diagnostic : {"", "The remote process does not exist. Maybe.\n", "warning: The remote process does not exist.\n", "The remote process does not exist.\nRemote bridge connection failed.\n"})
+			VerifyPendingRemoteStopConfirmation(shutdown, 70, diagnostic, false);
+		VerifyPendingRemoteStopConfirmation(shutdown, 23, "The remote process does not exist.\n", false);
+	}
+}
+
+UAM_TEST(ShutdownMissingRemoteProcessSettlesRestartAsInterrupted)
+{
+	VerifyPendingRemoteStopConfirmation(true, 70, "The remote process does not exist.\n", true, true);
+}
+
+UAM_TEST(MacPendingRemoteStopReadsMissingDiagnosticBeyondFirstStderrDrain)
+{
+#if defined(__APPLE__)
+	for (const bool shutdown : {false, true})
+		VerifyPendingRemoteStopConfirmation(shutdown, 70, std::string(20000, 'x') + "\nThe remote process does not exist.\n", true);
+#endif
+}
+
+UAM_TEST(MacPendingRemoteStopRejectsFailureBeyondFirstStderrDrain)
+{
+#if defined(__APPLE__)
+	const std::string missing = "The remote process does not exist.\n";
+	// Put a misleading diagnostic exactly at the bounded drain boundary.
+	const std::string diagnostic = std::string(16384 - missing.size() - 1, 'x') + "\n" + missing + std::string(10000, 'y') + "\nRemote bridge connection failed.\n";
+	for (const bool shutdown : {false, true})
+		VerifyPendingRemoteStopConfirmation(shutdown, 70, diagnostic, false);
+#endif
 }
 
 UAM_TEST(MacShutdownRetainsSuccessfulExitAfterAPendingStopDrainPoll)

@@ -127,6 +127,12 @@ namespace uam
 			       line == "The remote process has exited.";
 		}
 
+		bool RemoteStopExitConfirmed(bool exited, int exit_code, const std::string& stderr_tail)
+		{
+			return exited && (exit_code == 0 ||
+			    (exit_code == 70 && RemoteProxyExitConfirmsMissingProcess(stderr_tail)));
+		}
+
 		// Bounded, nonblocking reads keep the proxy's exit diagnostic after handle transfer.
 		bool DrainPendingRemoteStopStderr(PendingAcpRemoteStop& pending)
 		{
@@ -3764,8 +3770,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				++stop;
 				continue;
 			}
-			const bool confirmed_stop = exited && (exit_code == 0 ||
-			    (exit_code == 70 && RemoteProxyExitConfirmsMissingProcess(pending.stderr_tail)));
+			const bool confirmed_stop = RemoteStopExitConfirmed(exited, exit_code, pending.stderr_tail);
 			if (!exited && stop_now < pending.deadline_time_s)
 			{
 				++stop;
@@ -4236,7 +4241,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			int exit_code = -1;
 			const bool exited = PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(
 			    *stop, &exit_code);
-			(void)DrainPendingRemoteStopStderr(*stop);
+			bool stderr_pending = DrainPendingRemoteStopStderr(*stop);
+			// An exited proxy's final diagnostic must be read before confirming its Stop.
+			while (exited && stderr_pending) stderr_pending = DrainPendingRemoteStopStderr(*stop);
 			while (DrainPendingRemoteStopStdout(app, *stop, nullptr)) {}
 			if (!exited)
 				PlatformServicesFactory::Instance().process_service.StopStdioProcess(*stop, true);
@@ -4244,7 +4251,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			AcpSessionState* session = FindAcpSessionForChat(app, stop->chat_id);
 			if (session == nullptr || !session->remote_stop_pending) continue;
 			ChatSession* chat = ChatDomainService().FindChatById(app, stop->chat_id);
-			if (exited && exit_code == 0)
+			if (RemoteStopExitConfirmed(exited, exit_code, stop->stderr_tail))
 			{
 				ApplyConfirmedRemoteStopOutcome(*session, stop->stderr_tail);
 				bool interrupted = false;
