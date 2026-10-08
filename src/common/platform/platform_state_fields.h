@@ -62,6 +62,8 @@ namespace uam::platform
 		int stderr_read_fd = -1;
 		pid_t child_pid = -1;
 		pid_t watchdog_pid = -1;
+		// macOS reaps before output drainage finishes; retain status with process ownership.
+		int reaped_exit_code = -1;
 #else
 #error "StdioProcessPlatformFields is only supported on Windows, macOS, and Linux."
 #endif

@@ -6,6 +6,10 @@
 #include "common/provider/provider_native_context.h"
 #include "remote/runner_service_posix.h"
 
+#if defined(__APPLE__)
+#include <sys/wait.h>
+#endif
+
 using namespace uam_test;
 
 namespace
@@ -3705,5 +3709,159 @@ UAM_TEST(RemoteStopOutputCannotChangeTheReplacementSessionDuringPollOrShutdown)
 		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
 		UAM_ASSERT_EQ(app.acp_sessions.front()->stop_outcome, uam::platform::ProcessStopOutcome::Unknown);
 	}
+#endif
+}
+
+namespace
+{
+	void VerifyMacRemoteStopExitAfterMultipleDrainPolls(bool shutdown, int helper_exit_code)
+	{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+		TempDir temp("uam-stop-exit-retention");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+		chat.execution_host_id = "disposable-helper";
+		chat.remote_turn_reconnect_pending = true;
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->protocol_kind = "codex-app-server";
+		session->processing = true;
+		session->running = true;
+		uam::AcpSessionState* raw_session = session.get();
+		const fs::path tail = temp.root / "shutdown.jsonl";
+		const std::string line = R"({"method":"item/agentMessage/delta","params":{"itemId":"stop-tail","delta":"x"}})" "\n";
+		std::string output;
+		for (int index = 0; index < 1024; ++index) output += line;
+		UAM_ASSERT(uam::io::WriteTextFile(tail, output));
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		struct PendingStopCleanup
+		{
+			uam::AppState& app;
+			IPlatformProcessService& service;
+			~PendingStopCleanup()
+			{
+				for (const std::unique_ptr<uam::PendingAcpRemoteStop>& stop : app.pending_acp_remote_stops)
+					if (stop != nullptr) service.StopStdioProcess(*stop, true);
+			}
+		} cleanup{app, service};
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*session, temp.root,
+		    {"/bin/sh", "-c", "IFS= read -r stop; cat \"$1\"; exit \"$2\"", "fixture", tail.string(), std::to_string(helper_exit_code)}, &error));
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		uam::PendingAcpRemoteStop& pending = *app.pending_acp_remote_stops.front();
+		// Stage the large tail without reaping, so the runtime observes exit before its bounded line drain finishes.
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		siginfo_t exit_info{};
+		std::array<char, 16384> buffer{};
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const std::ptrdiff_t read = service.ReadStdioProcessStdout(pending, buffer.data(), buffer.size());
+			if (read > 0) raw_session->stdout_buffer.append(buffer.data(), static_cast<std::size_t>(read));
+			UAM_ASSERT_EQ(waitid(P_PID, static_cast<id_t>(pending.child_pid), &exit_info, WEXITED | WNOHANG | WNOWAIT), 0);
+			if (exit_info.si_pid == pending.child_pid && read <= 0) break;
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(exit_info.si_pid, pending.child_pid);
+		UAM_ASSERT_EQ(exit_info.si_status, helper_exit_code);
+		UAM_ASSERT_EQ(raw_session->stdout_buffer, output);
+		(void)uam::PollAllAcpSessions(app);
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		UAM_ASSERT_EQ(pending.child_pid, pid_t{-1});
+		UAM_ASSERT(raw_session->remote_stop_pending);
+		UAM_ASSERT(raw_session->stdout_buffer.find('\n') != std::string::npos);
+		if (shutdown) uam::FinalizePendingAcpRemoteStopsForExit(app);
+		else
+		{
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+				(void)uam::PollAllAcpSessions(app);
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string(1024, 'x'));
+		UAM_ASSERT(!raw_session->remote_stop_pending);
+		UAM_ASSERT_EQ(raw_session->remote_stop_unconfirmed, helper_exit_code != 0);
+		UAM_ASSERT_EQ(app.chats.front().remote_stop_cleanup_pending, helper_exit_code != 0);
+		UAM_ASSERT_EQ(app.chats.front().remote_process_exists, helper_exit_code != 0);
+		UAM_ASSERT_EQ(app.chats.front().remote_turn_reconnect_pending, helper_exit_code != 0);
+		if (helper_exit_code == 0) UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("stopped"));
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->messages.front().content, std::string(1024, 'x'));
+		UAM_ASSERT_EQ(loaded->remote_stop_cleanup_pending, helper_exit_code != 0);
+#endif
+	}
+}
+
+UAM_TEST(MacRemoteStopRetainsSuccessfulExitAcrossMultipleDrainPolls)
+{
+	VerifyMacRemoteStopExitAfterMultipleDrainPolls(false, 0);
+}
+
+UAM_TEST(MacShutdownRetainsSuccessfulExitAfterAPendingStopDrainPoll)
+{
+	VerifyMacRemoteStopExitAfterMultipleDrainPolls(true, 0);
+}
+
+UAM_TEST(MacRemoteStopPreservesFailureAcrossDrainPollsAndShutdown)
+{
+	VerifyMacRemoteStopExitAfterMultipleDrainPolls(false, 23);
+	VerifyMacRemoteStopExitAfterMultipleDrainPolls(true, 23);
+}
+
+UAM_TEST(MacStdioExitStatusFollowsOwnershipUntilHandlesCloseOrProcessRestarts)
+{
+#if defined(__APPLE__)
+	TempDir temp("uam-stdio-exit-retention");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	struct ProcessCleanup
+	{
+		IPlatformProcessService& service;
+		uam::platform::StdioProcessPlatformFields& process;
+		~ProcessCleanup() { service.StopStdioProcess(process, true); }
+	} cleanup{service, process};
+	std::string error;
+	for (const int expected : {23, 0, 128 + SIGTERM})
+	{
+		const std::string command = expected == 128 + SIGTERM ? "kill -TERM $$" : "exit " + std::to_string(expected);
+		UAM_ASSERT(service.StartStdioProcess(process, temp.root, {"/bin/sh", "-c", command}, &error));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		bool exited = false;
+		while (!(exited = service.PollStdioProcessExited(process)) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::yield();
+		UAM_ASSERT(exited);
+		int exit_code = -1;
+		UAM_ASSERT(service.PollStdioProcessExited(process, &exit_code));
+		UAM_ASSERT_EQ(exit_code, expected);
+		uam::platform::StdioProcessPlatformFields transferred;
+		ProcessCleanup transferred_cleanup{service, transferred};
+		uam::TransferStdioProcessFields(process, transferred);
+		UAM_ASSERT(service.PollStdioProcessExited(transferred, &exit_code));
+		UAM_ASSERT_EQ(exit_code, expected);
+		UAM_ASSERT(service.PollStdioProcessExited(process, &exit_code));
+		UAM_ASSERT_EQ(exit_code, -1);
+		service.CloseStdioProcessHandles(transferred);
+		UAM_ASSERT(service.PollStdioProcessExited(transferred, &exit_code));
+		UAM_ASSERT_EQ(exit_code, -1);
+	}
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, {"/bin/sh", "-c", "cat >/dev/null; exit 0"}, &error));
+	service.TerminateStdioProcess(process, true);
+	int exit_code = -1;
+	UAM_ASSERT(service.PollStdioProcessExited(process, &exit_code));
+	UAM_ASSERT_EQ(exit_code, 128 + SIGKILL);
+	// Reusing a reaped owner must not retain the preceding forced exit.
+	service.CloseStdioProcessHandles(process);
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, {"/bin/sh", "-c", "exit 0"}, &error));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	bool exited = false;
+	while (!(exited = service.PollStdioProcessExited(process, &exit_code)) && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::yield();
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(exit_code, 0);
 #endif
 }

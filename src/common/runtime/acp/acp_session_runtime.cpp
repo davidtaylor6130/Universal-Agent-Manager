@@ -2887,6 +2887,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		destination.stderr_read_fd = std::exchange(source.stderr_read_fd, -1);
 		destination.child_pid = std::exchange(source.child_pid, -1);
 		destination.watchdog_pid = std::exchange(source.watchdog_pid, -1);
+		destination.reaped_exit_code = std::exchange(source.reaped_exit_code, -1);
 #endif
 	}
 

@@ -263,6 +263,7 @@ class MacProcessService final : public IPlatformProcessService
 		process.stderr_read_fd = stderr_pipe[0];
 		process.child_pid = pid;
 		process.watchdog_pid = watchdog_pid;
+		process.reaped_exit_code = -1;
 
 		for (const int fd : {process.stdout_read_fd, process.stderr_read_fd})
 		{
@@ -281,6 +282,7 @@ class MacProcessService final : public IPlatformProcessService
 		CloseFdIfOpen(process.stdout_read_fd);
 		CloseFdIfOpen(process.stderr_read_fd);
 		process.child_pid = -1;
+		process.reaped_exit_code = -1;
 	}
 
 	bool WriteToStdioProcess(uam::platform::StdioProcessPlatformFields& process, const char* bytes, std::size_t len, std::string* error_out = nullptr) const override
@@ -331,6 +333,7 @@ class MacProcessService final : public IPlatformProcessService
 		int status = 0;
 		if (TerminateCapturedCommandProcess(child_pid, &status))
 		{
+			process.reaped_exit_code = status >= 0 ? ExitCodeFromWaitStatus(status) : -1;
 			process.child_pid = -1;
 			StopParentDeathWatchdog(process.watchdog_pid);
 		}
@@ -358,7 +361,7 @@ class MacProcessService final : public IPlatformProcessService
 		{
 			if (exit_code_out != nullptr)
 			{
-				*exit_code_out = -1;
+				*exit_code_out = process.reaped_exit_code;
 			}
 			return true;
 		}
@@ -372,9 +375,10 @@ class MacProcessService final : public IPlatformProcessService
 		}
 		if (wait_result == process.child_pid || (wait_result < 0 && errno == ECHILD))
 		{
+			process.reaped_exit_code = wait_result == process.child_pid ? ExitCodeFromWaitStatus(status) : -1;
 			if (exit_code_out != nullptr)
 			{
-				*exit_code_out = wait_result == process.child_pid ? ExitCodeFromWaitStatus(status) : -1;
+				*exit_code_out = process.reaped_exit_code;
 			}
 			process.child_pid = -1;
 			StopParentDeathWatchdog(process.watchdog_pid);
