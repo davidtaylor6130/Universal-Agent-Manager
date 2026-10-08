@@ -3,6 +3,7 @@ import { sanitizeCustomIcon, type CustomIcon, type CustomIconInput, type CustomI
 import { createRequestId, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import type { ResourceCollection, ResourceReference, ResourceReferenceType } from '../../types/resourceCollection'
 import type { ZustandGet, ZustandSet } from '../storeTypes'
+import { clearPendingRequest, isLatestPendingRequest, rememberPendingRequest } from '../cpp/reconcile'
 
 let localId = 0
 const pendingToggles = new Map<string, { baseline: boolean; count: number; successCount: number }>()
@@ -136,14 +137,23 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
 
     renameResourceCollection: async (collectionId: string, name: string): Promise<boolean> => {
       const normalized = name.trim()
-      if (!normalized || !get().resourceCollections.some((item) => item.id === collectionId)) return false
+      const previous = get().resourceCollections.find((item) => item.id === collectionId)
+      if (!normalized || !previous) return false
       if (isCefContext()) {
+        const requestKey = `renameResourceCollection:${collectionId}`
+        const requestId = createRequestId('renameResourceCollection')
+        rememberPendingRequest(requestKey, requestId)
         const response = await sendToCEF({
           action: 'renameResourceCollection',
           payload: { collectionId, name: normalized },
-          requestId: createRequestId('renameResourceCollection'),
+          requestId,
         })
+        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+        clearPendingRequest(requestKey, response.requestId)
         if (!response.ok) return false
+        // A desktop/companion push may already contain a later authoritative rename.
+        const current = get().resourceCollections.find((item) => item.id === collectionId)
+        if (!current || (current.name !== previous.name && current.name !== normalized)) return false
       }
       set((state) => ({
         resourceCollections: state.resourceCollections.map((item) => item.id === collectionId ? { ...item, name: normalized } : item),

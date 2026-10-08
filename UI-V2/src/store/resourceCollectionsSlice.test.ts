@@ -49,6 +49,74 @@ describe('resource collection state', () => {
     expect(reference).toMatchObject({ type: 'workspace-folder', target: 'project', label: 'Project' })
   })
 
+  it('does not overwrite a newer collection rename with an older acknowledgement', async () => {
+    const acknowledge: Array<() => void> = []
+    useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'Original', collapsed: false, references: [] }] })
+    window.cefQuery = vi.fn(({ request, onSuccess }) => {
+      const { payload } = JSON.parse(request) as { payload: { name: string } }
+      useAppStore.setState((state) => ({ resourceCollections: state.resourceCollections.map((collection) => ({ ...collection, name: payload.name })) }))
+      acknowledge.push(() => onSuccess('{}'))
+    })
+
+    const first = useAppStore.getState().renameResourceCollection('work', 'First')
+    const second = useAppStore.getState().renameResourceCollection('work', 'Second')
+    acknowledge[1]()
+    expect(await second).toBe(true)
+    acknowledge[0]()
+    await first
+
+    expect(useAppStore.getState().resourceCollections[0].name).toBe('Second')
+  })
+
+  it('preserves a later authoritative name when a pending rename completes', async () => {
+    let acknowledge!: () => void
+    useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'Original', collapsed: false, references: [] }] })
+    window.cefQuery = vi.fn(({ onSuccess }) => { acknowledge = () => onSuccess('{}') })
+
+    const rename = useAppStore.getState().renameResourceCollection('work', 'Pending')
+    useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'Changed elsewhere', collapsed: true, references: [] }] })
+    acknowledge()
+    await rename
+
+    expect(useAppStore.getState().resourceCollections[0]).toMatchObject({ name: 'Changed elsewhere', collapsed: true })
+  })
+
+  it('keeps rename ownership independent for different collections and preserves pushed fields', async () => {
+    const acknowledge: Array<() => void> = []
+    useAppStore.setState({ resourceCollections: [
+      { id: 'first', name: 'First', collapsed: false, references: [] },
+      { id: 'second', name: 'Second', collapsed: false, references: [] },
+    ] })
+    window.cefQuery = vi.fn(({ onSuccess }) => { acknowledge.push(() => onSuccess('{}')) })
+    const first = useAppStore.getState().renameResourceCollection('first', 'Renamed first')
+    const second = useAppStore.getState().renameResourceCollection('second', 'Renamed second')
+    useAppStore.setState((state) => ({ resourceCollections: state.resourceCollections.map((collection) => ({ ...collection, collapsed: true })) }))
+    acknowledge[1]()
+    acknowledge[0]()
+
+    expect(await Promise.all([first, second])).toEqual([true, true])
+    expect(useAppStore.getState().resourceCollections.map(({ name, collapsed }) => ({ name, collapsed }))).toEqual([
+      { name: 'Renamed first', collapsed: true }, { name: 'Renamed second', collapsed: true },
+    ])
+  })
+
+  it('preserves the native name when the newest rename fails before an older success returns', async () => {
+    const complete: Array<() => void> = []
+    useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'Original', collapsed: false, references: [] }] })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    window.cefQuery = vi.fn(({ onSuccess, onFailure }) => {
+      complete.push(complete.length === 0 ? () => onSuccess('{}') : () => onFailure(500, 'Save failed.'))
+    })
+    const first = useAppStore.getState().renameResourceCollection('work', 'First')
+    const second = useAppStore.getState().renameResourceCollection('work', 'Second')
+    useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'First', collapsed: false, references: [] }] })
+    complete[1]()
+    expect(await second).toBe(false)
+    complete[0]()
+    await first
+    expect(useAppStore.getState().resourceCollections[0].name).toBe('First')
+  })
+
   it('keeps both collections collapsed when native pushes outrun delayed toggle responses', async () => {
     let nativeCollections = [
       { id: 'misc', name: 'Misc AI', collapsed: false, references: [] },
