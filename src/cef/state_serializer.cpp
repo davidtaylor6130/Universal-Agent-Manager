@@ -1,3 +1,4 @@
+#include "app/startup_native_import_service.h"
 #include "app/execution_routing_integration.h"
 #include "cef/state_serializer.h"
 #include "common/config/custom_icon.h"
@@ -1451,6 +1452,21 @@ namespace uam
 	// StateSerializer implementation
 	// ---------------------------------------------------------------------------
 
+	nlohmann::json StateSerializer::SerializeStartupNativeImports(const StartupNativeImportSnapshot& snapshot)
+	{
+		nlohmann::json candidates = nlohmann::json::array();
+		for (const StartupNativeImportCandidate& candidate : snapshot.candidates)
+		{
+			candidates.push_back({{"candidateId", candidate.candidate_id}, {"providerId", candidate.provider_id},
+			    {"nativeSessionId", candidate.native_session_id}, {"title", candidate.title}, {"folderId", candidate.folder_id},
+			    {"workspaceDirectory", candidate.workspace_directory}, {"executionHostId", candidate.execution_host_id},
+			    {"updatedAt", candidate.updated_at}});
+		}
+		return {{"phase", snapshot.phase}, {"generation", snapshot.generation}, {"candidates", candidates},
+		    {"totalCount", snapshot.total_count}, {"nextOffset", snapshot.next_offset},
+		    {"importedCount", snapshot.imported_count}, {"errors", snapshot.errors}};
+	}
+
 	nlohmann::json StateSerializer::Serialize(const AppState& app, bool summary_only)
 	{
 		CatalogSnapshotCache catalog_cache;
@@ -1464,6 +1480,10 @@ namespace uam
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
+		const StartupNativeImportSnapshot import_snapshot = app.startup_native_import_service
+		    ? app.startup_native_import_service->Snapshot(0, 0) : StartupNativeImportSnapshot{};
+		j["startupNativeImports"] = {{"phase", import_snapshot.phase}, {"generation", import_snapshot.generation},
+		    {"totalCount", import_snapshot.total_count}, {"importedCount", import_snapshot.imported_count}};
 
 		// Chat sessions
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
@@ -1525,6 +1545,10 @@ namespace uam
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
+		const StartupNativeImportSnapshot import_snapshot = app.startup_native_import_service
+		    ? app.startup_native_import_service->Snapshot(0, 0) : StartupNativeImportSnapshot{};
+		j["startupNativeImports"] = {{"phase", import_snapshot.phase}, {"generation", import_snapshot.generation},
+		    {"totalCount", import_snapshot.total_count}, {"importedCount", import_snapshot.imported_count}};
 
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
 		const std::string selected_chat_id = SelectedVisibleChatId(app);

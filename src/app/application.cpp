@@ -394,47 +394,7 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 
 bool Application::PollHistoryDiscovery()
 {
-	bool changed = false;
-	if (m_historyDiscovery.valid())
-	{
-		if (m_historyDiscovery.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
-		try
-		{
-			m_pendingHistoryDiscovery = m_historyDiscovery.get();
-		}
-		catch (const std::exception& error)
-		{
-			uam::diagnostics::Write(std::string("History discovery failed: ") + error.what());
-		}
-		m_nextHistoryDiscovery = std::chrono::steady_clock::now() + std::chrono::minutes(1);
-	}
-	if (!m_pendingHistoryDiscovery.empty())
-	{
-		auto& [folder, discovery] = m_pendingHistoryDiscovery.back();
-		const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(m_app, folder, discovery, 8,
-		    ChatHistorySyncService::ImportPolicy::RegisteredWorkspacesOnly);
-		changed = result.imported_count > 0;
-		for (const std::string& error : result.errors) uam::diagnostics::Write("History discovery: " + error);
-		if (!discovery.Pending())
-		{
-			for (const std::string& error : discovery.result.errors) uam::diagnostics::Write("History discovery: " + error);
-			m_pendingHistoryDiscovery.pop_back();
-		}
-		return changed;
-	}
-	if (std::chrono::steady_clock::now() >= m_nextHistoryDiscovery)
-	{
-		const ProviderProfile* configured = ProviderProfileStore::FindById(m_app.provider_profiles, uam::provider_ids::kOpenCodeCli);
-		const std::optional<ProviderProfile> profile = configured != nullptr ? std::optional<ProviderProfile>(*configured) : std::nullopt;
-		m_historyDiscovery = std::async(std::launch::async, [profile, scan_offset = m_app.open_code_history_scan_offset, stop_token = m_historyDiscoveryStop.get_token()]()
-		{
-			std::vector<std::pair<ChatFolder, ChatHistorySyncService::LocalHistoryDiscovery>> results;
-			ChatFolder all_local_workspaces;
-			results.emplace_back(all_local_workspaces, ChatHistorySyncService().DiscoverProviderChatsForFolder(all_local_workspaces, profile ? &*profile : nullptr, stop_token, scan_offset));
-			return results;
-		});
-	}
-	return changed;
+	return m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->Poll(m_app);
 }
 
 void Application::PollTick()
@@ -515,7 +475,7 @@ void Application::PollTick()
 		last_slow_poll_report = poll_finished;
 	}
 
-	ScheduleNextUpdate(m_pendingHistoryDiscovery.empty() ? GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser)) : 16);
+	ScheduleNextUpdate(m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : GetNextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser)));
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
@@ -717,6 +677,8 @@ bool Application::InitializeState()
 	}
 	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
 	m_startupModelDiscovery.Initialize(m_app);
+	m_app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>();
+	m_app.startup_native_import_service->Initialize(m_app);
 	MemoryService::RefreshMemoryActivity(m_app);
 
 	if (!m_app.chats.empty())
@@ -821,12 +783,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
-	m_historyDiscoveryStop.request_stop();
-	for (std::pair<ChatFolder, ChatHistorySyncService::LocalHistoryDiscovery>& pending : m_pendingHistoryDiscovery)
-	{
-		pending.second.CancelPending();
-	}
-	m_pendingHistoryDiscovery.clear();
+	if (m_app.startup_native_import_service != nullptr) m_app.startup_native_import_service->Cancel();
 	if (m_shutdownComplete)
 	{
 		return;

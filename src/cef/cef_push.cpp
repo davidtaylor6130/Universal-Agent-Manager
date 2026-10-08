@@ -44,6 +44,7 @@ namespace
 	std::string g_last_pushed_resource_collections_fingerprint;
 	std::string g_last_pushed_providers_fingerprint;
 	std::string g_last_pushed_provider_model_catalogs_fingerprint;
+	std::string g_last_pushed_startup_native_imports_fingerprint;
 	std::string g_last_pushed_settings_fingerprint;
 	std::string g_last_pushed_memory_fingerprint;
 	std::string g_last_pushed_cli_version_manager_fingerprint;
@@ -95,6 +96,7 @@ namespace
 		g_last_pushed_resource_collections_fingerprint = DumpFrontendJson(fingerprint_state.at("resourceCollections"));
 		g_last_pushed_providers_fingerprint = DumpFrontendJson(fingerprint_state.at("providers"));
 		g_last_pushed_provider_model_catalogs_fingerprint = DumpFrontendJson(fingerprint_state.at("providerModelCatalogs"));
+		g_last_pushed_startup_native_imports_fingerprint = DumpFrontendJson(fingerprint_state.at("startupNativeImports"));
 		g_last_pushed_settings_fingerprint = DumpFrontendJson(SerializeSettingsForPatch(app));
 		g_last_pushed_memory_fingerprint = DumpFrontendJson(fingerprint_state.at("memoryActivity"));
 		g_last_pushed_cli_version_manager_fingerprint = DumpFrontendJson(fingerprint_state.at("cliVersionManager"));
@@ -284,6 +286,7 @@ namespace
 		AddChangedJsonField(data, "providers", fingerprint_state.at("providers"), g_last_pushed_providers_fingerprint);
 
 		AddChangedJsonField(data, "providerModelCatalogs", fingerprint_state.at("providerModelCatalogs"), g_last_pushed_provider_model_catalogs_fingerprint);
+		AddChangedJsonField(data, "startupNativeImports", fingerprint_state.at("startupNativeImports"), g_last_pushed_startup_native_imports_fingerprint);
 
 		const nlohmann::json settings = SerializeSettingsForPatch(app);
 		AddChangedJsonField(data, "settings", settings, g_last_pushed_settings_fingerprint);

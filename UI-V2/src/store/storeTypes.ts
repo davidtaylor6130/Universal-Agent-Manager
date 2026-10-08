@@ -1,3 +1,4 @@
+import type { StartupNativeImportStatus } from '../types/startupNativeImports'
 import type { ExecutionRoutingSettings, RoutingReservation } from '../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../types/chatSearch'
 import type { OrganizationChange, OrganizationUndo } from '../types/organization'
@@ -48,6 +49,10 @@ export type CommandSafetyTierResult = MutationResult & { cancelled?: boolean }
 export type GoalCreateResult = MutationResult & { goalId?: string }
 
 export interface AppState {
+  startupNativeImports: StartupNativeImportStatus
+  startupNativeImportReviewSequence: number
+  startupNativeImportFolderId: string | null
+  openStartupNativeImportReview: (folderId?: string) => void
   // Data
   folders: Folder[]
   resourceCollections: ResourceCollection[]

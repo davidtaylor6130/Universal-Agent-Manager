@@ -4,6 +4,7 @@
 #include "common/platform/platform_services.h"
 #include "common/state/app_state.h"
 #include "app/runtime_orchestration_services.h"
+#include "app/startup_native_import_service.h"
 #include "app/model_discovery_service.h"
 
 #include <future>
@@ -59,10 +60,6 @@ class Application
 	std::string m_pendingMarkdownStoreDirectory;
 	std::vector<std::string> m_launchArguments;
 	int m_exitCode = 0;
-	std::future<std::vector<std::pair<ChatFolder, ChatHistorySyncService::LocalHistoryDiscovery>>> m_historyDiscovery;
-	std::chrono::steady_clock::time_point m_nextHistoryDiscovery{};
-	std::stop_source m_historyDiscoveryStop;
-	std::vector<std::pair<ChatFolder, ChatHistorySyncService::LocalHistoryDiscovery>> m_pendingHistoryDiscovery;
 	bool PollHistoryDiscovery();
 
 	// ---- startup / teardown -----------------------------------------------

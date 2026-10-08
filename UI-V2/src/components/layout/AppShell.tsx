@@ -1,3 +1,4 @@
+import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
 import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
@@ -897,6 +898,7 @@ export function AppShell() {
         }}
       />
 
+      <StartupNativeImportChooser />
       {!collectionToast && <OrganizationUndoNotice />}
       {collectionToast && (
         <div role="alert" className="fixed bottom-4 left-4 flex items-start gap-3 rounded-md p-3 text-xs"

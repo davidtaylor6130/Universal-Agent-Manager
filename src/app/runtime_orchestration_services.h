@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <cstdint>
 #include <optional>
+#include <map>
 #include <future>
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_folder_store.h"
@@ -44,6 +45,13 @@ class ChatHistorySyncService
 		std::int64_t created_epoch_seconds = 0;
 		std::int64_t updated_epoch_seconds = 0;
 	};
+	struct RemoteOpenCodeDiscovery
+	{
+		std::vector<RemoteOpenCodeSession> sessions;
+		std::string error;
+	};
+	RemoteOpenCodeDiscovery DiscoverRemoteOpenCodeSessions(const ChatFolder& folder, const ExecutionHost& host,
+	    const ProviderProfile& profile, std::stop_token stop_token = {}) const;
 	struct RemoteCodexDiscovery
 	{
 		std::vector<RemoteCodexSession> sessions;
@@ -81,11 +89,13 @@ class ChatHistorySyncService
 	};
 	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
 	ImportResult ImportAllNativeChatsByDiscovery(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
-	enum class ImportPolicy { ExplicitImport, RegisteredWorkspacesOnly };
+	enum class ImportPolicy { ExplicitImport, RegisteredWorkspacesOnly, SelectedNewChatsOnly };
 	struct PreparedHistoryChat
 	{
 		ChatSession chat;
 		std::optional<ChatSession> expected_live;
+		std::optional<ExecutionHost> expected_host;
+		std::optional<ChatFolder> expected_folder;
 		std::string expected_fingerprint;
 		std::shared_ptr<PreparedChatSave> files;
 		std::filesystem::path codex_rollout;
@@ -108,11 +118,17 @@ class ChatHistorySyncService
 		std::shared_future<std::shared_ptr<PreparedHistoryBatch>> preparation;
 		std::shared_future<bool> publication_sync;
 		std::optional<std::size_t> open_code_next_offset;
+		std::map<std::string, ExecutionHost> expected_hosts;
+		std::map<std::string, ChatFolder> selected_folder_snapshots;
 		bool Pending() const { return !chats.empty() || !codex_rollouts.empty() || preparation.valid() || publication_sync.valid(); }
 		void CancelPending();
 	};
+	LocalHistoryDiscovery DiscoverRemoteProviderChatsForFolder(const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token = {}) const;
 	/// Read provider transcripts without accessing live app state or writing local history.
 	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0) const;
+	/// <summary>Removes owned, declined, duplicate and unregistered startup candidates without writing history.</summary>
+	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat) const;
+	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr) const;
 	/// Revalidate and merge a completed scan on the app thread.
 	ImportResult ImportDiscoveredProviderChatsForFolder(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery discovery, bool sidebar_is_complete = false) const;
 	ImportResult ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats = 8, ImportPolicy policy = ImportPolicy::ExplicitImport) const;
@@ -126,7 +142,7 @@ class ChatHistorySyncService
 	RemoteOpenCodeTranscript LoadLocalOpenCodeTranscript(const ChatSession& chat, const ProviderProfile& profile, std::stop_token stop_token = {}) const;
 	static RemoteOpenCodeTranscript ParseRemoteOpenCodeTranscript(std::string_view output);
 	RemoteCodexDiscovery DiscoverRemoteCodexSessions(
-	    const ExecutionHost& host, const ChatFolder& folder) const;
+	    const ExecutionHost& host, const ChatFolder& folder, std::stop_token stop_token = {}) const;
 	ImportResult ImportRemoteCodexChatsForFolder(
 	    uam::AppState& app, const std::string& folder_id,
 	    const std::vector<RemoteCodexSession>& sessions) const;

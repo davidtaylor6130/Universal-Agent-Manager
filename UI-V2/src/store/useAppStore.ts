@@ -1,3 +1,4 @@
+import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
 import { create } from 'zustand'
@@ -297,6 +298,7 @@ function deserializeState(
     cliBindingBySessionId,
     acpBindingBySessionId,
     providerModelCatalogs: cpp.providerModelCatalogs ?? existing.providerModelCatalogs,
+    startupNativeImports: cpp.startupNativeImports ?? EMPTY_STARTUP_NATIVE_IMPORT_STATUS,
     cliTranscriptBySessionId,
     cliDebugState,
     memoryEnabledDefault: cpp.settings.memoryEnabledDefault,
@@ -491,6 +493,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     repositoryReviewBySessionId: sameRecordEntries(current.repositoryReviewBySessionId, repositoryReviewBySessionId) ? current.repositoryReviewBySessionId : repositoryReviewBySessionId,
     providers,
     providerModelCatalogs: patch.providerModelCatalogs ?? current.providerModelCatalogs,
+    startupNativeImports: patch.startupNativeImports ?? current.startupNativeImports,
     activeSessionId,
     lastAppliedStateRevision: nextRevision,
     theme: patch.settings?.theme ?? current.theme,
@@ -972,6 +975,10 @@ export const useAppStore = create<AppState>((set, get) => {
   const inCef = isCefContext()
 
   return {
+    startupNativeImports: EMPTY_STARTUP_NATIVE_IMPORT_STATUS,
+    startupNativeImportReviewSequence: 0,
+    startupNativeImportFolderId: null,
+    openStartupNativeImportReview: (folderId) => set((state) => ({ startupNativeImportReviewSequence: state.startupNativeImportReviewSequence + 1, startupNativeImportFolderId: folderId ?? null })),
     computerUseAllowlistEnabled: false,
     computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),

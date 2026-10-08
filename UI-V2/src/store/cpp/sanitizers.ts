@@ -1,3 +1,4 @@
+import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImports'
 import { sanitizeExecutionRouting } from '../../types/executionRouting'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './types'
 import { sanitizeCustomIcon } from '../../types/customIcon'
@@ -1672,6 +1673,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     selectedChatIndex: finiteNumberOr(value.selectedChatIndex, -1),
     providers,
     providerModelCatalogs,
+    startupNativeImports: sanitizeStartupNativeImportStatus(value.startupNativeImports),
     settings,
     memoryActivity: sanitizeMemoryActivity(value.memoryActivity, settings.memoryLastStatus),
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
@@ -1815,6 +1817,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     providerModelCatalogs: value.providerModelCatalogs !== undefined
       ? sanitizeProviderModelCatalogs(value.providerModelCatalogs)
       : undefined,
+    startupNativeImports: value.startupNativeImports !== undefined ? sanitizeStartupNativeImportStatus(value.startupNativeImports) : undefined,
     settings: isRecord(value.settings) ? sanitizeCppSettings(value.settings) : undefined,
     memoryActivity: value.memoryActivity !== undefined ? sanitizeMemoryActivity(value.memoryActivity) : undefined,
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,

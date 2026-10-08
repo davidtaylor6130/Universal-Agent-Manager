@@ -26,6 +26,8 @@
 namespace uam
 {
 
+	class StartupNativeImportService;
+
 	namespace fs = std::filesystem;
 
 	/// <summary>
@@ -861,6 +863,7 @@ namespace uam
 	struct AppState
 	{
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
+		std::shared_ptr<StartupNativeImportService> startup_native_import_service;
 		std::unordered_map<std::string, std::string> execution_routing_waits;
 		std::unordered_map<std::string, double> execution_routing_retry_at_by_chat_id;
 		std::unordered_set<std::string> execution_routing_reserved_chat_ids;

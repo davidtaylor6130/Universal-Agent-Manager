@@ -443,6 +443,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/runtime_orchestration_services.cpp
+  src/app/startup_native_import_service.cpp
   src/app/model_discovery_service.cpp
   src/app/shell_action_service.cpp
   src/app/theme_service.cpp
@@ -458,6 +459,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/chat_handlers.cpp
   src/cef/organization_handlers.cpp
   src/cef/chat_receipt_handlers.cpp
+  src/cef/startup_native_import_handlers.cpp
   src/cef/chat_config_handlers.cpp
   src/cef/settings_handlers.cpp
   src/cef/remote_host_handlers.cpp
@@ -1154,6 +1156,7 @@ if(UAM_BUILD_TESTS)
     tests/core_tests.cpp
     tests/antigravity_tests.cpp
     tests/antigravity_mcp_tests.cpp
+    tests/startup_native_import_tests.cpp
     tests/queued_prompt_tests.cpp
     tests/queued_prompt_hold_tests.cpp
     tests/agent_target_metadata_tests.cpp
@@ -1216,6 +1219,7 @@ if(UAM_BUILD_TESTS)
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp
+    src/app/startup_native_import_service.cpp
     src/app/model_discovery_service.cpp
     src/app/shell_action_service.cpp
     src/app/theme_service.cpp

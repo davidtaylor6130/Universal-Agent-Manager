@@ -248,6 +248,39 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[0]).toMatchObject({ action: 'selectSession', payload: { chatId: '' } })
   })
 
+  it('receives startup import readiness through patches without changing the active chat or messages', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(makeCppState(1)))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const ready = { phase: 'ready' as const, generation: 'startup-fixture', totalCount: 3, importedCount: 0 }
+    cefStore.getState().loadFromCef({ ...makeCppState(1), startupNativeImports: { ...ready, phase: 'scanning', totalCount: 0 } })
+    const current = cefStore.getState()
+    expect(testWindow.uamPush).toBeTypeOf('function')
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 2, startupNativeImports: ready } })
+    expect(cefStore.getState().startupNativeImports).toEqual(ready)
+    expect(cefStore.getState().activeSessionId).toBe(current.activeSessionId)
+    expect(cefStore.getState().sessions).toBe(current.sessions)
+    expect(cefStore.getState().messages).toBe(current.messages)
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 1, startupNativeImports: { ...ready, totalCount: 9 } } })
+    expect(cefStore.getState().startupNativeImports).toEqual(ready)
+  })
+
+  it('reopens cached startup candidates when a workspace requests history review', async () => {
+    const requests: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request).action)
+      onSuccess(JSON.stringify({ success: true, reviewStartupImports: true }))
+    }
+    const previous = useAppStore.getState().startupNativeImportReviewSequence
+    expect(await useAppStore.getState().rescanFolderChats('default')).toBe(true)
+    expect(useAppStore.getState().startupNativeImportReviewSequence).toBe(previous + 1)
+    expect(useAppStore.getState().startupNativeImportFolderId).toBe('default')
+    expect(requests).toEqual(['rescanFolderChats'])
+  })
+
   it('does not reselect and rewrite the active chat', async () => {
     const requests: Array<{ action: string }> = []
     window.cefQuery = ({ request, onSuccess }) => {

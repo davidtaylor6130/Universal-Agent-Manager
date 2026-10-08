@@ -1,3 +1,4 @@
+import type { StartupNativeImportStatus } from '../../types/startupNativeImports'
 import type { ExecutionRoutingSettings } from '../../types/executionRouting'
 import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
@@ -728,6 +729,7 @@ export interface VcsCommitMessageSuggestion {
 }
 
 export interface CppAppState {
+  startupNativeImports?: StartupNativeImportStatus
   unchanged?: false
   stateRevision?: number
   bootId?: string
@@ -756,6 +758,7 @@ export interface CppCompanionUnchangedState {
 }
 
 export interface CppStatePatch {
+  startupNativeImports?: StartupNativeImportStatus
   stateRevision?: number
   folders?: CppFolder[]
   resourceCollections?: ResourceCollection[]

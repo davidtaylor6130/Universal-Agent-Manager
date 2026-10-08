@@ -12,6 +12,7 @@
 
 namespace uam
 {
+struct StartupNativeImportSnapshot;
 
 /// <summary>
 /// Converts AppState to a nlohmann::json object suitable for serialising
@@ -28,6 +29,9 @@ class StateSerializer
 
 	/// Serialise a compact state summary for push fingerprinting.
 	static nlohmann::json SerializeFingerprint(const AppState& app);
+
+	/// <summary>Serializes bounded startup discovery metadata without private transcript payloads.</summary>
+	static nlohmann::json SerializeStartupNativeImports(const StartupNativeImportSnapshot& snapshot);
 
 	/// Serialise a single chat session (messages included).
 	static nlohmann::json SerializeSession(const ChatSession& session);

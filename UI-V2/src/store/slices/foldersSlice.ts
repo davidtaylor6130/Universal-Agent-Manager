@@ -200,11 +200,12 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
 
     rescanFolderChats: async (id: string): Promise<boolean> => {
       if (!isCefContext()) return true
-      const response = await sendToCEF<{ success?: boolean; partial?: boolean }>({
+      const response = await sendToCEF<{ success?: boolean; partial?: boolean; reviewStartupImports?: boolean }>({
         action: 'rescanFolderChats',
         payload: { folderId: id },
         requestId: createRequestId('rescanFolderChats'),
       })
+      if (response.ok && response.data?.reviewStartupImports) get().openStartupNativeImportReview(id)
       return response.ok && (response.data?.success !== false || response.data?.partial === true)
     },
 

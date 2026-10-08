@@ -436,6 +436,18 @@ namespace
 		return import_index;
 	}
 
+	bool StartupCandidateIsOwned(const NativeImportIndex& index, const ChatSession& chat)
+	{
+		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+		if (index.existing_id_by_native_key.contains(key) || index.owned_native_keys.contains(key)) return true;
+		ChatSession workspace;
+		workspace.provider_id = chat.provider_id;
+		workspace.execution_host_id = chat.execution_host_id;
+		workspace.workspace_directory = chat.workspace_directory;
+		workspace.workspace_worktree_directory = chat.workspace_worktree_directory;
+		return index.pending_native_workspace_keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(workspace));
+	}
+
 	void UnloadPersistedTranscript(ChatSession& chat)
 	{
 		if (chat.messages_loaded)
@@ -2121,6 +2133,91 @@ void ChatHistorySyncService::LocalHistoryDiscovery::CancelPending()
 	}).detach();
 }
 
+const ChatFolder* ChatHistorySyncService::StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat) const
+{
+	if (uam::paths::IsControllerLocalWorkspace(chat))
+	{
+		const fs::path workspace = uam::paths::PathFromUtf8(chat.workspace_directory);
+		return workspace.is_absolute() ? uam::FindImportedWorkspaceFolder(app.folders, workspace) : nullptr;
+	}
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	if (host == nullptr || host->transport != "ssh" || host->runner_status != "ready" ||
+	    !uam::execution_hosts::IsAbsoluteRemotePath(host->platform, chat.workspace_directory)) return nullptr;
+	for (const ChatFolder& folder : app.folders)
+		if (folder.execution_host_id == chat.execution_host_id && uam::execution_hosts::RemotePathsMatch(host->platform, folder.directory, chat.workspace_directory)) return &folder;
+	return nullptr;
+}
+
+ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRemoteProviderChatsForFolder(
+    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token) const
+{
+	LocalHistoryDiscovery discovery;
+	if (host.transport != "ssh" || host.runner_status != "ready" || folder.execution_host_id != host.id ||
+	    !uam::execution_hosts::IsAbsoluteRemotePath(host.platform, folder.directory) || stop_token.stop_requested()) return discovery;
+	const auto append = [&](const std::string& id, const std::string& title, const std::string& directory,
+	    const std::string& provider, const std::string& created, const std::string& updated)
+	{
+		if (!uam::execution_hosts::RemotePathsMatch(host.platform, directory, folder.directory)) return;
+		ChatSession chat;
+		chat.id = id;
+		chat.branch_root_chat_id = id;
+		chat.title = uam::execution_hosts::Bounded(title, 256);
+		if (chat.title.empty()) chat.title = "Session " + id;
+		chat.provider_id = provider;
+		chat.native_session_id = id;
+		chat.folder_id = folder.id;
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = folder.directory;
+		chat.created_at = created;
+		chat.updated_at = updated;
+		discovery.chats.push_back(std::move(chat));
+	};
+	if (open_code_profile != nullptr && ProviderRuntime::IsRuntimeEnabled(*open_code_profile))
+	{
+		const RemoteOpenCodeDiscovery remote = DiscoverRemoteOpenCodeSessions(folder, host, *open_code_profile, stop_token);
+		if (!remote.error.empty()) discovery.result.Fail(remote.error);
+		for (const RemoteOpenCodeSession& session : remote.sessions)
+			if (uam::execution_hosts::IsPortableId(session.id)) append(session.id, session.title, session.directory,
+			    uam::provider_ids::kOpenCodeCli, IsoTimestampFromEpochMilliseconds(session.created_epoch_ms), IsoTimestampFromEpochMilliseconds(session.updated_epoch_ms));
+	}
+	if (!stop_token.stop_requested() && ProviderRuntime::IsRuntimeEnabled(uam::provider_ids::kCodexCli))
+	{
+		const RemoteCodexDiscovery remote = DiscoverRemoteCodexSessions(host, folder, stop_token);
+		if (!remote.error.empty()) discovery.result.Fail(remote.error);
+		for (const RemoteCodexSession& session : remote.sessions)
+		{
+			const std::string id = uam::codex::ValidThreadIdOrEmpty(session.id);
+			if (!id.empty()) append(id, session.title, session.directory, uam::provider_ids::kCodexCli,
+			    IsoTimestampFromEpochSeconds(session.created_epoch_seconds), IsoTimestampFromEpochSeconds(session.updated_epoch_seconds));
+		}
+	}
+	return discovery;
+}
+
+bool ChatHistorySyncService::FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out) const
+{
+	const NativeImportIndex index = LoadNativeImportIndex(app, &app.chats);
+	if (!index.tombstones_available)
+	{
+		if (error_out != nullptr) *error_out = "Deletion and decline records could not be read. History import is unavailable.";
+		return false;
+	}
+	std::unordered_set<std::string> seen;
+	const auto reject = [&](ChatSession& chat)
+	{
+		const ChatFolder* owner = StartupImportWorkspaceOwner(app, chat);
+		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+		if (owner == nullptr || (!uam::paths::IsControllerLocalWorkspace(chat) && owner->id != chat.folder_id) ||
+		    uam::strings::IsBlank(chat.native_session_id) || index.tombstoned_native_keys.contains(key) ||
+		    StartupCandidateIsOwned(index, chat) || !seen.insert(key).second) return true;
+		chat.folder_id = owner->id;
+		return false;
+	};
+	std::erase_if(discovery.chats, reject);
+	std::erase_if(discovery.codex_rollouts, [&](std::pair<ChatSession, fs::path>& record) { return reject(record.first); });
+	return true;
+}
+
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats, ImportPolicy policy) const
 {
 	ImportResult result;
@@ -2158,7 +2255,14 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			if (!candidate.error.empty()) result.Fail(candidate.error);
 		std::erase_if(prepared.chats, [&](const PreparedHistoryChat& candidate)
 		{
+			const ChatFolder* owner = policy == ImportPolicy::SelectedNewChatsOnly ? StartupImportWorkspaceOwner(app, candidate.chat) : nullptr;
+			const ExecutionHost* host = candidate.expected_host ? uam::execution_hosts::Find(app.settings.execution_hosts, candidate.expected_host->id) : nullptr;
 			return candidate.skipped || !candidate.files || tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)) ||
+			    (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(current_index, candidate.chat)) ||
+			    (policy == ImportPolicy::SelectedNewChatsOnly &&
+			     (owner == nullptr || owner->id != candidate.chat.folder_id ||
+			      (candidate.expected_folder && (owner->directory != candidate.expected_folder->directory || owner->execution_host_id != candidate.expected_folder->execution_host_id)) ||
+			      (candidate.expected_host && (host == nullptr || !uam::execution_hosts::SameConnection(*candidate.expected_host, *host))))) ||
 			    (policy == ImportPolicy::RegisteredWorkspacesOnly &&
 			     (!uam::paths::IsControllerLocalWorkspace(candidate.chat) || !uam::paths::PathFromUtf8(candidate.chat.workspace_directory).is_absolute() ||
 			      uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(candidate.chat.workspace_directory)) == nullptr));
@@ -2177,7 +2281,9 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			const auto current_identity = current_index.existing_id_by_native_key.find(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat));
 			if (current_identity != current_index.existing_id_by_native_key.end() && current_identity->second != candidate.chat.id) continue;
 			const ChatFolder* destination = ChatDomainService().FindFolderById(app, candidate.chat.folder_id);
-			if (destination == nullptr || !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(candidate.chat.workspace_directory), uam::paths::PathFromUtf8(destination->directory))) continue;
+			if (destination == nullptr || (policy == ImportPolicy::SelectedNewChatsOnly
+			    ? StartupImportWorkspaceOwner(app, candidate.chat) != destination
+			    : !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(candidate.chat.workspace_directory), uam::paths::PathFromUtf8(destination->directory)))) continue;
 			const ChatSession* live = ChatDomainService().FindChatById(app, candidate.chat.id);
 			if ((candidate.expected_live.has_value() != (live != nullptr)) ||
 			    (live != nullptr && (live->messages_loaded != candidate.expected_live->messages_loaded ||
@@ -2253,10 +2359,29 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			candidate.codex_rollout = std::move(discovery.codex_rollouts.back().second);
 			discovery.codex_rollouts.pop_back();
 		}
-		if (const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(chat.workspace_directory)))
+		if (const ChatFolder* owner = policy == ImportPolicy::SelectedNewChatsOnly ? StartupImportWorkspaceOwner(app, chat) : uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(chat.workspace_directory)))
 		{
 			if (!folder.id.empty() && owner->id != folder.id) continue;
+			if (policy == ImportPolicy::SelectedNewChatsOnly)
+			{
+				if (!chat.folder_id.empty() && owner->id != chat.folder_id) continue;
+				const auto selected = discovery.selected_folder_snapshots.find(owner->id);
+				if (selected != discovery.selected_folder_snapshots.end() &&
+				    (owner->directory != selected->second.directory || owner->execution_host_id != selected->second.execution_host_id)) continue;
+				candidate.expected_folder = *owner;
+			}
 			chat.folder_id = owner->id;
+		}
+		if (policy == ImportPolicy::SelectedNewChatsOnly)
+		{
+			if (StartupImportWorkspaceOwner(app, chat) == nullptr) continue;
+			if (!uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				const auto captured = discovery.expected_hosts.find(chat.execution_host_id);
+				const ExecutionHost* current = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+				if (captured == discovery.expected_hosts.end() || current == nullptr || !uam::execution_hosts::SameConnection(captured->second, *current)) continue;
+				candidate.expected_host = captured->second;
+			}
 		}
 		if (policy == ImportPolicy::RegisteredWorkspacesOnly &&
 		    (!uam::paths::IsControllerLocalWorkspace(chat) || !uam::paths::PathFromUtf8(chat.workspace_directory).is_absolute() ||
@@ -2264,6 +2389,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 		const auto existing = index.existing_id_by_native_key.find(key);
 		if (index.tombstoned_native_keys.contains(key)) continue;
+		if (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(index, chat)) continue;
 		if (existing != index.existing_id_by_native_key.end())
 		{
 			chat.id = existing->second;
@@ -2361,6 +2487,92 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportProviderChats
 	const ProviderProfile* open_code = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kOpenCodeCli);
 	return ImportDiscoveredProviderChatsForFolder(app, snapshot, DiscoverProviderChatsForFolder(snapshot, open_code, {}, app.open_code_history_scan_offset));
 }
+
+ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::DiscoverRemoteOpenCodeSessions(
+	    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile& profile, std::stop_token stop_token) const
+	{
+		RemoteOpenCodeDiscovery result;
+		uam::remote::RunnerClient client(
+		    PlatformServicesFactory::Instance().process_service,
+		    uam::remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+		                               host.runner_directory, host.runner_protocol_version),
+		    host.runner_version, host.runner_protocol_version);
+		if (stop_token.stop_requested()) return result;
+		if (!client.Connect(&result.error)) return result;
+		std::string session_id = "history-" +
+		    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		if (session_id == "history-")
+			session_id += uam::time::SteadyEpochNanosecondsTokenNow();
+		if (!client.StartProcess(
+		        session_id, uam::paths::PathFromUtf8(folder.directory),
+		        ProviderRuntimeRegistry::Resolve(profile).BuildNativeDiscoveryArgv(profile),
+		        {}, &result.error) || !client.CloseProcessInput(session_id, &result.error))
+		{
+			(void)client.StopProcess(session_id);
+			(void)client.RemoveProcess(session_id);
+			return result;
+		}
+		std::string output;
+		std::string diagnostic;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		while (!stop_token.stop_requested() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::remote::ProcessPollResult polled;
+			if (!client.PollProcess(session_id, polled, &result.error, [stop_token]() { return stop_token.stop_requested(); })) break;
+			if (output.size() + polled.standard_output.size() >
+			        uam::platform::kCapturedCommandMaxOutputBytes ||
+			    diagnostic.size() + polled.standard_error.size() >
+			        uam::platform::kCapturedCommandMaxOutputBytes)
+			{
+				result.error = "Remote OpenCode session discovery returned too much output.";
+				break;
+			}
+			output += polled.standard_output;
+			diagnostic += polled.standard_error;
+			if (!client.AcknowledgeProcessOutput(session_id, polled, &result.error)) break;
+			if (!polled.running)
+			{
+				(void)client.RemoveProcess(session_id);
+				if (polled.exit_code != 0)
+				{
+					result.error = "Remote OpenCode session discovery failed (exit " +
+					               std::to_string(polled.exit_code) + "): " +
+					               uam::strings::NonEmptyOrFallback(
+					                   uam::strings::Trim(diagnostic), uam::strings::Trim(output));
+					return result;
+				}
+				const nlohmann::json values = nlohmann::json::parse(output, nullptr, false);
+				if (!values.is_array() || values.size() > 200)
+				{
+					result.error = "Remote OpenCode returned an invalid bounded session list.";
+					return result;
+				}
+				for (const nlohmann::json& value : values)
+				{
+					if (!value.is_object() || !value.contains("id") || !value["id"].is_string() ||
+					    !value.contains("title") || !value["title"].is_string() ||
+					    !value.contains("directory") || !value["directory"].is_string() ||
+					    !value.contains("created") || !value["created"].is_number_integer() ||
+					    !value.contains("updated") || !value["updated"].is_number_integer())
+					{
+						result.sessions.clear();
+						result.error = "Remote OpenCode returned malformed session metadata.";
+						return result;
+					}
+					result.sessions.push_back({
+					    value["id"].get<std::string>(), value["title"].get<std::string>(),
+					    value["directory"].get<std::string>(), value["created"].get<std::int64_t>(),
+					    value["updated"].get<std::int64_t>()});
+				}
+				return result;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		if (result.error.empty()) result.error = stop_token.stop_requested() ? "Remote OpenCode discovery cancelled." : "Remote OpenCode session discovery timed out.";
+		(void)client.StopProcess(session_id);
+		(void)client.RemoveProcess(session_id);
+		return result;
+	}
 
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportRemoteOpenCodeChatsForFolder(
     uam::AppState& app, const std::string& folder_id,
@@ -2790,7 +3002,7 @@ bool ChatHistorySyncService::AppendRemoteCodexSessions(
 
 ChatHistorySyncService::RemoteCodexDiscovery
 ChatHistorySyncService::DiscoverRemoteCodexSessions(
-    const ExecutionHost& host, const ChatFolder& folder) const
+    const ExecutionHost& host, const ChatFolder& folder, std::stop_token stop_token) const
 {
 	RemoteCodexDiscovery discovery;
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -2816,13 +3028,14 @@ ChatHistorySyncService::DiscoverRemoteCodexSessions(
 		    {"limit", remaining}, {"sortKey", "updated_at"},
 		    {"sortDirection", "desc"}};
 		if (!RunRemoteCodexRpc(client, uam::paths::PathFromUtf8(folder.directory),
-		                       "thread/list", params, list_result, discovery.error) ||
+		                       "thread/list", params, list_result, discovery.error, stop_token) ||
 		    !AppendRemoteCodexSessions(list_result, discovery.sessions, &discovery.error))
 			return discovery;
 	}
 #else
 	(void)host;
 	(void)folder;
+	(void)stop_token;
 	discovery.error = "Codex support is disabled in this build.";
 #endif
 	return discovery;

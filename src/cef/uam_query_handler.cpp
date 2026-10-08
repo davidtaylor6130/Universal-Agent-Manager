@@ -20,10 +20,6 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();
-	for (const std::weak_ptr<std::stop_source>& pending : m_historyScanCancellations)
-	{
-		if (const std::shared_ptr<std::stop_source> source = pending.lock()) source->request_stop();
-	}
 #if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) m_companion->Stop();
 #endif
@@ -81,6 +77,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 
 	static constexpr Route kRoutes[] = {
 		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
+		{"getStartupNativeImports", &UamQueryHandler::HandleGetStartupNativeImports},
+		{"resolveStartupNativeImports", &UamQueryHandler::HandleResolveStartupNativeImports},
 		{"getAppPermissions", &UamQueryHandler::HandleGetAppPermissions},
 		{"requestAppPermission", &UamQueryHandler::HandleRequestAppPermission},
 		{"openAppPermissionSettings", &UamQueryHandler::HandleOpenAppPermissionSettings},
