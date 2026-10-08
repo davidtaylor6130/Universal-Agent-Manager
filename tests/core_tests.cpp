@@ -17896,10 +17896,138 @@ UAM_TEST(CreateFolderGeneratesUniqueIds)
 	for (int i = 0; i < 128; ++i)
 	{
 		std::string created_id;
-		UAM_ASSERT(CreateFolder(app, "Project " + std::to_string(i), temp.root.string(), &created_id));
+		const fs::path workspace = temp.root / ("project-" + std::to_string(i));
+		UAM_ASSERT(CreateFolder(app, "Project " + std::to_string(i), workspace.string(), &created_id));
 		UAM_ASSERT(!created_id.empty());
 		UAM_ASSERT(ids.insert(created_id).second);
 	}
+}
+
+UAM_TEST(CreateFolderRejectsCanonicalWorkspaceAliasesWithoutChangingSavedOwnership)
+{
+	TempDir temp("uam-folder-duplicate-create");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	std::string original_id;
+	UAM_ASSERT(CreateFolder(app, "Original", workspace.string(), &original_id));
+	const std::string saved = uam::io::ReadTextFile(app.data_root / "folders.txt");
+	for (const std::string& alias : {workspace.string() + "/", (workspace / ".").string()})
+	{
+		std::string created_id = "stale";
+		UAM_ASSERT(!CreateFolder(app, "Alias", alias, &created_id));
+		UAM_ASSERT(created_id.empty());
+		UAM_ASSERT_EQ(app.folders.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.new_chat_folder_id, original_id);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(app.data_root / "folders.txt"), saved);
+		UAM_ASSERT(app.status_line.find("already") != std::string::npos);
+	}
+	const fs::path missing = temp.root / "not-created";
+	UAM_ASSERT(CreateFolder(app, "Future", missing.string()));
+	UAM_ASSERT(!CreateFolder(app, "Future alias", missing.string() + "/"));
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{2});
+}
+
+UAM_TEST(RenameFolderRejectsAnotherWorkspaceOwnerAndPreservesLegacyTitleEdits)
+{
+	TempDir temp("uam-folder-duplicate-rename");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path first = temp.root / "first";
+	const fs::path second = temp.root / "second";
+	fs::create_directories(first);
+	fs::create_directories(second);
+	std::string first_id;
+	std::string second_id;
+	UAM_ASSERT(CreateFolder(app, "First", first.string(), &first_id));
+	UAM_ASSERT(CreateFolder(app, "Second", second.string(), &second_id));
+	const std::string saved = uam::io::ReadTextFile(app.data_root / "folders.txt");
+	UAM_ASSERT(!RenameFolderById(app, second_id, "Collision", first.string() + "/"));
+	UAM_ASSERT_EQ(app.folders[1].title, std::string("Second"));
+	UAM_ASSERT_EQ(app.folders[1].directory, second.string());
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(app.data_root / "folders.txt"), saved);
+	UAM_ASSERT(RenameFolderById(app, first_id, "Title edit", first.string() + "/"));
+	app.folders.push_back({"legacy-alias", "Legacy", first.string(), false, "local"});
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	UAM_ASSERT(RenameFolderById(app, "legacy-alias", "Preserved alias title", first.string()));
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{3});
+	UAM_ASSERT_EQ(app.folders.back().title, std::string("Preserved alias title"));
+}
+
+UAM_TEST(FolderDuplicateGuardRespectsRemoteHostAndPlatformPathIdentity)
+{
+	TempDir temp("uam-folder-duplicate-remote");
+	uam::AppState app;
+	app.data_root = temp.root;
+	for (const std::pair<std::string, std::string>& entry : {
+	         std::pair{std::string("windows-a"), std::string("windows")},
+	         std::pair{std::string("windows-b"), std::string("windows")},
+	         std::pair{std::string("linux"), std::string("linux")}})
+	{
+		ExecutionHost host;
+		host.id = entry.first;
+		host.platform = entry.second;
+		host.ssh_alias = entry.first;
+		app.settings.execution_hosts.push_back(host);
+	}
+	UAM_ASSERT(CreateFolder(app, "Windows", "C:\\Work\\Project", nullptr, "windows-a"));
+	UAM_ASSERT(!CreateFolder(app, "Windows alias", "c:/work/project/", nullptr, "windows-a"));
+	UAM_ASSERT(CreateFolder(app, "Other computer", "c:/work/project/", nullptr, "windows-b"));
+	UAM_ASSERT(CreateFolder(app, "Linux uppercase", "/srv/Project", nullptr, "linux"));
+	UAM_ASSERT(CreateFolder(app, "Linux lowercase", "/srv/project", nullptr, "linux"));
+	UAM_ASSERT(!CreateFolder(app, "Linux alias", "/srv/Project/", nullptr, "linux"));
+	UAM_ASSERT(!CreateFolder(app, "Windows interior separator alias", "C:\\Work\\\\Project", nullptr, "windows-a"));
+	UAM_ASSERT(!CreateFolder(app, "Linux interior separator alias", "/srv//Project", nullptr, "linux"));
+	UAM_ASSERT(!CreateFolder(app, "Linux redundant leading separators", "///srv/Project", nullptr, "linux"));
+	UAM_ASSERT(!CreateFolder(app, "Windows dotted alias", "C:\\Work\\Project\\.", nullptr, "windows-a"));
+	UAM_ASSERT(!CreateFolder(app, "Linux dotted alias", "/srv/Project/.", nullptr, "linux"));
+	UAM_ASSERT(CreateFolder(app, "Windows drive root", "C:\\", nullptr, "windows-a"));
+	UAM_ASSERT(!CreateFolder(app, "Windows dotted drive root", "C:\\.\\", nullptr, "windows-a"));
+	UAM_ASSERT(CreateFolder(app, "POSIX root", "/", nullptr, "linux"));
+	UAM_ASSERT(!CreateFolder(app, "Dotted POSIX root", "/./", nullptr, "linux"));
+	UAM_ASSERT(CreateFolder(app, "POSIX double-slash root", "//", nullptr, "linux"));
+	UAM_ASSERT(!CreateFolder(app, "Dotted POSIX double-slash root", "//./", nullptr, "linux"));
+	UAM_ASSERT(CreateFolder(app, "POSIX double-slash workspace", "//srv/Project", nullptr, "linux"));
+	UAM_ASSERT(!CreateFolder(app, "POSIX double-slash workspace alias", "//srv//Project/.", nullptr, "linux"));
+	UAM_ASSERT(CreateFolder(app, "UNC share", "\\\\server\\share\\", nullptr, "windows-a"));
+	UAM_ASSERT(!CreateFolder(app, "Dotted UNC share", "\\\\server\\share\\.", nullptr, "windows-a"));
+	std::string windows_nested_id;
+	UAM_ASSERT(CreateFolder(app, "Windows nested", "C:\\Work\\Project\\nested", &windows_nested_id, "windows-a"));
+	UAM_ASSERT(!CreateFolder(app, "Windows middle dot", "C:\\Work\\Project\\.\\nested", nullptr, "windows-a"));
+	UAM_ASSERT(CreateFolder(app, "Linux nested", "/srv/Project/nested", nullptr, "linux"));
+	UAM_ASSERT(!CreateFolder(app, "Linux middle dot", "/srv/Project/./nested", nullptr, "linux"));
+	const std::string saved_owners = uam::io::ReadTextFile(app.data_root / "folders.txt");
+	UAM_ASSERT(!RenameFolderById(app, windows_nested_id, "Dotted rename collision", "c:/work/project/."));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(app.data_root / "folders.txt"), saved_owners);
+	// Backslashes are ordinary POSIX filename characters, and '..' may traverse symlinks.
+	UAM_ASSERT(CreateFolder(app, "Linux literal backslash", "/srv/Project\\literal", nullptr, "linux"));
+	UAM_ASSERT(CreateFolder(app, "Linux separator", "/srv/Project/literal", nullptr, "linux"));
+	UAM_ASSERT(CreateFolder(app, "Linux other", "/srv/else", nullptr, "linux"));
+	UAM_ASSERT(CreateFolder(app, "Unresolved parent traversal", "/srv/Project/../else", nullptr, "linux"));
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{15});
+}
+
+UAM_TEST(FolderDuplicateGuardPreservesNestedAndCaseDistinctLocalWorkspaces)
+{
+	TempDir temp("uam-folder-duplicate-local-edges");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path project = temp.root / "Project";
+	const fs::path nested = project / "nested";
+	fs::create_directories(nested);
+	UAM_ASSERT(CreateFolder(app, "Project", project.string()));
+	UAM_ASSERT(CreateFolder(app, "Nested", nested.string()));
+	const fs::path lowercase = temp.root / "project";
+	fs::create_directories(lowercase);
+	std::error_code error;
+	if (!fs::equivalent(project, lowercase, error) && !error)
+		UAM_ASSERT(CreateFolder(app, "Distinct case", lowercase.string()));
+#if !defined(_WIN32)
+	const fs::path alias = temp.root / "alias";
+	fs::create_directory_symlink(project, alias);
+	UAM_ASSERT(!CreateFolder(app, "Symlink alias", alias.string()));
+#endif
 }
 
 UAM_TEST(CreateFolderClearsOutputOnValidationFailure)

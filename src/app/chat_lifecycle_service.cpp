@@ -611,6 +611,56 @@ namespace
 		return uam::paths::WorkspaceOwnershipKey(app, host_id, directory);
 	}
 
+	/// <summary>Compares exact workspace ownership, including aliases of local paths that do not exist yet.</summary>
+	std::string FolderOwnershipKey(const uam::AppState& app, std::string_view host_id,
+	                               std::string_view directory)
+	{
+		const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(host_id), std::string(uam::execution_hosts::kLocalHostId));
+		if (host == uam::execution_hosts::kLocalHostId)
+		{
+			std::filesystem::path path = uam::paths::NormalizeExistingOrAbsolutePath(uam::paths::ExpandTrimmedWorkspacePath(directory));
+			while (path.has_relative_path() && path.filename().empty()) path = path.parent_path();
+			return host + "\n" + uam::paths::Utf8PathString(path);
+		}
+		const ExecutionHost* execution_host = uam::execution_hosts::Find(app.settings.execution_hosts, host);
+		const std::string_view platform = execution_host == nullptr ? std::string_view{} : execution_host->platform;
+		const bool windows = platform == "windows" || platform == "Windows";
+		std::string path = uam::execution_hosts::NormalizeRemotePath(platform, directory);
+		// POSIX permits a distinct double-slash root; do not collapse it into the single-slash root.
+		if (!windows && uam::strings::TrimAsciiView(directory) == "//") path = "//";
+		std::size_t root_length = 0;
+		while (root_length < path.size() && path[root_length] == '/') ++root_length;
+		if (windows && root_length == 0 && path.size() >= 3 && path[1] == ':' && path[2] == '/') root_length = 3;
+		std::string normalized = !windows && root_length > 2 ? "/" : path.substr(0, root_length);
+		std::size_t position = root_length;
+		while (position < path.size())
+		{
+			const std::size_t separator = path.find('/', position);
+			const std::size_t end = separator == std::string::npos ? path.size() : separator;
+			const std::string_view component(path.data() + position, end - position);
+			// Remove only redundant separators and '.', since '..' can traverse a remote symlink.
+			if (!component.empty() && component != ".")
+			{
+				if (!normalized.empty() && normalized.back() != '/') normalized.push_back('/');
+				normalized.append(component);
+			}
+			if (separator == std::string::npos) break;
+			position = separator + 1;
+		}
+		return host + "\n" + normalized;
+	}
+
+	bool HasOtherWorkspaceOwner(const uam::AppState& app, const FolderInput& input,
+	                            std::string_view excluded_id = {})
+	{
+		const std::string key = FolderOwnershipKey(app, input.execution_host_id, input.directory);
+		return std::ranges::any_of(app.folders, [&](const ChatFolder& folder)
+		{
+			return folder.id != excluded_id && !uam::strings::IsBlank(folder.directory) &&
+			       FolderOwnershipKey(app, folder.execution_host_id, folder.directory) == key;
+		});
+	}
+
 	std::string WorkspaceTitle(std::string_view directory, std::string_view fallback)
 	{
 		std::string value(uam::strings::TrimAsciiView(directory));
@@ -1651,6 +1701,11 @@ bool CreateFolder(uam::AppState& app, const std::string& title,
 	{
 		return false;
 	}
+	if (HasOtherWorkspaceOwner(app, input))
+	{
+		app.status_line = "A workspace folder already exists for this directory on the selected computer.";
+		return false;
+	}
 
 	ChatFolder folder;
 	folder.id = AllocateUniqueFolderId(app);
@@ -1712,7 +1767,14 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 	const ChatFolder original = folder;
 	const std::vector<ChatSession> original_chats = app.chats;
 	const std::string original_status_line = app.status_line;
-	const bool directory_changed = !FolderDirectoryMatches(original.directory, input.directory);
+	const bool directory_changed = FolderOwnershipKey(app, original.execution_host_id, original.directory) !=
+	                               FolderOwnershipKey(app, input.execution_host_id, input.directory);
+	// Existing duplicate records remain editable until an explicit consolidation is approved.
+	if (directory_changed && HasOtherWorkspaceOwner(app, input, target_folder_id))
+	{
+		app.status_line = "A workspace folder already exists for this directory on the selected computer.";
+		return false;
+	}
 	if (directory_changed && FolderHasRunningChat(app, target_folder_id))
 	{
 		app.status_line = "Cannot change a folder directory while one of its chats has a running runtime.";
