@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StartupNativeImportChooser } from './StartupNativeImportChooser'
@@ -15,6 +15,22 @@ const answer = async (index: number, data: StartupNativeImportPage) => { await a
 const click = async (label: string) => { await act(async () => button(label).click()) }
 function mount() { act(() => root.render(<StartupNativeImportChooser />)) }
 describe('startup native history chooser', () => {
+  it('loads cached candidates after StrictMode replay and ignores the invalidated initial reply', async () => {
+    act(() => root.render(<StrictMode><StartupNativeImportChooser /></StrictMode>))
+    expect(requests.length).toBeGreaterThan(0)
+    const currentRequest = requests.length - 1
+    await answer(currentRequest, page('scan-1', ['current']))
+    expect(document.body.querySelector('[aria-label="Select current"]')).not.toBeNull()
+    if (currentRequest > 0) {
+      await answer(0, page('scan-1', ['stale']))
+      expect(document.body.querySelector('[aria-label="Select stale"]')).toBeNull()
+      expect(document.body.querySelector('[aria-label="Select current"]')).not.toBeNull()
+    }
+    expect(button('Later').disabled).toBe(false)
+    await click('Later')
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(requests.every((request) => request.action === 'getStartupNativeImports')).toBe(true)
+  })
   beforeEach(() => {
     requests = []
     window.cefQuery = ({ request, onSuccess, onFailure }) => { const parsed = JSON.parse(request); requests.push({ ...parsed, success: onSuccess, failure: onFailure }) }

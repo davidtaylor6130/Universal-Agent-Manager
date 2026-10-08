@@ -54,6 +54,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     window.addEventListener('keydown', key, true)
     return () => {
       mounted.current = false; ++requestSequence.current
+      busyRef.current = false
       window.removeEventListener('keydown', key, true)
       if (previous?.isConnected && (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement))) previous.focus()
     }
