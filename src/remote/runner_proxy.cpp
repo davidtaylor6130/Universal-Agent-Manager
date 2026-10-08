@@ -823,11 +823,14 @@ namespace uam::remote
 			std::string outcome;
 			if (!client.StopProcess(session_id, &error, true, &outcome)) return false;
 			bool drained = false;
+			bool unterminated_stdout = false;
 			for (int batch = 0; batch < 256; ++batch)
 			{
 				ProcessPollResult final_output;
 				if (!client.PollProcess(session_id, final_output, &error)) break;
 				std::cout << final_output.standard_output << std::flush;
+				if (!final_output.standard_output.empty())
+					unterminated_stdout = final_output.standard_output.back() != '\n';
 				std::cerr << final_output.standard_error << std::flush;
 				if (!client.AcknowledgeProcessOutput(session_id, final_output, &error)) break;
 				if (!final_output.running && final_output.standard_output.empty() && final_output.standard_error.empty())
@@ -836,6 +839,8 @@ namespace uam::remote
 					break;
 				}
 			}
+			// Native Stop cleanup projects complete lines, including the final EOF fragment.
+			if (drained && unterminated_stdout) std::cout << '\n' << std::flush;
 			if (!client.RemoveProcess(session_id, &error)) return false;
 			if (!drained) outcome = "failed";
 			std::cerr << kRemoteStopOutcomePrefix << spec->delivery_token << ' ' << outcome << '\n';

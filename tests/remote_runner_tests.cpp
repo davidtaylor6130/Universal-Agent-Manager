@@ -3595,3 +3595,58 @@ UAM_TEST(RemoteDeadSourceAfterUnansweredBatchNotifiesWithoutAcknowledgingOrRemov
 {
 	VerifyRemoteExitNoticeBeforeUnansweredOutputAcknowledgement(false);
 }
+
+UAM_TEST(RemoteStopProjectsAndPersistsTheFinalUnterminatedProviderMessage)
+{
+#if !defined(_WIN32) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const bool terminated : {false, true})
+	{
+		TempDir temp("uam-stop-final-line");
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+		const fs::path fake_ssh = temp.root / "ssh";
+		UAM_ASSERT(uam::io::WriteTextFile(fake_ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+		fs::permissions(fake_ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		const fs::path tail = temp.root / "final.json";
+		const std::string final_message = R"({"method":"item/agentMessage/delta","params":{"itemId":"stop-tail","delta":"Final shutdown text."}})";
+		UAM_ASSERT(uam::io::WriteTextFile(tail, final_message + (terminated ? "\n" : "")));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+		chat.execution_host_id = "ssh-fixture";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->protocol_kind = "codex-app-server";
+		session->processing = true;
+		session->remote_stop_pending = true;
+		session->remote_output_delivery_token = "final-line-authority";
+		app.acp_sessions.push_back(std::move(session));
+		std::unique_ptr<uam::PendingAcpRemoteStop> pending = std::make_unique<uam::PendingAcpRemoteStop>();
+		pending->chat_id = chat.id;
+		pending->deadline_time_s = uam::GetAppTimeSeconds() + 5.0;
+		const std::string spec = uam::remote::BuildProcessProxySpec(chat.id, temp.root,
+		    {"/bin/sh", "-c", "cat >/dev/null; cat \"$1\"", "fixture", tail.string()}, {}, false, "final-line-authority");
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*pending, temp.root,
+		    {runner.string(), "proxy", "--alias", "fixture-host", "--platform", "linux", "--version", std::string(uam::constants::kAppVersion).substr(1)}, &error,
+		    {{uam::remote::kRemoteProcessSpecEnvironment, spec}, {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")}, {"UAM_TEST_RUNNER", runner.string()}}));
+		UAM_ASSERT(service.WriteToStdioProcess(*pending, uam::remote::kRemoteStopControlLine.data(), uam::remote::kRemoteStopControlLine.size(), &error));
+		app.pending_acp_remote_stops.push_back(std::move(pending));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(6);
+		while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT(!app.acp_sessions.front()->remote_stop_unconfirmed);
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Final shutdown text."));
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->messages.front().content, app.chats.front().messages.front().content);
+	}
+#endif
+}
