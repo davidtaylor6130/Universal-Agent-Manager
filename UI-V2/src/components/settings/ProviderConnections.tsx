@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, X } from 'lucide-react'
+import { Check, Minus, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
 import { SUPPORTED_CLI_PROVIDER_IDS, providerMetadataForId } from '../../utils/providerMetadata'
@@ -46,17 +46,24 @@ export function ProviderConnections({ providerId, selectedHostId, onHostChange, 
   const currentHost = useRef(activeHostId)
   currentHost.current = activeHostId
   const hostVersions = activeHostId === 'local' ? versions.providers : (versions.remoteProviders ?? []).filter(version => version.executionHostId === activeHostId)
+  const configurationSignature = JSON.stringify([
+    central.enabled, central.uamControlEnabled,
+    (central.mcpOverrides ?? []).filter(override => override.executionHostId === activeHostId && ids.includes(override.providerId)),
+    servers.map(server => [server.id, server.name, server.enabled, server.executionHostId, server.workspaceDirectory]),
+    runtimeProviders.map(provider => [provider.id, provider.supportsStructured]),
+  ])
+  useEffect(() => setError(''), [activeHostId])
   const validStatus = (value: McpStatus | undefined, expectedHost: string): value is McpStatus => value?.executionHostId === expectedHost && Array.isArray(value.providers)
   useEffect(() => {
     const generation = ++requestGeneration.current
-    setStatus(previous => previous?.executionHostId === activeHostId ? previous : null); setStatusError(''); setError('')
+    setStatus(previous => previous?.executionHostId === activeHostId ? previous : null); setStatusError('')
     void sendToCEF<McpStatus>({ action: 'getProviderMcpStatus', payload: { executionHostId: activeHostId } }).then(result => {
       if (generation !== requestGeneration.current || currentHost.current !== activeHostId) return
       if (result.ok && validStatus(result.data, activeHostId)) setStatus(result.data)
       else { setStatus(null); setStatusError(result.error || 'Connection checks are unavailable in this build.') }
     }).catch(() => { if (generation === requestGeneration.current) { setStatus(null); setStatusError('Could not check provider MCP setup.') } })
     return () => { requestGeneration.current++ }
-  }, [activeHostId, refresh, central, servers, runtimeProviders])
+  }, [activeHostId, refresh, configurationSignature])
   useEffect(() => {
     const timer = window.setInterval(() => { if (!busyRef.current) setRefresh(value => value + 1) }, 30_000)
     return () => window.clearInterval(timer)
@@ -85,7 +92,7 @@ export function ProviderConnections({ providerId, selectedHostId, onHostChange, 
     } catch { if (generation === requestGeneration.current) setError('Could not save provider MCP configuration. Try again.') }
     finally { setBusy(false); busyRef.current = false }
   }
-  const checkbox = (label: string, checked: boolean | undefined, onChange?: () => void, title?: string) => <button type="button" role="checkbox" aria-label={label} aria-checked={checked === true} disabled={busy || checked === undefined || !onChange} title={title} onClick={onChange} className="inline-flex p-1" style={{ color: checked === true ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)' }}>{checked === true ? <Check size={16} aria-hidden/> : <X size={16} aria-hidden/>}</button>
+  const checkbox = (label: string, checked: boolean | undefined, onChange?: () => void, title?: string) => <button type="button" role="checkbox" aria-label={checked === undefined ? `${label} (unknown)` : label} aria-checked={checked === undefined ? 'mixed' : checked} disabled={busy || checked === undefined || !onChange} title={title} onClick={onChange} className="inline-flex p-1" style={{ color: checked === undefined ? 'var(--text-3)' : checked ? 'var(--green, #22c55e)' : 'var(--red, #ef4444)' }}>{checked === undefined ? <Minus size={16} aria-hidden/> : checked ? <Check size={16} aria-hidden/> : <X size={16} aria-hidden/>}</button>
   return <div className="space-y-3">
     <div className="flex items-center gap-2 flex-wrap">
       <div role="tablist" aria-label="Provider settings host" className="flex gap-1 flex-wrap">
@@ -114,7 +121,7 @@ export function ProviderConnections({ providerId, selectedHostId, onHostChange, 
             <td className="px-2 py-2 whitespace-nowrap">{cli}</td>
             <td className="px-2 py-2 whitespace-nowrap"><span title={health?.detail} style={{ color: healthLabel === 'Connected' ? 'var(--green, #22c55e)' : undefined }}>{terminalOnly ? 'Terminal only' : healthLabel}</span></td>
             <td className="px-2 py-2">{checkbox(`${metadata.shortName} UAM MCP`, health?.uamControlEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'uam-mcp', !health?.uamControlEnabled))}</td>
-            <td className="px-2 py-2">{checkbox(`${metadata.shortName} Computer Use`, !terminalOnly && status?.executionHostId === activeHostId && status.computerUseBuiltInAvailable === true, undefined, 'Built-in server availability; chat permissions are controlled in the composer.')}</td>
+            <td className="px-2 py-2">{checkbox(`${metadata.shortName} Computer Use`, status?.executionHostId === activeHostId && typeof status.computerUseBuiltInAvailable === 'boolean' ? !terminalOnly && status.computerUseBuiltInAvailable : undefined, undefined, 'Built-in server availability; chat permissions are controlled in the composer.')}</td>
             <td className="px-2 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled))}</td>
             {servers.map(server => {
               const enabled = health?.mcpServers?.find(item => item.id === server.id)?.enabled

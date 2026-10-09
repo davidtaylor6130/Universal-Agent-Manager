@@ -128,5 +128,49 @@ it('clears prior live connection evidence when refresh fails', async () => {
   await click('Refresh provider connections')
   expect(host.textContent).not.toContain('Connected')
   expect(host.querySelector('[role="status"]')?.textContent).toContain('Host check failed.')
-  expect(host.querySelector('[aria-label="Gemini UAM MCP"]')).toHaveProperty('disabled', true)
+  expect(host.querySelector('[aria-label="Gemini UAM MCP (unknown)"]')).toHaveProperty('disabled', true)
+})
+
+it.each(['loading', 'failed lookup'])('shows unknown controls instead of disabled red crosses during %s', async phase => {
+  vi.mocked(sendToCEF).mockImplementationOnce(() => phase === 'loading'
+    ? new Promise(() => {})
+    : Promise.resolve({ ok: false, error: 'Status unavailable' }))
+  await render('codex-cli')
+  for (const label of ['UAM MCP', 'Computer Use', 'Shared setup', 'Docs']) {
+    const control = host.querySelector<HTMLButtonElement>(`[aria-label="Codex ${label} (unknown)"]`)
+    expect(control).not.toBeNull()
+    expect(control?.getAttribute('aria-checked')).toBe('mixed')
+    expect(control?.style.color).toBe('var(--text-3)')
+    expect(control?.disabled).toBe(true)
+    expect(control?.querySelector('.lucide-x')).toBeNull()
+  }
+})
+
+it('retains disabled red controls when their false value is verified', async () => {
+  const disabled = status()
+  disabled.providers.find(row => row.providerId === 'codex-cli')!.uamControlEnabled = false
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: disabled })
+  await render('codex-cli')
+  const control = host.querySelector<HTMLButtonElement>('[aria-label="Codex UAM MCP"]')!
+  expect(control.getAttribute('aria-checked')).toBe('false')
+  expect(control.querySelector('.lucide-x')).not.toBeNull()
+  expect(control.disabled).toBe(false)
+})
+
+it('ignores structurally identical pushes and unrelated settings while retaining action errors', async () => {
+  useAppStore.setState({ providers: [{ id: 'codex-cli', supportsStructured: true }] as ReturnType<typeof useAppStore.getState>['providers'] })
+  await render('codex-cli')
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Save failed, retry this change.' })
+  await click('Codex UAM MCP')
+  const requests = vi.mocked(sendToCEF).mock.calls.length
+  await act(async () => useAppStore.setState(state => ({
+    centralProviderConfiguration: { ...state.centralProviderConfiguration, instructions: 'Updated unrelated instructions',
+      mcpOverrides: state.centralProviderConfiguration.mcpOverrides?.map(override => ({ ...override })) },
+    mcpServers: state.mcpServers.map(server => ({ ...server, environment: [...server.environment], headers: [...server.headers] })),
+    providers: state.providers.map(provider => ({ ...provider })),
+  })))
+  expect(vi.mocked(sendToCEF).mock.calls.length).toBe(requests)
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Save failed, retry this change.')
+  await click('Refresh provider connections')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('Save failed, retry this change.')
 })
