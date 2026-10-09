@@ -5305,6 +5305,9 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests[2].action).toBe('setChatUamControlEnabled')
     expect(requests[2].payload).toEqual({ chatId: 'chat-1', enabled: false })
     expect(useAppStore.getState().sessions[0].uamControlEnabled).toBe(false)
+    await expect(useAppStore.getState().setSessionUamControlEnabled('chat-1', true, true)).resolves.toBe(true)
+    expect(requests[3].payload).toEqual({ chatId: 'chat-1', enabled: true, applyOnNextLaunch: true })
+    expect(useAppStore.getState().sessions[0].uamControlEnabled).toBe(true)
   })
 
   it('persists editor settings through CEF', async () => {

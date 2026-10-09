@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { McpServerSetup, fromJsonText, toJsonText } from './McpServerSetup'
+import { McpServerSetup, fromJsonText, toJsonText, mergeMcpImport } from './McpServerSetup'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -47,6 +47,7 @@ it('shows built-ins without delete buttons and deletes a user server only after 
 
 it('adds a server through the form and blocks a relative program path', async () => {
   await click('+ Add server')
+  await click('Manual form')
   const inputs = () => [...host.querySelectorAll('input:not([type=checkbox])')] as HTMLInputElement[]
   await type(inputs()[0], 'docs')
   await type(inputs()[1], 'docs-server')
@@ -69,4 +70,59 @@ it('edits in JSON, toggles the built-in UAM service and saves both', async () =>
   await type(area, '{ not json')
   await click('Form')
   expect(host.textContent).toContain('not valid')
+})
+
+
+it('imports additively and rejects conflicts without changing the source configuration', () => {
+  const text = '{"mcp":{"docs":{"type":"remote","url":"https://example.com/mcp"},"uam-mcp":{"type":"builtin","enabled":false}}}'
+  const imported = mergeMcpImport(text, [server])
+  expect(imported).toHaveLength(2)
+  expect(imported[0]).toEqual(server)
+  expect(imported[1]).toMatchObject({ name: 'docs', transport: 'http' })
+  expect(() => mergeMcpImport(toJsonText([server], false), [server])).toThrow('already exists')
+  expect(() => mergeMcpImport('{"mcp":{"docs":{"type":"remote","url":"file:///etc/passwd"}}}', [server])).toThrow('http:// or https://')
+})
+
+it('previews an import without saving or disabling the built-in UAM service', async () => {
+  await click('+ Add server')
+  await click('Import configuration')
+  await type(host.querySelector('textarea[aria-label="Import MCP configuration"]') as HTMLTextAreaElement, '{"mcp":{"docs":{"type":"remote","url":"https://example.com/mcp"},"uam-mcp":{"type":"builtin","enabled":false}}}')
+  await click('Review import')
+  expect(saveServers).not.toHaveBeenCalled()
+  expect(host.textContent).toContain('Imported into the draft')
+  await click('Save')
+  expect(saveServers.mock.calls[0][0]).toHaveLength(2)
+  expect(saveCentral).not.toHaveBeenCalled()
+})
+
+it('starts guided setup with a named connection and saves only after completing details', async () => {
+  await click('+ Add server')
+  await click('Step by step')
+  await type(host.querySelector('input[placeholder="playwright"]') as HTMLInputElement, 'docs')
+  await click('Next: connection details')
+  expect(host.textContent).toContain('Step 2 of 2')
+  expect(saveServers).not.toHaveBeenCalled()
+  await type(host.querySelector('input[placeholder="/usr/local/bin/npx"]') as HTMLInputElement, '/opt/docs/server')
+  await click('Save')
+  expect(saveServers.mock.calls[0][0][1]).toMatchObject({ name: 'docs', command: '/opt/docs/server' })
+})
+
+
+it('round-trips same-name servers on different hosts without dropping either definition', () => {
+  const remote = { ...server, id: 'remote', executionHostId: 'homelab' }
+  expect(fromJsonText(toJsonText([server, remote], true), [server, remote]).servers).toEqual([server, remote])
+  expect(fromJsonText(toJsonText([{ ...server, name: '__proto__' }], true), []).servers[0].name).toBe('__proto__')
+})
+
+
+it('preserves concurrent central instruction changes while saving MCP servers', async () => {
+  let finish!: () => void
+  saveServers.mockImplementationOnce(async servers => { await new Promise<void>(resolve => { finish = resolve }); useAppStore.setState({ mcpServers: servers }); return { ok: true } })
+  await act(async () => (host.querySelector('input[aria-label="UAM MCP service enabled"]') as HTMLInputElement).click())
+  await click('Save')
+  await act(async () => {
+    useAppStore.setState({ centralProviderConfiguration: { ...useAppStore.getState().centralProviderConfiguration, instructions: 'New instructions' } })
+    finish()
+  })
+  expect(saveCentral.mock.calls[0][0]).toMatchObject({ instructions: 'New instructions', uamControlEnabled: false })
 })

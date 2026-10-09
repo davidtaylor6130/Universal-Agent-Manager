@@ -178,7 +178,7 @@ export interface AppState {
   setSessionReviewerModel: (id: string, modelId: string) => Promise<boolean>
   setSessionApprovalMode: (id: string, modeId: string) => Promise<boolean>
   setSessionUamAgent: (id: string, agentId: string) => Promise<boolean>
-  setSessionUamControlEnabled: (id: string, enabled: boolean) => Promise<boolean>
+  setSessionUamControlEnabled: (id: string, enabled: boolean, applyOnNextLaunch?: boolean) => Promise<boolean>
   refreshUamAgents: (id: string) => Promise<boolean>
   browseProviderAgentImport: (currentValue?: string) => Promise<string | null>
   previewProviderAgentImport: (providerId: string, sourcePath: string) => Promise<ProviderAgentImportPreview | null>

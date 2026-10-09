@@ -395,6 +395,9 @@ namespace uam
 		bool central_skills_enabled = false;
 		std::string chat_id;
 		std::string session_chat_id;
+		bool mcp_initialized = false;
+		std::string mcp_connection_id;
+		int64_t mcp_initialized_at_epoch_ms = 0;
 		std::string provider_id;
 		std::string agent_id;
 		std::string agent_run_id;

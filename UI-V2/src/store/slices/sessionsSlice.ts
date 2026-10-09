@@ -1534,7 +1534,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 	  return false
     },
 
-    setSessionUamControlEnabled: async (id: string, enabled: boolean): Promise<boolean> => {
+    setSessionUamControlEnabled: async (id: string, enabled: boolean, applyOnNextLaunch = false): Promise<boolean> => {
       const previousSession = get().sessions.find((session) => session.id === id)
       if (!previousSession || (previousSession.uamControlEnabled ?? false) === enabled) return Boolean(previousSession)
       const apply = (confirmed: boolean) => set((state) => ({
@@ -1551,7 +1551,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       rememberPendingRequest(requestKey, requestId)
       const response = await sendToCEF<{ enabled?: boolean }>({
         action: 'setChatUamControlEnabled',
-        payload: { chatId: id, enabled },
+        payload: { chatId: id, enabled, ...(applyOnNextLaunch ? { applyOnNextLaunch: true } : {}) },
         requestId,
       })
       if (response.ok) {

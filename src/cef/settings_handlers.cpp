@@ -4,9 +4,11 @@
 #include "common/config/central_provider_configuration.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
+#include "cef/uam_query_handler_async.h"
 
 #include "app/persistence_coordinator.h"
 #include "app/theme_service.h"
+#include "app/provider_mcp_settings_service.h"
 #include "cef/cef_push.h"
 #include "cef/companion_server.h"
 #include "common/config/editor_file_associations.h"
@@ -851,4 +853,65 @@ void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrow
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleGetProviderMcpStatus(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	try
+	{
+		const std::string host_id = payload.value("executionHostId", std::string("local"));
+		if (uam::execution_hosts::Find(m_app.settings.execution_hosts, host_id) == nullptr)
+		{
+			cb->Failure(404, "Execution host not found."); return;
+		}
+		cb->Success(uam::provider_mcp_settings::Status(m_app, host_id,
+		    payload.value("workspaceDirectory", std::string{}), payload.value("chatId", std::string{})).dump());
+	}
+	catch (const std::exception&)
+	{
+		cb->Failure(400, "MCP status requires a valid host and optional chat and workspace strings.");
+	}
+}
+
+void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	try
+	{
+		const std::string host = payload.value("executionHostId", std::string("local"));
+		if (host != "local")
+		{
+			cb->Failure(400, "OpenCode file import is available on this computer. For an SSH host, paste its MCP JSON and use executable paths from that host."); return;
+		}
+		const std::string workspace = payload.value("workspaceDirectory", std::string{});
+		if (!workspace.empty() && !uam::paths::PathFromUtf8(workspace).is_absolute())
+		{
+			cb->Failure(400, "Select an absolute workspace path or use global scope."); return;
+		}
+		const std::string source = payload.value("sourcePath", std::string{});
+		// Snapshot environment on the GUI thread. The worker never reads AppState.
+		const std::string inline_config = uam::env::GetNonEmptyString("OPENCODE_CONFIG_CONTENT").value_or("");
+		const std::string override_path = uam::env::GetNonEmptyString("OPENCODE_CONFIG").value_or("");
+		const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath();
+		const std::filesystem::path config_root = uam::env::GetTrimmedPath("XDG_CONFIG_HOME").value_or(home ? *home / ".config" : std::filesystem::path{});
+		const std::vector<std::filesystem::path> search = uam::provider_mcp_settings::CommandSearchPaths();
+		(void)uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [source, workspace, inline_config, override_path, config_root, search]()
+		    {
+			try
+			{
+				return uam::query_handler_async::AsyncSuccess(uam::provider_mcp_settings::ReadImport(
+				    source, workspace, inline_config, override_path, config_root, search));
+			}
+			catch (const std::exception& error)
+			{
+				return uam::query_handler_async::AsyncFailure(400, error.what());
+			}
+		    });
+	}
+	catch (const std::exception&)
+	{
+		cb->Failure(400, "OpenCode import requires optional file and workspace path strings.");
+	}
 }

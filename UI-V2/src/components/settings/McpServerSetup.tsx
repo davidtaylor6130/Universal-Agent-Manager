@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
+import { sendToCEF } from '../../ipc/cefBridge'
 import { Button } from '../ui'
 
 type Reference = McpServerConfiguration['environment'][number]
-type JsonEntry = { type: 'builtin' | 'local' | 'remote'; enabled?: boolean; command?: string[]; environment?: Record<string, string>; url?: string; headers?: Record<string, string>; sse?: boolean; workspace?: string; host?: string }
+type JsonEntry = { type: 'builtin' | 'local' | 'remote'; name?: string; enabled?: boolean; command?: string[]; environment?: Record<string, string>; url?: string; headers?: Record<string, string>; sse?: boolean; workspace?: string; host?: string }
 const BUILTIN = 'uam-mcp'
 const absolutePath = (value: string) => /^(\/|[a-z]:[\\/]|\\\\)/i.test(value)
 const refsToJson = (refs: Reference[]) => refs.length ? Object.fromEntries(refs.map(ref => [ref.name, ref.value !== undefined ? ref.value : `{env:${ref.environmentVariable}}`])) : undefined
@@ -19,13 +20,19 @@ const refsFromJson = (value: unknown, label: string): Reference[] => {
 
 /** OpenCode-style document; the form edits the same data. */
 export function toJsonText(servers: McpServerConfiguration[], uamEnabled: boolean) {
-  const mcp: Record<string, JsonEntry> = { [BUILTIN]: { type: 'builtin', enabled: uamEnabled } }
-  for (const server of servers) mcp[server.name] = {
+  const mcp: Record<string, JsonEntry> = Object.assign(Object.create(null), { [BUILTIN]: { type: 'builtin', enabled: uamEnabled } })
+  for (const server of servers) {
+    let key = server.name
+    let suffix = 2
+    while (Object.prototype.hasOwnProperty.call(mcp, key)) key = `${server.name} (${suffix++})`
+    mcp[key] = {
+    ...(key !== server.name ? { name: server.name } : {}),
     type: server.transport === 'stdio' ? 'local' : 'remote',
     ...(server.transport === 'stdio' ? { command: [server.command, ...server.args], environment: refsToJson(server.environment) } : { url: server.url, headers: refsToJson(server.headers), sse: server.transport === 'sse' || undefined }),
     enabled: server.enabled,
     workspace: server.workspaceDirectory || undefined,
     host: server.executionHostId || undefined,
+    }
   }
   return JSON.stringify({ mcp }, null, 2)
 }
@@ -36,9 +43,11 @@ export function fromJsonText(text: string, previous: McpServerConfiguration[]): 
   const mcp = (parsed as { mcp?: unknown })?.mcp
   if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) throw Error('Put servers inside { "mcp": { ... } }.')
   let uamEnabled = true
-  const servers = Object.entries(mcp as Record<string, JsonEntry>).flatMap(([name, entry]): McpServerConfiguration[] => {
+  const servers = Object.entries(mcp as Record<string, JsonEntry>).flatMap(([key, entry]): McpServerConfiguration[] => {
+    const name = entry?.name ?? key
+    if (typeof name !== 'string') throw Error('Server names must be text.')
     if (!entry || typeof entry !== 'object') throw Error(`"${name}" must be an object.`)
-    if (name === BUILTIN) { uamEnabled = entry.enabled !== false; return [] }
+    if (key === BUILTIN) { uamEnabled = entry.enabled !== false; return [] }
     if (entry.type !== 'local' && entry.type !== 'remote') throw Error(`"${name}" needs "type": "local" or "remote".`)
     const workspaceDirectory = entry.workspace ?? ''
     const executionHostId = entry.host ?? ''
@@ -73,6 +82,21 @@ function problem(server: McpServerConfiguration): string {
 
 const newServer = (name: string): McpServerConfiguration => ({ id: crypto.randomUUID(), name, workspaceDirectory: '', executionHostId: '', transport: 'stdio', command: '', args: [], url: '', environment: [], headers: [], enabled: true })
 
+/** Import adds definitions without replacing existing servers or changing UAM's built-in service. */
+export function mergeMcpImport(text: string, previous: McpServerConfiguration[]): McpServerConfiguration[] {
+  const incoming = fromJsonText(text, previous).servers.map(server => ({ ...server, name: server.name.trim() }))
+  const keys = new Set(previous.map(server => `${server.name.trim().toLowerCase()}|${server.workspaceDirectory}|${server.executionHostId}`))
+  for (const server of incoming) {
+    const issue = problem(server)
+    if (issue) throw Error(issue)
+    const key = `${server.name.toLowerCase()}|${server.workspaceDirectory}|${server.executionHostId}`
+    if (keys.has(key)) throw Error(`A server named "${server.name}" already exists for this workspace and machine. Rename it before importing.`)
+    keys.add(key)
+  }
+  if (!incoming.length) throw Error('This configuration contains no servers to import.')
+  return [...previous, ...incoming]
+}
+
 /** One list of MCP servers, edited as a form or as JSON, sent to every provider on launch (local and SSH). */
 export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: (busy: boolean) => void; onDirtyChange: (dirty: boolean) => void }) {
   const savedServers = useAppStore(state => state.mcpServers)
@@ -86,8 +110,16 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
   const [open, setOpen] = useState<string | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [setup, setSetup] = useState<'choose' | 'import' | 'guided' | null>(null)
+  const [importText, setImportText] = useState('')
+  const [guidedName, setGuidedName] = useState('')
+  const [guidedTransport, setGuidedTransport] = useState<McpServerConfiguration['transport']>('stdio')
+  const [importPath, setImportPath] = useState('')
+  const importGeneration = useRef(0)
+  useEffect(() => () => { importGeneration.current++ }, [])
   const dirty = view === 'json' ? jsonText !== toJsonText(savedServers, savedUam) : toJsonText(servers, uamEnabled) !== toJsonText(savedServers, savedUam)
-  useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange])
+  const setupDirty = setup === 'import' ? Boolean(importText) : setup === 'guided' && Boolean(guidedName)
+  useEffect(() => onDirtyChange(dirty || setupDirty), [dirty, setupDirty, onDirtyChange])
   useEffect(() => { if (!dirty) { setServers(savedServers); setUamEnabled(savedUam) } }, [savedServers, savedUam])
 
   const update = (id: string, change: Partial<McpServerConfiguration>) => { setServers(list => list.map(server => server.id === id ? { ...server, ...change } : server)); setMessage('') }
@@ -97,7 +129,20 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
     try { const parsed = fromJsonText(jsonText, servers); setServers(parsed.servers); setUamEnabled(parsed.uamEnabled); setView('form'); setMessage('') }
     catch (error) { setMessage((error as Error).message) }
   }
+  const readOpenCode = async () => {
+    const generation = ++importGeneration.current
+    setBusy(true); onBusyChange(true); setMessage('')
+    try {
+      const response = await sendToCEF<{ servers: McpServerConfiguration[]; warnings: string[]; sources: string[] }>({ action: 'previewOpenCodeMcpImport', payload: { executionHostId: 'local', ...(importPath.trim() ? { sourcePath: importPath.trim() } : {}) } })
+      if (generation !== importGeneration.current) return
+      if (!response.ok || !response.data) { setMessage(response.error || 'Could not read OpenCode configuration.'); return }
+      setImportText(toJsonText(response.data.servers, uamEnabled))
+      setMessage([`Loaded ${response.data.servers.length} servers. Review the configuration below before importing.`, ...response.data.warnings].join(' '))
+    } catch { if (generation === importGeneration.current) setMessage('Could not read OpenCode configuration. Try again.') }
+    finally { if (generation === importGeneration.current) { setBusy(false); onBusyChange(false) } }
+  }
   const save = async () => {
+    if (setup !== null) { setMessage('Finish or cancel setup before saving.'); return }
     let next = servers, nextUam = uamEnabled
     if (view === 'json') {
       try { ({ servers: next, uamEnabled: nextUam } = fromJsonText(jsonText, servers)) } catch (error) { setMessage((error as Error).message); return }
@@ -112,8 +157,9 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
       const store = useAppStore.getState()
       const result = await store.setMcpServers(next)
       if (!result.ok) { setMessage(result.error || 'Could not save MCP servers.'); return }
-      if (nextUam !== store.centralProviderConfiguration.uamControlEnabled) {
-        const central = await store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, uamControlEnabled: nextUam })
+      const currentStore = useAppStore.getState()
+      if (nextUam !== currentStore.centralProviderConfiguration.uamControlEnabled) {
+        const central = await currentStore.setCentralProviderConfiguration({ ...currentStore.centralProviderConfiguration, uamControlEnabled: nextUam })
         if (!central.ok) { setMessage(central.error || 'Servers saved, but the UAM MCP setting was not.'); return }
       }
       setServers(next); setUamEnabled(nextUam)
@@ -134,11 +180,32 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
   </div>
 
   return <div className="space-y-4" style={{ color: 'var(--text)' }}>
+    {setup && <section aria-label="MCP setup" className="grid gap-3 border-b pb-4" style={{ borderColor: 'var(--border)' }}>
+      <div className="flex items-center justify-between"><strong>{setup === 'choose' ? 'How would you like to set up this server?' : setup === 'import' ? 'Import MCP configuration' : 'Step 1 of 2: name and connection'}</strong><Button size="sm" disabled={busy} onClick={() => { setSetup(null); setMessage('') }}>Cancel setup</Button></div>
+      {setup === 'choose' && <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={() => { setSetup('import'); setImportText('') }}>Import configuration</Button>
+        <Button size="sm" onClick={() => { setSetup('guided'); setGuidedName(''); setGuidedTransport('stdio') }}>Step by step</Button>
+        <Button size="sm" onClick={() => { const server = newServer(''); setServers(list => [...list, server]); setOpen(server.id); setSetup(null) }}>Manual form</Button>
+        <Button size="sm" onClick={() => { switchView('json'); setSetup(null) }}>Edit JSON</Button>
+      </div>}
+      {setup === 'import' && <>
+        <p className="text-sm">Read OpenCode's configuration on this computer, or paste its MCP section. Existing servers stay unchanged.</p>
+        {text('OpenCode configuration file (optional)', importPath, setImportPath, 'Empty: find the installed configuration')}
+        <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read OpenCode configuration</Button>
+        <textarea aria-label="Import MCP configuration" className="uam-field w-full font-mono text-xs" rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setMessage('') }} />
+        <Button size="sm" className="self-start" disabled={busy} onClick={() => { try { setServers(mergeMcpImport(importText, servers)); setSetup(null); setMessage('Imported into the draft. Review the servers, then Save.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not import configuration.') } }}>Review import</Button>
+      </>}
+      {setup === 'guided' && <>
+        {text('Server name', guidedName, setGuidedName, 'playwright')}
+        <label className="grid gap-1 text-sm"><span>How does this server connect?</span><select aria-label="Setup connection type" className="uam-field" value={guidedTransport} onChange={event => setGuidedTransport(event.currentTarget.value as McpServerConfiguration['transport'])}><option value="stdio">Run a program on the agent's machine</option><option value="http">Connect to an HTTP URL</option><option value="sse">Connect to an SSE URL</option></select></label>
+        <Button size="sm" className="self-start" disabled={!guidedName.trim()} onClick={() => { const server = { ...newServer(guidedName.trim()), transport: guidedTransport }; setServers(list => [...list, server]); setOpen(server.id); setSetup(null); setMessage('Step 2 of 2: enter the connection details below, then Save.'); }}>Next: connection details</Button>
+      </>}
+    </section>}
     <div className="flex items-center justify-between gap-3">
-      <p className="text-sm">Add a server once. Every provider gets it, locally and over SSH.</p>
+      <p className="text-sm">Manage shared MCP servers for supported providers, locally and over SSH.</p>
       <div role="tablist" aria-label="Editor view" className="flex gap-1">
-        <Button size="sm" role="tab" aria-selected={view === 'form'} variant={view === 'form' ? 'primary' : 'secondary'} disabled={busy} onClick={() => switchView('form')}>Form</Button>
-        <Button size="sm" role="tab" aria-selected={view === 'json'} variant={view === 'json' ? 'primary' : 'secondary'} disabled={busy} onClick={() => switchView('json')}>JSON</Button>
+        <Button size="sm" role="tab" aria-selected={view === 'form'} variant={view === 'form' ? 'primary' : 'secondary'} disabled={busy || setup !== null} onClick={() => switchView('form')}>Form</Button>
+        <Button size="sm" role="tab" aria-selected={view === 'json'} variant={view === 'json' ? 'primary' : 'secondary'} disabled={busy || setup !== null} onClick={() => switchView('json')}>JSON</Button>
       </div>
     </div>
 
@@ -215,11 +282,11 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
           </div>}
         </div>
       })}
-      <Button size="sm" className="self-start" disabled={busy} onClick={() => { const server = newServer(''); setServers(list => [...list, server]); setOpen(server.id); setMessage('') }}>+ Add server</Button>
+      <Button size="sm" className="self-start" disabled={busy} onClick={() => { setSetup('choose'); setMessage('') }}>+ Add server</Button>
     </div>}
 
     <div className="flex items-center gap-2">
-      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={!dirty} onClick={() => void save()}>Save</Button>
+      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={!dirty || setup !== null} onClick={() => void save()}>Save</Button>
       {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)); setMessage('') }}>Undo changes</Button>}
       <span className="text-xs" style={{ color: 'var(--text-3)' }}>Running chats keep their old setup until restarted.</span>
     </div>

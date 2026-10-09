@@ -128,6 +128,8 @@ namespace uam
 
 		bool ValidToolArguments(std::string_view method, const nlohmann::json& arguments)
 		{
+			if (method == "_mcp_initialized" || method == "_mcp_disconnected")
+				return HasOnlyStringArguments(arguments, {"connectionId"}) && SafeRequestId(arguments["connectionId"].get_ref<const std::string&>());
 			if (method == "skill_list" || method == "agent_list" || method == "goal_get")
 				return arguments.is_object() && arguments.empty();
 			if (method == "skill_read") return HasOnlyStringArguments(arguments, {"id"}, {"path"});
@@ -167,7 +169,8 @@ namespace uam
 			return request.is_object() && request.contains("method") && request["method"].is_string() &&
 			       request["method"] == "tools/call" && request.contains("params") && request["params"].is_object() &&
 			       request["params"].contains("name") && request["params"]["name"].is_string() &&
-			       request["params"].contains("arguments") && request["params"]["arguments"].is_object();
+			       request["params"].contains("arguments") && request["params"]["arguments"].is_object() &&
+			       !request["params"]["name"].get_ref<const std::string&>().starts_with("_mcp_");
 		}
 
 		bool Contains(const std::vector<std::string>& values, std::string_view value)
@@ -763,6 +766,18 @@ namespace uam
 				return reject("Control capability exceeded the bounded request rate.");
 			capability->request_times_epoch_ms.push_back(now_epoch_ms);
 
+			// Transport receipts are session-bound observations, not tools or durable chat mutations.
+			if (method == "_mcp_initialized" || method == "_mcp_disconnected")
+			{
+				const std::string connection = arguments["connectionId"].get<std::string>();
+				if (method == "_mcp_disconnected" && capability->mcp_connection_id != connection)
+					return {{"ok", true}, {"result", nlohmann::json::object()}};
+				capability->mcp_connection_id = connection;
+				capability->mcp_initialized = method == "_mcp_initialized";
+				capability->mcp_initialized_at_epoch_ms = capability->mcp_initialized ? now_epoch_ms : 0;
+				return {{"ok", true}, {"result", nlohmann::json::object()}};
+			}
+
 			const ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
 			const std::optional<ChatSession> rollback = before_chat == nullptr ? std::nullopt : std::optional<ChatSession>{*before_chat};
 			const bool goal_needs_approval = method == "goal_create" && before_chat != nullptr &&
@@ -886,6 +901,11 @@ namespace uam
 		return std::ranges::find(arguments, kServerFlag) != arguments.end();
 	}
 
+	bool UamControlService::RequiresSessionStopForEnable(const AcpSessionState* session, bool apply_on_next_launch)
+	{
+		return !apply_on_next_launch && session != nullptr && session->running && session->uam_control_capability_id.empty();
+	}
+
 	bool UamControlService::SupportsStructuredProtocol(std::string_view protocol)
 	{
 		return protocol == uam::provider_profile_constants::kProtocolCodexAppServer ||
@@ -900,13 +920,24 @@ namespace uam
 	{
 		const auto capability = uam::env::GetTrimmedPath(kCapabilityDirectoryEnvironment);
 		if (!capability.has_value()) return 2;
+		const std::string connection_id = RandomRequestId();
+		bool initialization_replied = false;
+		bool connection_recorded = false;
 		std::string line;
 		while (std::getline(std::cin, line))
 		{
 			if (line.size() > kMaxRequestBytes) return 2;
 			const nlohmann::json request = nlohmann::json::parse(line, nullptr, false);
 			if (!request.is_object()) continue;
-			if (!request.contains("id")) continue;
+			if (!request.contains("id"))
+			{
+				if (initialization_replied && request.contains("method") && request["method"].is_string() && request["method"] == "notifications/initialized")
+				{
+					const std::optional<nlohmann::json> receipt = SubmitToManager(*capability, "_mcp_initialized", {{"connectionId", connection_id}});
+					connection_recorded = receipt.has_value() && receipt->value("ok", false);
+				}
+				continue;
+			}
 			const nlohmann::json id = request["id"];
 			nlohmann::json response{{"jsonrpc", "2.0"}, {"id", id}};
 			if (!request.contains("method") || !request["method"].is_string())
@@ -947,6 +978,14 @@ namespace uam
 			const std::string output = response.dump();
 			if (output.size() > kMaxResponseBytes) return 2;
 			std::cout << output << '\n' << std::flush;
+			if (method == "initialize" && std::cout.good()) initialization_replied = true;
+		}
+		if (connection_recorded && uam::paths::IsDirectoryNoThrow(*capability))
+		{
+			// Do not delay provider shutdown waiting for the GUI to process the receipt.
+			const std::string id = RandomRequestId();
+			(void)uam::io::WriteTextFile(*capability / "requests" / (id + ".json"),
+			    nlohmann::json{{"requestId", id}, {"method", "_mcp_disconnected"}, {"arguments", {{"connectionId", connection_id}}}}.dump());
 		}
 		return 0;
 	}

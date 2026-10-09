@@ -1,4 +1,5 @@
 import { PermissionsSettings } from './PermissionsSettings'
+import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
@@ -44,6 +45,8 @@ import { MarkdownStoreModal } from './MarkdownStoreModal'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import {
   DEFAULT_PROVIDER_ID,
+  SUPPORTED_CLI_PROVIDER_IDS,
+  fallbackProviderForId,
   providerCapabilities,
   providerMetadataForId,
   providerSupportsTextWorkers,
@@ -69,9 +72,9 @@ function providerDisplayName(provider?: Provider, fallbackId = '') {
   return providerShortName(provider, fallbackId)
 }
 
-function latestLocalProviderSession(sessions: Session[], providerId: string) {
+function latestLocalProviderSession(sessions: Session[], providerId: string, executionHostId = 'local') {
   return sessions.reduce<Session | undefined>((latest, session) => {
-    if (session.providerId !== providerId || (session.executionHostId || 'local') !== 'local') return latest
+    if (session.providerId !== providerId || (session.executionHostId || 'local') !== executionHostId) return latest
     if (!latest || session.updatedAt.getTime() > latest.updatedAt.getTime()) return session
     return latest
   }, undefined)
@@ -126,7 +129,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = 'permissions' | 'central-configuration' | 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
+type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -152,7 +155,8 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'defaults', label: 'Chat Defaults', icon: MessageSquare },
   { id: 'agents', label: 'Agents', icon: ClipboardList },
-  { id: 'cli-version', label: 'CLI Version', icon: TerminalSquare },
+  { id: 'provider-summary', label: 'Overview', icon: TerminalSquare },
+  ...SUPPORTED_CLI_PROVIDER_IDS.map(id => ({ id: `provider:${id}` as SettingsSectionId, label: providerMetadataForId(id).shortName, icon: TerminalSquare })),
   { id: 'remote-hosts', label: 'Remote Hosts', icon: Server },
   { id: 'phone', label: 'Phone', icon: Smartphone },
   { id: 'voice-input', label: 'Voice Input', icon: Mic },
@@ -171,14 +175,16 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', 'phone', 'voice-input'] },
-  { label: 'Providers', sections: ['central-configuration', 'cli-version', 'agents', 'remote-hosts', 'mcp-servers'] },
+  { label: 'Providers', sections: ['provider-summary', ...SUPPORTED_CLI_PROVIDER_IDS.map(id => `provider:${id}` as SettingsSectionId)] },
+  { label: 'Connections', sections: ['remote-hosts', 'mcp-servers'] },
+  { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
   { label: 'Security', sections: ['permissions', 'computer-use'] },
-  { label: 'Workspace', sections: ['editors', 'shell-actions', 'memory-settings', 'memory-store', 'markdown-store', 'goal-loops'] },
+  { label: 'Workspace', sections: ['editors'] },
   { label: 'App', sections: ['chat-data', 'about'] },
 ]
 const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   appearance: 'Theme, sidebar and how agent activity is shown.',
-  defaults: 'Default provider, reviewer and per-provider chat settings.',
+  defaults: 'Default provider and permission reviewer for new chats.',
   'voice-input': 'Dictation for the message box.',
   'cli-version': 'Installed provider CLIs and their versions.',
   agents: 'Agent favourites and the shortcut that cycles between them.',
@@ -199,7 +205,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
 
 
 // Terms name controls inside each page so searches work beyond sidebar titles.
-const SETTINGS_SEARCH_TERMS: Record<SettingsSectionId, string> = {
+const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   permissions: 'privacy local network microphone speech recording accessibility authorization',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity',
   defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
@@ -339,7 +345,8 @@ export interface SettingsHandle {
 
 export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_props, ref) {
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
-  const providers = useAppStore(useShallow((s) => s.providers))
+  const runtimeProviders = useAppStore(useShallow((s) => s.providers))
+  const providers = SUPPORTED_CLI_PROVIDER_IDS.map(id => runtimeProviders.find(provider => provider.id === id) ?? fallbackProviderForId(id))
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const acpBindings = useAppStore(useShallow((s) => s.acpBindingBySessionId))
@@ -414,9 +421,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const visibleSettingsGroups = SETTINGS_GROUPS.map(group => ({...group, sections: group.sections.filter(id => {
     const section = SETTINGS_SECTIONS.find(item => item.id === id)
     if (!section) return false
-    const searchable = `${group.label} ${section.label} ${SETTINGS_SEARCH_TERMS[id]}`.toLocaleLowerCase()
+    const searchable = `${group.label} ${section.label} ${SETTINGS_SEARCH_TERMS[id] ?? (id.startsWith('provider:') ? 'CLI recommended latest version installation models visibility MCP setup connection' : 'providers status overview installed MCP')}`.toLocaleLowerCase()
     return searchTerms.every(term => searchable.includes(term))
   })})).filter(group => group.sections.length > 0)
+  const [providerSettingsHostId, setProviderSettingsHostId] = useState('local')
+  const effectiveProviderSettingsHostId = executionHosts.some(host => host.id === providerSettingsHostId) || providerSettingsHostId === 'local' ? providerSettingsHostId : 'local'
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
   const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
   const [openCliVersionMenu, setOpenCliVersionMenu] = useState<string | null>(null)
@@ -1369,7 +1378,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     </div>
   }
 
-  const renderSectionContent = () => {
+  const selectedSettingsSection = selectedSection
+  const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
+    const selectedSection = sectionOverride ?? selectedSettingsSection
+    if (selectedSection === 'provider-summary') return <ProviderConnections onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />
+    if (selectedSection.startsWith('provider:')) {
+      const providerId = selectedSection.slice('provider:'.length)
+      return <div className="space-y-6"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onHostChange={hostId => { setPendingCliInstall(null); setOpenCliVersionMenu(null); setProviderSettingsHostId(hostId) }} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}</div>
+    }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
@@ -1472,7 +1488,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         : []
       return (
         <div className="space-y-4">
-          <SectionCard
+          {!scopedProviderId && <SectionCard
             title="AI Permission Reviewer"
           >
             <div className="grid gap-3 sm:grid-cols-2 text-xs" style={{ color: 'var(--text-2)' }}>
@@ -1501,12 +1517,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 )}
               </div>
             </div>
-          </SectionCard>
+          </SectionCard>}
           <SectionCard
-            title="New Chat Defaults"
+            title={scopedProviderId ? "Models and chat defaults" : "New Chat Defaults"}
           >
             <div className="grid gap-4">
-              <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              {!scopedProviderId && <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                 <div>Default provider</div>
                 {renderDefaultsMenu(
                   'default-provider',
@@ -1520,17 +1536,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }),
                   (option) => <ProviderLogo providerId={option.id} />
                 )}
-              </div>
+              </div>}
 
               <div className="space-y-3">
-                {providers.filter((provider) => provider.supportsStructured !== false).map((provider) => {
+                {providers.filter(provider => provider.id === scopedProviderId).map((provider) => {
                   const defaults = defaultsForProvider(provider)
                   const caps = providerCapabilities(provider.id, provider)
                   const providerName = providerDisplayName(provider, provider.id)
-                  const providerSession = latestLocalProviderSession(sessions, provider.id)
-				  const providerWorkspace = providerSession?.workspaceDirectory || localWorkspace
+                  const providerSession = latestLocalProviderSession(sessions, provider.id, effectiveProviderSettingsHostId)
+				  const providerWorkspace = providerSession?.workspaceDirectory || folders.find(folder => (folder.executionHostId || 'local') === effectiveProviderSettingsHostId)?.directory || ''
 				  const providerAcp = (providerSession ? acpBindings[providerSession.id] : undefined)
-				    ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === 'local' && catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
+				    ?? providerModelCatalogs.find((catalog) => (catalog.executionHostId || 'local') === effectiveProviderSettingsHostId && catalog.providerId === provider.id && workspaceKey(catalog.workspaceDirectory) === workspaceKey(providerWorkspace))
                   const hasDiscoveredModels = Boolean(providerAcp?.availableModels?.some((model) => model.id.trim()) || providerAcp?.configOptions?.find((option) => option.category === 'model' || option.id === 'model')?.options.some((choice) => choice.value.trim()))
                   const modelsLoading = providerAcp?.modelsLoading ?? false
                   const modelRefreshError = providerAcp?.modelRefreshError ?? ''
@@ -1566,9 +1582,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       expanded={expanded}
                       toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} chat defaults`}
                       onToggle={() => toggleDefaultProvider(provider.id)}
-                      actions={<IconButton icon={<RefreshCw size={14}/>} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace)} />}
+                      actions={provider.supportsStructured === false ? undefined : <IconButton icon={<RefreshCw size={14}/>} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void (effectiveProviderSettingsHostId === 'local' ? discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace) : discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace, effectiveProviderSettingsHostId))} />}
                     >
                       <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
+                        {provider.supportsStructured === false && <p>Terminal only. Model discovery and model visibility are managed in the provider CLI.</p>}
+                        {!modelOptions.some(option => option.id) && provider.supportsStructured !== false && <p>Model visibility becomes available after models are discovered.</p>}
                         {modelOptions.some((option) => option.id) && (
                           <details className="rounded-lg" style={{ border: '1px solid var(--border)' }}>
                             <summary className="flex cursor-pointer items-center justify-between px-3 py-2" style={{ color: 'var(--text)' }}>
@@ -2012,15 +2030,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       return (
         <div className="space-y-4">
           <SectionCard
-            title="Provider CLIs"
+            title={scopedProviderId ? `CLI installation on ${effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find(host => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId}` : "Provider CLIs"}
           >
             <div ref={cliVersionMenuRef} className="space-y-3">
-              {cliVersionManager.providers.length === 0 && (
+              {!(effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).some(manager => !scopedProviderId || manager.providerId === scopedProviderId) && (
                 <div className="text-xs" style={{ color: 'var(--text-3)' }}>
-                  No managed CLI providers are available in this build.
+                  No CLI installation information is available. Check the provider on this host.
                 </div>
               )}
-              {cliVersionManager.providers.map((manager) => {
+              {(effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).filter(manager => !scopedProviderId || manager.providerId === scopedProviderId).map((manager) => {
                 const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
                 const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
                 const expanded = expandedCliVersionProviders[manager.providerId] ?? false
@@ -2047,7 +2065,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <div className="flex items-center gap-1">
                       <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
                         setCliActionError(current => ({...current,[manager.providerId]:''}))
-                        try { if (!await refreshCliProviderVersion(manager.providerId)) setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
+                        try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
                         catch { setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
                       }}/>
                       <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>
@@ -2062,13 +2080,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <div><div className="text-xs" style={{color:'var(--text-3)'}}>Recommended</div>{manager.preferredVersion || 'Unavailable'}</div>
                     </div>
                     {pendingCliInstall?.providerId === manager.providerId && <div className="flex flex-wrap items-center gap-3 mt-3 text-xs" role="group" aria-label="Confirm CLI installation">
-                      <span>Install {pendingCliInstall.providerName} {pendingCliInstall.version} globally using {manager.installMethod || 'npm'}?</span>
+                      <span>Install {pendingCliInstall.providerName} {pendingCliInstall.version} on {manager.executionHostName || 'this computer'} using {manager.installMethod || 'npm'}?</span>
                       <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
                       <Button size="sm" disabled={manager.running} onClick={async () => {
                         const pending = pendingCliInstall
                         setPendingCliInstall(null)
                         setCliActionError(current => ({...current,[manager.providerId]:''}))
-                        try { if (!await applyCliProviderVersion(pending.providerId,pending.version)) setCliActionError(current => ({...current,[manager.providerId]:'Installation could not start. Check provider output.'})) }
+                        try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) setCliActionError(current => ({...current,[manager.providerId]:'Installation could not start. Check provider output.'})) }
                         catch { setCliActionError(current => ({...current,[manager.providerId]:'Installation could not start. Check provider output.'})) }
                       }}>Install version</Button>
                     </div>}

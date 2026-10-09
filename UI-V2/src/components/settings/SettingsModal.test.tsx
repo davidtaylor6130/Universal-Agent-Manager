@@ -219,15 +219,57 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  function openCliVersionSection(host: HTMLElement) {
-    const cliSectionButton = Array.from(host.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('CLI Version')
-    )
-    expect(cliSectionButton).toBeTruthy()
 
-    act(() => {
-      cliSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+  it('shows all six catalogue providers even when a runtime provider entry is missing', () => {
+    useAppStore.setState({ providers: [fallbackProviderForId('codex-cli')] })
+    const { host, root } = renderModal()
+    for (const name of ['Gemini', 'Codex', 'Claude', 'OpenCode', 'Copilot', 'Antigravity']) expect(host.querySelector(`nav [aria-label="${name}"]`)).toBeTruthy()
+    openProviderSection(host, 'Antigravity')
+    act(() => useAppStore.setState({ providers: [{ ...fallbackProviderForId('antigravity-cli'), supportsStructured: false }] }))
+    expect(host.textContent).toContain('Terminal only')
+    expect(host.querySelector('[aria-label="Refresh Antigravity models"]')).toBeNull()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Antigravity chat defaults"]')?.click())
+    expect(host.textContent).toContain('Model discovery and model visibility are managed in the provider CLI')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps shared agent setup under Agent preferences and per-provider controls out of General', () => {
+    const { host, root } = renderModal()
+    const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Agent preferences')?.parentElement
+    for (const label of ['Central Setup', 'Agents', 'Skills', 'Memory Settings', 'Memory Store', 'Shell Actions']) expect(group?.querySelector(`[aria-label="${label}"]`)).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    expect(host.querySelector('[aria-label="New Chat Defaults"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="AI Permission Reviewer"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Show Codex chat defaults"]')).toBeNull()
+    act(() => root.unmount()); host.remove()
+  })
+
+
+  it('routes provider version actions to the selected remote host and drops old install confirmation', async () => {
+    const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
+    useAppStore.setState(state => ({ executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: 'Lab', installedVersion: '8.0' }] } }))
+    const { host, root } = renderModal()
+    openProviderSection(host, 'Codex')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
+    act(() => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'Download latest')!.click())
+    expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Provider settings host"]')!.click())
+    act(() => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(button => button.textContent === 'Lab')!.click())
+    expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeNull()
+    expect(host.textContent).toContain('CLI installation on Lab')
+    expect(host.textContent).toContain('8.0')
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
+    expect(useAppStore.getState().refreshCliProviderVersion).toHaveBeenCalledWith('codex-cli', 'ssh-lab')
+    act(() => root.unmount()); host.remove()
+  })
+
+  function openCliVersionSection(host: HTMLElement) {
+    act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Codex"]')?.click())
+  }
+
+  function openProviderSection(host: HTMLElement, name: string) {
+    act(() => host.querySelector<HTMLButtonElement>(`nav [aria-label="${name}"]`)?.click())
   }
 
   function openRemoteHostsSection(host: HTMLElement) {
@@ -652,7 +694,7 @@ describe('SettingsModal memory settings', () => {
       field.dispatchEvent(new Event('input', {bubbles:true}))
     })
     search('  ReCoMmEnDeD  ')
-    expect(Array.from(host.querySelectorAll('nav button')).map(button => button.getAttribute('aria-label'))).toEqual(['CLI Version'])
+    expect(Array.from(host.querySelectorAll('nav button')).map(button => button.getAttribute('aria-label'))).toEqual(['Gemini', 'Codex', 'Claude', 'OpenCode', 'Copilot', 'Antigravity'])
     expect(host.querySelector('h2')?.textContent).toBe('Providers')
     expect(host.querySelector('nav [aria-pressed="true"]')).toBeNull()
     expect(host.querySelectorAll('h2')[1]?.textContent).toBe('Appearance')
@@ -674,7 +716,7 @@ describe('SettingsModal memory settings', () => {
     expect(closeButton.textContent).toBe('Back to chats')
     expect(host.querySelector('[aria-modal="true"]')).toBeNull()
     expect(host.querySelector('h1')?.textContent).toBe('Settings')
-    expect(Array.from(host.querySelectorAll('nav h2')).map(heading => heading.textContent)).toEqual(['General', 'Providers', 'Security', 'Workspace', 'App'])
+    expect(Array.from(host.querySelectorAll('nav h2')).map(heading => heading.textContent)).toEqual(['General', 'Providers', 'Connections', 'Agent preferences', 'Security', 'Workspace', 'App'])
     const tab = new KeyboardEvent('keydown', {key: 'Tab', bubbles: true, cancelable: true})
     act(() => closeButton.dispatchEvent(tab))
     expect(tab.defaultPrevented).toBe(false)
@@ -717,7 +759,7 @@ describe('SettingsModal memory settings', () => {
 
     expect(host.querySelectorAll('select')).toHaveLength(0)
     expect(host.textContent).toContain('Appearance')
-    expect(host.textContent).toContain('CLI Version')
+    expect(host.textContent).toContain('Overview')
     expect(host.textContent).toContain('Memory Settings')
     expect(host.textContent).toContain('Memory Store')
     expect(host.textContent).toContain('About')
@@ -844,10 +886,10 @@ describe('SettingsModal memory settings', () => {
 
     openCliVersionSection(host)
 
-    expect(host.textContent).toContain('CLI version control')
+    expect(host.textContent).toContain('CLI installation on this computer')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
-    expect(host.textContent).not.toContain('0.123.0')
+    expect(host.querySelector('#codex-cli-cli-version-panel')).toBeNull()
 
     const codexCliToggle = host.querySelector(
       'button[aria-label="Show Codex CLI version settings"]'
@@ -866,7 +908,7 @@ describe('SettingsModal memory settings', () => {
     const recommended = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent?.includes('Download recommended'))!
     expect(recommended.textContent).toContain('0.124.0')
     act(() => recommended.click())
-    expect(host.textContent).toContain('Install Codex 0.124.0 globally using npm?')
+    expect(host.textContent).toContain('Install Codex 0.124.0 on this computer using npm?')
     expect(useAppStore.getState().applyCliProviderVersion).not.toHaveBeenCalled()
     const confirmInstall = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Install version')
     act(() => confirmInstall?.click())
@@ -908,6 +950,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults'))?.click())
+    openProviderSection(host, 'OpenCode')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
     const visibility = Array.from(section.querySelectorAll('details')).find((details) => details.querySelector('summary')?.textContent?.startsWith('Model visibility'))!
@@ -937,6 +980,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    openProviderSection(host, 'OpenCode')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show OpenCode chat defaults"]')?.click())
     const section = host.querySelector('#opencode-cli-defaults-panel')!
     try {
@@ -965,6 +1009,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Codex')
     expect(host.querySelector('button[title="Codex default permissions"]')).toBeNull()
 
+    openProviderSection(host, 'Codex')
     const codexDefaultsToggle = host.querySelector(
       'button[aria-label="Show Codex chat defaults"]'
     ) as HTMLButtonElement | null
@@ -975,10 +1020,10 @@ describe('SettingsModal memory settings', () => {
     })
 
     expect(host.textContent).toContain('Reasoning')
-    expect(host.querySelector('[aria-label="AI Permission Reviewer"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="AI Permission Reviewer"]')).toBeNull()
     expect(host.querySelector('button[title="Codex default permissions"]')).toBeTruthy()
     expect(host.querySelector('#codex-cli-defaults-panel')?.className).not.toContain('animate-fade-in')
-    expect(host.querySelector('select')).toBeNull()
+    expect(host.querySelector('select[aria-label="Codex default model"]')).toBeNull()
     const memoryLevel = host.querySelector('button[title="Codex default memory level"]') as HTMLButtonElement
     expect(memoryLevel).toBeTruthy()
 
@@ -1010,11 +1055,13 @@ describe('SettingsModal memory settings', () => {
   it('keeps model refresh outside collapse and advanced preferences available', () => {
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    openProviderSection(host, 'Codex')
     const refresh = host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex models"]')!
     expect(refresh).toBeTruthy()
     expect(host.querySelector('#codex-cli-defaults-panel')).toBeNull()
     act(() => refresh.click())
     expect(useAppStore.getState().discoverProviderModels).toHaveBeenCalled()
+    openProviderSection(host, 'Codex')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex chat defaults"]')?.click())
     expect(host.querySelector('[aria-label="Codex provider usage"]')).toBeNull()
     expect(refresh.closest('#codex-cli-defaults-panel')).toBeNull()
@@ -1031,6 +1078,7 @@ describe('SettingsModal memory settings', () => {
       (button) => button.textContent?.includes('Chat Defaults')
     )
     act(() => defaultsSectionButton?.click())
+    openProviderSection(host, 'Codex')
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
 
     const speed = host.querySelector<HTMLButtonElement>('button[title="Codex default speed"]')!
@@ -1107,6 +1155,7 @@ describe('SettingsModal memory settings', () => {
       (button) => button.textContent?.includes('Chat Defaults')
     )?.click())
 
+    openProviderSection(host, 'Codex')
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Codex chat defaults"]')?.click())
     act(() => host.querySelector<HTMLButtonElement>('button[title="Codex default speed"]')?.click())
     let listbox = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Codex default speed"]')!
@@ -1120,6 +1169,7 @@ describe('SettingsModal memory settings', () => {
     expect(listbox.textContent).not.toContain('Maximum reasoning with automatic delegation')
     act(() => document.body.querySelector<HTMLElement>('[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
 
+    openProviderSection(host, 'Copilot')
     act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Show Copilot chat defaults"]')?.click())
     act(() => host.querySelector<HTMLButtonElement>('button[title="Copilot default model"]')?.click())
     listbox = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Copilot default model"]')!
@@ -1141,20 +1191,21 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
     act(() => defaults.click())
+    openProviderSection(host, 'Codex')
     act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
     act(() => (host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement).click())
 	expect(discoverProviderModels).toHaveBeenCalledWith('chat-model-cache', 'codex-cli', '/tmp/project')
 
     act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-model-cache': { ...state.acpBindingBySessionId['chat-model-cache'], modelRefreshError: 'Model refresh failed.' } } })))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Model refresh failed.')
+    expect(host.querySelector('#codex-cli-defaults-panel [role="alert"]')?.textContent).toContain('Model refresh failed.')
     act(() => (host.querySelector('button[aria-label="Dismiss Codex model refresh error"]') as HTMLButtonElement).click())
     expect(host.textContent).not.toContain('Model refresh failed.')
     act(() => (host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement).click())
     expect(discoverProviderModels).toHaveBeenCalledTimes(2)
     act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-model-cache': { ...state.acpBindingBySessionId['chat-model-cache'], modelsLoading: true } } })))
-    expect(host.querySelector('[role="status"]')?.textContent).toContain('Refreshing models')
+    expect(host.querySelector('#codex-cli-defaults-panel [role="status"]')?.textContent).toContain('Refreshing models')
     act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-model-cache': { ...state.acpBindingBySessionId['chat-model-cache'], modelsLoading: false } } })))
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Model refresh failed.')
+    expect(host.querySelector('#codex-cli-defaults-panel [role="alert"]')?.textContent).toContain('Model refresh failed.')
 
     act(() => root.unmount())
     host.remove()
@@ -1166,6 +1217,7 @@ describe('SettingsModal memory settings', () => {
 	  const { host, root } = renderModal()
 	  const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
 	  act(() => defaults.click())
+	  openProviderSection(host, 'Codex')
 	  act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
 	  const refresh = host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement
 	  expect(refresh.disabled).toBe(false)
@@ -1216,7 +1268,7 @@ describe('SettingsModal memory settings', () => {
     openEditorsSection(host)
 
     expect(host.querySelector('[aria-label="Workspace Editors"]')).toBeTruthy()
-    expect(host.querySelector('select')).toBeNull()
+    expect(host.querySelector('select[aria-label="Codex default model"]')).toBeNull()
     expect(host.textContent).toContain('C++')
     expect(host.textContent).not.toContain('8 extensions open in VS Code')
 
@@ -1290,7 +1342,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openEditorsSection(host)
 
-    expect(host.querySelector('select')).toBeNull()
+    expect(host.querySelector('select[aria-label="Codex default model"]')).toBeNull()
 
     const cppGroupToggle = host.querySelector(
       'button[aria-label="Show C++ editor group"]'
@@ -1507,8 +1559,11 @@ describe('SettingsModal memory settings', () => {
     }))
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+    openProviderSection(host, 'Gemini')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click())
     for (const label of ['AI permission reviewer model', 'Gemini default model', 'Gemini goal reviewer model']) {
+      if (label === 'AI permission reviewer model') act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
+      else { openProviderSection(host, 'Gemini'); act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Gemini chat defaults"]')?.click()) }
       act(() => host.querySelector<HTMLButtonElement>(`button[title="${label}"]`)?.click())
       const listbox = document.body.querySelector<HTMLElement>(`[role="listbox"][aria-label="${label}"]`)
       expect(listbox?.textContent).toContain('Local Model')
@@ -1835,13 +1890,13 @@ describe('SettingsModal memory settings', () => {
 
 
 
-  it('keeps all five CLI rows compact and confirms a latest download before calling the real action', () => {
+  it('scopes CLI controls to the selected provider and confirms a latest download before calling the real action', () => {
     const providers = ['gemini-cli','codex-cli','opencode-cli','claude-cli','copilot-cli'].map(fallbackProviderForId)
     const template = useAppStore.getState().cliVersionManager.providers[0]
     useAppStore.setState({providers,cliVersionManager:{providers:providers.map(provider => ({...template,providerId:provider.id,...(provider.id === 'codex-cli' ? {status:'known-incompatible' as const,message:'Structured chat is incompatible.',lastInstallStatus:'failed' as const} : {})}))}})
     const {host,root} = renderModal()
     openCliVersionSection(host)
-    expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(5)
+    expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(1)
     expect(host.querySelector('[aria-label="Refresh Codex CLI version"]')).toBeNull()
     const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!
     expect(toggle.previousElementSibling?.getAttribute('role')).toBe('img')

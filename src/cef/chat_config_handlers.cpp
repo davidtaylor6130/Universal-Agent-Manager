@@ -843,6 +843,12 @@ void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> brows
 		cb->Failure(400, "Agent goal control requires an explicit boolean enabled value.");
 		return;
 	}
+	const std::optional<bool> next_launch = uam::nlohmann_json::BoolFieldStrict(payload, "applyOnNextLaunch");
+	if ((payload.contains("applyOnNextLaunch") && !next_launch.has_value()) || (next_launch.value_or(false) && !*enabled))
+	{
+		cb->Failure(400, "Next-launch setup requires an explicit boolean and supports enabling UAM tools only.");
+		return;
+	}
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr) return;
 	if (!chat->agent_run_id.empty())
@@ -858,7 +864,7 @@ void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> brows
 		return;
 	}
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
-	if (*enabled && session != nullptr && session->running && session->uam_control_capability_id.empty())
+	if (*enabled && uam::UamControlService::RequiresSessionStopForEnable(session, next_launch.value_or(false)))
 	{
 		cb->Failure(409, "Stop the current provider session before enabling agent goal control.");
 		return;

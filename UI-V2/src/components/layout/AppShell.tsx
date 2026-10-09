@@ -1,4 +1,5 @@
 import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser'
+import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
 import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
@@ -806,8 +807,9 @@ export function AppShell() {
         </>
       )}
 
-      <main className="min-w-0 flex-1 overflow-hidden" style={{ background: 'var(--bg)' }}>
-        <MainPanel />
+      <main className="min-w-0 flex-1 overflow-hidden flex flex-col" style={{ background: 'var(--bg)' }}>
+        <ProviderMcpWarning />
+        <div className="min-h-0 flex-1"><MainPanel /></div>
       </main>
       </div>
       {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}

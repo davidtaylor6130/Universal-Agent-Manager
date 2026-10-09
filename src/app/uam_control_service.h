@@ -18,6 +18,8 @@ namespace uam
 	  public:
 		static bool IsStdioServerInvocation(const std::vector<std::string>& arguments);
 		static bool SupportsStructuredProtocol(std::string_view protocol);
+		/// Enabling for the next launch changes saved intent without attaching to an active process.
+		static bool RequiresSessionStopForEnable(const AcpSessionState* session, bool apply_on_next_launch);
 		static int RunStdioServerFromEnvironment();
 		static bool Initialize(AppState& app, std::string* error_out = nullptr);
 		static void Shutdown(AppState& app);
