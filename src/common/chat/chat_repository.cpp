@@ -275,6 +275,8 @@ namespace
 		uam::json::SetString(obj, attachment_fields::kPathField, attachment.path);
 		uam::json::SetNumber(obj, attachment_persisted_fields::kSizeBytesField, static_cast<double>(attachment.size_bytes));
 		uam::json::SetBool(obj, attachment_fields::kCopiedField, attachment.copied);
+		if (!attachment.preview_key.empty()) uam::json::SetString(obj, attachment_fields::kPreviewKeyField, attachment.preview_key);
+		if (!attachment.preview_origin_path.empty()) uam::json::SetString(obj, attachment_fields::kPreviewOriginField, attachment.preview_origin_path);
 		return obj;
 	}
 
@@ -413,6 +415,8 @@ namespace
 				attachment.path = JsonStringOrEmpty(item.Find(attachment_fields::kPathField));
 				attachment.size_bytes = NonNegativeUintmaxFieldOrZero(item.Find(attachment_persisted_fields::kSizeBytesField));
 				attachment.copied = JsonBoolOrDefault(item.Find(attachment_fields::kCopiedField), false);
+				attachment.preview_key = JsonStringOrEmpty(item.Find(attachment_fields::kPreviewKeyField));
+				attachment.preview_origin_path = JsonStringOrEmpty(item.Find(attachment_fields::kPreviewOriginField));
 				if (!attachment.path.empty()) prompt.attachments.push_back(std::move(attachment));
 			}
 		}
@@ -683,6 +687,8 @@ namespace
 				attachment.path = JsonStringOrEmpty(item.Find(attachment_fields::kPathField));
 				attachment.size_bytes = NonNegativeUintmaxFieldOrZero(item.Find(attachment_persisted_fields::kSizeBytesField));
 				attachment.copied = JsonBoolOrDefault(item.Find(attachment_fields::kCopiedField), false);
+				attachment.preview_key = JsonStringOrEmpty(item.Find(attachment_fields::kPreviewKeyField));
+				attachment.preview_origin_path = JsonStringOrEmpty(item.Find(attachment_fields::kPreviewOriginField));
 				if (!attachment.path.empty())
 				{
 					msg.attachments.push_back(std::move(attachment));

@@ -15,6 +15,7 @@
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "app/uam_control_service.h"
+#include "app/attachment_preview_service.h"
 #include "common/utils/base64.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -230,6 +231,8 @@ namespace
 		    {std::string(attachment_fields::kPathField), attachment.path},
 		    {std::string(attachment_frontend_fields::kSizeBytesField), attachment.size_bytes},
 		    {std::string(attachment_fields::kCopiedField), attachment.copied},
+		    {std::string(attachment_fields::kPreviewKeyField), attachment.preview_key},
+		    {std::string(attachment_fields::kPreviewOriginField), attachment.preview_origin_path},
 		};
 	}
 
@@ -274,6 +277,9 @@ namespace
 			attachment.path = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
 			attachment.size_bytes = item.value(std::string(attachment_frontend_fields::kSizeBytesField), static_cast<std::uintmax_t>(0));
 			attachment.copied = item.value(std::string(attachment_fields::kCopiedField), false);
+			attachment.preview_key = item.value(std::string(attachment_fields::kPreviewKeyField), "");
+			if (!uam::attachment_preview::IsKey(attachment.preview_key)) attachment.preview_key.clear();
+			attachment.preview_origin_path = item.value(std::string(attachment_fields::kPreviewOriginField), "");
 			if (attachment.path.empty())
 			{
 				continue;
@@ -306,7 +312,8 @@ namespace
 	RemoteAttachmentResult StageRemoteAttachments(const nlohmann::json& items,
 	                                              const ExecutionHost& host,
 	                                              const std::string& chat_id,
-	                                              const std::string& workspace_root)
+	                                              const std::string& workspace_root,
+	                                              const std::filesystem::path& data_root)
 	{
 		RemoteAttachmentResult result;
 		if (!uam::execution_hosts::IsPortableId(chat_id))
@@ -428,6 +435,7 @@ namespace
 				std::ranges::replace(attachment.path, '/', '\\');
 			attachment.size_bytes = bytes.size();
 			attachment.copied = true;
+			attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);
 			result.attachments.push_back(AttachmentToJson(attachment));
 			++index;
 		}
@@ -797,6 +805,18 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 	const bool remote = execution_host->id != uam::execution_hosts::kLocalHostId;
+	const std::function<void(uam::query_handler_async::AsyncCefResult&)> complete = [this, chat_id, workspace_root, host = *execution_host](uam::query_handler_async::AsyncCefResult& response)
+	{
+		ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+		const ExecutionHost* current_host = current == nullptr ? nullptr :
+		    uam::execution_hosts::Find(m_app.settings.execution_hosts, current->execution_host_id);
+		if (current == nullptr || current->imported_read_only || current_host == nullptr ||
+		    !uam::execution_hosts::SameConnection(*current_host, host) ||
+		    uam::paths::ResolveWorkspaceRootPath(m_app, *current) != workspace_root)
+		{
+			response = uam::query_handler_async::AsyncFailure(409, "Chat workspace or execution host changed while attachments were staging.");
+		}
+	};
 	if (remote)
 	{
 		if (execution_host->runner_status != "ready" ||
@@ -810,141 +830,134 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
 		    cb,
 		    [items = *items, host = *execution_host, chat_id,
-		     workspace = uam::paths::Utf8PathString(workspace_root), result]()
+		     workspace = uam::paths::Utf8PathString(workspace_root), data_root = m_app.data_root, result]()
 		    {
-			    *result = StageRemoteAttachments(items, host, chat_id, workspace);
+			    *result = StageRemoteAttachments(items, host, chat_id, workspace, data_root);
 			    return result->ok
 			        ? uam::query_handler_async::AsyncSuccess(
 			              {{"attachments", result->attachments}})
 			        : uam::query_handler_async::AsyncFailure(result->status, result->error);
-		    });
+		    }, complete);
 		return;
 	}
 
-	std::error_code ec;
-	if (!uam::paths::CreateDirectoriesNoThrow(workspace_root, &ec))
-	{
-		cb->Failure(500, "Failed to create workspace directory.");
-		return;
-	}
-
-	const std::filesystem::path workspace_data_root = workspace_root / ".UAM";
-	if (!PlatformServicesFactory::Instance().path_service.EnsureHiddenDirectory(workspace_data_root, &ec))
-	{
-		cb->Failure(500, "Failed to create workspace data directory.");
-		return;
-	}
-
-	const std::filesystem::path attachment_root = workspace_data_root / "attachments" / chat_id;
-	if (!uam::paths::CreateDirectoriesNoThrow(attachment_root, &ec))
-	{
-		cb->Failure(500, "Failed to create attachment directory.");
-		return;
-	}
-
-	auto staged = nlohmann::json::array();
-	std::size_t index = 0;
-	for (const nlohmann::json& item : *items)
-	{
-		if (!item.is_object())
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [items = *items, workspace_root, chat_id, data_root = m_app.data_root]()
+	    {
+		std::error_code ec;
+		if (!uam::paths::CreateDirectoriesNoThrow(workspace_root, &ec))
 		{
-			continue;
+			return uam::query_handler_async::AsyncFailure(500, "Failed to create workspace directory.");
 		}
 
-		const std::string requested_kind = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kKindField});
-		const std::string mime_type = uam::nlohmann_json::TrimmedStringValue(item, {attachment_frontend_fields::kMimeTypeInputField});
-		const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
-		const std::string attachment_kind = NormalizeStagedAttachmentKind(requested_kind);
-		const bool is_directory = attachment_kind == attachment_frontend_fields::kDirectoryKind;
-		MessageAttachment attachment;
-		attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
-		if (attachment.id.empty())
+		const std::filesystem::path workspace_data_root = workspace_root / ".UAM";
+		if (!PlatformServicesFactory::Instance().path_service.EnsureHiddenDirectory(workspace_data_root, &ec))
 		{
-			attachment.id = AttachmentId();
+			return uam::query_handler_async::AsyncFailure(500, "Failed to create workspace data directory.");
 		}
-		const std::string fallback_name = source_path_text.empty() ? "attachment" : uam::paths::Utf8PathString(uam::paths::PathFromUtf8(source_path_text).filename());
-		attachment.name = SafeAttachmentName(uam::strings::TrimOrFallback(uam::nlohmann_json::StringViewOrEmpty(item, attachment_fields::kNameField), fallback_name), "attachment");
-		attachment.kind = attachment_kind;
-		attachment.mime_type = mime_type;
 
-		if (is_directory)
+		const std::filesystem::path attachment_root = workspace_data_root / "attachments" / chat_id;
+		if (!uam::paths::CreateDirectoriesNoThrow(attachment_root, &ec))
 		{
-			if (source_path_text.empty())
+			return uam::query_handler_async::AsyncFailure(500, "Failed to create attachment directory.");
+		}
+
+		auto staged = nlohmann::json::array();
+		std::size_t index = 0;
+		for (const nlohmann::json& item : items)
+		{
+			if (!item.is_object())
 			{
-				cb->Failure(400, "Directory attachments require a filesystem path.");
-				return;
+				continue;
 			}
-			const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
-			if (!uam::paths::IsDirectoryNoThrow(source_path))
+
+			const std::string requested_kind = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kKindField});
+			const std::string mime_type = uam::nlohmann_json::TrimmedStringValue(item, {attachment_frontend_fields::kMimeTypeInputField});
+			const std::string source_path_text = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
+			const std::string attachment_kind = NormalizeStagedAttachmentKind(requested_kind);
+			const bool is_directory = attachment_kind == attachment_frontend_fields::kDirectoryKind;
+			MessageAttachment attachment;
+			attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
+			if (attachment.id.empty())
 			{
-				cb->Failure(400, "Directory attachment does not exist: " + source_path_text);
-				return;
+				attachment.id = AttachmentId();
 			}
-			attachment.path = PathForPrompt(workspace_root, source_path);
-			attachment.copied = false;
+			const std::string fallback_name = source_path_text.empty() ? "attachment" : uam::paths::Utf8PathString(uam::paths::PathFromUtf8(source_path_text).filename());
+			attachment.name = SafeAttachmentName(uam::strings::TrimOrFallback(uam::nlohmann_json::StringViewOrEmpty(item, attachment_fields::kNameField), fallback_name), "attachment");
+			attachment.kind = attachment_kind;
+			attachment.mime_type = mime_type;
+
+			if (is_directory)
+			{
+				if (source_path_text.empty())
+				{
+					return uam::query_handler_async::AsyncFailure(400, "Directory attachments require a filesystem path.");
+				}
+				const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
+				if (!uam::paths::IsDirectoryNoThrow(source_path))
+				{
+					return uam::query_handler_async::AsyncFailure(400, "Directory attachment does not exist: " + source_path_text);
+				}
+				attachment.path = PathForPrompt(workspace_root, source_path);
+				attachment.copied = false;
+				staged.push_back(AttachmentToJson(attachment));
+				continue;
+			}
+
+			std::string bytes;
+			if (const nlohmann::json* data_base64 = uam::nlohmann_json::FindStringField(item, attachment_frontend_fields::kDataBase64Field); data_base64 != nullptr)
+			{
+				if (!uam::base64::Decode(data_base64->get_ref<const std::string&>(), bytes))
+				{
+					return uam::query_handler_async::AsyncFailure(400, "Attachment data is not valid base64.");
+				}
+				if (bytes.size() > kMaxAttachmentBytes)
+				{
+					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
+				}
+			}
+			else if (!source_path_text.empty())
+			{
+				const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
+				if (!uam::paths::IsRegularFileNoThrow(source_path))
+				{
+					return uam::query_handler_async::AsyncFailure(400, "File attachment does not exist: " + source_path_text);
+				}
+				const std::optional<std::uintmax_t> source_size = uam::paths::FileSizeNoThrow(source_path);
+				if (!source_size || *source_size > kMaxAttachmentBytes)
+				{
+					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
+				}
+				if (!uam::io::TryReadBinaryFile(source_path, bytes))
+				{
+					return uam::query_handler_async::AsyncFailure(500, "Failed to read attachment: " + source_path_text);
+				}
+				if (bytes.size() > kMaxAttachmentBytes)
+				{
+					return uam::query_handler_async::AsyncFailure(413, "Attachment is larger than the 25 MB limit.");
+				}
+			}
+			else
+			{
+				return uam::query_handler_async::AsyncFailure(400, "File attachments require data or a filesystem path.");
+			}
+
+			const std::string prefix = uam::time::SystemEpochMicrosecondsTokenNow() + "-" + std::to_string(index++);
+			const std::filesystem::path target = attachment_root / (prefix + "-" + attachment.name);
+			if (!uam::io::WriteBinaryFile(target, bytes))
+			{
+				return uam::query_handler_async::AsyncFailure(500, "Failed to write attachment.");
+			}
+			attachment.path = PathForPrompt(workspace_root, target);
+			attachment.preview_origin_path = uam::paths::Utf8PathString(std::filesystem::absolute(target));
+			attachment.preview_key = uam::attachment_preview::Store(data_root, bytes);
+			attachment.size_bytes = bytes.size();
+			attachment.copied = true;
 			staged.push_back(AttachmentToJson(attachment));
-			continue;
 		}
 
-		std::string bytes;
-		if (const nlohmann::json* data_base64 = uam::nlohmann_json::FindStringField(item, attachment_frontend_fields::kDataBase64Field); data_base64 != nullptr)
-		{
-			if (!uam::base64::Decode(data_base64->get_ref<const std::string&>(), bytes))
-			{
-				cb->Failure(400, "Attachment data is not valid base64.");
-				return;
-			}
-			if (bytes.size() > kMaxAttachmentBytes)
-			{
-				cb->Failure(413, "Attachment is larger than the 25 MB limit.");
-				return;
-			}
-		}
-		else if (!source_path_text.empty())
-		{
-			const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
-			if (!uam::paths::IsRegularFileNoThrow(source_path))
-			{
-				cb->Failure(400, "File attachment does not exist: " + source_path_text);
-				return;
-			}
-			const std::optional<std::uintmax_t> source_size = uam::paths::FileSizeNoThrow(source_path);
-			if (!source_size || *source_size > kMaxAttachmentBytes)
-			{
-				cb->Failure(413, "Attachment is larger than the 25 MB limit.");
-				return;
-			}
-			if (!uam::io::TryReadBinaryFile(source_path, bytes))
-			{
-				cb->Failure(500, "Failed to read attachment: " + source_path_text);
-				return;
-			}
-			if (bytes.size() > kMaxAttachmentBytes)
-			{
-				cb->Failure(413, "Attachment is larger than the 25 MB limit.");
-				return;
-			}
-		}
-		else
-		{
-			cb->Failure(400, "File attachments require data or a filesystem path.");
-			return;
-		}
-
-		const std::string prefix = uam::time::SystemEpochMicrosecondsTokenNow() + "-" + std::to_string(index++);
-		const std::filesystem::path target = attachment_root / (prefix + "-" + attachment.name);
-		if (!uam::io::WriteBinaryFile(target, bytes))
-		{
-			cb->Failure(500, "Failed to write attachment.");
-			return;
-		}
-		attachment.path = PathForPrompt(workspace_root, target);
-		attachment.size_bytes = bytes.size();
-		attachment.copied = true;
-		staged.push_back(AttachmentToJson(attachment));
-	}
-
-	cb->Success(nlohmann::json{{"attachments", staged}}.dump());
+		return uam::query_handler_async::AsyncSuccess({{"attachments", staged}});
+	    }, complete);
 }
 
 void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

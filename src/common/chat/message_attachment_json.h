@@ -9,6 +9,8 @@ namespace uam::message_attachment_json
 	inline constexpr std::string_view kKindField = "kind";
 	inline constexpr std::string_view kPathField = "path";
 	inline constexpr std::string_view kCopiedField = "copied";
+	inline constexpr std::string_view kPreviewKeyField = "previewKey";
+	inline constexpr std::string_view kPreviewOriginField = "previewOriginPath";
 
 	namespace persisted
 	{

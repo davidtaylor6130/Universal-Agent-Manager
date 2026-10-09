@@ -378,6 +378,8 @@ namespace uam
 			    {std::string(attachment_fields::kPathField), attachment.path},
 			    {std::string(attachment_frontend_fields::kSizeBytesField), attachment.size_bytes},
 			    {std::string(attachment_fields::kCopiedField), attachment.copied},
+			    {std::string(attachment_fields::kPreviewKeyField), attachment.preview_key},
+			    {std::string(attachment_fields::kPreviewOriginField), attachment.preview_origin_path},
 			};
 		}
 
@@ -599,6 +601,8 @@ namespace uam
 					FingerprintHashString(hash, attachment.path);
 					FingerprintHashString(hash, std::to_string(attachment.size_bytes));
 					FingerprintHashBool(hash, attachment.copied);
+					FingerprintHashString(hash, attachment.preview_key);
+					FingerprintHashString(hash, attachment.preview_origin_path);
 				}
 				FingerprintHashBool(hash, message.interrupted);
 				FingerprintHashString(hash, message.stop_reason);

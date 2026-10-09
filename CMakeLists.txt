@@ -268,6 +268,12 @@ endif()
 # ---------------------------------------------------------------------------
 
 set(UAM_PLATFORM_SOURCES)
+if(APPLE)
+  set(UAM_ATTACHMENT_PREVIEW_PLATFORM src/app/attachment_preview_platform_macos.mm)
+elseif(WIN32)
+  set(UAM_ATTACHMENT_PREVIEW_PLATFORM src/app/attachment_preview_platform_windows.cpp)
+endif()
+
 set(UAM_PLATFORM_IMPL_SOURCES)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 if(WIN32)
@@ -407,6 +413,8 @@ endif()
 
 add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_PLATFORM_SOURCES}
+  src/app/attachment_preview_service.cpp
+  ${UAM_ATTACHMENT_PREVIEW_PLATFORM}
   ${UAM_PLATFORM_IMPL_SOURCES}
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/main.cpp
@@ -474,6 +482,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/vcs_handlers.cpp
   src/cef/terminal_handlers.cpp
   src/cef/dictation_handlers.cpp
+  src/cef/attachment_preview_handlers.cpp
   src/cef/acp_handlers.cpp
   src/cef/goal_handlers.cpp
   src/common/models/app_models.cpp
@@ -581,7 +590,8 @@ if(APPLE)
     "-Wl,-framework,Speech"
     "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,ApplicationServices>"
     "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,Carbon>"
-    "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,ImageIO>"
+    "-Wl,-framework,ImageIO"
+    "-Wl,-framework,CoreGraphics"
     "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-framework,QuartzCore>"
     "$<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:-Wl,-weak_framework,ScreenCaptureKit>"
   )
@@ -595,6 +605,7 @@ elseif(WIN32)
     windowsapp
     gdi32
     ole32
+    uuid
     oleaut32
     user32
     uiautomationcore
@@ -1185,6 +1196,7 @@ if(UAM_BUILD_TESTS)
     tests/chat_search_tests.cpp
     tests/provider_configuration_tests.cpp
     src/common/utils/diagnostic_log.cpp
+    tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp
     tests/remote_runner_tests.cpp
     tests/memory_tests.cpp
@@ -1194,6 +1206,8 @@ if(UAM_BUILD_TESTS)
     tests/goal_tests.cpp
     tests/theme_tests.cpp
     tests/resource_collection_tests.cpp
+    src/app/attachment_preview_service.cpp
+    ${UAM_ATTACHMENT_PREVIEW_PLATFORM}
     ${UAM_PLATFORM_IMPL_SOURCES}
 	    ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
 	    src/computer_use/computer_use_mcp_config.cpp
@@ -1316,6 +1330,7 @@ if(UAM_BUILD_TESTS)
       "-Wl,-framework,ApplicationServices"
       "-Wl,-framework,Carbon"
       "-Wl,-framework,ImageIO"
+      "-Wl,-framework,CoreGraphics"
       "-Wl,-framework,QuartzCore"
       "-Wl,-weak_framework,ScreenCaptureKit"
     )
@@ -1330,6 +1345,7 @@ if(UAM_BUILD_TESTS)
       windowsapp
       gdi32
       ole32
+      uuid
       oleaut32
       user32
       uiautomationcore

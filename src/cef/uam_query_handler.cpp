@@ -54,7 +54,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 	}
 	const std::string chat_id = payload.value("chatId", "");
 	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession";
-	const bool is_cached_history_read = action == "getChatMessages" || action == "getToolCallContent";
+	const bool is_cached_history_read = action == "getChatMessages" || action == "getToolCallContent" || action == "getAttachmentImagePreview";
 	if ((!is_runtime_stop && !is_cached_history_read && !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id)) ||
 	    (!m_app.worktree_operation_chat_ids.empty() && (action == "deleteFolder" || action == "deleteFolders" || action == "rescanFolderChats")))
 	{
@@ -93,6 +93,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getChatFileChangeReceipts", &UamQueryHandler::HandleGetChatFileChangeReceipts},
 		{"applyOrganizationAction", &UamQueryHandler::HandleOrganizationAction},
 		{"getToolCallContent", &UamQueryHandler::HandleGetToolCallContent},
+		{"getAttachmentImagePreview", &UamQueryHandler::HandleGetAttachmentImagePreview},
 		{"createSideChat", &UamQueryHandler::HandleCreateSideChat},
 		{"dismissSideChat", &UamQueryHandler::HandleDismissSideChat},
 		{"createSession", &UamQueryHandler::HandleCreateSession},

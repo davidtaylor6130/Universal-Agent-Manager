@@ -68,6 +68,8 @@ struct MessageAttachment
 	std::string path;
 	std::uintmax_t size_bytes = 0;
 	bool copied = false;
+	std::string preview_key;
+	std::string preview_origin_path;
 	bool operator==(const MessageAttachment&) const = default;
 };
 
