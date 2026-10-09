@@ -68,9 +68,9 @@ UAM_TEST(ProviderMcpStatusRequiresCurrentChatBoundHandshakeAndRejectsStaleAuthor
 	UAM_ASSERT_EQ(status(chat.id), std::string("handshake-confirmed"));
 
 	session.process_execution_host_id = "old-host";
-	UAM_ASSERT_EQ(status(chat.id), std::string("missing"));
+	UAM_ASSERT_EQ(status(chat.id), std::string("configured-unverified"));
 	session.process_execution_host_id = "local";
-	UAM_ASSERT_EQ(status(other.id), std::string("missing"));
+	UAM_ASSERT_EQ(status(other.id), std::string("configured-unverified"));
 	UAM_ASSERT(!receipt("handshake", "_mcp_initialized", "connection-one").value("ok", true));
 	UAM_ASSERT(receipt("replacement", "_mcp_initialized", "connection-two").value("ok", false));
 	UAM_ASSERT(receipt("old-disconnect", "_mcp_disconnected", "connection-one").value("ok", false));
@@ -94,7 +94,7 @@ UAM_TEST(ProviderMcpStatusRequiresCurrentChatBoundHandshakeAndRejectsStaleAuthor
 	UAM_ASSERT_EQ(status(chat.id), std::string("configured-unverified"));
 	session.running = false; session.last_error = "Model authentication failed.";
 	UAM_ASSERT(!receipt("stopped", "_mcp_initialized", "connection-two").value("ok", true));
-	UAM_ASSERT_EQ(status(chat.id), std::string("missing"));
+	UAM_ASSERT_EQ(status(chat.id), std::string("configured-unverified"));
 	UAM_ASSERT(uam::provider_mcp_settings::Status(app, "local", "", chat.id)["providers"].front()["providerSessionFailed"].get<bool>());
 	session.running = true; app.chats.front().uam_control_enabled = false;
 	UAM_ASSERT_EQ(status(chat.id), std::string("disabled"));
@@ -196,4 +196,33 @@ UAM_TEST(ProviderMcpOverridesPersistOnlyForTheSelectedProviderAndHost)
 	UAM_ASSERT(bundle.files.empty());
 
 
+}
+
+UAM_TEST(ProviderMcpStatusDistinguishesIdleEnabledSetupFromAnActiveMissingCapability)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "idle-mcp-status";
+	chat.provider_id = "codex-cli";
+	chat.execution_host_id = "local";
+	chat.uam_control_enabled = true;
+	app.chats.push_back(chat);
+	const auto status = [&]()
+	{
+		return uam::provider_mcp_settings::Status(app, "local", "", chat.id)["providers"].front();
+	};
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("configured-unverified"));
+	UAM_ASSERT_EQ(status()["activeSessionCount"].get<std::size_t>(), std::size_t{0});
+	UAM_ASSERT_EQ(status()["configuredSessionCount"].get<std::size_t>(), std::size_t{0});
+	UAM_ASSERT_EQ(status()["connectedSessionCount"].get<std::size_t>(), std::size_t{0});
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.process_execution_host_id = "local";
+	session.running = true;
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
+	session.running = false;
+	app.chats.front().uam_control_enabled = false;
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("disabled"));
 }

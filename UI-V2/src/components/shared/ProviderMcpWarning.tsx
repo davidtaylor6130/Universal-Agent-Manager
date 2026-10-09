@@ -8,29 +8,42 @@ type Connection = { providerId: string; status: string; detail: string }
 /** A missing UAM connection is actionable without interrupting the provider's work. */
 export function ProviderMcpWarning() {
   const session = useAppStore(state => state.sessions.find(item => item.id === state.activeSessionId))
+  const centralConfiguration = useAppStore(state => state.centralProviderConfiguration)
+  const servers = useAppStore(state => state.mcpServers)
+  const runtime = useAppStore(state => session ? state.acpBindingBySessionId[session.id] : undefined)
   const [notice, setNotice] = useState<{ key: string; connection: Connection } | null>(null)
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ key: string; text: string } | null>(null)
   const [refresh, setRefresh] = useState(0)
   const key = session ? JSON.stringify([session.id, session.providerId, session.executionHostId ?? 'local', session.workspaceDirectory ?? '']) : ''
+  const configurationSignature = JSON.stringify([
+    centralConfiguration.uamControlEnabled,
+    (centralConfiguration.mcpOverrides ?? []).filter(override => override.providerId === session?.providerId &&
+      override.executionHostId === (session?.executionHostId ?? 'local') && override.serverId === 'uam-mcp'),
+    servers.map(server => [server.id, server.enabled, server.executionHostId, server.workspaceDirectory]),
+  ])
 
   useEffect(() => {
     let canceled = false
     if (!session?.providerId || session.viewMode === 'cli' || dismissed.has(key)) return
-    void sendToCEF<{ providers: Connection[] }>({ action: 'getProviderMcpStatus', payload: { chatId: session.id, executionHostId: session.executionHostId ?? 'local', workspaceDirectory: session.workspaceDirectory ?? '' } })
+    void sendToCEF<{ executionHostId: string; providers: Connection[] }>({ action: 'getProviderMcpStatus', payload: { chatId: session.id, executionHostId: session.executionHostId ?? 'local', workspaceDirectory: session.workspaceDirectory ?? '' } })
       .then(response => {
-        if (canceled || !response.ok) return
-        const connection = response.data?.providers.find(item => item.providerId === session.providerId)
+        if (canceled) return
+        if (!response.ok || response.data?.executionHostId !== (session.executionHostId ?? 'local') || !Array.isArray(response.data.providers)) {
+          setNotice(null)
+          return
+        }
+        const connection = response.data.providers.find(item => item.providerId === session.providerId)
         setNotice(connection && ['missing', 'disabled', 'failed'].includes(connection.status) ? { key, connection } : null)
-      }).catch(() => { /* Settings exposes diagnostic failures; don't turn an unavailable status check into a missing-connection claim. */ })
+      }).catch(() => { if (!canceled) setNotice(null) })
     return () => { canceled = true }
-  }, [key, session?.viewMode, session?.uamControlEnabled, session?.workspaceDirectory, dismissed, refresh])
+  }, [key, session?.viewMode, session?.uamControlEnabled, session?.workspaceDirectory, configurationSignature, runtime?.running, runtime?.sessionId, runtime?.lifecycleState, dismissed, refresh])
   useEffect(() => {
-    if (!notice || notice.key !== key || dismissed.has(key)) return
-    const timer = window.setTimeout(() => setRefresh(value => value + 1), 5000)
-    return () => window.clearTimeout(timer)
-  }, [notice, key, dismissed, refresh])
+    if (!session?.providerId || session.viewMode === 'cli' || dismissed.has(key) || (!notice && !runtime?.running)) return
+    const timer = window.setInterval(() => setRefresh(value => value + 1), notice?.key === key ? 5000 : 30000)
+    return () => window.clearInterval(timer)
+  }, [notice, key, session?.viewMode, runtime?.running, dismissed])
 
   if (!notice || notice.key !== key || dismissed.has(key)) return null
   return <div role="alert" className="shrink-0 px-4 py-3 text-sm" style={{ borderBottom: '2px solid #ef4444', background: 'var(--bg)', color: 'var(--text)' }}>

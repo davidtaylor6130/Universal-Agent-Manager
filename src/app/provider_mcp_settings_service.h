@@ -331,9 +331,9 @@ namespace uam::provider_mcp_settings
 			for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions) if (session != nullptr) observe(*session, session->running);
 			for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
 				if (terminal != nullptr && terminal->uam_control_session != nullptr) observe(*terminal->uam_control_session, terminal->running);
-			const std::string state = live > 0 ? "connected" : connected > 0 ? "handshake-confirmed" : configured > 0 ? "configured-unverified" : !enabled || (selected != nullptr && selected->uam_control_explicitly_disabled) ? "disabled" : "missing";
+			const std::string state = live > 0 ? "connected" : connected > 0 ? "handshake-confirmed" : configured > 0 ? "configured-unverified" : !enabled || (selected != nullptr && selected->uam_control_explicitly_disabled) ? "disabled" : active == 0 ? "configured-unverified" : "missing";
 			const std::string detail = state == "disabled" ? "UAM tools are disabled for this scope." : state == "connected" ? "The running provider MCP connection has a current heartbeat." : state == "handshake-confirmed" ? "UAM MCP handshake confirmed for this running session. Waiting for a current connection heartbeat." :
-			    state == "configured-unverified" ? "UAM MCP is installed for a running session. No handshake has been confirmed." : provider_failed ? "The provider session failed. Check its chat error; an MCP failure has not been established." : "UAM MCP is installed when the next enabled session starts.";
+			    state == "configured-unverified" ? (configured == 0 ? "UAM MCP is enabled for the next provider session. No connection has been confirmed." : "UAM MCP is installed for a running session. No handshake has been confirmed.") : provider_failed ? "The provider session failed. Check its chat error; an MCP failure has not been established." : "UAM MCP is installed when the next enabled session starts.";
 			nlohmann::json server_settings = nlohmann::json::array();
 			for (const McpServerConfiguration& server : app.settings.mcp_servers)
 				if (server.execution_host_id.empty() || server.execution_host_id == host)
