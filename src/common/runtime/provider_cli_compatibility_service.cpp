@@ -508,19 +508,29 @@ namespace
 		return std::nullopt;
 	}
 
-	bool ValidateRemoteInstallProbe(std::string_view previous, std::string_view current, std::string_view platform, std::string* error)
+	bool ValidateRemoteInstallIdentity(std::string_view previous, std::string_view current, std::string_view platform, std::string* error)
 	{
 		const std::string_view identity = ProbeIdentity(previous);
 		const std::size_t separator = identity.find('|');
 		const std::string method = InstallMethodFromProbeOutput(previous, true);
-		const std::optional<bool> remote_cli_running = ProbeRemoteCliRunning(current);
 		if (identity.empty() || separator == std::string_view::npos ||
 		    !uam::execution_hosts::IsAbsoluteRemotePath(platform, identity.substr(0, separator)) ||
 		    method == "unknown" || identity != ProbeIdentity(current) ||
 		    method != InstallMethodFromProbeOutput(current, true) ||
-		    OutputIndicatesCommandFailure(current) || !remote_cli_running.has_value())
+		    OutputIndicatesCommandFailure(current))
 		{
 			return FailProviderCliInstall(error, "The CLI installation changed or could not be identified. Check this machine again before updating. No update was started.");
+		}
+		return true;
+	}
+
+	bool ValidateRemoteInstallProbe(std::string_view previous, std::string_view current, std::string_view platform, std::string* error)
+	{
+		if (!ValidateRemoteInstallIdentity(previous, current, platform, error)) return false;
+		const std::optional<bool> remote_cli_running = ProbeRemoteCliRunning(current);
+		if (!remote_cli_running.has_value())
+		{
+			return FailProviderCliInstall(error, "Could not check running provider CLI processes. Check this machine again before updating. No update was started.");
 		}
 		if (*remote_cli_running)
 		{
@@ -808,9 +818,10 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	if (host->id != "local" && provider_state.install_method != "npm" && provider_state.install_method != "homebrew-formula" &&
 	    provider_state.install_method != "homebrew-cask" && provider_state.install_method != "winget")
 		return FailProviderCliInstall(error_out, "The CLI installation method could not be identified. Use its existing installer to update it.");
+	// Cached process activity can be stale. RunCliCommand checks current activity before installing.
 	if (host->id != "local" &&
 	    (provider_state.install_method != InstallMethodFromProbeOutput(provider_state.raw_output, true) ||
-	     !ValidateRemoteInstallProbe(provider_state.raw_output, provider_state.raw_output, host->platform, error_out)))
+	     !ValidateRemoteInstallIdentity(provider_state.raw_output, provider_state.raw_output, host->platform, error_out)))
 		return FailProviderCliInstall(error_out, "Check this machine's CLI installation again before updating.");
 	for (const auto& [key, task] : app.runtime_cli_install_tasks)
 	{
@@ -819,7 +830,10 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 		    InstallManager(installed->second.install_method) == InstallManager(provider_state.install_method))
 			return FailProviderCliInstall(error_out, "This machine's package manager is updating another provider. Retry when it finishes.");
 	}
-	const std::string command = BuildInstallCommand(*resolved.policy, trimmed_version, provider_state.install_method);
+	// Homebrew upgrades its current package; it does not install the requested pin.
+	const std::string_view install_version = InstallManager(provider_state.install_method) == "homebrew"
+	    ? std::string_view(kLatestVersion) : trimmed_version;
+	const std::string command = BuildInstallCommand(*resolved.policy, install_version, provider_state.install_method);
 	if (command.empty())
 	{
 		return FailProviderCliInstall(error_out, "Provider CLI installs are not supported for this provider.");
@@ -830,10 +844,10 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	{
 		if (!stop_sessions) return FailProviderCliInstall(error_out, "Provider sessions are running. Stop the affected sessions and retry the update.");
 		app.pending_cli_updates[CliProviderVersionStateKey(resolved.provider_id, host->id)] =
-		    {resolved.provider_id, std::string(trimmed_version), *host, std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + 30.0};
+		    {resolved.provider_id, std::string(install_version), *host, std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + 30.0};
 		provider_state.provider_id = resolved.provider_id;
 		provider_state.execution_host = *host;
-		provider_state.selected_version.assign(trimmed_version);
+		provider_state.selected_version.assign(install_version);
 		provider_state.last_install_status = "running";
 		provider_state.message = "Stopping provider sessions before installing the update.";
 		for (const std::string& chat_id : blocking)
@@ -850,7 +864,7 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 
 	provider_state.provider_id = resolved.provider_id;
 	provider_state.execution_host = *host;
-	provider_state.selected_version.assign(trimmed_version);
+	provider_state.selected_version.assign(install_version);
 	provider_state.install_command = command;
 	provider_state.install_output.clear();
 	provider_state.last_install_status = "running";

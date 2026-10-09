@@ -11895,6 +11895,63 @@ UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 	}
 }
 
+UAM_TEST(CliProviderRemoteInstallRechecksCachedBusyStateBeforeMutation)
+{
+	const std::string identity = "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n";
+	for (const std::string marker : {std::string("[UAM CLI RUNNING] 1\n"), std::string("[UAM CLI RUNNING] unknown\n"), std::string{}})
+	{
+		uam::AppState app;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "fixture-update";
+		host.transport = "ssh";
+		host.ssh_alias = "fixture-update";
+		host.platform = "linux";
+		host.runner_status = "ready";
+		host.runner_version = "fixture";
+		host.runner_protocol_version = 3;
+		app.settings.execution_hosts.push_back(host);
+		uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", host.id)];
+		state.execution_host = host;
+		state.checked = true;
+		state.installed_version = "0.148.0";
+		state.install_method = "npm";
+		state.raw_output = identity + marker + "codex-cli 0.148.0\n";
+		std::string error;
+		UAM_ASSERT(ProviderCliCompatibilityService().StartInstallProviderVersion(app, "codex-cli", "latest", &error, host.id, false, true));
+		UAM_ASSERT(app.runtime_cli_install_tasks.empty());
+		UAM_ASSERT(ValidateRemoteCliInstallProbeForTests(state.raw_output, identity + "[UAM CLI RUNNING] 0\n0.148.0", "linux", &error));
+		UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(state.raw_output, identity + "[UAM CLI RUNNING] 1\n0.148.0", "linux", &error));
+		UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(state.raw_output, identity + "[UAM CLI RUNNING] unknown\n0.148.0", "linux", &error));
+		state.raw_output = "[UAM CLI PATH] relative/codex|../lib/node_modules/@openai/codex/bin/codex.js\n0.148.0";
+		UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, "codex-cli", "latest", &error, host.id, false, true));
+	}
+}
+
+UAM_TEST(CliProviderHomebrewSelectionMatchesActualUpgradeWithoutWeakeningExactPins)
+{
+	for (const std::string method : {std::string("homebrew-cask"), std::string("npm")})
+	{
+		uam::AppState app;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id["codex-cli"];
+		state.install_method = method;
+		std::string error;
+		UAM_ASSERT(ProviderCliCompatibilityService().StartInstallProviderVersion(app, "codex-cli", "0.148.0", &error, {}, false, true));
+		UAM_ASSERT_EQ(state.selected_version, method == "homebrew-cask" ? std::string("latest") : std::string("0.148.0"));
+		state.last_install_status = "succeeded";
+		state.install_output = "Installer completed";
+		app.runtime_cli_version_provider_id = "codex-cli";
+		app.runtime_cli_version_check_task.running = true;
+		app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
+		app.runtime_cli_version_check_task.state->result.output = "codex-cli 0.162.0\n";
+		app.runtime_cli_version_check_task.state->completed.store(true);
+		ProviderCliCompatibilityService().Poll(app);
+		UAM_ASSERT_EQ(state.last_install_status, method == "homebrew-cask" ? std::string("succeeded") : std::string("failed"));
+		UAM_ASSERT(app.runtime_cli_install_tasks.empty());
+	}
+}
+
 UAM_TEST(CliProviderVersionCompletionsRejectReconfiguredOrRemovedHosts)
 {
 	for (const bool installing : {false, true})

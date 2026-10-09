@@ -252,8 +252,9 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                         onClick={async () => {
                           setInstallError('')
                           if (providerState?.blockingChatIds?.length) { setBlockedUpdate(update); return }
-                          if (!await monitor.applyCliProviderVersion(update.providerId!, update.latestVersion, ...update.executionHostId ? [update.executionHostId] : [])) {
-                            setInstallError(`${update.name} update could not be started. Finish active provider work and try again.`)
+                          const result = await monitor.requestCliProviderUpdate(update.providerId!, update.latestVersion, ...update.executionHostId ? [update.executionHostId] : [])
+                          if (!result.ok) {
+                            setInstallError(`${update.name} update could not be started. ${result.error?.trim() || 'Check its installation and connection, then retry.'}`)
                           }
                         }}
                       >

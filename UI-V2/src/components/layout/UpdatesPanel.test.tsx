@@ -25,6 +25,7 @@ function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
     dismiss: vi.fn(),
     dismissAll: vi.fn(),
     applyCliProviderVersion: vi.fn(async () => true),
+    requestCliProviderUpdate: vi.fn(async () => ({ ok: true })),
     installCliProviderVersion: vi.fn(async () => true),
     installProviderUpdates: vi.fn(async () => ({ ok: true })),
     automaticProviderUpdates: false,
@@ -53,10 +54,10 @@ describe('UpdatesPanel', () => {
     })
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
     await act(async () => (host.querySelector('button[aria-label="Update Codex · beta to 0.130.0"]') as HTMLButtonElement).click())
-    expect(state.applyCliProviderVersion).toHaveBeenCalledWith('codex-cli', '0.130.0', 'beta')
+    expect(state.requestCliProviderUpdate).toHaveBeenCalledWith('codex-cli', '0.130.0', 'beta')
     await act(async () => (host.querySelector('button[aria-label="Dismiss Codex · alpha 0.130.0"]') as HTMLButtonElement).click())
     expect(state.dismiss).toHaveBeenCalledWith(JSON.stringify(['alpha', 'codex-cli']), '0.130.0')
-    vi.mocked(state.applyCliProviderVersion).mockClear()
+    vi.mocked(state.requestCliProviderUpdate).mockClear()
     await act(async () => (host.querySelector('button[aria-label="Update everything"]') as HTMLButtonElement).click())
     expect(state.installProviderUpdates).toHaveBeenCalledWith(expect.arrayContaining([
       expect.objectContaining({ providerId: 'codex-cli', executionHostId: 'alpha' }),
@@ -91,7 +92,7 @@ describe('UpdatesPanel', () => {
     await act(async () => {
       ;(host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click()
     })
-    expect(state.applyCliProviderVersion).toHaveBeenCalledWith('codex-cli', '0.130.0')
+    expect(state.requestCliProviderUpdate).toHaveBeenCalledWith('codex-cli', '0.130.0')
 
     await act(async () => {
       ;(host.querySelector('button[aria-label^="Dismiss Codex CLI"]') as HTMLButtonElement).click()
@@ -103,7 +104,7 @@ describe('UpdatesPanel', () => {
   it('surfaces a provider update that the backend refuses to start', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
-    const state = monitor({ applyCliProviderVersion: vi.fn(async () => false) })
+    const state = monitor({ requestCliProviderUpdate: vi.fn(async () => ({ ok: false, error: 'The CLI installation method could not be identified.' })) })
     await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
 
     await act(async () => {
@@ -111,6 +112,8 @@ describe('UpdatesPanel', () => {
     })
 
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Codex CLI update could not be started')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('The CLI installation method could not be identified.')
+    expect(host.textContent).not.toContain('Finish active provider work')
     act(() => (host.querySelector('button[aria-label="Dismiss update error"]') as HTMLButtonElement).click())
     expect(host.querySelector('[role="alert"]')).toBeNull()
     await act(async () => (host.querySelector('button[aria-label="Update Codex CLI to 0.130.0"]') as HTMLButtonElement).click())
@@ -335,7 +338,7 @@ it('keeps a running session intact when cancelled and requests scoped shutdown o
   const state = monitor({ providerStates: [{ providerId: 'codex-cli', installedVersion: '0.124.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified', message: '', running: false, blockingChatIds: ['chat-one'], lastCommand: '', lastOutput: '' }] })
   await act(async () => root.render(<UpdatesPanel monitor={state} onClose={() => {}} />))
   await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Update Codex CLI to 0.130.0"]')!.click())
-  expect(state.applyCliProviderVersion).not.toHaveBeenCalled()
+  expect(state.requestCliProviderUpdate).not.toHaveBeenCalled()
   await act(async () => [...host.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click())
   expect(state.stopSessionsAndUpdate).not.toHaveBeenCalled()
   await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Update Codex CLI to 0.130.0"]')!.click())

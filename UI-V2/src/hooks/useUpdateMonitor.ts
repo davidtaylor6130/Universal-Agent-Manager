@@ -148,10 +148,12 @@ export function useUpdateMonitor() {
         const manager = useAppStore.getState().cliVersionManager
         const state = [...manager.providers, ...(manager.remoteProviders ?? [])].find((entry) =>
           entry.providerId === providerId && (entry.executionHostId || 'local') === (executionHostId || 'local'))
-        if (state?.status === 'installing' && state.selectedVersion === version && state.lastInstallStatus === 'running') started = true
+        const homebrew = state?.installMethod === 'homebrew-formula' || state?.installMethod === 'homebrew-cask'
+        const selectedVersion = homebrew ? 'latest' : version
+        if (state?.status === 'installing' && state.selectedVersion === selectedVersion && state.lastInstallStatus === 'running') started = true
         if (!admitted || !started || state?.running) return
         finish(state?.lastInstallStatus === 'succeeded' && !state.checkError &&
-          Boolean(state.installedVersion) && (version === 'latest' || state.installedVersion === version))
+          Boolean(state.installedVersion) && (selectedVersion === 'latest' || state.installedVersion === version))
       }
       // Subscribe before admission: CEF can push both startup and completion before replying.
       const unsubscribe = useAppStore.subscribe(observe)
@@ -184,6 +186,10 @@ export function useUpdateMonitor() {
     }, () => setError('Automatic provider updates could not start. Retry manually in Updates.'))
   }, [automaticProviderUpdates, cefStateHydrated, checking, updates, providerStates, applyCliProviderVersion])
 
+  const requestCliProviderUpdate = useCallback(async (providerId: string, version: string, executionHostId?: string) => {
+    return sendToCEF({ action: 'applyCliProviderVersion', payload: { providerId, version, ...(executionHostId ? { executionHostId } : {}) } })
+  }, [])
+
   const stopSessionsAndUpdate = useCallback(async (providerId: string, version: string, executionHostId?: string) => {
     const response = await sendToCEF({ action: 'applyCliProviderVersion', payload: { providerId, version, executionHostId, stopSessions: true } })
     return response
@@ -215,13 +221,14 @@ export function useUpdateMonitor() {
 
   const providerUpdateResults = useMemo(() => providerStates.flatMap((state) => {
     if (state.lastInstallStatus !== 'succeeded' && state.lastInstallStatus !== 'failed') return []
+    if (state.lastInstallStatus === 'succeeded' && (state.running || state.checkError)) return []
     const provider = providers.find((candidate) => candidate.id === state.providerId)
     return [{
       providerId: state.providerId,
       ...(state.executionHostId ? { executionHostId: state.executionHostId } : {}),
       name: `${provider?.shortName || provider?.name || state.providerId}${state.executionHostId ? ` · ${state.executionHostName || state.executionHostId}` : ''}`,
       status: state.lastInstallStatus,
-      message: state.message,
+      message: state.lastInstallStatus === 'succeeded' ? `Installed ${state.installedVersion || 'provider update'}.` : state.message,
       output: state.lastOutput,
       installedVersion: state.installedVersion,
     }]
@@ -255,6 +262,7 @@ export function useUpdateMonitor() {
     dismiss,
     dismissAll,
     applyCliProviderVersion,
+    requestCliProviderUpdate,
     installCliProviderVersion,
     applyRemoteHelperUpdate,
     remoteHelperUpdatingId,
