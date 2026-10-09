@@ -14,6 +14,7 @@
 #include "common/utils/base64.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/hash_utils.h"
+#include "common/utils/io_utils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -277,7 +278,14 @@ namespace uam::remote
 				return false;
 			}
 			const std::uintmax_t prefix = acknowledged_cursor - base_cursor;
-			const std::filesystem::path temporary = path.string() + ".compact";
+			std::filesystem::path temporary = path;
+			temporary += ".compact";
+#if defined(_WIN32)
+			// The suffix can cross MAX_PATH even when the original spool is short.
+			std::filesystem::path native_temporary;
+			if (!uam::io::NativeFilePath(temporary, native_temporary, error)) return false;
+			temporary = std::move(native_temporary);
+#endif
 			std::ifstream input(path, std::ios::binary);
 			std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
 			if (!input || !output)
@@ -473,11 +481,31 @@ namespace uam::remote
 #endif
 		m_spoolDirectory = spool_root /
 		                   ("uam-runner-spool-" + ProcessService().GenerateUuid());
-		if (!error && std::filesystem::create_directory(m_spoolDirectory, error))
-			std::filesystem::permissions(
-			    m_spoolDirectory, std::filesystem::perms::owner_all,
-			    std::filesystem::perm_options::replace, error);
-		if (error) m_spoolDirectory.clear();
+#if defined(_WIN32)
+		std::filesystem::path native_directory;
+		std::string path_error;
+		if (!uam::io::NativeFilePath(m_spoolDirectory, native_directory, path_error))
+		{
+			m_spoolDirectory.clear();
+			return;
+		}
+		m_spoolDirectory = std::move(native_directory);
+#endif
+		if (error || !std::filesystem::create_directory(m_spoolDirectory, error))
+		{
+			m_spoolDirectory.clear();
+			return;
+		}
+		std::filesystem::permissions(
+		    m_spoolDirectory, std::filesystem::perms::owner_all,
+		    std::filesystem::perm_options::replace, error);
+		if (error)
+		{
+			// Remove only this newly created empty directory; never adopt an existing spool.
+			std::error_code cleanup_error;
+			std::filesystem::remove(m_spoolDirectory, cleanup_error);
+			m_spoolDirectory.clear();
+		}
 	}
 
 	RunnerState::~RunnerState()
@@ -485,13 +513,7 @@ namespace uam::remote
 		for (auto& [session_id, process] : m_processes)
 		{
 			(void)session_id;
-			process->drainer.request_stop();
-			{
-				std::scoped_lock lock(process->mutex);
-				ProcessService().TerminateStdioProcess(process->fields, true);
-			}
-			if (process->drainer.joinable()) process->drainer.join();
-			ProcessService().CloseStdioProcessHandles(process->fields);
+			CleanupProcess(process);
 		}
 		for (const auto& [upload_id, upload] : m_uploads)
 		{
@@ -1279,6 +1301,18 @@ namespace uam::remote
 				                    "The remote process output spool is unavailable.");
 			process->stdout_spool = m_spoolDirectory / (session_id + ".stdout");
 			process->stderr_spool = m_spoolDirectory / (session_id + ".stderr");
+#if defined(_WIN32)
+			// Store native paths so all reads, compaction, and cleanup use the same spelling.
+			std::filesystem::path native_stdout;
+			std::filesystem::path native_stderr;
+			std::string path_error;
+			if (!uam::io::NativeFilePath(process->stdout_spool, native_stdout, path_error) ||
+			    !uam::io::NativeFilePath(process->stderr_spool, native_stderr, path_error))
+				return ProcessError(request, "spool_unavailable",
+				                    "The remote process output spool could not be created.");
+			process->stdout_spool = std::move(native_stdout);
+			process->stderr_spool = std::move(native_stderr);
+#endif
 			m_processes.emplace(session_id, process);
 			state_lock.unlock();
 			const auto abandon_start = [&]

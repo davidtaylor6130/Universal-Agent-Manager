@@ -7,6 +7,8 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "remote/runner_service_posix.h"
 
+#include <set>
+
 #if defined(__APPLE__)
 #include <sys/wait.h>
 #endif
@@ -732,80 +734,134 @@ UAM_TEST(RemoteRunnerReplaysPolledOutputUntilItIsAcknowledged)
 
 UAM_TEST(RemoteRunnerReclaimsAcknowledgedSpoolPrefixesWithoutChangingCursors)
 {
-#if defined(__APPLE__) || defined(__linux__)
-	uam::remote::RunnerState state(8);
+#if defined(__APPLE__) || defined(__linux__) || defined(_WIN32)
+#if defined(_WIN32)
+	const fs::path spool_parent = PlatformServicesFactory::Instance().process_service
+	    .ResolveCurrentExecutablePath().parent_path();
+	std::set<fs::path> previous_spools;
+	for (const fs::directory_entry& entry : fs::directory_iterator(spool_parent))
+		if (entry.is_directory() && entry.path().filename().string().starts_with("uam-runner-spool-"))
+			previous_spools.insert(entry.path());
+	const std::string session_id(128, 's');
+	const std::vector<std::string> arguments = {"cmd.exe", "/d", "/s", "/c",
+	    "(<nul set /p =12345678)&(<nul set /p =87654321)1>&2&set /p reply=&"
+	    "(<nul set /p =abcdefgh)&(<nul set /p =hgfedcba)1>&2&set /p reply=&"
+	    "(<nul set /p =ABCDEFGH)&(<nul set /p =HGFEDCBA)1>&2"};
+#else
+	const std::string session_id = "rollover";
+	const std::vector<std::string> arguments = {"/bin/sh", "-c",
+	    "printf 12345678; printf 87654321 >&2; read reply; "
+	    "printf abcdefgh; printf hgfedcba >&2; read reply; "
+	    "printf ABCDEFGH; printf HGFEDCBA >&2"};
+#endif
+	std::unique_ptr<uam::remote::RunnerState> state = std::make_unique<uam::remote::RunnerState>(8);
+#if defined(_WIN32)
+	fs::path spool_directory;
+	for (const fs::directory_entry& entry : fs::directory_iterator(spool_parent))
+		if (entry.is_directory() && entry.path().filename().string().starts_with("uam-runner-spool-") &&
+		    !previous_spools.contains(entry.path()))
+		{
+			UAM_ASSERT(spool_directory.empty());
+			spool_directory = entry.path();
+		}
+	UAM_ASSERT(!spool_directory.empty());
+	const fs::path stdout_path = spool_directory / (session_id + ".stdout");
+	const fs::path stderr_path = spool_directory / (session_id + ".stderr");
+	const auto native_path = [](const fs::path& path)
+	{
+		fs::path converted;
+		std::string error;
+		UAM_ASSERT(uam::io::NativeFilePath(path, converted, error));
+		return converted;
+	};
+	if (uam::env::GetNonEmptyString("UAM_TEST_REQUIRE_LONG_SPOOL").value_or("") == "1")
+	{
+		UAM_ASSERT(stdout_path.native().size() > 260);
+		UAM_ASSERT(stderr_path.native().size() > 260);
+	}
+#endif
 	const nlohmann::json started = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-start"}, {"type", "process.start"}, {"sessionId", "rollover"},
+	    {{"id", "rollover-start"}, {"type", "process.start"}, {"sessionId", session_id},
 	     {"controlToken", kProcessControlToken}, {"cwd", fs::temp_directory_path().string()},
-	     {"argv", nlohmann::json::array({"/bin/sh", "-c",
-	         "printf 12345678; read reply; printf abcdefgh; read reply; printf ABCDEFGH"})}},
-	    "test-version", &state);
+	     {"argv", arguments}},
+	    "test-version", state.get());
 	UAM_ASSERT(started.value("ok", false));
 	const auto poll = [&](const char* id, std::uint64_t cursor)
 	{
 		return uam::remote::HandleRunnerRequest(
-		    {{"id", id}, {"type", "process.poll"}, {"sessionId", "rollover"},
+		    {{"id", id}, {"type", "process.poll"}, {"sessionId", session_id},
 		     {"controlToken", kProcessControlToken}, {"acknowledgedOutput", true},
-		     {"stdoutCursor", cursor}, {"stderrCursor", std::uint64_t{0}}},
-		    "test-version", &state);
+		     {"stdoutCursor", cursor}, {"stderrCursor", cursor}},
+		    "test-version", state.get());
 	};
 	nlohmann::json first;
 	std::string first_output;
-	for (int attempt = 0; attempt < 100 && first_output.empty(); ++attempt)
+	std::string first_error;
+	for (int attempt = 0; attempt < 100 && (first_output.empty() || first_error.empty()); ++attempt)
 	{
 		first = poll("rollover-poll-1", 0);
 		UAM_ASSERT(first.value("ok", false));
 		UAM_ASSERT(uam::base64::Decode(first["result"].value("stdoutBase64", ""), first_output));
-		if (first_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		UAM_ASSERT(uam::base64::Decode(first["result"].value("stderrBase64", ""), first_error));
+		if (first_output.empty() || first_error.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT_EQ(first_output, std::string("12345678"));
+	UAM_ASSERT_EQ(first_error, std::string("87654321"));
 	const std::uint64_t first_cursor = first["result"]["stdoutCursor"].get<std::uint64_t>();
 	UAM_ASSERT_EQ(first_cursor, std::uint64_t{8});
+	UAM_ASSERT_EQ(first["result"]["stderrCursor"].get<std::uint64_t>(), std::uint64_t{8});
 	const nlohmann::json ack = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-ack-1"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	    {{"id", "rollover-ack-1"}, {"type", "process.ack"}, {"sessionId", session_id},
 	     {"controlToken", kProcessControlToken}, {"stdoutCursor", first_cursor},
-	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	     {"stderrCursor", first_cursor}}, "test-version", state.get());
 	UAM_ASSERT(ack.value("ok", false));
 	const auto advance = [&](const char* id, std::uint64_t input_sequence)
 	{
 		return uam::remote::HandleRunnerRequest(
-		    {{"id", id}, {"type", "process.write"}, {"sessionId", "rollover"},
-		     {"controlToken", kProcessControlToken}, {"dataBase64", uam::base64::Encode("\n")},
-		     {"inputSequence", input_sequence}}, "test-version", &state);
+		    {{"id", id}, {"type", "process.write"}, {"sessionId", session_id},
+		     {"controlToken", kProcessControlToken}, {"dataBase64", uam::base64::Encode("next\n")},
+		     {"inputSequence", input_sequence}}, "test-version", state.get());
 	};
 	UAM_ASSERT(advance("rollover-write-1", 1).value("ok", false));
 	nlohmann::json second;
 	std::string second_output;
-	for (int attempt = 0; attempt < 100 && second_output.empty(); ++attempt)
+	std::string second_error;
+	for (int attempt = 0; attempt < 100 && (second_output.empty() || second_error.empty()); ++attempt)
 	{
 		second = poll("rollover-poll-2", first_cursor);
 		UAM_ASSERT(second.value("ok", false));
 		UAM_ASSERT(uam::base64::Decode(second["result"].value("stdoutBase64", ""), second_output));
-		if (second_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		UAM_ASSERT(uam::base64::Decode(second["result"].value("stderrBase64", ""), second_error));
+		if (second_output.empty() || second_error.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT_EQ(second_output, std::string("abcdefgh"));
+	UAM_ASSERT_EQ(second_error, std::string("hgfedcba"));
 	UAM_ASSERT_EQ(second["result"]["stdoutCursor"].get<std::uint64_t>(), std::uint64_t{16});
+	UAM_ASSERT_EQ(second["result"]["stderrCursor"].get<std::uint64_t>(), std::uint64_t{16});
 	const nlohmann::json duplicate_ack = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-ack-replay"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	    {{"id", "rollover-ack-replay"}, {"type", "process.ack"}, {"sessionId", session_id},
 	     {"controlToken", kProcessControlToken}, {"stdoutCursor", first_cursor},
-	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	     {"stderrCursor", first_cursor}}, "test-version", state.get());
 	UAM_ASSERT(duplicate_ack.value("ok", false));
 	const nlohmann::json ack_second = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-ack-2"}, {"type", "process.ack"}, {"sessionId", "rollover"},
+	    {{"id", "rollover-ack-2"}, {"type", "process.ack"}, {"sessionId", session_id},
 	     {"controlToken", kProcessControlToken}, {"stdoutCursor", std::uint64_t{16}},
-	     {"stderrCursor", std::uint64_t{0}}}, "test-version", &state);
+	     {"stderrCursor", std::uint64_t{16}}}, "test-version", state.get());
 	UAM_ASSERT(ack_second.value("ok", false));
 	UAM_ASSERT(advance("rollover-write-2", 2).value("ok", false));
 	nlohmann::json third;
 	std::string third_output;
-	for (int attempt = 0; attempt < 100 && third_output.empty(); ++attempt)
+	std::string third_error;
+	for (int attempt = 0; attempt < 100 && (third_output.empty() || third_error.empty()); ++attempt)
 	{
 		third = poll("rollover-poll-3", 16);
 		UAM_ASSERT(third.value("ok", false));
 		UAM_ASSERT(uam::base64::Decode(third["result"].value("stdoutBase64", ""), third_output));
-		if (third_output.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		UAM_ASSERT(uam::base64::Decode(third["result"].value("stderrBase64", ""), third_error));
+		if (third_output.empty() || third_error.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT_EQ(third_output, std::string("ABCDEFGH"));
+	UAM_ASSERT_EQ(third_error, std::string("HGFEDCBA"));
 	for (int attempt = 0; attempt < 100 && third["result"].value("running", true); ++attempt)
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -814,9 +870,29 @@ UAM_TEST(RemoteRunnerReclaimsAcknowledgedSpoolPrefixesWithoutChangingCursors)
 	}
 	UAM_ASSERT(!third["result"].value("running", true));
 	const nlohmann::json removed = uam::remote::HandleRunnerRequest(
-	    {{"id", "rollover-remove"}, {"type", "process.remove"}, {"sessionId", "rollover"},
-	     {"controlToken", kProcessControlToken}}, "test-version", &state);
+	    {{"id", "rollover-remove"}, {"type", "process.remove"}, {"sessionId", session_id},
+	     {"controlToken", kProcessControlToken}}, "test-version", state.get());
 	UAM_ASSERT(removed.value("ok", false));
+#if defined(_WIN32)
+	UAM_ASSERT(!fs::exists(native_path(stdout_path)));
+	UAM_ASSERT(!fs::exists(native_path(stderr_path)));
+#endif
+	// Leave a restarted process registered so destruction must clean its spools too.
+	const nlohmann::json restarted = uam::remote::HandleRunnerRequest(
+	    {{"id", "rollover-restart"}, {"type", "process.start"}, {"sessionId", session_id},
+	     {"controlToken", kProcessControlToken}, {"cwd", fs::temp_directory_path().string()},
+	     {"argv", arguments}}, "test-version", state.get());
+	UAM_ASSERT(restarted.value("ok", false));
+#if defined(_WIN32)
+	UAM_ASSERT(fs::exists(native_path(stdout_path)));
+	UAM_ASSERT(fs::exists(native_path(stderr_path)));
+#endif
+	state.reset();
+#if defined(_WIN32)
+	UAM_ASSERT(!fs::exists(native_path(stdout_path)));
+	UAM_ASSERT(!fs::exists(native_path(stderr_path)));
+	UAM_ASSERT(!fs::exists(native_path(spool_directory)));
+#endif
 #endif
 }
 
