@@ -46,8 +46,8 @@ namespace uam::io
 		return std::error_code(static_cast<int>(code), std::system_category()).message();
 	}
 
-	/// <summary>Resolve long Win32 paths before adding an extended prefix; retain short and already native path semantics.</summary>
-	inline bool NativeFilePath(const std::filesystem::path& path, std::filesystem::path& native_path, std::string& error)
+	/// <summary>Resolve Win32 paths before adding an extended prefix; optionally protect short directory roots whose descendants can be long.</summary>
+	inline bool NativeFilePath(const std::filesystem::path& path, std::filesystem::path& native_path, std::string& error, bool force_extended = false)
 	{
 		const std::wstring& input = path.native();
 		if (input.empty() || input.find(L'\0') != std::wstring::npos)
@@ -75,7 +75,7 @@ namespace uam::io
 			return false;
 		}
 		absolute.resize(length);
-		if (length < MAX_PATH)
+		if (!force_extended && length < MAX_PATH)
 		{
 			native_path = path;
 			return true;
@@ -93,7 +93,7 @@ namespace uam::io
 	}
 
 #else
-	inline bool NativeFilePath(const std::filesystem::path& path, std::filesystem::path& native_path, std::string&)
+	inline bool NativeFilePath(const std::filesystem::path& path, std::filesystem::path& native_path, std::string&, bool = false)
 	{
 		native_path = path;
 		return true;
@@ -298,7 +298,7 @@ namespace uam::io
 		std::filesystem::path native_parent;
 		std::string normalization_error;
 		if (path.parent_path().empty() || !NativeFilePath(path, native_path, normalization_error) ||
-		    !NativeFilePath(path.parent_path(), native_parent, normalization_error) || !uam::paths::PathExistsNoThrow(native_path))
+		    !NativeFilePath(path.parent_path(), native_parent, normalization_error, true) || !uam::paths::PathExistsNoThrow(native_path))
 		{
 			return;
 		}
@@ -662,7 +662,8 @@ namespace uam::io
 		std::error_code ec;
 		std::filesystem::path native_parent;
 		std::filesystem::path native_path;
-		if (!NativeFilePath(parent, native_parent, result.error) || !NativeFilePath(path, native_path, result.error)) return result;
+		// Directory creation reaches its legacy limit before a child file requires an extended path.
+		if (!NativeFilePath(parent, native_parent, result.error, true) || !NativeFilePath(path, native_path, result.error)) return result;
 		if (!uam::paths::CreateDirectoriesNoThrow(native_parent, &ec))
 		{
 			result.error = "Failed to create destination directory: " + ec.message();
