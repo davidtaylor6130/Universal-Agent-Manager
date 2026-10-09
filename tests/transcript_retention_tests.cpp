@@ -38,6 +38,52 @@ UAM_TEST(TranscriptRetentionReleasesDurableColdHistoryAndRehydrates)
 	UAM_ASSERT_EQ(app.chats.front().messages, saved->messages);
 }
 
+UAM_TEST(TranscriptPageLoadingLeavesNativeHistoryColdAndPreservesDurableContext)
+{
+	uam_test::TempDir temp("uam-cold-transcript-page");
+	ChatSession original = RetentionChat();
+	for (int index = 0; index < 999; ++index) original.messages.push_back(Message{MessageRole::Assistant, "durable history " + std::to_string(index)});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, original));
+	std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(summary.has_value() && loaded.has_value());
+	const std::size_t count = summary->persisted_message_count;
+	const std::string digest = summary->persisted_messages_digest;
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), count, digest, false));
+	UAM_ASSERT(!summary->messages_loaded && summary->messages.empty());
+	UAM_ASSERT_EQ(summary->persisted_message_count, std::size_t{1000});
+	UAM_ASSERT_EQ(summary->persisted_messages_digest, digest);
+	summary->title = "Renamed cold chat";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *summary));
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, *summary));
+	UAM_ASSERT_EQ(summary->messages, original.messages);
+	UAM_ASSERT_EQ(summary->title, std::string("Renamed cold chat"));
+
+	summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(summary.has_value() && loaded.has_value());
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, true));
+	UAM_ASSERT(summary->messages_loaded && summary->messages == original.messages);
+	for (int guard = 0; guard < 7; ++guard)
+	{
+		summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+		loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+		UAM_ASSERT(summary.has_value() && loaded.has_value());
+		const std::size_t expected_count = summary->persisted_message_count;
+		const std::string expected_digest = summary->persisted_messages_digest;
+		if (guard == 0) ++summary->persisted_message_count;
+		if (guard == 1) summary->persisted_messages_digest = "changed";
+		if (guard == 2) loaded->id = "different";
+		if (guard == 3) ++loaded->persisted_message_count;
+		if (guard == 4) loaded->persisted_messages_digest = "changed";
+		if (guard == 5) loaded->messages_loaded = false;
+		if (guard == 6) summary->messages_loaded = true;
+		UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), expected_count, expected_digest, false));
+		UAM_ASSERT(summary->messages.empty());
+		UAM_ASSERT_EQ(summary->messages_loaded, guard == 6);
+	}
+}
+
 UAM_TEST(TranscriptRetentionProtectsEveryVisiblePaneAndReopenedHydration)
 {
 	uam::AppState app;

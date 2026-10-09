@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -14,6 +15,8 @@ namespace uam
 	class TranscriptRetentionService
 	{
 	public:
+		/// <summary>Validate a background history load; page requests must leave cold transcripts detached.</summary>
+		static bool CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history);
 		void SetVisibleChatIds(const std::vector<std::string>& chat_ids);
 		void Invalidate(const std::string& chat_id);
 		std::optional<std::uint64_t> BeginRelease(const AppState& app, const std::string& chat_id);

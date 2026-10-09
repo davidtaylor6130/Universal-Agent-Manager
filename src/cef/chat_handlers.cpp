@@ -332,8 +332,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target);
 				    return;
 			    }
-			    if (!ChatRepository::AdoptHydratedMessagesIfUnchanged(
-			            *current, std::move(**loaded), expected_count, expected_digest))
+			    if (!uam::TranscriptRetentionService::CompleteHistoryLoad(
+			            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value()))
 				    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 		    });
 		return;

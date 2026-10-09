@@ -1,12 +1,22 @@
 #include "transcript_retention_service.h"
 #include "app/chat_domain_service.h"
 #include "app/uam_control_service.h"
+#include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include <algorithm>
 
 namespace uam
 {
+	bool TranscriptRetentionService::CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history)
+	{
+		if (retain_history)
+			return ChatRepository::AdoptHydratedMessagesIfUnchanged(current, std::move(loaded), expected_count, expected_digest);
+		if (current.messages_loaded) return false;
+		ChatSession detached = current;
+		return ChatRepository::AdoptHydratedMessagesIfUnchanged(detached, std::move(loaded), expected_count, expected_digest);
+	}
+
 	void TranscriptRetentionService::SetVisibleChatIds(const std::vector<std::string>& chat_ids)
 	{
 		m_visibilityKnown = true;
