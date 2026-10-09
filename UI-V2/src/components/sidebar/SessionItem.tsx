@@ -4,7 +4,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
-  Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck, FolderGit2,
+  Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
   MessageCircleQuestion, ShieldQuestion,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
@@ -121,9 +121,13 @@ function formatSidebarTimeTitle(date: Date | null): string {
   })}`
 }
 
-export function formatSidebarWorktreePath(path: string): string {
-  const parts = path.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean)
-  return parts.length > 2 ? `.../${parts.slice(-2).join('/')}` : parts.join('/')
+function sidebarPathName(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).at(-1) ?? ''
+}
+
+function workspacePathIdentity(path: string): string {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
+  return /^[a-z]:/i.test(normalized) ? normalized.toLowerCase() : normalized
 }
 
 interface SessionItemProps {
@@ -178,6 +182,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         isPinned: session.isPinned ?? false,
         providerId: session.providerId,
         worktreeDirectory: session.workspaceWorktreeDirectory ?? '',
+        sourceDirectory: session.workspaceSourceDirectory ?? '',
+        branchName: session.workspaceBranchName ?? '',
+        executionHostId: session.executionHostId || 'local',
       }
     }
 
@@ -189,8 +196,17 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       isPinned: storeSession?.isPinned ?? false,
       providerId: storeSession?.providerId,
       worktreeDirectory: storeSession?.workspaceWorktreeDirectory ?? '',
+      sourceDirectory: storeSession?.workspaceSourceDirectory ?? '',
+      branchName: storeSession?.workspaceBranchName ?? '',
+      executionHostId: storeSession?.executionHostId || 'local',
     }
   }))
+  const sourceFolderName = useAppStore((s) => sessionSummary.sourceDirectory
+    ? s.folders.find((folder) => (folder.executionHostId || 'local') === sessionSummary.executionHostId
+      && workspacePathIdentity(folder.directory) === workspacePathIdentity(sessionSummary.sourceDirectory))?.name ?? ''
+    : '')
+  const sourceWorkspaceName = sourceFolderName || sidebarPathName(sessionSummary.sourceDirectory) || activityFolderName || 'Unsorted'
+  const worktreeName = sessionSummary.branchName.trim() || sidebarPathName(sessionSummary.worktreeDirectory)
   const sessionName = sessionSummary.name
   const sessionLastOpenedAt = sessionSummary.lastOpenedAt
   const isPinned = sessionSummary.isPinned
@@ -265,7 +281,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
   const lastOpenedLabel = formatSidebarTime(activityDate)
   const activityBranch = useActivityBranch(activityLayout ? sessionId : null, session?.workspaceBranchName, session?.interactionAt ?? session?.updatedAt)
-  const activityWorktree = activityLayout ? session?.workspaceWorktreeDirectory?.trim() ?? '' : ''
+  const activityWorktree = activityLayout ? sessionSummary.worktreeDirectory.trim() : ''
   const activityStatus = activityLayout ? activityStatusLabel(lifecycleStatus) : null
   const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
   const gridLeaves = chatGridLeaves(gridLayout.root)
@@ -404,7 +420,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <div className="flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-3)' }}>
               <CustomIcon icon={activityFolderIcon} fallback={<FolderIcon size={13} aria-hidden />} />
-              <span className="min-w-0 flex-1 truncate">{activityFolderName || 'Unsorted'}</span>
+              <span className="flex min-w-0 flex-1 items-center gap-1" title={activityWorktree || undefined}>
+                <span className="truncate">{activityWorktree ? sourceWorkspaceName : activityFolderName || 'Unsorted'}</span>
+                {activityWorktree && <><GitBranch size={12} className="shrink-0" aria-hidden /><span className="truncate">{worktreeName}</span></>}
+              </span>
               {lifecycleStatus?.type === 'processing' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums" style={{ color: 'var(--info)' }}>
                   <CircleDashed size={13} className="shrink-0" aria-hidden />
@@ -443,14 +462,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             </div>
             <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
             <div className="flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-3)' }}>
-              {activityWorktree && (
-                <span role="img" aria-label={`Worktree: ${activityWorktree}${activityBranch ? ` (${activityBranch})` : ''}`} title={`Worktree: ${activityWorktree}`} className="inline-flex shrink-0">
-                  <FolderGit2 size={12} aria-hidden />
-                </span>
-              )}
-              {activityBranch ? (
+              {!activityWorktree && activityBranch ? (
                 <>
-                  {!activityWorktree && <GitBranch size={12} className="shrink-0" aria-hidden />}
+                  <GitBranch size={12} className="shrink-0" aria-hidden />
                   <span className="min-w-0 flex-1 truncate" title={activityBranch}>{activityBranch}</span>
                 </>
               ) : <span className="flex-1" />}
@@ -531,8 +545,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           <div className="min-w-0 flex-1">
             <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
             {!activityLayout && showWorktreePath && sessionSummary.worktreeDirectory && (
-              <span className="block truncate text-[10px]" title={sessionSummary.worktreeDirectory} style={{ color: 'var(--text-3)' }}>
-                {formatSidebarWorktreePath(sessionSummary.worktreeDirectory)}
+              <span className="flex min-w-0 items-center gap-1 text-[10px]" title={sessionSummary.worktreeDirectory} style={{ color: 'var(--text-3)' }}>
+                <span className="truncate">{sourceWorkspaceName}</span>
+                <GitBranch size={11} className="shrink-0" aria-hidden />
+                <span className="truncate">{worktreeName}</span>
               </span>
             )}
           </div>

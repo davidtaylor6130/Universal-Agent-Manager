@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
-import { formatSidebarWorktreePath, SessionItem } from './SessionItem'
+import { SessionItem } from './SessionItem'
 import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -123,14 +123,16 @@ describe('SessionItem status icons', () => {
         ...makeSession(),
         providerId: 'codex-cli',
         workspaceWorktreeDirectory: '/Users/david/project/.uam-worktrees/chat-abc123',
+        workspaceSourceDirectory: '/Users/david/project',
+        workspaceBranchName: 'fix-sidebar',
       }],
     })
     const { host, root } = renderSessionItem()
 
-    expect(formatSidebarWorktreePath('C:\\Users\\david\\project\\chat-abc123')).toBe('.../project/chat-abc123')
     expect(host.querySelector('img.uam-provider-logo--codex')?.parentElement?.style.width).toBe('16px')
     expect(host.querySelector('[role="img"][aria-label="Provider: Codex"]')).toBeTruthy()
-    expect(host.textContent).toContain('.../.uam-worktrees/chat-abc123')
+    expect(host.textContent).toContain('projectfix-sidebar')
+    expect(host.textContent).not.toContain('.uam-worktrees')
     expect(host.querySelector('[title="/Users/david/project/.uam-worktrees/chat-abc123"]')).toBeTruthy()
 
     act(() => useAppStore.setState({ showProviderIconsInSidebar: false, showWorktreePathInSidebar: false }))
@@ -139,6 +141,26 @@ describe('SessionItem status icons', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('uses the original workspace label and logical worktree name in both sidebar layouts', () => {
+    const worktree = { ...makeSession(), executionHostId: 'windows', workspaceSourceDirectory: 'C:\\Projects\\UAM\\', workspaceWorktreeDirectory: 'C:\\Temp\\chat-random', workspaceBranchName: 'fix-folders' }
+    useAppStore.setState({
+      sessions: [worktree],
+      folders: [
+        { id: 'other', name: 'Wrong machine', directory: 'C:/Projects/UAM', executionHostId: 'local', parentId: null, isExpanded: true, createdAt: now },
+        { id: 'project', name: 'Original UAM', directory: 'c:/projects/uam', executionHostId: 'windows', parentId: null, isExpanded: true, createdAt: now },
+      ],
+    })
+    for (const activityLayout of [false, true]) {
+      const { host, root } = renderSessionItem(activityLayout)
+      expect(host.textContent).toContain('Original UAMfix-folders')
+      expect(host.textContent).not.toContain('chat-random')
+      const context = Array.from(host.querySelectorAll<HTMLElement>('[title]')).find((element) => element.title === worktree.workspaceWorktreeDirectory)
+      expect(context?.querySelector('svg')).toBeTruthy()
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('acknowledges the rendered completion only on deliberate mouse or keyboard selection', () => {
