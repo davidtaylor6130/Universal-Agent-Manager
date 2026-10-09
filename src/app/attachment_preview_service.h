@@ -1,5 +1,6 @@
 #pragma once
 #include "common/models/app_models.h"
+#include <optional>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -20,6 +21,31 @@ namespace uam::attachment_preview
 		unsigned width = 0;
 		unsigned height = 0;
 	};
+
+	/// Identity and storage metadata captured before an asynchronous preview lookup.
+	struct ChatSnapshot
+	{
+		std::string chat_id;
+		std::string execution_host_id;
+		std::string native_identity_key;
+		std::size_t message_count = 0;
+		std::string messages_digest;
+		bool messages_loaded = false;
+	};
+
+	struct AttachmentSnapshot
+	{
+		MessageAttachment attachment;
+	};
+
+	ChatSnapshot CaptureChatSnapshot(const ChatSession& chat);
+	/// Resolve one attachment from saved history without hydrating or adopting into the live chat.
+	std::optional<AttachmentSnapshot> LoadPersistedAttachmentSnapshot(
+	    const std::filesystem::path& data_root, const ChatSnapshot& chat, std::size_t message_index,
+	    std::string_view attachment_id);
+	/// Revalidate async completion against the current live chat, including loaded message changes.
+	bool MatchesCurrentAttachmentSnapshot(const ChatSession& current, const ChatSnapshot& original,
+	    std::size_t message_index, std::string_view attachment_id, const AttachmentSnapshot& snapshot);
 
 	/// Bounded OS decoder. Only PNG/JPEG first frames are admitted; EXIF orientation is applied.
 	Image Decode(std::string_view source);

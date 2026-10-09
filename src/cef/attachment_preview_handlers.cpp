@@ -2,7 +2,6 @@
 #include "cef/uam_query_handler_async.h"
 #include "app/attachment_preview_service.h"
 #include "app/chat_domain_service.h"
-#include "common/chat/native_chat_identity.h"
 #include "common/config/execution_host_config.h"
 #include "common/utils/base64.h"
 #include <algorithm>
@@ -27,42 +26,54 @@ void UamQueryHandler::HandleGetAttachmentImagePreview(CefRefPtr<CefBrowser>, con
 	}
 	const std::size_t index = static_cast<std::size_t>(index_value);
 	ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
-	if (!chat || !chat->messages_loaded || index >= chat->messages.size())
+	if (!chat)
 	{
-		cb->Failure(404, "Preview message is unavailable. Load its saved history first.");
+		cb->Failure(404, "Preview message is unavailable.");
 		return;
 	}
-	const std::vector<MessageAttachment>& attachments = chat->messages[index].attachments;
-	const std::size_t matches = static_cast<std::size_t>(std::count_if(attachments.begin(), attachments.end(), [&attachment_id](const MessageAttachment& value) { return value.id == attachment_id; }));
-	if (matches != 1)
+	const uam::attachment_preview::ChatSnapshot chat_snapshot = uam::attachment_preview::CaptureChatSnapshot(*chat);
+	std::optional<uam::attachment_preview::AttachmentSnapshot> attachment_snapshot;
+	if (chat_snapshot.messages_loaded)
 	{
-		cb->Failure(matches == 0 ? 404 : 409, "Preview attachment identity is unavailable or ambiguous.");
+		if (index < chat->messages.size())
+		{
+			const Message& message = chat->messages[index];
+			const std::vector<MessageAttachment>::const_iterator found = std::find_if(message.attachments.begin(), message.attachments.end(),
+			    [&attachment_id](const MessageAttachment& value) { return value.id == attachment_id; });
+			if (found != message.attachments.end() && std::count_if(message.attachments.begin(), message.attachments.end(),
+			    [&attachment_id](const MessageAttachment& value) { return value.id == attachment_id; }) == 1)
+				attachment_snapshot = uam::attachment_preview::AttachmentSnapshot{*found};
+		}
+	}
+	if (chat_snapshot.messages_loaded && !attachment_snapshot)
+	{
+		cb->Failure(404, "Preview attachment identity is unavailable or ambiguous.");
 		return;
 	}
-	const MessageAttachment snapshot = *std::find_if(attachments.begin(), attachments.end(), [&attachment_id](const MessageAttachment& value) { return value.id == attachment_id; });
-	const std::string identity = uam::chat_identity::NativeIdentityKeyForHistoryImport(*chat);
-	const std::string host = chat->execution_host_id;
+	std::shared_ptr<std::optional<uam::attachment_preview::AttachmentSnapshot>> resolved_snapshot =
+	    std::make_shared<std::optional<uam::attachment_preview::AttachmentSnapshot>>(std::move(attachment_snapshot));
 	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
-	    [data_root = m_app.data_root, snapshot, local = host == uam::execution_hosts::kLocalHostId]()
+	    [data_root = m_app.data_root, chat_snapshot, index, attachment_id, resolved_snapshot,
+	        local = chat_snapshot.execution_host_id == uam::execution_hosts::kLocalHostId]()
 	    {
-		    const uam::attachment_preview::Image image = uam::attachment_preview::Read(data_root, snapshot, local);
+		    if (!*resolved_snapshot)
+			    *resolved_snapshot = uam::attachment_preview::LoadPersistedAttachmentSnapshot(data_root, chat_snapshot, index, attachment_id);
+		    if (!*resolved_snapshot) return uam::query_handler_async::AsyncFailure(404,
+			    "Preview attachment identity is unavailable or ambiguous.");
+		    const uam::attachment_preview::Image image = uam::attachment_preview::Read(data_root, (*resolved_snapshot)->attachment, local);
 		    if (image.png.empty()) return uam::query_handler_async::AsyncSuccess({{"available", false}});
 		    return uam::query_handler_async::AsyncSuccess({{"available", true}, {"mimeType", "image/png"},
 		        {"width", image.width}, {"height", image.height}, {"dataBase64", uam::base64::Encode(image.png)}});
 	    },
-	    [this, chat_id, index, attachment_id, identity, host, snapshot](uam::query_handler_async::AsyncCefResult& response)
+	    [this, chat_id, index, attachment_id, chat_snapshot, resolved_snapshot](uam::query_handler_async::AsyncCefResult& response)
 	    {
+		    if (!response.ok) return;
 		    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
-		    if (!current || !current->messages_loaded || current->execution_host_id != host ||
-		        uam::chat_identity::NativeIdentityKeyForHistoryImport(*current) != identity ||
-		        index >= current->messages.size())
+		    if (!current || !*resolved_snapshot || !uam::attachment_preview::MatchesCurrentAttachmentSnapshot(
+			        *current, chat_snapshot, index, attachment_id, **resolved_snapshot))
 		    {
 			    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while its preview was loading.");
 			    return;
 		    }
-		    const std::vector<MessageAttachment>& values = current->messages[index].attachments;
-		    if (std::count_if(values.begin(), values.end(), [&attachment_id, &snapshot](const MessageAttachment& value) { return value.id == attachment_id && value == snapshot; }) != 1 ||
-		        std::count_if(values.begin(), values.end(), [&attachment_id](const MessageAttachment& value) { return value.id == attachment_id; }) != 1)
-			    response = uam::query_handler_async::AsyncFailure(409, "Attachment changed while its preview was loading.");
 	    });
 }

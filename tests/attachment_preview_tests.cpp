@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/attachment_preview_service.h"
+#include "common/chat/chat_repository.h"
 #include "common/provider/provider_runtime.h"
 #include <array>
 #if defined(__APPLE__)
@@ -180,6 +181,50 @@ UAM_TEST(AttachmentPreviewMetadataRoundTripsMessagesAndQueuedPrompts)
 	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
 	UAM_ASSERT(loaded.has_value()); UAM_ASSERT_EQ(loaded->messages[0].attachments[0], attachment);
 	UAM_ASSERT_EQ(loaded->acp_queued_prompts[0].attachments[0], attachment);
+}
+
+UAM_TEST(AttachmentPreviewLoadsColdPersistedMessageWithoutMutatingLiveChat)
+{
+	uam_test::TempDir temp("attachment-preview-cold");
+	ChatSession chat; chat.id = "cold-preview-chat"; chat.provider_id = "codex"; chat.native_session_id = "native-session";
+	chat.created_at = "2026-10-09T12:00:00.000Z"; chat.updated_at = chat.created_at;
+	chat.title = "Cold preview";
+	MessageAttachment attachment; attachment.id = "image-id"; attachment.name = "image.png";
+	attachment.path = ".UAM/attachments/image.png";
+	attachment.mime_type = "image/png"; attachment.preview_key = uam::attachment_preview::Store(temp.root, Png(6, 4));
+	UAM_ASSERT(uam::attachment_preview::IsKey(attachment.preview_key));
+	Message message; message.role = MessageRole::User; message.content = "attached image"; message.attachments.push_back(attachment);
+	chat.messages.push_back(message);
+	Message trailing; trailing.role = MessageRole::Assistant; trailing.content = "reply"; chat.messages.push_back(trailing);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	std::optional<ChatSession> cold = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(cold.has_value()); UAM_ASSERT(!cold->messages_loaded); UAM_ASSERT(cold->messages.empty());
+	const uam::attachment_preview::ChatSnapshot snapshot = uam::attachment_preview::CaptureChatSnapshot(*cold);
+	UAM_ASSERT(!snapshot.messages_digest.empty());
+	const std::optional<uam::attachment_preview::AttachmentSnapshot> resolved =
+	    uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, snapshot, 0, "image-id");
+	UAM_ASSERT(resolved.has_value()); UAM_ASSERT_EQ(resolved->attachment, attachment);
+	UAM_ASSERT(!cold->messages_loaded); UAM_ASSERT(cold->messages.empty());
+	UAM_ASSERT(!uam::attachment_preview::Read(temp.root, resolved->attachment, true).png.empty());
+
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, snapshot, 0, "missing").has_value());
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, snapshot, 2, "image-id").has_value());
+	uam::attachment_preview::ChatSnapshot stale = snapshot; ++stale.message_count;
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, stale, 0, "image-id").has_value());
+	stale = snapshot; stale.execution_host_id = "remote-host";
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, stale, 0, "image-id").has_value());
+	stale = snapshot; stale.native_identity_key += "stale";
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, stale, 0, "image-id").has_value());
+	stale = snapshot; stale.messages_digest += "stale";
+	UAM_ASSERT(!uam::attachment_preview::LoadPersistedAttachmentSnapshot(temp.root, stale, 0, "image-id").has_value());
+
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(uam::attachment_preview::MatchesCurrentAttachmentSnapshot(*loaded, snapshot, 0, "image-id", *resolved));
+	loaded->messages[0].attachments[0].path = "changed while reading";
+	UAM_ASSERT(!uam::attachment_preview::MatchesCurrentAttachmentSnapshot(*loaded, snapshot, 0, "image-id", *resolved));
+	UAM_ASSERT_EQ(cold->messages.size(), 0u); UAM_ASSERT(!cold->messages_loaded);
+	UAM_ASSERT_EQ(loaded->messages[0].content, message.content);
 }
 
 #if defined(_WIN32)

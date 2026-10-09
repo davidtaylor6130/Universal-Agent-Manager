@@ -5,6 +5,8 @@
 
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
+#include "common/chat/chat_repository.h"
+#include "common/chat/native_chat_identity.h"
 #if defined(_WIN32)
 #include <windows.h>
 #else
@@ -18,6 +20,23 @@ namespace uam::attachment_preview
 	namespace
 	{
 		std::mutex s_decodeMutex;
+
+		std::size_t MessageCount(const ChatSession& chat)
+		{
+			return chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+		}
+
+		std::optional<AttachmentSnapshot> FindAttachment(const ChatSession& chat, std::size_t index,
+		    std::string_view attachment_id)
+		{
+			if (!chat.messages_loaded || index >= chat.messages.size() || attachment_id.empty()) return std::nullopt;
+			const Message& message = chat.messages[index];
+			const std::vector<MessageAttachment>::const_iterator found = std::find_if(message.attachments.begin(), message.attachments.end(),
+			    [attachment_id](const MessageAttachment& value) { return value.id == attachment_id; });
+			if (found == message.attachments.end() || std::count_if(message.attachments.begin(), message.attachments.end(),
+			    [attachment_id](const MessageAttachment& value) { return value.id == attachment_id; }) != 1) return std::nullopt;
+			return AttachmentSnapshot{*found};
+		}
 
 		bool ReadRegular(const std::filesystem::path& path, std::size_t cap, std::string& bytes,
 		    std::size_t read_limit = kMaxSourceBytes, std::uintmax_t* source_size = nullptr)
@@ -117,6 +136,45 @@ namespace uam::attachment_preview
 			// A partial own immutable entry stays unusable: every read validates its content digest.
 			return ok;
 		}
+	}
+
+	ChatSnapshot CaptureChatSnapshot(const ChatSession& chat)
+	{
+		ChatSnapshot snapshot;
+		snapshot.chat_id = chat.id;
+		snapshot.execution_host_id = chat.execution_host_id;
+		snapshot.native_identity_key = uam::chat_identity::NativeIdentityKeyForHistoryImport(chat);
+		snapshot.message_count = MessageCount(chat);
+		snapshot.messages_digest = chat.persisted_messages_digest;
+		snapshot.messages_loaded = chat.messages_loaded;
+		return snapshot;
+	}
+
+	std::optional<AttachmentSnapshot> LoadPersistedAttachmentSnapshot(const std::filesystem::path& data_root,
+	    const ChatSnapshot& expected, std::size_t message_index, std::string_view attachment_id)
+	{
+		if (expected.messages_loaded || expected.chat_id.empty() || attachment_id.empty() ||
+		    message_index >= expected.message_count) return std::nullopt;
+		const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(data_root, expected.chat_id, true);
+		if (!persisted || persisted->id != expected.chat_id || !persisted->messages_loaded ||
+		    persisted->execution_host_id != expected.execution_host_id ||
+		    uam::chat_identity::NativeIdentityKeyForHistoryImport(*persisted) != expected.native_identity_key ||
+		    persisted->messages.size() != expected.message_count ||
+		    persisted->persisted_messages_digest != expected.messages_digest)
+			return std::nullopt;
+		return FindAttachment(*persisted, message_index, attachment_id);
+	}
+
+	bool MatchesCurrentAttachmentSnapshot(const ChatSession& current, const ChatSnapshot& original,
+	    std::size_t message_index, std::string_view attachment_id, const AttachmentSnapshot& snapshot)
+	{
+		if (current.id != original.chat_id || current.execution_host_id != original.execution_host_id ||
+		    uam::chat_identity::NativeIdentityKeyForHistoryImport(current) != original.native_identity_key ||
+		    MessageCount(current) != original.message_count) return false;
+		if (!current.messages_loaded)
+			return !original.messages_loaded && current.persisted_messages_digest == original.messages_digest;
+		const std::optional<AttachmentSnapshot> now = FindAttachment(current, message_index, attachment_id);
+		return now.has_value() && now->attachment == snapshot.attachment;
 	}
 
 	std::string ImageMime(std::string_view source)
