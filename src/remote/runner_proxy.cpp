@@ -640,7 +640,11 @@ namespace uam::remote
 		{
 			configuration_directory = spec->working_directory / ".UAM" / "provider-setup" / spec->configuration_directory.filename();
 			if (!client.InstallProviderConfiguration(spec->configuration_directory, configuration_directory, &error))
-			{ std::cerr << error << '\n'; return 70; }
+			{
+				std::cerr << error << '\n';
+				std::cerr << kRemoteStartupFailurePrefix << spec->delivery_token << " configuration\n";
+				return kRemoteConfigurationStartupFailureExitCode;
+			}
 		}
 		if (protocol_version >= 3)
 			client.SetProcessControlToken(session_id, spec->delivery_token);

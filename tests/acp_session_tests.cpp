@@ -9204,6 +9204,202 @@ UAM_TEST(AcpOptInRestartRecoveryBlocksMissingTurnWithoutReplayingAndRetainsGoal)
 	UAM_ASSERT(persisted->remote_interaction_responses.empty());
 }
 
+#if !defined(_WIN32)
+UAM_TEST(RemoteProxyConfigurationCapabilityRejectionNeverStartsProvider)
+{
+	TempDir temp("uam-proxy-config-capability-rejection");
+	IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
+	const fs::path executable = process_service.ResolveCurrentExecutablePath();
+	const fs::path runner = executable.parent_path() / "uam-runner";
+	const fs::path requests = temp.root / "requests.txt";
+	const fs::path ssh = temp.root / "ssh";
+	UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec " + ShellQuoteForTest(executable.string()) +
+	    " --uam-test-runner-result '{}' " + ShellQuoteForTest(requests.string()) + " --without-central-config\n"));
+	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	const std::string token = "unstarted-proxy-authority";
+	const std::string spec = uam::remote::BuildProcessProxySpec("unstarted-proxy", temp.root,
+	    {"/usr/bin/false"}, {}, false, token, 0, 0, {}, {}, "codex-cli", (temp.root / "configuration").string());
+	const std::vector<std::pair<std::string, std::string>> environment = {
+	    {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")},
+	    {uam::remote::kRemoteProcessSpecEnvironment, spec}};
+	uam::platform::StdioProcessPlatformFields proxy;
+	std::string error;
+	UAM_ASSERT(process_service.StartStdioProcess(proxy, temp.root,
+	    {runner.string(), "proxy", "--alias", "offline-fixture", "--platform", "linux", "--version", "test"}, &error, environment));
+	struct ProxyGuard
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~ProxyGuard()
+		{
+			PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
+		}
+	} guard{proxy};
+	std::array<char, 1024> buffer{};
+	std::string stderr_text;
+	int exit_code = -1;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		const std::ptrdiff_t read = process_service.ReadStdioProcessStderr(proxy, buffer.data(), buffer.size(), &error);
+		if (read > 0) stderr_text.append(buffer.data(), static_cast<std::size_t>(read));
+		if (process_service.PollStdioProcessExited(proxy, &exit_code))
+		{
+			const std::ptrdiff_t final_read = process_service.ReadStdioProcessStderr(proxy, buffer.data(), buffer.size(), &error);
+			if (final_read > 0) stderr_text.append(buffer.data(), static_cast<std::size_t>(final_read));
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT_EQ(exit_code, uam::remote::kRemoteConfigurationStartupFailureExitCode);
+	UAM_ASSERT_EQ(stderr_text, std::string("Update the SSH helper before using central provider configuration.\n") +
+	    std::string(uam::remote::kRemoteStartupFailurePrefix) + token + " configuration\n");
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(requests), std::string("hello \n"));
+}
+#endif
+
+UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
+{
+	for (const bool input_failed : {false, true})
+	{
+		TempDir temp("uam-acp-confirmed-config-startup-failure");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "confirmed-config-startup-failure";
+		chat.provider_id = "codex-cli";
+		chat.execution_host_id = "ssh-test";
+		chat.remote_process_exists = true; // Launch ownership is saved before the proxy starts.
+		chat.remote_process_control_token = "never-launched-authority";
+		chat.messages.push_back({.role = MessageRole::User, .content = "Start the remote task.", .acp_prompt_not_sent = true});
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+
+		std::unique_ptr<uam::AcpSessionState> owned_session = std::make_unique<uam::AcpSessionState>();
+		owned_session->chat_id = chat.id;
+		owned_session->provider_id = chat.provider_id;
+		owned_session->protocol_kind = "codex-app-server";
+		owned_session->running = true;
+		owned_session->processing = true;
+		owned_session->queued_prompt = chat.messages.front().content;
+		owned_session->remote_output_delivery_token = chat.remote_process_control_token;
+		owned_session->turn_user_message_index = 0;
+		owned_session->turn_first_user_message_index = 0;
+		uam::AcpSessionState* session = owned_session.get();
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
+		    "echo Update the SSH helper before using central provider configuration. 1>&2 & echo UAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration 1>&2 & exit /b 71"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c",
+		    "printf 'Update the SSH helper before using central provider configuration.\\nUAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration\\n' >&2; exit 71"};
+#endif
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+		if (input_failed)
+		{
+			session->stdin_writer = std::make_unique<uam::platform::AsyncByteWriter>(
+			    [](const char*, std::size_t, std::string& failure) -> std::ptrdiff_t { failure = "Broken pipe during initialize."; return -1; }, [] {});
+			UAM_ASSERT(session->stdin_writer->Enqueue("initialize\n", 11));
+			int exit_code = -1;
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+			while ((!session->stdin_writer->FailureOrStall() || !PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(*session, &exit_code)) &&
+			       std::chrono::steady_clock::now() < deadline)
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			UAM_ASSERT(session->stdin_writer->FailureOrStall());
+			UAM_ASSERT_EQ(exit_code, 71);
+			session->process_exit_observed = true;
+			session->observed_process_exit_code = exit_code;
+		}
+		app.acp_sessions.push_back(std::move(owned_session));
+		for (int attempt = 0; attempt < 200 && session->running; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(!session->running);
+		UAM_ASSERT_EQ(session->last_error, std::string("Update the SSH helper before using central provider configuration."));
+		UAM_ASSERT_EQ(session->lifecycle_state, std::string("error"));
+		UAM_ASSERT(!session->processing && !session->reconnect_pending && !session->recovering_remote_turn);
+		UAM_ASSERT_EQ(session->crash_restart_attempts, 0);
+		UAM_ASSERT(session->recent_stderr.find(chat.remote_process_control_token) == std::string::npos);
+		for (const uam::AcpDiagnosticEntryState& diagnostic : session->diagnostics)
+			UAM_ASSERT(diagnostic.detail.find(chat.remote_process_control_token) == std::string::npos);
+		UAM_ASSERT(!app.chats.front().remote_process_exists);
+		UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
+		UAM_ASSERT(app.chats.front().messages.front().acp_prompt_not_sent);
+		UAM_ASSERT(app.chats.front().messages.front().interrupted);
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t(1));
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT(!saved->remote_process_exists && !saved->remote_turn_reconnect_pending);
+		UAM_ASSERT(saved->messages.front().acp_prompt_not_sent && saved->messages.front().interrupted);
+	}
+}
+
+UAM_TEST(AcpRemoteStartupFailureMarkerWithForeignAuthorityKeepsRecovery)
+{
+	for (const std::string& rejection : {"foreign", "initialized", "source-exited"})
+	{
+		TempDir temp("uam-acp-foreign-startup-failure-marker");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "foreign-startup-failure-marker";
+		chat.provider_id = "codex-cli";
+		chat.execution_host_id = "ssh-test";
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "retained-process-authority";
+		chat.remote_turn_reconnect_pending = true;
+		chat.remote_pending_requests.push_back({.request_id = 1, .method = "initialize", .delivery_id = "retained-delivery", .payload = "{\"id\":1}", .user_message_index = -1, .turn_serial = 1});
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retain this turn."});
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::unique_ptr<uam::AcpSessionState> owned_session = std::make_unique<uam::AcpSessionState>();
+		owned_session->chat_id = chat.id;
+		owned_session->provider_id = chat.provider_id;
+		owned_session->protocol_kind = "codex-app-server";
+		owned_session->running = true;
+		owned_session->initialized = rejection == "initialized";
+		owned_session->remote_source_exit_reported = rejection == "source-exited";
+		owned_session->remote_source_exit_code = rejection == "source-exited" ? 71 : -1;
+		owned_session->processing = true;
+		owned_session->queued_prompt = chat.messages.front().content;
+		owned_session->crash_restart_attempts = 1;
+		owned_session->pending_request_methods[1] = "initialize";
+		owned_session->remote_output_delivery_token = chat.remote_process_control_token;
+		uam::AcpSessionState* session = owned_session.get();
+		const std::string marker_token = rejection == "foreign" ? "foreign-authority" : chat.remote_process_control_token;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
+		    "echo Update the SSH helper before using central provider configuration. 1>&2 & echo UAM_REMOTE_STARTUP_FAILURE " + marker_token + " configuration 1>&2 & exit /b 71"};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c",
+		    "printf 'Update the SSH helper before using central provider configuration.\\nUAM_REMOTE_STARTUP_FAILURE " + marker_token + " configuration\\n' >&2; exit 71"};
+#endif
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+		app.acp_sessions.push_back(std::move(owned_session));
+		for (int attempt = 0; attempt < 200 && session->running; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(!session->running);
+		if (rejection == "source-exited")
+		{
+			UAM_ASSERT(!session->processing && !session->reconnect_pending && !app.chats.front().remote_process_exists);
+			UAM_ASSERT(session->last_error != "Update the SSH helper before using central provider configuration.");
+		}
+		else
+		{
+			UAM_ASSERT(session->processing && session->reconnect_pending && session->recovering_remote_turn);
+			UAM_ASSERT(app.chats.front().remote_process_exists && app.chats.front().remote_turn_reconnect_pending);
+			UAM_ASSERT_EQ(app.chats.front().remote_pending_requests.size(), std::size_t(1));
+			UAM_ASSERT_EQ(app.chats.front().remote_pending_requests.front().delivery_id, std::string("retained-delivery"));
+		}
+	}
+}
+
 UAM_TEST(AcpProviderStderrCannotFalselyDeclareRemoteTurnMissing)
 {
 	TempDir temp("uam-acp-provider-stderr-false-missing");

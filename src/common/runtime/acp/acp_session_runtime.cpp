@@ -119,6 +119,18 @@ namespace uam
 			return uam::strings::TrimAsciiView(line);
 		}
 
+		std::optional<std::string> ConfirmedRemoteConfigurationStartupError(const AcpSessionState& session, int exit_code)
+		{
+			if (exit_code != uam::remote::kRemoteConfigurationStartupFailureExitCode || session.remote_output_delivery_token.empty() ||
+			    session.remote_source_exit_reported || session.initialized || session.session_ready || session.prompt_request_id != 0)
+				return std::nullopt;
+			const std::string marker = std::string(uam::remote::kRemoteStartupFailurePrefix) + session.remote_output_delivery_token + " configuration";
+			const std::string_view tail = uam::strings::TrimAsciiView(session.recent_stderr);
+			if (RemoteProxyExitLine(session.recent_stderr) != marker) return std::nullopt;
+			const std::string_view error = uam::strings::TrimAsciiView(tail.substr(0, tail.size() - marker.size()));
+			return error.empty() ? "Remote provider configuration failed before startup." : std::string(error);
+		}
+
 		bool RemoteProxyExitConfirmsMissingProcess(const std::string& stderr_tail)
 		{
 			const std::string_view line = RemoteProxyExitLine(stderr_tail);
@@ -3902,11 +3914,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 			std::string input_error;
 			if (session.stdin_writer != nullptr && session.stdin_writer->FailureOrStall(&input_error))
 			{
-				session.last_error = "Structured provider input failed: " + uam::strings::NonEmptyOrFallback(input_error, "unknown transport error");
-				AppendAcpDiagnostic(session, "write", "async_write_failed", "", "", false, 0, session.last_error);
-				RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
-				changed = true;
-				continue;
+				int exit_code = session.observed_process_exit_code;
+				if (session.process_exit_observed || PlatformServicesFactory::Instance().process_service.PollStdioProcessExited(session, &exit_code))
+				{
+					// A closed stdin can be a consequence of startup rejection. Drain the
+					// exited process before classifying its cause or reconnecting its turn.
+					session.process_exit_observed = true;
+					session.observed_process_exit_code = exit_code;
+				}
+				else
+				{
+					session.last_error = "Structured provider input failed: " + uam::strings::NonEmptyOrFallback(input_error, "unknown transport error");
+					AppendAcpDiagnostic(session, "write", "async_write_failed", "", "", false, 0, session.last_error);
+					RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
+					changed = true;
+					continue;
+				}
 			}
 			changed = DrainStderr(app, session, chat) || changed;
 			changed = DrainStdout(app, session, chat, browser) || changed;
@@ -3996,9 +4019,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 				// duplicate prompt reaching the provider.
 				const bool turn_was_active = uam::AcpSessionHasActiveTurn(session);
 				const bool remote_source_exit = session.remote_source_exit_reported;
+				const std::optional<std::string> remote_startup_error = chat.execution_host_id != uam::execution_hosts::kLocalHostId
+				    ? ConfirmedRemoteConfigurationStartupError(session, exit_code) : std::nullopt;
+				const bool remote_startup_rejected = remote_startup_error.has_value();
 				const bool remote_turn_recovery = turn_was_active &&
 				    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
-				    !remote_source_exit;
+				    !remote_source_exit && !remote_startup_rejected;
 				const bool remote_process_missing = exit_code == 70 &&
 				    RemoteProxyExitConfirmsMissingProcess(session.recent_stderr);
 				const bool remote_process_duplicate =
@@ -4027,6 +4053,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const std::string goal_review_user_prompt = session.goal_review_user_prompt;
 				const std::string goal_review_assistant_text = session.goal_review_assistant_text;
 
+				if (remote_startup_rejected)
+				{
+					// This token-bound proxy outcome precedes StartProcess, so no prompt can
+					// have reached this launch. Preserve its cause instead of attaching a turn.
+					session.last_error = *remote_startup_error;
+					session.recent_stderr = *remote_startup_error;
+					session.recovering_remote_turn = false;
+					session.recovering_remote_process = false;
+					chat.remote_process_exists = false;
+					chat.remote_turn_reconnect_pending = false;
+					chat.remote_prompt_delivery_session_id.clear();
+					chat.remote_prompt_delivery_id.clear();
+					chat.remote_prompt_delivery_payload.clear();
+					chat.remote_pending_requests.clear();
+					chat.remote_interaction_responses.clear();
+				}
 				if (turn_was_active && !remote_turn_recovery)
 					(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
 				MarkAcpProcessExited(session, &chat, true, exit_code,
@@ -4062,7 +4104,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 					changed = true;
 					continue;
 				}
-				if ((turn_was_active && !remote_turn_recovery) || remote_source_exit)
+				if (remote_startup_rejected && !turn_was_active) FailAcpTurnOrSession(session, &chat, session.last_error);
+				if ((turn_was_active && !remote_turn_recovery) || remote_source_exit || remote_startup_rejected)
 					SaveChatQuietly(app, chat);
 				if (remote_stop_cleanup_missing)
 				{
@@ -4139,7 +4182,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 
 				std::string restart_error;
-				if (undelivered_prompt && session.crash_restart_attempts < 1 && StartAcpProcessForChat(app, session, chat, &restart_error))
+				if (!remote_startup_rejected && undelivered_prompt && session.crash_restart_attempts < 1 && StartAcpProcessForChat(app, session, chat, &restart_error))
 				{
 					session.crash_restart_attempts = 1;
 					session.queued_prompt = pending_prompt;
@@ -4158,7 +4201,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				else
 				{
-					if (remote_source_exit)
+					if (remote_source_exit || remote_startup_rejected)
 					{
 						session.reconnect_pending = false;
 						session.reconnect_not_before_time_s = 0.0;

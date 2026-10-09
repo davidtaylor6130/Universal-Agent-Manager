@@ -22328,13 +22328,13 @@ int main(int argc, char** argv)
 	if (const std::optional<int> result = RunOpenCodeSessionCreateFixtureIfRequested(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteMcpLostAckFixture(argc, argv)) return *result;
 #if !defined(_WIN32)
-	if ((argc == 3 || argc == 4) && std::string_view(argv[1]) == "--uam-test-runner-result")
+	if ((argc == 3 || argc == 4 || (argc == 5 && std::string_view(argv[4]) == "--without-central-config")) && std::string_view(argv[1]) == "--uam-test-runner-result")
 	{
 		uam::remote::RunnerState state;
 		nlohmann::json request;
 		while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 		{
-			if (argc == 4)
+			if (argc >= 4)
 			{
 				std::ofstream log(argv[3], std::ios::app);
 				log << request.value("type", "") << ' ' << request.value("sessionId", "") << std::endl;
@@ -22344,10 +22344,12 @@ int main(int argc, char** argv)
 					return 0;
 				}
 			}
-			const nlohmann::json response = request.value("type", "") == "hello"
+			nlohmann::json response = request.value("type", "") == "hello"
 			    ? uam::remote::HandleRunnerRequest(request, "test", &state)
 			    : nlohmann::json{{"id", request["id"]}, {"ok", true},
 			                     {"result", nlohmann::json::parse(argv[2])}};
+			if (argc == 5 && request.value("type", "") == "hello")
+				response["capabilities"]["centralProviderConfiguration"] = false;
 			if (!uam::remote::WriteFrame(std::cout, response)) return 1;
 			std::cout.flush();
 		}

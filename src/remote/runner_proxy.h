@@ -15,6 +15,9 @@ namespace uam::remote
 {
 	inline constexpr const char* kRemoteProcessSpecEnvironment = "UAM_REMOTE_PROCESS_SPEC";
 	inline constexpr std::string_view kRemoteStopOutcomePrefix = "UAM_REMOTE_STOP_OUTCOME ";
+	// Only the proxy emits this before attempting to create a provider process.
+	inline constexpr int kRemoteConfigurationStartupFailureExitCode = 71;
+	inline constexpr std::string_view kRemoteStartupFailurePrefix = "UAM_REMOTE_STARTUP_FAILURE ";
 	inline constexpr std::string_view kRemoteStopControlLine = "\x1eUAM_REMOTE_STOP\n";
 	inline constexpr std::string_view kRemoteMcpControlPrefix = "\x1eUAM_REMOTE_MCP ";
 	inline constexpr std::string_view kRemoteOutputMarkerPrefix = "\x1eUAM_REMOTE_OUTPUT ";
