@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import { Bot } from 'lucide-react'
 import codexLogo from '../../assets/provider-logos/codex.svg'
 import claudeLogo from '../../assets/provider-logos/claude.svg'
 import opencodeLogo from '../../assets/provider-logos/opencode.svg'
@@ -9,6 +10,7 @@ import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
 } from '../../utils/providerMetadata'
 
@@ -35,8 +37,9 @@ export function ProviderLogo({ providerId, size = 16, style, className }: Provid
   const claude = providerId === CLAUDE_CLI_PROVIDER_ID
   const opencode = providerId === OPENCODE_CLI_PROVIDER_ID
   const copilot = providerId === COPILOT_CLI_PROVIDER_ID
+  const gemini = !providerId || providerId === DEFAULT_PROVIDER_ID
   const logoSrc = codex ? codexLogo : claude ? claudeLogo : opencode ? opencodeLogo
-    : providerId === ANTIGRAVITY_CLI_PROVIDER_ID ? antigravityLogo : copilot ? '' : geminiLogo
+    : providerId === ANTIGRAVITY_CLI_PROVIDER_ID ? antigravityLogo : gemini ? geminiLogo : ''
 
   return (
     <span
@@ -55,10 +58,12 @@ export function ProviderLogo({ providerId, size = 16, style, className }: Provid
           className={`block h-full w-full object-contain${codex ? ' uam-provider-logo--codex' : ''}`}
           draggable={false}
         />
-      ) : (
-        <span style={{ color: copilot ? '#22c55e' : '#8ab4ff' }} className="block h-full w-full">
+      ) : copilot ? (
+        <span style={{ color: '#22c55e' }} className="block h-full w-full">
           <CopilotMark />
         </span>
+      ) : (
+        <Bot aria-hidden="true" className="h-full w-full" style={{ color: 'var(--text-3)' }} />
       )}
     </span>
   )

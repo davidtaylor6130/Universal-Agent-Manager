@@ -63,6 +63,20 @@ describe('recorded chat edit scope', () => {
     expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(host.textContent).toContain('old.ts')
   })
+  it('retries from the error alert and guards malformed receipt timestamps', async () => {
+    const invalidTimestamp = 'not-a-timestamp'
+    getReceipts.mockRejectedValueOnce(new Error('Receipt history is temporarily unavailable.'))
+      .mockResolvedValueOnce(response([{ ...receipt, messageCreatedAt: invalidTimestamp }]))
+    await openRecorded()
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('temporarily unavailable')
+    await act(async () => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Retry')!.click())
+    expect(getReceipts).toHaveBeenCalledTimes(2)
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    const time = host.querySelector('time')!
+    expect(time.textContent).toBe('Time unavailable')
+    expect(time.getAttribute('title')).toBe(invalidTimestamp)
+    expect(host.textContent).not.toContain('Invalid Date')
+  })
   it.each(['chat', 'workspace', 'worktree', 'host'] as const)('drops a late response after %s ownership changes', async (change) => {
     let resolve!: (value: ReturnType<typeof response>) => void
     getReceipts.mockImplementationOnce(() => new Promise((done) => { resolve = done }))

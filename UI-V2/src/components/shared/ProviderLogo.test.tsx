@@ -31,11 +31,32 @@ describe('ProviderLogo', () => {
       expect(frame.querySelectorAll('svg')).toHaveLength(0)
     }
   })
-  it('preserves Copilot and the Gemini default for legacy provider entries', () => {
+  it('retains distinct branding for all six supported providers and defaults missing IDs to Gemini', () => {
     const host = document.createElement('div')
-    host.innerHTML = renderToStaticMarkup(<><ProviderLogo providerId="copilot-cli" /><ProviderLogo /></>)
-    expect(host.children[0].querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 24 24')
-    expect(host.children[0].querySelector('img')).toBeNull()
-    expect(host.children[1].querySelector('img')?.getAttribute('src')).toBe(geminiLogo)
+    host.innerHTML = renderToStaticMarkup(<>
+      <ProviderLogo providerId="gemini-cli" />
+      <ProviderLogo providerId="codex-cli" />
+      <ProviderLogo providerId="claude-cli" />
+      <ProviderLogo providerId="opencode-cli" />
+      <ProviderLogo providerId="copilot-cli" />
+      <ProviderLogo providerId="antigravity-cli" />
+      <ProviderLogo />
+    </>)
+    expect(host.children[0].querySelector('img')?.getAttribute('src')).toBe(geminiLogo)
+    expect(host.children[1].querySelector('img')?.getAttribute('src')).toBe(codexLogo)
+    expect(host.children[2].querySelector('img')?.getAttribute('src')).toBe(claudeLogo)
+    expect(host.children[3].querySelector('img')?.getAttribute('src')).toBe(opencodeLogo)
+    expect(host.children[4].querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 24 24')
+    expect(host.children[4].querySelector('img')).toBeNull()
+    expect(host.children[5].querySelector('img')).not.toBeNull()
+    expect(host.children[5].querySelector('img')?.getAttribute('src')).not.toBe(geminiLogo)
+    expect(host.children[6].querySelector('img')?.getAttribute('src')).toBe(geminiLogo)
+  })
+  it('uses a neutral generic mark for unknown provider IDs', () => {
+    const host = document.createElement('div')
+    host.innerHTML = renderToStaticMarkup(<ProviderLogo providerId="future-provider" />)
+    expect(host.querySelector('img')).toBeNull()
+    expect(host.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
+    expect(host.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 24 24')
   })
 })
