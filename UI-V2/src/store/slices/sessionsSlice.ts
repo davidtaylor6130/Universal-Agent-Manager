@@ -1,6 +1,7 @@
 import { canRouteAutomatically } from '../../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch'
 import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
+import { setPreferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
@@ -359,7 +360,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     setActiveSession: (id: string | null) => {
       intentionalSelectionRevision += 1
       if (get().chatSearchNavigation && get().chatSearchNavigation!.chatId !== id) set({ chatSearchNavigation: null })
-      if (get().activeSessionId === id) return
+      const persistSelection = () => {
+        if (!id) return
+        const selected = get().sessions.find((session) => session.id === id)
+        if (selected) setPreferredFamilyChat(selected.branchRootChatId || selected.parentChatId || selected.id, selected.id)
+      }
+      if (get().activeSessionId === id) {
+        persistSelection()
+        return
+      }
       if (isCefContext()) {
         const previousActiveSessionId = get().activeSessionId
         const requestKey = 'selectSession'
@@ -370,6 +379,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           if (resp.ok) {
 			if (!isLatestPendingRequest(requestKey, resp.requestId)) return
             clearPendingRequest(requestKey, resp.requestId)
+            if (get().activeSessionId === id) persistSelection()
             if (id) requestChatMessagesFromCef(id)
             return
           }
@@ -393,6 +403,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           ),
         }
       })
+      persistSelection()
     },
 
     jumpToChatSearchHit: async (input: ChatSearchHit, queryRequestId: string) => {

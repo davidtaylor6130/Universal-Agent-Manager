@@ -285,6 +285,41 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('restores the last selected family chat after reorder and falls back when it is deleted', () => {
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
+    const branchA = { ...makeSession(), id: 'chat-branch-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 5 }
+    const branchB = { ...makeSession(), id: 'chat-branch-b', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 20 }
+    const familySessionIds = ['chat-root', 'chat-branch-a', 'chat-branch-b']
+    useAppStore.setState({ sessions: [rootSession, branchA, branchB], activeSessionId: 'chat-root', setActiveSession: originalActions.setActiveSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<>
+      <SessionItem sessionId="chat-root" session={rootSession} familySessionIds={familySessionIds} />
+      <SessionItem sessionId="chat-branch-a" session={branchA} familySessionIds={familySessionIds} />
+      <SessionItem sessionId="chat-branch-b" session={branchB} familySessionIds={familySessionIds} />
+    </>))
+
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-branch-a"]')!.click())
+    expect(useAppStore.getState().activeSessionId).toBe('chat-branch-a')
+    act(() => root.unmount())
+    useAppStore.setState({ sessions: [rootSession, branchB, branchA] })
+    const restored = createRoot(host)
+    act(() => restored.render(<SessionItem sessionId="chat-root" session={rootSession} familySessionIds={familySessionIds} />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!.click())
+    expect(useAppStore.getState().activeSessionId).toBe('chat-branch-a')
+
+    act(() => {
+      useAppStore.setState({ sessions: [rootSession, branchB] })
+      restored.render(<SessionItem sessionId="chat-root" session={rootSession} familySessionIds={['chat-root', 'chat-branch-b']} />)
+    })
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-chat-root"]')!.click())
+    expect(useAppStore.getState().activeSessionId).toBe('chat-branch-b')
+
+    act(() => restored.unmount())
+    host.remove()
+  })
+
   it('selects the longest provided branch without filtering or sorting all chats', () => {
     const setActiveSession = vi.fn()
     const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }

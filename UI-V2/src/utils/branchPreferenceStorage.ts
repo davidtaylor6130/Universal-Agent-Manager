@@ -6,6 +6,10 @@ function key(parentChatId: string, messageIndex: number): string {
   return `${parentChatId}:${messageIndex}`
 }
 
+function familyKey(rootChatId: string): string {
+  return `family:${rootChatId}`
+}
+
 function read(): Preferences {
   try {
     const value = JSON.parse(localStorage.getItem(storageKey) ?? '{}')
@@ -37,4 +41,27 @@ export function preferredBranch(parentChatId: string, messageIndex: number, avai
     // Ignore storage failures.
   }
   return availableChatIds[0] ?? null
+}
+
+export function setPreferredFamilyChat(rootChatId: string, chatId: string): void {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify({ ...read(), [familyKey(rootChatId)]: chatId }))
+  } catch {
+    // Selection still works when persistence is unavailable.
+  }
+}
+
+export function preferredFamilyChat(rootChatId: string, availableChatIds: string[]): string | null {
+  const preferences = read()
+  const preferenceKey = familyKey(rootChatId)
+  const chatId = preferences[preferenceKey]
+  if (!chatId) return null
+  if (availableChatIds.includes(chatId)) return chatId
+  delete preferences[preferenceKey]
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(preferences))
+  } catch {
+    // Ignore storage failures.
+  }
+  return null
 }

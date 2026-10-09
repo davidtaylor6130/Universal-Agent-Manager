@@ -3,6 +3,7 @@ import type { AcpBinding } from './cpp/types'
 import { CppAppState, useAppStore } from './useAppStore'
 import { createUiSlice } from './slices/uiSlice'
 import { parseUamPushPayload } from './push/uamPush'
+import { preferredFamilyChat, setPreferredFamilyChat } from '../utils/branchPreferenceStorage'
 
 type TestWindow = Window & typeof globalThis & {
   cefQuery?: Window['cefQuery']
@@ -318,6 +319,31 @@ describe('useAppStore Gemini CLI slice', () => {
 
     expect(useAppStore.getState().activeSessionId).toBe('chat-1')
     expect(useAppStore.getState().sessions).toBe(sessions)
+  })
+
+  it('keeps the saved family choice when native selection is rejected', async () => {
+    let failSelection: ((errorCode: number, errorMessage: string) => void) | undefined
+    window.cefQuery = ({ request, onFailure }) => {
+      if (JSON.parse(request).action === 'selectSession') failSelection = onFailure
+    }
+    const now = new Date()
+    useAppStore.setState({
+      sessions: [
+        { id: 'root', name: 'Root', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now, branchRootChatId: 'root' },
+        { id: 'branch-a', name: 'A', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now, parentChatId: 'root', branchRootChatId: 'root' },
+        { id: 'branch-b', name: 'B', viewMode: 'chat', folderId: 'default', createdAt: now, updatedAt: now, parentChatId: 'root', branchRootChatId: 'root' },
+      ],
+      activeSessionId: 'root',
+    })
+    setPreferredFamilyChat('root', 'branch-a')
+
+    useAppStore.getState().setActiveSession('branch-b')
+    expect(preferredFamilyChat('root', ['root', 'branch-a', 'branch-b'])).toBe('branch-a')
+    failSelection?.(1, 'Selection failed')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(useAppStore.getState().activeSessionId).toBe('root')
+    expect(preferredFamilyChat('root', ['root', 'branch-a', 'branch-b'])).toBe('branch-a')
   })
 
   it('ignores stale successful selection responses before hydrating messages', async () => {

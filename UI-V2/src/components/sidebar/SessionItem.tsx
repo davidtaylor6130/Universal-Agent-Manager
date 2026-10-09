@@ -20,6 +20,7 @@ import {
   subscribeChatGridLayout,
 } from '../../utils/chatGridStorage'
 import { providerShortName } from '../../utils/providerMetadata'
+import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon } from '../shared/CustomIcon'
@@ -239,18 +240,25 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     const clickedSession = session ?? sessions.find((candidate) => candidate.id === sessionId)
     const branchRootId = clickedSession?.branchRootChatId || clickedSession?.parentChatId || clickedSession?.id
     if (clickedSession && branchRootId === sessionId) {
+      const activeFamilyChatId = state.activeSessionId !== sessionId && familySessionIds.includes(state.activeSessionId ?? '')
+        ? state.activeSessionId
+        : null
+      const preferredChatId = preferredFamilyChat(branchRootId, familySessionIds) ?? activeFamilyChatId
+      const preferredChat = preferredChatId ? sessions.find((candidate) => candidate.id === preferredChatId) : undefined
       const compareLength = (a: Session, b: Session) =>
         (a.messageCount ?? 0) - (b.messageCount ?? 0) ||
         (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0) ||
         b.id.localeCompare(a.id)
       const familyIds = familySessionIds.length > 0 ? new Set(familySessionIds) : undefined
-      let longestChat: Session | undefined
-      for (const candidate of sessions) {
-        const isInFamily = familyIds
-          ? familyIds.has(candidate.id)
-          : (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId
-        if (isInFamily && (!longestChat || compareLength(candidate, longestChat) > 0)) {
-          longestChat = candidate
+      let longestChat: Session | undefined = preferredChat
+      if (!longestChat) {
+        for (const candidate of sessions) {
+          const isInFamily = familyIds
+            ? familyIds.has(candidate.id)
+            : (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId
+          if (isInFamily && (!longestChat || compareLength(candidate, longestChat) > 0)) {
+            longestChat = candidate
+          }
         }
       }
       const chatId = longestChat?.id ?? sessionId
