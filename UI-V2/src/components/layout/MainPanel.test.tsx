@@ -1069,4 +1069,96 @@ describe('MainPanel', () => {
     }
   })
 
+  it.each([
+    ['acp', false, true], ['acp', true, true],
+    ['cli', false, true], ['cli', true, true],
+    ['acp', false, false], ['acp', true, false],
+  ] as const)('preserves a reopened transcript across idle selection: %s side=%s sameUpdate=%s', (runtime, side, sameUpdate) => {
+    const saved = [{ id: 'earlier-answer', sessionId: 'chat-2', role: 'assistant' as const, content: 'Earlier assistant remains.', thoughts: 'Earlier work trace remains.', createdAt: new Date(0) }]
+    const concurrent = [{ ...saved[0], id: 'concurrent-answer', sessionId: 'chat-1', content: 'Concurrent assistant remains.', thoughts: 'Concurrent work trace remains.' }]
+    useAppStore.setState((state) => ({
+      sessions: [state.sessions[0], { ...state.sessions[0], id: 'chat-2', name: 'Second', ...(side ? { temporaryParentChatId: 'chat-1' } : {}) }],
+      activeSessionId: 'chat-1',
+      messages: { 'chat-1': concurrent, 'chat-2': saved },
+      workingDisplayMode: 'compact', expandWorkTraces: true,
+      acpBindingBySessionId: {
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true },
+        ...(runtime === 'acp' ? { 'chat-2': { ...state.acpBindingBySessionId['chat-1'], processing: true } } : {}),
+      },
+      cliBindingBySessionId: runtime === 'cli' ? { 'chat-2': { terminalId: 'term-2', boundChatId: 'chat-2', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, readySinceLastSelect: false, active: true, lastError: '' } } : {},
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MainPanel />))
+      act(() => (host.querySelector('button[aria-label="Close Second"]') as HTMLButtonElement).click())
+      expect(useAppStore.getState().messages['chat-2']).toBe(saved)
+      if (!sameUpdate) act(() => useAppStore.setState({ activeSessionId: 'chat-2' }))
+      act(() => useAppStore.setState((state) => ({
+        activeSessionId: 'chat-2',
+        ...(runtime === 'acp'
+          ? { acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-2': { ...state.acpBindingBySessionId['chat-2'], processing: false, lifecycleState: 'ready' } } }
+          : { cliBindingBySessionId: { ...state.cliBindingBySessionId, 'chat-2': { ...state.cliBindingBySessionId['chat-2'], processing: false, lifecycleState: 'ready', turnState: 'idle' } } }),
+      })))
+      expect(useAppStore.getState().messages['chat-1']).toBe(concurrent)
+      expect(useAppStore.getState().messages['chat-2']).toBe(saved)
+      const pane = host.querySelector('[data-testid="chat-pane-chat-2"]')
+      expect(pane?.textContent).toContain('Earlier assistant remains.')
+      expect(pane?.textContent).toContain('Earlier work trace remains.')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('retains hidden CLI history while processing and evicts it after idle', () => {
+    const saved = [{ id: 'answer', sessionId: 'chat-2', role: 'assistant' as const, content: 'Hidden answer.', createdAt: new Date(0) }]
+    useAppStore.setState((state) => ({
+      sessions: [state.sessions[0], { ...state.sessions[0], id: 'chat-2', name: 'Second' }],
+      messages: { 'chat-1': [], 'chat-2': saved },
+      cliBindingBySessionId: { 'chat-2': { terminalId: 'term-2', boundChatId: 'chat-2', running: true, lifecycleState: 'busy', turnState: 'busy', processing: true, readySinceLastSelect: false, active: true, lastError: '' } },
+    }))
+    writeChatGridLayout(paneLayout('chat-1', 'chat-2'))
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MainPanel />))
+      act(() => (host.querySelector('button[aria-label="Close Second"]') as HTMLButtonElement).click())
+      act(() => useAppStore.setState({ activeSessionId: 'chat-1' }))
+      expect(useAppStore.getState().messages['chat-2']).toBe(saved)
+      act(() => useAppStore.setState((state) => ({ cliBindingBySessionId: { ...state.cliBindingBySessionId, 'chat-2': { ...state.cliBindingBySessionId['chat-2'], processing: false, lifecycleState: 'ready', turnState: 'idle' } } })))
+      expect(useAppStore.getState().messages['chat-2']).toBeUndefined()
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
+  it.each([false, true])('releases hidden native history unless reselected in the idle update: %s', async (reopened) => {
+    const initial = useAppStore.getState()
+    useAppStore.setState({
+      sessions: [initial.sessions[0], { ...initial.sessions[0], id: 'chat-2', name: 'Second' }],
+      acpBindingBySessionId: { 'chat-1': { ...initial.acpBindingBySessionId['chat-1'], processing: false, running: true, lifecycleState: 'ready' } },
+    })
+    writeChatGridLayout(paneLayout('chat-1'))
+    const requests: Array<{ action: string; payload?: { chatId?: string } }> = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}'); return 1 }
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<MainPanel />))
+      await act(async () => { useAppStore.setState({ activeSessionId: 'chat-2' }); writeChatGridLayout(paneLayout('chat-2')) })
+      requests.length = 0
+      await act(async () => useAppStore.setState((state) => ({
+        activeSessionId: reopened ? 'chat-1' : 'chat-2',
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, processing: false, lifecycleState: 'stopped' } },
+      })))
+      expect(requests.filter((request) => request.action === 'releaseChatMessages')).toEqual(reopened ? [] : [{ action: 'releaseChatMessages', payload: { chatId: 'chat-1' }, requestId: expect.any(String) }])
+    } finally {
+      await act(async () => root.unmount())
+      delete window.cefQuery
+    }
+  })
+
 })

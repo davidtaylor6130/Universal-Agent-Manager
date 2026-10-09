@@ -382,12 +382,13 @@ export function MainPanel() {
   useEffect(() => subscribeChatGridLayout((next) => setLayout((current) => current === next ? current : next)), [])
   useEffect(() => useAppStore.subscribe((state) => {
     for (const id of pendingEvictionIds.current) {
+      if (state.activeSessionId === id || previousVisibleIds.current.has(id)) { pendingEvictionIds.current.delete(id); continue }
       if (state.acpBindingBySessionId[id]?.processing || state.cliBindingBySessionId[id]?.processing) continue
       pendingEvictionIds.current.delete(id)
       state.unloadSessionMessages(id)
     }
     for (const id of pendingNativeReleaseIds.current) {
-      if (previousVisibleIds.current.has(id)) { pendingNativeReleaseIds.current.delete(id); continue }
+      if (state.activeSessionId === id || previousVisibleIds.current.has(id)) { pendingNativeReleaseIds.current.delete(id); continue }
       const acp = state.acpBindingBySessionId[id]
       const cli = state.cliBindingBySessionId[id]
       if (acp && (acp.running || acp.processing || !['stopped', 'failed', 'error'].includes(acp.lifecycleState))) continue
