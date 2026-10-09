@@ -67,7 +67,17 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
       {(prompt.attachments.length > 0 || prompt.markdownStoreFiles.length > 0) && <span style={{ color: 'var(--text-3)' }}>{prompt.attachments.length + prompt.markdownStoreFiles.length} attachment{prompt.attachments.length + prompt.markdownStoreFiles.length === 1 ? '' : 's'}</span>}
     </div>)}</div>
     {editing && <div className="pt-1.5">
-      <textarea aria-label="Edit queued prompt text" className="w-full bg-black text-white border border-[var(--border)] px-2 py-1 text-xs resize-y" rows={3} value={editing.text} disabled={pending} onChange={(event) => setEditing({ ...editing, text: event.target.value })} />
+      <textarea aria-label="Edit queued prompt text" className="w-full bg-black text-white border border-[var(--border)] px-2 py-1 text-xs resize-y" rows={3} value={editing.text} disabled={pending} onChange={(event) => setEditing({ ...editing, text: event.target.value })} onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          if (!pendingRef.current) { setEditing(null); setError('') }
+        } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+          event.preventDefault()
+          event.stopPropagation()
+          if (!staleEdit && !editedPrompt?.prepared && editing.text.trim()) void run(() => onEdit(editing.id, editing.revision, editing.text), 'Queued prompt changed or could not be saved. Your edit is kept.', () => setEditing(null))
+        }
+      }} />
       <div className="flex items-center gap-2">
         <Button type="button" size="sm" variant="ghost" disabled={blocked || staleEdit || editedPrompt?.prepared || !editing.text.trim()} onClick={() => void run(() => onEdit(editing.id, editing.revision, editing.text), 'Queued prompt changed or could not be saved. Your edit is kept.', () => setEditing(null))}>{pending ? 'Saving…' : 'Save'}</Button>
         <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => { setEditing(null); setError('') }}>Cancel</Button>

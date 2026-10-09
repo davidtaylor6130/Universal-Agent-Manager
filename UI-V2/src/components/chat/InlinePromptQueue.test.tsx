@@ -119,3 +119,19 @@ describe('inline queued prompts', () => {
   })
 
 })
+
+it('handles queued edit shortcuts without escaping into chat cancellation', async () => {
+  act(() => root.render(<InlinePromptQueue {...props} />))
+  const escaped = vi.fn()
+  document.addEventListener('keydown', escaped)
+  await click(button('Edit queued prompt'))
+  editText('Saved with shortcut')
+  await act(async () => host.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })))
+  expect(props.onEdit).toHaveBeenCalledWith('a', 1, 'Saved with shortcut')
+  expect(escaped).not.toHaveBeenCalled()
+  await click(button('Edit queued prompt'))
+  await act(async () => host.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
+  expect(host.querySelector('textarea')).toBeNull()
+  expect(escaped).not.toHaveBeenCalled()
+  document.removeEventListener('keydown', escaped)
+})
