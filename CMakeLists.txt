@@ -927,6 +927,7 @@ endif()
 set(UAM_UI_BUILD_ID "${UAM_UI_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${UAM_UI_BUILD_TIMESTAMP}")
 
 add_custom_target(uam_ui_v2_build
+  BYPRODUCTS "${UAM_UI_DIST_SRC}/index.html"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/UI-V2"
   COMMAND ${CMAKE_COMMAND} -E env "VITE_UAM_UI_BUILD_ID=${UAM_UI_BUILD_ID}" "VITE_UAM_OUT_DIR=${UAM_UI_DIST_SRC}" "VITE_UAM_COMPUTER_USE=${UAM_ENABLE_COMPUTER_USE}" "VITE_UAM_SSH=${UAM_ENABLE_SSH}" "VITE_UAM_MOBILE_COMPANION=${UAM_ENABLE_MOBILE_COMPANION}" ${UAM_NPM_EXECUTABLE} run build
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/UI-V2"
@@ -962,8 +963,10 @@ else()
   set(UAM_RESOURCE_DEST "$<TARGET_FILE_DIR:universal_agent_manager>")
 endif()
 add_custom_command(TARGET universal_agent_manager POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/UI-V2/dist"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${UAM_UI_DIST_SRC}" "${UAM_RESOURCE_DEST}/UI-V2/dist"
+  COMMAND ${CMAKE_COMMAND}
+    "-DUAM_UI_SOURCE=${UAM_UI_DIST_SRC}"
+    "-DUAM_UI_DEST=${UAM_RESOURCE_DEST}/UI-V2/dist"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/copy_ui_dist.cmake"
   COMMAND ${CMAKE_COMMAND} -E remove_directory "${UAM_RESOURCE_DEST}/markdown-store"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/markdown-store" "${UAM_RESOURCE_DEST}/markdown-store"
   COMMAND ${CMAKE_COMMAND} -E rm -f "${UAM_RESOURCE_DEST}/markdown-store/skill-builder.uam"
