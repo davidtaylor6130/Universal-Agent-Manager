@@ -166,6 +166,40 @@ UAM_TEST(TranscriptRetentionProtectsPendingSaveSelectionAndRuntimeOwnership)
 	}
 }
 
+UAM_TEST(TranscriptRetentionReleasesPausedOrBlockedGoalHistoryButProtectsActiveGoals)
+{
+	for (const GoalStatus status : {GoalStatus::Paused, GoalStatus::Blocked})
+	{
+		TempDir temp("uam-transcript-retention-settled-goal");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat = RetentionChat();
+		chat.goals.push_back(Goal{});
+		chat.goals.back().status = status;
+		app.chats.push_back(std::move(chat));
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id, true);
+		UAM_ASSERT(saved.has_value());
+
+		uam::TranscriptRetentionService retention;
+		retention.SetVisibleChatIds({});
+		const auto generation = retention.BeginRelease(app, saved->id);
+		UAM_ASSERT(generation.has_value());
+		UAM_ASSERT(retention.CompleteRelease(app, saved->id, *generation, *saved));
+		UAM_ASSERT(app.chats.front().messages.empty() && !app.chats.front().messages_loaded);
+		UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, app.chats.front()));
+		UAM_ASSERT_EQ(app.chats.front().messages, saved->messages);
+	}
+
+	uam::AppState app;
+	app.chats.push_back(RetentionChat());
+	app.chats.front().goals.push_back(Goal{});
+	app.chats.front().goals.back().status = GoalStatus::Active;
+	uam::TranscriptRetentionService retention;
+	retention.SetVisibleChatIds({});
+	UAM_ASSERT(!retention.BeginRelease(app, app.chats.front().id));
+}
+
 UAM_TEST(TranscriptRetentionKeepsMissingOrMismatchedDurableHistory)
 {
 	uam::AppState app;

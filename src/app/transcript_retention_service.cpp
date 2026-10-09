@@ -39,7 +39,7 @@ namespace uam
 		    !chat.remote_pending_requests.empty() || !chat.remote_interaction_responses.empty() ||
 		    !chat.acp_queued_prompts.empty() || !chat.goal_pending_continuation_id.empty() ||
 		    UamControlService::PendingApprovalForChat(app, chat.id).has_value()) return false;
-		if (std::ranges::any_of(chat.goals, [](const Goal& goal) { return goal.status != GoalStatus::Complete; })) return false;
+		if (std::ranges::any_of(chat.goals, [](const Goal& goal) { return goal.status == GoalStatus::Active; })) return false;
 		if (std::ranges::any_of(app.native_chat_load_tasks, [](const auto& entry) { return entry.second.running; })) return false;
 		if (std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<AcpSessionState>& session)
 		{
