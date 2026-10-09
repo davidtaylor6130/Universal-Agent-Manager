@@ -262,11 +262,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
         }
         const messagesChanged = nextMessages !== state.messages[chatId]
-        const nextDigest = streamedTail ? '' : data.messagesDigest ?? ''
-        const sessions = nextDigest
+        // Native summary tokens and authoritative page hashes have different contracts.
+        const sessions = !streamedTail
           ? state.sessions.map((candidate) =>
-              candidate.id === chatId && ((candidate.messagesDigest ?? '') !== nextDigest || candidate.messageCount !== totalCount)
-                ? { ...candidate, messagesDigest: nextDigest, messageCount: totalCount }
+              candidate.id === chatId && candidate.messageCount !== totalCount
+                ? { ...candidate, messageCount: totalCount }
                 : candidate
             )
           : state.sessions
@@ -444,7 +444,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         messages: { ...state.messages, [hit.chatId]: page },
         historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [hit.chatId]: data.startIndex! },
         sessions: state.sessions.map((session) => session.id === hit.chatId
-          ? { ...session, messageCount: data.totalCount, messagesDigest: data.messagesDigest } : session),
+          ? { ...session, messageCount: data.totalCount } : session),
         chatHistoryErrorBySessionId: Object.fromEntries(Object.entries(state.chatHistoryErrorBySessionId).filter(([id]) => id !== hit.chatId)),
       }))
       return true
@@ -484,7 +484,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
         set((state) => ({ messages: { ...state.messages, [chatId]: data.messages!.map((message, index) => buildMessageFromCpp(chatId, message, data.startIndex! + index)) },
           historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: data.startIndex! },
-          sessions: state.sessions.map((session) => session.id === chatId ? { ...session, messageCount: data.totalCount, messagesDigest: data.messagesDigest ?? '' } : session),
+          sessions: state.sessions.map((session) => session.id === chatId ? { ...session, messageCount: data.totalCount } : session),
         }))
       } finally { if (boundedTailReloads.get(chatId) === reloadGeneration) boundedTailReloads.delete(chatId) }
     },

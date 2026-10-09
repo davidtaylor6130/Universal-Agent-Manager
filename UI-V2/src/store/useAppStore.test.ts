@@ -2176,6 +2176,91 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests.filter(action => action === 'getChatMessages')).toHaveLength(1)
   })
 
+  it('keeps cold summary change tokens separate from page hashes across repeated pushes and older pages', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = undefined
+    initial.chats[0].messageCount = 1000
+    initial.chats[0].messagesDigest = 'saved-time:1000'
+    initial.chats[0].acpSession = { sessionId: 'stopped-runtime', running: false, processing: false, lifecycleState: 'stopped' }
+    let contentHash = 'content-hash'
+    const requests: Array<{ action: string; payload?: { before?: number; messagesDigest?: string } }> = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') {
+        const end = parsed.payload.before ?? 1000
+        const start = Math.max(0, end - parsed.payload.limit)
+        onSuccess(JSON.stringify({ chatId: 'chat-1', messagesDigest: contentHash, startIndex: start, totalCount: 1000,
+          messages: Array.from({ length: end - start }, (_, index) => ({ role: 'assistant', content: `${contentHash}:${start + index}`, createdAt: String(start + index) })),
+        }))
+      }
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const pushSummary = async (stateRevision: number, messagesDigest = 'saved-time:1000') => {
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision, chats: [{ ...initial.chats[0], messagesDigest }] } })
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    await cefStore.getState().loadSessionMessages('chat-1')
+    await pushSummary(2)
+    await pushSummary(3)
+    expect(requests.filter(request => request.action === 'getChatMessages')).toHaveLength(1)
+    expect(cefStore.getState().sessions[0].messagesDigest).toBe('saved-time:1000')
+    await expect(cefStore.getState().loadOlderSessionMessages('chat-1')).resolves.toBe(true)
+    expect(cefStore.getState().historyStartIndexBySessionId['chat-1']).toBe(850)
+    contentHash = 'edited-content-hash'
+    await pushSummary(4, 'new-saved-time:1000')
+    expect(requests.filter(request => request.action === 'getChatMessages')).toHaveLength(3)
+    expect(cefStore.getState().messages['chat-1'].at(-1)?.content).toBe('edited-content-hash:999')
+    expect(cefStore.getState().sessions[0].messagesDigest).toBe('new-saved-time:1000')
+    await pushSummary(5, 'new-saved-time:1000')
+    expect(requests.filter(request => request.action === 'getChatMessages')).toHaveLength(3)
+    await expect(cefStore.getState().loadOlderSessionMessages('chat-1')).resolves.toBe(true)
+    expect(cefStore.getState().messages['chat-1'][0].content).toBe('edited-content-hash:850')
+  })
+
+  it.each(['search page', 'return to latest'] as const)('preserves the native summary token when loading a %s', async (operation) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messages = [{ role: 'assistant', content: 'Visible tail', createdAt: '999' }]
+    initial.chats[0].messageCount = 1000
+    initial.chats[0].messagesDigest = 'saved-time:1000'
+    let pageRequests = 0
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') {
+        ++pageRequests
+        const end = parsed.payload.before ?? 1000
+        const start = Math.max(0, end - parsed.payload.limit)
+        onSuccess(JSON.stringify({ chatId: 'chat-1', messagesDigest: 'content-hash', startIndex: start, totalCount: 1000,
+          messages: Array.from({ length: end - start }, (_, index) => ({ role: 'assistant', content: `Message ${start + index}`, createdAt: String(start + index) })),
+        }))
+      }
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await expect(cefStore.getState().jumpToChatSearchHit({ chatId: 'chat-1', messageIndex: 200, messagesDigest: 'content-hash', field: 'content', excerpt: 'Message 200' }, 'search-request')).resolves.toBe(true)
+    if (operation === 'return to latest') {
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{ ...initial.chats[0], messages: undefined }] } })
+      await cefStore.getState().clearChatSearchNavigation()
+    }
+    expect(cefStore.getState().sessions[0].messagesDigest).toBe('saved-time:1000')
+    const beforePush = pageRequests
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 3, chats: [{ ...initial.chats[0], messages: undefined }] } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(pageRequests).toBe(beforePush)
+    await expect(cefStore.getState().loadOlderSessionMessages('chat-1')).resolves.toBe(operation === 'return to latest')
+  })
+
   it.each(['ACP turn', 'CLI turn', 'streamed tail', 'background chat'])('preserves %s during summary-only history changes', async (live) => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
