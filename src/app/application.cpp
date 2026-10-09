@@ -685,15 +685,6 @@ bool Application::InitializeState()
 	if (!m_app.chats.empty())
 	{
 		ChatDomainService().SelectRememberedOrFirstChat(m_app);
-
-		std::string hydrate_warning;
-		ChatSession* selected_chat = ChatDomainService().SelectedChat(m_app);
-		if (selected_chat != nullptr)
-		{
-			ChatRepository::HydrateChatMessages(m_app.data_root, *selected_chat, &hydrate_warning);
-		}
-		if (!hydrate_warning.empty())
-			m_app.status_line = hydrate_warning;
 	}
 	if (!uam::ComputerUseService::ResetControlsForStartup(m_app))
 	{
