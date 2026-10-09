@@ -19247,11 +19247,26 @@ UAM_TEST(ClaudeNativeDiscoveryFollowsLatestBranchAndSkipsCorruptSessions)
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	TempDir temp("uam-claude-history");
 	const fs::path workspace = temp.root / "workspace";
-	fs::create_directories(workspace);
 	std::string encoded = workspace.string();
 	for (char& character : encoded) if (!std::isalnum(static_cast<unsigned char>(character))) character = '-';
 	const fs::path project = temp.root / "claude" / "projects" / encoded;
-	fs::create_directories(project);
+	// Normalize the leaf before creating its parents; keep ordinary paths in Claude identity.
+	fs::path native_history_file;
+	std::string native_path_error;
+	UAM_ASSERT(uam::io::NativeFilePath(project / "session.jsonl", native_history_file, native_path_error));
+	struct NativeOwnedRootCleanup
+	{
+		fs::path root;
+		~NativeOwnedRootCleanup()
+		{
+			std::error_code error;
+			fs::remove_all(root, error);
+		}
+	} cleanup{native_history_file.parent_path().parent_path().parent_path().parent_path()};
+	fs::path native_workspace;
+	UAM_ASSERT(uam::io::NativeFilePath(workspace, native_workspace, native_path_error));
+	fs::create_directories(native_workspace);
+	fs::create_directories(native_history_file.parent_path());
 	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
 	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
 	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());

@@ -1884,9 +1884,15 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			if (root == root.parent_path()) break;
 		}
 	}
-	const fs::path project = claude_root / "projects";
+	fs::path project;
+	std::string project_path_error;
+	const bool project_path_available = uam::io::NativeFilePath(claude_root / "projects", project, project_path_error, true);
+	if (!project_path_available)
+	{
+		discovery.result.Fail("Could not resolve Claude history directory: " + project_path_error);
+	}
 	std::error_code claude_error;
-	if (fs::exists(project, claude_error) || claude_error)
+	if (project_path_available && (fs::exists(project, claude_error) || claude_error))
 	{
 		for (fs::recursive_directory_iterator it(project, claude_error), end; !claude_error && !stop_token.stop_requested() && it != end; it.increment(claude_error))
 		{
