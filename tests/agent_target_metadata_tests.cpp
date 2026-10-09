@@ -100,6 +100,8 @@ UAM_TEST(AgentListRejectsStaleHostVersionAndUnreadyOrUpdatingTargetMetadata)
 	fixture.app.settings.execution_hosts.front().transport = "ssh";
 	fixture.app.settings.execution_hosts.front().platform = "linux";
 	fixture.app.settings.execution_hosts.front().runner_status = "ready";
+	// Remote metadata needs a Linux path, rather than the controller's temporary workspace.
+	fixture.app.chats.front().workspace_directory = "/workspace/agent-target-metadata";
 	fixture.Ready("codex-cli");
 	fixture.Ready("claude-cli");
 	fixture.app.settings.execution_hosts.front().runner_directory = "new-runner";

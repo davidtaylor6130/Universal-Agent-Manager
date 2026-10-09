@@ -19627,7 +19627,8 @@ UAM_TEST(GeminiAndCopilotScansSkipOwnedWorktreeSessions)
 UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 {
 	if (!GitAvailableForTests()) return;
-	TempDir temp("uam-import-worktree-folders");
+	// Claude encodes the absolute workspace path beneath this root; keep both copies below Windows MAX_PATH.
+	TempDir temp("uam-wt");
 	const fs::path repo = temp.root / "main checkout";
 	const fs::path worktree = temp.root / "linked checkout";
 	fs::create_directories(repo);
@@ -21589,6 +21590,8 @@ UAM_TEST(WindowsCopilotVersionProbeHandlesUnicodeWinGetShimPath)
 	const fs::path shim_bin = temp.root / uam::paths::PathFromUtf8("Jos\xC3\xA9") / "Microsoft" / "WinGet" / "Links";
 	fs::create_directories(shim_bin);
 	UAM_ASSERT(uam::io::WriteTextFile(shim_bin / "copilot.cmd", "@echo off\r\necho GitHub Copilot CLI 1.0.75\r\n"));
+	// The version probe checks pwsh availability but executes only the Copilot shim.
+	UAM_ASSERT(uam::io::WriteTextFile(shim_bin / "pwsh.cmd", "@echo off\r\nexit /b 93\r\n"));
 
 	const DWORD existing_path_size = GetEnvironmentVariableW(L"PATH", nullptr, 0);
 	std::wstring existing_path(static_cast<std::size_t>(existing_path_size), L'\0');
