@@ -832,7 +832,8 @@ export function reconcileCppMessages(
   chatId: string,
   existingMessages: Message[] | undefined,
   cppMessages: CppMessage[],
-  authoritative = false
+  authoritative = false,
+  startIndex = 0
 ): Message[] {
   const existing = existingMessages ?? []
   if (!authoritative && existing[existing.length - 1]?.isStreaming) {
@@ -860,7 +861,7 @@ export function reconcileCppMessages(
   while (
     prefixLength < existingRealMessages.length &&
     prefixLength < cppMessages.length &&
-    cppMessagesEquivalent(existingRealMessages[prefixLength], cppMessages[prefixLength], prefixLength)
+    cppMessagesEquivalent(existingRealMessages[prefixLength], cppMessages[prefixLength], startIndex + prefixLength)
   ) {
     prefixLength++
   }
@@ -871,7 +872,7 @@ export function reconcileCppMessages(
 
   const reconciled = existingRealMessages.slice(0, prefixLength)
   for (let index = prefixLength; index < cppMessages.length; index += 1) {
-    reconciled.push(buildMessageFromCpp(chatId, cppMessages[index], index))
+    reconciled.push(buildMessageFromCpp(chatId, cppMessages[index], startIndex + index))
   }
   return reconciled
 }

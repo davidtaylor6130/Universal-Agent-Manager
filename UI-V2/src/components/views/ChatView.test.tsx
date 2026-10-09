@@ -1721,10 +1721,11 @@ describe('ChatView', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
-  it('copies, edits, and reverts messages with icon actions and branch-safe requests', async () => {
+  it.each([0, 9950])('copies, edits, and reverts messages with branch-safe requests at history offset %s', async (historyOffset) => {
     const branchFromMessage = vi.fn(() => Promise.resolve('branch-1'))
     useAppStore.setState((state) => ({
       branchFromMessage,
+      historyStartIndexBySessionId: { 'chat-1': historyOffset },
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -1761,10 +1762,10 @@ describe('ChatView', () => {
     })
     const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save to new branch')
     await act(async () => saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
-    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Inspect only the tests', [])
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', historyOffset, 'Inspect only the tests', [])
 
     await act(async () => revertButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
-    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', historyOffset, undefined)
 
     act(() => root.unmount())
     host.remove()
@@ -6147,6 +6148,35 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('fetches earlier long-chat history only after the history action and keeps absolute branch context', async () => {
+    const loadOlderSessionMessages = vi.fn(async () => {
+      useAppStore.setState(state => ({
+        messages: { ...state.messages, 'chat-1': [{ ...state.messages['chat-1'][0], id: 'older', content: 'Demand loaded older user' }, ...state.messages['chat-1']] },
+        historyStartIndexBySessionId: { 'chat-1': 9949 },
+      }))
+      return true
+    })
+    const branchFromMessage = vi.fn(async () => 'branch')
+    useAppStore.setState(state => ({ loadOlderSessionMessages, branchFromMessage,
+      historyStartIndexBySessionId: { 'chat-1': 9950 },
+      sessions: state.sessions.map(session => ({ ...session, messageCount: 10000 })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'],
+        lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null,
+        turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnEvents: [] } },
+    }))
+    const host = document.createElement('div'); document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(loadOlderSessionMessages).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('Demand loaded older user')
+    await act(async () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Show earlier messages')!.click())
+    expect(loadOlderSessionMessages).toHaveBeenCalledWith('chat-1')
+    expect(host.textContent).toContain('Demand loaded older user')
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Revert to message in new branch"]')!.click())
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 9949, undefined)
+    act(() => root.unmount()); host.remove()
   })
 
   it('falls back when otherwise matching turn anchors are outside the rendered history window', () => {

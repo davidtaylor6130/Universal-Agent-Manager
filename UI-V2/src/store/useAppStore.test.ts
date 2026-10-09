@@ -1142,6 +1142,45 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().goalsByChatId['chat-1']).toEqual([])
   })
 
+  it('bootstraps desktop summaries and streams into a bounded long-chat tail without sparse history', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].cliTerminal = undefined
+    delete initial.chats[0].messages
+    initial.chats[0].messageCount = 10000
+    initial.chats[0].messagesDigest = 'long'
+    initial.chats[0].acpSession = { sessionId: 'live', running: true, processing: true,
+      turnAssistantMessageIndex: 9999, turnSerial: 1 }
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request); requests.push(parsed)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') onSuccess(JSON.stringify({ chatId: 'chat-1',
+        startIndex: 9950, totalCount: 10000, messagesDigest: 'long', messages: Array.from({ length: 50 }, (_, index) => ({
+          role: 'assistant', content: `saved ${9950 + index}`, createdAt: '2026-01-01T00:00:00Z',
+        })) }))
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(requests[0]).toMatchObject({ action: 'getInitialState', payload: { summaryOnly: true } })
+    expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+    await cefStore.getState().loadSessionMessages('chat-1')
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', messageIndex: 9999, token: ' continued' })
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-1']).toHaveLength(50)
+    expect(cefStore.getState().messages['chat-1'].at(-1)).toMatchObject({ content: 'saved 9999 continued', nativeMessageIndex: 9999 })
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{ ...initial.chats[0],
+      messageCount: 10001, acpSession: { ...initial.chats[0].acpSession, turnAssistantMessageIndex: 10000 },
+    }] } })
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-1', messageIndex: 10000, token: 'next assistant' })
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-1']).toHaveLength(51)
+    expect(cefStore.getState().messages['chat-1'].at(-1)?.content).toBe('next assistant')
+    expect(cefStore.getState().historyStartIndexBySessionId['chat-1']).toBe(9950)
+  })
+
   it('continues streaming into an authoritative assistant message during an active ACP turn', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -2227,7 +2266,7 @@ describe('useAppStore Gemini CLI slice', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     const completion = cefStore.getState().loadSessionMessages('chat-1', true, true)
     expect(requests.filter((request) => request.action === 'getChatMessages').at(-1)?.payload).toEqual({
-      chatId: 'chat-1', messagesDigest: '', refreshNative: true,
+      chatId: 'chat-1', messagesDigest: '', refreshNative: true, limit: 50, deferToolCallContent: true,
     })
     const newerMessages = [{ id: 'newer', sessionId: 'chat-1', role: 'assistant' as const, content: 'New streamed answer', createdAt: new Date(), isStreaming: true }]
     if (change === 'unloaded chat') cefStore.getState().unloadSessionMessages('chat-1')
@@ -5379,6 +5418,8 @@ describe('useAppStore Gemini CLI slice', () => {
     const configuration = {
       enabled: true, instructions: 'Shared context', instructionFiles: ['/instructions/AGENTS.md'],
       skillDirectories: ['/skills'], defaultAgentId: 'plan', uamControlEnabled: true,
+      defaultSkills: ['review'], defaultAgents: ['build'],
+      mcpOverrides: [{ providerId: 'codex-cli', executionHostId: 'local', serverId: 'uam-mcp', enabled: false }],
     }
     const state = makeCppState(1)
     state.settings.centralProviderConfiguration = configuration

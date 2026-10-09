@@ -164,6 +164,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     if (!isCefContext() || !chatId) return
     if (get().chatSearchNavigation?.chatId === chatId || boundedTailReloads.has(chatId)) return
     const current = get()
+    const historyStartAtRequestStart = current.historyStartIndexBySessionId[chatId] ?? 0
     const messagesAtRequestStart = current.messages[chatId]
     const bindingAtRequestStart = current.acpBindingBySessionId[chatId]
     const requestKey = `getChatMessages:${chatId}`
@@ -174,8 +175,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       action: 'getChatMessages',
       payload: {
         chatId,
-        ...(isCompanionContext() ? { limit: 50 } : {}),
-        ...(isCompanionContext() ? { deferToolCallContent: true } : {}),
+        limit: 50,
+        deferToolCallContent: true,
         ...(refreshNative ? { refreshNative: true } : {}),
         messagesDigest: force || current.messages[chatId] === undefined
           ? ''
@@ -211,36 +212,21 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
       if (!Array.isArray(data.messages)) return
 
-      if (isCompanionContext() && data.startIndex !== undefined) {
-        const start = data.startIndex
-        const total = data.totalCount
-        if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(total) ||
-            total === undefined || start + data.messages.length !== total) return false as const
-        const page = data.messages.map((message, index) => buildMessageFromCpp(chatId, message, start + index))
-        loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
-        set((state) => ({
-          messages: { ...state.messages, [chatId]: page },
-          historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: start },
-          sessions: state.sessions.map((candidate) => candidate.id === chatId
-            ? { ...candidate, messageCount: total, messagesDigest: data.messagesDigest ?? '' }
-            : candidate),
-          chatHistoryErrorBySessionId: Object.fromEntries(
-            Object.entries(state.chatHistoryErrorBySessionId).filter(([id]) => id !== chatId)
-          ),
-        }))
-        return
-      }
+      const pageStart = data.startIndex ?? 0
+      const totalCount = data.totalCount ?? data.messages.length
+      if (!Number.isSafeInteger(pageStart) || pageStart < 0 || !Number.isSafeInteger(totalCount) ||
+          pageStart + data.messages.length !== totalCount) return false as const
 
       set((state) => {
         let streamedTail: Message | undefined
-        if (force && state.messages[chatId] !== messagesAtRequestStart) {
+        if ((force || data.startIndex !== undefined) && state.messages[chatId] !== messagesAtRequestStart) {
           const existing = state.messages[chatId] ?? []
           const start = messagesAtRequestStart ?? []
           const binding = state.acpBindingBySessionId[chatId]
           const tail = existing[existing.length - 1]
           const startTail = start[start.length - 1]
           const assistantIndex = binding?.turnAssistantMessageIndex ?? -1
-          const nativeAssistant = data.messages?.[assistantIndex]
+          const nativeAssistant = data.messages?.[assistantIndex - pageStart]
           const sameTurn = binding && bindingAtRequestStart &&
             binding.turnSerial === bindingAtRequestStart.turnSerial &&
             binding.sessionId === bindingAtRequestStart.sessionId &&
@@ -248,17 +234,20 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             binding.providerId === bindingAtRequestStart.providerId
           const unchangedPrefix = existing.length === start.length
             ? existing.slice(0, -1).every((message, index) => message === start[index]) &&
-              (startTail?.isStreaming || assistantIndex === existing.length - 1)
+              (startTail?.isStreaming || assistantIndex === historyStartAtRequestStart + existing.length - 1)
             : existing.length === start.length + 1 && start.every((message, index) => message === existing[index])
           // Only streaming tail updates may coexist with authoritative missing message positions.
           // Edits, new turns and unrelated replacements retain the strict stale-response guard.
-          if (!sameTurn || !unchangedPrefix || tail?.role !== 'assistant' ||
+          if ((state.historyStartIndexBySessionId[chatId] ?? 0) !== historyStartAtRequestStart || !sameTurn || !unchangedPrefix || tail?.role !== 'assistant' ||
               !(tail.isStreaming || startTail?.isStreaming) || nativeAssistant?.role !== 'assistant' ||
-              assistantIndex !== data.messages!.length - 1 ||
+              assistantIndex !== totalCount - 1 ||
               !(tail.content.startsWith(nativeAssistant.content) || nativeAssistant.content.startsWith(tail.content))) return state
           streamedTail = tail
         }
-        let nextMessages = reconcileCppMessages(chatId, state.messages[chatId], data.messages ?? [], force)
+        const existingStart = state.historyStartIndexBySessionId[chatId] ?? 0
+        const existingPage = existingStart === pageStart ? state.messages[chatId]
+          : existingStart < pageStart ? state.messages[chatId]?.slice(pageStart - existingStart) : undefined
+        let nextMessages = reconcileCppMessages(chatId, existingPage, data.messages ?? [], force, pageStart)
         if (streamedTail) {
           nextMessages = [...nextMessages]
           const index = nextMessages.length - 1
@@ -275,8 +264,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const nextDigest = streamedTail ? '' : data.messagesDigest ?? ''
         const sessions = nextDigest
           ? state.sessions.map((candidate) =>
-              candidate.id === chatId && (candidate.messagesDigest ?? '') !== nextDigest
-                ? { ...candidate, messagesDigest: nextDigest, messageCount: data.messages?.length ?? candidate.messageCount ?? 0 }
+              candidate.id === chatId && ((candidate.messagesDigest ?? '') !== nextDigest || candidate.messageCount !== totalCount)
+                ? { ...candidate, messagesDigest: nextDigest, messageCount: totalCount }
                 : candidate
             )
           : state.sessions
@@ -290,7 +279,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           : state.chatHistoryErrorBySessionId
         const historyErrorChanged = chatHistoryErrorBySessionId !== state.chatHistoryErrorBySessionId
 
-        if (!messagesChanged && !sessionsChanged && !historyErrorChanged) return state
+        const historyStartChanged = existingStart !== pageStart
+        if (!messagesChanged && !sessionsChanged && !historyErrorChanged && !historyStartChanged) return state
         return {
           ...(messagesChanged ? {
             messages: {
@@ -298,6 +288,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               [chatId]: nextMessages,
             },
           } : {}),
+          ...(historyStartChanged ? { historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: pageStart } } : {}),
           ...(sessionsChanged ? { sessions } : {}),
           ...(historyErrorChanged ? { chatHistoryErrorBySessionId } : {}),
         }
@@ -491,6 +482,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
     loadOlderSessionMessages: async (id: string) => {
       if (!isCefContext()) return false
+      const hydrationGeneration = messageHydrationGenerationByChatId.get(id) ?? 0
       const before = get().historyStartIndexBySessionId[id] ?? 0
       if (before <= 0 || !get().messages[id]) return false
       const fail = (error: string) => {
@@ -503,9 +495,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         action: 'getChatMessages',
         payload: { chatId: id, limit: 100, before, deferToolCallContent: true },
       })
+      if ((messageHydrationGenerationByChatId.get(id) ?? 0) !== hydrationGeneration ||
+          !get().sessions.some((session) => session.id === id) ||
+          get().historyStartIndexBySessionId[id] !== before || get().chatSearchNavigation?.chatId === id) return false
       const data = response.data
       if (!response.ok) return fail(response.error || 'Could not load earlier messages.')
-      if (!data || !Array.isArray(data.messages) ||
+      if (!data || (data.chatId && data.chatId !== id) || !Array.isArray(data.messages) || data.messages.length === 0 ||
           !Number.isSafeInteger(data.startIndex) || data.startIndex === undefined ||
           data.startIndex < 0 || data.startIndex + data.messages.length !== before) return fail('The earlier message page was invalid.')
       if (data.messagesDigest !== loadedMessagesDigestByChatId.get(id)) return fail('Chat history changed while loading. Retry to refresh it.')

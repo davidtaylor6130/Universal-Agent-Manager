@@ -667,7 +667,7 @@ export const useAppStore = create<AppState>((set, get) => {
   // CompanionShell bootstraps after authentication and preserves phone-local selection.
   // Desktop state arrives via uamPush later too.
   if (isCefContext() && !isCompanionContext()) {
-    sendToCEF<CppAppState>({ action: 'getInitialState' }).then((resp) => {
+    sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
       if (sanitized) {
