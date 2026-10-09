@@ -254,8 +254,7 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
     act(() => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'Download latest')!.click())
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeTruthy()
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Provider settings host"]')!.click())
-    act(() => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(button => button.textContent === 'Lab')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeNull()
     expect(host.textContent).toContain('CLI installation on Lab')
     expect(host.textContent).toContain('8.0')
@@ -308,7 +307,7 @@ describe('SettingsModal memory settings', () => {
     const preview = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))
     await act(async () => { preview?.click() })
 
-    expect(actions).toEqual(['previewRemoteHost'])
+    expect(actions.filter(action => action !== 'getProviderMcpStatus')).toEqual(['previewRemoteHost'])
     expect(host.textContent).toContain('Install helper on AI desktop?')
     expect(host.textContent).toContain('detects Ubuntu/Linux or Windows')
     expect(host.textContent).toContain('Unsupported systems stop before anything is copied')
@@ -432,7 +431,7 @@ describe('SettingsModal memory settings', () => {
     expect(directory.selectionStart).toBe(0)
     expect(directory.selectionEnd).toBe('../outside'.length)
 		expect(host.textContent).toContain('Remove the .. segment; the helper must stay under the remote home directory.')
-    expect(actions).toEqual(['previewRemoteHost'])
+    expect(actions.filter(action => action !== 'getProviderMcpStatus')).toEqual(['previewRemoteHost'])
 
     act(() => root.unmount())
     host.remove()

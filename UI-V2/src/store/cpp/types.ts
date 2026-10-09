@@ -542,6 +542,7 @@ export interface CliVersionOption {
 }
 
 export interface CliVersionProviderState {
+  canInstall?: boolean
   routingConnectionIdentity?: string
   routingProviderConfigurationIdentity?: string
   providerId: string
@@ -873,6 +874,7 @@ export type ParsedPushResult =
   | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string }
 
 export interface CentralProviderConfiguration {
+  mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean }>
   enabled: boolean
   instructions: string
   instructionFiles: string[]

@@ -2068,7 +2068,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
                         catch { setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
                       }}/>
-                      <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>
+                      {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
                       {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
                         <Button size="sm" role="menuitem" disabled={!manager.preferredVersion} onClick={() => requestInstall(manager.preferredVersion)}>Download recommended{manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}</Button>
                         <Button size="sm" role="menuitem" onClick={() => requestInstall('latest')}>Download latest</Button>
@@ -2775,7 +2775,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   const section = SETTINGS_SECTIONS.find(item => item.id === id)!
                   const active = selectedSection === section.id
                   const SectionIcon = section.icon
-                  return <button key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-settings-nav-item" data-active={active}><SectionIcon size={15} className="shrink-0" aria-hidden/><span className="text-sm">{section.label}</span></button>
+                  return <button key={section.id} type="button" aria-pressed={active} aria-label={section.label} onClick={() => changeSection(section.id)} className="uam-settings-nav-item" data-active={active}>{section.id.startsWith('provider:') ? <ProviderLogo providerId={section.id.slice('provider:'.length)} size={15}/> : <SectionIcon size={15} className="shrink-0" aria-hidden/>}<span className="text-sm">{section.label}</span></button>
                 })}
               </div>)}
             </nav>

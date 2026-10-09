@@ -1185,6 +1185,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
         })
       : [],
     preferredVersion: stringOr(value.preferredVersion),
+    ...(typeof value.canInstall === 'boolean' ? { canInstall: value.canInstall } : {}),
     verifiedVersion: stringOr(value.verifiedVersion),
     verifiedAt: stringOr(value.verifiedAt),
     status: normalizedStatus,
@@ -1441,6 +1442,9 @@ export function sanitizeCentralProviderConfiguration(value: unknown): CentralPro
     enabled: booleanOr(value.enabled, false), instructions: stringOr(value.instructions),
     instructionFiles: paths(value.instructionFiles), skillDirectories: paths(value.skillDirectories),
     defaultAgentId: stringOr(value.defaultAgentId, 'build'), uamControlEnabled: booleanOr(value.uamControlEnabled, true),
+    defaultSkills: Array.isArray(value.defaultSkills) ? value.defaultSkills.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
+    defaultAgents: Array.isArray(value.defaultAgents) ? value.defaultAgents.filter((entry): entry is string => typeof entry === 'string').slice(0, 256) : [],
+    mcpOverrides: Array.isArray(value.mcpOverrides) ? value.mcpOverrides.filter(isRecord).flatMap(entry => typeof entry.providerId === 'string' && typeof entry.executionHostId === 'string' && typeof entry.serverId === 'string' && typeof entry.enabled === 'boolean' ? [{ providerId: entry.providerId, executionHostId: entry.executionHostId, serverId: entry.serverId, enabled: entry.enabled }] : []).slice(0, 4096) : [],
   }
 }
 
