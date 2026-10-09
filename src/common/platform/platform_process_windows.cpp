@@ -240,6 +240,11 @@ class WindowsProcessService final : public IPlatformProcessService
 	ProcessExecutionResult ExecuteCommand(const std::string& command, int timeout_ms = -1, std::stop_token stop_token = {}) const override
 	{
 		ProcessExecutionResult result;
+		std::vector<wchar_t> environment_block;
+		if (!BuildEnvironmentBlock({}, environment_block, &result.error, true))
+		{
+			return result;
+		}
 		SECURITY_ATTRIBUTES sa{};
 		sa.nLength = sizeof(sa);
 		sa.bInheritHandle = TRUE;
@@ -284,8 +289,8 @@ class WindowsProcessService final : public IPlatformProcessService
 		startup_info.lpAttributeList = attribute_list.Get();
 
 		PROCESS_INFORMATION process_info{};
-		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
-		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, nullptr, nullptr, &startup_info.StartupInfo, &process_info);
+		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, environment_block.data(), nullptr, &startup_info.StartupInfo, &process_info);
 		CloseInvalidHandleIfOpen(stdout_write);
 
 		if (!created)
@@ -513,7 +518,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		command_line.push_back(L'\0');
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
 		std::vector<wchar_t> environment_block;
-		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out))
+		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out, true))
 		{
 			CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
 			return false;

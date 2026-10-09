@@ -119,7 +119,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 		command_line.push_back(L'\0');
 		std::vector<wchar_t> environment_block;
-		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out))
+		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out, true))
 		{
 			DeleteProcThreadAttributeList(terminal.attr_list);
 			HeapFree(GetProcessHeap(), 0, terminal.attr_list);

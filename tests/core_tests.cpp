@@ -649,6 +649,8 @@ namespace
 	constexpr const char* kWindowsManagerFixture = "--uam-windows-manager-fixture";
 	constexpr const char* kWindowsHandleProbeFixture = "--uam-windows-handle-probe-fixture";
 	constexpr const char* kWindowsOutputFloodFixture = "--uam-windows-output-flood-fixture";
+	constexpr const char* kWindowsFdStateFixture = "--uam-windows-fd-state-fixture";
+	constexpr const wchar_t* kWindowsPrivateFdStateName = L"c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE";
 
 	std::filesystem::path WindowsFixtureExecutablePath()
 	{
@@ -943,6 +945,19 @@ namespace
 				std::cout << argv[3] << (inherited ? ":inherited\n" : ":isolated\n");
 			}
 			return inherited ? 41 : 0;
+		}
+
+		if (argc >= 2 && std::string_view(argv[1]) == kWindowsFdStateFixture)
+		{
+			if (argc != 3) return 2;
+			wchar_t stale_state[64]{};
+			SetLastError(ERROR_SUCCESS);
+			if (GetEnvironmentVariableW(kWindowsPrivateFdStateName, stale_state, 64) != 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND) return 51;
+			char ordinary[64]{};
+			if (GetEnvironmentVariableA("UAM_TEST_FD_STATE_ORDINARY", ordinary, 64) == 0 || std::string(ordinary) != argv[2]) return 52;
+			static constexpr char marker[] = "fd-state-isolated\n";
+			DWORD written = 0;
+			return WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), marker, sizeof(marker) - 1, &written, nullptr) && written == sizeof(marker) - 1 ? 0 : 53;
 		}
 
 		if (argc >= 2 && std::string_view(argv[1]) == kWindowsOutputFloodFixture)
@@ -21011,6 +21026,116 @@ UAM_TEST(StdioProcessEnvironmentOverridesAreChildScoped)
 	UAM_ASSERT(!process_service.StartStdioProcess(invalid_process, temp.root, argv, &error, {{"INVALID=NAME", "value"}}));
 	UAM_ASSERT(!error.empty());
 }
+
+#if defined(_WIN32)
+namespace
+{
+	void AssertWindowsFdStateParentUnchanged()
+	{
+		wchar_t value[64]{};
+		UAM_ASSERT_EQ(GetEnvironmentVariableW(kWindowsPrivateFdStateName, value, 64), static_cast<DWORD>(12));
+		UAM_ASSERT_EQ(std::wstring(value), std::wstring(L"AAAAAAICAgA="));
+		UAM_ASSERT_EQ(GetEnvironmentVariableW(L"UAM_TEST_FD_STATE_ORDINARY", value, 64), static_cast<DWORD>(9));
+		UAM_ASSERT_EQ(std::wstring(value), std::wstring(L"inherited"));
+	}
+}
+
+UAM_TEST(WindowsReplacedStdioDiscardsInheritedOpenSshFdState)
+{
+	TempDir temp("uam-windows-fd-state-stdio");
+	ScopedWideWindowsEnvVar poison(kWindowsPrivateFdStateName, L"AAAAAAICAgA=");
+	ScopedWideWindowsEnvVar ordinary(L"UAM_TEST_FD_STATE_ORDINARY", L"inherited");
+	UAM_ASSERT(poison.applied && ordinary.applied);
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	for (bool override_ordinary : {false, true})
+	{
+		const std::string expected = override_ordinary ? "overridden" : "inherited";
+		const std::vector<std::pair<std::string, std::string>> overrides = override_ordinary ?
+		    std::vector<std::pair<std::string, std::string>>{{"UAM_TEST_FD_STATE_ORDINARY", expected}} : std::vector<std::pair<std::string, std::string>>{};
+		uam::platform::StdioProcessPlatformFields process;
+		struct StopOwnedProcess
+		{
+			IPlatformProcessService& service;
+			uam::platform::StdioProcessPlatformFields& process;
+			~StopOwnedProcess() { service.StopStdioProcess(process, true); }
+		} cleanup{service, process};
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(process, temp.root, {uam::paths::Utf8PathString(WindowsFixtureExecutablePath()), kWindowsFdStateFixture, expected}, &error, overrides));
+		service.CloseStdioProcessInput(process);
+		std::string output;
+		std::array<char, 128> buffer{};
+		bool exited = false;
+		int exit_code = -1;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const std::ptrdiff_t bytes = service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &error);
+			if (bytes > 0) output.append(buffer.data(), static_cast<std::size_t>(bytes));
+			exited = service.PollStdioProcessExited(process, &exit_code);
+			if (exited && bytes <= 0) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		AssertWindowsFdStateParentUnchanged();
+		UAM_ASSERT(exited);
+		UAM_ASSERT_EQ(exit_code, 0);
+		UAM_ASSERT_EQ(output, std::string("fd-state-isolated\n"));
+	}
+}
+
+UAM_TEST(WindowsCapturedCommandDiscardsInheritedOpenSshFdState)
+{
+	ScopedWideWindowsEnvVar poison(kWindowsPrivateFdStateName, L"AAAAAAICAgA=");
+	ScopedWideWindowsEnvVar ordinary(L"UAM_TEST_FD_STATE_ORDINARY", L"inherited");
+	UAM_ASSERT(poison.applied && ordinary.applied);
+	const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+	    WindowsFixtureShellCommand({uam::paths::Utf8PathString(WindowsFixtureExecutablePath()), kWindowsFdStateFixture, "inherited"}), 5000);
+	AssertWindowsFdStateParentUnchanged();
+	UAM_ASSERT(result.ok);
+	UAM_ASSERT_EQ(result.exit_code, 0);
+	UAM_ASSERT_EQ(result.output, std::string("fd-state-isolated\n"));
+}
+
+UAM_TEST(WindowsConPtyDiscardsInheritedOpenSshFdState)
+{
+	TempDir temp("uam-windows-fd-state-conpty");
+	ScopedWideWindowsEnvVar poison(kWindowsPrivateFdStateName, L"AAAAAAICAgA=");
+	ScopedWideWindowsEnvVar ordinary(L"UAM_TEST_FD_STATE_ORDINARY", L"inherited");
+	UAM_ASSERT(poison.applied && ordinary.applied);
+	IPlatformTerminalRuntime& runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	for (bool override_ordinary : {false, true})
+	{
+		const std::string expected = override_ordinary ? "overridden" : "inherited";
+		const std::vector<std::pair<std::string, std::string>> overrides = override_ordinary ?
+		    std::vector<std::pair<std::string, std::string>>{{"UAM_TEST_FD_STATE_ORDINARY", expected}} : std::vector<std::pair<std::string, std::string>>{};
+		uam::CliTerminalState terminal;
+		terminal.rows = uam::kCliTerminalDefaultRows;
+		terminal.cols = uam::kCliTerminalDefaultCols;
+		struct StopOwnedTerminal
+		{
+			IPlatformTerminalRuntime& runtime;
+			uam::CliTerminalState& terminal;
+			~StopOwnedTerminal() { runtime.StopCliTerminalProcess(terminal, true); }
+		} cleanup{runtime, terminal};
+		std::string error;
+		UAM_ASSERT(runtime.StartCliTerminalProcess(terminal, temp.root, {uam::paths::Utf8PathString(WindowsFixtureExecutablePath()), kWindowsFdStateFixture, expected}, &error, overrides));
+		std::string output;
+		std::array<char, 128> buffer{};
+		bool exited = false;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const std::ptrdiff_t bytes = runtime.ReadCliTerminalOutput(terminal, buffer.data(), buffer.size());
+			if (bytes > 0) output.append(buffer.data(), static_cast<std::size_t>(bytes));
+			exited = runtime.PollCliTerminalProcessExited(terminal);
+			if (exited && bytes <= 0) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		AssertWindowsFdStateParentUnchanged();
+		UAM_ASSERT(exited);
+		UAM_ASSERT(output.find("fd-state-isolated") != std::string::npos);
+	}
+}
+#endif
 
 UAM_TEST(CapturedCommandOutputIsBounded)
 {

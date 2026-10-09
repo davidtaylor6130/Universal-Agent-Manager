@@ -143,9 +143,9 @@ inline std::string FormatWindowsError(const DWORD error)
 	return message + " (" + std::to_string(static_cast<unsigned long>(error)) + ")";
 }
 
-inline bool BuildEnvironmentBlock(const std::vector<std::pair<std::string, std::string>>& overrides, std::vector<wchar_t>& block, std::string* error_out)
+inline bool BuildEnvironmentBlock(const std::vector<std::pair<std::string, std::string>>& overrides, std::vector<wchar_t>& block, std::string* error_out, bool replace_stdio_handles = false)
 {
-	if (overrides.empty())
+	if (overrides.empty() && !replace_stdio_handles)
 	{
 		return true;
 	}
@@ -162,7 +162,12 @@ inline bool BuildEnvironmentBlock(const std::vector<std::pair<std::string, std::
 	}
 	for (const wchar_t* current = inherited; *current != L'\0'; current += std::wcslen(current) + 1)
 	{
-		entries.emplace_back(current);
+		// OpenSSH's inherited fd map describes the old handles, not newly created stdio handles.
+		constexpr std::wstring_view kInheritedStdioStatePrefix = L"c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE=";
+		if (!replace_stdio_handles || _wcsnicmp(current, kInheritedStdioStatePrefix.data(), kInheritedStdioStatePrefix.size()) != 0)
+		{
+			entries.emplace_back(current);
+		}
 	}
 	FreeEnvironmentStringsW(inherited);
 
@@ -201,6 +206,10 @@ inline bool BuildEnvironmentBlock(const std::vector<std::pair<std::string, std::
 	for (const std::wstring& entry : entries)
 	{
 		block.insert(block.end(), entry.begin(), entry.end());
+		block.push_back(L'\0');
+	}
+	if (entries.empty())
+	{
 		block.push_back(L'\0');
 	}
 	block.push_back(L'\0');
