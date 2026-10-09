@@ -134,7 +134,7 @@ namespace uam
 		}
 
 		// Bounded, nonblocking reads keep the proxy's exit diagnostic after handle transfer.
-		bool DrainRemoteStopStderr(platform::StdioProcessPlatformFields& process, std::string& stderr_tail)
+		bool DrainRemoteStopStderr(platform::StdioProcessPlatformFields& process, std::string& stderr_tail, bool* made_progress = nullptr)
 		{
 			std::array<char, 4096> buffer{};
 			for (int chunk = 0; chunk < 4; ++chunk)
@@ -142,6 +142,7 @@ namespace uam
 				const std::ptrdiff_t count = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStderr(
 				    process, buffer.data(), buffer.size());
 				if (count <= 0) return false;
+				if (made_progress != nullptr) *made_progress = true;
 				stderr_tail.append(buffer.data(), static_cast<std::size_t>(count));
 				if (stderr_tail.size() > 4096)
 					stderr_tail.erase(0, stderr_tail.size() - 4096);
@@ -150,7 +151,7 @@ namespace uam
 		}
 
 		bool DrainRemoteStopStdout(AppState& app, platform::StdioProcessPlatformFields& process,
-		                           AcpSessionState* session, ChatSession* chat, CefRefPtr<CefBrowser> browser)
+		                           AcpSessionState* session, ChatSession* chat, CefRefPtr<CefBrowser> browser, bool* made_progress = nullptr)
 		{
 			std::array<char, 16384> buffer{};
 			bool more = true;
@@ -158,12 +159,15 @@ namespace uam
 			{
 				const std::ptrdiff_t count = PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size());
 				if (count <= 0) { more = false; break; }
+				if (made_progress != nullptr) *made_progress = true;
 				if (session != nullptr && chat != nullptr && !acp_detail::AppendAcpStdoutChunk(*session, std::string_view(buffer.data(), static_cast<std::size_t>(count))))
 					session->last_error = "Remote shutdown output exceeded the limit.";
 			}
 			if (session != nullptr && chat != nullptr)
 			{
+				const std::size_t buffered_bytes = session->stdout_buffer.size();
 				(void)acp_detail::ProcessBufferedAcpStdoutAfterStop(app, *session, *chat, browser, 256);
+				if (made_progress != nullptr && session->stdout_buffer.size() < buffered_bytes) *made_progress = true;
 				more = more || session->stdout_buffer.find('\n') != std::string::npos;
 			}
 			return more;
@@ -4323,14 +4327,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 		       std::chrono::steady_clock::now() < idle_stop_deadline)
 		{
 			bool all_settled = true;
+			bool made_progress = false;
 			for (IdleRemoteStop& stop : idle_remote_stops)
 			{
 				if (stop.confirmed) continue;
 				int exit_code = -1;
 				const bool exited = PlatformServicesFactory::Instance().process_service.
 				    PollStdioProcessExited(*stop.session, &exit_code);
-				bool stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail);
-				bool stdout_pending = DrainRemoteStopStdout(app, *stop.session, stop.session, stop.chat, nullptr);
+				bool stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail, &made_progress);
+				bool stdout_pending = DrainRemoteStopStdout(app, *stop.session, stop.session, stop.chat, nullptr, &made_progress);
 				// Both pipes must drain so the proxy can flush its final output and exit.
 				while (exited && (stderr_pending || stdout_pending))
 				{
@@ -4341,7 +4346,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 				all_settled = all_settled && stop.confirmed;
 			}
 			if (all_settled) break;
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			// Keep draining active pipes within the existing shutdown deadline.
+			if (!made_progress) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 		for (const IdleRemoteStop& stop : idle_remote_stops)
 		{

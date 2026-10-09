@@ -9717,7 +9717,17 @@ UAM_TEST(AcpIdleRemoteCleanupCanAttachDespiteStaleRunnerHealth)
 		std::string error;
 		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(
 		    app, *session, app.chats.front(), &error));
-		UAM_ASSERT(uam::strings::Contains(error, "negotiated protocol version"));
+		std::error_code runner_error;
+		const bool runner_packaged = fs::is_regular_file(uam::remote::PackagedRunnerPath(), runner_error) && !runner_error;
+		UAM_ASSERT_EQ(error, runner_packaged ? std::string("The selected remote runner has no negotiated protocol version.")
+		                                   : std::string("The packaged UAM remote runner is missing."));
+		UAM_ASSERT_EQ(session->remote_runner_protocol_version, -1);
+		UAM_ASSERT(!session->running && session->last_process_id.empty());
+#if defined(_WIN32)
+		UAM_ASSERT_EQ(session->process_info.hProcess, INVALID_HANDLE_VALUE);
+#else
+		UAM_ASSERT_EQ(session->child_pid, pid_t{-1});
+#endif
 		UAM_ASSERT(app.chats.front().remote_process_exists);
 		UAM_ASSERT_EQ(app.chats.front().remote_stop_cleanup_pending, stopping);
 		UAM_ASSERT(!session->processing);
@@ -12281,7 +12291,7 @@ namespace
 		const fs::path natural_exit = temp.root / "natural-exit";
 #if defined(_WIN32)
 		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
-		    "set /p line= & echo UAM_REMOTE_STOP_OUTCOME owned-stop-authority graceful 1>&2 & ping -n 3 127.0.0.1 >nul & type nul >\"" + natural_exit.string() + "\" & exit /b " + std::to_string(exit_code)};
+		    "set /p line= & echo UAM_REMOTE_STOP_OUTCOME owned-stop-authority graceful 1>&2 & ping -n 3 127.0.0.1 >nul & type nul >natural-exit & exit /b " + std::to_string(exit_code)};
 #else
 		const std::vector<std::string> argv = {"/bin/sh", "-c",
 		    "IFS= read -r line; printf 'UAM_REMOTE_STOP_OUTCOME %s graceful\\n' \"$2\" >&2; sleep 1.5; : >\"$1\"; exit \"$3\"",

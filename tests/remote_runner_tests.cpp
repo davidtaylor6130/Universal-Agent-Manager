@@ -3876,7 +3876,7 @@ namespace
 		const fs::path stderr_file = temp.root / "diagnostic.txt";
 		UAM_ASSERT(uam::io::WriteTextFile(stderr_file, diagnostic));
 #if defined(_WIN32)
-		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "set /p line= & type \"" + stderr_file.string() + "\" 1>&2 & exit /b " + std::to_string(helper_exit_code)};
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "set /p line= & type diagnostic.txt 1>&2 & exit /b " + std::to_string(helper_exit_code)};
 #else
 		const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; cat \"$1\" >&2; exit \"$2\"", "fixture", stderr_file.string(), std::to_string(helper_exit_code)};
 #endif
