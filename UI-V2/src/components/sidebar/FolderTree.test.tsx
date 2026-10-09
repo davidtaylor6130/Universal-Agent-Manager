@@ -68,6 +68,7 @@ describe('FolderTree', () => {
       previewUnsortedWorkspaceFolders: vi.fn(() => Promise.resolve(null)),
       rebuildUnsortedWorkspaceFolders: vi.fn(() => Promise.resolve(true)),
       workspaceFolderRecoveryError: '',
+      workspaceDeletionError: '',
       addFolder: originalAddFolder,
       listRemoteDirectories: originalListRemoteDirectories,
     })
@@ -1522,7 +1523,7 @@ describe('FolderTree', () => {
   })
 
   it('selects workspace ranges, cancels, reports failures, and submits one batch', async () => {
-    const deleteFolders = vi.fn(async () => false)
+    const deleteFolders = vi.fn(async () => { useAppStore.setState({ workspaceDeletionError: 'Remote stop could not be confirmed.' }); return false })
     useAppStore.setState({
       folders: ['a', 'b', 'c'].map((id) => ({ ...makeFolder(), id, name: id })),
       sessions: ['a', 'b', 'c'].map((id, index) => ({ ...makeSession(index), folderId: id })),
@@ -1544,7 +1545,7 @@ describe('FolderTree', () => {
     act(openDelete)
     await act(async () => dialogButton('Delete workspaces').click())
     expect(deleteFolders).toHaveBeenCalledWith(['a', 'b', 'c'])
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be deleted')
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('Remote stop could not be confirmed.')
     expect(host.querySelectorAll('[data-workspace-id][aria-pressed="true"]')).toHaveLength(3)
     deleteFolders.mockResolvedValue(true)
     await act(async () => dialogButton('Delete workspaces').click())
@@ -1595,6 +1596,7 @@ describe('FolderTree', () => {
     const confirm = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
     await act(async () => { confirm.click(); await Promise.resolve() })
     expect(confirm.disabled).toBe(true)
+    expect(host.querySelector('[role="alertdialog"] [role="status"]')?.textContent).toBe('Deleting 1 workspace and 7 chats…')
     act(() => { confirm.click(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
     expect(deleteFolders).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[role="alertdialog"]')).toBeTruthy()

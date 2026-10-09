@@ -6607,9 +6607,11 @@ describe('bulk workspace deletion', () => {
       await expect(useAppStore.getState().deleteFolders(['a', 'b', 'a'])).resolves.toBe(false)
       expect(useAppStore.getState().folders).toHaveLength(3)
       expect(useAppStore.getState().sessions).toHaveLength(4)
+      expect(useAppStore.getState().workspaceDeletionError).toBe('A runtime is running.')
       succeed = true
       await expect(useAppStore.getState().deleteFolders(['a', 'b', 'a'])).resolves.toBe(true)
       expect(requests).toHaveLength(2)
+      expect(useAppStore.getState().workspaceDeletionError).toBe('')
       expect(requests[1]).toMatchObject({ action: 'deleteFolders', payload: { folderIds: ['a', 'b'] } })
       expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['keep'])
       expect(useAppStore.getState().sessions.map((session) => session.id)).toEqual(['keep'])

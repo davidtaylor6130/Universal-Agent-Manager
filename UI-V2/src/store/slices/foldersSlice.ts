@@ -24,10 +24,17 @@ function makeId(prefix: string, counter: number) {
 
 export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
   async function deleteWorkspaceFolders(ids: string[], action: 'deleteFolder' | 'deleteFolders'): Promise<boolean> {
+    set({ workspaceDeletionError: '' })
     const folderIds = new Set(ids.map((id) => id.trim()))
-    if (folderIds.size === 0 || folderIds.has('')) return false
+    if (folderIds.size === 0 || folderIds.has('')) {
+      set({ workspaceDeletionError: 'Choose at least one workspace to delete.' })
+      return false
+    }
     const snapshot = get()
-    if (isCefContext() && [...folderIds].some((id) => !snapshot.folders.some((folder) => folder.id === id))) return false
+    if (isCefContext() && [...folderIds].some((id) => !snapshot.folders.some((folder) => folder.id === id))) {
+      set({ workspaceDeletionError: 'A selected workspace no longer exists. Select the remaining workspaces again.' })
+      return false
+    }
     const deletedSessionIds = new Set(snapshot.sessions.filter((session) => session.folderId && folderIds.has(session.folderId)).map((session) => session.id))
     let selectedChatId: string | null | undefined
     if (isCefContext()) {
@@ -36,7 +43,10 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         payload: action === 'deleteFolder' ? { folderId: [...folderIds][0] } : { folderIds: [...folderIds] },
         requestId: createRequestId(action),
       })
-      if (!response.ok) return false
+      if (!response.ok) {
+        set({ workspaceDeletionError: response.error || 'The workspaces could not be deleted.' })
+        return false
+      }
       selectedChatId = response.data?.selectedChatId
       // The native transaction also deletes hidden goal iterations and agent transcripts.
       for (const id of response.data?.deletedChatIds ?? []) deletedSessionIds.add(id)
@@ -96,6 +106,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     shellActions: [] as ShellAction[],
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',
+    workspaceDeletionError: '',
 
     addFolder: (name: string, _parentId: string | null, directory: string, executionHostId = 'local') => {
       if (isCefContext()) {

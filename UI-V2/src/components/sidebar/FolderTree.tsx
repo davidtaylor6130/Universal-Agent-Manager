@@ -451,9 +451,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     setDeleteFolderError('')
     try {
       if (await deleteFolders(pendingDeleteFolderIds)) clearWorkspaceSelection()
-      else setDeleteFolderError('The workspaces could not be deleted. Finish active work and try again.')
-    } catch {
-      setDeleteFolderError('The workspaces could not be deleted. Finish active work and try again.')
+      else setDeleteFolderError(useAppStore.getState().workspaceDeletionError || 'The workspaces could not be deleted. Try again.')
+    } catch (error) {
+      setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : 'The workspaces could not be deleted. Try again.')
     } finally {
       workspaceDeleteInFlightRef.current = false
       setDeletingFolder(false)
@@ -599,10 +599,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       if (await deleteFolder(pendingDeleteFolder.id)) {
         setPendingDeleteFolderId(null)
       } else {
-        setDeleteFolderError('The workspace could not be deleted. Finish active work and try again.')
+        setDeleteFolderError(useAppStore.getState().workspaceDeletionError || 'The workspace could not be deleted. Try again.')
       }
-    } catch {
-      setDeleteFolderError('The workspace could not be deleted. Finish active work and try again.')
+    } catch (error) {
+      setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : 'The workspace could not be deleted. Try again.')
     } finally {
       setDeletingFolder(false)
     }
@@ -1426,6 +1426,7 @@ function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCanc
       <div className="px-5 py-4 text-sm font-semibold">Delete selected workspaces?</div>
       <div className="px-5 pb-5 text-sm">
         <p id="delete-workspaces-description">Delete {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
+        {deleting && <p role="status" aria-live="polite" className="mt-2">Deleting {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}…</p>}
         {error && <p role="alert" className="mt-2" style={{ color: 'var(--red)' }}>{error}</p>}
       </div>
       <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>

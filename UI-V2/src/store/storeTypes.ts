@@ -255,6 +255,7 @@ export interface AppState {
   previewUnsortedWorkspaceFolders: () => Promise<WorkspaceFolderRecoveryPreview | null>
   rebuildUnsortedWorkspaceFolders: () => Promise<boolean>
   renameFolder: (id: string, name: string, directory: string) => Promise<boolean>
+  workspaceDeletionError: string
   deleteFolder: (id: string) => Promise<boolean>
   deleteFolders: (ids: string[]) => Promise<boolean>
   browseFolderDirectory: (currentValue: string) => Promise<string | null>
