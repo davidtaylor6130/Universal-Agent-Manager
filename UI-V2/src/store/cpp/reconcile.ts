@@ -769,8 +769,9 @@ function cppMessageCreatedAtMillis(message: CppMessage) {
   return Number.isFinite(timestamp) ? timestamp : 0
 }
 
-function cppMessagesEquivalent(existing: Message, next: CppMessage) {
+function cppMessagesEquivalent(existing: Message, next: CppMessage, index: number) {
   return (
+    existing.nativeMessageIndex === index &&
     existing.role === next.role &&
     existing.content === next.content &&
     (existing.providerId ?? '') === (next.providerId ?? '') &&
@@ -804,6 +805,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
   return {
     id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
     sessionId: chatId,
+    nativeMessageIndex: Number.isSafeInteger(index) && index >= 0 ? index : undefined,
     role: message.role,
     content: message.content,
     providerId: message.providerId,
@@ -858,7 +860,7 @@ export function reconcileCppMessages(
   while (
     prefixLength < existingRealMessages.length &&
     prefixLength < cppMessages.length &&
-    cppMessagesEquivalent(existingRealMessages[prefixLength], cppMessages[prefixLength])
+    cppMessagesEquivalent(existingRealMessages[prefixLength], cppMessages[prefixLength], prefixLength)
   ) {
     prefixLength++
   }
@@ -923,7 +925,10 @@ export function attachmentsEquivalent(existing: Attachment[], next: Attachment[]
       attachment.name === other.name &&
       attachment.type === other.type &&
       attachment.size === other.size &&
-      (attachment.path ?? '') === (other.path ?? '')
+      (attachment.path ?? '') === (other.path ?? '') &&
+      (attachment.mimeType ?? '') === (other.mimeType ?? '') &&
+      (attachment.previewKey ?? '') === (other.previewKey ?? '') &&
+      (attachment.previewOriginPath ?? '') === (other.previewOriginPath ?? '')
   })
 }
 

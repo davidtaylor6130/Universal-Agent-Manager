@@ -37,4 +37,12 @@ describe('composer draft storage fallback', () => {
     writeChatComposerDraft(sessionId, { text: '', attachments: [] })
     expect(readChatComposerDraft(sessionId)).toEqual({ text: '', attachments: [] })
   })
+  it('restores MIME and immutable preview identity from persisted file-kind drafts', () => {
+    const sessionId = `preview-reload-${Math.random()}`
+    const attachment = { id: 'image-one', name: 'image.png', type: 'file', mimeType: 'image/png', size: 4, path: '.UAM/attachments/image.png', previewKey: 'a'.repeat(64), previewOriginPath: '/captured/image.png' }
+    const persisted = JSON.stringify({ text: 'draft', attachments: [attachment] })
+    vi.stubGlobal('localStorage', { getItem: (key: string) => key === `uam-chat-composer-draft-v1:${sessionId}` ? persisted : null })
+    expect(readChatComposerDraft(sessionId)).toEqual({ text: 'draft', attachments: [attachment] })
+  })
+
 })

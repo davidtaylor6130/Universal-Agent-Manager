@@ -53,7 +53,7 @@ describe('reconcileCppMessages attachments', () => {
     }])
 
     expect(reconciled).not.toBe(existing)
-    expect(reconciled[0].attachments).toEqual([attachment])
+    expect(reconciled[0].attachments).toEqual([{ ...attachment, mimeType: 'image/png' }])
   })
 
   it('keeps a markdown-store attachment-only update', () => {

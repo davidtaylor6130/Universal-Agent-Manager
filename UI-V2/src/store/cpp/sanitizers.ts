@@ -331,10 +331,14 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
     : isString(value.type)
       ? value.type
       : 'file'
+  const mimeType = isString(value.mimeType) ? value.mimeType : isString(value.type) && value.type.includes('/') ? value.type : undefined
   return {
     id,
     name,
     type,
+    ...(mimeType ? { mimeType } : {}),
+    ...(isString(value.previewKey) && /^[a-f0-9]{64}$/.test(value.previewKey) ? { previewKey: value.previewKey } : {}),
+    ...(isString(value.previewOriginPath) ? { previewOriginPath: value.previewOriginPath } : {}),
     size: finiteNumberOr(value.size, finiteNumberOr(value.sizeBytes, 0)),
     path,
   }
@@ -342,7 +346,12 @@ export function sanitizeAttachment(value: unknown): Attachment | null {
 
 export function messageAttachments(message: Pick<CppMessage, 'markdownStoreFiles' | 'attachments'>): Attachment[] {
   const markdownStoreFiles = message.markdownStoreFiles ?? []
-  if (markdownStoreFiles.length === 0) return message.attachments ?? []
+  const attachments = (message.attachments ?? []).flatMap((value) => {
+    const attachment = sanitizeAttachment(value)
+    if (attachment && value.path === undefined) delete attachment.path
+    return attachment ? [attachment] : []
+  })
+  if (markdownStoreFiles.length === 0) return attachments
   const markdownAttachments = markdownStoreFiles.map((filePath) => ({
     id: filePath,
     name: filePath.split(/[\\/]/).pop() || filePath,
@@ -350,7 +359,7 @@ export function messageAttachments(message: Pick<CppMessage, 'markdownStoreFiles
     size: 0,
     path: filePath,
   }))
-  return [...markdownAttachments, ...(message.attachments ?? [])]
+  return [...markdownAttachments, ...attachments]
 }
 
 export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {

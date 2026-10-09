@@ -22,7 +22,7 @@ function attachment(value: unknown): Attachment | null {
   if (!value || typeof value !== 'object') return null
   const item = value as Partial<Attachment>
   if (typeof item.id !== 'string' || typeof item.name !== 'string' || typeof item.type !== 'string' || typeof item.size !== 'number') return null
-  return { id: item.id, name: item.name, type: item.type, size: item.size, ...(typeof item.path === 'string' ? { path: item.path } : {}) }
+  return { id: item.id, name: item.name, type: item.type, size: item.size, ...(typeof item.mimeType === 'string' ? { mimeType: item.mimeType } : {}), ...(typeof item.path === 'string' ? { path: item.path } : {}), ...(typeof item.previewKey === 'string' && /^[a-f0-9]{64}$/.test(item.previewKey) ? { previewKey: item.previewKey } : {}), ...(typeof item.previewOriginPath === 'string' ? { previewOriginPath: item.previewOriginPath } : {}) }
 }
 
 export function readChatComposerDraft(sessionId: string): ChatComposerDraft {

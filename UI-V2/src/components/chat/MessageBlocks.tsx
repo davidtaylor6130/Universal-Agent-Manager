@@ -2,6 +2,7 @@
 // persisted message content, attachment list, and turn timeline.
 // Extracted from ChatView.tsx (MO-3).
 
+import { ImageAttachmentPreview } from './ImageAttachmentPreview'
 import { MarkdownContent } from '../markdown/Markdown'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore } from '../../store/useAppStore'
@@ -709,7 +710,7 @@ export function PersistedMessageContent({
           workingMode={workingMode}
           workedSeconds={workedSeconds}
         />
-        <AttachmentList attachments={attachments} />
+        <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
       </div>
     )
   }
@@ -718,7 +719,7 @@ export function PersistedMessageContent({
     return (
       <div className="space-y-2">
         {goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />}
-        <AttachmentList attachments={attachments} />
+        <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
       </div>
     )
   }
@@ -762,12 +763,12 @@ export function PersistedMessageContent({
         onApprove={planActions?.onApprove}
         onDeny={planActions?.onDeny}
       />
-      <AttachmentList attachments={attachments} />
+      <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
     </div>
   )
 }
 
-export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
+export function AttachmentList({ attachments, chatId, nativeMessageIndex }: { attachments: Attachment[]; chatId?: string; nativeMessageIndex?: number }) {
   if (attachments.length === 0) return null
 
   const markdownStoreAttachments = attachments.filter((attachment) => attachment.type === 'markdown-store')
@@ -800,8 +801,8 @@ export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
       {fileAttachments.length > 0 && (
         <div className="flex flex-wrap gap-2" aria-label="File attachments">
           {fileAttachments.map((attachment) => (
+            <ImageAttachmentPreview key={attachment.id} chatId={chatId} messageIndex={nativeMessageIndex} attachment={attachment} fallback={
             <span
-              key={attachment.id}
               className="inline-flex items-center gap-2 max-w-full text-[11px]"
               title={attachmentLabel(attachment)}
               style={{
@@ -815,6 +816,7 @@ export function AttachmentList({ attachments }: { attachments: Attachment[] }) {
               <span className="truncate max-w-[320px]">{attachment.path || attachment.name}</span>
               <span style={{ color: 'var(--text-3)' }}>{attachment.type}</span>
             </span>
+            } />
           ))}
         </div>
       )}

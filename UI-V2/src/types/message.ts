@@ -6,6 +6,9 @@ export interface Attachment {
   type: string
   size: number
   path?: string
+  mimeType?: string
+  previewKey?: string
+  previewOriginPath?: string
 }
 
 export interface MessageToolCall {
@@ -51,6 +54,7 @@ export interface Message {
   blocks?: MessageBlock[]
   isStreaming?: boolean
   streamMessageIndex?: number
+  nativeMessageIndex?: number
   attachments?: Attachment[]
   processingTimeMs?: number
 	interrupted?: boolean
