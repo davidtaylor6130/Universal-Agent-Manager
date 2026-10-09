@@ -145,6 +145,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
   const [guidedTransport, setGuidedTransport] = useState<McpServerConfiguration['transport']>('stdio')
   const [importPath, setImportPath] = useState('')
   const [importSources, setImportSources] = useState<string[]>([])
+  const [importWarnings, setImportWarnings] = useState<string[]>([])
   const importGeneration = useRef(0)
   useEffect(() => () => { importGeneration.current++ }, [])
   const dirty = view === 'json' ? jsonText !== toJsonText(savedServers, savedUam) : toJsonText(servers, uamEnabled) !== toJsonText(savedServers, savedUam)
@@ -161,14 +162,15 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
   }
   const readOpenCode = async () => {
     const generation = ++importGeneration.current
-    setBusy(true); onBusyChange(true); setMessage(''); setImportText(''); setImportSources([])
+    setBusy(true); onBusyChange(true); setMessage(''); setImportText(''); setImportSources([]); setImportWarnings([])
     try {
       const response = await sendToCEF<{ servers: McpServerConfiguration[]; warnings: string[]; sources: string[] }>({ action: 'previewOpenCodeMcpImport', payload: { executionHostId: 'local', ...(importPath.trim() ? { sourcePath: importPath.trim() } : {}) } })
       if (generation !== importGeneration.current) return
       if (!response.ok || !response.data) { setMessage(response.error || 'Could not read OpenCode configuration.'); return }
       setImportSources(response.data.sources)
+      setImportWarnings(response.data.warnings)
       setImportText(response.data.servers.length ? toJsonText(response.data.servers, uamEnabled) : '')
-      setMessage([response.data.servers.length ? `Loaded ${response.data.servers.length} servers. Review the configuration below before importing.` : 'No external MCP servers found in the configuration.', ...response.data.warnings].join(' '))
+      setMessage(response.data.servers.length ? `Loaded ${response.data.servers.length} servers. Review the configuration below before importing.` : 'No external MCP servers found in the configuration.')
     } catch { if (generation === importGeneration.current) setMessage('Could not read OpenCode configuration. Try again.') }
     finally { if (generation === importGeneration.current) { setBusy(false); onBusyChange(false) } }
   }
@@ -210,9 +212,11 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
     <div className="flex-1 min-w-0"><strong>{name}</strong> <span className="text-xs" style={{ color: 'var(--text-3)' }}>Built in · cannot be deleted</span><p className="text-xs" style={{ color: 'var(--text-3)' }}>{detail}</p></div>{control}
   </div>
 
+  const warningNotice = importWarnings.length > 0 ? <p role="status" aria-label="Import warnings" className="text-sm">{importWarnings.join(' ')}</p> : null
+
   return <div className="space-y-4" style={{ color: 'var(--text)' }}>
     {setup && <section aria-label="MCP setup" className="grid gap-3 border-b pb-4" style={{ borderColor: 'var(--border)' }}>
-      <div className="flex items-center justify-between"><strong>{setup === 'choose' ? 'How would you like to set up this server?' : setup === 'import' ? 'Import MCP configuration' : 'Step 1 of 2: name and connection'}</strong><Button size="sm" disabled={busy} onClick={() => { setSetup(null); setMessage('') }}>Cancel setup</Button></div>
+      <div className="flex items-center justify-between"><strong>{setup === 'choose' ? 'How would you like to set up this server?' : setup === 'import' ? 'Import MCP configuration' : 'Step 1 of 2: name and connection'}</strong><Button size="sm" disabled={busy} onClick={() => { setSetup(null); setMessage(''); setImportWarnings([]) }}>Cancel setup</Button></div>
       {setup === 'choose' && <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={() => { setSetup('import'); setImportText(''); setImportSources([]); setMessage('') }}>Import configuration</Button>
         <Button size="sm" onClick={() => { setSetup('guided'); setGuidedName(''); setGuidedTransport('stdio') }}>Step by step</Button>
@@ -222,10 +226,11 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
       {setup === 'import' && <>
         <p className="text-sm">Read OpenCode's global configuration, or paste its MCP section. Existing servers stay unchanged.</p>
         {text('OpenCode configuration file or directory (optional)', importPath, setImportPath, 'Empty: read global OpenCode configuration')}
-        <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read OpenCode configuration</Button>
+        <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read this computer's OpenCode configuration</Button>
         <textarea aria-label="Import MCP configuration" className="uam-field w-full font-mono text-xs" rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
         {importSources.length > 0 && <div className="text-xs break-all">{importSources.map(source => <div key={source}>{source}</div>)}</div>}
         {message && <p role="status" className="text-sm">{message}</p>}
+        {warningNotice}
         <Button size="sm" className="self-start" disabled={busy || !importText.trim()} onClick={() => { try { setServers(mergeMcpImport(importText, servers)); setSetup(null); setMessage('Imported into the draft. Review the servers, then Save.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not import configuration.') } }}>Review import</Button>
       </>}
       {setup === 'guided' && <>
@@ -316,10 +321,11 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
     </div>}
 
     <div className="flex items-center gap-2">
-      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={!dirty || setup !== null} onClick={() => void save()}>Save</Button>
+      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={!dirty || setup !== null} title={setup !== null ? 'Finish or cancel setup before saving.' : undefined} onClick={() => void save()}>Save</Button>
       {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)); setMessage('') }}>Undo changes</Button>}
-      <span className="text-xs" style={{ color: 'var(--text-3)' }}>Running chats keep their old setup until restarted.</span>
+      <span className="text-xs" style={{ color: 'var(--text-3)' }}>{setup !== null ? 'Finish or cancel setup before saving.' : 'Running chats keep their old setup until restarted.'}</span>
     </div>
     {message && setup !== 'import' && <p role="status" className="text-sm">{message}</p>}
+    {setup !== 'import' && warningNotice}
   </div>
 }

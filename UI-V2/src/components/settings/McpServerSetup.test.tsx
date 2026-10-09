@@ -225,7 +225,7 @@ it('shows native source paths and warnings beside import controls and accepts a 
   const section = host.querySelector('[aria-label="MCP setup"]')!
   expect(section.textContent).toContain('file or directory')
   await type(section.querySelector<HTMLInputElement>('input')!, '/config/opencode')
-  await click('Read OpenCode configuration')
+  await click("Read this computer's OpenCode configuration")
   expect(sendToCEF).toHaveBeenCalledWith({ action: 'previewOpenCodeMcpImport', payload: { executionHostId: 'local', sourcePath: '/config/opencode' } })
   expect(section.textContent).toContain('/config/opencode/opencode.jsonc')
   expect(section.textContent).toContain('OAuth settings need manual configuration')
@@ -235,9 +235,9 @@ it('shows native source paths and warnings beside import controls and accepts a 
 
 it('clears a previous native preview on read failure and blocks stale review', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, name: 'docs' }], sources: ['/config/opencode.jsonc'], warnings: [] } }).mockResolvedValueOnce({ ok: false, error: 'No configuration exists in the selected directory.' })
-  await click('+ Add server'); await click('Import configuration'); await click('Read OpenCode configuration')
+  await click('+ Add server'); await click('Import configuration'); await click("Read this computer's OpenCode configuration")
   expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!.value).toContain('docs')
-  await click('Read OpenCode configuration')
+  await click("Read this computer's OpenCode configuration")
   const section = host.querySelector('[aria-label="MCP setup"]')!
   expect(section.querySelector('[role="status"]')?.textContent).toContain('No configuration exists')
   expect(section.textContent).not.toContain('/config/opencode.jsonc')
@@ -248,7 +248,7 @@ it('clears a previous native preview on read failure and blocks stale review', a
 
 it('distinguishes zero external servers and keeps warnings and source visible without a UAM-only preview', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['legacy: executable unavailable'], requiresReview: true } })
-  await click('+ Add server'); await click('Import configuration'); await click('Read OpenCode configuration')
+  await click('+ Add server'); await click('Import configuration'); await click("Read this computer's OpenCode configuration")
   const section = host.querySelector('[aria-label="MCP setup"]')!
   expect(section.querySelector('[role="status"]')?.textContent).toContain('No external MCP servers found')
   expect(section.textContent).toContain('executable unavailable')
@@ -308,4 +308,45 @@ it.each(['local', 'remote'])('rejects external %s definitions using the builtin 
   } })
   expect(() => fromJsonText(text, [server])).toThrow('reserved for the built-in UAM service')
   expect(() => mergeMcpImport(text, [server])).toThrow('reserved for the built-in UAM service')
+})
+
+it('keeps skipped-server warnings through editing, review and save', async () => {
+  const warning = 'legacy: OAuth settings need manual configuration'
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, id: 'docs', name: 'docs' }], sources: ['/config/opencode.jsonc'], warnings: [warning] } })
+  await click('+ Add server'); await click('Import configuration')
+  await click("Read this computer's OpenCode configuration")
+  const area = host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!
+  await type(area, `${area.value}\n`)
+  expect(host.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
+  await click('Review import')
+  expect(host.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
+  await click('Save')
+  expect(saveServers.mock.calls[0][0]).toHaveLength(2)
+  expect(host.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
+})
+
+it('clears earlier read warnings only on a new read or Cancel setup', async () => {
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['first: manual setup required'] } })
+    .mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['second: executable unavailable'] } })
+  await click('+ Add server'); await click('Import configuration')
+  await click("Read this computer's OpenCode configuration")
+  expect(host.textContent).toContain('first: manual setup required')
+  await click("Read this computer's OpenCode configuration")
+  expect(host.textContent).not.toContain('first: manual setup required')
+  expect(host.textContent).toContain('second: executable unavailable')
+  await click('Cancel setup')
+  expect(host.querySelector('[aria-label="Import warnings"]')).toBeNull()
+})
+
+it('explains why Save is disabled while server setup is incomplete', async () => {
+  await click('+ Add server'); await click('Import configuration')
+  expect(button('Save').disabled).toBe(true)
+  expect(button('Save').title).toBe('Finish or cancel setup before saving.')
+  expect(host.textContent).toContain('Finish or cancel setup before saving.')
+})
+
+
+it('identifies the OpenCode read action as local to this computer', async () => {
+  await click('+ Add server'); await click('Import configuration')
+  expect(button("Read this computer's OpenCode configuration")).toBeDefined()
 })
