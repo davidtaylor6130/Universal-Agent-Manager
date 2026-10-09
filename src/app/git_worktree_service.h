@@ -43,6 +43,31 @@ namespace uam
 		std::string message;
 	};
 
+	struct GitTurnRollbackSnapshot
+	{
+		std::string chat_id;
+		std::string native_identity_key;
+		std::string provider_id;
+		std::string execution_host_id;
+		std::string workspace_directory;
+		std::string workspace_isolation_kind;
+		std::string workspace_source_directory;
+		std::string workspace_base_ref;
+		std::string workspace_branch_name;
+		std::string workspace_worktree_directory;
+		std::string updated_at;
+		std::string persisted_messages_digest;
+		std::size_t message_count = 0;
+		int message_index = -1;
+		std::string checkpoint_sha;
+		std::string checkpoint_parent_sha;
+	};
+
+	GitTurnRollbackSnapshot CaptureGitTurnRollbackSnapshot(const ChatSession& chat, int message_index);
+	bool MatchesGitTurnRollbackSnapshot(const ChatSession& chat, const GitTurnRollbackSnapshot& snapshot);
+	bool ApplyGitTurnRollbackSnapshot(ChatSession& live_chat, const GitTurnRollbackSnapshot& before,
+	                                  const ChatSession& persisted_after, const std::string& checkpoint_sha);
+
 	class GitWorktreeService
 	{
 	  public:

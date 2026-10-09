@@ -2,6 +2,7 @@
 
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/native_chat_identity.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -20,6 +21,91 @@
 
 namespace uam
 {
+	GitTurnRollbackSnapshot CaptureGitTurnRollbackSnapshot(const ChatSession& chat, int message_index)
+	{
+		GitTurnRollbackSnapshot snapshot;
+		snapshot.chat_id = chat.id;
+		snapshot.native_identity_key = uam::chat_identity::NativeIdentityKeyForHistoryImport(chat);
+		snapshot.provider_id = chat.provider_id;
+		snapshot.execution_host_id = chat.execution_host_id;
+		snapshot.workspace_directory = chat.workspace_directory;
+		snapshot.workspace_isolation_kind = chat.workspace_isolation_kind;
+		snapshot.workspace_source_directory = chat.workspace_source_directory;
+		snapshot.workspace_base_ref = chat.workspace_base_ref;
+		snapshot.workspace_branch_name = chat.workspace_branch_name;
+		snapshot.workspace_worktree_directory = chat.workspace_worktree_directory;
+		snapshot.updated_at = chat.updated_at;
+		snapshot.message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+		snapshot.persisted_messages_digest = snapshot.updated_at + ":" + std::to_string(snapshot.message_count);
+		snapshot.message_index = message_index;
+		if (chat.messages_loaded && message_index >= 0 && message_index < static_cast<int>(chat.messages.size()))
+		{
+			snapshot.checkpoint_sha = chat.messages[message_index].checkpoint_sha;
+			snapshot.checkpoint_parent_sha = chat.messages[message_index].checkpoint_parent_sha;
+		}
+		return snapshot;
+	}
+
+	bool MatchesGitTurnRollbackSnapshot(const ChatSession& chat, const GitTurnRollbackSnapshot& snapshot)
+	{
+		const std::size_t message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+		return chat.id == snapshot.chat_id &&
+		    uam::chat_identity::NativeIdentityKeyForHistoryImport(chat) == snapshot.native_identity_key &&
+		    chat.provider_id == snapshot.provider_id &&
+		    chat.execution_host_id == snapshot.execution_host_id &&
+		    chat.workspace_directory == snapshot.workspace_directory &&
+		    chat.workspace_isolation_kind == snapshot.workspace_isolation_kind &&
+		    chat.workspace_source_directory == snapshot.workspace_source_directory &&
+		    chat.workspace_base_ref == snapshot.workspace_base_ref &&
+		    chat.workspace_branch_name == snapshot.workspace_branch_name &&
+		    chat.workspace_worktree_directory == snapshot.workspace_worktree_directory &&
+		    chat.updated_at == snapshot.updated_at && message_count == snapshot.message_count &&
+		    chat.updated_at + ":" + std::to_string(message_count) == snapshot.persisted_messages_digest &&
+		    (snapshot.checkpoint_sha.empty() ||
+		     (!chat.messages_loaded || (snapshot.message_index >= 0 &&
+		      snapshot.message_index < static_cast<int>(chat.messages.size()) &&
+		      chat.messages[snapshot.message_index].checkpoint_sha == snapshot.checkpoint_sha &&
+		      chat.messages[snapshot.message_index].checkpoint_parent_sha == snapshot.checkpoint_parent_sha)));
+	}
+
+	bool ApplyGitTurnRollbackSnapshot(ChatSession& live_chat, const GitTurnRollbackSnapshot& before,
+	                                  const ChatSession& persisted_after, const std::string& checkpoint_sha)
+	{
+		if (checkpoint_sha.empty() || !MatchesGitTurnRollbackSnapshot(live_chat, before) ||
+		    persisted_after.messages_loaded || persisted_after.id != before.chat_id ||
+		    uam::chat_identity::NativeIdentityKeyForHistoryImport(persisted_after) != before.native_identity_key ||
+		    persisted_after.provider_id != before.provider_id ||
+		    persisted_after.execution_host_id != before.execution_host_id ||
+		    persisted_after.workspace_directory != before.workspace_directory ||
+		    persisted_after.workspace_isolation_kind != before.workspace_isolation_kind ||
+		    persisted_after.workspace_source_directory != before.workspace_source_directory ||
+		    persisted_after.workspace_base_ref != before.workspace_base_ref ||
+		    persisted_after.workspace_branch_name != before.workspace_branch_name ||
+		    persisted_after.workspace_worktree_directory != before.workspace_worktree_directory ||
+		    persisted_after.persisted_message_count != before.message_count ||
+		    persisted_after.persisted_messages_digest != persisted_after.updated_at + ":" +
+		        std::to_string(persisted_after.persisted_message_count))
+			return false;
+
+		if (live_chat.messages_loaded)
+		{
+			if (before.message_index < 0 || before.message_index >= static_cast<int>(live_chat.messages.size()) ||
+			    live_chat.messages[before.message_index].checkpoint_sha != checkpoint_sha)
+				return false;
+			live_chat.messages[before.message_index].checkpoint_sha.clear();
+			live_chat.messages[before.message_index].checkpoint_parent_sha.clear();
+		}
+		else if (!live_chat.messages.empty())
+		{
+			return false;
+		}
+
+		live_chat.updated_at = persisted_after.updated_at;
+		live_chat.persisted_message_count = persisted_after.persisted_message_count;
+		live_chat.persisted_messages_digest = persisted_after.persisted_messages_digest;
+		return true;
+	}
+
 	namespace
 	{
 		constexpr int kDefaultGitCommandTimeoutMs = 120000;

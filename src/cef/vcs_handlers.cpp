@@ -426,37 +426,47 @@ void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, cons
 	}
 	const std::string chat_id = chat->id;
 	const int index = *message_index;
-	if (index >= static_cast<int>(chat->messages.size()) || chat->messages[index].checkpoint_sha.empty())
+	const uam::GitTurnRollbackSnapshot rollback_snapshot =
+	    uam::CaptureGitTurnRollbackSnapshot(*chat, index);
+	if (chat->messages_loaded && rollback_snapshot.checkpoint_sha.empty())
 	{
 		cb->Failure(409, "This turn has no rollback checkpoint.");
 		return;
 	}
-	const std::string expected_checkpoint_sha = chat->messages[index].checkpoint_sha;
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
-	auto result_state = std::make_shared<uam::GitTurnCheckpointResult>();
+	const std::shared_ptr<uam::GitTurnCheckpointResult> result_state = std::make_shared<uam::GitTurnCheckpointResult>();
+	const std::shared_ptr<uam::GitTurnRollbackSnapshot> loaded_checkpoint_snapshot =
+	    std::make_shared<uam::GitTurnRollbackSnapshot>(rollback_snapshot);
+	const std::shared_ptr<std::optional<ChatSession>> persisted_after = std::make_shared<std::optional<ChatSession>>();
 	m_app.worktree_operation_chat_ids.insert(chat_id);
 	uam::AppState* live_app = &m_app;
 	RunAsyncCefQuery(m_asyncLifetime, cb,
-		[snapshot_inputs = std::move(snapshot_inputs), chat_id, index, result_state]() mutable {
+		[snapshot_inputs = std::move(snapshot_inputs), chat_id, index, rollback_snapshot, loaded_checkpoint_snapshot, result_state, persisted_after]() mutable {
 			uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 			std::string warning;
 			std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, true, &warning);
 			if (!loaded) return AsyncFailure(500, FailureDetailOrFallback(warning, "Failed to load the checkpointed turn."));
+			if (!uam::MatchesGitTurnRollbackSnapshot(*loaded, rollback_snapshot))
+				return AsyncFailure(409, "Chat history or workspace changed before rollback. Refresh and try again.");
+			*loaded_checkpoint_snapshot = uam::CaptureGitTurnRollbackSnapshot(*loaded, index);
 			*result_state = uam::GitWorktreeService().RollbackTurn(snapshot, *loaded, index);
-			return result_state->ok ? AsyncSuccess(SerializeTurnCheckpointResult(*result_state)) : AsyncFailure(409, result_state->message);
+			if (!result_state->ok) return AsyncFailure(409, result_state->message);
+			*persisted_after = ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, false, &warning);
+			if (!persisted_after->has_value())
+				return AsyncFailure(500, FailureDetailOrFallback(warning, "Rollback completed, but saved chat metadata could not be reloaded."));
+			return AsyncSuccess(SerializeTurnCheckpointResult(*result_state));
 		},
-		[live_app, browser, chat_id, index, expected_checkpoint_sha](AsyncCefResult& result) {
+		[live_app, browser, chat_id, loaded_checkpoint_snapshot, result_state, persisted_after](AsyncCefResult& result) {
 			live_app->worktree_operation_chat_ids.erase(chat_id);
 			if (!result.ok) return;
 			ChatSession* live_chat = ChatDomainService().FindChatById(*live_app, chat_id);
-			if (live_chat == nullptr || index < 0 || index >= static_cast<int>(live_chat->messages.size()) ||
-			    live_chat->messages[index].checkpoint_sha != expected_checkpoint_sha)
+			if (live_chat == nullptr || !persisted_after->has_value() ||
+			    !uam::ApplyGitTurnRollbackSnapshot(*live_chat, *loaded_checkpoint_snapshot,
+			                                      **persisted_after, result_state->checkpoint_sha))
 			{
-				result = AsyncFailure(404, "Chat changed while its rollback was running.");
+				result = AsyncFailure(409, "Chat changed while its rollback was running. Refresh its history.");
 				return;
 			}
-			live_chat->messages[index].checkpoint_sha.clear();
-			live_chat->messages[index].checkpoint_parent_sha.clear();
 			uam::PushStateUpdateIfChanged(browser, *live_app);
 		});
 }
