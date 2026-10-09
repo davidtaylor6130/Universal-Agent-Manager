@@ -4352,6 +4352,178 @@ UAM_TEST(IoUtilsCommitsFirstWriteAndCleansReplacementTemps)
 		UAM_ASSERT_EQ(entry.path(), file);
 }
 
+#if defined(_WIN32)
+/// <summary>Remove only this test's fresh temporary tree through an extended path, including on assertion failure.</summary>
+class ScopedNativeTempCleanup
+{
+public:
+	explicit ScopedNativeTempCleanup(const TempDir& temp)
+	{
+		const std::wstring absolute = fs::absolute(temp.root).lexically_normal().native();
+		if (absolute.starts_with(L"\\\\?\\") || absolute.starts_with(L"\\\\.\\"))
+			m_root = fs::path(absolute);
+		else if (absolute.starts_with(L"\\\\"))
+			m_root = fs::path(L"\\\\?\\UNC\\" + absolute.substr(2));
+		else
+			m_root = fs::path(L"\\\\?\\" + absolute);
+	}
+
+	~ScopedNativeTempCleanup()
+	{
+		std::error_code error;
+		fs::remove_all(m_root, error);
+	}
+
+private:
+	fs::path m_root;
+};
+
+UAM_TEST(IoUtilsWindowsNativePathsPreserveShortExtendedAndUncSemantics)
+{
+	fs::path native;
+	std::string error;
+	const fs::path short_relative(L"sub/../note.txt");
+	UAM_ASSERT(uam::io::NativeFilePath(short_relative, native, error));
+	UAM_ASSERT_EQ(native, short_relative);
+	for (const fs::path& prefixed : {fs::path(LR"(\\?\C:\already-native.txt)"), fs::path(LR"(\\.\pipe\already-native)")})
+	{
+		UAM_ASSERT(uam::io::NativeFilePath(prefixed, native, error));
+		UAM_ASSERT_EQ(native, prefixed);
+	}
+	const std::wstring long_components = std::wstring(140, L'u') + L"\\" + std::wstring(140, L'v');
+	const fs::path unc(LR"(\\server\share\folder\..\)" + long_components);
+	UAM_ASSERT(uam::io::NativeFilePath(unc, native, error));
+	UAM_ASSERT_EQ(native.native(), LR"(\\?\UNC\server\share\)" + long_components);
+	const fs::path long_relative(L"folder/../" + long_components);
+	UAM_ASSERT(uam::io::NativeFilePath(long_relative, native, error));
+	UAM_ASSERT(native.native().starts_with(LR"(\\?\)"));
+	UAM_ASSERT_EQ(native.native().substr(4), fs::absolute(long_relative).lexically_normal().native());
+	UAM_ASSERT(!uam::io::NativeFilePath(fs::path{}, native, error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(!uam::io::NativeFilePath(fs::path(std::wstring(L"bad\0path", 8)), native, error));
+}
+
+UAM_TEST(IoUtilsWindowsLongPathsCommitFirstWriteBackupAndPreparedTemps)
+{
+	TempDir temp("uam-io-long-path");
+	const ScopedNativeTempCleanup cleanup(temp);
+	for (const std::size_t destination_chars : {250U, 258U, 310U})
+	{
+		fs::path parent = temp.root / std::to_string(destination_chars);
+		if (parent.native().size() < 120)
+		{
+			parent /= std::wstring(120 - parent.native().size() - 1, L'd');
+		}
+		UAM_ASSERT(fs::create_directories(parent));
+		UAM_ASSERT(parent.native().size() + 1 < destination_chars);
+		const std::size_t leaf_chars = destination_chars - parent.native().size() - 1;
+		UAM_ASSERT(leaf_chars >= 4 && leaf_chars < 220);
+		const fs::path file = parent / (std::wstring(leaf_chars - 4, L'l') + L".txt");
+		UAM_ASSERT_EQ(file.native().size(), destination_chars);
+		const fs::path backup = uam::io::MakeBackupPath(file);
+		const fs::path prepared = uam::io::MakeTempWritePath(file);
+		UAM_ASSERT(prepared.native().size() >= MAX_PATH);
+		const uam::io::AtomicWriteResult first = uam::io::AtomicWriteFileDetailed(file, "first", {}, true);
+		UAM_ASSERT(first.success && first.primary_committed && !first.backup_degraded);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(file), std::string("first"));
+		const uam::io::AtomicWriteResult second = uam::io::AtomicWriteFileDetailed(file, "second", {}, true);
+		UAM_ASSERT(second.success && second.primary_committed && !second.backup_degraded);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(file), std::string("second"));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(backup), std::string("first"));
+		std::string read;
+		UAM_ASSERT(uam::io::TryReadTextFile(backup, read, 5));
+		UAM_ASSERT_EQ(read, std::string("first"));
+		UAM_ASSERT(!uam::io::TryReadTextFile(backup, read, 4));
+		UAM_ASSERT(read.empty());
+		std::vector<std::string> lines;
+		UAM_ASSERT(uam::io::ForEachTextFileLine(backup, [&lines](const std::string& line) { lines.push_back(line); return true; }));
+		UAM_ASSERT_EQ(lines, std::vector<std::string>({"first"}));
+		std::string bytes;
+		UAM_ASSERT(uam::io::ForEachBinaryFileByte(backup, [&bytes](char byte) { bytes.push_back(byte); return true; }));
+		UAM_ASSERT_EQ(bytes, std::string("first"));
+		UAM_ASSERT_EQ(uam::io::ReadFirstTextFileLine(backup), std::optional<std::string>("first"));
+		// ChatRepository and ChatFolderStore publish already synced temps through this same lower-level contract.
+		uam::io::AtomicWriteResult prepared_result;
+		UAM_ASSERT(uam::io::WriteAndSyncAtomicTemp(prepared, "prepared", {}, prepared_result));
+		const uam::io::AtomicWriteResult committed = uam::io::CommitSyncedAtomicTemp(file, prepared, true);
+		UAM_ASSERT(committed.success && committed.primary_committed && !committed.backup_degraded);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(file), std::string("prepared"));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(backup), std::string("second"));
+
+		const fs::path abandoned = uam::io::MakeTempWritePath(file);
+		uam::io::AtomicWriteResult abandoned_result;
+		UAM_ASSERT(uam::io::WriteAndSyncAtomicTemp(abandoned, "abandoned", {}, abandoned_result));
+		fs::path native_abandoned;
+		std::string native_error;
+		UAM_ASSERT(uam::io::NativeFilePath(abandoned, native_abandoned, native_error));
+		fs::last_write_time(native_abandoned, fs::file_time_type::clock::now() - std::chrono::hours(25));
+		uam::io::CleanupAbandonedAtomicTemps(file);
+		UAM_ASSERT(!fs::exists(native_abandoned));
+		UAM_ASSERT_EQ(std::distance(fs::directory_iterator(parent), fs::directory_iterator{}), 2);
+	}
+	// A short leaf under a long parent exercises directory creation independently of long filename expansion.
+	const fs::path long_parent = temp.root / std::wstring(140, L'p') / std::wstring(140, L'q');
+	UAM_ASSERT(long_parent.native().size() >= MAX_PATH);
+	const fs::path child = long_parent / "state.txt";
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(child, "first"));
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(child, "second"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(child), std::string("second"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(child)), std::string("first"));
+	const fs::path long_prepared = uam::io::MakeTempWritePath(child);
+	uam::io::AtomicWriteResult long_result;
+	UAM_ASSERT(uam::io::WriteAndSyncAtomicTemp(long_prepared, "prepared", {}, long_result));
+	UAM_ASSERT(uam::io::CommitSyncedAtomicTemp(child, long_prepared, true).success);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(child), std::string("prepared"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(child)), std::string("second"));
+	UAM_ASSERT(uam::io::WriteAndSyncAtomicTemp(long_prepared, "unpublished", {}, long_result));
+	uam::io::RemoveAtomicTempNoThrow(long_prepared);
+	fs::path native_parent;
+	fs::path native_temp;
+	std::string normalization_error;
+	UAM_ASSERT(uam::io::NativeFilePath(long_parent, native_parent, normalization_error));
+	UAM_ASSERT(uam::io::NativeFilePath(long_prepared, native_temp, normalization_error));
+	UAM_ASSERT(!fs::exists(native_temp));
+	UAM_ASSERT_EQ(std::distance(fs::directory_iterator(native_parent), fs::directory_iterator{}), 2);
+}
+
+UAM_TEST(IoUtilsWindowsLongPathFailureRetainsPrimaryAndCleansUncommittedTemp)
+{
+	TempDir temp("uam-io-long-path-failure");
+	const ScopedNativeTempCleanup cleanup(temp);
+	UAM_ASSERT(temp.root.native().size() + 1 < 250);
+	const fs::path file = temp.root / (std::wstring(250 - temp.root.native().size() - 5, L'f') + L".txt");
+	UAM_ASSERT_EQ(file.native().size(), 250U);
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(file, "old"));
+	{
+		// Deny deletion of the old generation so the real ReplaceFileW operation must fail before committing.
+		const HANDLE raw = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		UAM_ASSERT(raw != INVALID_HANDLE_VALUE);
+		const std::unique_ptr<void, decltype(&CloseHandle)> held(raw, &CloseHandle);
+		const uam::io::AtomicWriteResult refused = uam::io::AtomicWriteFileDetailed(file, "new", {}, true);
+		UAM_ASSERT(!refused.success && !refused.primary_committed && !refused.interrupted);
+		UAM_ASSERT_EQ(refused.stage, uam::io::AtomicWriteStage::BeforeReplace);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(file), std::string("old"));
+		UAM_ASSERT_EQ(std::distance(fs::directory_iterator(temp.root), fs::directory_iterator{}), 1);
+	}
+	const fs::path prepared = uam::io::MakeTempWritePath(file);
+	UAM_ASSERT(prepared.native().size() >= MAX_PATH);
+	uam::io::AtomicWriteResult interrupted;
+	UAM_ASSERT(!uam::io::WriteAndSyncAtomicTemp(prepared, "not-published",
+	    [](uam::io::AtomicWriteStage stage) { return stage != uam::io::AtomicWriteStage::AfterFileSync; }, interrupted));
+	UAM_ASSERT(interrupted.interrupted && !interrupted.primary_committed);
+	fs::path native_prepared;
+	std::string native_error;
+	UAM_ASSERT(uam::io::NativeFilePath(prepared, native_prepared, native_error));
+	UAM_ASSERT(fs::exists(native_prepared));
+	uam::io::RemoveAtomicTempNoThrow(prepared);
+	UAM_ASSERT(!fs::exists(native_prepared));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(file), std::string("old"));
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(file, "final"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(file)), std::string("old"));
+}
+#endif
+
 UAM_TEST(IoUtilsDurableReplacementKeepsACompleteGenerationAtEveryFaultStage)
 {
 	TempDir temp("uam-durable-atomic-write");

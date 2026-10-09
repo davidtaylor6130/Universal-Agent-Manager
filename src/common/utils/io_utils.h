@@ -40,11 +40,81 @@ namespace uam::io
 	inline constexpr const char* kTempWritePathSuffix = ".tmp.";
 	inline constexpr const char* kBackupPathSuffix = ".bak";
 
+#if defined(_WIN32)
+	inline std::string AtomicWriteSystemError(unsigned long code)
+	{
+		return std::error_code(static_cast<int>(code), std::system_category()).message();
+	}
+
+	/// <summary>Resolve long Win32 paths before adding an extended prefix; retain short and already native path semantics.</summary>
+	inline bool NativeFilePath(const std::filesystem::path& path, std::filesystem::path& native_path, std::string& error)
+	{
+		const std::wstring& input = path.native();
+		if (input.empty() || input.find(L'\0') != std::wstring::npos)
+		{
+			error = "Invalid file path.";
+			return false;
+		}
+		if (input.starts_with(L"\\\\?\\") || input.starts_with(L"\\\\.\\"))
+		{
+			native_path = path;
+			return true;
+		}
+		const DWORD required = GetFullPathNameW(input.c_str(), 0, nullptr, nullptr);
+		if (required == 0)
+		{
+			error = "Failed to resolve file path: " + AtomicWriteSystemError(GetLastError());
+			return false;
+		}
+		std::wstring absolute(required, L'\0');
+		const DWORD length = GetFullPathNameW(input.c_str(), required, absolute.data(), nullptr);
+		if (length == 0 || length >= required)
+		{
+			const DWORD code = length == 0 ? GetLastError() : ERROR_INSUFFICIENT_BUFFER;
+			error = "Failed to resolve file path: " + AtomicWriteSystemError(code);
+			return false;
+		}
+		absolute.resize(length);
+		if (length < MAX_PATH)
+		{
+			native_path = path;
+			return true;
+		}
+		// GetFullPathNameW resolves relative components and separators before extended paths disable Win32 normalization.
+		if (absolute.starts_with(L"\\\\"))
+		{
+			native_path = std::filesystem::path(L"\\\\?\\UNC\\" + absolute.substr(2));
+		}
+		else
+		{
+			native_path = std::filesystem::path(L"\\\\?\\" + absolute);
+		}
+		return true;
+	}
+
+#else
+	inline bool NativeFilePath(const std::filesystem::path& path, std::filesystem::path& native_path, std::string&)
+	{
+		native_path = path;
+		return true;
+	}
+#endif
+
+	/// <summary>Open all file readers through the same platform path conversion.</summary>
+	inline bool OpenReadFile(const std::filesystem::path& path, std::ifstream& file)
+	{
+		std::filesystem::path native_path;
+		std::string error;
+		if (!NativeFilePath(path, native_path, error)) return false;
+		file.open(native_path, std::ios::in | std::ios::binary);
+		return static_cast<bool>(file);
+	}
+
 	inline bool TryReadFile(const std::filesystem::path& path, std::string& out)
 	{
 		out.clear();
-		std::ifstream file(path, std::ios::in | std::ios::binary);
-		if (!file)
+		std::ifstream file;
+		if (!OpenReadFile(path, file))
 		{
 			return false;
 		}
@@ -69,8 +139,8 @@ namespace uam::io
 	    const std::filesystem::path& path, std::string& out, std::size_t max_bytes)
 	{
 		out.clear();
-		std::ifstream file(path, std::ios::in | std::ios::binary);
-		if (!file) return false;
+		std::ifstream file;
+		if (!OpenReadFile(path, file)) return false;
 
 		std::array<char, 8192> buffer{};
 		while (file)
@@ -101,8 +171,8 @@ namespace uam::io
 
 	template <typename LineVisitor> inline bool ForEachTextFileLine(const std::filesystem::path& path, LineVisitor visitor)
 	{
-		std::ifstream file(path, std::ios::in | std::ios::binary);
-		if (!file)
+		std::ifstream file;
+		if (!OpenReadFile(path, file))
 		{
 			return false;
 		}
@@ -132,8 +202,8 @@ namespace uam::io
 
 	template <typename ByteVisitor> inline bool ForEachBinaryFileByte(const std::filesystem::path& path, ByteVisitor visitor)
 	{
-		std::ifstream file(path, std::ios::in | std::ios::binary);
-		if (!file)
+		std::ifstream file;
+		if (!OpenReadFile(path, file))
 		{
 			return false;
 		}
@@ -211,50 +281,55 @@ namespace uam::io
 
 	inline void RemoveAtomicTempNoThrow(const std::filesystem::path& path)
 	{
+		std::filesystem::path native_path;
+		std::string normalization_error;
+		if (!NativeFilePath(path, native_path, normalization_error)) return;
 		std::error_code error;
-		const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
+		const std::filesystem::file_status status = std::filesystem::symlink_status(native_path, error);
 		if (!error && status.type() != std::filesystem::file_type::not_found && !std::filesystem::is_symlink(status))
 		{
-			std::filesystem::remove(path, error);
+			std::filesystem::remove(native_path, error);
 		}
 	}
 
 	inline void CleanupAbandonedAtomicTemps(const std::filesystem::path& path)
 	{
-		if (!uam::paths::PathExistsNoThrow(path) || path.parent_path().empty())
+		std::filesystem::path native_path;
+		std::filesystem::path native_parent;
+		std::string normalization_error;
+		if (path.parent_path().empty() || !NativeFilePath(path, native_path, normalization_error) ||
+		    !NativeFilePath(path.parent_path(), native_parent, normalization_error) || !uam::paths::PathExistsNoThrow(native_path))
 		{
 			return;
 		}
 
 		const std::string prefix = uam::paths::Utf8PathString(path.filename()) + kTempWritePathSuffix;
 		std::error_code error;
-		for (std::filesystem::directory_iterator it(path.parent_path(), std::filesystem::directory_options::skip_permission_denied, error), end;
+		for (std::filesystem::directory_iterator it(native_parent, std::filesystem::directory_options::skip_permission_denied, error), end;
 		     !error && it != end;
 		     it.increment(error))
 		{
 			const std::filesystem::directory_entry& entry = *it;
 			const std::string name = uam::paths::Utf8PathString(entry.path().filename());
+			std::filesystem::path native_entry;
+			if (!NativeFilePath(entry.path(), native_entry, normalization_error)) continue;
 			std::error_code status_error;
-			const std::filesystem::file_status status = entry.symlink_status(status_error);
+			const std::filesystem::file_status status = std::filesystem::symlink_status(native_entry, status_error);
 			if (status_error || std::filesystem::is_symlink(status) || !std::filesystem::is_regular_file(status) || !name.starts_with(prefix))
 			{
 				continue;
 			}
 
 			std::error_code time_error;
-			const auto modified = entry.last_write_time(time_error);
+			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(native_entry, time_error);
 			if (!time_error && std::filesystem::file_time_type::clock::now() - modified >= std::chrono::hours(24))
 			{
-				std::filesystem::remove(entry.path(), status_error);
+				std::filesystem::remove(native_entry, status_error);
 			}
 		}
 	}
 
 #if defined(_WIN32)
-	inline std::string AtomicWriteSystemError(unsigned long code)
-	{
-		return std::error_code(static_cast<int>(code), std::system_category()).message();
-	}
 
 	inline bool WriteAndSyncAtomicTemp(
 	    const std::filesystem::path& temp_path,
@@ -262,7 +337,9 @@ namespace uam::io
 	    const AtomicWriteStageHook& hook,
 	    AtomicWriteResult& result)
 	{
-		HANDLE file = CreateFileW(temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		std::filesystem::path native_temp_path;
+		if (!NativeFilePath(temp_path, native_temp_path, result.error)) return false;
+		HANDLE file = CreateFileW(native_temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
 		if (file == INVALID_HANDLE_VALUE)
 		{
 			result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError());
@@ -327,9 +404,15 @@ namespace uam::io
 	    bool preserve_backup,
 	    AtomicWriteResult& result)
 	{
+		std::filesystem::path native_path;
+		std::filesystem::path native_temp_path;
+		std::filesystem::path native_backup_temp_path;
+		if (!NativeFilePath(path, native_path, result.error) ||
+		    !NativeFilePath(temp_path, native_temp_path, result.error) ||
+		    (preserve_backup && !NativeFilePath(backup_temp_path, native_backup_temp_path, result.error))) return false;
 		const bool replaced = destination_exists
-		    ? ReplaceFileW(path.c_str(), temp_path.c_str(), preserve_backup ? backup_temp_path.c_str() : nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)
-		    : MoveFileExW(temp_path.c_str(), path.c_str(), MOVEFILE_WRITE_THROUGH);
+		    ? ReplaceFileW(native_path.c_str(), native_temp_path.c_str(), preserve_backup ? native_backup_temp_path.c_str() : nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)
+		    : MoveFileExW(native_temp_path.c_str(), native_path.c_str(), MOVEFILE_WRITE_THROUGH);
 		if (!replaced)
 		{
 			result.error = "Failed to atomically replace destination: " + AtomicWriteSystemError(GetLastError());
@@ -446,7 +529,9 @@ namespace uam::io
 		AtomicWriteResult result;
 		const std::filesystem::path parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
 		std::error_code ec;
-		const std::filesystem::file_status status = std::filesystem::symlink_status(path, ec);
+		std::filesystem::path native_path;
+		if (!NativeFilePath(path, native_path, result.error)) return result;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(native_path, ec);
 		if (ec && ec != std::errc::no_such_file_or_directory) { result.error = "Could not inspect destination: " + ec.message(); return result; }
 		const bool destination_exists = !ec && status.type() != std::filesystem::file_type::not_found;
 		if (destination_exists && !std::filesystem::is_regular_file(status)) { result.error = "Destination must be a regular file."; return result; }
@@ -520,7 +605,16 @@ namespace uam::io
 				return result;
 			}
 #if defined(_WIN32)
-			if (!MoveFileExW(backup_temp_path.c_str(), backup_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			std::filesystem::path native_backup_temp_path;
+			std::filesystem::path native_backup_path;
+			if (!NativeFilePath(backup_temp_path, native_backup_temp_path, result.error) ||
+			    !NativeFilePath(backup_path, native_backup_path, result.error))
+			{
+				result.success = true;
+				result.backup_degraded = true;
+				return result;
+			}
+			if (!MoveFileExW(native_backup_temp_path.c_str(), native_backup_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 			{
 				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(GetLastError());
 				result.success = true;
@@ -566,12 +660,15 @@ namespace uam::io
 
 		const std::filesystem::path parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
 		std::error_code ec;
-		if (!uam::paths::CreateDirectoriesNoThrow(parent, &ec))
+		std::filesystem::path native_parent;
+		std::filesystem::path native_path;
+		if (!NativeFilePath(parent, native_parent, result.error) || !NativeFilePath(path, native_path, result.error)) return result;
+		if (!uam::paths::CreateDirectoriesNoThrow(native_parent, &ec))
 		{
 			result.error = "Failed to create destination directory: " + ec.message();
 			return result;
 		}
-		const std::filesystem::file_status destination_status = std::filesystem::symlink_status(path, ec);
+		const std::filesystem::file_status destination_status = std::filesystem::symlink_status(native_path, ec);
 		if (ec && ec != std::errc::no_such_file_or_directory)
 		{
 			result.error = "Failed to inspect destination: " + ec.message();
