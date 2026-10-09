@@ -1610,7 +1610,11 @@ namespace
 	{
 		if (chat.created_at.empty())
 		{
-			chat.created_at = uam::time::TimestampNow();
+			// Missing legacy dates must remain stable across summary and message loads.
+			chat.created_at = !chat.updated_at.empty() ? chat.updated_at
+			    : !chat.last_opened_at.empty() ? chat.last_opened_at
+			    : !chat.interaction_at.empty() ? chat.interaction_at
+			    : "1970-01-01T00:00:00.000Z";
 		}
 		if (chat.updated_at.empty())
 		{

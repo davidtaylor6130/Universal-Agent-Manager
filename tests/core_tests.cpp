@@ -14269,6 +14269,41 @@ UAM_TEST(ChatRepositoryAdoptsOnlyUnchangedHydratedMessages)
 	UAM_ASSERT(current.messages.empty());
 }
 
+UAM_TEST(ChatRepositoryHydratesMissingDatesWithoutChangingPersistedHistory)
+{
+	TempDir temp("uam-stable-missing-chat-dates");
+	for (const bool has_updated_at : {false, true})
+	{
+		ChatSession chat;
+		chat.id = has_updated_at ? "known-updated-date" : "missing-chat-dates";
+		chat.updated_at = has_updated_at ? "2026-01-02T03:04:05.000Z" : "";
+		chat.messages = {Message{MessageRole::Assistant, "persisted history"}};
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+		const std::string original = ReadFile(primary);
+		const fs::file_time_type original_time = fs::last_write_time(primary);
+		std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+		UAM_ASSERT(summary.has_value());
+		const std::size_t count = summary->persisted_message_count;
+		const std::string digest = summary->persisted_messages_digest;
+		// Cross the parser's second-resolution clock boundary without modifying the file.
+		if (!has_updated_at) std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+		std::optional<ChatSession> full = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+		UAM_ASSERT(full.has_value());
+		UAM_ASSERT_EQ(full->persisted_messages_digest, digest);
+		UAM_ASSERT(ChatRepository::AdoptHydratedMessagesIfUnchanged(*summary, std::move(*full), count, digest));
+		UAM_ASSERT_EQ(summary->messages.front().content, std::string("persisted history"));
+		if (has_updated_at)
+		{
+			UAM_ASSERT_EQ(summary->created_at, chat.updated_at);
+			UAM_ASSERT_EQ(summary->updated_at, chat.updated_at);
+		}
+		UAM_ASSERT(summary->interaction_at.empty());
+		UAM_ASSERT_EQ(ReadFile(primary), original);
+		UAM_ASSERT_EQ(fs::last_write_time(primary), original_time);
+	}
+}
+
 UAM_TEST(ChatRepositoryRefreshesSummaryDigestAfterLoadedTranscriptChanges)
 {
 	TempDir temp("uam-chat-summary-digest");
