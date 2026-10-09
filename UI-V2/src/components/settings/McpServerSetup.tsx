@@ -5,7 +5,7 @@ import { sendToCEF } from '../../ipc/cefBridge'
 import { Button } from '../ui'
 
 type Reference = McpServerConfiguration['environment'][number]
-type JsonEntry = { type: 'builtin' | 'local' | 'remote'; name?: string; enabled?: boolean; command?: string[]; environment?: Record<string, string>; url?: string; headers?: Record<string, string>; sse?: boolean; workspace?: string; host?: string }
+type JsonEntry = { type: 'builtin' | 'local' | 'remote'; name?: string; uamId?: string; enabled?: boolean; command?: string[]; environment?: Record<string, string>; url?: string; headers?: Record<string, string>; sse?: boolean; workspace?: string; host?: string }
 const BUILTIN = 'uam-mcp'
 const hasSubstitution = (value: string) => /\{(?:env|file):/.test(value)
 const absolutePath = (value: string) => /^(\/|[a-z]:[\\/]|\\\\)/i.test(value)
@@ -21,7 +21,7 @@ const refsFromJson = (value: unknown, label: string): Reference[] => {
   })
 }
 
-/** OpenCode-style document; the form edits the same data. */
+/** OpenCode-style editor document. uamId retains local server identity across name and scope edits. */
 export function toJsonText(servers: McpServerConfiguration[], uamEnabled: boolean) {
   const mcp: Record<string, JsonEntry> = Object.assign(Object.create(null), { [BUILTIN]: { type: 'builtin', enabled: uamEnabled } })
   for (const server of servers) {
@@ -29,6 +29,7 @@ export function toJsonText(servers: McpServerConfiguration[], uamEnabled: boolea
     let suffix = 2
     while (Object.prototype.hasOwnProperty.call(mcp, key)) key = `${server.name} (${suffix++})`
     mcp[key] = {
+    uamId: server.id,
     ...(key !== server.name ? { name: server.name } : {}),
     type: server.transport === 'stdio' ? 'local' : 'remote',
     ...(server.transport === 'stdio' ? { command: [server.command, ...server.args], environment: refsToJson(server.environment) } : { url: server.url, headers: refsToJson(server.headers), sse: server.transport === 'sse' || undefined }),
@@ -46,6 +47,8 @@ export function fromJsonText(text: string, previous: McpServerConfiguration[]): 
   const mcp = (parsed as { mcp?: unknown })?.mcp
   if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) throw Error('Put servers inside { "mcp": { ... } }.')
   let uamEnabled = true
+  const editorIds = new Set<string>()
+  const serverIds = new Set<string>()
   const servers = Object.entries(mcp as Record<string, JsonEntry>).flatMap(([key, entry]): McpServerConfiguration[] => {
     const name = entry?.name ?? key
     if (typeof name !== 'string') throw Error('Server names must be text.')
@@ -56,14 +59,26 @@ export function fromJsonText(text: string, previous: McpServerConfiguration[]): 
     for (const field of ['enabled', 'sse'] as const) {
       if (entry[field] !== undefined && typeof entry[field] !== 'boolean') throw Error(`"${name}": ${field} must be boolean.`)
     }
-    if (key === BUILTIN) { uamEnabled = entry.enabled !== false; return [] }
+    if (key === BUILTIN) {
+      if (entry.type !== 'builtin') throw Error('"uam-mcp" is reserved for the built-in UAM service. Rename the external server before importing.')
+      uamEnabled = entry.enabled !== false
+      return []
+    }
+    if (entry.uamId !== undefined) {
+      if (typeof entry.uamId !== 'string' || !/^[^\s\x00-\x1f\x7f]{1,128}$/.test(entry.uamId)) throw Error(`"${name}": uamId must be a valid server identifier.`)
+      if (editorIds.has(entry.uamId)) throw Error(`"${name}": duplicate uamId. Each server needs its own editor identifier.`)
+      editorIds.add(entry.uamId)
+    }
     if (entry.type !== 'local' && entry.type !== 'remote') throw Error(`"${name}" needs "type": "local" or "remote".`)
     for (const field of ['oauth', 'timeout'] as const) {
       if (field in entry) throw Error(`"${name}": ${field === 'oauth' ? 'OAuth' : field} settings need manual configuration; this editor cannot preserve them.`)
     }
     const workspaceDirectory = entry.workspace ?? ''
     const executionHostId = entry.host ?? ''
-    const id = previous.find(server => server.name === name && server.workspaceDirectory === workspaceDirectory && server.executionHostId === executionHostId)?.id ?? crypto.randomUUID()
+    const known = entry.uamId !== undefined ? previous.find(server => server.id === entry.uamId) : undefined
+    const id = known?.id ?? previous.find(server => server.name === name && server.workspaceDirectory === workspaceDirectory && server.executionHostId === executionHostId)?.id ?? crypto.randomUUID()
+    if (serverIds.has(id)) throw Error(`"${name}": duplicate server identity. Each server needs its own editor identifier.`)
+    serverIds.add(id)
     const base = { id, name, workspaceDirectory, executionHostId, enabled: entry.enabled !== false, command: '', args: [], url: '', environment: [], headers: [] }
     if (entry.type === 'local') {
       if (!Array.isArray(entry.command) || !entry.command.length || entry.command.some(part => typeof part !== 'string')) throw Error(`"${name}" needs "command": ["/path/to/program", "argument", ...].`)
@@ -98,7 +113,8 @@ const newServer = (name: string): McpServerConfiguration => ({ id: crypto.random
 
 /** Import adds definitions without replacing existing servers or changing UAM's built-in service. */
 export function mergeMcpImport(text: string, previous: McpServerConfiguration[]): McpServerConfiguration[] {
-  const incoming = fromJsonText(text, previous).servers.map(server => ({ ...server, name: server.name.trim() }))
+  // Imported metadata cannot adopt an existing server or its provider overrides.
+  const incoming = fromJsonText(text, []).servers.map(server => ({ ...server, name: server.name.trim() }))
   const keys = new Set(previous.map(server => `${server.name.trim().toLowerCase()}|${server.workspaceDirectory}|${server.executionHostId}`))
   for (const server of incoming) {
     const issue = problem(server)

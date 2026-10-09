@@ -33,7 +33,7 @@ async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string
 
 it('round-trips OpenCode-style JSON with the built-in UAM service and env references', () => {
   const text = toJsonText([server], false)
-  expect(JSON.parse(text).mcp).toEqual({ 'uam-mcp': { type: 'builtin', enabled: false }, playwright: { type: 'local', command: ['/usr/local/bin/npx', '-y', '@playwright/mcp@latest'], environment: { TOKEN: '{env:PW_TOKEN}' }, enabled: true } })
+  expect(JSON.parse(text).mcp).toEqual({ 'uam-mcp': { type: 'builtin', enabled: false }, playwright: { uamId: server.id, type: 'local', command: ['/usr/local/bin/npx', '-y', '@playwright/mcp@latest'], environment: { TOKEN: '{env:PW_TOKEN}' }, enabled: true } })
   expect(fromJsonText(text, [server])).toEqual({ servers: [server], uamEnabled: false })
   const literal = fromJsonText('{"mcp":{"x":{"type":"remote","url":"http://main.homelab.com:9001/mcp?userToken=abc","headers":{"Authorization":"Bearer t"}}}}', [])
   expect(literal.servers[0]).toMatchObject({ transport: 'http', url: 'http://main.homelab.com:9001/mcp?userToken=abc', headers: [{ name: 'Authorization', environmentVariable: '', value: 'Bearer t' }] })
@@ -263,4 +263,49 @@ it.each([true, false])('shows Computer Use server build availability %s without 
   expect(host.textContent).toContain(enabled ? 'Available in this build' : 'Unavailable in this build')
   expect(host.querySelector('[aria-label="UAM Computer Use for current chat"]')).toBeNull()
   expect(host.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
+})
+
+it('keeps provider override identity when a server is renamed in the JSON editor', async () => {
+  const override = { providerId: 'codex-cli', executionHostId: 'local', serverId: server.id, enabled: false }
+  useAppStore.setState(state => ({ centralProviderConfiguration: { ...state.centralProviderConfiguration, mcpOverrides: [override] } }))
+  await click('JSON')
+  const area = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
+  const document = JSON.parse(area.value)
+  expect(document.mcp.playwright.uamId).toBe(server.id)
+  document.mcp['renamed-playwright'] = document.mcp.playwright
+  delete document.mcp.playwright
+  await type(area, JSON.stringify(document))
+  await click('Save')
+  expect(saveServers).toHaveBeenCalledWith([{ ...server, name: 'renamed-playwright' }])
+  expect(useAppStore.getState().centralProviderConfiguration.mcpOverrides).toEqual([override])
+})
+
+it('keeps the known editor ID when workspace metadata changes and generates fresh imported IDs', () => {
+  const document = JSON.parse(toJsonText([server], true))
+  document.mcp.playwright.workspace = '/new-workspace'
+  document.mcp.playwright.name = 'renamed'
+  expect(fromJsonText(JSON.stringify(document), [server]).servers[0]).toMatchObject({ id: server.id, name: 'renamed', workspaceDirectory: '/new-workspace' })
+  const imported = mergeMcpImport(JSON.stringify(document), [server])
+  expect(imported[0]).toEqual(server)
+  expect(imported[1].id).not.toBe(server.id)
+  expect(imported[1]).toMatchObject({ name: 'renamed', workspaceDirectory: '/new-workspace' })
+})
+
+it.each([null, 3, '', 'white space', 'id\u0000secret', 'x'.repeat(129)])('rejects invalid editor IDs without echoing their values (%j)', uamId => {
+  expect(() => fromJsonText(JSON.stringify({ mcp: { docs: { type: 'remote', url: 'https://example.test/mcp', uamId } } }), [server])).toThrow('uamId must be a valid server identifier')
+})
+
+it('rejects duplicate editor IDs and does not adopt an unknown foreign ID', () => {
+  const entry = { type: 'remote', url: 'https://example.test/mcp', uamId: 'foreign-id' }
+  expect(() => fromJsonText(JSON.stringify({ mcp: { first: entry, second: entry } }), [server])).toThrow('duplicate uamId')
+  expect(fromJsonText(JSON.stringify({ mcp: { docs: entry } }), [server]).servers[0].id).not.toBe('foreign-id')
+})
+
+it.each(['local', 'remote'])('rejects external %s definitions using the builtin key instead of dropping them', type => {
+  const text = JSON.stringify({ mcp: {
+    'uam-mcp': { type, command: ['/opt/mcp'], url: 'https://example.test/reserved' },
+    docs: { type: 'remote', url: 'https://example.test/docs' },
+  } })
+  expect(() => fromJsonText(text, [server])).toThrow('reserved for the built-in UAM service')
+  expect(() => mergeMcpImport(text, [server])).toThrow('reserved for the built-in UAM service')
 })
