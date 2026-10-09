@@ -6448,6 +6448,45 @@ describe('useAppStore Gemini CLI slice', () => {
     ])
   })
 
+  it('edits queued attachments by retained IDs and keeps omitted selections backward compatible', async () => {
+    const first = { id: 'first', name: 'first.png', type: 'image' as const, mimeType: 'image/png', size: 10, path: '/workspace/first.png' }
+    const second = { id: 'second', name: 'second.png', type: 'image' as const, mimeType: 'image/png', size: 20, path: '/workspace/second.png' }
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          queuedPrompts: [{ id: 'queued', revision: 1, text: 'Prompt', uamAgentId: '', markdownStoreFiles: [], attachments: [first, second], goalMode: false, goalId: '' }],
+        },
+      },
+    }))
+
+    await expect(useAppStore.getState().editQueuedAcpPrompt('chat-1', 'queued', 1, 'Legacy text')).resolves.toBe(true)
+    expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts?.[0].attachments).toEqual([first, second])
+    await expect(useAppStore.getState().editQueuedAcpPrompt('chat-1', 'queued', 2, '')).resolves.toBe(true)
+    expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts?.[0]).toMatchObject({ revision: 3, text: '', attachments: [first, second] })
+    await expect(useAppStore.getState().editQueuedAcpPrompt('chat-1', 'queued', 3, 'Keep one', ['second'])).resolves.toBe(true)
+    expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts?.[0]).toMatchObject({ revision: 4, attachments: [second] })
+    await expect(useAppStore.getState().editQueuedAcpPrompt('chat-1', 'queued', 4, 'Remove all', [])).resolves.toBe(true)
+    expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts?.[0].attachments).toEqual([])
+    await expect(useAppStore.getState().editQueuedAcpPrompt('chat-1', 'queued', 5, 'Invalid', ['missing'])).resolves.toBe(false)
+    await expect(useAppStore.getState().editQueuedAcpPrompt('chat-1', 'queued', 5, 'Duplicate', ['x', 'x'])).resolves.toBe(false)
+  })
+
+  it('sends optional retained attachment IDs only when supplied to native queue edits', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    ensureTestWindow().cefQuery = ((params: { request: string; onSuccess?: (response: string) => void }) => {
+      requests.push(JSON.parse(params.request))
+      params.onSuccess?.('{}')
+    }) as unknown as TestWindow['cefQuery']
+    await expect(useAppStore.getState().editQueuedAcpPrompt('chat-1', 'queued', 1, 'Legacy')).resolves.toBe(true)
+    await expect(useAppStore.getState().editQueuedAcpPrompt('chat-1', 'queued', 2, 'Retain', ['image-id'])).resolves.toBe(true)
+    expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([
+      { action: 'manageQueuedAcpPrompt', payload: { chatId: 'chat-1', operation: 'edit', promptId: 'queued', expectedRevision: 1, text: 'Legacy' } },
+      { action: 'manageQueuedAcpPrompt', payload: { chatId: 'chat-1', operation: 'edit', promptId: 'queued', expectedRevision: 2, text: 'Retain', retainedAttachmentIds: ['image-id'] } },
+    ])
+  })
+
   it('loads queued ACP prompt payloads and blocks provider switching until they clear', async () => {
     const state = makeCppState(1)
     state.chats[0].acpSession = {

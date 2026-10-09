@@ -533,7 +533,28 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 			cb->Failure(400, "Invalid queued prompt edit.");
 			return;
 		}
-		ok = uam::EditQueuedAcpPrompt(m_app, chat_id, payload["promptId"].get<std::string>(), payload["expectedRevision"].get<int>(), payload["text"].get<std::string>(), &error);
+		std::optional<std::vector<std::string>> retained_attachment_ids;
+		if (payload.contains("retainedAttachmentIds"))
+		{
+			const nlohmann::json& values = payload["retainedAttachmentIds"];
+			if (!values.is_array() || values.size() > 128)
+			{
+				cb->Failure(400, "Invalid queued prompt attachment selection.");
+				return;
+			}
+			retained_attachment_ids.emplace();
+			for (const nlohmann::json& value : values)
+			{
+				if (!value.is_string() || value.get_ref<const std::string&>().empty() || value.get_ref<const std::string&>().size() > 128)
+				{
+					cb->Failure(400, "Invalid queued prompt attachment selection.");
+					return;
+				}
+				retained_attachment_ids->push_back(value.get<std::string>());
+			}
+		}
+		ok = uam::EditQueuedAcpPrompt(m_app, chat_id, payload["promptId"].get<std::string>(), payload["expectedRevision"].get<int>(),
+		    payload["text"].get<std::string>(), &error, retained_attachment_ids);
 	}
 	else if (operation == "reorder")
 	{

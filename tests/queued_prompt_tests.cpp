@@ -52,7 +52,13 @@ UAM_TEST(QueuedPromptEditRetainsSnapshotsAndRejectsStaleRevision)
 	attachment.name = "evidence.txt";
 	attachment.path = "evidence.txt";
 	attachment.kind = "file";
+	MessageAttachment image = attachment;
+	image.id = "image-id";
+	image.name = "image.png";
+	image.path = "workspace/.UAM/attachments/image.png";
+	image.kind = "image";
 	fixture.session->queued_user_prompts.front().attachments.push_back(attachment);
+	fixture.session->queued_user_prompts.front().attachments.push_back(image);
 	std::string error;
 	UAM_ASSERT(uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 1, "Edited text", &error));
 	const uam::AcpQueuedUserPromptState& edited = fixture.session->queued_user_prompts.front();
@@ -63,15 +69,27 @@ UAM_TEST(QueuedPromptEditRetainsSnapshotsAndRejectsStaleRevision)
 	UAM_ASSERT_EQ(edited.uam_agent_instructions, std::string("AGENT_INSTRUCTIONS"));
 	UAM_ASSERT(edited.goal_mode && edited.computer_use_mode);
 	UAM_ASSERT_EQ(edited.goal_id, std::string("goal"));
+	UAM_ASSERT_EQ(edited.attachments.size(), std::size_t{2});
 	UAM_ASSERT_EQ(edited.attachments.front(), attachment);
+	UAM_ASSERT_EQ(edited.attachments.back(), image);
 	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 1, "Stale text", &error));
 	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "gone", 1, "Missing", &error));
 	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "two", 1, "  ", &error));
-	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().text, std::string("Edited text"));
+	UAM_ASSERT(uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 2, "", &error));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().attachments.size(), std::size_t{2});
+	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 3, "Invalid IDs", &error, std::vector<std::string>{"missing"}));
+	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 3, "Duplicate IDs", &error, std::vector<std::string>{"image-id", "image-id"}));
+	UAM_ASSERT(uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 3, "Keep image", &error, std::vector<std::string>{"image-id"}));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().attachments, std::vector<MessageAttachment>{image});
+	UAM_ASSERT(uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 4, "Remove all images", &error, std::vector<std::string>{}));
+	UAM_ASSERT(fixture.session->queued_user_prompts.front().attachments.empty());
+	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 5, "", &error, std::vector<std::string>{}));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().text, std::string("Remove all images"));
 	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(fixture.temp.root, "queued-edits");
 	UAM_ASSERT(loaded.has_value());
 	UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().id, std::string("one"));
-	UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().revision, 2);
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().revision, 5);
+	UAM_ASSERT(loaded->acp_queued_prompts.front().attachments.empty());
 }
 
 UAM_TEST(QueuedPromptReorderRejectsChangedQueueAndKeepsEveryEntry)
@@ -98,11 +116,18 @@ UAM_TEST(QueuedPromptPreparedEntriesCannotBeEditedOrMoved)
 {
 	QueuedPromptFixture fixture;
 	fixture.session->queued_user_prompts.front().prepared_for_delivery = true;
+	MessageAttachment attachment;
+	attachment.id = "prepared-image";
+	attachment.path = "workspace/image.png";
+	attachment.kind = "image";
+	fixture.session->queued_user_prompts.front().attachments.push_back(attachment);
 	UAM_ASSERT(uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["queuedPrompts"][0].value("prepared", false));
 	std::string error;
 	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 1, "Too late", &error));
+	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, "queued-edits", "one", 1, "Remove image", &error, std::vector<std::string>{}));
 	UAM_ASSERT(!uam::ReorderQueuedAcpPrompts(fixture.app, "queued-edits", {{"one", 1}, {"two", 1}}, {"two", "one"}, &error));
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().text, std::string("one"));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().attachments.front(), attachment);
 }
 
 UAM_TEST(QueuedPromptSaveFailurePreservesPendingRemoteOutboxPrefix)
@@ -111,6 +136,11 @@ UAM_TEST(QueuedPromptSaveFailurePreservesPendingRemoteOutboxPrefix)
 	ChatSession& chat = fixture.app.chats.front();
 	chat.execution_host_id = "remote-host";
 	fixture.session->queued_prompt = "Dispatched remote prompt";
+	MessageAttachment attachment;
+	attachment.id = "protected-image";
+	attachment.path = "remote/workspace/image.png";
+	attachment.kind = "image";
+	fixture.session->queued_user_prompts.front().attachments.push_back(attachment);
 	uam::AcpQueuedUserPromptState pending;
 	pending.id = "dispatched";
 	pending.text = fixture.session->queued_prompt;
@@ -121,8 +151,9 @@ UAM_TEST(QueuedPromptSaveFailurePreservesPendingRemoteOutboxPrefix)
 	UAM_ASSERT(uam::io::WriteTextFile(blocked, "Not a directory"));
 	fixture.app.data_root = blocked;
 	std::string error;
-	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, chat.id, "one", 1, "Cannot save", &error));
+	UAM_ASSERT(!uam::EditQueuedAcpPrompt(fixture.app, chat.id, "one", 1, "Cannot save", &error, std::vector<std::string>{}));
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().text, std::string("one"));
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().attachments.front(), attachment);
 	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{3});
 	UAM_ASSERT_EQ(chat.acp_queued_prompts.front().id, std::string("dispatched"));
 	UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, std::size_t{1});

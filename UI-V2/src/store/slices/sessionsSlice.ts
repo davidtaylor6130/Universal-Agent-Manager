@@ -2467,16 +2467,24 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    editQueuedAcpPrompt: async (sessionId: string, promptId: string, expectedRevision: number, text: string): Promise<boolean> => {
-      if (!promptId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !text.trim()) return false
+    editQueuedAcpPrompt: async (sessionId: string, promptId: string, expectedRevision: number, text: string, retainedAttachmentIds?: string[]): Promise<boolean> => {
+      if (!promptId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 ||
+          (retainedAttachmentIds && (retainedAttachmentIds.length > 128 || new Set(retainedAttachmentIds).size !== retainedAttachmentIds.length ||
+            retainedAttachmentIds.some((id) => typeof id !== 'string' || !id || id.length > 128)))) return false
       if (isCefContext()) {
-        const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: { chatId: sessionId, operation: 'edit', promptId, expectedRevision, text } })
+        const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: { chatId: sessionId, operation: 'edit', promptId, expectedRevision, text, ...(retainedAttachmentIds === undefined ? {} : { retainedAttachmentIds }) } })
         return response.ok
       }
       const queue = get().acpBindingBySessionId[sessionId]?.queuedPrompts ?? []
       const index = queue.findIndex((prompt) => prompt.id === promptId && prompt.revision === expectedRevision)
       if (index < 0) return false
-      const next = queue.map((prompt, position) => position === index ? { ...prompt, text, revision: expectedRevision + 1 } : prompt)
+      const original = queue[index]
+      if (original.prepared || (retainedAttachmentIds && retainedAttachmentIds.some((id) => original.attachments.filter((attachment) => attachment.id === id).length !== 1))) return false
+      const attachments = retainedAttachmentIds === undefined
+        ? original.attachments
+        : original.attachments.filter((attachment) => retainedAttachmentIds.includes(attachment.id))
+      if (!text.trim() && attachments.length === 0) return false
+      const next = queue.map((prompt, position) => position === index ? { ...prompt, text, attachments, revision: expectedRevision + 1 } : prompt)
       set((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, [sessionId]: { ...state.acpBindingBySessionId[sessionId], queuedPrompts: next } } }))
       return true
     },

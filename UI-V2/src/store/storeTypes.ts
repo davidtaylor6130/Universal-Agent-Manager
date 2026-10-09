@@ -295,7 +295,7 @@ export interface AppState {
   removeQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
   steerQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
   resumeQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[]) => Promise<boolean>
-  editQueuedAcpPrompt: (sessionId: string, promptId: string, expectedRevision: number, text: string) => Promise<boolean>
+  editQueuedAcpPrompt: (sessionId: string, promptId: string, expectedRevision: number, text: string, retainedAttachmentIds?: string[]) => Promise<boolean>
   reorderQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[], orderedIds: string[]) => Promise<boolean>
   discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string, executionHostId?: string) => Promise<boolean>
   setAcpConfigOption: (sessionId: string, configId: string, value: string) => Promise<boolean>

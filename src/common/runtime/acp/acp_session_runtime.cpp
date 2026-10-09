@@ -2012,9 +2012,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return uam::AcpSessionHasPendingCancel(session) || DrainNextQueuedAcpUserPrompt(app, session, *chat);
 	}
 
-	/** Updates only undispatched text, preserving the queued task's captured context. */
+	/** Updates undispatched text and optional retained attachments, preserving captured context. */
 	bool EditQueuedAcpPrompt(AppState& app, const std::string& chat_id, const std::string& prompt_id,
-	                         int expected_revision, const std::string& text, std::string* error_out)
+	                         int expected_revision, const std::string& text, std::string* error_out,
+	                         const std::optional<std::vector<std::string>>& retained_attachment_ids)
 	{
 		const auto reject = [&](const std::string& reason)
 		{
@@ -2031,8 +2032,20 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return reject("Queued prompt changed or was dispatched. Refresh the queue.");
 		if (item->revision == std::numeric_limits<int>::max())
 			return reject("This queued prompt cannot be revised further. Remove it and queue a new prompt.");
+		std::vector<MessageAttachment> updated_attachments = item->attachments;
+		if (retained_attachment_ids.has_value())
+		{
+			std::set<std::string> retained;
+			for (const std::string& attachment_id : *retained_attachment_ids)
+			{
+				const std::size_t matches = std::ranges::count(item->attachments, attachment_id, &MessageAttachment::id);
+				if (attachment_id.empty() || !retained.insert(attachment_id).second || matches != 1)
+					return reject("Attachment selection must contain unique IDs from this queued prompt.");
+			}
+			std::erase_if(updated_attachments, [&retained](const MessageAttachment& attachment) { return !retained.contains(attachment.id); });
+		}
 		const std::string updated_text = uam::strings::Trim(text);
-		if (updated_text.empty() && item->attachments.empty()) return reject("Prompt is empty.");
+		if (updated_text.empty() && updated_attachments.empty()) return reject("Prompt is empty.");
 		if (updated_text.size() > kAcpUserPromptMaxBytes) return reject("Prompt exceeds the 1 MiB limit.");
 		std::size_t total_bytes = updated_text.size();
 		for (const AcpQueuedUserPromptState& prompt : queue)
@@ -2042,6 +2055,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::vector<AcpQueuedUserPromptState> previous_outbox = chat->acp_queued_prompts;
 		const std::size_t previous_dispatched = chat->acp_dispatched_queued_prompt_count;
 		item->text = updated_text;
+		item->attachments = std::move(updated_attachments);
 		++item->revision;
 		if (PersistQueuedPromptOutbox(app, *session, *chat, error_out)) return true;
 		queue = previous_queue;
