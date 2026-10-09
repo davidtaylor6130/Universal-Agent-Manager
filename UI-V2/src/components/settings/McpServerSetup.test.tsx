@@ -2,7 +2,12 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { McpServerSetup, fromJsonText, toJsonText, mergeMcpImport } from './McpServerSetup'
+import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
+
+const buildFeatures = vi.hoisted(() => ({ COMPUTER_USE_ENABLED: true }))
+vi.mock('../../config/buildFeatures', () => buildFeatures)
+vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), sendToCEF: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 let host: HTMLDivElement
@@ -11,7 +16,7 @@ const server: McpServerConfiguration = { id: 'pw', name: 'playwright', execution
 const saveServers = vi.fn(async (servers: McpServerConfiguration[]) => { useAppStore.setState({ mcpServers: servers }); return { ok: true } })
 const saveCentral = vi.fn(async (configuration: ReturnType<typeof useAppStore.getState>['centralProviderConfiguration']) => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } })
 beforeEach(async () => {
-  saveServers.mockClear(); saveCentral.mockClear()
+  saveServers.mockClear(); saveCentral.mockClear(); vi.mocked(sendToCEF).mockReset(); buildFeatures.COMPUTER_USE_ENABLED = true
   useAppStore.setState({ mcpServers: [server], sessions: [], activeSessionId: null, executionHosts: [], centralProviderConfiguration: { enabled: true, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true }, setMcpServers: saveServers, setCentralProviderConfiguration: saveCentral })
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
@@ -125,4 +130,137 @@ it('preserves concurrent central instruction changes while saving MCP servers', 
     finish()
   })
   expect(saveCentral.mock.calls[0][0]).toMatchObject({ instructions: 'New instructions', uamControlEnabled: false })
+})
+
+it.each(['import', 'json', 'manual'] as const)('preserves intentional empty arguments and order when saving through %s', async mode => {
+  const args = ['--value', '', '--other', 'tail', '']
+  if (mode === 'import') {
+    await click('+ Add server')
+    await click('Import configuration')
+    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!, JSON.stringify({ mcp: { empty: { type: 'local', command: ['/opt/mcp/tool', ...args] } } }))
+    await click('Review import')
+  } else if (mode === 'json') {
+    await click('JSON')
+    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, toJsonText([{ ...server, args }], true))
+  } else {
+    await click('+ Add server'); await click('Manual form')
+    const inputs = [...host.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')]
+    await type(inputs[0], 'empty'); await type(inputs[1], '/opt/mcp/tool')
+    for (const [index, arg] of args.entries()) {
+      await click('+ Add argument')
+      await type(host.querySelector<HTMLInputElement>(`[aria-label="Argument ${index + 1}"]`)!, arg)
+    }
+  }
+  await click('Save')
+  expect(saveServers).toHaveBeenCalledTimes(1)
+  expect(saveServers.mock.calls[0][0].at(-1)?.args).toEqual(args)
+})
+
+it.each([
+  { field: 'workspace', value: 7, error: 'workspace must be text' },
+  { field: 'enabled', value: 'false', error: 'enabled must be boolean' },
+])('rejects malformed pasted $field before accepting a configuration', ({ field, value, error }) => {
+  const text = JSON.stringify({ mcp: { malformed: { type: 'remote', url: 'https://example.test/mcp', [field]: value } } })
+  expect(() => fromJsonText(text, [server])).toThrow(error)
+  expect(saveServers).not.toHaveBeenCalled()
+})
+
+it.each([
+  { field: 'workspace', value: 7, error: 'workspace must be text' },
+  { field: 'host', value: false, error: 'host must be text' },
+  { field: 'enabled', value: 'false', error: 'enabled must be boolean' },
+  { field: 'sse', value: 'false', error: 'sse must be boolean' },
+])('shows a validation error without saving malformed JSON $field', async ({ field, value, error }) => {
+  await click('JSON')
+  await type(host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, JSON.stringify({ mcp: { malformed: { type: 'remote', url: 'https://example.test/mcp', [field]: value } } }))
+  await click('Save')
+  expect(host.textContent).toContain(error)
+  expect(saveServers).not.toHaveBeenCalled()
+  expect(saveCentral).not.toHaveBeenCalled()
+})
+
+
+it.each([
+  { entry: { type: 'remote', url: 'https://example.test/mcp', oauth: false }, error: 'OAuth settings need manual configuration' },
+  { entry: { type: 'local', command: ['/opt/mcp/tool'], timeout: 1000 }, error: 'timeout settings need manual configuration' },
+  { entry: { type: 'local', command: ['/opt/mcp/tool', '{env:SECRET}'] }, error: 'command substitutions need manual configuration' },
+  { entry: { type: 'local', command: ['/opt/mcp/tool', '--token={file:/private/token}'] }, error: 'command substitutions need manual configuration' },
+  { entry: { type: 'remote', url: 'https://example.test/{env:SECRET}' }, error: 'URL substitutions need manual configuration' },
+  { entry: { type: 'remote', url: 'https://example.test/mcp', headers: { Authorization: 'Bearer {env:SECRET}' } }, error: 'substitutions need manual configuration' },
+  { entry: { type: 'local', command: ['/opt/mcp/tool'], environment: { TOKEN: '{file:/private/token}' } }, error: 'substitutions need manual configuration' },
+])('rejects unsupported import semantics: $error', ({ entry, error }) => {
+  const text = JSON.stringify({ mcp: { unsupported: entry } })
+  expect(() => fromJsonText(text, [server])).toThrow(error)
+  expect(() => mergeMcpImport(text, [server])).toThrow(error)
+  expect(server.environment).toEqual([{ name: 'TOKEN', environmentVariable: 'PW_TOKEN' }])
+})
+
+it('keeps supported root metadata, server scopes, SSE, literal secrets and whole env references', () => {
+  const text = JSON.stringify({ $schema: 'https://example.test/config.schema.json', model: 'provider/model', mcp: { docs: { name: 'scoped', type: 'remote', url: 'https://example.test/mcp?token=literal-secret', sse: true, workspace: '/workspace', host: 'ssh', enabled: false, headers: { Authorization: '{env:SECRET}', Token: 'literal-secret' } } } })
+  expect(mergeMcpImport(text, [server]).at(-1)).toMatchObject({ name: 'scoped', workspaceDirectory: '/workspace', executionHostId: 'ssh', transport: 'sse', enabled: false, url: 'https://example.test/mcp?token=literal-secret', headers: [{ name: 'Authorization', environmentVariable: 'SECRET' }, { name: 'Token', environmentVariable: '', value: 'literal-secret' }] })
+})
+
+it.each(['import', 'json'] as const)('keeps the draft and secrets unchanged after unsupported %s input', async mode => {
+  const text = JSON.stringify({ mcp: { docs: { type: 'remote', url: 'https://example.test/mcp', oauth: { clientSecret: 'private-secret-value' } } } })
+  if (mode === 'import') {
+    await click('+ Add server'); await click('Import configuration')
+    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!, text)
+    await click('Review import')
+  } else {
+    await click('JSON')
+    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, text)
+    await click('Save')
+  }
+  expect(host.querySelector('[role="status"]')?.textContent).toContain('OAuth settings need manual configuration')
+  expect(host.querySelector('[role="status"]')?.textContent).not.toContain('private-secret-value')
+  expect(useAppStore.getState().mcpServers).toEqual([server])
+  expect(saveServers).not.toHaveBeenCalled()
+  expect(saveCentral).not.toHaveBeenCalled()
+})
+
+
+it('shows native source paths and warnings beside import controls and accepts a global directory', async () => {
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, id: 'docs', name: 'docs' }], sources: ['/config/opencode/opencode.jsonc'], warnings: ['legacy: OAuth settings need manual configuration'], requiresReview: true } })
+  await click('+ Add server'); await click('Import configuration')
+  const section = host.querySelector('[aria-label="MCP setup"]')!
+  expect(section.textContent).toContain('file or directory')
+  await type(section.querySelector<HTMLInputElement>('input')!, '/config/opencode')
+  await click('Read OpenCode configuration')
+  expect(sendToCEF).toHaveBeenCalledWith({ action: 'previewOpenCodeMcpImport', payload: { executionHostId: 'local', sourcePath: '/config/opencode' } })
+  expect(section.textContent).toContain('/config/opencode/opencode.jsonc')
+  expect(section.textContent).toContain('OAuth settings need manual configuration')
+  expect(section.querySelector('[role="status"]')?.textContent).toContain('Loaded 1 servers')
+  expect(button('Review import').disabled).toBe(false)
+})
+
+it('clears a previous native preview on read failure and blocks stale review', async () => {
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, name: 'docs' }], sources: ['/config/opencode.jsonc'], warnings: [] } }).mockResolvedValueOnce({ ok: false, error: 'No configuration exists in the selected directory.' })
+  await click('+ Add server'); await click('Import configuration'); await click('Read OpenCode configuration')
+  expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!.value).toContain('docs')
+  await click('Read OpenCode configuration')
+  const section = host.querySelector('[aria-label="MCP setup"]')!
+  expect(section.querySelector('[role="status"]')?.textContent).toContain('No configuration exists')
+  expect(section.textContent).not.toContain('/config/opencode.jsonc')
+  expect(section.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
+  expect(button('Review import').disabled).toBe(true)
+  expect(saveServers).not.toHaveBeenCalled()
+})
+
+it('distinguishes zero external servers and keeps warnings and source visible without a UAM-only preview', async () => {
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['legacy: executable unavailable'], requiresReview: true } })
+  await click('+ Add server'); await click('Import configuration'); await click('Read OpenCode configuration')
+  const section = host.querySelector('[aria-label="MCP setup"]')!
+  expect(section.querySelector('[role="status"]')?.textContent).toContain('No external MCP servers found')
+  expect(section.textContent).toContain('executable unavailable')
+  expect(section.textContent).toContain('/config/opencode.jsonc')
+  expect(section.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
+  expect(button('Review import').disabled).toBe(true)
+})
+
+it.each([true, false])('shows Computer Use server build availability %s without a chat permission toggle', async enabled => {
+  buildFeatures.COMPUTER_USE_ENABLED = enabled
+  await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
+  expect(host.textContent).toContain(enabled ? 'Available in this build' : 'Unavailable in this build')
+  expect(host.querySelector('[aria-label="UAM Computer Use for current chat"]')).toBeNull()
+  expect(host.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
 })
