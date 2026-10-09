@@ -14412,6 +14412,66 @@ UAM_TEST(SaveNativeTranscriptPreservesDetailsAndCommitsBeforeReplacingLiveChat)
 	app.cli_terminals.back()->running = false;
 }
 
+UAM_TEST(SaveNativeTranscriptKeepsWorktreeOwnedDirtyHistoryAndAllowsUnrelatedChat)
+{
+	uam_test::TempDir temp("uam-worktree-owned-history");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession current;
+	current.id = "checkpoint-owned";
+	current.provider_id = uam::provider_ids::kOpenCodeCli;
+	current.messages = {Message{MessageRole::Assistant, "saved answer"}};
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, current));
+	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, current.id);
+	const fs::path summary = AppPaths::UamChatSummaryFilePath(app.data_root, current.id);
+	const fs::path backup = uam::io::MakeBackupPath(primary);
+	const std::string primary_before = uam::io::ReadTextFile(primary);
+	const std::string summary_before = uam::io::ReadTextFile(summary);
+	const bool backup_existed = fs::exists(backup);
+	const std::string backup_before = backup_existed ? uam::io::ReadTextFile(backup) : std::string();
+	const fs::file_time_type old_time = fs::file_time_type::clock::now() - std::chrono::hours(24);
+	fs::last_write_time(primary, old_time);
+	fs::last_write_time(summary, old_time);
+	const fs::file_time_type primary_before_time = fs::last_write_time(primary);
+	const fs::file_time_type summary_before_time = fs::last_write_time(summary);
+	const fs::file_time_type backup_before_time = backup_existed ? fs::last_write_time(backup) : fs::file_time_type();
+	current.messages.back().content = "unsaved worktree-owned answer";
+	const std::vector<Message> dirty_messages = current.messages;
+	app.worktree_operation_chat_ids.insert(current.id);
+	const std::vector<Message> imported = {
+	    Message{MessageRole::Assistant, "native replacement"},
+	    Message{MessageRole::Assistant, "native additional answer"}};
+	const ChatHistorySyncService service;
+	UAM_ASSERT(service.SaveNativeTranscript(app, current, imported));
+	UAM_ASSERT_EQ(current.messages, dirty_messages);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), primary_before);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(summary), summary_before);
+	UAM_ASSERT_EQ(fs::last_write_time(primary), primary_before_time);
+	UAM_ASSERT_EQ(fs::last_write_time(summary), summary_before_time);
+	UAM_ASSERT_EQ(fs::exists(backup), backup_existed);
+	if (backup_existed)
+	{
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(backup), backup_before);
+		UAM_ASSERT_EQ(fs::last_write_time(backup), backup_before_time);
+	}
+	ChatSession unrelated;
+	unrelated.id = "unrelated-chat";
+	unrelated.provider_id = current.provider_id;
+	unrelated.messages = {Message{MessageRole::Assistant, "other saved answer"}};
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, unrelated));
+	UAM_ASSERT(service.SaveNativeTranscript(app, unrelated, imported));
+	UAM_ASSERT_EQ(unrelated.messages, imported);
+	const std::optional<ChatSession> unrelated_disk = ChatRepository::LoadLocalChat(app.data_root, unrelated.id, true);
+	UAM_ASSERT(unrelated_disk.has_value());
+	UAM_ASSERT_EQ(unrelated_disk->messages, imported);
+	app.worktree_operation_chat_ids.erase(current.id);
+	UAM_ASSERT(service.SaveNativeTranscript(app, current, imported));
+	UAM_ASSERT_EQ(current.messages, imported);
+	const std::optional<ChatSession> released_disk = ChatRepository::LoadLocalChat(app.data_root, current.id, true);
+	UAM_ASSERT(released_disk.has_value());
+	UAM_ASSERT_EQ(released_disk->messages, imported);
+}
+
 UAM_TEST(OpenCodeExportSnapshotImportsRefreshesAndPreservesActiveOrDeletedChats)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI

@@ -440,7 +440,6 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    return;
 		    }
 		    m_nativeHistoryRequests.erase(pending);
-		    if (!response.ok) return;
 		    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_snapshot.id);
 		    if (current == nullptr)
 		    {
@@ -471,6 +470,13 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    return;
 			    }
 		    }
+		    // Runtime ownership may have started while the native export was running.
+		    if (uam::runtime_orch_impl::ChatNeedsTranscriptPreserved(m_app, *current))
+		    {
+			    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target);
+			    return;
+		    }
+		    if (!response.ok) return;
 		    std::string hydrate_error;
 		    if (!ChatRepository::HydrateChatMessages(m_app.data_root, *current, &hydrate_error))
 		    {

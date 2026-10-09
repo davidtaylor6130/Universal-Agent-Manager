@@ -19,7 +19,8 @@ namespace uam::runtime_orch_impl
 {
 	inline bool ChatNeedsTranscriptPreserved(const uam::AppState& app, const ChatSession& chat)
 	{
-		return app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
+		return app.worktree_operation_chat_ids.contains(chat.id) ||
+		       app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
 		       std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<uam::AcpSessionState>& session)
 		       { return session != nullptr && session->chat_id == chat.id && (uam::AcpSessionHasActiveTurn(*session) || session->turn_checkpoint_commit_pending); });
 	}
