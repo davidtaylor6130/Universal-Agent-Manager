@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "common/paths/workspace_root.h"
 
 using namespace uam_test;
 
@@ -93,4 +94,29 @@ UAM_TEST(AgentUnavailableProviderRejectsWithoutCreatingRunOrTranscript)
 	UAM_ASSERT(fixture.app.agent_runs.empty() && fixture.app.queued_agent_run_ids.empty());
 	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
 	UAM_ASSERT(run_id.empty());
+}
+
+UAM_TEST(AgentChildKeepsResolvedParentWorktreeAndWorkspaceAgentSource)
+{
+	AgentProviderFixture fixture;
+	const fs::path source = fixture.temp.root / "workspace";
+	const fs::path worktree = fixture.temp.root / "worktree";
+	fs::create_directories(worktree);
+	ChatSession& root = fixture.app.chats.front();
+	root.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	root.workspace_source_directory = source.string();
+	root.workspace_worktree_directory = worktree.string();
+	root.workspace_directory = source.string();
+	root.approval_mode = "plan";
+	std::string run_id;
+	std::string error;
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(fixture.app, "root", {}, "worker", "Task.", &run_id, &error));
+	const ChatSession& child = fixture.app.chats.back();
+	UAM_ASSERT_EQ(child.workspace_directory, uam::paths::Utf8PathString(worktree));
+	UAM_ASSERT_EQ(child.workspace_source_directory, source.string());
+	UAM_ASSERT_EQ(child.workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
+	UAM_ASSERT(child.workspace_worktree_directory.empty());
+	UAM_ASSERT(fixture.app.agent_runs.back().definition_snapshot.find("name: worker") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.app.agent_runs.back().effective_workspace_access, std::string("read"));
+	UAM_ASSERT_EQ(child.approval_mode, std::string("plan"));
 }

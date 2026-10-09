@@ -52,8 +52,17 @@ namespace uam
 				if (resource_bytes > provider_setup::kMaxFileBytes) { error = "Central instructions exceed 2 MiB."; return false; }
 				instructions += "\n\n" + bytes;
 			}
-			const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(data_root, host.transport == "ssh" ? std::filesystem::path{} : workspace);
-			const std::vector<AgentDefinition>::const_iterator selected = std::find_if(catalog.definitions.begin(), catalog.definitions.end(), [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+			AgentDefinitionCatalog catalog = AgentDefinitionService::Load(data_root, host.transport == "ssh" ? std::filesystem::path{} : workspace);
+			std::vector<AgentDefinition>::const_iterator selected = std::find_if(catalog.definitions.begin(), catalog.definitions.end(), [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+			// Worktrees may not carry workspace agent files from their source workspace.
+			// Reload from that source only when needed, so its normal definition validation still applies.
+			if (selected == catalog.definitions.end() && host.transport != "ssh" &&
+			    !chat.workspace_source_directory.empty() &&
+			    mcp_server_config::WorkspaceKey(chat.workspace_source_directory) != mcp_server_config::WorkspaceKey(uam::paths::Utf8PathString(workspace)))
+			{
+				catalog = AgentDefinitionService::Load(data_root, uam::paths::PathFromUtf8(chat.workspace_source_directory));
+				selected = std::find_if(catalog.definitions.begin(), catalog.definitions.end(), [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+			}
 			if (selected == catalog.definitions.end()) { error = "The selected UAM agent is unavailable: " + chat.uam_agent_id; return false; }
 			instructions += "\n\n" + (selected_agent_instructions ? *selected_agent_instructions : selected->instructions);
 			instructions += "\n\nUAM agent definitions are available below. Delegate through UAM tools only when permitted by the selected agent.\n";

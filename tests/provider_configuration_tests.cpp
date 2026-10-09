@@ -632,6 +632,29 @@ UAM_TEST(CentralNativeSetupInstallsTheQueuedAgentSnapshot)
 	UAM_ASSERT_EQ(ReadFile(bundle.local_directory / "agents/build.md"), snapshot);
 }
 
+UAM_TEST(CentralNativeSetupFindsSelectedAgentInSourceWorkspace)
+{
+	TempDir temp("uam-central-source-agent-snapshot");
+	const fs::path source = temp.root / "source";
+	const fs::path worktree = temp.root / "worktree";
+	fs::create_directories(source / ".uam" / "agents");
+	fs::create_directories(worktree);
+	const std::string agent_markdown = "---\nversion: 1\nname: workspace-agent\ndescription: Parent workspace agent\nmode: primary\nworkspaceAccess: read\nskills: []\ndelegates: []\n---\nParent workspace agent.";
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".uam/agents/workspace-agent.md", agent_markdown));
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.uam_agent_id = "workspace-agent";
+	chat.workspace_source_directory = uam::paths::Utf8PathString(source);
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	const std::string queued_snapshot = "PINNED_PARENT_AGENT_SNAPSHOT";
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, worktree, bundle, error, &queued_snapshot));
+	UAM_ASSERT_EQ(bundle.files.at("agents/workspace-agent.md"), queued_snapshot);
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find(queued_snapshot) != std::string::npos);
+}
+
 UAM_TEST(McpServersAcceptLanUrlsAndLiteralValuesButRejectCredentialUrls)
 {
 	McpServerConfiguration remote{.id = "penpot", .name = "penpot", .transport = "http", .url = "http://main.homelab.com:9001/mcp/stream?userToken=abc"};

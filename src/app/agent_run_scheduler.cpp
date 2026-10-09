@@ -6,6 +6,7 @@
 #include "app/chat_domain_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
+#include "common/config/mcp_server_config.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -288,9 +289,18 @@ namespace uam
 			}
 		}
 
-		const AgentDefinitionCatalog agents = AgentDefinitionService::Load(
-		    app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, *root_chat));
+		const std::filesystem::path parent_workspace = uam::paths::ResolveWorkspaceRootPath(app, *root_chat);
+		const std::filesystem::path controller_workspace = uam::paths::ResolveControllerWorkspaceRootPath(app, *root_chat);
+		AgentDefinitionCatalog agents = AgentDefinitionService::Load(app.data_root, controller_workspace);
 		const AgentDefinition* definition = FindAgent(agents, requested_agent);
+		if (definition == nullptr && uam::paths::IsControllerLocalWorkspace(*root_chat) &&
+		    !root_chat->workspace_source_directory.empty() &&
+		    uam::mcp_server_config::WorkspaceKey(root_chat->workspace_source_directory) !=
+		        uam::mcp_server_config::WorkspaceKey(uam::paths::Utf8PathString(controller_workspace)))
+		{
+			agents = AgentDefinitionService::Load(app.data_root, uam::paths::PathFromUtf8(root_chat->workspace_source_directory));
+			definition = FindAgent(agents, requested_agent);
+		}
 		if (definition == nullptr || (definition->mode != "subagent" && definition->mode != "both"))
 		{
 			if (error_out != nullptr) *error_out = "Requested agent is unavailable for delegation: " + requested_agent + ".";
@@ -324,7 +334,9 @@ namespace uam
 		ChatSession transcript = ChatDomainService().CreateNewChat(root_chat->folder_id, selected_provider);
 		transcript.title = "Agent: " + requested_agent;
 		transcript.execution_host_id = root_chat->execution_host_id;
-		transcript.workspace_directory = root_chat->workspace_directory;
+		transcript.workspace_directory = uam::paths::Utf8PathString(parent_workspace);
+		// Keep the source only as a definition lookup fallback. The child does not own or manage the parent's worktree.
+		transcript.workspace_source_directory = root_chat->workspace_source_directory;
 		transcript.routing_mode = root_chat->routing_mode;
 		if (transcript.routing_mode == "automatic")
 		{
