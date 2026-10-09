@@ -161,17 +161,23 @@ namespace uam
 		return result.imported_count > 0 || !result.errors.empty() || m_phase != "importing";
 	}
 
-	StartupNativeImportSnapshot StartupNativeImportService::Snapshot(std::size_t offset, std::size_t limit) const
+	StartupNativeImportSnapshot StartupNativeImportService::Snapshot(std::size_t offset, std::size_t limit,
+	    const std::string& folder_id) const
 	{
 		StartupNativeImportSnapshot snapshot;
 		snapshot.phase = m_phase;
 		snapshot.generation = m_generation;
 		snapshot.errors = m_errors;
 		snapshot.imported_count = m_imported_count;
-		snapshot.total_count = m_candidates.size();
-		offset = std::min(offset, m_candidates.size());
-		const std::size_t count = std::min(std::clamp<std::size_t>(limit, 1, 200), m_candidates.size() - offset);
-		for (std::size_t index = offset; index < offset + count; ++index) snapshot.candidates.push_back(m_candidates[index].summary);
+		std::vector<const Candidate*> candidates;
+		for (const Candidate& candidate : m_candidates)
+		{
+			if (folder_id.empty() || candidate.owner.id == folder_id) candidates.push_back(&candidate);
+		}
+		snapshot.total_count = candidates.size();
+		offset = std::min(offset, candidates.size());
+		const std::size_t count = std::min(std::clamp<std::size_t>(limit, 1, 200), candidates.size() - offset);
+		for (std::size_t index = offset; index < offset + count; ++index) snapshot.candidates.push_back(candidates[index]->summary);
 		snapshot.next_offset = offset + count;
 		return snapshot;
 	}
@@ -195,7 +201,7 @@ namespace uam
 	}
 
 	bool StartupNativeImportService::Decide(AppState& app, const std::string& generation, const std::vector<std::string>& selected_ids,
-	    const std::vector<std::string>& declined_ids, std::string* error_out)
+	    const std::vector<std::string>& declined_ids, std::string* error_out, const std::string& folder_id)
 	{
 		const auto reject = [&](const std::string& error)
 		{
@@ -211,8 +217,14 @@ namespace uam
 		std::string filter_error;
 		if (!Revalidate(app, &filter_error)) return reject(filter_error);
 		for (const std::string& id : requested)
-			if (std::ranges::none_of(m_candidates, [&](const Candidate& candidate) { return candidate.summary.candidate_id == id; }))
+		{
+			const std::vector<Candidate>::const_iterator candidate = std::ranges::find_if(m_candidates,
+			    [&](const Candidate& entry) { return entry.summary.candidate_id == id; });
+			if (candidate == m_candidates.end())
 				return reject("A history candidate is no longer available or its workspace changed. Review the current list.");
+			if (!folder_id.empty() && candidate->owner.id != folder_id)
+				return reject("A history candidate belongs to another workspace. Review the current list.");
+		}
 		const std::unordered_set<std::string> declined(declined_ids.begin(), declined_ids.end());
 		std::vector<ChatSession> declined_chats;
 		for (const Candidate& candidate : m_candidates)

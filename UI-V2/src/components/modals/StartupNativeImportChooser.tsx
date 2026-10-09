@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { parseStartupNativeImportPage, type StartupNativeImportPage, type StartupNativeImportStatus } from '../../types/startupNativeImports'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
-import { Button, Overlay } from '../ui'
+import { providerMetadataForId } from '../../utils/providerMetadata'
+import { Button, IconButton, Overlay } from '../ui'
 
 /** Reviews only cached startup metadata. Dismissal never records a native decision. */
 export function StartupNativeImportChooser() {
@@ -36,6 +38,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const requestSequence = useRef(0)
+  const loadedFolderId = useRef(folderId)
   const busyRef = useRef(false)
   const mounted = useRef(false)
   const panel = useRef<HTMLDivElement>(null)
@@ -70,7 +73,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     const request = ++requestSequence.current
     busyRef.current = true; setBusy(true); setError('')
     try {
-      const response = await sendToCEF<unknown>({ action: 'getStartupNativeImports', payload: { offset: nextOffset, limit: 100 } })
+      const response = await sendToCEF<unknown>({ action: 'getStartupNativeImports', payload: { offset: nextOffset, limit: 100, folderId } })
       if (!owns(request)) return
       if (!response.ok || !response.data) throw new Error(response.error || 'History could not be loaded.')
       const data = parseStartupNativeImportPage(response.data)
@@ -93,6 +96,14 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
   }
   useEffect(() => { void load(0) }, [])
   useEffect(() => {
+    if (loadedFolderId.current === folderId) return
+    loadedFolderId.current = folderId
+    ++requestSequence.current
+    busyRef.current = false
+    setBusy(false); setPage(null); setOffset(0); setSelected([]); setError('')
+    void load(0)
+  }, [folderId])
+  useEffect(() => {
     if (status.phase === 'importing' && publication.current.selectedIds.length > 0) setAwaitingPublication(true)
     if (!awaitingPublication || busy || !['ready', 'complete'].includes(status.phase)) return
     const pending = publication.current
@@ -109,7 +120,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     if (importSelected) publication.current = { start: status, refreshed: null, importedCount: status.importedCount, selectedIds: ids }
     busyRef.current = true; setBusy(true); setError('')
     try {
-      const response = await sendToCEF<unknown>({ action: 'resolveStartupNativeImports', payload: { generation, selectedIds: importSelected ? ids : [], declinedIds: importSelected ? [] : ids } })
+      const response = await sendToCEF<unknown>({ action: 'resolveStartupNativeImports', payload: { generation, selectedIds: importSelected ? ids : [], declinedIds: importSelected ? [] : ids, folderId } })
       if (!owns(request)) return
       if (!response.ok || !response.data) throw new Error(response.error || 'History decisions could not be saved.')
       const data = parseStartupNativeImportPage(response.data)
@@ -127,21 +138,21 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     finally { if (owns(request)) { busyRef.current = false; setBusy(false) } }
   }
   const importing = awaitingPublication || page?.phase === 'importing' || status.phase === 'importing'
-  const candidates = page?.candidates.filter((candidate) => !folderId || candidate.folderId === folderId) ?? []
+  const candidates = page?.candidates ?? []
   return <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!busyRef.current) onClose() }}>
-    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Review native history" aria-busy={busy} className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-black text-white border border-[var(--border)] p-4 text-xs">
-      <div className="flex justify-between items-center mb-3"><strong>Review native history</strong><Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onClose}>Later</Button></div>
+    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Import chats" aria-busy={busy} className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-black text-white border border-[var(--border)] p-4 text-xs">
+      <div className="flex justify-between items-center mb-3"><strong>Import chats</strong><IconButton icon={<X size={16} />} label="Close import chats" disabled={busy} onClick={onClose} /></div>
       <p className="mb-2">Choose chats to add to UAM.</p>
       {candidates.map((candidate) => <label key={candidate.candidateId} className="flex gap-2 items-start border-t border-[var(--border)] py-2">
         <input type="checkbox" aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, candidate.candidateId] : current.filter((id) => id !== candidate.candidateId))} />
-        <span className="min-w-0"><span className="block truncate">{candidate.title}</span><span className="block break-all">{candidate.providerId} · {candidate.executionHostId || 'local'} · {candidate.workspaceDirectory}</span></span>
+        <span className="min-w-0"><span className="block truncate">{candidate.title}</span><span className="block break-all">{providerMetadataForId(candidate.providerId).name}{candidate.executionHostId && candidate.executionHostId !== 'local' ? ` · ${candidate.executionHostId}` : ''} · {candidate.workspaceDirectory}</span></span>
       </label>)}
       {!busy && !importing && page && candidates.length === 0 && <p>No pending chats on this page{folderId ? ' for this workspace' : ''}.</p>}
       {busy && <p role="status">Loading history…</p>}
       {importing && !busy && <p role="status">Importing selected chats…</p>}
       {error && <p role="alert" className="py-2">{error}</p>}
       <div className="flex flex-wrap gap-2 mt-3">
-        <Button type="button" size="sm" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>Import selected</Button>
+        <Button type="button" size="sm" variant="primary" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>Import selected</Button>
         <Button type="button" size="sm" disabled={busy || importing || selected.length === 0} onClick={() => void decide(false)}>Ignore selected</Button>
         <Button type="button" size="sm" disabled={busy || importing || offset === 0} onClick={() => void load(Math.max(0, offset - 100))}>Previous</Button>
         <Button type="button" size="sm" disabled={busy || importing || !page || page.nextOffset >= page.totalCount} onClick={() => page && void load(page.nextOffset)}>Next</Button>

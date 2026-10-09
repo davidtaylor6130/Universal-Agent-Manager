@@ -7,13 +7,24 @@ void UamQueryHandler::HandleGetStartupNativeImports(CefRefPtr<CefBrowser>, const
 {
 	const int64_t offset = payload.value("offset", int64_t{0});
 	const int64_t limit = payload.value("limit", int64_t{100});
+	std::string folder_id;
+	const nlohmann::json::const_iterator folder_value = payload.find("folderId");
+	if (folder_value != payload.end() && !folder_value->is_null())
+	{
+		if (!folder_value->is_string() || folder_value->get_ref<const std::string&>().empty() || folder_value->get_ref<const std::string&>().size() > 128)
+		{
+			cb->Failure(400, "Invalid import workspace.");
+			return;
+		}
+		folder_id = folder_value->get<std::string>();
+	}
 	if (offset < 0 || limit < 1 || limit > 200)
 	{
 		cb->Failure(400, "Invalid import page.");
 		return;
 	}
 	const uam::StartupNativeImportSnapshot snapshot = m_app.startup_native_import_service
-	    ? m_app.startup_native_import_service->Snapshot(static_cast<std::size_t>(offset), static_cast<std::size_t>(limit))
+	    ? m_app.startup_native_import_service->Snapshot(static_cast<std::size_t>(offset), static_cast<std::size_t>(limit), folder_id)
 	    : uam::StartupNativeImportSnapshot{};
 	cb->Success(uam::StateSerializer::SerializeStartupNativeImports(snapshot).dump());
 }
@@ -24,6 +35,17 @@ void UamQueryHandler::HandleResolveStartupNativeImports(CefRefPtr<CefBrowser> br
 	{
 		cb->Failure(409, "Startup imports are unavailable.");
 		return;
+	}
+	std::string folder_id;
+	const nlohmann::json::const_iterator folder_value = payload.find("folderId");
+	if (folder_value != payload.end() && !folder_value->is_null())
+	{
+		if (!folder_value->is_string() || folder_value->get_ref<const std::string&>().empty() || folder_value->get_ref<const std::string&>().size() > 128)
+		{
+			cb->Failure(400, "Invalid import workspace.");
+			return;
+		}
+		folder_id = folder_value->get<std::string>();
 	}
 	const std::string generation = payload.value("generation", std::string{});
 	std::vector<std::string> selected;
@@ -49,11 +71,11 @@ void UamQueryHandler::HandleResolveStartupNativeImports(CefRefPtr<CefBrowser> br
 		}
 	}
 	std::string error;
-	if (generation.size() > 128 || !m_app.startup_native_import_service->Decide(m_app, generation, selected, declined, &error))
+	if (generation.size() > 128 || !m_app.startup_native_import_service->Decide(m_app, generation, selected, declined, &error, folder_id))
 	{
 		cb->Failure(409, error.empty() ? "Import selection changed. Review it again." : error);
 		return;
 	}
-	cb->Success(uam::StateSerializer::SerializeStartupNativeImports(m_app.startup_native_import_service->Snapshot()).dump());
+	cb->Success(uam::StateSerializer::SerializeStartupNativeImports(m_app.startup_native_import_service->Snapshot(0, 100, folder_id)).dump());
 	uam::PushStateUpdateIfChanged(browser, m_app);
 }

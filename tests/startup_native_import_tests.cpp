@@ -224,6 +224,77 @@ UAM_TEST(StartupNativeChooserRejectsInvalidDecisionsAndBoundsMetadataPages)
 	UAM_ASSERT(app.chats.empty());
 }
 
+UAM_TEST(StartupNativeChooserPaginatesWithinValidatedWorkspaceOwnership)
+{
+	TempDir temp("uam-startup-history-workspace-pages");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	fs::create_directories(temp.root / "other-workspace");
+	app.folders.push_back({"other", "Other", (temp.root / "other-workspace").string(), false, "local"});
+	std::vector<ChatSession> chats;
+	for (int index = 0; index < 125; ++index)
+		chats.push_back(StartupHistory(temp.root / "other-workspace", "other-" + std::to_string(index)));
+	for (int index = 0; index < 3; ++index)
+		chats.push_back(StartupHistory(temp.root / "workspace", "target-" + std::to_string(index)));
+	uam::StartupNativeImportService service(FixtureScanner(std::move(chats)));
+	service.Initialize(app);
+	WaitForStartup(service, app);
+
+	const uam::StartupNativeImportSnapshot target_page = service.Snapshot(0, 2, "known");
+	UAM_ASSERT_EQ(target_page.total_count, std::size_t{3});
+	UAM_ASSERT_EQ(target_page.candidates.size(), std::size_t{2});
+	UAM_ASSERT_EQ(target_page.next_offset, std::size_t{2});
+	UAM_ASSERT_EQ(target_page.candidates.front().folder_id, std::string("known"));
+	const uam::StartupNativeImportSnapshot target_last = service.Snapshot(target_page.next_offset, 2, "known");
+	UAM_ASSERT_EQ(target_last.total_count, std::size_t{3});
+	UAM_ASSERT_EQ(target_last.candidates.size(), std::size_t{1});
+	UAM_ASSERT_EQ(target_last.next_offset, std::size_t{3});
+	UAM_ASSERT_EQ(target_last.candidates.front().folder_id, std::string("known"));
+	UAM_ASSERT_EQ(service.Snapshot(0, 200).total_count, std::size_t{128});
+	UAM_ASSERT_EQ(service.Snapshot(0, 2, "missing-folder").total_count, std::size_t{0});
+	UAM_ASSERT_EQ(service.Snapshot(0, 2, "missing-folder").candidates.size(), std::size_t{0});
+	std::string error;
+	UAM_ASSERT(service.Decide(app, target_page.generation, {target_page.candidates.front().candidate_id}, {}, &error));
+	const uam::StartupNativeImportSnapshot resolved_target_page = service.Snapshot(0, 100, "known");
+	UAM_ASSERT_EQ(resolved_target_page.total_count, std::size_t{2});
+	for (const uam::StartupNativeImportCandidate& candidate : resolved_target_page.candidates)
+		UAM_ASSERT_EQ(candidate.folder_id, std::string("known"));
+}
+
+UAM_TEST(StartupNativeChooserRejectsCrossWorkspaceSelectionsAndDeclinesWithoutMutation)
+{
+	for (const bool decline : {false, true})
+	{
+		TempDir temp(decline ? "uam-startup-cross-workspace-decline" : "uam-startup-cross-workspace-select");
+		uam::AppState app;
+		StartupWorkspace(app, temp.root);
+		fs::create_directories(temp.root / "other-workspace");
+		app.folders.push_back({"other", "Other", (temp.root / "other-workspace").string(), false, "local"});
+		uam::StartupNativeImportService service(FixtureScanner({
+		    StartupHistory(temp.root / "workspace", "target"),
+		    StartupHistory(temp.root / "other-workspace", "outside")}));
+		service.Initialize(app);
+		WaitForStartup(service, app);
+		const uam::StartupNativeImportSnapshot target = service.Snapshot(0, 100, "known");
+		const uam::StartupNativeImportSnapshot outside = service.Snapshot(0, 100, "other");
+		const std::vector<std::string> ids{target.candidates.front().candidate_id, outside.candidates.front().candidate_id};
+		std::string error;
+		UAM_ASSERT(!service.Decide(app, target.generation, decline ? std::vector<std::string>{} : ids,
+		    decline ? ids : std::vector<std::string>{}, &error, "known"));
+		UAM_ASSERT_EQ(error, std::string("A history candidate belongs to another workspace. Review the current list."));
+		UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{2});
+		UAM_ASSERT_EQ(service.Snapshot().phase, std::string("ready"));
+		UAM_ASSERT(!service.ImportPending());
+		UAM_ASSERT(app.chats.empty());
+		UAM_ASSERT(!fs::exists(app.data_root));
+		UAM_ASSERT(service.Decide(app, target.generation, {target.candidates.front().candidate_id}, {}, &error, "known"));
+		WaitForStartup(service, app);
+		UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("known"));
+		UAM_ASSERT_EQ(service.Snapshot(0, 100, "other").total_count, std::size_t{1});
+	}
+}
+
 UAM_TEST(StartupNativeCancellationNeverRestartsDiscoveryOrWritesHistory)
 {
 	TempDir temp("uam-startup-history-cancel");

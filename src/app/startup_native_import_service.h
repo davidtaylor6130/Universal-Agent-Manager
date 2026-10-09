@@ -58,10 +58,11 @@ namespace uam
 		void Initialize(const AppState& app);
 		bool Poll(AppState& app);
 		/// <summary>Returns bounded metadata only, with a cursor for the remaining candidates.</summary>
-		StartupNativeImportSnapshot Snapshot(std::size_t offset = 0, std::size_t limit = 100) const;
-		/// <summary>Rejects stale ownership; saves declines before removing them or scheduling selected imports.</summary>
+		StartupNativeImportSnapshot Snapshot(std::size_t offset = 0, std::size_t limit = 100,
+		    const std::string& folder_id = {}) const;
+		/// <summary>Rejects stale ownership or decisions outside the requested workspace before saving declines or scheduling imports.</summary>
 		bool Decide(AppState& app, const std::string& generation, const std::vector<std::string>& selected_ids,
-		    const std::vector<std::string>& declined_ids, std::string* error_out = nullptr);
+		    const std::vector<std::string>& declined_ids, std::string* error_out = nullptr, const std::string& folder_id = {});
 		void Cancel();
 		bool ImportPending() const { return m_phase == "importing"; }
 
