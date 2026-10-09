@@ -129,7 +129,10 @@ export function WorkspacePicker({ folders, collections, executionHostId, value, 
 
   return <>
     <button ref={triggerRef} type="button" role="combobox" aria-label={label} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} disabled={disabled}
-      className="flex w-full items-center justify-between gap-2 border border-[var(--border)] bg-black px-2 py-1.5 text-left text-sm text-white"
+      className="flex w-full items-center justify-between gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-left text-sm outline-none"
+      style={{ background: 'var(--surface-up)', color: 'var(--text)' }}
+      onFocus={(event) => { event.currentTarget.style.borderColor = 'var(--accent)' }}
+      onBlur={(event) => { event.currentTarget.style.borderColor = 'var(--border)' }}
       onClick={() => open ? close() : show()} onKeyDown={(event) => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); event.stopPropagation(); show() }
       }}>

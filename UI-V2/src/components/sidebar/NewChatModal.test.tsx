@@ -840,17 +840,34 @@ describe('NewChatModal', () => {
 
   it('blocks chat creation and offers to create a workspace when none exists', async () => {
     const browseFolderDirectory = vi.fn().mockResolvedValue('/tmp/New Workspace')
-    const addFolder = vi.fn().mockResolvedValue(true)
+    const addFolder = vi.fn().mockResolvedValue(false)
     useAppStore.setState({ folders: [], newChatFolderId: null, browseFolderDirectory, addFolder })
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
-    expect(host.textContent).toContain('Choose a workspace.')
+    expect(host.textContent).not.toContain('Choose a workspace.')
+    expect(host.querySelector('[role="alert"]')).toBeNull()
     expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')?.disabled).toBe(true)
     const createWorkspace = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Choose workspace')
     await act(async () => { createWorkspace?.click(); await Promise.resolve(); await Promise.resolve() })
     expect(addFolder).toHaveBeenCalledWith('New Workspace', null, '/tmp/New Workspace')
+    expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1)
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe('The workspace could not be created. Choose another folder.')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('uses consistent field labels and a neutral close control', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    const label = (text: string) => Array.from(host.querySelectorAll<HTMLElement>('div')).find((element) => element.textContent?.trim() === text)
+    expect(label('Runs on')?.style.color).toBe('var(--text-2)')
+    expect(label('Provider')?.style.color).toBe('var(--text-2)')
+    expect(label('Folder')?.tagName).toBe('DIV')
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Close new chat"]')?.className).toContain('uam-iconbtn--ghost')
     act(() => root.unmount())
     host.remove()
   })
@@ -969,6 +986,8 @@ describe('NewChatModal', () => {
     const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
     expect(create().disabled).toBe(true)
     expect(host.textContent).toContain('Terminal fallback is also unavailable.')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Terminal fallback is also unavailable.')
+    expect((host.querySelector('[role="alert"]') as HTMLElement).style.color).toBe('var(--red)')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Home lab"]')!.click())
     const path = host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')!
     act(() => {

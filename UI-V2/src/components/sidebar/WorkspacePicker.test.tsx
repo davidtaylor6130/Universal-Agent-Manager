@@ -32,6 +32,19 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove() })
 
 describe('WorkspacePicker', () => {
+  it('uses the modal field surface and visible focus border', () => {
+    const picker = trigger()
+    expect(picker.className).toContain('rounded-md')
+    expect(picker.className).toContain('px-3')
+    expect(picker.className).toContain('py-2')
+    expect(picker.style.background).toBe('var(--surface-up)')
+    expect(picker.style.color).toBe('var(--text)')
+    act(() => picker.focus())
+    expect(picker.style.borderColor).toBe('var(--accent)')
+    act(() => picker.blur())
+    expect(picker.style.borderColor).toBe('var(--border)')
+  })
+
   it('mirrors first sidebar collection ownership and searches names, paths and group text', () => {
     open()
     expect(options().map((entry) => entry.textContent)).toEqual(['App/repo/app', 'Backend/repo/backend', 'Loose/misc'])
