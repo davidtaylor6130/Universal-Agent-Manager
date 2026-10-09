@@ -3,6 +3,7 @@
 #include "app/chat_domain_service.h"
 #include "common/models/app_models.h"
 #include "common/config/approval_modes.h"
+#include "common/config/central_provider_configuration.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/memory/memory_levels.h"
 #include "common/provider/provider_ids.h"
@@ -141,8 +142,8 @@ inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession
 	if (settings.central_provider_configuration.enabled)
 	{
 		chat.uam_agent_id = settings.central_provider_configuration.default_agent_id;
-		chat.uam_control_enabled = settings.central_provider_configuration.uam_control_enabled;
 	}
+	chat.uam_control_enabled = uam::central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", settings.central_provider_configuration.uam_control_enabled);
 	ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
 	if (payload_defaults != nullptr)
 	{

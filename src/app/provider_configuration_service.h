@@ -3,6 +3,7 @@
 #include "app/agent_definition_service.h"
 #include "app/markdown_store_service.h"
 #include "common/provider/provider_setup.h"
+#include "common/config/central_provider_configuration.h"
 #include "common/models/app_models.h"
 
 namespace uam
@@ -19,8 +20,10 @@ namespace uam
 	    const ChatSession& chat, const ExecutionHost& host, const std::filesystem::path& workspace,
 	    ProviderConfigurationBundle& bundle, std::string& error, const std::string* selected_agent_instructions = nullptr)
 	{
+		bundle = {};
 		// Source workspace settings follow isolated worktrees; the active workspace can override them.
 		std::vector<McpServerConfiguration> candidates = settings.mcp_servers;
+		for (McpServerConfiguration& server : candidates) server.enabled = central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, host.id, server.id, server.enabled);
 		if (!chat.workspace_source_directory.empty() && chat.workspace_source_directory != uam::paths::Utf8PathString(workspace))
 		{
 			std::stable_partition(candidates.begin(), candidates.end(), [&](const McpServerConfiguration& server)
@@ -33,8 +36,9 @@ namespace uam
 		}
 		const std::vector<McpServerConfiguration> selected_servers = mcp_server_config::SelectForWorkspace(
 		    candidates, uam::paths::Utf8PathString(workspace), host.id);
-		if (!settings.central_provider_configuration.enabled && selected_servers.empty()) return true;
-		const CentralProviderConfiguration& configuration = settings.central_provider_configuration;
+		CentralProviderConfiguration configuration = settings.central_provider_configuration;
+		configuration.enabled = central_configuration::McpEnabled(configuration, chat.provider_id, host.id, "shared-setup", configuration.enabled);
+		if (!configuration.enabled && selected_servers.empty()) return true;
 		std::set<std::string> executable_files;
 		if (configuration.enabled)
 		{

@@ -7,6 +7,7 @@ class AntigravityCliProviderRuntime final : public IProviderRuntime
 {
   public:
 	const char* RuntimeId() const override;
+	const ProviderCliPolicy* CliVersionPolicy() const override;
 	bool SupportsTextWorkers() const override { return false; }
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile&, const ChatSession&, const AppSettings&) const override;
 	bool SupportsInteractivePromptTracking() const override { return false; }

@@ -27,6 +27,7 @@ namespace uam
 		                                   const ChatSession& chat, std::string_view setup_method,
 		                                   nlohmann::json& request, std::string* error_out = nullptr);
 		static bool PrepareTerminalMcpServer(AppState& app, CliTerminalState& terminal, const ChatSession& chat, nlohmann::json& server, std::string& error);
+		static void RevokeForChat(AppState& app, std::string_view chat_id);
 		static void RevokeForSession(AppState& app, AcpSessionState& session);
 		static bool ProcessPendingRequests(AppState& app);
 		static std::optional<AcpPendingUserInputState> PendingApprovalForChat(const AppState& app,

@@ -869,39 +869,33 @@ void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> brows
 		cb->Failure(409, "Stop the current provider session before enabling agent goal control.");
 		return;
 	}
-	if (chat->uam_control_enabled == *enabled)
+	if (chat->uam_control_enabled == *enabled && chat->uam_control_explicitly_disabled == !*enabled)
 	{
+		if (!*enabled)
+		{
+			uam::UamControlService::RevokeForChat(m_app, chat->id);
+			uam::PushStateUpdateIfChanged(browser, m_app);
+		}
 		cb->Success(nlohmann::json{{"enabled", *enabled}}.dump());
 		return;
 	}
 
 	const bool previous = chat->uam_control_enabled;
+	const bool previous_explicitly_disabled = chat->uam_control_explicitly_disabled;
 	const std::string previous_updated_at = chat->updated_at;
 	chat->uam_control_enabled = *enabled;
+	chat->uam_control_explicitly_disabled = !*enabled;
 	chat->updated_at = uam::time::TimestampNow();
 	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Agent goal control updated.",
 	                                                "Agent goal control changed in UI, but failed to save."))
 	{
 		chat->uam_control_enabled = previous;
+		chat->uam_control_explicitly_disabled = previous_explicitly_disabled;
 		chat->updated_at = previous_updated_at;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist agent goal control."));
 		return;
 	}
-	if (!*enabled)
-	{
-		if (session != nullptr)
-		{
-			uam::UamControlService::RevokeForSession(m_app, *session);
-		}
-		for (const auto& terminal : m_app.cli_terminals)
-		{
-			if (terminal != nullptr && terminal->uam_control_session != nullptr && terminal->uam_control_session->chat_id == chat->id)
-			{
-				uam::UamControlService::RevokeForSession(m_app, *terminal->uam_control_session);
-				terminal->uam_control_relay.reset();
-			}
-		}
-	}
+	if (!*enabled) uam::UamControlService::RevokeForChat(m_app, chat->id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(nlohmann::json{{"enabled", chat->uam_control_enabled}}.dump());
 }

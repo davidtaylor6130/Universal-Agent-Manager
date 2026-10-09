@@ -11793,6 +11793,9 @@ UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("claude-cli"), std::string("claude --version"));
 	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("opencode-cli"), std::string("opencode --version"));
 	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("copilot-cli"), std::string("copilot --version"));
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("antigravity-cli"), std::string("agy --version"));
+#endif
 	UAM_ASSERT_EQ(BuildCliProviderVersionProbeCommandForTests("unknown-provider"), std::string(""));
 	UAM_ASSERT(service.PreferredVersionForProvider("unknown-provider").empty());
 	UAM_ASSERT(!service.IsSupportedVersionForProvider("unknown-provider", "latest"));
@@ -23255,6 +23258,23 @@ UAM_TEST(ProviderHandoffOversizedLatestEntryKeepsUtf8AlignedSuffix)
 	UAM_ASSERT_EQ(static_cast<unsigned char>(context[suffix]), static_cast<unsigned char>(0xc3));
 	UAM_ASSERT(context.ends_with(" END\n\n"));
 }
+UAM_TEST(UamMcpDefaultsAreIndependentOfSharedInstructions)
+{
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = false;
+	settings.central_provider_configuration.uam_control_enabled = true;
+	for (const char* provider : uam::provider_ids::kAllCliProviderIds)
+	{
+		ChatSession chat; chat.provider_id = provider;
+		uam::query_handler_internal::ApplyProviderDefaultsToChat(settings, chat);
+		UAM_ASSERT(chat.uam_control_enabled);
+		settings.central_provider_configuration.uam_control_enabled = false;
+		uam::query_handler_internal::ApplyProviderDefaultsToChat(settings, chat);
+		UAM_ASSERT(!chat.uam_control_enabled);
+		settings.central_provider_configuration.uam_control_enabled = true;
+	}
+}
+
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 UAM_TEST(AntigravityTerminalAliasesAndCapabilitiesRemainDistinct)
 {
@@ -23269,12 +23289,22 @@ UAM_TEST(AntigravityTerminalAliasesAndCapabilitiesRemainDistinct)
 	UAM_ASSERT(uam::ProviderSupportsInteractiveTerminal(profile));
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(profile);
 	UAM_ASSERT(!runtime.SupportsTextWorkers());
-	UAM_ASSERT(runtime.CliVersionPolicy() == nullptr);
+	UAM_ASSERT(runtime.CliVersionPolicy() != nullptr);
+	UAM_ASSERT_EQ(std::string(runtime.CliVersionPolicy()->version_probe_command), std::string("agy --version"));
 	UAM_ASSERT(!runtime.BuildStructuredLaunchArgv(profile, {}).empty());
 	UAM_ASSERT(!uam::provider_ids::IsVersionManagedCliProviderId(profile.id));
 	const nlohmann::json serialized = uam::StateSerializer::SerializeProvider(profile);
 	UAM_ASSERT(serialized["supportsStructured"].get<bool>());
 	UAM_ASSERT_EQ(serialized["structuredPermissionControl"].get<std::string>(), std::string("provider"));
+	uam::AppState app; app.provider_profiles = {profile};
+	const nlohmann::json state = uam::StateSerializer::Serialize(app);
+	UAM_ASSERT_EQ(state["cliVersionManager"]["providers"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(state["cliVersionManager"]["providers"][0]["providerId"], nlohmann::json(profile.id));
+	UAM_ASSERT(!state["cliVersionManager"]["providers"][0]["canInstall"].get<bool>());
+	std::string error;
+	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, profile.id, "latest", &error));
+	UAM_ASSERT(error.find("existing installer") != std::string::npos);
+	UAM_ASSERT(app.runtime_cli_install_tasks.empty());
 }
 
 UAM_TEST(AntigravityTerminalLaunchAndSavedResumePreserveIdentityAndFlags)

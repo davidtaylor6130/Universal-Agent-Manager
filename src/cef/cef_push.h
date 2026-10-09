@@ -11,7 +11,7 @@ namespace uam
 {
 
 	/// <summary>
-	/// Serialises the full AppState and calls window.uamPush({type:"stateUpdate",...}) in the
+	/// Serialises AppState summaries, with transcripts loaded separately, and calls window.uamPush({type:"stateUpdate",...}) in the
 	/// browser's main frame.  Safe to call from any thread — marshals to the UI thread internally.
 	/// </summary>
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app);
@@ -26,6 +26,7 @@ namespace uam
 	{
 		return StateSerializer::SerializeFingerprint(app).dump();
 	}
+	std::string StateUpdateForTests(const AppState& app);
 	std::string StatePatchForTests(const AppState& before, const AppState& after);
 	std::string SettingsPatchForTests(const AppState& app);
 

@@ -138,6 +138,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setCentralProviderConfiguration", &UamQueryHandler::HandleSetCentralProviderConfiguration},
 		{"setMcpServers", &UamQueryHandler::HandleSetMcpServers},
 		{"getProviderMcpStatus", &UamQueryHandler::HandleGetProviderMcpStatus},
+		{"setProviderMcpConfiguration", &UamQueryHandler::HandleSetProviderMcpConfiguration},
 		{"previewOpenCodeMcpImport", &UamQueryHandler::HandlePreviewOpenCodeMcpImport},
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},

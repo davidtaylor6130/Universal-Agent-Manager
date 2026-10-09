@@ -1,6 +1,8 @@
 #include "test_harness.h"
 #include "app/provider_mcp_settings_service.h"
+#include "app/provider_configuration_service.h"
 #include "app/uam_control_service.h"
+#include "common/config/central_provider_configuration.h"
 
 UAM_TEST(ProviderMcpImportPreservesArgumentsAndReferencesAndReportsUnsupportedEntries)
 {
@@ -59,6 +61,12 @@ UAM_TEST(ProviderMcpStatusRequiresCurrentChatBoundHandshakeAndRejectsStaleAuthor
 	};
 	UAM_ASSERT(receipt("handshake", "_mcp_initialized", "connection-one").value("ok", false));
 	UAM_ASSERT_EQ(status(chat.id), std::string("handshake-confirmed"));
+	UAM_ASSERT(!receipt("foreign-heartbeat", "_mcp_heartbeat", "foreign").value("ok", true));
+	UAM_ASSERT(receipt("heartbeat", "_mcp_heartbeat", "connection-one").value("ok", false));
+	UAM_ASSERT_EQ(status(chat.id), std::string("connected"));
+	app.uam_control_capabilities.front().mcp_heartbeat_at_epoch_ms = uam::time::SystemEpochMillisecondsNow() - 20001;
+	UAM_ASSERT_EQ(status(chat.id), std::string("handshake-confirmed"));
+
 	session.process_execution_host_id = "old-host";
 	UAM_ASSERT_EQ(status(chat.id), std::string("missing"));
 	session.process_execution_host_id = "local";
@@ -109,10 +117,35 @@ UAM_TEST(ProviderMcpFileImportIsBoundedReadOnlyAndReportsUnsupportedJsonSyntax)
 	const nlohmann::json result = uam::provider_mcp_settings::ReadImport(uam::paths::Utf8PathString(file), "", "", "", {}, {});
 	UAM_ASSERT_EQ(result["servers"].size(), std::size_t{1});
 	std::string after; UAM_ASSERT(uam::io::TryReadTextFile(file, after)); UAM_ASSERT_EQ(after, original);
+	const std::string jsonc = "{ // trailing commas are valid JSONC\n \"mcp\": {\"remote\": {\"type\": \"remote\", \"url\": \"https://example.test/mcp?a=,}\",},},}";
+	UAM_ASSERT(uam::io::WriteTextFile(file, jsonc));
+	const nlohmann::json directory = uam::provider_mcp_settings::ReadImport(uam::paths::Utf8PathString(temp.root), "", "{\"mcp\":{}}", "", {}, {});
+	UAM_ASSERT_EQ(directory["servers"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(directory["sources"][0].get<std::string>(), uam::paths::Utf8PathString(file));
+	UAM_ASSERT_EQ(directory["servers"][0]["url"].get<std::string>(), std::string("https://example.test/mcp?a=,}"));
+	UAM_ASSERT(uam::io::TryReadTextFile(file, after)); UAM_ASSERT_EQ(after, jsonc);
+	const std::filesystem::path global = temp.root / "global" / "opencode";
+	UAM_ASSERT(uam::paths::CreateDirectoriesNoThrow(global));
+	UAM_ASSERT(uam::io::WriteTextFile(global / "opencode.jsonc", jsonc));
+	const nlohmann::json global_result = uam::provider_mcp_settings::ReadImport("", "", "{\"mcp\":{}}", "", global.parent_path(), {});
+	UAM_ASSERT_EQ(global_result["servers"].size(), std::size_t{1});
+	UAM_ASSERT(uam::io::WriteTextFile(global / "opencode.json", "{\"mcp\":{\"another\":{\"type\":\"remote\",\"url\":\"https://second.test/mcp\"}}}"));
+	const nlohmann::json layered = uam::provider_mcp_settings::ReadImport(uam::paths::Utf8PathString(global), "", "", "", {}, {});
+	UAM_ASSERT_EQ(layered["sources"].size(), std::size_t{2});
+	UAM_ASSERT_EQ(layered["servers"].size(), std::size_t{2});
+	for (const std::string& malformed : {std::string("{\"mcp\":{,}}"), std::string("{\"mcp\":{\"x\":,}}"), std::string("{/* unfinished")})
+	{
+		bool failed = false;
+		try { (void)nlohmann::json::parse(uam::provider_mcp_settings::JsoncText(malformed)); }
+		catch (const std::exception&) { failed = true; }
+		UAM_ASSERT(failed);
+	}
+
 	bool rejected = false;
-	try { (void)uam::provider_mcp_settings::ReadImport("", "", "{\"mcp\": {},}", "", {}, {}); }
-	catch (const std::runtime_error& error) { rejected = std::string(error.what()).find("trailing commas") != std::string::npos; }
+	try { (void)uam::provider_mcp_settings::ReadImport(uam::paths::Utf8PathString(temp.root / "missing"), "", "{\"mcp\":{}}", "", {}, {}); }
+	catch (const std::runtime_error&) { rejected = true; }
 	UAM_ASSERT(rejected);
+
 	rejected = false;
 	try { (void)uam::provider_mcp_settings::ReadImport("", "", std::string(uam::provider_setup::kMaxFileBytes + 1, ' '), "", {}, {}); }
 	catch (const std::runtime_error& error) { rejected = std::string(error.what()).find("2 MiB") != std::string::npos; }
@@ -129,4 +162,38 @@ UAM_TEST(ProviderMcpFileImportIsBoundedReadOnlyAndReportsUnsupportedJsonSyntax)
 	std::filesystem::create_symlink(file, link);
 	UAM_ASSERT(!uam::provider_mcp_settings::ReadConfigFile(link, bounded));
 #endif
+}
+
+UAM_TEST(ProviderMcpOverridesPersistOnlyForTheSelectedProviderAndHost)
+{
+	CentralProviderConfiguration configuration;
+	std::string error;
+	const nlohmann::json overrides = nlohmann::json::array({{{"providerId", "gemini-cli"}, {"executionHostId", "local"}, {"serverId", "uam-mcp"}, {"enabled", false}}});
+	UAM_ASSERT(uam::central_configuration::Parse({{"uamControlEnabled", true}, {"mcpOverrides", overrides}}, configuration, error));
+	const nlohmann::json serialized = uam::central_configuration::Serialize(configuration);
+	UAM_ASSERT(serialized.contains("mcpOverrides"));
+	UAM_ASSERT_EQ(serialized["mcpOverrides"], overrides);
+	UAM_ASSERT(!uam::central_configuration::McpEnabled(configuration, "gemini-cli", "local", "uam-mcp", true));
+	UAM_ASSERT(uam::central_configuration::McpEnabled(configuration, "codex-cli", "local", "uam-mcp", true));
+	UAM_ASSERT(uam::central_configuration::McpEnabled(configuration, "gemini-cli", "ssh-other", "uam-mcp", true));
+	const nlohmann::json duplicate = nlohmann::json::array({overrides.front(), overrides.front()});
+	UAM_ASSERT(!uam::central_configuration::Parse({{"mcpOverrides", duplicate}}, configuration, error));
+	UAM_ASSERT_EQ(uam::central_configuration::Serialize(configuration), serialized);
+	uam_test::TempDir temp("mcp-provider-scope");
+	AppSettings settings;
+	McpServerConfiguration server; server.id = "docs"; server.name = "Docs"; server.transport = "http"; server.url = "https://docs.test/mcp"; server.enabled = false;
+	settings.mcp_servers.push_back(server);
+	settings.central_provider_configuration.mcp_overrides.push_back({"gemini-cli", "local", "docs", true});
+	ChatSession chat; chat.provider_id = "gemini-cli"; chat.execution_host_id = "local";
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root, settings, chat, host, temp.root, bundle, error));
+	UAM_ASSERT_EQ(bundle.manifest["mcpServers"].size(), std::size_t{1});
+	chat.provider_id = "codex-cli";
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root, settings, chat, host, temp.root, bundle, error));
+	UAM_ASSERT(bundle.local_directory.empty());
+	UAM_ASSERT(bundle.manifest.is_null());
+	UAM_ASSERT(bundle.files.empty());
+
+
 }

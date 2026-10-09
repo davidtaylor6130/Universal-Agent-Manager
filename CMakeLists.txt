@@ -1196,6 +1196,7 @@ if(UAM_BUILD_TESTS)
     tests/chat_search_tests.cpp
     tests/provider_configuration_tests.cpp
     tests/provider_mcp_settings_tests.cpp
+    tests/uam_control_transport_tests.cpp
     src/common/utils/diagnostic_log.cpp
     tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp

@@ -398,6 +398,9 @@ namespace uam
 		bool mcp_initialized = false;
 		std::string mcp_connection_id;
 		int64_t mcp_initialized_at_epoch_ms = 0;
+		int64_t mcp_heartbeat_at_epoch_ms = 0;
+		bool session_control_override_at_launch = false;
+		bool root_control_override_at_launch = false;
 		std::string provider_id;
 		std::string agent_id;
 		std::string agent_run_id;

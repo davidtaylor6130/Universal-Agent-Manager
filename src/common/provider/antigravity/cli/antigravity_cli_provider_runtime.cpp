@@ -271,3 +271,16 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 	}
 	return true;
 }
+
+const ProviderCliPolicy* AntigravityCliProviderRuntime::CliVersionPolicy() const
+{
+	static constexpr ProviderCliPolicy policy
+	{
+		.provider_id = uam::provider_ids::kAntigravityCli,
+		.fallback_title = "Antigravity CLI",
+		.executable_name = "agy",
+		.version_probe_command = "agy --version",
+		.provider_managed = true,
+	};
+	return &policy;
+}

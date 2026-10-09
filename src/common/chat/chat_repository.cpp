@@ -1358,6 +1358,7 @@ namespace
 		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find(kChatMemoryLastProcessedAtField));
 		chat.small_model_mode = JsonBoolOrDefault(root.Find(kChatSmallModelModeField), false);
 		chat.uam_control_enabled = JsonBoolOrDefault(root.Find("uamControlEnabled"), false);
+		chat.uam_control_explicitly_disabled = JsonBoolOrDefault(root.Find("uamControlExplicitlyDisabled"), false);
 
 		// Load goals array
 		if (const JsonValue* goals_arr = uam::json::ArrayOrNull(root.Find("goals")); goals_arr != nullptr)
@@ -1833,6 +1834,7 @@ try
 	uam::json::SetString(root, kChatMemoryLastProcessedAtField, chat.memory_last_processed_at);
 	uam::json::SetBool(root, kChatSmallModelModeField, chat.small_model_mode);
 	uam::json::SetBool(root, "uamControlEnabled", chat.uam_control_enabled);
+	uam::json::SetBool(root, "uamControlExplicitlyDisabled", chat.uam_control_explicitly_disabled);
 
 	std::size_t persisted_message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
 	std::string persisted_messages_digest = chat.messages_loaded && fingerprint == nullptr

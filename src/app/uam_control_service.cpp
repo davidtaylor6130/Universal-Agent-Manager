@@ -1,4 +1,6 @@
 #include "common/provider/provider_setup.h"
+#include <condition_variable>
+#include <mutex>
 #include "app/uam_control_service.h"
 
 #include "app/agent_definition_service.h"
@@ -14,6 +16,7 @@
 #include "app/markdown_store_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
+#include "common/config/central_provider_configuration.h"
 #include "common/config/settings_normalization.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -128,7 +131,7 @@ namespace uam
 
 		bool ValidToolArguments(std::string_view method, const nlohmann::json& arguments)
 		{
-			if (method == "_mcp_initialized" || method == "_mcp_disconnected")
+			if (method == "_mcp_initialized" || method == "_mcp_disconnected" || method == "_mcp_heartbeat")
 				return HasOnlyStringArguments(arguments, {"connectionId"}) && SafeRequestId(arguments["connectionId"].get_ref<const std::string&>());
 			if (method == "skill_list" || method == "agent_list" || method == "goal_get")
 				return arguments.is_object() && arguments.empty();
@@ -244,6 +247,13 @@ namespace uam
 				parent = run->parent_run_id;
 			}
 			return false;
+		}
+
+		/// A provider override grants this launch; later settings changes do not alter its authority.
+		bool ControlEnabled(const ChatSession* chat, const UamControlCapability& capability, bool root)
+		{
+			return chat != nullptr && !chat->uam_control_explicitly_disabled && (chat->uam_control_enabled ||
+			    (root ? capability.root_control_override_at_launch : capability.session_control_override_at_launch));
 		}
 
 		std::string GoalStatusName(GoalStatus status)
@@ -551,7 +561,7 @@ namespace uam
 			        uam::approval_modes::kPlanApprovalMode;
 			return {.ok = true,
 			        .result = {{"goal", GoalJson(GoalService::FindActiveOrLatestTerminalGoal(app, capability.chat_id), app)},
-			                   {"controlEnabled", chat != nullptr && chat->uam_control_enabled},
+			                   {"controlEnabled", ControlEnabled(chat, capability, true)},
 			                   {"mutationToolsEnabled", mutations_allowed},
 			                   {"mutationPolicy", mutations_allowed ? "yoloAutoApprove" : "readOnly"},
 			                   {"agentGoalManagementEnabled", goal_creation_allowed}, {"lifecycleOwner", "uam"},
@@ -624,7 +634,7 @@ namespace uam
 		                             int64_t now_epoch_ms)
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || !chat->uam_control_enabled)
+			if (!ControlEnabled(chat, capability, true))
 				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
 			if (uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
 			    uam::approval_modes::kPlanApprovalMode)
@@ -653,8 +663,7 @@ namespace uam
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
 			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || !chat->uam_control_enabled || root_chat == nullptr ||
-			    !root_chat->uam_control_enabled)
+			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root_chat, capability, true))
 				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
 			if (!uam::computer_use::AvailableForChat(*chat) || !uam::computer_use::UsesUamBackend(*chat))
 				return {.error = "UAM Computer Use is unavailable for this chat or execution host."};
@@ -678,8 +687,7 @@ namespace uam
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
 			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || root_chat == nullptr || !chat->uam_control_enabled ||
-			    !root_chat->uam_control_enabled)
+			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root_chat, capability, true))
 				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
 			std::vector<std::string> options;
 			for (const nlohmann::json& option : arguments.value("options", nlohmann::json::array()))
@@ -695,7 +703,7 @@ namespace uam
 		                       std::string_view method, const nlohmann::json& arguments)
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || !chat->uam_control_enabled)
+			if (!ControlEnabled(chat, capability, true))
 				return {.error = "Agent-goal management is disabled or the owning chat is unavailable."};
 			if (IsMutation(method) && !MutationsAllowed(*chat))
 				return {.error = "UAM Control mutations require the owning chat's YOLO permission mode and are forbidden in Plan mode; this request was rejected without changing state."};
@@ -759,24 +767,33 @@ namespace uam
 			if (capability->seen_request_ids.size() > kMaxSeenRequests)
 				capability->seen_request_ids.erase(capability->seen_request_ids.begin());
 
+
+
+			// Transport receipts are session-bound observations, not tools or durable chat mutations.
+			if (method == "_mcp_initialized" || method == "_mcp_disconnected" || method == "_mcp_heartbeat")
+			{
+				const std::string connection = arguments["connectionId"].get<std::string>();
+				if (method == "_mcp_heartbeat")
+				{
+					if (!capability->mcp_initialized || capability->mcp_connection_id != connection) return reject("MCP connection is no longer current.");
+					capability->mcp_heartbeat_at_epoch_ms = now_epoch_ms;
+					return {{"ok", true}, {"result", nlohmann::json::object()}};
+				}
+				if (method == "_mcp_disconnected" && capability->mcp_connection_id != connection)
+					return {{"ok", true}, {"result", nlohmann::json::object()}};
+				capability->mcp_heartbeat_at_epoch_ms = 0;
+				capability->mcp_connection_id = connection;
+				capability->mcp_initialized = method == "_mcp_initialized";
+				capability->mcp_initialized_at_epoch_ms = capability->mcp_initialized ? now_epoch_ms : 0;
+				return {{"ok", true}, {"result", nlohmann::json::object()}};
+			}
+
 			while (!capability->request_times_epoch_ms.empty() &&
 			       capability->request_times_epoch_ms.front() <= now_epoch_ms - 60000)
 				capability->request_times_epoch_ms.pop_front();
 			if (capability->request_times_epoch_ms.size() >= kMaxRequestsPerMinute)
 				return reject("Control capability exceeded the bounded request rate.");
 			capability->request_times_epoch_ms.push_back(now_epoch_ms);
-
-			// Transport receipts are session-bound observations, not tools or durable chat mutations.
-			if (method == "_mcp_initialized" || method == "_mcp_disconnected")
-			{
-				const std::string connection = arguments["connectionId"].get<std::string>();
-				if (method == "_mcp_disconnected" && capability->mcp_connection_id != connection)
-					return {{"ok", true}, {"result", nlohmann::json::object()}};
-				capability->mcp_connection_id = connection;
-				capability->mcp_initialized = method == "_mcp_initialized";
-				capability->mcp_initialized_at_epoch_ms = capability->mcp_initialized ? now_epoch_ms : 0;
-				return {{"ok", true}, {"result", nlohmann::json::object()}};
-			}
 
 			const ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
 			const std::optional<ChatSession> rollback = before_chat == nullptr ? std::nullopt : std::optional<ChatSession>{*before_chat};
@@ -865,7 +882,7 @@ namespace uam
 
 		std::optional<nlohmann::json> SubmitToManager(const std::filesystem::path& capability,
 		                                              std::string_view method,
-		                                              const nlohmann::json& arguments)
+		                                              const nlohmann::json& arguments, std::stop_token cancel = {})
 		{
 			if (!uam::paths::IsDirectoryNoThrow(capability) || uam::paths::IsLinkOrReparsePointNoThrow(capability))
 				return std::nullopt;
@@ -877,7 +894,7 @@ namespace uam
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
 			const int max_attempts = method == "computer_use_request" || method == "goal_create" || method == "user_question"
 			    ? 4000 : 400;
-			for (int attempt = 0; attempt < max_attempts; ++attempt)
+			for (int attempt = 0; attempt < max_attempts && !cancel.stop_requested(); ++attempt)
 			{
 				const auto size = uam::paths::FileSizeNoThrow(response_path);
 				if (size.has_value())
@@ -891,6 +908,11 @@ namespace uam
 				}
 				if (!uam::paths::IsDirectoryNoThrow(capability)) return std::nullopt;
 				std::this_thread::sleep_for(std::chrono::milliseconds(25));
+			}
+			if (method == "_mcp_heartbeat")
+			{
+				(void)uam::paths::RemoveFileNoThrow(capability / "requests" / (id + ".json"));
+				(void)uam::paths::RemoveFileNoThrow(response_path);
 			}
 			return std::nullopt;
 		}
@@ -923,6 +945,7 @@ namespace uam
 		const std::string connection_id = RandomRequestId();
 		bool initialization_replied = false;
 		bool connection_recorded = false;
+		std::jthread heartbeat;
 		std::string line;
 		while (std::getline(std::cin, line))
 		{
@@ -935,6 +958,27 @@ namespace uam
 				{
 					const std::optional<nlohmann::json> receipt = SubmitToManager(*capability, "_mcp_initialized", {{"connectionId", connection_id}});
 					connection_recorded = receipt.has_value() && receipt->value("ok", false);
+					if (connection_recorded && !heartbeat.joinable())
+					{
+						heartbeat = std::jthread([directory = *capability, connection_id](std::stop_token cancel)
+						{
+							std::condition_variable_any wake;
+							std::mutex mutex;
+							std::unique_lock<std::mutex> lock(mutex);
+							while (!cancel.stop_requested())
+							{
+								try
+								{
+									const std::optional<nlohmann::json> result = SubmitToManager(directory, "_mcp_heartbeat", {{"connectionId", connection_id}}, cancel);
+									if (cancel.stop_requested() || !uam::paths::IsDirectoryNoThrow(directory) ||
+									    (result.has_value() && result->value("error", "") == "MCP connection is no longer current.")) break;
+								}
+								catch (const std::exception&) { break; }
+								wake.wait_for(lock, cancel, std::chrono::seconds(5), [] { return false; });
+							}
+						});
+					}
+
 				}
 				continue;
 			}
@@ -980,6 +1024,8 @@ namespace uam
 			std::cout << output << '\n' << std::flush;
 			if (method == "initialize" && std::cout.good()) initialization_replied = true;
 		}
+		heartbeat.request_stop();
+		if (heartbeat.joinable()) heartbeat.join();
 		if (connection_recorded && uam::paths::IsDirectoryNoThrow(*capability))
 		{
 			// Do not delay provider shutdown waiting for the GUI to process the receipt.
@@ -1032,7 +1078,7 @@ namespace uam
 	                                               const ChatSession& chat, std::string_view setup_method,
 	                                               nlohmann::json& request, std::string* error_out)
 	{
-		if (!chat.uam_control_enabled || session.model_discovery_only) return true;
+		if (chat.uam_control_explicitly_disabled || !central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", chat.uam_control_enabled) || session.model_discovery_only) return true;
 		if (setup_method != uam::acp_methods::kSessionNew && setup_method != uam::acp_methods::kSessionLoad && setup_method != uam::acp_methods::kSessionResume)
 		{
 			if (error_out != nullptr) *error_out = "UAM control is available only during structured session creation, load, or resume.";
@@ -1055,7 +1101,7 @@ namespace uam
 		const AgentRun* run = chat.agent_run_id.empty() ? nullptr : FindRun(app, chat.agent_run_id);
 		const std::string root_chat_id = run == nullptr ? chat.id : run->root_chat_id;
 		const ChatSession* root_chat = ChatDomainService().FindChatById(app, root_chat_id);
-		if (root_chat == nullptr || !root_chat->uam_control_enabled)
+		if (root_chat == nullptr || root_chat->uam_control_explicitly_disabled || !central_configuration::McpEnabled(app.settings.central_provider_configuration, root_chat->provider_id, root_chat->execution_host_id, "uam-mcp", root_chat->uam_control_enabled))
 		{
 			if (error_out != nullptr) *error_out = "The owning root chat no longer permits UAM control.";
 			return false;
@@ -1064,13 +1110,15 @@ namespace uam
 		capability.id = NewUuid();
 		capability.directory = ControlRoot(app) / app.uam_control_manager_id / capability.id;
 		capability.chat_id = root_chat_id;
+		capability.session_control_override_at_launch = !chat.uam_control_enabled;
+		capability.root_control_override_at_launch = !root_chat->uam_control_enabled;
 		capability.session_chat_id = chat.id;
 		capability.provider_id = session.provider_id;
 		capability.agent_id = uam::strings::NonEmptyOrFallback(session.active_uam_agent_id, "build");
 		capability.agent_run_id = run == nullptr ? std::string{} : run->id;
 		capability.agent_skills = session.active_uam_agent_skills;
 		capability.provider_configuration_directory = session.provider_configuration_directory;
-		capability.central_skills_enabled = app.settings.central_provider_configuration.enabled && (capability.agent_id == "build" || capability.agent_id == "plan");
+		capability.central_skills_enabled = central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "shared-setup", app.settings.central_provider_configuration.enabled) && (capability.agent_id == "build" || capability.agent_id == "plan");
 		capability.agent_delegates = session.active_uam_agent_delegates;
 		capability.expires_at_epoch_ms = uam::time::SystemEpochMillisecondsNow() + kCapabilityLifetimeMs;
 		if (capability.id.empty() || !uam::paths::CreateDirectoriesNoThrow(capability.directory / "requests") ||
@@ -1111,7 +1159,7 @@ namespace uam
 		if (terminal.uam_control_session != nullptr) RevokeForSession(app, *terminal.uam_control_session);
 		terminal.uam_control_session.reset();
 		terminal.uam_control_relay.reset();
-		if (!chat.uam_control_enabled) return true;
+		if (chat.uam_control_explicitly_disabled || !central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", chat.uam_control_enabled)) return true;
 		const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
 		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
 		if (selected == catalog.definitions.end()) { error = "The selected UAM agent is unavailable."; return false; }
@@ -1127,6 +1175,27 @@ namespace uam
 		if (!AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, request, &error)) return false;
 		server = request["params"]["mcpServers"].back();
 		return true;
+	}
+
+	void UamControlService::RevokeForChat(AppState& app, std::string_view chat_id)
+	{
+		std::set<std::string> ids;
+		for (const UamControlCapability& capability : app.uam_control_capabilities)
+			if (capability.chat_id == chat_id || capability.session_chat_id == chat_id) ids.insert(capability.id);
+		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
+			if (session != nullptr && ids.contains(session->uam_control_capability_id)) RevokeForSession(app, *session);
+		for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
+			if (terminal != nullptr && terminal->uam_control_session != nullptr && ids.contains(terminal->uam_control_session->uam_control_capability_id))
+			{
+				RevokeForSession(app, *terminal->uam_control_session);
+				terminal->uam_control_relay.reset();
+			}
+		std::erase_if(app.uam_control_capabilities, [&](const UamControlCapability& capability)
+		{
+			if (!ids.contains(capability.id)) return false;
+			(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(capability.directory);
+			return true;
+		});
 	}
 
 	void UamControlService::RevokeForSession(AppState& app, AcpSessionState& session)
@@ -1222,10 +1291,9 @@ namespace uam
 				return fail("Choose Allow or Deny for this UAM request.");
 			ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 			ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr || root_chat == nullptr || !root_chat->uam_control_enabled ||
-			    (user_question && !chat->uam_control_enabled) ||
-			    (computer_use && (!chat->uam_control_enabled ||
-			                      !uam::computer_use::AvailableForChat(*chat) ||
+			if (chat == nullptr || !ControlEnabled(root_chat, capability, true) ||
+			    ((user_question || computer_use) && !ControlEnabled(chat, capability, false)) ||
+			    (computer_use && (!uam::computer_use::AvailableForChat(*chat) ||
 			                      !uam::computer_use::UsesUamBackend(*chat))))
 				return fail("This UAM request is no longer available for this chat.");
 			if (!user_question && answer == "Allow" &&

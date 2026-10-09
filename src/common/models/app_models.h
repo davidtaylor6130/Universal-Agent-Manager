@@ -383,6 +383,7 @@ struct ChatSession
 	std::string goal_iteration_turn_kind;
 	int goal_iteration_repair_attempts = 0;
 	bool uam_control_enabled = false;
+	bool uam_control_explicitly_disabled = false;
 	std::string command_safety_tier = "off";
 	// Enablement and the selected OS target are intentionally runtime-only.
 	// Only the backend preference is persisted with the chat.
@@ -570,10 +571,16 @@ struct ComputerUseApplicationRule
 	bool operator==(const ComputerUseApplicationRule&) const = default;
 };
 
-/// <summary>
-/// Persisted application settings.
-/// </summary>
-/// <summary>Resources UAM installs privately for every configured provider launch.</summary>
+/// <summary>A provider and host's override of a shared resource default.</summary>
+struct ProviderMcpOverride
+{
+	std::string provider_id;
+	std::string execution_host_id;
+	std::string server_id;
+	bool enabled = true;
+};
+
+/// <summary>Resources UAM installs privately for configured provider launches.</summary>
 struct CentralProviderConfiguration
 {
 	bool enabled = false;
@@ -582,6 +589,7 @@ struct CentralProviderConfiguration
 	std::vector<std::string> skill_directories;
 	std::string default_agent_id = "build";
 	bool uam_control_enabled = true;
+	std::vector<ProviderMcpOverride> mcp_overrides;
 	std::vector<std::string> default_skills;
 	std::vector<std::string> default_agents;
 };

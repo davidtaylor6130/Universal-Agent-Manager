@@ -131,7 +131,7 @@ namespace
 	std::string BuildFullStateUpdateMessage(const uam::AppState& app)
 	{
 		nlohmann::json msg = PushMessage(kPushTypeStateUpdate);
-		msg["data"] = uam::StateSerializer::Serialize(app);
+		msg["data"] = uam::StateSerializer::Serialize(app, true);
 		return DumpFrontendJson(msg);
 	}
 
@@ -367,6 +367,11 @@ namespace
 
 namespace uam
 {
+
+	std::string StateUpdateForTests(const AppState& app)
+	{
+		return BuildFullStateUpdateMessage(app);
+	}
 
 	std::string SettingsPatchForTests(const AppState& app)
 	{

@@ -855,6 +855,33 @@ void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrow
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetProviderMcpConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	try
+	{
+		const std::string host = payload.at("executionHostId").get<std::string>();
+		const std::string provider = payload.at("providerId").get<std::string>();
+		const std::string server = payload.at("serverId").get<std::string>();
+		const bool enabled = payload.at("enabled").get<bool>();
+		if (uam::execution_hosts::Find(m_app.settings.execution_hosts, host) == nullptr || !uam::provider_ids::ContainsProviderId(uam::provider_ids::kAllCliProviderIds, provider))
+		{ cb->Failure(404, "Provider or execution host not found."); return; }
+		if (server != "uam-mcp" && server != "shared-setup" && std::ranges::none_of(m_app.settings.mcp_servers, [&](const McpServerConfiguration& item) { return item.id == server && (item.execution_host_id.empty() || item.execution_host_id == host); }))
+		{ cb->Failure(404, "MCP server is not configured on this host."); return; }
+		const CentralProviderConfiguration previous = m_app.settings.central_provider_configuration;
+		CentralProviderConfiguration candidate = previous;
+		std::erase_if(candidate.mcp_overrides, [&](const ProviderMcpOverride& item) { return item.provider_id == provider && item.execution_host_id == host && item.server_id == server; });
+		candidate.mcp_overrides.push_back({provider, host, server, enabled});
+		std::string error;
+		if (!uam::central_configuration::Parse(uam::central_configuration::Serialize(candidate), candidate, error)) { cb->Failure(400, error); return; }
+		m_app.settings.central_provider_configuration = std::move(candidate);
+		if (!PersistenceCoordinator().SaveSettings(m_app))
+		{ m_app.settings.central_provider_configuration = previous; cb->Failure(500, "Could not save provider MCP settings."); return; }
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(uam::provider_mcp_settings::Status(m_app, host, "").dump());
+	}
+	catch (const std::exception&) { cb->Failure(400, "Select a provider, host, server and an enabled boolean."); }
+}
+
 void UamQueryHandler::HandleGetProviderMcpStatus(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	(void)browser;

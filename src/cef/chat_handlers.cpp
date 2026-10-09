@@ -141,12 +141,12 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 {
 	const std::string known_boot_id = payload.value("knownBootId", "");
 	const std::uint64_t known_revision = payload.value("knownStateRevision", std::numeric_limits<std::uint64_t>::max());
-	if (payload.value("summaryOnly", false) && known_boot_id == CompanionBootId() && known_revision == m_app.state_revision)
+	if (payload.value("summaryOnly", true) && known_boot_id == CompanionBootId() && known_revision == m_app.state_revision)
 	{
 		cb->Success(nlohmann::json{{"unchanged", true}, {"bootId", CompanionBootId()}, {"stateRevision", m_app.state_revision}}.dump());
 		return;
 	}
-	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", false));
+	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
 	state["bootId"] = CompanionBootId();
 	cb->Success(state.dump());
 }

@@ -793,6 +793,8 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	{
 		return FailProviderCliInstall(error_out, "Unsupported provider: " + unsupported_provider_id);
 	}
+	if (resolved.policy->npm_package.empty() && resolved.policy->homebrew_package.empty() && resolved.policy->winget_package.empty())
+		return FailProviderCliInstall(error_out, "Update this CLI with its existing installer. UAM can check its installed version.");
 	if (!IsSupportedVersionForProvider(resolved.provider_id, trimmed_version))
 	{
 		constexpr std::string_view kUnsupportedVersionPrefix = "Unsupported CLI version: ";

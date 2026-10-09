@@ -1240,7 +1240,7 @@ namespace uam
 		std::string NormalizedCliVersionManagedProviderId(std::string_view raw_provider_id)
 		{
 			const std::string provider_id = uam::provider_ids::NormalizeCliProviderAlias(raw_provider_id);
-			return uam::provider_ids::IsVersionManagedCliProviderId(provider_id) ? provider_id : std::string{};
+			return uam::provider_ids::ContainsProviderId(uam::provider_ids::kAllCliProviderIds, provider_id) && ProviderRuntimeRegistry::ResolveById(provider_id).CliVersionPolicy() != nullptr ? provider_id : std::string{};
 		}
 
 		std::string NormalizedCliVersionManagedProviderId(const ProviderProfile& profile)
@@ -1301,6 +1301,8 @@ namespace uam
 
 			nlohmann::json provider_json;
 			provider_json["providerId"] = provider_id;
+			const ProviderCliPolicy* policy = ProviderRuntimeRegistry::ResolveById(provider_id).CliVersionPolicy();
+			provider_json["canInstall"] = policy != nullptr && (!policy->npm_package.empty() || !policy->homebrew_package.empty() || !policy->winget_package.empty());
 			provider_json["routingConnectionIdentity"] = ExecutionRoutingConnectionIdentity(execution_host);
 			if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, provider_id); profile != nullptr)
 				provider_json["routingProviderConfigurationIdentity"] = ExecutionRoutingProviderIdentity(app, *profile);
