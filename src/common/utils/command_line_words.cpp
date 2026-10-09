@@ -48,8 +48,16 @@ namespace
 		{
 			if (escaping)
 			{
-				current.push_back(ch);
-				word_started = true;
+				// Double quotes retain backslashes before ordinary characters.
+				if (quote == '"' && ch != '$' && ch != '`' && ch != '"' && ch != '\\' && ch != '\n')
+				{
+					current.push_back('\\');
+				}
+				if (ch != '\n')
+				{
+					current.push_back(ch);
+					word_started = true;
+				}
 				escaping = false;
 				continue;
 			}

@@ -5203,6 +5203,21 @@ UAM_TEST(CommandLineSplitPreservesQuotedEmptyArguments)
 	const std::vector<std::string> single_quoted_backslash_words = uam::command_line::SplitWords("tool 'path\\name'");
 	UAM_ASSERT_EQ(single_quoted_backslash_words.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(single_quoted_backslash_words[1], std::string("path\\name"));
+
+	const std::vector<std::string> double_quoted_path_words = uam::command_line::SplitWords(R"(tool "F:\tools\my folder")");
+	const std::vector<std::string> expected_path_words = {"tool", R"(F:\tools\my folder)"};
+	UAM_ASSERT_EQ(double_quoted_path_words, expected_path_words);
+	const std::vector<std::string> quoted_continuation_words = uam::command_line::SplitWords("tool \"one\\\ntwo\"");
+	const std::vector<std::string> unquoted_continuation_words = uam::command_line::SplitWords("tool one\\\ntwo");
+	const std::vector<std::string> expected_continuation_words = {"tool", "onetwo"};
+	UAM_ASSERT_EQ(quoted_continuation_words, expected_continuation_words);
+	UAM_ASSERT_EQ(unquoted_continuation_words, expected_continuation_words);
+	const std::vector<std::string> escaped_metacharacter_words = uam::command_line::SplitWords(R"(tool "escaped \"quote\" \\ \$ \`")");
+	const std::vector<std::string> expected_metacharacter_words = {"tool", "escaped \"quote\" \\ $ `"};
+	UAM_ASSERT_EQ(escaped_metacharacter_words, expected_metacharacter_words);
+	const std::vector<std::string> leading_continuation_words = uam::command_line::SplitWords("\\\n alpha");
+	const std::vector<std::string> expected_leading_continuation_words = {"alpha"};
+	UAM_ASSERT_EQ(leading_continuation_words, expected_leading_continuation_words);
 #endif
 }
 
