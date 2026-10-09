@@ -6,6 +6,7 @@
 #include "app/chat_lifecycle_service.h"
 #include "app/local_chat_bundle_service.h"
 #include "app/persistence_coordinator.h"
+#include "app/transcript_retention_service.h"
 #include "app/runtime_orchestration_internal.h"
 #include "app/uam_control_service.h"
 #include "cef/state_serializer.h"
@@ -13,6 +14,7 @@
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
+#include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
@@ -14572,6 +14574,65 @@ UAM_TEST(ChatRepositoryAdoptsOnlyUnchangedHydratedMessages)
 	mismatched_loaded.messages = {Message{MessageRole::Assistant, "wrong"}};
 	UAM_ASSERT(!ChatRepository::AdoptHydratedMessagesIfUnchanged(current, std::move(mismatched_loaded), 1, "digest-2"));
 	UAM_ASSERT(current.messages.empty());
+}
+
+UAM_TEST(ColdToolCallContentLookupIsDetachedIdentityBoundAndAmbiguitySafe)
+{
+	TempDir temp("uam-cold-tool-content");
+	ChatSession chat;
+	chat.id = "cold-tool-content";
+	chat.provider_id = "codex";
+	chat.native_session_id = "native-session-before";
+	chat.workspace_directory = "/workspace/project";
+	chat.updated_at = "2026-10-01T00:00:00.000Z";
+	Message first{MessageRole::User, "prompt"};
+	Message second{MessageRole::Assistant, "result"};
+	ToolCall tool;
+	tool.id = "tool-call-1";
+	tool.name = "read_file";
+	tool.args_json = R"({"path":"safe.txt"})";
+	tool.result_text = "persisted output";
+	second.tool_calls.push_back(tool);
+	chat.messages = {first, second};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	std::optional<ChatSession> cold = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(cold.has_value() && !cold->messages_loaded && cold->messages.empty());
+	const uam::ToolCallContentIdentity identity =
+	    uam::CaptureToolCallContentIdentity(*cold, static_cast<std::size_t>(1));
+	const std::optional<uam::ToolCallContentSnapshot> resolved =
+	    uam::LoadToolCallContentSnapshot(temp.root, identity, tool.id);
+	UAM_ASSERT(resolved.has_value());
+	UAM_ASSERT_EQ(resolved->message_index, static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(resolved->tool_call, tool);
+	UAM_ASSERT(uam::MatchesToolCallContentSnapshot(*cold, *resolved));
+	UAM_ASSERT(cold->messages.empty() && !cold->messages_loaded);
+	UAM_ASSERT(!uam::LoadToolCallContentSnapshot(temp.root, identity, "missing-tool").has_value());
+	UAM_ASSERT(uam::LoadToolCallContentSnapshot(temp.root,
+	    uam::CaptureToolCallContentIdentity(*cold, std::nullopt), tool.id).has_value());
+
+	uam::ToolCallContentIdentity stale = identity;
+	stale.native_session_id = "native-session-after";
+	UAM_ASSERT(!uam::LoadToolCallContentSnapshot(temp.root, stale, tool.id).has_value());
+	stale = identity;
+	stale.messages_digest += "stale";
+	UAM_ASSERT(!uam::LoadToolCallContentSnapshot(temp.root, stale, tool.id).has_value());
+
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(uam::MatchesToolCallContentSnapshot(*loaded, *resolved));
+	loaded->messages[1].tool_calls[0].result_text = "changed during lookup";
+	UAM_ASSERT(!uam::MatchesToolCallContentSnapshot(*loaded, *resolved));
+
+	ChatSession duplicate = chat;
+	duplicate.messages[0].tool_calls.push_back(tool);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, duplicate));
+	const std::optional<ChatSession> duplicate_cold = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(duplicate_cold.has_value());
+	const uam::ToolCallContentIdentity duplicate_identity =
+	    uam::CaptureToolCallContentIdentity(*duplicate_cold, std::nullopt);
+	UAM_ASSERT(!uam::LoadToolCallContentSnapshot(temp.root, duplicate_identity, tool.id).has_value());
+	UAM_ASSERT(uam::LoadToolCallContentSnapshot(temp.root,
+	    uam::CaptureToolCallContentIdentity(*duplicate_cold, static_cast<std::size_t>(1)), tool.id).has_value());
 }
 
 UAM_TEST(ChatRepositoryHydratesMissingDatesWithoutChangingPersistedHistory)

@@ -8,6 +8,94 @@
 
 namespace uam
 {
+	ToolCallContentIdentity CaptureToolCallContentIdentity(
+	    const ChatSession& chat, std::optional<std::size_t> message_index)
+	{
+		ToolCallContentIdentity identity;
+		identity.chat_id = chat.id;
+		identity.provider_id = chat.provider_id;
+		identity.execution_host_id = chat.execution_host_id;
+		identity.native_session_id = chat.native_session_id;
+		identity.workspace_directory = chat.workspace_directory;
+		identity.workspace_isolation_kind = chat.workspace_isolation_kind;
+		identity.workspace_source_directory = chat.workspace_source_directory;
+		identity.workspace_base_ref = chat.workspace_base_ref;
+		identity.workspace_branch_name = chat.workspace_branch_name;
+		identity.workspace_worktree_directory = chat.workspace_worktree_directory;
+		identity.updated_at = chat.updated_at;
+		identity.message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+		identity.messages_digest = chat.persisted_messages_digest;
+		identity.message_index = message_index;
+		return identity;
+	}
+
+	std::optional<ToolCallContentSnapshot> LoadToolCallContentSnapshot(
+	    const std::filesystem::path& data_root, const ToolCallContentIdentity& expected,
+	    std::string_view tool_call_id)
+	{
+		if (expected.chat_id.empty() || tool_call_id.empty() || tool_call_id.size() > 256 ||
+		    expected.messages_digest.empty() || (expected.message_index && *expected.message_index >= expected.message_count))
+			return std::nullopt;
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(data_root, expected.chat_id, true);
+		if (!loaded || loaded->id != expected.chat_id || !loaded->messages_loaded ||
+		    loaded->provider_id != expected.provider_id || loaded->execution_host_id != expected.execution_host_id ||
+		    loaded->native_session_id != expected.native_session_id ||
+		    loaded->workspace_directory != expected.workspace_directory ||
+		    loaded->workspace_isolation_kind != expected.workspace_isolation_kind ||
+		    loaded->workspace_source_directory != expected.workspace_source_directory ||
+		    loaded->workspace_base_ref != expected.workspace_base_ref ||
+		    loaded->workspace_branch_name != expected.workspace_branch_name ||
+		    loaded->workspace_worktree_directory != expected.workspace_worktree_directory ||
+		    loaded->updated_at != expected.updated_at || loaded->messages.size() != expected.message_count ||
+		    loaded->persisted_messages_digest != expected.messages_digest)
+			return std::nullopt;
+
+		std::optional<ToolCallContentSnapshot> match;
+		for (std::size_t message_index = 0; message_index < loaded->messages.size(); ++message_index)
+		{
+			if (expected.message_index && message_index != *expected.message_index) continue;
+			for (const ToolCall& tool_call : loaded->messages[message_index].tool_calls)
+			{
+				if (tool_call.id != tool_call_id) continue;
+				if (match) return std::nullopt;
+				match = ToolCallContentSnapshot{expected, message_index, tool_call};
+			}
+		}
+		return match;
+	}
+
+	bool MatchesToolCallContentSnapshot(const ChatSession& current, const ToolCallContentSnapshot& snapshot)
+	{
+		const ToolCallContentIdentity& expected = snapshot.identity;
+		const std::size_t message_count = current.messages_loaded ? current.messages.size() : current.persisted_message_count;
+		if (current.id != expected.chat_id || current.provider_id != expected.provider_id ||
+		    current.execution_host_id != expected.execution_host_id || current.native_session_id != expected.native_session_id ||
+		    current.workspace_directory != expected.workspace_directory ||
+		    current.workspace_isolation_kind != expected.workspace_isolation_kind ||
+		    current.workspace_source_directory != expected.workspace_source_directory ||
+		    current.workspace_base_ref != expected.workspace_base_ref ||
+		    current.workspace_branch_name != expected.workspace_branch_name ||
+		    current.workspace_worktree_directory != expected.workspace_worktree_directory ||
+		    current.updated_at != expected.updated_at || message_count != expected.message_count ||
+		    current.persisted_messages_digest != expected.messages_digest)
+			return false;
+		if (!current.messages_loaded) return true;
+		if (snapshot.message_index >= current.messages.size()) return false;
+
+		std::size_t matches = 0;
+		for (std::size_t message_index = 0; message_index < current.messages.size(); ++message_index)
+		{
+			if (snapshot.identity.message_index && message_index != snapshot.message_index) continue;
+			for (const ToolCall& tool_call : current.messages[message_index].tool_calls)
+			{
+				if (tool_call.id != snapshot.tool_call.id) continue;
+				if (tool_call != snapshot.tool_call) return false;
+				++matches;
+			}
+		}
+		return matches == 1;
+	}
+
 	bool TranscriptRetentionService::CompleteHistoryLoad(ChatSession& current, ChatSession&& loaded, std::size_t expected_count, std::string_view expected_digest, bool retain_history)
 	{
 		if (retain_history)

@@ -6,6 +6,7 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_search_service.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/transcript_retention_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -543,7 +544,7 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 		offset = static_cast<std::size_t>(requested);
 	}
 	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
-	if (chat == nullptr || tool_call_id.empty())
+	if (chat == nullptr || tool_call_id.empty() || tool_call_id.size() > 256)
 	{
 		if (chat != nullptr)
 		{
@@ -565,28 +566,60 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 		}
 	}
 
-	std::string hydrate_warning;
-	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *chat, &hydrate_warning))
+	if (!chat->messages_loaded)
 	{
-		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(hydrate_warning, "Failed to load chat messages."));
+		std::optional<std::size_t> requested_index;
+		if (message_index.has_value()) requested_index = static_cast<std::size_t>(*message_index);
+		const uam::ToolCallContentIdentity identity =
+		    uam::CaptureToolCallContentIdentity(*chat, requested_index);
+		const std::shared_ptr<std::optional<uam::ToolCallContentSnapshot>> resolved =
+		    std::make_shared<std::optional<uam::ToolCallContentSnapshot>>();
+		uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [data_root = m_app.data_root, identity, tool_call_id, offset, resolved]()
+		    {
+			    *resolved = uam::LoadToolCallContentSnapshot(data_root, identity, tool_call_id);
+			    if (!*resolved)
+				    return uam::query_handler_async::AsyncFailure(404,
+				        "Tool call not found or its transcript changed while loading.");
+			    const std::string content = uam::StateSerializer::ToolCallContentForFrontend((*resolved)->tool_call);
+			    return uam::query_handler_async::AsyncSuccess(
+			        uam::StateSerializer::ToolCallContentPageForFrontend(content, offset));
+		    },
+		    [this, chat_id, resolved](uam::query_handler_async::AsyncCefResult& response)
+		    {
+			    if (!response.ok) return;
+			    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			    if (!current || !*resolved || !uam::MatchesToolCallContentSnapshot(*current, **resolved))
+				    response = uam::query_handler_async::AsyncFailure(409,
+				        "Chat history changed while tool output was loading. Retry to refresh it.");
+		    });
 		return;
 	}
 
 	const std::size_t begin = message_index.has_value() ? static_cast<std::size_t>(*message_index) : 0;
 	const std::size_t end = message_index.has_value() ? std::min(begin + 1, chat->messages.size()) : chat->messages.size();
+	const ToolCall* match = nullptr;
+	std::size_t matches = 0;
 	for (std::size_t index = begin; index < end; ++index)
 	{
 		const Message& message = chat->messages[index];
-		const auto tool = std::ranges::find_if(message.tool_calls, [&](const ToolCall& candidate) { return candidate.id == tool_call_id; });
-		if (tool != message.tool_calls.end())
+		for (const ToolCall& tool : message.tool_calls)
 		{
-			cb->Success(uam::StateSerializer::ToolCallContentPageForFrontend(
-			    uam::StateSerializer::ToolCallContentForFrontend(*tool), offset).dump());
-			return;
+			if (tool.id == tool_call_id)
+			{
+				match = &tool;
+				++matches;
+			}
 		}
 	}
-
-	cb->Failure(404, "Tool call not found: " + tool_call_id);
+	if (matches != 1)
+	{
+		cb->Failure(matches == 0 ? 404 : 409,
+		    matches == 0 ? "Tool call not found: " + tool_call_id : "Tool call identity is ambiguous in this transcript.");
+		return;
+	}
+	cb->Success(uam::StateSerializer::ToolCallContentPageForFrontend(
+	    uam::StateSerializer::ToolCallContentForFrontend(*match), offset).dump());
 }
 
 void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
