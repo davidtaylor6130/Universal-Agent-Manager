@@ -158,6 +158,40 @@ namespace uam
 			return relative_name.empty() ? root : root / uam::paths::PathFromUtf8(relative_name);
 		}
 
+		/// Keeps Git's Windows administrative path within its startup limit without changing the branch ref.
+		bool PhysicalWorktreeRootForChat(const AppState& app, const std::filesystem::path& source_root,
+		    const std::string& relative_name, std::filesystem::path& path, std::string& error)
+		{
+			path = WorktreeRootForChat(app, source_root, relative_name);
+#if defined(_WIN32)
+			constexpr std::size_t kMaxGitAdministrativePathBytes = 220;
+			const std::filesystem::path absolute = uam::paths::AbsolutePathNoThrow(path);
+			if (uam::paths::Utf8PathString(absolute / ".git").size() > kMaxGitAdministrativePathBytes)
+			{
+				const std::filesystem::path parent = absolute.parent_path();
+				const std::size_t fixed_bytes = uam::paths::Utf8PathString(parent / "x" / ".git").size() - 1;
+				const std::string digest = uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(relative_name));
+				// At least one readable byte, a separator and the complete stable digest must fit.
+				if (fixed_bytes + 1 + 1 + digest.size() > kMaxGitAdministrativePathBytes)
+				{
+					error = "The data directory is too long for a Windows Git worktree. Choose a shorter data directory.";
+					return false;
+				}
+				std::string leaf = uam::paths::Utf8PathString(path.filename());
+				std::size_t length = std::min(leaf.size(), kMaxGitAdministrativePathBytes - fixed_bytes - 1 - digest.size());
+				while (length > 0 && length < leaf.size() && (static_cast<unsigned char>(leaf[length]) & 0xc0) == 0x80) --length;
+				if (length == 0)
+				{
+					error = "The data directory leaves no room for the worktree's UTF-8 name. Choose a shorter data directory.";
+					return false;
+				}
+				leaf.resize(length);
+				path = path.parent_path() / uam::paths::PathFromUtf8(leaf + "-" + digest);
+			}
+#endif
+			return true;
+		}
+
 		std::filesystem::path ManagedRepositoryRoot(const AppState& app, const std::filesystem::path& source_root, const std::string& chat_id)
 		{
 			const std::string normalized_source_root = uam::paths::NormalizedPortablePathString(source_root);
@@ -350,7 +384,8 @@ namespace uam
 
 		/// Avoids both filesystem and branch collisions without adding IDs to readable names.
 		bool ChooseWorktreeName(const AppState& app, const std::filesystem::path& source,
-		    const std::filesystem::path& repository, const ChatSession& chat, std::string& name, std::string& error)
+		    const std::filesystem::path& repository, const ChatSession& chat, std::string& name,
+		    std::filesystem::path& worktree, std::string& error)
 		{
 			std::string refs;
 			if (!GitOutput(repository, "for-each-ref refs/heads", &refs, &error)) return false;
@@ -384,7 +419,9 @@ namespace uam
 			for (int suffix = 1; suffix < 10000; ++suffix)
 			{
 				name = base + (suffix == 1 ? "" : "-" + std::to_string(suffix));
-				bool collision = uam::paths::PathExistsNoThrow(WorktreeRootForChat(app, source, name));
+				if (!PhysicalWorktreeRootForChat(app, source, name, worktree, error)) return false;
+				bool collision = uam::paths::PathExistsNoThrow(worktree) ||
+				    uam::paths::PathExistsNoThrow(WorktreeRootForChat(app, source, name));
 				for (const std::string& branch : branches)
 				{
 					if (branch == name || branch.starts_with(name + "/") || name.starts_with(branch + "/")) collision = true;
@@ -695,6 +732,8 @@ namespace uam
 		const std::filesystem::path source_root = result.status.is_git_repository ? uam::paths::PathFromUtf8(result.status.source_directory) : EffectiveSourceWorkspace(app, chat);
 		const bool managed_repository = !result.status.is_git_repository;
 		const std::filesystem::path repository = managed_repository ? ManagedRepositoryRoot(app, source_root, chat.id) : source_root;
+		std::filesystem::path preferred_worktree;
+		if (!PhysicalWorktreeRootForChat(app, source_root, BranchNameForChat(chat), preferred_worktree, result.message)) return result;
 		std::string head;
 		if (managed_repository)
 		{
@@ -752,12 +791,12 @@ namespace uam
 		}
 
 		std::string branch_name;
-		if (!ChooseWorktreeName(app, source_root, repository, chat, branch_name, result.message))
+		std::filesystem::path worktree_root;
+		if (!ChooseWorktreeName(app, source_root, repository, chat, branch_name, worktree_root, result.message))
 		{
 			if (managed_repository) (void)uam::paths::RemoveAllNoThrow(repository);
 			return result;
 		}
-		const std::filesystem::path worktree_root = WorktreeRootForChat(app, source_root, branch_name);
 		if (uam::paths::PathExistsNoThrow(worktree_root))
 		{
 			result.message = "Worktree path already exists: " + uam::paths::Utf8PathString(worktree_root);
@@ -856,8 +895,8 @@ namespace uam
 
 		const std::filesystem::path repository = managed_repository ? ManagedRepositoryRoot(app, source_root, branch.id) : parent_repository;
 		std::string branch_name;
-		if (!ChooseWorktreeName(app, source_root, parent_repository, branch, branch_name, result.message)) return result;
-		const std::filesystem::path worktree = WorktreeRootForChat(app, source_root, branch_name);
+		std::filesystem::path worktree;
+		if (!ChooseWorktreeName(app, source_root, parent_repository, branch, branch_name, worktree, result.message)) return result;
 		if (uam::paths::PathExistsNoThrow(repository) && managed_repository)
 		{
 			result.message = "The branch's managed repository path already exists.";
@@ -925,11 +964,16 @@ namespace uam
 		}
 		const std::filesystem::path source_root = uam::paths::PathFromUtf8(branch.workspace_source_directory);
 		const std::filesystem::path worktree = uam::paths::PathFromUtf8(branch.workspace_worktree_directory);
+		std::filesystem::path physical_worktree;
+		std::string path_error;
+		const bool physical_path_available = PhysicalWorktreeRootForChat(app, source_root, branch.workspace_branch_name, physical_worktree, path_error);
 		if (!PathIsWithin(worktree, WorktreeRootForChat(app, source_root, "")) ||
 		    (uam::paths::AbsolutePathNoThrow(worktree).lexically_normal() !=
 		    uam::paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source_root, branch.id)).lexically_normal() &&
 		    uam::paths::AbsolutePathNoThrow(worktree).lexically_normal() !=
-		    uam::paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source_root, branch.workspace_branch_name)).lexically_normal()) ||
+		    uam::paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source_root, branch.workspace_branch_name)).lexically_normal() &&
+		    (!physical_path_available || uam::paths::AbsolutePathNoThrow(worktree).lexically_normal() !=
+		    uam::paths::AbsolutePathNoThrow(physical_worktree).lexically_normal())) ||
 		    !uam::paths::IsDirectoryNoThrow(worktree) || uam::paths::IsLinkOrReparsePointNoThrow(worktree))
 		{
 			if (error_out != nullptr) *error_out = "Branch worktree path is unavailable or unexpected; it was left untouched.";

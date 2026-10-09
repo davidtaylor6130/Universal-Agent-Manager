@@ -9729,7 +9729,20 @@ UAM_TEST(GitWorktreeNamesUseAgentAndTitleWithSafeFallbacksAndCollisions)
 		}
 		UAM_ASSERT_EQ(chat.workspace_branch_name, cases[index].second);
 		const fs::path worktree = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
-		UAM_ASSERT_EQ(uam::paths::Utf8PathString(worktree.parent_path().filename()) + "/" + uam::paths::Utf8PathString(worktree.filename()), cases[index].second);
+#if defined(_WIN32)
+		const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(repo)));
+		const fs::path original_path = app.data_root / "worktrees" / repo_key / uam::paths::PathFromUtf8(cases[index].second);
+		if (uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(original_path) / ".git").size() > 220)
+		{
+			UAM_ASSERT(uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(worktree) / ".git").size() <= 220);
+			UAM_ASSERT_EQ(uam::paths::Utf8PathString(worktree.parent_path().filename()), cases[index].second.substr(0, cases[index].second.find('/')));
+			UAM_ASSERT(uam::paths::Utf8PathString(worktree.filename()).ends_with("-" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(cases[index].second))));
+		}
+		else
+#endif
+		{
+			UAM_ASSERT_EQ(uam::paths::Utf8PathString(worktree.parent_path().filename()) + "/" + uam::paths::Utf8PathString(worktree.filename()), cases[index].second);
+		}
 		UAM_ASSERT(RunGitForTest(repo, "check-ref-format --branch " + ShellQuoteForTest(chat.workspace_branch_name)));
 		chat.title = "Renamed after creation";
 		chat.uam_agent_id = "build";
@@ -9754,6 +9767,104 @@ UAM_TEST(GitWorktreeNamesUseAgentAndTitleWithSafeFallbacksAndCollisions)
 	UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, legacy, &error));
 	UAM_ASSERT(!fs::exists(legacy_path));
 }
+
+#if defined(_WIN32)
+UAM_TEST(GitWorktreeWindowsPhysicalBudgetPreservesBranchesAndCleanup)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-git-budget");
+	const fs::path repo = temp.root / "source";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunGitForTest(repo, "init --template="));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(RunGitForTest(repo, "commit --allow-empty -m initial"));
+	const std::string repo_key = uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(repo)));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const std::size_t initial_parent_bytes = uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(app.data_root / "worktrees" / repo_key / "review")).size();
+	UAM_ASSERT(initial_parent_bytes <= 182);
+	app.data_root = temp.root / ("data" + std::string(182 - initial_parent_bytes, 'p'));
+	const uam::GitWorktreeService service;
+	const std::string logical_name = "review/" + std::string(80, 'a');
+	const fs::path original = app.data_root / "worktrees" / repo_key / uam::paths::PathFromUtf8(logical_name);
+	UAM_ASSERT_EQ(uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(original) / ".git").size(), static_cast<std::size_t>(268));
+	const std::function<std::string(const std::string&)> git_output = [&repo](const std::string& args)
+	{
+		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+		    "git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args, 120000);
+		UAM_ASSERT(result.ok && !result.timed_out && !result.canceled && result.exit_code == 0);
+		return uam::strings::Trim(result.output);
+	};
+	std::vector<ChatSession> chats(4);
+	for (std::size_t index = 0; index < chats.size(); ++index)
+	{
+		ChatSession& chat = chats[index];
+		chat.id = "budget-chat-" + std::to_string(index);
+		if (index == 3) for (int letter = 0; letter < 100; ++letter) chat.title += "r\xC3\xA9";
+		else chat.title = std::string(200, 'A');
+		chat.uam_agent_id = "Review";
+		chat.workspace_directory = uam::paths::Utf8PathString(repo);
+		const uam::GitWorktreeOperationResult result = index == 1
+		    ? service.CreateBranchForChat(app, chats.front(), chat, chats.front().workspace_base_ref)
+		    : service.CreateForChat(app, chat);
+		if (!result.ok) uam_test::Fail(result.message.c_str(), __FILE__, __LINE__);
+		std::string unicode_name = "review/";
+		if (index == 3) for (int letter = 0; letter < 26; ++letter) unicode_name += "r\xC3\xA9";
+		const std::string expected_branch = index == 3 ? unicode_name + "r" : logical_name + (index == 0 ? "" : "-" + std::to_string(index + 1));
+		UAM_ASSERT_EQ(chat.workspace_branch_name, expected_branch);
+		const fs::path actual = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
+		UAM_ASSERT_EQ(actual.parent_path(), original.parent_path());
+		UAM_ASSERT(uam::paths::Utf8PathString(uam::paths::AbsolutePathNoThrow(actual) / ".git").size() <= 220);
+		UAM_ASSERT_EQ(uam::paths::Utf8PathString(actual.filename()), (index == 3 ? std::string("r\xC3\xA9r\xC3\xA9r\xC3\xA9r\xC3\xA9r\xC3\xA9") : std::string(15, 'a')) + "-" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(expected_branch)));
+		UAM_ASSERT(("\n" + git_output("worktree list --porcelain") + "\n").find("\nbranch refs/heads/" + expected_branch + "\n") != std::string::npos);
+		UAM_ASSERT(service.Status(app, chat).isolated);
+		if (index > 0) UAM_ASSERT(chat.workspace_worktree_directory != chats[index - 1].workspace_worktree_directory);
+	}
+	for (const ChatSession& chat : chats)
+	{
+		std::string error;
+		UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, chat, &error));
+		UAM_ASSERT(!fs::exists(uam::paths::PathFromUtf8(chat.workspace_worktree_directory)));
+	}
+	UAM_ASSERT(git_output("worktree list --porcelain").find("refs/heads/" + logical_name) == std::string::npos);
+
+	// A parent that cannot hold a readable hash-backed leaf is refused before creating data.
+	const std::string refs_before = git_output("for-each-ref refs/heads");
+	app.data_root = temp.root / ("data" + std::string(212 - initial_parent_bytes, 'p'));
+	UAM_ASSERT(!fs::exists(app.data_root));
+	ChatSession refused;
+	refused.id = "budget-refused";
+	refused.title = std::string(200, 'A');
+	refused.uam_agent_id = "Review";
+	refused.workspace_directory = uam::paths::Utf8PathString(repo);
+	const uam::GitWorktreeOperationResult rejected = service.CreateForChat(app, refused);
+	UAM_ASSERT(!rejected.ok);
+	UAM_ASSERT(rejected.message.find("data directory") != std::string::npos);
+	UAM_ASSERT(refused.workspace_worktree_directory.empty());
+	UAM_ASSERT(!fs::exists(app.data_root));
+	UAM_ASSERT_EQ(git_output("for-each-ref refs/heads"), refs_before);
+	const fs::path plain = temp.root / "plain";
+	fs::create_directory(plain);
+	UAM_ASSERT(uam::io::WriteTextFile(plain / "app.txt", "unversioned\n"));
+	refused.workspace_directory = uam::paths::Utf8PathString(plain);
+	UAM_ASSERT(!service.CreateForChat(app, refused).ok);
+	UAM_ASSERT(!fs::exists(app.data_root));
+
+	// Actual managed baseline refs still reserve an agent-prefix branch namespace.
+	app.data_root = temp.root / "managed-data";
+	refused.id = "managed-default-branch";
+	refused.title = "Short";
+	ScopedEnvVar config_count("GIT_CONFIG_COUNT", "1");
+	ScopedEnvVar config_key("GIT_CONFIG_KEY_0", "init.defaultBranch");
+	ScopedEnvVar config_value("GIT_CONFIG_VALUE_0", "review");
+	const uam::GitWorktreeOperationResult managed = service.CreateForChat(app, refused);
+	if (!managed.ok) uam_test::Fail(managed.message.c_str(), __FILE__, __LINE__);
+	UAM_ASSERT_EQ(refused.workspace_branch_name, std::string("review-2/short"));
+	std::string managed_cleanup_error;
+	UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, refused, &managed_cleanup_error));
+}
+#endif
 
 UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 {
