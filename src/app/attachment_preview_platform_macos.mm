@@ -18,9 +18,9 @@ namespace uam::attachment_preview
 		return result;
 	}
 
-	Image Decode(std::string_view source)
+	static DeliveryImage ProcessImage(std::string_view source, std::size_t max_bytes, bool delivery, std::stop_token cancel)
 	{
-		if (source.empty() || source.size() > kMaxSourceBytes) return {};
+		if (cancel.stop_requested() || source.empty() || source.size() > kMaxSourceBytes || max_bytes == 0 || max_bytes > kMaxSourceBytes) return {};
 		CFDataRef data = CFDataCreateWithBytesNoCopy(nullptr, reinterpret_cast<const UInt8*>(source.data()),
 		    static_cast<CFIndex>(source.size()), kCFAllocatorNull);
 		if (!data) return {};
@@ -33,7 +33,8 @@ namespace uam::attachment_preview
 		CFRelease(options);
 		if (!decoder) return {};
 		const CFStringRef type = CGImageSourceGetType(decoder);
-		const bool supported = type && (CFEqual(type, CFSTR("public.png")) || CFEqual(type, CFSTR("public.jpeg")));
+		const std::string mime = ImageMime(source);
+		const bool supported = type && !mime.empty() && (delivery || CFEqual(type, CFSTR("public.png")) || CFEqual(type, CFSTR("public.jpeg")));
 		CFDictionaryRef properties = supported ? CGImageSourceCopyPropertiesAtIndex(decoder, 0, nullptr) : nullptr;
 		std::int64_t width = 0, height = 0;
 		if (properties)
@@ -52,10 +53,16 @@ namespace uam::attachment_preview
 			CFRelease(decoder);
 			return {};
 		}
-		Image result;
-		for (int side : {1024, 512, 256})
+		const bool animated = CGImageSourceGetCount(decoder) > 1;
+		const bool original_fits = delivery && source.size() <= max_bytes && width <= 8000 && height <= 8000;
+		if (delivery && !original_fits && animated) { CFRelease(decoder); return {}; }
+		DeliveryImage result;
+		const std::vector<int> sides = delivery ? std::vector<int>{8000, 4096, 2576, 2048, 1568, 1024, 768, 512, 256} : std::vector<int>{1024, 512, 256};
+		for (int side : sides)
 		{
-			CFNumberRef size = CFNumberCreate(nullptr, kCFNumberIntType, &side);
+			if (cancel.stop_requested()) { CFRelease(decoder); return {}; }
+			const int decode_side = original_fits ? 1024 : side;
+			CFNumberRef size = CFNumberCreate(nullptr, kCFNumberIntType, &decode_side);
 			const void* keys[] = {kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform,
 			    kCGImageSourceThumbnailMaxPixelSize, kCGImageSourceShouldCache};
 			const void* values[] = {kCFBooleanTrue, kCFBooleanTrue, size, kCFBooleanFalse};
@@ -65,17 +72,32 @@ namespace uam::attachment_preview
 			CFRelease(settings);
 			CFRelease(size);
 			if (!image) break;
-			if (CGImageGetWidth(image) == 0 || CGImageGetHeight(image) == 0 || CGImageGetWidth(image) > kMaxPreviewSide || CGImageGetHeight(image) > kMaxPreviewSide)
+			if (cancel.stop_requested()) { CGImageRelease(image); CFRelease(decoder); return {}; }
+			if (CGImageGetWidth(image) == 0 || CGImageGetHeight(image) == 0 || CGImageGetWidth(image) > static_cast<unsigned>(side) || CGImageGetHeight(image) > static_cast<unsigned>(side))
 			{
 				CGImageRelease(image);
 				break;
 			}
-			struct Output { std::string bytes; bool overflow = false; } output;
+			if (original_fits)
+			{
+				// Materialize the bounded thumbnail so lazy decoding cannot admit a corrupt body.
+				CGColorSpaceRef colors = CGColorSpaceCreateDeviceRGB();
+				CGContextRef bitmap = CGBitmapContextCreate(nullptr, CGImageGetWidth(image), CGImageGetHeight(image), 8,
+				    CGImageGetWidth(image) * 4, colors, static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedLast));
+				CGColorSpaceRelease(colors);
+				if (!bitmap) { CGImageRelease(image); CFRelease(decoder); return {}; }
+				CGContextDrawImage(bitmap, CGRectMake(0, 0, CGImageGetWidth(image), CGImageGetHeight(image)), image);
+				CGContextRelease(bitmap);
+				CGImageRelease(image); CFRelease(decoder);
+				if (cancel.stop_requested()) return {};
+				return {std::string(source), static_cast<unsigned>(width), static_cast<unsigned>(height), mime, animated};
+			}
+			struct Output { std::string bytes; std::size_t cap; std::stop_token cancel; bool overflow = false; } output{{}, max_bytes, cancel};
 			CGDataConsumerCallbacks callbacks{};
 			callbacks.putBytes = [](void* opaque, const void* bytes, std::size_t count) -> std::size_t
 			{
 				Output* out = static_cast<Output*>(opaque);
-				if (out->overflow || count > kMaxPreviewBytes - out->bytes.size()) { out->overflow = true; return 0; }
+				if (out->cancel.stop_requested() || out->overflow || count > out->cap - out->bytes.size()) { out->overflow = true; return 0; }
 				out->bytes.append(static_cast<const char*>(bytes), count);
 				return count;
 			};
@@ -85,14 +107,24 @@ namespace uam::attachment_preview
 			{
 				CGImageDestinationAddImage(encoder, image, nullptr);
 				if (CGImageDestinationFinalize(encoder) && !output.overflow && !output.bytes.empty())
-					result = {std::move(output.bytes), static_cast<unsigned>(CGImageGetWidth(image)), static_cast<unsigned>(CGImageGetHeight(image))};
+					result = {std::move(output.bytes), static_cast<unsigned>(CGImageGetWidth(image)), static_cast<unsigned>(CGImageGetHeight(image)), "image/png"};
 				CFRelease(encoder);
 			}
 			if (consumer) CFRelease(consumer);
 			CGImageRelease(image);
-			if (!result.png.empty()) break;
+			if (!result.bytes.empty()) break;
 		}
 		CFRelease(decoder);
 		return result;
 	}
+	Image Decode(std::string_view source)
+	{
+		DeliveryImage decoded = ProcessImage(source, kMaxPreviewBytes, false, {});
+		return {std::move(decoded.bytes), decoded.width, decoded.height};
+	}
+	DeliveryImage PrepareDeliveryImage(std::string_view source, std::size_t max_bytes, std::stop_token cancel)
+	{
+		return ProcessImage(source, max_bytes, true, cancel);
+	}
+
 }

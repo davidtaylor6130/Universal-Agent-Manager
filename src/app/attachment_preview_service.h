@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <stop_token>
+#include <vector>
 
 namespace uam::attachment_preview
 {
@@ -21,6 +23,24 @@ namespace uam::attachment_preview
 
 	/// Bounded OS decoder. Only PNG/JPEG first frames are admitted; EXIF orientation is applied.
 	Image Decode(std::string_view source);
+	struct DeliveryImage
+	{
+		std::string bytes;
+		unsigned width = 0;
+		unsigned height = 0;
+		std::string mime_type;
+		bool animated = false;
+	};
+
+	/// Validate with the bounded OS decoder. Preserve fitting originals; resize only to fit delivery limits.
+	DeliveryImage PrepareDeliveryImage(std::string_view source, std::size_t max_bytes, std::stop_token cancel = {});
+	std::string ImageMime(std::string_view source);
+	/// Read a bounded regular local image without following its final symlink.
+	bool ReadDeliverySource(const std::filesystem::path& path, std::string& bytes, std::size_t max_bytes = kMaxSourceBytes);
+	/// Fast metadata/header preflight. Pixel decoding belongs to the delivery worker.
+	bool ValidateImageAttachmentFiles(const std::filesystem::path& workspace,
+	    const std::vector<MessageAttachment>& attachments, std::string& error);
+
 	std::string Digest(std::string_view bytes);
 	bool IsKey(std::string_view key);
 

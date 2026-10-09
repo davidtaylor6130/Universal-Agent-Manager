@@ -16644,7 +16644,9 @@ UAM_TEST(ClaudeFollowupRestartsAndWritesPromptAfterSettingsChange)
 			process.StopStdioProcess(session, true);
 			process.CloseStdioProcessHandles(session);
 			const fs::path image = temp.root / "batch.png";
-			UAM_ASSERT(uam::io::WriteTextFile(image, "batch-image"));
+			std::string batch_image;
+			UAM_ASSERT(uam::base64::Decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", batch_image));
+			UAM_ASSERT(uam::io::WriteBinaryFile(image, batch_image));
 			Message first;
 			first.role = MessageRole::User;
 			first.content = "Image batch first";
@@ -16672,7 +16674,7 @@ UAM_TEST(ClaudeFollowupRestartsAndWritesPromptAfterSettingsChange)
 			}
 			const std::size_t recovery = received.find("Recovery batch sentinel");
 			UAM_ASSERT(recovery != std::string::npos);
-			UAM_ASSERT(received.find(uam::base64::Encode("batch-image"), recovery) != std::string::npos);
+			UAM_ASSERT(received.find(uam::base64::Encode(batch_image), recovery) != std::string::npos);
 			UAM_ASSERT(!app.chats.front().messages[1].acp_prompt_not_sent);
 			UAM_ASSERT(!app.chats.front().messages[2].acp_prompt_not_sent);
 		}
@@ -23046,7 +23048,7 @@ UAM_TEST(CustomIconsKeepPortableReferencesBoundedAssetsAndLocalHostMetadata)
 	UAM_ASSERT(!uam::icons::IsValid({"text", std::string(65, 'a')}));
 	UAM_ASSERT(uam::icons::PngDataUrl(temp.root, png).empty());
 	std::string bytes;
-	UAM_ASSERT(uam::base64::Decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", bytes));
+	UAM_ASSERT(uam::base64::Decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", bytes));
 	UAM_ASSERT(uam::icons::HasBoundedPngHeader(bytes));
 	fs::create_directories(temp.root / "icons");
 	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "icons" / png.value, bytes));

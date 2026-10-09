@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/attachment_preview_service.h"
+#include "common/provider/provider_runtime.h"
 #include <array>
 #if defined(__APPLE__)
 #include <ImageIO/ImageIO.h>
@@ -105,6 +106,9 @@ UAM_TEST(AttachmentPreviewDecodesRealPngAndBoundsNoisyOutput)
 	UAM_ASSERT(uam::base64::Decode("/9j/4AAQSkZJRgABAQAAAQABAAD/4QAiRXhpZgAATU0AKgAAAAgAAQESAAMAAAABAAYAAAAAAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAACAAMDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDxKiiivyo/0jP/2Q==", jpeg));
 	const uam::attachment_preview::Image oriented = uam::attachment_preview::Decode(jpeg);
 	UAM_ASSERT(!oriented.png.empty()); UAM_ASSERT_EQ(oriented.width, 2u); UAM_ASSERT_EQ(oriented.height, 3u);
+	const uam::attachment_preview::DeliveryImage oriented_delivery = uam::attachment_preview::PrepareDeliveryImage(jpeg, 200);
+	UAM_ASSERT(!oriented_delivery.bytes.empty()); UAM_ASSERT_EQ(oriented_delivery.width, 2u); UAM_ASSERT_EQ(oriented_delivery.height, 3u);
+	UAM_ASSERT_EQ(oriented_delivery.mime_type, std::string("image/png"));
 	UAM_ASSERT(uam::attachment_preview::Decode("not an image").png.empty());
 	UAM_ASSERT(uam::attachment_preview::Decode(std::string(uam::attachment_preview::kMaxSourceBytes + 1, 'x')).png.empty());
 	// Huge declared dimensions are refused before pixel decoding, even with a tiny corrupt body.
@@ -235,3 +239,124 @@ UAM_TEST(AttachmentPreviewWindowsNormalizesActualLongCacheAndOriginPaths)
 	UAM_ASSERT(!std::filesystem::exists(native_root));
 }
 #endif
+
+UAM_TEST(ClaudeDeliveryPreservesFittingOriginalsAndRejectsInvalidOrAnimatedOverflow)
+{
+	const std::string original = Png(8, 7);
+	const uam::attachment_preview::DeliveryImage unchanged = uam::attachment_preview::PrepareDeliveryImage(original, original.size());
+	UAM_ASSERT_EQ(unchanged.bytes, original);
+	UAM_ASSERT_EQ(unchanged.mime_type, std::string("image/png"));
+	UAM_ASSERT_EQ(FirstPixelAlpha(unchanged.bytes), 128u);
+	const std::string noisy = Png(700, 700, true);
+	const uam::attachment_preview::DeliveryImage smaller = uam::attachment_preview::PrepareDeliveryImage(noisy, 400 * 1024);
+	UAM_ASSERT(!smaller.bytes.empty() && smaller.bytes.size() <= 400 * 1024);
+	UAM_ASSERT(smaller.width < 700 && smaller.height < 700);
+	UAM_ASSERT(!uam::attachment_preview::Decode(smaller.bytes).png.empty());
+	std::string corrupt("\x89PNG\r\n\x1a\n", 8), header;
+	U32(header, 2); U32(header, 3); header.append("\x08\x06\0\0\0", 5);
+	Chunk(corrupt, "IHDR", header); Chunk(corrupt, "IEND", {});
+	UAM_ASSERT(uam::attachment_preview::PrepareDeliveryImage(corrupt, 4096).bytes.empty());
+	std::string gif;
+	UAM_ASSERT(uam::base64::Decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", gif));
+	const std::string frames = gif.substr(19, gif.size() - 20);
+	gif.insert(gif.size() - 1, frames);
+	UAM_ASSERT_EQ(uam::attachment_preview::PrepareDeliveryImage(gif, gif.size()).bytes, gif);
+	UAM_ASSERT(uam::attachment_preview::PrepareDeliveryImage(gif, gif.size() - 1).bytes.empty());
+	std::stop_source canceled; canceled.request_stop();
+	UAM_ASSERT(uam::attachment_preview::PrepareDeliveryImage(original, original.size(), canceled.get_token()).bytes.empty());
+}
+
+UAM_TEST(ClaudeDeliveryBudgetIncludesEscapedPromptAndEveryImageWithoutChangingSources)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	uam_test::TempDir temp("claude-delivery-budget");
+	const std::string original = Png(700, 700, true);
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "one.png", original));
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "two.png", original));
+	MessageAttachment one; one.id = "one"; one.name = "one.png"; one.path = one.name; one.kind = "image"; one.mime_type = "image/jpeg";
+	MessageAttachment two = one; two.id = "two"; two.name = "two.png"; two.path = two.name;
+	const std::vector<MessageAttachment> images{one, two};
+	std::string error;
+	const std::string prompt = "Inspect both images.\n\"Quoted\" text and \\ path.";
+	const nlohmann::json message = uam::claude_input::Build(prompt, temp.root, images, error, true);
+	UAM_ASSERT(error.empty()); UAM_ASSERT(!message.is_null());
+	UAM_ASSERT(message.dump().size() + 1 <= uam::platform::kAsyncInputMaxQueuedBytes);
+	UAM_ASSERT_EQ(message["message"]["content"][0]["text"], nlohmann::json(prompt));
+	UAM_ASSERT_EQ(message["message"]["content"].size(), std::size_t{3});
+	for (std::size_t index = 1; index <= 2; ++index)
+	{
+		const nlohmann::json& source = message["message"]["content"][index]["source"];
+		UAM_ASSERT_EQ(source["media_type"], nlohmann::json("image/png"));
+		std::string delivered;
+		UAM_ASSERT(uam::base64::Decode(source["data"].get<std::string>(), delivered));
+		UAM_ASSERT(delivered.size() < original.size());
+		UAM_ASSERT(!uam::attachment_preview::Decode(delivered).png.empty());
+	}
+	std::string after;
+	UAM_ASSERT(uam::attachment_preview::ReadDeliverySource(temp.root / "one.png", after)); UAM_ASSERT_EQ(after, original);
+	UAM_ASSERT(uam::attachment_preview::ReadDeliverySource(temp.root / "two.png", after)); UAM_ASSERT_EQ(after, original);
+	UAM_ASSERT_EQ(images.front(), one); UAM_ASSERT_EQ(images.back(), two);
+	UAM_ASSERT(uam::claude_input::Build(std::string(uam::platform::kAsyncInputMaxQueuedBytes, '"'), temp.root, images, error, true).is_null());
+	UAM_ASSERT(error.find("4 MiB") != std::string::npos);
+	// Remote runtime input never dereferences a runner's path on this machine.
+	ChatSession remote; remote.execution_host_id = "remote"; remote.workspace_directory = temp.root.string();
+	Message user; user.role = MessageRole::User; user.attachments = images; remote.messages.push_back(user);
+	uam::AcpSessionState session; session.turn_first_user_message_index = 0; session.turn_user_message_index = 0;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("claude-cli"); std::string method;
+	one.path = "missing.png"; remote.messages[0].attachments = {one};
+	const nlohmann::json remote_message = runtime.OnAcpBuildPrompt(session, 1, prompt, remote, method);
+	UAM_ASSERT(session.last_error.empty()); UAM_ASSERT_EQ(remote_message["message"]["content"].size(), std::size_t{1});
+#endif
+}
+
+UAM_TEST(ClaudeSendPreflightRejectsMissingUnsupportedAndOversizedLocalImages)
+{
+	uam_test::TempDir temp("claude-image-preflight");
+	MessageAttachment image; image.kind = "image"; image.name = "one.png"; image.path = image.name;
+	std::string error;
+	UAM_ASSERT(!uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, {image}, error));
+	UAM_ASSERT(error.find("no longer available") != std::string::npos);
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / image.path, "wrong format"));
+	UAM_ASSERT(!uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, {image}, error));
+	UAM_ASSERT(error.find("Unsupported") != std::string::npos);
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / image.path, Png(2, 3)));
+	UAM_ASSERT(uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, {image}, error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(!uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, std::vector<MessageAttachment>(33, image), error));
+	UAM_ASSERT(error.find("32") != std::string::npos);
+	std::filesystem::resize_file(temp.root / image.path, uam::attachment_preview::kMaxSourceBytes + 1);
+	UAM_ASSERT(!uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, {image}, error));
+	UAM_ASSERT(error.find("25 MiB") != std::string::npos);
+#if !defined(_WIN32)
+	const std::filesystem::path link = temp.root / "link.png";
+	std::filesystem::create_symlink(temp.root / image.path, link);
+	image.path = "link.png";
+	UAM_ASSERT(!uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, {image}, error));
+#endif
+}
+
+UAM_TEST(ClaudeDeliveryKeepsTinyAndAnimatedImagesWhileCompressingLargeStaticImage)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	uam_test::TempDir temp("claude-mixed-images");
+	const std::string tiny = Png(1, 1);
+	const std::string medium = Png(32, 32, true);
+	std::string gif; UAM_ASSERT(uam::base64::Decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", gif));
+	gif.insert(gif.size() - 1, gif.substr(19, gif.size() - 20));
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "tiny.png", tiny));
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "animated.gif", gif));
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "medium.png", medium));
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "large.png", Png(1024, 1024, true)));
+	std::vector<MessageAttachment> images;
+	for (const std::string& name : {"tiny.png", "animated.gif", "medium.png", "large.png"})
+	{ MessageAttachment image; image.kind = "image"; image.path = name; image.name = name; images.push_back(image); }
+	std::string error;
+	const nlohmann::json message = uam::claude_input::Build("Describe every image", temp.root, images, error, true);
+	UAM_ASSERT(error.empty()); UAM_ASSERT(!message.is_null());
+	UAM_ASSERT(message.dump().size() + 1 <= uam::platform::kAsyncInputMaxQueuedBytes);
+	std::string delivered;
+	UAM_ASSERT(uam::base64::Decode(message["message"]["content"][1]["source"]["data"].get<std::string>(), delivered)); UAM_ASSERT_EQ(delivered, tiny);
+	UAM_ASSERT(uam::base64::Decode(message["message"]["content"][2]["source"]["data"].get<std::string>(), delivered)); UAM_ASSERT_EQ(delivered, gif);
+	UAM_ASSERT(uam::base64::Decode(message["message"]["content"][3]["source"]["data"].get<std::string>(), delivered)); UAM_ASSERT_EQ(delivered, medium);
+#endif
+}

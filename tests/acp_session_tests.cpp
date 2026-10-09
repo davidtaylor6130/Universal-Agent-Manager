@@ -12127,7 +12127,9 @@ UAM_TEST(ClaudePromptReadsImagesFromEffectiveWorkspace)
 		TempDir temp("uam-claude-image-workspace");
 		const fs::path workspace = temp.root / "active";
 		fs::create_directories(workspace);
-		UAM_ASSERT(uam::io::WriteTextFile(workspace / "image.png", "active-image"));
+		std::string actual_png;
+		UAM_ASSERT(uam::base64::Decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", actual_png));
+		UAM_ASSERT(uam::io::WriteBinaryFile(workspace / "image.png", actual_png));
 		uam::AppState app;
 		app.data_root = temp.root;
 		ChatSession chat;
@@ -12165,7 +12167,8 @@ UAM_TEST(ClaudePromptReadsImagesFromEffectiveWorkspace)
 		session.processing = true;
 		session.turn_first_user_message_index = 0;
 		session.turn_user_message_index = 0;
-		session.queued_prompt = "Describe image";
+		const std::string prefixed_prompt = "Native agent instructions\n\"Describe image\"";
+		session.queued_prompt = prefixed_prompt;
 #if defined(_WIN32)
 		const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
 #else
@@ -12175,7 +12178,15 @@ UAM_TEST(ClaudePromptReadsImagesFromEffectiveWorkspace)
 		std::string error;
 		UAM_ASSERT(process.StartStdioProcess(session, workspace, sink, &error));
 		session.running = true;
-		const bool sent = uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		bool sent = uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		UAM_ASSERT(!sent); UAM_ASSERT_EQ(app.claude_input_tasks.size(), std::size_t{1});
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!sent && std::chrono::steady_clock::now() < deadline)
+		{
+			std::this_thread::yield();
+			sent = uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		}
+		UAM_ASSERT_EQ(app.claude_input_tasks.front().state->message["message"]["content"][0]["text"], nlohmann::json(prefixed_prompt));
 		const std::string prompt_error = session.last_error;
 		process.StopStdioProcess(session, true);
 		process.CloseStdioProcessHandles(session);
@@ -12554,4 +12565,90 @@ UAM_TEST(AcpRemoteRestartAllowsSlowConfirmedExitWithoutDroppingIntent)
 	UAM_ASSERT(restarted.restart_pending && restarted.reconnect_pending);
 	UAM_ASSERT_EQ(restarted.queued_prompt, std::string("Retain the queued restart intent."));
 	UAM_ASSERT(restarted.first_poll_duration < std::chrono::milliseconds(500));
+}
+
+UAM_TEST(ClaudeImagePreparationLeaseMovesAndCancelsWithoutOwningWorkerLifetime)
+{
+	const std::shared_ptr<uam::ClaudeInputPreparation> state = std::make_shared<uam::ClaudeInputPreparation>();
+	uam::AppState app;
+	uam::ClaudeInputPreparationTask task; task.state = state;
+	app.claude_input_tasks.push_back(std::move(task));
+	{
+		uam::AcpSessionState original;
+		original.claude_input_preparation = std::make_unique<uam::ClaudeInputPreparationLease>(state);
+		uam::AcpSessionState moved(std::move(original));
+		UAM_ASSERT(!state->cancel.stop_requested());
+		UAM_ASSERT(original.claude_input_preparation == nullptr);
+		UAM_ASSERT(moved.claude_input_preparation != nullptr);
+	}
+	UAM_ASSERT(state->cancel.stop_requested());
+	UAM_ASSERT_EQ(app.claude_input_tasks.size(), std::size_t{1});
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT_EQ(app.claude_input_tasks.size(), std::size_t{1});
+	state->finished.store(true, std::memory_order_release);
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(app.claude_input_tasks.empty());
+}
+
+UAM_TEST(ClaudeImagePreparationCancelsEveryStaleIdentityBeforeStartupGates)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	const std::vector<std::function<void(uam::AppState&, uam::AcpSessionState&, ChatSession&)>> mutations = {
+	    [](uam::AppState&, uam::AcpSessionState& session, ChatSession&) { session.queued_prompt.clear(); },
+	    [](uam::AppState&, uam::AcpSessionState& session, ChatSession&) { session.queued_prompt += "changed"; },
+	    [](uam::AppState&, uam::AcpSessionState& session, ChatSession&) { ++session.turn_serial; },
+	    [](uam::AppState&, uam::AcpSessionState& session, ChatSession&) { session.provider_id = "codex-cli"; },
+	    [](uam::AppState&, uam::AcpSessionState&, ChatSession& chat) { chat.provider_id = "codex-cli"; },
+	    [](uam::AppState&, uam::AcpSessionState&, ChatSession& chat) { chat.execution_host_id = "different-host"; },
+	    [](uam::AppState&, uam::AcpSessionState&, ChatSession& chat) { chat.workspace_directory = "/changed-workspace"; },
+	    [](uam::AppState&, uam::AcpSessionState&, ChatSession& chat) { chat.model_id = "other-model"; },
+	    [](uam::AppState&, uam::AcpSessionState& session, ChatSession&) { session.goal_turn_model_id = "goal-model"; },
+	    [](uam::AppState&, uam::AcpSessionState& session, ChatSession&) { session.session_id = "new-native-session"; },
+	    [](uam::AppState&, uam::AcpSessionState& session, ChatSession&) { session.process_execution_host_id = "changed-process-host"; },
+	    [](uam::AppState&, uam::AcpSessionState&, ChatSession& chat) { chat.computer_use_enabled = !chat.computer_use_enabled; },
+	    [](uam::AppState&, uam::AcpSessionState&, ChatSession& chat) { chat.computer_use_backend = "changed-backend"; },
+	    [](uam::AppState&, uam::AcpSessionState&, ChatSession& chat) { chat.approval_mode = "other-mode"; },
+	    [](uam::AppState&, uam::AcpSessionState&, ChatSession& chat) { chat.messages[0].attachments.clear(); },
+	    [](uam::AppState&, uam::AcpSessionState& session, ChatSession&) { session.turn_user_message_index = -1; },
+	    [](uam::AppState& app, uam::AcpSessionState&, ChatSession&) { ExecutionHost local; local.platform = "changed"; app.settings.execution_hosts.push_back(local); }
+	};
+	for (const std::function<void(uam::AppState&, uam::AcpSessionState&, ChatSession&)>& mutate : mutations)
+	{
+		uam::AppState app; ChatSession chat; chat.id = "images"; chat.provider_id = "claude-cli"; chat.workspace_directory = "/workspace";
+		Message user; user.role = MessageRole::User;
+		MessageAttachment image; image.kind = "image"; image.path = "image.png"; user.attachments.push_back(image); chat.messages.push_back(user);
+		uam::AcpSessionState session; session.chat_id = chat.id; session.provider_id = chat.provider_id; session.protocol_kind = "claude-code-stream-json";
+		session.queued_prompt = "Instructions prefix\nDescribe image"; session.turn_first_user_message_index = 0; session.turn_user_message_index = 0;
+		const std::shared_ptr<uam::ClaudeInputPreparation> state = std::make_shared<uam::ClaudeInputPreparation>();
+		state->host = *uam::execution_hosts::Find(app.settings.execution_hosts, "local");
+		state->identity = {chat.id, session.provider_id, chat.provider_id, session.session_id, session.process_execution_host_id,
+		    chat.execution_host_id, chat.workspace_directory, session.queued_prompt, chat.model_id, session.goal_turn_model_id,
+		    chat.approval_mode, chat.computer_use_backend, chat.computer_use_enabled, session.turn_serial, 0, 0, user.attachments};
+		session.claude_input_preparation = std::make_unique<uam::ClaudeInputPreparationLease>(state);
+		// An unchanged prefix is retained while startup is still waiting.
+		UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		UAM_ASSERT(!state->cancel.stop_requested());
+		mutate(app, session, chat);
+		UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		UAM_ASSERT(state->cancel.stop_requested()); UAM_ASSERT(session.claude_input_preparation == nullptr);
+		UAM_ASSERT_EQ(session.next_request_id, 1);
+	}
+#endif
+}
+
+UAM_TEST(ClaudeImagePreparationCancelAndStopReleaseSessionLease)
+{
+	for (const bool stop : {false, true})
+	{
+		TempDir temp("claude-image-cancel"); uam::AppState app; app.data_root = temp.root;
+		ChatSession chat; chat.id = "cancel-images"; chat.provider_id = "claude-cli"; app.chats.push_back(chat);
+		const std::shared_ptr<uam::ClaudeInputPreparation> state = std::make_shared<uam::ClaudeInputPreparation>();
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>(); session->chat_id = chat.id;
+		session->provider_id = chat.provider_id; session->processing = true; session->queued_prompt = "Unsent image";
+		session->claude_input_preparation = std::make_unique<uam::ClaudeInputPreparationLease>(state);
+		app.acp_sessions.push_back(std::move(session));
+		std::string error;
+		UAM_ASSERT(stop ? uam::StopAcpSession(app, chat.id) : uam::CancelAcpTurn(app, chat.id, &error));
+		UAM_ASSERT(state->cancel.stop_requested()); UAM_ASSERT(app.acp_sessions.front()->claude_input_preparation == nullptr);
+	}
 }

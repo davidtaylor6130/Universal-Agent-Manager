@@ -17,6 +17,7 @@ namespace uam::attachment_preview
 		class BoundedStream final : public IStream
 		{
 		public:
+			explicit BoundedStream(std::size_t limit, std::stop_token cancel) : m_limit(limit), m_cancel(cancel) {}
 			std::string bytes;
 			HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** result) override
 			{
@@ -37,7 +38,8 @@ namespace uam::attachment_preview
 			HRESULT STDMETHODCALLTYPE Write(const void* source, ULONG count, ULONG* written) override
 			{
 				if (written) *written = 0;
-				if ((!source && count) || count > kMaxPreviewBytes - m_offset) return STG_E_MEDIUMFULL;
+				if (m_cancel.stop_requested()) return STG_E_REVERTED;
+				if ((!source && count) || count > m_limit - m_offset) return STG_E_MEDIUMFULL;
 				bytes.resize(std::max(bytes.size(), m_offset + count));
 				if (count) std::memcpy(bytes.data() + m_offset, source, count);
 				m_offset += count; if (written) *written = count; return S_OK;
@@ -46,11 +48,11 @@ namespace uam::attachment_preview
 			{
 				const LONGLONG base = origin == STREAM_SEEK_SET ? 0 : origin == STREAM_SEEK_CUR ? static_cast<LONGLONG>(m_offset) :
 				    origin == STREAM_SEEK_END ? static_cast<LONGLONG>(bytes.size()) : -1;
-				if (base < 0 || delta.QuadPart < -base || delta.QuadPart > static_cast<LONGLONG>(kMaxPreviewBytes) - base) return STG_E_INVALIDFUNCTION;
+				if (base < 0 || delta.QuadPart < -base || delta.QuadPart > static_cast<LONGLONG>(m_limit) - base) return STG_E_INVALIDFUNCTION;
 				m_offset = static_cast<std::size_t>(base + delta.QuadPart);
 				if (result) result->QuadPart = m_offset; return S_OK;
 			}
-			HRESULT STDMETHODCALLTYPE SetSize(ULARGE_INTEGER size) override { if (size.QuadPart > kMaxPreviewBytes) return STG_E_MEDIUMFULL; bytes.resize(static_cast<std::size_t>(size.QuadPart)); return S_OK; }
+			HRESULT STDMETHODCALLTYPE SetSize(ULARGE_INTEGER size) override { if (size.QuadPart > m_limit) return STG_E_MEDIUMFULL; bytes.resize(static_cast<std::size_t>(size.QuadPart)); return S_OK; }
 			HRESULT STDMETHODCALLTYPE CopyTo(IStream*, ULARGE_INTEGER, ULARGE_INTEGER*, ULARGE_INTEGER*) override { return E_NOTIMPL; }
 			HRESULT STDMETHODCALLTYPE Commit(DWORD) override { return S_OK; }
 			HRESULT STDMETHODCALLTYPE Revert() override { return E_NOTIMPL; }
@@ -61,6 +63,8 @@ namespace uam::attachment_preview
 		private:
 			std::atomic<ULONG> m_refs{1};
 			std::size_t m_offset = 0;
+			const std::size_t m_limit;
+			const std::stop_token m_cancel;
 		};
 	}
 
@@ -80,9 +84,9 @@ namespace uam::attachment_preview
 		return result;
 	}
 
-	Image Decode(std::string_view source)
+	static DeliveryImage ProcessImage(std::string_view source, std::size_t max_bytes, bool delivery, std::stop_token cancel)
 	{
-		if (source.empty() || source.size() > kMaxSourceBytes) return {};
+		if (cancel.stop_requested() || source.empty() || source.size() > kMaxSourceBytes || max_bytes == 0 || max_bytes > kMaxSourceBytes) return {};
 		const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 		if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) return {};
 		struct Apartment { bool owns; ~Apartment() { if (owns) CoUninitialize(); } } apartment{SUCCEEDED(initialized)};
@@ -96,14 +100,21 @@ namespace uam::attachment_preview
 		IWICBitmapDecoder* raw_decoder = nullptr;
 		if (FAILED(factory->CreateDecoderFromStream(stream.get(), nullptr, WICDecodeMetadataCacheOnDemand, &raw_decoder))) return {};
 		ComPtr<IWICBitmapDecoder> decoder(raw_decoder);
+		const std::string mime = ImageMime(source);
+		if (mime.empty()) return {};
 		GUID container{};
-		if (FAILED(decoder->GetContainerFormat(&container)) || container != GUID_ContainerFormatPng && container != GUID_ContainerFormatJpeg) return {};
+		if (FAILED(decoder->GetContainerFormat(&container)) || (!delivery && container != GUID_ContainerFormatPng && container != GUID_ContainerFormatJpeg)) return {};
 		IWICBitmapFrameDecode* raw_frame = nullptr;
 		if (FAILED(decoder->GetFrame(0, &raw_frame))) return {};
 		ComPtr<IWICBitmapFrameDecode> frame(raw_frame);
 		UINT width = 0, height = 0;
 		if (FAILED(frame->GetSize(&width, &height)) || !width || !height || width > kMaxSourceSide || height > kMaxSourceSide ||
 		    static_cast<std::uint64_t>(width) * height > kMaxSourcePixels) return {};
+		const bool original_fits = delivery && source.size() <= max_bytes && width <= 8000 && height <= 8000;
+		UINT frames = 0;
+		if (FAILED(decoder->GetFrameCount(&frames))) return {};
+		const bool animated = frames > 1;
+		if (delivery && !original_fits && animated) return {};
 		unsigned orientation = 1;
 		IWICMetadataQueryReader* raw_metadata = nullptr;
 		if (SUCCEEDED(frame->GetMetadataQueryReader(&raw_metadata)))
@@ -120,8 +131,11 @@ namespace uam::attachment_preview
 		if (FAILED(factory->CreateBitmapFlipRotator(&raw_rotator))) return {};
 		ComPtr<IWICBitmapFlipRotator> rotator(raw_rotator);
 		if (FAILED(rotator->Initialize(frame.get(), transforms[orientation <= 8 ? orientation : 1])) || FAILED(rotator->GetSize(&width, &height))) return {};
-		for (UINT side : {1024u, 512u, 256u})
+		const std::vector<UINT> sides = delivery ? std::vector<UINT>{8000, 4096, 2576, 2048, 1568, 1024, 768, 512, 256} : std::vector<UINT>{1024, 512, 256};
+		for (UINT side : sides)
 		{
+			if (cancel.stop_requested()) return {};
+			if (original_fits) side = 1024;
 			const UINT largest = std::max(width, height);
 			const UINT out_width = largest <= side ? width : std::max(1u, static_cast<UINT>(static_cast<std::uint64_t>(width) * side / largest));
 			const UINT out_height = largest <= side ? height : std::max(1u, static_cast<UINT>(static_cast<std::uint64_t>(height) * side / largest));
@@ -129,7 +143,7 @@ namespace uam::attachment_preview
 			if (FAILED(factory->CreateBitmapScaler(&raw_scaler))) return {};
 			ComPtr<IWICBitmapScaler> scaler(raw_scaler);
 			if (FAILED(scaler->Initialize(rotator.get(), out_width, out_height, WICBitmapInterpolationModeFant))) return {};
-			ComPtr<BoundedStream> output(new BoundedStream);
+			ComPtr<BoundedStream> output(new BoundedStream(max_bytes, cancel));
 			IWICBitmapEncoder* raw_encoder = nullptr;
 			if (FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &raw_encoder))) return {};
 			ComPtr<IWICBitmapEncoder> encoder(raw_encoder);
@@ -143,9 +157,27 @@ namespace uam::attachment_preview
 			if (FAILED(factory->CreateFormatConverter(&raw_converter))) return {};
 			ComPtr<IWICFormatConverter> converter(raw_converter);
 			if (FAILED(converter->Initialize(scaler.get(), format, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) return {};
+			if (original_fits)
+			{
+				// Force bounded pixel decoding before admitting the unchanged original bytes.
+				const UINT stride = out_width * 4;
+				std::vector<BYTE> pixels(static_cast<std::size_t>(stride) * out_height);
+				if (FAILED(converter->CopyPixels(nullptr, stride, static_cast<UINT>(pixels.size()), pixels.data())) || cancel.stop_requested()) return {};
+				return {std::string(source), width, height, mime, animated};
+			}
 			if (SUCCEEDED(encoded->WriteSource(converter.get(), nullptr)) && SUCCEEDED(encoded->Commit()) && SUCCEEDED(encoder->Commit()) && !output->bytes.empty())
-				return {std::move(output->bytes), out_width, out_height};
+				return {std::move(output->bytes), out_width, out_height, "image/png"};
 		}
 		return {};
 	}
+	Image Decode(std::string_view source)
+	{
+		DeliveryImage decoded = ProcessImage(source, kMaxPreviewBytes, false, {});
+		return {std::move(decoded.bytes), decoded.width, decoded.height};
+	}
+	DeliveryImage PrepareDeliveryImage(std::string_view source, std::size_t max_bytes, std::stop_token cancel)
+	{
+		return ProcessImage(source, max_bytes, true, cancel);
+	}
+
 }

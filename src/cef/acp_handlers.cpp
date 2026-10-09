@@ -489,6 +489,12 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 
 	std::string error;
 	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
+	if (chat->provider_id == uam::provider_ids::kClaudeCli && chat->execution_host_id == uam::execution_hosts::kLocalHostId &&
+	    !uam::attachment_preview::ValidateImageAttachmentFiles(uam::paths::ResolveWorkspaceRootPath(m_app, *chat), attachments, error))
+	{
+		cb->Failure(400, error);
+		return;
+	}
 	const bool goal_mode = payload.value("goalMode", false);
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
 	const bool computer_use_mode = UAM_ENABLE_COMPUTER_USE && payload.value("computerUseMode", false) && chat->computer_use_enabled;

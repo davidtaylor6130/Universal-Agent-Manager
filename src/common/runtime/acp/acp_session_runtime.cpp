@@ -2815,6 +2815,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		session->queued_prompt.clear();
+		session->claude_input_preparation.reset();
 		session->processing = false;
 		session->turn_checkpoint_eligible = false;
 		session->cancel_requested = true;
@@ -3164,6 +3165,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.last_error.clear();
 		}
 		session.queued_prompt.clear();
+		session.claude_input_preparation.reset();
 		if (!preserve_held_queue) session.queued_user_prompts.clear();
 		session.goal_turn_kind.clear();
 		session.goal_turn_model_id.clear();
@@ -3261,6 +3263,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return !AcpStopInProgress(app, chat_id);
 		}
+		session->claude_input_preparation.reset();
 		if (session->local_stop_pending)
 		{
 			for (AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
@@ -3771,6 +3774,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		bool changed = RetryPendingRemoteAcpSessionHydration(app) > 0;
 		changed = PollCompletedAcpProcessStops(app, browser) || changed;
 		std::erase_if(app.remote_context_tasks, [](const RemoteContextTask& task)
+		{ return task.state != nullptr && task.state->finished.load(std::memory_order_acquire); });
+		std::erase_if(app.claude_input_tasks, [](const ClaudeInputPreparationTask& task)
 		{ return task.state != nullptr && task.state->finished.load(std::memory_order_acquire); });
 		const double stop_now = GetAppTimeSeconds();
 		for (auto stop = app.pending_acp_remote_stops.begin();
@@ -4323,6 +4328,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	void FastStopAcpSessionsForExit(AppState& app)
 	{
+		for (ClaudeInputPreparationTask& task : app.claude_input_tasks)
+			if (task.state != nullptr) task.state->cancel.request_stop();
+		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
+			if (session != nullptr) session->claude_input_preparation.reset();
+		app.claude_input_tasks.clear();
+
 		acp_detail::StopTurnCheckpointTasks(app);
 		for (AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
 		{

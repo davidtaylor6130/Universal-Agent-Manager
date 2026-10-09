@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/provider/provider_runtime.h"
+#include <stop_token>
 
 class ClaudeCliProviderRuntime final : public IProviderRuntime
 {

@@ -441,3 +441,12 @@ class ProviderRuntime
 	/// <summary>Returns true when this provider treats <paramref name="tool_name"/> as a sub-agent invocation.</summary>
 	static bool ProviderRecognizesSubagentTool(const ProviderProfile& profile, std::string_view tool_name);
 };
+
+namespace uam::claude_input
+{
+	std::vector<MessageAttachment> TurnImages(const ChatSession& chat, int first, int last);
+	/// Exact Claude stream envelope. Delivery mode validates pixels and fits images on a worker.
+	nlohmann::json Build(const std::string& prompt, const std::filesystem::path& workspace,
+	    const std::vector<MessageAttachment>& images, std::string& error,
+	    bool prepare_delivery, std::stop_token cancel = {});
+}

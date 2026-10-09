@@ -4,6 +4,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 
 #include "app/agent_definition_service.h"
+#include "common/provider/provider_runtime.h"
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
 #include "app/git_worktree_service.h"
@@ -354,6 +355,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.queued_prompt.clear();
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
+	session.claude_input_preparation.reset();
 	session.goal_turn_kind.clear();
 	session.goal_turn_model_id.clear();
 	session.goal_internal_session = false;
@@ -1200,8 +1202,31 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	return true;
 }
 
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
+	return {chat.id, session.provider_id, chat.provider_id, session.session_id,
+	    session.process_execution_host_id, chat.execution_host_id, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)), session.queued_prompt,
+	    chat.model_id, session.goal_turn_model_id, chat.approval_mode, chat.computer_use_backend, chat.computer_use_enabled,
+	    session.turn_serial, first, session.turn_user_message_index, uam::claude_input::TurnImages(chat, first, session.turn_user_message_index)};
+}
+#endif
+
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	if (session.claude_input_preparation != nullptr)
+	{
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		if (session.remote_source_exit_reported || session.queued_prompt.empty() || session.protocol_kind != "claude-code-stream-json" ||
+		    chat.execution_host_id != execution_hosts::kLocalHostId || host == nullptr ||
+		    session.queued_prompt.size() > platform::kAsyncInputMaxQueuedBytes ||
+		    session.claude_input_preparation->state->identity != ClaudeInputSnapshot(app, session, chat) ||
+		    !execution_hosts::SameConnection(session.claude_input_preparation->state->host, *host))
+			session.claude_input_preparation.reset();
+	}
+#endif
 	if (session.remote_source_exit_reported) return false;
 	// A command made while startup was pending may invalidate an unsent goal turn.
 	if (!session.goal_turn_kind.empty() && session.prompt_request_id == 0 && !session.queued_prompt.empty())
@@ -1210,6 +1235,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		if (owner == nullptr || owner->goal_command_revision != session.goal_command_revision)
 		{
 			session.queued_prompt.clear();
+			session.claude_input_preparation.reset();
 			session.goal_turn_kind.clear();
 			session.goal_review_turn = false;
 			session.processing = false;
@@ -1297,13 +1323,69 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		session.last_error = "Wait for pending remote requests to be confirmed before sending another prompt.";
 		return true;
 	}
-	const int id = session.next_request_id++;
 	std::string method;
 	ChatSession prompt_chat = chat;
-	// Prompt attachments use the same effective root as staging and process launch.
 	prompt_chat.workspace_directory = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
 	if (!session.goal_turn_model_id.empty()) prompt_chat.model_id = session.goal_turn_model_id;
-	nlohmann::json msg = runtime.OnAcpBuildPrompt(session, id, context + prompt, prompt_chat, method);
+	nlohmann::json msg;
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
+	const std::vector<MessageAttachment> images = session.protocol_kind == "claude-code-stream-json" && chat.execution_host_id == execution_hosts::kLocalHostId
+	    ? uam::claude_input::TurnImages(chat, first, session.turn_user_message_index) : std::vector<MessageAttachment>{};
+	if (session.protocol_kind == "claude-code-stream-json" && chat.execution_host_id == execution_hosts::kLocalHostId && !images.empty())
+	{
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		if (host == nullptr) { FailAcpTurnOrSession(session, &chat, "The execution host no longer exists."); return true; }
+		if (prompt.size() > platform::kAsyncInputMaxQueuedBytes)
+		{ FailAcpTurnOrSession(session, &chat, "The prompt exceeds UAM's 4 MiB input limit."); return true; }
+		const ClaudeInputIdentity identity = ClaudeInputSnapshot(app, session, chat);
+		if (session.claude_input_preparation != nullptr &&
+		    (session.claude_input_preparation->state->identity != identity ||
+		     !execution_hosts::SameConnection(session.claude_input_preparation->state->host, *host)))
+			session.claude_input_preparation.reset();
+		if (session.claude_input_preparation == nullptr)
+		{
+			// A small active-worker cap bounds concurrent image decoder memory.
+			const std::size_t active = std::ranges::count_if(app.claude_input_tasks, [](const ClaudeInputPreparationTask& task)
+			{ return task.state != nullptr && !task.state->finished.load(std::memory_order_acquire); });
+			if (active >= 2) return false;
+			std::shared_ptr<ClaudeInputPreparation> state = std::make_shared<ClaudeInputPreparation>();
+			state->identity = identity; state->host = *host;
+			ClaudeInputPreparationTask task;
+			task.state = state;
+			task.worker = std::make_unique<std::jthread>([state](std::stop_token shutdown)
+			{
+				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
+				try
+				{
+					state->message = uam::claude_input::Build(state->identity.prompt,
+					    paths::PathFromUtf8(state->identity.workspace), state->identity.images,
+					    state->error, true, state->cancel.get_token());
+				}
+				catch (...) { state->error = "Image preparation failed. Remove or replace the image and try again."; }
+				state->finished.store(true, std::memory_order_release);
+			});
+			app.claude_input_tasks.push_back(std::move(task));
+			session.claude_input_preparation = std::make_unique<ClaudeInputPreparationLease>(std::move(state));
+			return false;
+		}
+		const std::shared_ptr<ClaudeInputPreparation>& state = session.claude_input_preparation->state;
+		if (!state->finished.load(std::memory_order_acquire)) return false;
+		if (!state->error.empty())
+		{
+			const std::string error = state->error;
+			session.claude_input_preparation.reset();
+			FailAcpTurnOrSession(session, &chat, error); return true;
+		}
+		msg = state->message;
+	}
+	else
+#endif
+	{
+		session.claude_input_preparation.reset();
+		msg = runtime.OnAcpBuildPrompt(session, session.next_request_id, context + prompt, prompt_chat, method);
+	}
+	const int id = session.next_request_id++;
 
 	if (msg.is_null() || msg.empty())
 	{
@@ -1453,6 +1535,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	session.queued_prompt.clear();
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
+	session.claude_input_preparation.reset();
 	if (!remote && !SaveChatQuietly(app, chat))
 	{
 		session.last_error = "Prompt was delivered, but chat state could not be saved.";
@@ -1628,6 +1711,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.queued_prompt.clear();
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
+	session.claude_input_preparation.reset();
 	session.current_assistant_message_index = -1;
 	session.codex_turn_id.clear();
 	session.load_history_replay_updates.clear();

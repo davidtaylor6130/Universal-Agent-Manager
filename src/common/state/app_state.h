@@ -438,6 +438,51 @@ namespace uam
 		std::unique_ptr<std::jthread> worker;
 	};
 
+	struct ClaudeInputIdentity
+	{
+		std::string chat_id;
+		std::string provider_id;
+		std::string chat_provider_id;
+		std::string session_id;
+		std::string process_host_id;
+		std::string execution_host_id;
+		std::string workspace;
+		std::string prompt;
+		std::string model_id;
+		std::string goal_model_id;
+		std::string approval_mode;
+		std::string computer_use_backend;
+		bool computer_use_enabled = false;
+		int turn_serial = 0;
+		int first_message_index = -1;
+		int last_message_index = -1;
+		std::vector<MessageAttachment> images;
+		bool operator==(const ClaudeInputIdentity&) const = default;
+	};
+	struct ClaudeInputPreparation
+	{
+		ClaudeInputIdentity identity;
+		ExecutionHost host;
+		nlohmann::json message;
+		std::string error;
+		std::stop_source cancel;
+		std::atomic<bool> finished{false};
+	};
+	/// Session lifetime requests cancellation; app ownership keeps the worker off GUI destruction paths.
+	struct ClaudeInputPreparationLease
+	{
+		std::shared_ptr<ClaudeInputPreparation> state;
+		explicit ClaudeInputPreparationLease(std::shared_ptr<ClaudeInputPreparation> preparation) : state(std::move(preparation)) {}
+		ClaudeInputPreparationLease(const ClaudeInputPreparationLease&) = delete;
+		ClaudeInputPreparationLease& operator=(const ClaudeInputPreparationLease&) = delete;
+		~ClaudeInputPreparationLease() { if (state != nullptr) state->cancel.request_stop(); }
+	};
+	struct ClaudeInputPreparationTask
+	{
+		std::shared_ptr<ClaudeInputPreparation> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
 		AcpStopPurpose stop_purpose = AcpStopPurpose::Interrupt;
@@ -525,6 +570,7 @@ namespace uam
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
 		bool queue_held = false;
 		std::shared_ptr<RemoteContextPreparation> remote_context_preparation;
+		std::unique_ptr<ClaudeInputPreparationLease> claude_input_preparation;
 		// Counts automatic relaunches after the process died before the queued
 		// prompt was delivered. Deliberately survives ResetAcpRuntimeState so a
 		// crash-looping provider cannot restart forever; cleared when a new user
@@ -918,6 +964,7 @@ namespace uam
 		std::shared_ptr<std::atomic<bool>> provider_context_cleanup_finished;
 		double provider_context_cleanup_not_before_s = 0.0;
 		std::vector<RemoteContextTask> remote_context_tasks;
+		std::vector<ClaudeInputPreparationTask> claude_input_tasks;
 		// Runtime-only discovery contexts; never serialized or persisted as user chats.
 		std::vector<ChatSession> model_discovery_chats;
 		std::vector<PendingModelDiscoveryRetry> pending_model_discovery_retries;

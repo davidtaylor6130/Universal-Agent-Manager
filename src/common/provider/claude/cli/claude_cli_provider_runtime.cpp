@@ -14,9 +14,10 @@
 #include "common/paths/path_utils.h"
 #include "common/platform/async_byte_writer.h"
 #include "common/utils/nlohmann_json_utils.h"
+#include "app/attachment_preview_service.h"
 
+#include <algorithm>
 #include <array>
-#include <fstream>
 #include <string_view>
 
 namespace
@@ -195,79 +196,127 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildSetupRequest(int request_id, 
 	return nullptr;
 }
 
-nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
-    const std::string& prompt, const ChatSession& chat, std::string& out_method) const
+namespace uam::claude_input
 {
-	(void)request_id;
-	out_method.clear();
-	nlohmann::json message = uam::acp_detail::BuildClaudeInputMessage(prompt);
-	// Remote attachments are on the runner, where Claude can inspect their referenced paths.
-	// Never resolve a remote workspace path against this machine's filesystem.
-	if (chat.execution_host_id == "local")
+	std::vector<MessageAttachment> TurnImages(const ChatSession& chat, int first, int last)
 	{
-		const int first = session.turn_first_user_message_index >= 0
-		    ? session.turn_first_user_message_index : session.turn_user_message_index;
-		for (int index = first; index >= 0 && index <= session.turn_user_message_index && index < static_cast<int>(chat.messages.size()); ++index)
+		std::vector<MessageAttachment> images;
+		for (int index = first; index >= 0 && index <= last && index < static_cast<int>(chat.messages.size()); ++index)
 		{
 			const Message& user = chat.messages[static_cast<std::size_t>(index)];
-			if (user.role != MessageRole::User)
-			{
-				continue;
-			}
+			if (user.role != MessageRole::User) continue;
 			for (const MessageAttachment& attachment : user.attachments)
+				if (attachment.kind == "image") images.push_back(attachment);
+		}
+		return images;
+	}
+
+	nlohmann::json Build(const std::string& prompt, const std::filesystem::path& workspace,
+	    const std::vector<MessageAttachment>& images, std::string& error, bool prepare_delivery, std::stop_token cancel)
+	{
+		error.clear();
+		const auto fail = [&error](std::string message) -> nlohmann::json { error = std::move(message); return nullptr; };
+		if (cancel.stop_requested()) return fail("Image preparation canceled.");
+		if (prompt.size() > uam::platform::kAsyncInputMaxQueuedBytes) return fail("The prompt exceeds UAM's 4 MiB input limit.");
+		if (images.size() > 32) return fail("Send at most 32 images in one message.");
+		nlohmann::json message = uam::acp_detail::BuildClaudeInputMessage(prompt);
+		const std::size_t limit = uam::platform::kAsyncInputMaxQueuedBytes;
+		if (message.dump().size() + 1 > limit) return fail("The prompt exceeds UAM's 4 MiB input limit.");
+		std::vector<uam::attachment_preview::DeliveryImage> inputs;
+		std::vector<std::string> originals;
+		std::size_t source_bytes = 0;
+		std::size_t encoded_bytes = 0;
+		for (const MessageAttachment& image : images)
+		{
+			if (cancel.stop_requested()) return fail("Image preparation canceled.");
+			const std::filesystem::path path = uam::paths::PathFromUtf8(image.path);
+			const std::filesystem::path resolved = path.is_absolute() ? path : workspace / path;
+			std::string bytes;
+			if (!uam::attachment_preview::ReadDeliverySource(resolved, bytes, 50 * 1024 * 1024 - source_bytes)) return fail("Could not read attached image: " + image.name);
+			if (bytes.size() > 50 * 1024 * 1024 - source_bytes) return fail("Images exceed the 50 MiB preparation limit. Send fewer images.");
+			source_bytes += bytes.size();
+			uam::attachment_preview::DeliveryImage input;
+			if (prepare_delivery)
 			{
-				if (attachment.kind != "image")
-				{
-					continue;
-				}
-				std::string mime = uam::strings::ToLowerAscii(attachment.mime_type);
-				const std::filesystem::path path = uam::paths::PathFromUtf8(attachment.path);
+				input = uam::attachment_preview::PrepareDeliveryImage(bytes, uam::attachment_preview::kMaxSourceBytes, cancel);
+				if (input.bytes.empty()) return fail("Invalid or unsupported image. Use PNG, JPEG, GIF or WebP: " + image.name);
+			}
+			else
+			{
+				std::string mime = uam::strings::ToLowerAscii(image.mime_type);
 				if (mime.empty())
 				{
 					const std::string extension = uam::strings::ToLowerAscii(path.extension().string());
 					mime = extension == ".png" ? "image/png" : extension == ".jpg" || extension == ".jpeg" ? "image/jpeg" : extension == ".gif" ? "image/gif" : extension == ".webp" ? "image/webp" : "";
 				}
 				if (!uam::ranges::Contains(std::array<std::string_view, 4>{"image/png", "image/jpeg", "image/gif", "image/webp"}, std::string_view(mime)))
-				{
-					session.last_error = "Claude supports PNG, JPEG, GIF and WebP image attachments. Convert this image before sending: " + attachment.name;
-					return nullptr;
-				}
-				const std::filesystem::path resolved = path.is_absolute() ? path : uam::paths::PathFromUtf8(chat.workspace_directory) / path;
-				std::error_code error;
-				const std::uintmax_t size = std::filesystem::file_size(resolved, error);
-				if (error || size == 0)
-				{
-					session.last_error = "Could not read attached image: " + attachment.path;
-					return nullptr;
-				}
-				if (size > uam::platform::kAsyncInputMaxQueuedBytes * 3 / 4)
-				{
-					session.last_error = "Attached image exceeds Claude's input limit. Resize it before sending: " + attachment.name;
-					return nullptr;
-				}
-				std::string bytes(static_cast<std::size_t>(size), '\0');
-				std::ifstream file(resolved, std::ios::binary);
-				if (!file.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) || file.peek() != std::char_traits<char>::eof())
-				{
-					session.last_error = "Could not read attached image: " + attachment.path;
-					return nullptr;
-				}
-				message["message"]["content"].push_back({{"type", "image"}, {"source", {{"type", "base64"}, {"media_type", mime}, {"data", uam::base64::Encode(bytes)}}}});
-				if (message.dump().size() + 1 > uam::platform::kAsyncInputMaxQueuedBytes)
-				{
-					session.last_error = "Claude's prompt and images exceed the 4 MiB input limit. Send fewer or smaller images.";
-					return nullptr;
-				}
+					return fail("Unsupported image. Use PNG, JPEG, GIF or WebP: " + image.name);
+				input = {bytes, 0, 0, mime};
+			}
+			encoded_bytes += 4 * ((input.bytes.size() + 2) / 3);
+			message["message"]["content"].push_back({{"type", "image"}, {"source", {{"type", "base64"}, {"media_type", input.mime_type}, {"data", ""}}}});
+			inputs.push_back(std::move(input));
+			originals.push_back(std::move(bytes));
+		}
+		const std::size_t envelope_bytes = message.dump().size() + 1;
+		if (envelope_bytes >= limit) return fail("The prompt and images exceed UAM's 4 MiB input limit.");
+		const std::size_t available = limit - envelope_bytes;
+		if (encoded_bytes > available)
+		{
+			if (!prepare_delivery) return fail("The prompt and images exceed UAM's 4 MiB input limit. Send fewer or smaller images.");
+			std::size_t reserved = 0;
+			std::size_t compressible = encoded_bytes;
+			std::vector<bool> preserve(inputs.size(), false);
+			std::vector<std::size_t> static_indices;
+			for (std::size_t index = 0; index < inputs.size(); ++index)
+			{
+				const std::size_t encoded_size = 4 * ((inputs[index].bytes.size() + 2) / 3);
+				if (inputs[index].animated)
+				{ preserve[index] = true; reserved += encoded_size; compressible -= encoded_size; }
+				else static_indices.push_back(index);
+			}
+			if (reserved >= available || static_indices.empty()) return fail("Animated images must fit unchanged. Send fewer images or shorten the prompt.");
+			std::ranges::sort(static_indices, [&inputs](std::size_t left, std::size_t right) { return inputs[left].bytes.size() < inputs[right].bytes.size(); });
+			std::size_t remaining = static_indices.size();
+			// Keep every image that fits its share unchanged before allocating space to larger images.
+			for (const std::size_t index : static_indices)
+			{
+				const std::size_t encoded_size = 4 * ((inputs[index].bytes.size() + 2) / 3);
+				if (encoded_size > (available - reserved) / remaining) break;
+				preserve[index] = true; reserved += encoded_size; compressible -= encoded_size; --remaining;
+			}
+			for (std::size_t index = 0; index < inputs.size(); ++index)
+			{
+				if (cancel.stop_requested()) return fail("Image preparation canceled.");
+				const std::size_t encoded_size = 4 * ((inputs[index].bytes.size() + 2) / 3);
+				if (preserve[index]) continue;
+				const std::size_t encoded_budget = (available - reserved) * encoded_size / compressible;
+				const std::size_t byte_budget = encoded_budget / 4 * 3;
+				if (byte_budget == 0) return fail("Too little input space remains for images. Shorten the prompt or send fewer images.");
+				inputs[index] = uam::attachment_preview::PrepareDeliveryImage(originals[index], byte_budget, cancel);
+				if (inputs[index].bytes.empty()) return fail("This image could not fit UAM's input limit. Animated images must fit unchanged: " + images[index].name);
+				message["message"]["content"][index + 1]["source"]["media_type"] = inputs[index].mime_type;
 			}
 		}
+		for (std::size_t index = 0; index < inputs.size(); ++index)
+			message["message"]["content"][index + 1]["source"]["data"] = uam::base64::Encode(inputs[index].bytes);
+		if (cancel.stop_requested()) return fail("Image preparation canceled.");
+		// MIME changes and JSON escaping are included in this final transport bound.
+		if (message.dump().size() + 1 > limit) return fail("The prompt and images exceed UAM's 4 MiB input limit. Send fewer or smaller images.");
+		return message;
 	}
-	// Enqueueing an oversized message permanently fails the shared asynchronous writer.
-	if (message.dump().size() + 1 > uam::platform::kAsyncInputMaxQueuedBytes)
-	{
-		session.last_error = "Claude's prompt and images exceed the 4 MiB input limit. Send fewer or smaller images.";
-		return nullptr;
-	}
-	return message;
+}
+
+nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
+    const std::string& prompt, const ChatSession& chat, std::string& out_method) const
+{
+	(void)request_id;
+	out_method.clear();
+	// Remote paths belong to the runner; never open them on the desktop.
+	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
+	const std::vector<MessageAttachment> images = chat.execution_host_id == "local"
+	    ? uam::claude_input::TurnImages(chat, first, session.turn_user_message_index) : std::vector<MessageAttachment>{};
+	return uam::claude_input::Build(prompt, uam::paths::PathFromUtf8(chat.workspace_directory), images, session.last_error, false);
 }
 
 nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState&, int request_id, std::string& out_method) const

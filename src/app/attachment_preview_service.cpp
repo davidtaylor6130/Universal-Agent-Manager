@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <mutex>
+
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
 #if defined(_WIN32)
@@ -18,7 +19,8 @@ namespace uam::attachment_preview
 	{
 		std::mutex s_decodeMutex;
 
-		bool ReadRegular(const std::filesystem::path& path, std::size_t cap, std::string& bytes)
+		bool ReadRegular(const std::filesystem::path& path, std::size_t cap, std::string& bytes,
+		    std::size_t read_limit = kMaxSourceBytes, std::uintmax_t* source_size = nullptr)
 		{
 			if (path.empty() || path.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos) return false;
 #if defined(_WIN32)
@@ -29,13 +31,15 @@ namespace uam::attachment_preview
 			    FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
 			if (handle == INVALID_HANDLE_VALUE) return false;
 			BY_HANDLE_FILE_INFORMATION info{};
-			const bool admitted = GetFileInformationByHandle(handle, &info) &&
+			const bool observed = GetFileInformationByHandle(handle, &info);
+			if (observed && source_size != nullptr) *source_size = (static_cast<std::uintmax_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+			const bool admitted = observed &&
 			    (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) == 0 &&
 			    info.nFileSizeHigh == 0 && info.nFileSizeLow > 0 && info.nFileSizeLow <= cap;
 			bool ok = false;
 			if (admitted)
 			{
-				bytes.resize(info.nFileSizeLow);
+				bytes.resize(std::min<std::size_t>(info.nFileSizeLow, read_limit));
 				DWORD read = 0;
 				ok = ReadFile(handle, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) && read == bytes.size();
 			}
@@ -44,11 +48,13 @@ namespace uam::attachment_preview
 			const int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
 			if (fd < 0) return false;
 			struct stat info{};
-			bool ok = fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && info.st_size > 0 &&
+			const bool observed = fstat(fd, &info) == 0;
+			if (observed && source_size != nullptr && info.st_size >= 0) *source_size = static_cast<std::uintmax_t>(info.st_size);
+			bool ok = observed && S_ISREG(info.st_mode) && info.st_size > 0 &&
 			    static_cast<std::uintmax_t>(info.st_size) <= cap;
 			if (ok)
 			{
-				bytes.resize(static_cast<std::size_t>(info.st_size));
+				bytes.resize(std::min<std::size_t>(static_cast<std::size_t>(info.st_size), read_limit));
 				std::size_t offset = 0;
 				while (offset < bytes.size())
 				{
@@ -111,6 +117,46 @@ namespace uam::attachment_preview
 			// A partial own immutable entry stays unusable: every read validates its content digest.
 			return ok;
 		}
+	}
+
+	std::string ImageMime(std::string_view source)
+	{
+		if (source.starts_with(std::string_view("\x89PNG\r\n\x1a\n", 8))) return "image/png";
+		if (source.size() >= 3 && static_cast<unsigned char>(source[0]) == 0xff && static_cast<unsigned char>(source[1]) == 0xd8 && static_cast<unsigned char>(source[2]) == 0xff) return "image/jpeg";
+		if (source.starts_with("GIF87a") || source.starts_with("GIF89a")) return "image/gif";
+		if (source.size() >= 12 && source.substr(0, 4) == "RIFF" && source.substr(8, 4) == "WEBP") return "image/webp";
+		return {};
+	}
+
+	bool ReadDeliverySource(const std::filesystem::path& path, std::string& bytes, std::size_t max_bytes)
+	{
+		return ReadRegular(path, std::min(max_bytes, kMaxSourceBytes), bytes);
+	}
+
+	bool ValidateImageAttachmentFiles(const std::filesystem::path& workspace,
+	    const std::vector<MessageAttachment>& attachments, std::string& error)
+	{
+		error.clear();
+		std::size_t count = 0;
+		std::uintmax_t total = 0;
+		for (const MessageAttachment& attachment : attachments)
+		{
+			if (attachment.kind != "image") continue;
+			if (++count > 32) { error = "Send at most 32 images in one message."; return false; }
+			const std::filesystem::path path = uam::paths::PathFromUtf8(attachment.path);
+			const std::filesystem::path resolved = path.is_absolute() ? path : workspace / path;
+			std::string prefix;
+			std::uintmax_t size = 0;
+			const bool readable = ReadRegular(resolved, kMaxSourceBytes, prefix, 16, &size);
+			if (size > kMaxSourceBytes || size > 50 * 1024 * 1024 - total)
+			{ error = "Images must be nonempty, at most 25 MiB each and 50 MiB total."; return false; }
+			if (!readable)
+			{ error = "Attached image is no longer available or empty: " + attachment.name; return false; }
+			total += size;
+			if (ImageMime(prefix).empty())
+			{ error = "Unsupported image. Use PNG, JPEG, GIF or WebP: " + attachment.name; return false; }
+		}
+		return true;
 	}
 
 	bool IsKey(std::string_view key)
