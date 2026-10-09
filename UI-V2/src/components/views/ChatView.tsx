@@ -16,7 +16,7 @@ import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from 
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
-import { CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { isImageAttachment, AttachmentList, CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
@@ -313,6 +313,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branchSessions,
   isEditing,
   editingText,
+  editingAttachments,
+  onRemoveEditingAttachment,
   actionsDisabled,
   canChangeProvider,
   branching,
@@ -337,6 +339,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   branchSessions: Session[]
   isEditing: boolean
   editingText: string
+  editingAttachments: Attachment[]
+  onRemoveEditingAttachment: (id: string) => void
   actionsDisabled: boolean
   canChangeProvider: boolean
   branching: boolean
@@ -346,7 +350,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onBeginEdit: (index: number, content: string) => void
   onCancelEdit: () => void
   onEditingTextChange: (content: string) => void
-  onCreateBranch: (index: number, content?: string) => void | Promise<void>
+  onCreateBranch: (index: number, content?: string, retainedAttachmentIds?: string[]) => void | Promise<void>
   onSelectBranch: (parentId: string, index: number, sessionId: string) => void
   onSelectTool: (messageId: string, toolId: string) => void
 }) {
@@ -372,6 +376,11 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
 
   return (
 		<>
+    {!isEditing && (message.attachments ?? []).some(isImageAttachment) && (
+      <div className={`conversation-image-attachments mb-2${isUserMessage ? ' ml-auto w-fit max-w-[85%]' : ''}`}>
+        <AttachmentList attachments={(message.attachments ?? []).filter(isImageAttachment)} chatId={sessionId} nativeMessageIndex={message.nativeMessageIndex} />
+      </div>
+    )}
     <MessageFrame
       role={message.role}
       assistantLabel={assistantLabel}
@@ -391,8 +400,15 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
 			{isUserMessage && message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'}</div>}
 			{isEditing ? (
         <div className="space-y-2">
+          {editingAttachments.map((attachment) => (
+            <div key={attachment.id} className="inline-flex items-center gap-1">
+              <AttachmentList attachments={[attachment]} chatId={sessionId} nativeMessageIndex={message.nativeMessageIndex} />
+              <IconButton icon={<X size={14} />} label={`Remove ${attachment.name} from edited message`} disabled={branching} onClick={() => onRemoveEditingAttachment(attachment.id)} />
+            </div>
+          ))}
           <textarea
             aria-label="Edit message"
+            disabled={branching}
             autoFocus
             value={editingText}
             onChange={(event) => onEditingTextChange(event.target.value)}
@@ -401,7 +417,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
             style={{ border: '1px solid var(--border-bright)', background: 'var(--bg)', color: 'var(--text)' }}
           />
           <div className="flex justify-end gap-2">
-            <Button type="button" size="sm" variant="ghost" onClick={onCancelEdit}>
+            <Button type="button" size="sm" variant="ghost" disabled={branching} onClick={onCancelEdit}>
               Cancel
             </Button>
             <Button
@@ -409,8 +425,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
               size="sm"
               variant="primary"
               loading={branching}
-              disabled={!editingText.trim() || !canChangeProvider}
-              onClick={() => void onCreateBranch(index, editingText)}
+              disabled={(!editingText.trim() && editingAttachments.length === 0) || !canChangeProvider}
+              onClick={() => void onCreateBranch(index, editingText, editingAttachments.map((attachment) => attachment.id))}
             >
               Save to new branch
             </Button>
@@ -419,6 +435,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       ) : (
         <PersistedMessageContent
           message={message}
+          omitImages
           disclosureState={disclosureState}
           onSelectTool={onSelectTool}
           planActions={planActions}
@@ -474,6 +491,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [dismissedAcpErrorKey, setDismissedAcpErrorKey] = useState('')
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
+  const [editingMessageAttachments, setEditingMessageAttachments] = useState<Attachment[]>([])
+  const messageBranchGenerationRef = useRef(0)
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
   const [messageBranchError, setMessageBranchError] = useState('')
   const [rollbackConfirmation, setRollbackConfirmation] = useState<{ messageIndex: number; diff: string } | null>(null)
@@ -891,8 +910,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setGoalArmNextMessage(false)
     setSlashMessage('')
     setPermissionMenuOpen(false)
+    messageBranchGenerationRef.current += 1
     setEditingMessageIndex(null)
     setEditingMessageText('')
+    setEditingMessageAttachments([])
     setBranchingMessageIndex(null)
     setMessageBranchError('')
     setClaudePlanPrompt(null)
@@ -1442,36 +1463,58 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     ? ''
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
   const canChangeProvider = !acp?.processing && !(acp?.queuedPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
-  const createMessageBranch = useCallback(async (messageIndex: number, content?: string) => {
+  const createMessageBranch = useCallback(async (messageIndex: number, content?: string, retainedAttachmentIds?: string[]) => {
+    const generation = ++messageBranchGenerationRef.current
+    const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
     setBranchingMessageIndex(messageIndex)
     setMessageBranchError('')
     const chatMessages = useAppStore.getState().messages[session.id] ?? []
     if (content === undefined && canRetryMessageInPlace(chatMessages, messageIndex - historyStartIndex)) {
       try {
         const result = await retryFailedMessage(session.id, messageIndex)
-        if (!result.ok) setMessageBranchError(result.error || 'Could not retry the failed message.')
+        if (ownsFeedback() && !result.ok) setMessageBranchError(result.error || 'Could not retry the failed message.')
       } catch {
-        setMessageBranchError('Could not retry the failed message. Check the chat before trying again.')
+        if (ownsFeedback()) setMessageBranchError('Could not retry the failed message. Check the chat before trying again.')
       } finally {
-        setBranchingMessageIndex(null)
+        if (ownsFeedback()) setBranchingMessageIndex(null)
       }
       return
     }
-    const branchId = await branchFromMessage(session.id, messageIndex, content)
+    let branchId: string | null = null
+    let branchError = 'Could not create the message branch.'
+    try {
+      branchId = retainedAttachmentIds === undefined
+        ? await branchFromMessage(session.id, messageIndex, content)
+        : await branchFromMessage(session.id, messageIndex, content, retainedAttachmentIds)
+    } catch (error) {
+      if (error instanceof Error && error.message.trim()) branchError = error.message
+    }
+    if (!ownsFeedback()) return
     setBranchingMessageIndex(null)
     if (!branchId) {
-      setMessageBranchError('Could not create the message branch. Wait for the current turn to finish and try again.')
+      setMessageBranchError(branchError)
       return
     }
     setEditingMessageIndex(null)
     setEditingMessageText('')
   }, [branchFromMessage, historyStartIndex, retryFailedMessage, session.id])
   const beginEditingMessage = useCallback((messageIndex: number, content: string) => {
+    messageBranchGenerationRef.current += 1
+    setBranchingMessageIndex(null)
     setEditingMessageIndex(messageIndex)
     setEditingMessageText(content)
+    const message = useAppStore.getState().messages[session.id]?.[messageIndex - historyStartIndex]
+    setEditingMessageAttachments([...(message?.attachments ?? [])])
     setMessageBranchError('')
+  }, [session.id, historyStartIndex])
+  const removeEditingAttachment = useCallback((id: string) => {
+    setEditingMessageAttachments((current) => current.filter((attachment) => attachment.id !== id))
   }, [])
-  const cancelEditingMessage = useCallback(() => setEditingMessageIndex(null), [])
+  const cancelEditingMessage = useCallback(() => {
+    messageBranchGenerationRef.current += 1
+    setEditingMessageIndex(null)
+    setBranchingMessageIndex(null)
+  }, [])
   const selectMessageBranch = useCallback((parentId: string, messageIndex: number, branchId: string) => {
     setPreferredBranch(parentId, messageIndex, branchId)
     setActiveSession(branchId)
@@ -2404,6 +2447,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         branchSessions={branchSessions}
                         isEditing={editingMessageIndex === index + historyStartIndex}
                         editingText={editingMessageIndex === index + historyStartIndex ? editingMessageText : ''}
+                        editingAttachments={editingMessageAttachments}
+                        onRemoveEditingAttachment={removeEditingAttachment}
                         actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
                         canChangeProvider={canChangeProvider}
                         branching={branchingMessageIndex === index + historyStartIndex}

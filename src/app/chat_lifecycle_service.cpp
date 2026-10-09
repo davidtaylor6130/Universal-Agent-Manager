@@ -1282,14 +1282,14 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	return ChatProviderSwitchResult::Changed;
 }
 
-bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out, const std::optional<std::string>& operation_id, std::string* warning_out)
+bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out, const std::optional<std::string>& operation_id, std::string* warning_out, const std::optional<std::vector<std::string>>& retained_attachment_ids)
 {
 	if (branch_id_out != nullptr) branch_id_out->clear();
 	if (error_out != nullptr) error_out->clear();
 	if (warning_out != nullptr) warning_out->clear();
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(app);
 	bool reused_existing_branch = false;
-	if (!ChatDomainService().CreateBranchFromMessage(app, source_chat_id, message_index, replacement_content, operation_id, &reused_existing_branch))
+	if (!ChatDomainService().CreateBranchFromMessage(app, source_chat_id, message_index, replacement_content, operation_id, &reused_existing_branch, retained_attachment_ids))
 	{
 		if (error_out != nullptr)
 		{

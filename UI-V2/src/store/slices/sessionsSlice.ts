@@ -653,13 +653,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return { ok: response.ok, error: response.error }
     },
 
-    branchFromMessage: async (id: string, messageIndex: number, content?: string): Promise<string | null> => {
+    branchFromMessage: async (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[]): Promise<string | null> => {
       if (isCefContext()) {
         const operationId = createRequestId('branch')
         const payload = {
           chatId: id,
           messageIndex,
           ...(content === undefined ? {} : { content }),
+          ...(retainedAttachmentIds === undefined ? {} : { retainedAttachmentIds }),
           ...(operationId ? { operationId } : {}),
         }
         let response = await sendToCEF<{ chatId?: string; warning?: string }>({
@@ -671,7 +672,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         }
         if (!response.ok) {
           console.error('[CEF] branchFromMessage failed:', response.error)
-          return null
+          throw new Error(response.error || 'Could not create the message branch.')
         }
         if (response.data?.warning) set({ statusLine: response.data.warning })
         return response.data?.chatId?.trim() || null
@@ -680,7 +681,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const source = get().sessions.find((session) => session.id === id)
       const sourceMessages = get().messages[id] ?? []
       const sourceMessage = sourceMessages[messageIndex]
-      if (!source || sourceMessage?.role !== 'user' || (content !== undefined && !content.trim())) return null
+      if (!source || sourceMessage?.role !== 'user') return null
+      const retainedAttachments = retainedAttachmentIds === undefined ? sourceMessage.attachments ?? []
+        : (sourceMessage.attachments ?? []).filter((attachment) => retainedAttachmentIds.includes(attachment.id))
+      if (retainedAttachmentIds && (new Set(retainedAttachmentIds).size !== retainedAttachmentIds.length || retainedAttachmentIds.some((id) => !id || !sourceMessage.attachments?.some((attachment) => attachment.id === id)))) return null
+      if (!(content ?? sourceMessage.content).trim() && retainedAttachments.length === 0) return null
 
       sessionCounter++
       const branchId = makeId('branch', sessionCounter)
@@ -689,6 +694,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         ...message,
         sessionId: branchId,
         ...(index === messageIndex && content !== undefined ? { content } : {}),
+        ...(index === messageIndex && retainedAttachmentIds !== undefined ? { attachments: retainedAttachments } : {}),
       }))
       const branch: Session = {
         ...source,

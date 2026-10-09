@@ -63,6 +63,7 @@ it('requests only after visibility, scopes by native index and revokes on unmoun
     payload: { chatId: 'source-chat', messageIndex: 7, attachmentId: 'owned-image' },
   }, false)
   expect(host.querySelector('img')?.getAttribute('src')).toBe('blob:private-preview')
+  expect(host.querySelector('img')?.className).toBe('h-20 w-20 object-contain')
   act(() => root.unmount())
   expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:private-preview')
   root = createRoot(host)

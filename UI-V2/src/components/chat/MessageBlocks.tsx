@@ -673,11 +673,13 @@ export function PersistedMessageContent({
   planActions,
   sourceChatId,
   workingMode = 'verbose',
+  omitImages = false,
 }: {
   disclosureState?: WorkTraceDisclosureState
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
   sourceChatId?: string
+  omitImages?: boolean
   workingMode?: WorkingDisplayMode
   planActions?: {
     show: boolean
@@ -693,13 +695,15 @@ export function PersistedMessageContent({
   const planSummary = message.role === 'assistant' ? message.planSummary ?? '' : ''
   const planEntries = message.role === 'assistant' ? message.planEntries ?? [] : []
   const blocks = message.role === 'assistant' ? message.blocks ?? [] : []
-  const attachments = message.attachments ?? []
+  const imageAttachments = omitImages ? [] : (message.attachments ?? []).filter(isImageAttachment)
+  const attachments = (message.attachments ?? []).filter((attachment) => !isImageAttachment(attachment))
   const goalReview = goalReviewForMessage(message)
   const workedSeconds = (message.processingTimeMs ?? 0) / 1000
 
   if (blocks.length > 0) {
     return (
       <div className="space-y-2">
+        <AttachmentList attachments={imageAttachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
         <PersistedMessageBlocksContent
           message={message}
           disclosureState={traceDisclosure}
@@ -718,6 +722,7 @@ export function PersistedMessageContent({
   if (!thoughts && toolCalls.length === 0 && !planSummary.trim() && planEntries.length === 0) {
     return (
       <div className="space-y-2">
+        <AttachmentList attachments={imageAttachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
         {goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />}
         <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
       </div>
@@ -726,6 +731,7 @@ export function PersistedMessageContent({
 
   return (
     <div className="space-y-2">
+      <AttachmentList attachments={imageAttachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
       {(thoughts || toolCalls.length > 0) ? (
         <CompactWorkingSummary
           headerOnly={workingMode !== 'compact'}
@@ -766,6 +772,10 @@ export function PersistedMessageContent({
       <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
     </div>
   )
+}
+
+export function isImageAttachment(attachment: Attachment): boolean {
+  return attachment.type === 'image' || Boolean(attachment.mimeType?.startsWith('image/'))
 }
 
 export function AttachmentList({ attachments, chatId, nativeMessageIndex }: { attachments: Attachment[]; chatId?: string; nativeMessageIndex?: number }) {

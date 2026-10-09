@@ -781,10 +781,29 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 	                                             ? std::optional<std::string>(payload.value("operationId", ""))
 	                                             : std::nullopt;
 
+	std::optional<std::vector<std::string>> retained_attachment_ids;
+	if (payload.contains("retainedAttachmentIds"))
+	{
+		if (!payload["retainedAttachmentIds"].is_array() || payload["retainedAttachmentIds"].size() > 128)
+		{
+			cb->Failure(400, "retainedAttachmentIds must be an array of attachment IDs.");
+			return;
+		}
+		retained_attachment_ids.emplace();
+		for (const nlohmann::json& attachment_id : payload["retainedAttachmentIds"])
+		{
+			if (!attachment_id.is_string())
+			{
+				cb->Failure(400, "retainedAttachmentIds must contain only attachment IDs.");
+				return;
+			}
+			retained_attachment_ids->push_back(attachment_id.get<std::string>());
+		}
+	}
 	std::string branch_id;
 	std::string branch_error;
 	std::string branch_warning;
-	if (!uam::BranchFromMessageAndRetry(m_app, chat_id, *message_index, replacement_content, &branch_id, &branch_error, operation_id, &branch_warning))
+	if (!uam::BranchFromMessageAndRetry(m_app, chat_id, *message_index, replacement_content, &branch_id, &branch_error, operation_id, &branch_warning, retained_attachment_ids))
 	{
 		const bool branch_was_created = !branch_id.empty();
 		if (branch_was_created && ChatDomainService().FindChatById(m_app, branch_id) != nullptr)

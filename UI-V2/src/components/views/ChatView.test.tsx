@@ -1567,6 +1567,7 @@ describe('ChatView', () => {
       expect(host.textContent).toContain('new.png')
       expect(host.textContent?.includes('sent.png')).toBe(!accepted)
       expect(textarea.value).toBe('New unsent draft')
+
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -1760,13 +1761,128 @@ describe('ChatView', () => {
     })
     const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save to new branch')
     await act(async () => saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
-    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Inspect only the tests')
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Inspect only the tests', [])
 
     await act(async () => revertButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, undefined)
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('edits source attachment retention without mutating the message and retries a failed branch', async () => {
+    const attachments = [
+      { id: 'photo', name: 'photo.png', type: 'file' as const, mimeType: 'image/png', size: 4 },
+      { id: 'second', name: 'second.webp', type: 'file' as const, mimeType: 'image/webp', size: 4 },
+    ]
+    const branch = vi.fn().mockRejectedValueOnce(new Error('Source image no longer exists.')).mockResolvedValueOnce('branch-1')
+    useAppStore.setState((state) => ({
+      branchFromMessage: branch,
+      messages: { ...state.messages, 'chat-1': [{ ...state.messages['chat-1'][0], content: '', nativeMessageIndex: 7, attachments }] },
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, pendingPermission: null, pendingUserInput: null, turnEvents: [] } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const images = host.querySelector('.conversation-image-attachments')!
+      const frame = host.querySelector('.conversation-turn')!
+      expect(images.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(images.textContent).toContain('photo.png')
+      expect(images.textContent).toContain('second.webp')
+      const edit = () => act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Edit message in new branch"]')!.click())
+      edit()
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
+      const save = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')!
+      expect(save().disabled).toBe(false)
+      await act(async () => save().click())
+      expect(branch).toHaveBeenLastCalledWith('chat-1', 0, '', ['second'])
+      expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeTruthy()
+      expect(host.textContent).toContain('Source image no longer exists.')
+      expect(useAppStore.getState().messages['chat-1'][0].attachments).toEqual(attachments)
+      await act(async () => save().click())
+      expect(host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
+      edit()
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Cancel')!.click())
+      edit()
+      expect(host.querySelector('button[aria-label="Remove photo.png from edited message"]')).toBeTruthy()
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove photo.png from edited message"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove second.webp from edited message"]')!.click())
+      expect(save().disabled).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each(['branch-success', 'branch-failure', 'retry-success', 'retry-failure'] as const)('ignores stale %s feedback after switching away and starting a new edit', async (operation) => {
+    let settle!: (value: unknown) => void
+    const deferred = new Promise((resolve) => { settle = resolve })
+    const retry = operation.startsWith('retry')
+    const image = { id: 'image', name: 'keep.png', type: 'file', mimeType: 'image/png', size: 4 }
+    useAppStore.setState((state) => ({
+      branchFromMessage: vi.fn(async () => await deferred as string | null),
+      retryFailedMessage: vi.fn(async () => await deferred as { ok: boolean; error?: string }),
+      messages: { ...state.messages, 'chat-1': [{ ...state.messages['chat-1'][0], attachments: [image], ...(retry ? { acpPromptNotSent: true } : {}) }] },
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, pendingPermission: null, pendingUserInput: null, turnEvents: [] } },
+    }))
+    const sessionA = useAppStore.getState().sessions[0]
+    const sessionB = { ...sessionA, id: 'chat-other' }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const edit = () => act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Edit message in new branch"]')!.click())
+    try {
+      act(() => root.render(<ChatView session={sessionA} />))
+      if (retry) act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Retry message"]')!.click())
+      else {
+        edit()
+        act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')!.click())
+      }
+      act(() => root.render(<ChatView session={sessionB} />))
+      act(() => root.render(<ChatView session={sessionA} />))
+      edit()
+      const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'New edit must survive')
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => settle(retry ? { ok: operation.endsWith('success'), error: 'Old retry failure' } : operation.endsWith('success') ? 'old-branch' : null))
+      expect(host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Edit message"]')?.value).toBe('New edit must survive')
+      expect(host.querySelector('button[aria-label="Remove keep.png from edited message"]')).toBeTruthy()
+      expect(host.textContent).not.toContain('Old retry failure')
+      expect(host.textContent).not.toContain('Could not create the message branch.')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps newer staging errors and the draft when an older attachment send fails', async () => {
+    let settle!: (ok: boolean) => void
+    useAppStore.setState({
+      sendAcpPrompt: vi.fn(() => new Promise<boolean>((resolve) => { settle = resolve })),
+      stageChatAttachments: vi.fn(async () => { throw new Error('New image could not be staged.') }),
+    })
+    writeChatComposerDraft('chat-1', { text: 'Keep my text', attachments: [{ id: 'old', name: 'old.png', type: 'file', mimeType: 'image/png', size: 4 }] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Queue prompt"]')!.click())
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+      const file = new File(['image'], 'new.png', { type: 'image/png' })
+      Object.defineProperty(file, 'path', { value: '/tmp/new.png' })
+      Object.defineProperty(input, 'files', { value: [file], configurable: true })
+      await act(async () => input.dispatchEvent(new Event('change', { bubbles: true })))
+      expect(host.textContent).toContain('New image could not be staged.')
+      await act(async () => {
+        useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], promptActionError: { id: 'attempt', message: 'Provider rejected the old image.' } } } }))
+        settle(false)
+      })
+      expect(host.textContent).toContain('New image could not be staged.')
+      expect(host.textContent).toContain('Provider rejected the old image.')
+      expect(host.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep my text')
+      expect(host.textContent).toContain('old.png')
+      expect(host.textContent).toContain('new.png')
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('uses absolute indices for actions on a paged chat', async () => {
@@ -1922,7 +2038,7 @@ describe('ChatView', () => {
     await act(async () => {
       Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save to new branch')?.click()
     })
-    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Edited prompt')
+    expect(branchFromMessage).toHaveBeenCalledWith('chat-1', 0, 'Edited prompt', [])
     expect(retryFailedMessage).not.toHaveBeenCalled()
     act(() => root.unmount())
     host.remove()

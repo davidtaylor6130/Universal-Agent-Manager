@@ -31,6 +31,22 @@ describe('AttachmentList', () => {
   })
 })
 
+it.each(['plain', 'blocks', 'legacy'] as const)('keeps images above text and ordinary files below in %s messages', (kind) => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  try {
+    act(() => root.render(<PersistedMessageContent message={{ id: 'order', sessionId: 'chat', role: 'assistant', content: 'Message text', createdAt: new Date(0),
+      ...(kind === 'blocks' ? { blocks: [{ type: 'assistant_text' as const, text: 'Message text' }] } : {}),
+      ...(kind === 'legacy' ? { thoughts: 'Reasoning' } : {}),
+      attachments: [{ id: 'image', name: 'photo.webp', type: 'file', mimeType: 'image/webp', size: 4 }, { id: 'doc', name: 'notes.txt', type: 'file', size: 4 }],
+    }} onSelectTool={() => undefined} />))
+    const order = host.textContent!
+    expect(order.indexOf('photo.webp')).toBeLessThan(order.indexOf('Message text'))
+    expect(order.indexOf('notes.txt')).toBeGreaterThan(order.indexOf('Message text'))
+    expect(host.querySelectorAll('[title="photo.webp"]')).toHaveLength(1)
+  } finally { act(() => root.unmount()); host.remove() }
+})
+
 describe('working transcript', () => {
   it('distinguishes a timeout stop from an interrupted response', () => {
     const host = document.createElement('div')

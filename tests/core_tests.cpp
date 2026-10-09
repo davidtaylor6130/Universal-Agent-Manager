@@ -7867,6 +7867,51 @@ UAM_TEST(ChatDomainServiceBranchOperationIdIsIdempotentAndRejectsCollisions)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
 }
 
+UAM_TEST(MessageBranchAttachmentSelectionPreservesSourceAndRejectsOperationCollisions)
+{
+	TempDir temp("uam-message-branch-attachments");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("", "codex-cli");
+	source.id = "attachment-source";
+	Message message{MessageRole::User, "Original prompt"};
+	message.attachments = {MessageAttachment{.id = "first", .name = "first.png", .kind = "image", .path = "first.png"},
+	    MessageAttachment{.id = "second", .name = "second.png", .kind = "image", .path = "second.png"}};
+	source.messages.push_back(message);
+	app.chats.push_back(source);
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().attachments, message.attachments);
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string(), std::string("image-only"), nullptr, std::vector<std::string>{"first"}));
+	UAM_ASSERT(ChatDomainService().SelectedChat(app)->messages.back().content.empty());
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().attachments.front().id, std::string("first"));
+	const std::size_t before_empty = app.chats.size();
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string(), std::string("empty-edit"), nullptr, std::vector<std::string>{}));
+	UAM_ASSERT_EQ(app.chats.size(), before_empty);
+	const std::vector<std::string> retained{"second"};
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited"), std::string("keep-second"), nullptr, retained));
+	const std::string branch_id = ChatDomainService().SelectedChatId(app);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().attachments.size(), std::size_t(1));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChat(app)->messages.back().attachments.front(), message.attachments.back());
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages.front().attachments, message.attachments);
+	// Replays compare the persisted result, including the complete native attachment records.
+	ChatDomainService().SelectedChat(app)->messages_loaded = false;
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited"), std::string("keep-second"), nullptr, retained));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), branch_id);
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited"), std::string("keep-second")));
+	UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited"), std::string("keep-second"), nullptr, std::vector<std::string>{}));
+	const std::size_t count = app.chats.size();
+	for (const std::vector<std::string>& invalid : {std::vector<std::string>{""}, std::vector<std::string>{"unknown"}, std::vector<std::string>{"second", "second"}})
+	{
+		UAM_ASSERT(!ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Edited"), std::nullopt, nullptr, invalid));
+		UAM_ASSERT_EQ(app.chats.size(), count);
+		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), branch_id);
+	}
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::string("Text only"), std::string("remove-all"), nullptr, std::vector<std::string>{}));
+	UAM_ASSERT(ChatDomainService().SelectedChat(app)->messages.back().attachments.empty());
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, source.id)->messages.front().attachments, message.attachments);
+}
+
 UAM_TEST(ChatDomainServiceBranchesWithIndependentPausedGoalSnapshots)
 {
 	TempDir temp("uam-message-branch-goals");

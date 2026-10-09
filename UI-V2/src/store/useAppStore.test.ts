@@ -2689,6 +2689,31 @@ describe('useAppStore Gemini CLI slice', () => {
 	  expect(requests).toHaveLength(0)
 	})
 
+  it('preserves the native branch rejection cause', async () => {
+    window.cefQuery = ({ onFailure }) => onFailure(1, 'The source image is unavailable.')
+    await expect(useAppStore.getState().branchFromMessage('chat-1', 7, 'Keep text', ['image'])).rejects.toThrow('The source image is unavailable.')
+  })
+
+  it('distinguishes preserved and removed branch attachments, including an idempotent retry', async () => {
+    const requests: Array<{ payload: Record<string, unknown> }> = []
+    let failed = false
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request)
+      requests.push(parsed)
+      if (!failed && parsed.payload.retainedAttachmentIds) {
+        failed = true
+        onFailure(1, 'Connection lost; action may have reached the application')
+      } else onSuccess(JSON.stringify({ chatId: 'branch-1' }))
+    }
+    await expect(useAppStore.getState().branchFromMessage('chat-1', 7, '', ['native-image'])).resolves.toBe('branch-1')
+    expect(requests[0].payload).toEqual(requests[1].payload)
+    expect(requests[0].payload).toMatchObject({ messageIndex: 7, content: '', retainedAttachmentIds: ['native-image'] })
+    await useAppStore.getState().branchFromMessage('chat-1', 7, 'Text only', [])
+    expect(requests[2].payload.retainedAttachmentIds).toEqual([])
+    await useAppStore.getState().branchFromMessage('chat-1', 7)
+    expect(requests[3].payload).not.toHaveProperty('retainedAttachmentIds')
+  })
+
   it('creates edited and reverted message branches through CEF', async () => {
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onSuccess }) => {

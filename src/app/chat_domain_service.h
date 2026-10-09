@@ -53,7 +53,7 @@ class ChatDomainService
 	void RefreshRememberedSelection(uam::AppState& app) const;
 	void SelectChatById(uam::AppState& app, const std::string& chat_id) const;
 	ChatSession CreateNewChat(const std::string& folder_id, const std::string& provider_id) const;
-	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content = std::nullopt, const std::optional<std::string>& operation_id = std::nullopt, bool* reused_existing_branch = nullptr) const;
+	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content = std::nullopt, const std::optional<std::string>& operation_id = std::nullopt, bool* reused_existing_branch = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt) const;
 	void AddMessage(ChatSession& chat, MessageRole role, const std::string& text) const;
 	void AddMessageWithAnalytics(ChatSession& chat, MessageRole role, const std::string& text, const MessageAnalytics& analytics) const;
 };
