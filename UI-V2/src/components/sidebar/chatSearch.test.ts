@@ -7,6 +7,7 @@ import {
   tokenizeChatSearchQuery,
   isUnsettledChat,
   ACTIVE_CHAT_AUTO_DONE_MS,
+  displayedChatStatus,
 } from './chatSearch'
 
 const now = new Date('2026-01-01T00:00:00.000Z')
@@ -449,4 +450,9 @@ it('activates an imported family when its UAM branch is used', () => {
   const branch: Session = { ...makeSession('branch', 'UAM branch', null), branchRootChatId: 'root', interactionAt: new Date() }
   expect(searchModel('', [], [root, branch]).activeSessionIds).toEqual(['root'])
   expect(searchModel('imported', [], [root, branch]).activeSessionIds).toEqual([])
+})
+
+it('keeps a parent working until its native children settle', () => {
+ expect(displayedChatStatus([], [{ processing: false, backgroundTaskCount: 1, readySinceLastSelect: true }])).toEqual({ type: 'processing' })
+ expect(displayedChatStatus([], [{ processing: false, backgroundTaskCount: 0, readySinceLastSelect: true }])).toEqual({ type: 'done' })
 })

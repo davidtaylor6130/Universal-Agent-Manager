@@ -967,6 +967,14 @@ namespace uam
 			return input_json;
 		}
 
+		std::size_t ManagedChildRunCountForChat(const AppState& app, const ChatSession& chat)
+		{
+			return static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&chat](const AgentRun& run)
+			{
+				return run.root_chat_id == chat.id && (run.status == "queued" || run.status == "running");
+			}));
+		}
+
 		nlohmann::json SerializeStoppedAcpSessionSummary(const AppState& app, const ChatSession& chat,
 		                                                 bool ready_since_last_select, CatalogSnapshotCache& cache)
 		{
@@ -980,6 +988,7 @@ namespace uam
 			acp_json["threadId"] = session_id;
 			acp_json["running"] = false;
 			acp_json["processing"] = false;
+			acp_json["backgroundTaskCount"] = ManagedChildRunCountForChat(app, chat);
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
 			acp_json["lastStopReason"] = chat.last_stop_reason;
 			acp_json["attentionKind"] = nullptr;
@@ -1035,6 +1044,7 @@ namespace uam
 			acp_json["threadId"] = session->codex_thread_id.empty() ? session->session_id : session->codex_thread_id;
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing;
+			acp_json["backgroundTaskCount"] = session->claude_live_background_task_ids.size() + ManagedChildRunCountForChat(app, chat);
 			if (AcpSessionCanIdleShutdown(*session, chat))
 				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 			acp_json["readySinceLastSelect"] = ready_since_last_select;

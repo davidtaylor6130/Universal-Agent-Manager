@@ -388,3 +388,14 @@ describe('remote recovery snapshot reconciliation', () => {
     expect(sessionFromCppChat({ ...previousChat, remoteRecoveryState }, next, [])).toBe(next)
   })
 })
+
+ it('propagates native child activity through sanitization and immutable binding reconciliation', () => {
+  const chat = { id: 'child-parent', acpSession: sanitizeCppAcpSession({ lifecycleState: 'ready', running: true, processing: false, backgroundTaskCount: 1 }) } as CppChat
+  const working = acpBindingFromCppChat(chat, undefined)
+  expect(working.processing).toBe(false)
+  expect(working.backgroundTaskCount).toBe(1)
+  const settled = acpBindingFromCppChat({ ...chat, acpSession: sanitizeCppAcpSession({ lifecycleState: 'ready', running: true, processing: false, backgroundTaskCount: 0 }) }, working)
+  expect(settled).not.toBe(working)
+  expect(settled.backgroundTaskCount).toBe(0)
+  for (const value of [-1, 1.5, '1', Infinity]) expect(sanitizeCppAcpSession({ backgroundTaskCount: value })?.backgroundTaskCount).toBe(0)
+ })

@@ -20,6 +20,7 @@ interface ChatSearchCliBinding {
 interface ChatSearchAcpBinding {
   running?: boolean
   processing?: boolean
+  backgroundTaskCount?: number
   lifecycleState?: string
   readySinceLastSelect?: boolean
   attentionKind?: AcpAttentionKind | null
@@ -121,7 +122,7 @@ export function displayedChatStatus(
   const attention = acpBindings.find((binding) => binding?.attentionKind && binding.attentionKind !== 'error')?.attentionKind
   if (attention) return { type: 'attention', kind: attention }
   if (
-    acpBindings.some((binding) => binding?.processing || binding?.lifecycleState === 'waitingPermission') ||
+    acpBindings.some((binding) => binding?.processing || (binding?.backgroundTaskCount ?? 0) > 0 || binding?.lifecycleState === 'waitingPermission') ||
     cliBindings.some((binding) => binding?.processing || binding?.lifecycleState === 'busy' || binding?.lifecycleState === 'shuttingDown')
   ) return { type: 'processing' }
   if (acpBindings.some((binding) => binding?.readySinceLastSelect) || cliBindings.some((binding) => binding?.readySinceLastSelect)) {

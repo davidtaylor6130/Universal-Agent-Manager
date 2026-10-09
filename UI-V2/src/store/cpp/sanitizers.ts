@@ -732,6 +732,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     idleShutdownTimeoutSeconds: typeof value.idleShutdownTimeoutSeconds === 'number' && Number.isFinite(value.idleShutdownTimeoutSeconds) ? value.idleShutdownTimeoutSeconds : undefined,
     running: typeof value.running === 'boolean' ? value.running : undefined,
     processing: typeof value.processing === 'boolean' ? value.processing : undefined,
+    backgroundTaskCount: nonNegativeInteger(value.backgroundTaskCount) ?? 0,
     readySinceLastSelect: typeof value.readySinceLastSelect === 'boolean' ? value.readySinceLastSelect : undefined,
     attentionKind: sanitizeAcpAttentionKind(value.attentionKind),
     lifecycleState: isString(value.lifecycleState) ? value.lifecycleState : undefined,

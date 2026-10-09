@@ -1005,6 +1005,18 @@ describe('ChatView', () => {
       comparisonRef,
       requestId: expect.stringContaining('chat-summary:chat-1:'),
     }))
+    // A cached completed-turn review must disappear for startup, parent work and live child work.
+    for (const patch of [{ processing: true }, { lifecycleState: 'starting' }, { backgroundTaskCount: 1 }]) {
+      await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], ...patch },
+      } })))
+      expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
+    }
+    await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: {
+      ...state.acpBindingBySessionId,
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', backgroundTaskCount: 0 },
+    } })))
     const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
     expect(summary.textContent).toContain('Review changes')
     expect(summary.textContent).toContain('src/exact.ts')
@@ -6881,6 +6893,7 @@ describe('ChatView', () => {
         'chat-1': {
           ...state.acpBindingBySessionId['chat-1'],
           running: false,
+          lifecycleState: 'ready',
           processing: false,
           pendingPermission: null,
           pendingUserInput: null,

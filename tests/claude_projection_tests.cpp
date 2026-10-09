@@ -3,6 +3,8 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/acp/acp_polling.h"
 
+#include <tuple>
+
 using namespace uam_test;
 
 UAM_TEST(ToolProjectionPreservesKindApprovalAndDetailsAcrossAllProviders)
@@ -21,9 +23,14 @@ UAM_TEST(ToolProjectionPreservesKindApprovalAndDetailsAcrossAllProviders)
 		session.chat_id = chat.id;
 		session.provider_id = provider;
 		session.tool_calls.push_back({.id = "read-1", .title = "README.md", .kind = "read", .status = "running", .content = "output", .args_json = "{}", .approval_status = "auto_approved", .task_id = "task-1", .child_activity = "Child output"});
+		if (provider == "claude-cli") session.claude_live_background_task_ids.insert("task-1");
 		app.acp_sessions.push_back(std::move(owned));
 		uam::acp_detail::AppendToolTurnEventIfNeeded(session, "read-1");
 		UAM_ASSERT(uam::acp_detail::SyncAcpToolCallsToAssistantMessage(app.chats.front(), session, true));
+		const nlohmann::json acp_summary = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		UAM_ASSERT_EQ(acp_summary["backgroundTaskCount"], provider == "claude-cli" ? nlohmann::json(1) : nlohmann::json(0));
+		session.claude_live_background_task_ids.clear();
+		UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["backgroundTaskCount"], nlohmann::json(0));
 		const nlohmann::json live = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["toolCalls"][0];
 		const nlohmann::json saved = uam::StateSerializer::SerializeSession(app.chats.front())["messages"][0]["toolCalls"][0];
 		for (const std::string field : {"title", "kind", "status", "approvalStatus", "content"}) UAM_ASSERT_EQ(live[field], saved[field]);
@@ -44,6 +51,65 @@ UAM_TEST(ToolProjectionPreservesKindApprovalAndDetailsAcrossAllProviders)
 		changed.messages.front().tool_calls.front().kind = "execute";
 		UAM_ASSERT(digest != uam::StateSerializer::MessageDigest(changed));
 	}
+}
+
+UAM_TEST(AcpBackgroundTaskCountIncludesOnlyQueuedOrRunningRootChildren)
+{
+	TempDir temp("uam-background-task-count");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root;
+	root.id = "root-chat";
+	root.provider_id = "claude-cli";
+	app.chats.push_back(root);
+	ChatSession child;
+	child.id = "child-transcript";
+	child.provider_id = "claude-cli";
+	app.chats.push_back(child);
+	ChatSession codex_root;
+	codex_root.id = "codex-root";
+	codex_root.provider_id = "codex-cli";
+	app.chats.push_back(codex_root);
+
+	for (const auto& [id, root_id, transcript_id, status] : {
+	         std::tuple{"queued-run", "root-chat", "child-transcript", "queued"},
+	         std::tuple{"running-run", "root-chat", "child-transcript", "running"},
+	         std::tuple{"codex-run", "codex-root", "", "queued"},
+	         std::tuple{"unrelated-run", "other-root", "", "running"}})
+	{
+		AgentRun run;
+		run.id = id;
+		run.root_chat_id = root_id;
+		run.transcript_chat_id = transcript_id;
+		run.status = status;
+		app.agent_runs.push_back(std::move(run));
+	}
+
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = root.id;
+	owned->provider_id = root.provider_id;
+	owned->claude_live_background_task_ids.insert("native-task");
+	app.acp_sessions.push_back(std::move(owned));
+
+	const auto summary_for = [&app](const std::string& chat_id)
+	{
+		const nlohmann::json state = uam::StateSerializer::Serialize(app);
+		for (const nlohmann::json& chat_json : state["chats"])
+			if (chat_json.value("id", std::string{}) == chat_id) return chat_json["acpSession"];
+		return nlohmann::json{};
+	};
+	UAM_ASSERT_EQ(summary_for("root-chat")["backgroundTaskCount"], nlohmann::json(3));
+	UAM_ASSERT_EQ(summary_for("child-transcript")["backgroundTaskCount"], nlohmann::json(0));
+	UAM_ASSERT_EQ(summary_for("codex-root")["backgroundTaskCount"], nlohmann::json(1));
+
+	for (AgentRun& run : app.agent_runs)
+		if (run.status == "queued" || run.status == "running") run.status = "completed";
+	UAM_ASSERT_EQ(summary_for("root-chat")["backgroundTaskCount"], nlohmann::json(1));
+	app.acp_sessions.clear();
+	UAM_ASSERT_EQ(summary_for("root-chat")["backgroundTaskCount"], nlohmann::json(0));
+	for (AgentRun& run : app.agent_runs)
+		if (run.root_chat_id == "root-chat") run.status = "running";
+	UAM_ASSERT_EQ(summary_for("root-chat")["backgroundTaskCount"], nlohmann::json(2));
 }
 
 UAM_TEST(ClaudeToolTitlesUseArgumentsAndKeepUnknownToolsReadable)
@@ -331,6 +397,7 @@ UAM_TEST(ClaudeNativeBackgroundTasksPreventIdleShutdownUntilTheirOwnTerminalEven
 		send({{"type", "system"}, {"subtype", "task_notification"}, {"task_id", "unrelated-task"}, {"status", "completed"}});
 		UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
 		send({{"type", "system"}, {"subtype", "task_notification"}, {"task_id", "background-owned"}, {"status", terminal}});
+		UAM_ASSERT(session.claude_live_background_task_ids.empty());
 		UAM_ASSERT(uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
 		// A replayed progress frame cannot resurrect a settled task's idle ownership.
 		send({{"type", "system"}, {"subtype", "task_progress"}, {"task_id", "background-owned"}});

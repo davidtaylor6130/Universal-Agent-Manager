@@ -1,3 +1,4 @@
+import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { InlinePromptQueue } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
@@ -1287,7 +1288,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const pendingUserInput = acp?.pendingUserInput
   const latestAssistantMessage = latestAssistantMessageIndex >= 0 ? messages[latestAssistantMessageIndex] : undefined
   const repositoryComparisonRef = session.workspaceIsolationKind === 'gitWorktree' ? session.workspaceBaseRef?.trim() : undefined
-  const completedTurnKey = !acp?.processing && !cli?.processing && latestAssistantMessageIndex > latestUserMessageIndex
+  const reviewGoal = activeGoalId ? goals.find(goal => goal.id === activeGoalId) : null
+  const chatWorking = chatHasUnfinishedWork(acp, cli, reviewGoal)
+  const completedTurnKey = !chatWorking && latestAssistantMessageIndex > latestUserMessageIndex
     ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
     : ''
   useEffect(() => {
@@ -2556,7 +2559,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   </WorkSectionContext.Provider>
                 </MessageFrame>
               )}
-              {(repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
+              {!chatWorking && (repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
                 <section
                   aria-label="Review changes"
                   className="mx-4 overflow-hidden rounded-md text-xs"

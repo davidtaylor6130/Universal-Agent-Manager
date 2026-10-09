@@ -517,6 +517,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.idleShutdownAtMs === next.idleShutdownAtMs &&
     existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.processing === next.processing &&
+    existing.backgroundTaskCount === next.backgroundTaskCount &&
     existing.idleShutdownAtMs === next.idleShutdownAtMs &&
     existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.readySinceLastSelect === next.readySinceLastSelect &&
@@ -624,6 +625,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     running,
     lifecycleState,
     processing: effectiveProcessing,
+    backgroundTaskCount: acp?.backgroundTaskCount ?? 0,
     idleCountdownStartsAtMs: acp?.idleCountdownStartsAtMs,
     idleShutdownAtMs: acp?.idleShutdownAtMs,
     idleShutdownTimeoutSeconds: acp?.idleShutdownTimeoutSeconds,

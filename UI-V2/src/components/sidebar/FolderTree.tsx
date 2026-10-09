@@ -30,6 +30,7 @@ interface FolderTreeProps {
 
 const VISIBLE_SESSION_LIMIT = 5
 const EMPTY_SEARCH_INDEX = {}
+const EMPTY_SELECTION_IDS = new Set<string>()
 type FolderDropEdge = 'before' | 'after'
 type CompactRuntimeStatus = '' | 'processing' | 'done' | `attention:${AcpAttentionKind}`
 
@@ -56,7 +57,7 @@ function acpRuntimeStatus(binding: ReturnType<typeof useAppStore.getState>['acpB
   const attentionKind = binding.attentionKind && binding.attentionKind !== 'error' ? binding.attentionKind : null
   const status: CompactRuntimeStatus = attentionKind
     ? `attention:${attentionKind}`
-    : binding.processing || binding.lifecycleState === 'starting' || binding.lifecycleState === 'waitingPermission'
+    : binding.processing || (binding.backgroundTaskCount ?? 0) > 0 || binding.lifecycleState === 'starting' || binding.lifecycleState === 'waitingPermission'
       ? 'processing'
       : binding.readySinceLastSelect ? 'done' : ''
   acpRuntimeStatusCache.set(binding, status)
@@ -139,6 +140,7 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
 }
 
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: FolderTreeProps) {
+  const companionContext = isCompanionContext()
   const folders = useAppStore(useShallow((s) => s.folders))
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
@@ -689,7 +691,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         sessionId={id}
         session={activitySession}
         familySessionIds={familySessionIdsByRootId.get(id)}
-        selected={selectedSessionIds.has(id)}
+        selected={!companionContext && selectedSessionIds.has(id)}
         activityLayout
         activityFolderName={folder?.name}
         activityFolderIcon={folder?.customIcon}
@@ -713,10 +715,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       shouldShowSessions={shouldShowSessions}
       hiddenPaneColors={shouldShowSessions ? [] : paneColorsForFolder(folder.id)}
       isSearching={searchModel.isSearching}
-      isEditing={editingFolderId === folder.id}
+      isEditing={!companionContext && editingFolderId === folder.id}
       editFolderName={editFolderName}
       editFolderDirectory={editFolderDirectory}
-      selected={selectedFolderIds.has(folder.id)}
+      selected={!companionContext && selectedFolderIds.has(folder.id)}
       onToggle={(event) => handleFolderClick(folder.id, event)}
       onStartRename={() => startRenameFolder(folder)}
       onDelete={() => {
@@ -738,7 +740,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
       sessionsById={sessionsById}
       familySessionIdsByRootId={familySessionIdsByRootId}
-      selectedSessionIds={selectedSessionIds}
+      selectedSessionIds={companionContext ? EMPTY_SELECTION_IDS : selectedSessionIds}
       onSessionClick={handleSessionClick}
       draggable={!searchModel.isSearching && !isCompanionContext()}
       dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
@@ -760,7 +762,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onDragStartCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
       onKeyDownCapture={(event) => { if (isCompanionContext() && (event.shiftKey || ['F2', 'ContextMenu', 'ArrowUp', 'ArrowDown'].includes(event.key))) event.stopPropagation() }}
     >
-      {selectedFolderIds.size > 0 && (
+      {!companionContext && selectedFolderIds.size > 0 && (
         <div className="mx-1 mb-1 flex items-center gap-2 px-2.5 py-1" style={{ background: 'var(--surface-up)', borderBottom: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium">{selectedFolderIds.size} workspaces selected</span>
           <Button size="sm" variant="ghost" disabled={deletingFolder} onClick={clearWorkspaceSelection}>Clear</Button>
@@ -774,7 +776,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           }}>Delete</Button>
         </div>
       )}
-      {selectedSessionIds.size > 0 && (
+      {!companionContext && selectedSessionIds.size > 0 && (
         <div className="mx-1 mb-1 flex items-center gap-2 rounded-md px-2.5 py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium" style={{ color: 'var(--text-2)' }}>{selectedSessionIds.size} selected</span>
           <Button size="sm" variant="ghost" onClick={clearBulkSelection}>Clear</Button>
@@ -866,7 +868,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             {...(!pinnedExpanded ? { inert: '' } : {})}
           >
             {searchModel.pinnedSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
             ))}
           </div>
         </div>
@@ -992,7 +994,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           >
             <div className="min-h-0 overflow-hidden">
               {searchModel.unfolderedSessionIds.map((id) => (
-                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
               ))}
             </div>
           </div>
@@ -1178,7 +1180,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         />
       )}
 
-      {pendingDeleteFolderIds && (
+      {!companionContext && pendingDeleteFolderIds && (
         <DeleteWorkspacesModal
           folderCount={pendingDeleteFolderIds.length}
           chatCount={sessions.filter((session) => session.folderId && pendingDeleteFolderIds.includes(session.folderId)).length}
@@ -1188,7 +1190,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           onConfirm={() => { void confirmDeleteWorkspaces() }}
         />
       )}
-      {pendingDeleteFolder && (
+      {!companionContext && pendingDeleteFolder && (
         <DeleteFolderModal
           folder={pendingDeleteFolder}
           chatCount={pendingDeleteChatCount}
@@ -1405,6 +1407,9 @@ function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCanc
     return () => previousFocus?.focus()
   }, [])
   useEffect(() => {
+    if (deleting) dialogRef.current?.focus()
+  }, [deleting])
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.stopPropagation()
@@ -1412,7 +1417,7 @@ function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCanc
       }
       if (event.key === 'Tab') {
         const buttons = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
-        if (buttons.length === 0) { event.preventDefault(); return }
+        if (buttons.length === 0) { event.preventDefault(); dialogRef.current?.focus(); return }
         const first = buttons[0], last = buttons[buttons.length - 1]
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
@@ -1874,6 +1879,7 @@ const FolderRow = memo(function FolderRow({
           onMove(event.key === 'ArrowUp' ? -1 : 1)
         }}
         onContextMenu={(event) => {
+          if (isCompanionContext()) { event.preventDefault(); event.stopPropagation(); return }
           event.preventDefault()
           event.stopPropagation()
           setMenuPos({ x: event.clientX, y: event.clientY })
@@ -1960,11 +1966,11 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<MessageSquarePlus size={14} aria-hidden />} label="New chat" onClick={() => { setMenuPos(null); onCreateChat() }} />
           <FolderMenuItem icon={<Brain size={14} aria-hidden />} label="Project memory" onClick={() => { setMenuPos(null); onOpenMemory() }} />
           <CollectionMenuItems target={folder.id} label={folder.name} onAdded={() => setMenuPos(null)} />
-          <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" onClick={() => { setMenuPos(null); onRescan() }} />
+          {!isCompanionContext() && <FolderMenuItem icon={<RefreshCw size={14} aria-hidden />} label="Review native chats" onClick={() => { setMenuPos(null); onRescan() }} />}
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
           <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
-          <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />
-          <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />
+          {!isCompanionContext() && <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />}
+          {!isCompanionContext() && <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />}
         </ViewportMenu>
       )}
 
