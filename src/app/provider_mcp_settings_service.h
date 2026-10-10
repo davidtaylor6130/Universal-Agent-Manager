@@ -307,7 +307,7 @@ namespace uam::provider_mcp_settings
 		for (const char* provider : provider_ids::kAllCliProviderIds)
 		{
 			if (selected != nullptr && selected->provider_id != provider) continue;
-			const bool enabled = central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, "uam-mcp", selected != nullptr ? selected->uam_control_enabled : app.settings.central_provider_configuration.uam_control_enabled);
+			const bool enabled = (selected == nullptr || !selected->uam_control_explicitly_disabled) && central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, "uam-mcp", selected != nullptr ? selected->uam_control_enabled : app.settings.central_provider_configuration.uam_control_enabled);
 			std::size_t active = 0, configured = 0, connected = 0, live = 0;
 			bool provider_failed = false;
 			const auto observe = [&](const AcpSessionState& session, bool running)
@@ -318,7 +318,7 @@ namespace uam::provider_mcp_settings
 				if (!running) { provider_failed = provider_failed || !session.last_error.empty(); return; }
 				++active;
 				const auto capability = std::ranges::find(app.uam_control_capabilities, session.uam_control_capability_id, &UamControlCapability::id);
-				if (capability == app.uam_control_capabilities.end() || capability->session_chat_id != session.chat_id || capability->provider_id != provider ||
+				if (chat->uam_control_explicitly_disabled || capability == app.uam_control_capabilities.end() || capability->session_chat_id != session.chat_id || capability->provider_id != provider ||
 				    (!chat->uam_control_enabled && !capability->session_control_override_at_launch) || capability->expires_at_epoch_ms <= now || !paths::IsDirectoryNoThrow(capability->directory) ||
 				    paths::IsLinkOrReparsePointNoThrow(capability->directory)) return;
 				++configured;

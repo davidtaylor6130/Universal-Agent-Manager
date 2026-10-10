@@ -226,3 +226,130 @@ UAM_TEST(ProviderMcpStatusDistinguishesIdleEnabledSetupFromAnActiveMissingCapabi
 	app.chats.front().uam_control_enabled = false;
 	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("disabled"));
 }
+
+UAM_TEST(ProviderMcpExplicitOptOutRejectsAnOtherwiseLiveLaunchOverride)
+{
+	uam_test::TempDir temp("mcp-opt-out-status");
+	uam::AppState app; app.data_root = temp.root;
+	ChatSession chat; chat.id = "opt-out"; chat.provider_id = "codex-cli"; chat.execution_host_id = "local"; chat.uam_control_enabled = false;
+	app.settings.central_provider_configuration.mcp_overrides.push_back({"codex-cli", "local", "uam-mcp", true});
+	app.chats.push_back(chat);
+	UAM_ASSERT(uam::UamControlService::Initialize(app));
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id; session.provider_id = chat.provider_id; session.running = true;
+	nlohmann::json setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, app.chats.front(), "session/new", setup));
+	uam::UamControlCapability& capability = app.uam_control_capabilities.front();
+	UAM_ASSERT(capability.session_control_override_at_launch);
+	capability.mcp_initialized = true;
+	capability.mcp_initialized_at_epoch_ms = uam::time::SystemEpochMillisecondsNow();
+	capability.mcp_heartbeat_at_epoch_ms = capability.mcp_initialized_at_epoch_ms;
+	const auto status = [&]() { return uam::provider_mcp_settings::Status(app, "local", "", chat.id)["providers"].front(); };
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("connected"));
+	app.chats.front().uam_control_explicitly_disabled = true;
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("disabled"));
+	UAM_ASSERT_EQ(status()["connectedSessionCount"].get<std::size_t>(), std::size_t{0});
+	UAM_ASSERT(!status()["uamControlEnabled"].get<bool>());
+	app.chats.front().uam_control_explicitly_disabled = false;
+	capability.session_chat_id = "foreign-chat";
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
+	capability.session_chat_id = chat.id;
+	capability.expires_at_epoch_ms = uam::time::SystemEpochMillisecondsNow() - 1;
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
+	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(ProviderMcpLayeredImportPreservesReferencesAndFilesOnMalformedLayer)
+{
+	uam_test::TempDir temp("mcp-layered-preservation");
+	const std::filesystem::path first = temp.root / "config.json";
+	const std::filesystem::path second = temp.root / "opencode.jsonc";
+	const std::string original = R"({"mcp":{"docs":{"type":"remote","url":"https://example.test/mcp","enabled":false,"headers":{"Authorization":"{env:DOCS_TOKEN}","X-Literal":"fixture-secret"}}}})";
+	const std::string overlay = R"({/* bounded layer */"mcp":{"docs":{"url":"https://other.test/mcp",},"manual":{"type":"remote","url":"https://example.test/mcp","oauth":false}}})";
+	UAM_ASSERT(uam::io::WriteTextFile(first, original));
+	UAM_ASSERT(uam::io::WriteTextFile(second, overlay));
+	const nlohmann::json preview = uam::provider_mcp_settings::ReadImport(uam::paths::Utf8PathString(temp.root), "/fixture/workspace", "", "", {}, {});
+	UAM_ASSERT_EQ(preview["sources"].size(), std::size_t{2});
+	UAM_ASSERT_EQ(preview["servers"].size(), std::size_t{1});
+	const McpServerConfiguration server = uam::mcp_server_config::Parse(preview["servers"]).front();
+	UAM_ASSERT_EQ(server.url, std::string("https://other.test/mcp"));
+	UAM_ASSERT(!server.enabled);
+	UAM_ASSERT_EQ(server.headers.front().environment_variable, std::string("DOCS_TOKEN"));
+	UAM_ASSERT_EQ(server.headers.back().value, std::string("fixture-secret"));
+	UAM_ASSERT_EQ(preview["warnings"].size(), std::size_t{1});
+	UAM_ASSERT(preview["warnings"].dump().find("fixture-secret") == std::string::npos);
+	std::string after;
+	UAM_ASSERT(uam::io::TryReadTextFile(first, after)); UAM_ASSERT_EQ(after, original);
+	UAM_ASSERT(uam::io::TryReadTextFile(second, after)); UAM_ASSERT_EQ(after, overlay);
+	const std::string malformed = R"({"mcp": {"secret": "fixture-secret",)";
+	UAM_ASSERT(uam::io::WriteTextFile(second, malformed));
+	bool rejected = false;
+	try { (void)uam::provider_mcp_settings::ReadImport(uam::paths::Utf8PathString(temp.root), "", "", "", {}, {}); }
+	catch (const std::exception& error) { rejected = std::string(error.what()).find("fixture-secret") == std::string::npos; }
+	UAM_ASSERT(rejected);
+	UAM_ASSERT(uam::io::TryReadTextFile(first, after)); UAM_ASSERT_EQ(after, original);
+	UAM_ASSERT(uam::io::TryReadTextFile(second, after)); UAM_ASSERT_EQ(after, malformed);
+}
+
+UAM_TEST(ProviderMcpAvailabilityKeepsAllSixProvidersAndHostSessionIdentitySeparate)
+{
+	uam::AppState app;
+	const nlohmann::json overview = uam::provider_mcp_settings::Status(app, "local", "");
+	UAM_ASSERT_EQ(overview["providers"].size(), std::size_t{6});
+	for (const char* provider : uam::provider_ids::kAllCliProviderIds)
+	{
+		app.chats.clear(); app.acp_sessions.clear();
+		ChatSession chat; chat.id = "identity-fixture"; chat.provider_id = provider; chat.execution_host_id = "fixture-host"; chat.uam_control_enabled = true;
+		app.chats.push_back(chat);
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = chat.id; session.provider_id = provider; session.process_execution_host_id = "other-host"; session.running = true;
+		const auto status = [&]() { return uam::provider_mcp_settings::Status(app, "fixture-host", "", chat.id)["providers"]; };
+		UAM_ASSERT_EQ(status().size(), std::size_t{1});
+		UAM_ASSERT_EQ(status().front()["providerId"].get<std::string>(), std::string(provider));
+		UAM_ASSERT_EQ(status().front()["activeSessionCount"].get<std::size_t>(), std::size_t{0});
+		session.process_execution_host_id = chat.execution_host_id;
+		session.model_discovery_only = true;
+		UAM_ASSERT_EQ(status().front()["activeSessionCount"].get<std::size_t>(), std::size_t{0});
+		session.model_discovery_only = false;
+		UAM_ASSERT_EQ(status().front()["status"].get<std::string>(), std::string("missing"));
+		session.running = false; session.last_error = "Synthetic provider authentication failure";
+		UAM_ASSERT_EQ(status().front()["status"].get<std::string>(), std::string("configured-unverified"));
+		UAM_ASSERT(status().front()["providerSessionFailed"].get<bool>());
+		bool rejected = false;
+		try { (void)uam::provider_mcp_settings::Status(app, "other-host", "", chat.id); }
+		catch (const std::exception&) { rejected = true; }
+		UAM_ASSERT(rejected);
+	}
+}
+
+UAM_TEST(ProviderMcpTerminalAvailabilityRejectsForeignHostStoppedAndOptedOutConnections)
+{
+	uam_test::TempDir temp("mcp-terminal-identity");
+	uam::AppState app; app.data_root = temp.root;
+	ChatSession chat; chat.id = "terminal-mcp"; chat.provider_id = "antigravity-cli"; chat.execution_host_id = "local"; chat.uam_control_enabled = true;
+	app.chats.push_back(chat);
+	UAM_ASSERT(uam::UamControlService::Initialize(app));
+	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+	uam::CliTerminalState& terminal = *app.cli_terminals.back(); terminal.running = true;
+	terminal.uam_control_session = std::make_unique<uam::AcpSessionState>();
+	uam::AcpSessionState& session = *terminal.uam_control_session;
+	session.chat_id = chat.id; session.provider_id = chat.provider_id; session.process_execution_host_id = "local";
+	nlohmann::json setup = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, chat, "session/new", setup));
+	uam::UamControlCapability& capability = app.uam_control_capabilities.front();
+	capability.mcp_initialized = true;
+	capability.mcp_initialized_at_epoch_ms = uam::time::SystemEpochMillisecondsNow();
+	capability.mcp_heartbeat_at_epoch_ms = capability.mcp_initialized_at_epoch_ms;
+	const auto status = [&]() { return uam::provider_mcp_settings::Status(app, "local", "", chat.id)["providers"].front(); };
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("connected"));
+	session.process_execution_host_id = "foreign-host";
+	UAM_ASSERT_EQ(status()["activeSessionCount"].get<std::size_t>(), std::size_t{0});
+	session.process_execution_host_id = "local"; terminal.running = false;
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("configured-unverified"));
+	terminal.running = true; app.chats.front().uam_control_explicitly_disabled = true;
+	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("disabled"));
+	UAM_ASSERT_EQ(status()["connectedSessionCount"].get<std::size_t>(), std::size_t{0});
+	uam::UamControlService::Shutdown(app);
+}

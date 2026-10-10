@@ -10,13 +10,17 @@ export function ProviderMcpWarning() {
   const session = useAppStore(state => state.sessions.find(item => item.id === state.activeSessionId))
   const centralConfiguration = useAppStore(state => state.centralProviderConfiguration)
   const servers = useAppStore(state => state.mcpServers)
-  const runtime = useAppStore(state => session ? state.acpBindingBySessionId[session.id] : undefined)
+  const runtimes = useAppStore(state => state.acpBindingBySessionId)
+  const runtime = session ? runtimes[session.id] : undefined
   const [notice, setNotice] = useState<{ key: string; connection: Connection } | null>(null)
-  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
+  const [dismissed, setDismissed] = useState<Map<string, { chatId: string; runtimeId: string }>>(() => new Map())
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ key: string; text: string } | null>(null)
   const [refresh, setRefresh] = useState(0)
-  const key = session ? JSON.stringify([session.id, session.providerId, session.executionHostId ?? 'local', session.workspaceDirectory ?? '']) : ''
+  const scopeKey = session ? JSON.stringify([session.id, session.providerId, session.executionHostId ?? 'local', session.workspaceDirectory ?? '']) : ''
+  const runtimeId = runtime?.sessionId ?? ''
+  const key = JSON.stringify([scopeKey, runtimeId])
+  const isDismissed = dismissed.get(scopeKey)?.runtimeId === runtimeId
   const configurationSignature = JSON.stringify([
     centralConfiguration.uamControlEnabled,
     (centralConfiguration.mcpOverrides ?? []).filter(override => override.providerId === session?.providerId &&
@@ -25,8 +29,15 @@ export function ProviderMcpWarning() {
   ])
 
   useEffect(() => {
+    setDismissed(previous => {
+      if ([...previous.values()].every(item => runtimes[item.chatId]?.running)) return previous
+      return new Map([...previous].filter(([, item]) => runtimes[item.chatId]?.running))
+    })
+  }, [runtimes])
+
+  useEffect(() => {
     let canceled = false
-    if (!session?.providerId || session.viewMode === 'cli' || dismissed.has(key)) return
+    if (!session?.providerId || session.viewMode === 'cli' || isDismissed) return
     void sendToCEF<{ executionHostId: string; providers: Connection[] }>({ action: 'getProviderMcpStatus', payload: { chatId: session.id, executionHostId: session.executionHostId ?? 'local', workspaceDirectory: session.workspaceDirectory ?? '' } })
       .then(response => {
         if (canceled) return
@@ -35,17 +46,17 @@ export function ProviderMcpWarning() {
           return
         }
         const connection = response.data.providers.find(item => item.providerId === session.providerId)
-        setNotice(connection && ['missing', 'disabled', 'failed'].includes(connection.status) ? { key, connection } : null)
+        setNotice(connection && ['missing', 'failed'].includes(connection.status) ? { key, connection } : null)
       }).catch(() => { if (!canceled) setNotice(null) })
     return () => { canceled = true }
-  }, [key, session?.viewMode, session?.uamControlEnabled, session?.workspaceDirectory, configurationSignature, runtime?.running, runtime?.sessionId, runtime?.lifecycleState, dismissed, refresh])
+  }, [key, session?.viewMode, session?.uamControlEnabled, session?.workspaceDirectory, configurationSignature, runtime?.running, runtime?.sessionId, runtime?.lifecycleState, isDismissed, refresh])
   useEffect(() => {
-    if (!session?.providerId || session.viewMode === 'cli' || dismissed.has(key) || (!notice && !runtime?.running)) return
+    if (!session?.providerId || session.viewMode === 'cli' || isDismissed || (!notice && !runtime?.running)) return
     const timer = window.setInterval(() => setRefresh(value => value + 1), notice?.key === key ? 5000 : 30000)
     return () => window.clearInterval(timer)
-  }, [notice, key, session?.viewMode, runtime?.running, dismissed])
+  }, [notice, key, session?.viewMode, runtime?.running, isDismissed])
 
-  if (!notice || notice.key !== key || dismissed.has(key)) return null
+  if (!notice || notice.key !== key || isDismissed) return null
   return <div role="alert" className="shrink-0 px-4 py-3 text-sm" style={{ borderBottom: '2px solid #ef4444', background: 'var(--bg)', color: 'var(--text)' }}>
     <strong style={{ color: '#ff5555' }}>WARNING: UAM MCP tools are unavailable.</strong>
     <p className="mt-1">{result?.key === key ? result.text : notice.connection.detail}</p>
@@ -68,7 +79,7 @@ export function ProviderMcpWarning() {
         })()
       }}>Enable UAM connection</Button>
       <Button size="sm" onClick={() => useAppStore.getState().setSettingsOpen(true)}>View settings</Button>
-      <Button size="sm" disabled={busy} onClick={() => setDismissed(previous => new Set(previous).add(key))}>Continue without it</Button>
+      <Button size="sm" disabled={busy} onClick={() => { if (session) setDismissed(previous => new Map(previous).set(scopeKey, { chatId: session.id, runtimeId })) }}>Continue without it</Button>
     </div>
   </div>
 }

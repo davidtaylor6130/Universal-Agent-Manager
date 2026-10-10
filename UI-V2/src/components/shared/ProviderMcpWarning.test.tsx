@@ -24,7 +24,7 @@ it('shows missing exact-chat connection and permits deliberate continuation', as
   await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click())
   expect(host.textContent).toBe('')
 })
-it.each(['connected', 'configured-unverified', 'unsupported'])('does not call %s a missing connection', async status => {
+it.each(['connected', 'configured-unverified', 'unsupported', 'disabled'])('does not call %s a missing connection', async status => {
   bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status, detail: 'Status' }] } })
   await render()
   expect(host.querySelector('[role="alert"]')).toBeNull()
@@ -93,7 +93,7 @@ it('refreshes after effective configuration changes without calling an enabled s
   expect(host.querySelector('[role="alert"]')).toBeNull()
   await act(async () => useAppStore.setState(state => ({ centralProviderConfiguration: { ...state.centralProviderConfiguration, uamControlEnabled: false } })))
   expect(bridge).toHaveBeenCalledTimes(2)
-  expect(host.querySelector('[role="alert"]')).not.toBeNull()
+  expect(host.querySelector('[role="alert"]')).toBeNull()
 })
 
 it('checks a running connection periodically after a warning clears', async () => {
@@ -146,4 +146,58 @@ it('does not look up status for identical configuration objects or unrelated ins
     mcpServers: state.mcpServers.map(server => ({ ...server })),
   })))
   expect(bridge).toHaveBeenCalledTimes(1)
+})
+
+
+it('checks a replacement provider session after continuing without the old connection', async () => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'old-runtime', lifecycleState: 'ready' } as never } })
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click())
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+  await act(async () => useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'new-runtime', lifecycleState: 'ready' } as never } }))
+  expect(bridge).toHaveBeenCalledTimes(2)
+  expect(host.querySelector('[role="alert"]')).not.toBeNull()
+})
+
+
+it('checks a resumed runtime with the same provider conversation ID after Stop', async () => {
+  useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'same-conversation', lifecycleState: 'ready' } as never } })
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } })
+  await render()
+  await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click())
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+  await act(async () => useAppStore.setState({ acpBindingBySessionId: { one: { running: false, sessionId: 'same-conversation', lifecycleState: 'stopped' } as never } }))
+  bridge.mockClear()
+  await act(async () => useAppStore.setState({ acpBindingBySessionId: { one: { running: true, sessionId: 'same-conversation', lifecycleState: 'ready' } as never } }))
+  expect(bridge).toHaveBeenCalledTimes(1)
+  expect(host.querySelector('[role="alert"]')).not.toBeNull()
+})
+
+
+it('checks a background Stop and same-ID resume while preserving another running dismissal', async () => {
+  useAppStore.setState({ sessions: [
+    ...useAppStore.getState().sessions,
+    { id: 'two', providerId: 'claude-cli', executionHostId: 'local', viewMode: 'chat', name: 'Other', messages: [] } as never,
+  ], acpBindingBySessionId: {
+    one: { running: true, sessionId: 'same-one', lifecycleState: 'ready' } as never,
+    two: { running: true, sessionId: 'same-two', lifecycleState: 'ready' } as never,
+  } })
+  bridge.mockResolvedValue({ ok: true, data: { executionHostId: 'local', providers: [{ providerId: 'claude-cli', status: 'missing', detail: 'Missing' }] } })
+  await render()
+  const dismiss = async () => { await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Continue without it')!.click()) }
+  await dismiss()
+  await act(async () => useAppStore.setState({ activeSessionId: 'two' }))
+  await dismiss()
+  await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, one: { ...state.acpBindingBySessionId.one, running: false } } })))
+  expect(host.querySelector('[role="alert"]')).toBeNull()
+  await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, one: { ...state.acpBindingBySessionId.one, running: true } } })))
+  bridge.mockClear()
+  await act(async () => useAppStore.setState({ activeSessionId: 'one' }))
+  expect(bridge).toHaveBeenCalledTimes(1)
+  expect(host.querySelector('[role="alert"]')).not.toBeNull()
+  bridge.mockClear()
+  await act(async () => useAppStore.setState({ activeSessionId: 'two' }))
+  expect(bridge).not.toHaveBeenCalled()
+  expect(host.querySelector('[role="alert"]')).toBeNull()
 })
