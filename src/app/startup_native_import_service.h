@@ -62,7 +62,7 @@ namespace uam
 		    const std::string& folder_id = {}) const;
 		/// <summary>Rejects stale ownership or decisions outside the requested workspace before saving declines or scheduling imports.</summary>
 		bool Decide(AppState& app, const std::string& generation, const std::vector<std::string>& selected_ids,
-		    const std::vector<std::string>& declined_ids, std::string* error_out = nullptr, const std::string& folder_id = {});
+		    const std::vector<std::string>& declined_ids, std::string* error_out = nullptr, const std::string& folder_id = {}, bool import_all = false);
 		void Cancel();
 		bool ImportPending() const { return m_phase == "importing"; }
 

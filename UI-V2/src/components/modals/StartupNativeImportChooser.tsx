@@ -31,10 +31,11 @@ export function StartupNativeImportChooser() {
 function ImportReview({ generation, folderId, onClose }: { generation: string; folderId: string | null; onClose: () => void }) {
   const status = useAppStore((state) => state.startupNativeImports)
   const [awaitingPublication, setAwaitingPublication] = useState(false)
-  const publication = useRef({ start: status, refreshed: null as StartupNativeImportStatus | null, importedCount: 0, selectedIds: [] as string[] })
+  const publication = useRef({ start: status, refreshed: null as StartupNativeImportStatus | null, importedCount: 0, expectedCount: 0 })
   const [page, setPage] = useState<StartupNativeImportPage | null>(null)
   const [offset, setOffset] = useState(0)
   const [selected, setSelected] = useState<string[]>([])
+  const selectionAnchor = useRef<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [busyAction, setBusyAction] = useState<'load' | 'resolve' | null>(null)
   const [error, setError] = useState('')
@@ -65,7 +66,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
   }, [])
   function publicationFailure(data: StartupNativeImportPage): string {
     const pending = publication.current
-    if (data.importedCount - pending.importedCount >= pending.selectedIds.length) return ''
+    if (data.importedCount - pending.importedCount >= pending.expectedCount) return ''
     if (data.totalCount === 0) return 'Some selected chats could not be imported. They are no longer available.'
     return 'Some selected chats could not be imported. Review the remaining history to retry.'
   }
@@ -81,16 +82,16 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (!data) throw new Error('Invalid history response. Reload to try again.')
       if (data.generation !== generation) throw new Error('History changed. Open the review again.')
       data.errors.forEach((message) => console.warn(`[Startup history] ${message}`))
-      setPage(data); setOffset(nextOffset); setSelected([])
+      setPage(data); setOffset(nextOffset); setSelected([]); selectionAnchor.current = null
       if (data.phase === 'importing') {
-        if (publication.current.selectedIds.length === 0) publication.current.start = status
+        if (publication.current.expectedCount === 0) publication.current.start = status
         setAwaitingPublication(true)
       }
       if (afterPublication && data.phase !== 'importing') {
         setAwaitingPublication(false)
         const failure = publicationFailure(data)
         if (failure) setError(failure)
-        publication.current = { start: status, refreshed: null, importedCount: data.importedCount, selectedIds: [] }
+        publication.current = { start: status, refreshed: null, importedCount: data.importedCount, expectedCount: 0 }
         if (!failure && data.phase === 'complete' && data.totalCount === 0) closeRef.current()
       }
     } catch (failure) { if (owns(request)) setError(failure instanceof Error ? failure.message : 'History could not be loaded.') }
@@ -106,7 +107,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     void load(0)
   }, [folderId])
   useEffect(() => {
-    if (status.phase === 'importing' && publication.current.selectedIds.length > 0) setAwaitingPublication(true)
+    if (status.phase === 'importing' && publication.current.expectedCount > 0) setAwaitingPublication(true)
     if (!awaitingPublication || busy || !['ready', 'complete'].includes(status.phase)) return
     const pending = publication.current
     // Native pushes can coalesce importing into ready with unchanged counts.
@@ -115,15 +116,15 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     pending.refreshed = status
     void load(0, true)
   }, [awaitingPublication, busy, status])
-  async function decide(importSelected: boolean) {
-    if (busyRef.current || awaitingPublication || page?.phase === 'importing' || status.phase === 'importing' || selected.length === 0) return
+  async function decide(importSelected: boolean, importAll = false) {
+    if (busyRef.current || awaitingPublication || page?.phase === 'importing' || status.phase === 'importing' || (importAll ? !page?.totalCount : selected.length === 0)) return
     const request = ++requestSequence.current
     const ids = selected.slice(0, 200)
     let resolutionMayHaveStarted = false
-    if (importSelected) publication.current = { start: status, refreshed: null, importedCount: status.importedCount, selectedIds: ids }
+    if (importSelected) publication.current = { start: status, refreshed: null, importedCount: status.importedCount, expectedCount: importAll ? page!.totalCount : ids.length }
     busyRef.current = true; setBusy(true); setBusyAction('resolve'); setError('')
     try {
-      const response = await sendToCEF<unknown>({ action: 'resolveStartupNativeImports', payload: { generation, selectedIds: importSelected ? ids : [], declinedIds: importSelected ? [] : ids, folderId } })
+      const response = await sendToCEF<unknown>({ action: 'resolveStartupNativeImports', payload: { generation, selectedIds: importSelected && !importAll ? ids : [], declinedIds: importSelected ? [] : ids, folderId, ...(importAll ? { importAll: true } : {}) } })
       if (!owns(request)) return
       if (!response.ok || !response.data) {
         resolutionMayHaveStarted = Boolean(response.error?.includes('may have reached UAM'))
@@ -139,7 +140,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
         setAwaitingPublication(false)
         const failure = publicationFailure(data)
         if (failure) setError(failure)
-        publication.current = { start: status, refreshed: null, importedCount: data.importedCount, selectedIds: [] }
+        publication.current = { start: status, refreshed: null, importedCount: data.importedCount, expectedCount: 0 }
         if (data.phase === 'complete' && data.totalCount === 0 && !failure) closeRef.current()
       }
       else if (importSelected) setAwaitingPublication(true)
@@ -147,7 +148,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     } catch (failure) {
       if (owns(request)) {
         if (importSelected) {
-          publication.current = { start: status, refreshed: null, importedCount: status.importedCount, selectedIds: [] }
+          publication.current = { start: status, refreshed: null, importedCount: status.importedCount, expectedCount: 0 }
           setAwaitingPublication(resolutionMayHaveStarted)
         }
         setError(failure instanceof Error ? failure.message : 'History decisions could not be saved.')
@@ -155,22 +156,36 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     }
     finally { if (owns(request)) { busyRef.current = false; setBusy(false); setBusyAction(null) } }
   }
+  function selectCandidate(candidateId: string, checked: boolean, shift: boolean) {
+    const candidates = page?.candidates ?? []
+    const anchor = candidates.findIndex((candidate) => candidate.candidateId === selectionAnchor.current)
+    const target = candidates.findIndex((candidate) => candidate.candidateId === candidateId)
+    const ids = shift && anchor >= 0 && target >= 0
+      ? candidates.slice(Math.min(anchor, target), Math.max(anchor, target) + 1).map((candidate) => candidate.candidateId)
+      : [candidateId]
+    if (!shift || anchor < 0) selectionAnchor.current = candidateId
+    setSelected((current) => checked ? [...new Set([...current, ...ids])] : current.filter((id) => !ids.includes(id)))
+  }
   const importing = awaitingPublication || page?.phase === 'importing' || status.phase === 'importing'
   const candidates = page?.candidates ?? []
   return <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!busyRef.current) onClose() }}>
-    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Import chats" aria-busy={busy} className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-black text-white border border-[var(--border)] p-4 text-xs">
+    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Import chats" aria-busy={busy} className="flex min-h-0 flex-col w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-black text-white border border-[var(--border)] p-4 text-xs">
       <div className="flex justify-between items-center mb-3"><strong>Import chats</strong><IconButton icon={<X size={16} />} label="Close import chats" disabled={busy} onClick={onClose} /></div>
       <p className="mb-2">Choose chats to add to UAM.</p>
+      <div className="min-h-0 overflow-y-auto" aria-label="Pending chats">
       {candidates.map((candidate) => <label key={candidate.candidateId} className="flex gap-2 items-start border-t border-[var(--border)] py-2">
-        <input type="checkbox" aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, candidate.candidateId] : current.filter((id) => id !== candidate.candidateId))} />
+        <input type="checkbox" aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
         <span className="min-w-0"><span className="block truncate">{candidate.title}</span><span className="block break-all" style={{ color: 'var(--text-3)' }}>{providerMetadataForId(candidate.providerId).name}{candidate.executionHostId && candidate.executionHostId !== 'local' ? ` · ${candidate.executionHostId}` : ''} · {candidate.workspaceDirectory}</span></span>
       </label>)}
+      </div>
       {!busy && !importing && page && candidates.length === 0 && <p>No pending chats on this page{folderId ? ' for this workspace' : ''}.</p>}
       {busy && <p role="status" style={{ color: 'var(--text-3)' }}>{busyAction === 'resolve' ? 'Saving…' : 'Loading history…'}</p>}
       {importing && !busy && <p role="status" style={{ color: 'var(--text-3)' }}>Importing selected chats…</p>}
       {error && <p role="alert" className="py-2" style={{ color: 'var(--red)' }}>{error}</p>}
-      <div className="flex flex-wrap gap-2 mt-3">
+      {page && <p className="mt-2" role="status">Page {Math.floor(offset / 100) + 1} of {Math.max(1, Math.ceil(page.totalCount / 100))} · {page.totalCount} pending · {selected.length} selected</p>}
+      <div className="flex shrink-0 flex-wrap gap-2 mt-3">
         <Button type="button" size="sm" variant="primary" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>Import selected</Button>
+        <Button type="button" size="sm" disabled={busy || importing || !page?.totalCount} onClick={() => void decide(true, true)}>Import all</Button>
         <Button type="button" size="sm" disabled={busy || importing || selected.length === 0} onClick={() => void decide(false)}>Ignore selected</Button>
         <Button type="button" size="sm" disabled={busy || importing || offset === 0} onClick={() => void load(Math.max(0, offset - 100))}>Previous</Button>
         <Button type="button" size="sm" disabled={busy || importing || !page || page.nextOffset >= page.totalCount} onClick={() => page && void load(page.nextOffset)}>Next</Button>

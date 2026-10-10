@@ -71,7 +71,14 @@ void UamQueryHandler::HandleResolveStartupNativeImports(CefRefPtr<CefBrowser> br
 		}
 	}
 	std::string error;
-	if (generation.size() > 128 || !m_app.startup_native_import_service->Decide(m_app, generation, selected, declined, &error, folder_id))
+	const nlohmann::json::const_iterator import_all = payload.find("importAll");
+	if (import_all != payload.end() && !import_all->is_boolean())
+	{
+		cb->Failure(400, "Invalid import-all decision.");
+		return;
+	}
+	if (generation.size() > 128 || !m_app.startup_native_import_service->Decide(m_app, generation, selected, declined, &error, folder_id,
+	    import_all != payload.end() && import_all->get<bool>()))
 	{
 		cb->Failure(409, error.empty() ? "Import selection changed. Review it again." : error);
 		return;

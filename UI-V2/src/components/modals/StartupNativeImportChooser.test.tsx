@@ -15,6 +15,43 @@ const answer = async (index: number, data: StartupNativeImportPage) => { await a
 const click = async (label: string) => { await act(async () => button(label).click()) }
 function mount() { act(() => root.render(<StartupNativeImportChooser />)) }
 describe('startup native history chooser', () => {
+  it('shift-selects and deselects a range on the current page', async () => {
+    mount(); await answer(0, page('scan-1', ['one', 'two', 'three', 'four']))
+    const checkbox = (id: string) => document.body.querySelector<HTMLInputElement>(`[aria-label="Select ${id}"]`)!
+    act(() => checkbox('one').click())
+    act(() => checkbox('three').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(['one', 'two', 'three', 'four'].map((id) => checkbox(id).checked)).toEqual([true, true, true, false])
+    act(() => checkbox('three').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    expect(['one', 'two', 'three', 'four'].map((id) => checkbox(id).checked)).toEqual([false, false, false, false])
+  })
+
+  it('shows page counts and imports all pending chats beyond the visible page', async () => {
+    mount(); await answer(0, { ...page('scan-1', ['one', 'two']), totalCount: 250, nextOffset: 100 })
+    expect(document.body.textContent).toContain('Page 1 of 3')
+    await click('Next')
+    expect(requests[1].payload).toEqual({ offset: 100, limit: 100, folderId: null })
+    await answer(1, { ...page('scan-1', ['three']), totalCount: 250, nextOffset: 200 })
+    expect(document.body.textContent).toContain('Page 2 of 3')
+    await click('Import all')
+    expect(requests[2].payload).toEqual({ generation: 'scan-1', selectedIds: [], declinedIds: [], folderId: null, importAll: true })
+    expect(button('Import all').disabled).toBe(true)
+    await answer(2, { ...page('scan-1', []), phase: 'complete', totalCount: 0, importedCount: 250 })
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('scopes Import all to the reviewed workspace and reports partial completion', async () => {
+    useAppStore.setState({ startupNativeImportReviewSequence: 1, startupNativeImportFolderId: 'folder-a' })
+    // Mount first, then request an explicit workspace review.
+    mount(); await answer(0, page())
+    act(() => useAppStore.setState({ startupNativeImportReviewSequence: 2 }))
+    await answer(1, { ...page('scan-1', ['one']), totalCount: 150, nextOffset: 100 })
+    await click('Import all')
+    expect(requests[2].payload.folderId).toBe('folder-a')
+    await answer(2, { ...page('scan-1', []), phase: 'complete', totalCount: 0, importedCount: 149 })
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('could not be imported')
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+  })
+
   it('loads cached candidates after StrictMode replay and ignores the invalidated initial reply', async () => {
     act(() => root.render(<StrictMode><StartupNativeImportChooser /></StrictMode>))
     expect(requests.length).toBeGreaterThan(0)

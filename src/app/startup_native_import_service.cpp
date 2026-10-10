@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace uam
@@ -201,7 +202,7 @@ namespace uam
 	}
 
 	bool StartupNativeImportService::Decide(AppState& app, const std::string& generation, const std::vector<std::string>& selected_ids,
-	    const std::vector<std::string>& declined_ids, std::string* error_out, const std::string& folder_id)
+	    const std::vector<std::string>& declined_ids, std::string* error_out, const std::string& folder_id, bool import_all)
 	{
 		const auto reject = [&](const std::string& error)
 		{
@@ -209,20 +210,28 @@ namespace uam
 			return false;
 		};
 		if (m_phase != "ready" || generation != m_generation) return reject("History candidates changed. Review the current list.");
+		if (import_all && (!selected_ids.empty() || !declined_ids.empty())) return reject("Import all cannot be combined with selected decisions.");
+		std::vector<std::string> selected_candidates = selected_ids;
+		if (import_all)
+		{
+			for (const Candidate& candidate : m_candidates)
+				if (folder_id.empty() || candidate.owner.id == folder_id) selected_candidates.push_back(candidate.summary.candidate_id);
+		}
 		std::unordered_set<std::string> requested;
-		for (const std::vector<std::string>* group : {&selected_ids, &declined_ids})
+		for (const std::vector<std::string>* group : std::initializer_list<const std::vector<std::string>*>{&selected_candidates, &declined_ids})
 			for (const std::string& id : *group)
 				if (id.empty() || !requested.insert(id).second) return reject("Each history candidate must have one decision.");
 		if (requested.empty()) return reject("Select chats to import or decline.");
 		std::string filter_error;
 		if (!Revalidate(app, &filter_error)) return reject(filter_error);
+		std::unordered_map<std::string, const Candidate*> candidates_by_id;
+		for (const Candidate& candidate : m_candidates) candidates_by_id.emplace(candidate.summary.candidate_id, &candidate);
 		for (const std::string& id : requested)
 		{
-			const std::vector<Candidate>::const_iterator candidate = std::ranges::find_if(m_candidates,
-			    [&](const Candidate& entry) { return entry.summary.candidate_id == id; });
-			if (candidate == m_candidates.end())
+			const std::unordered_map<std::string, const Candidate*>::const_iterator candidate = candidates_by_id.find(id);
+			if (candidate == candidates_by_id.end())
 				return reject("A history candidate is no longer available or its workspace changed. Review the current list.");
-			if (!folder_id.empty() && candidate->owner.id != folder_id)
+			if (!folder_id.empty() && candidate->second->owner.id != folder_id)
 				return reject("A history candidate belongs to another workspace. Review the current list.");
 		}
 		const std::unordered_set<std::string> declined(declined_ids.begin(), declined_ids.end());
@@ -232,7 +241,7 @@ namespace uam
 		std::vector<std::string> added_keys;
 		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, declined_chats, added_keys))
 			return reject("Declined history could not be saved. No decisions were applied.");
-		const std::unordered_set<std::string> selected(selected_ids.begin(), selected_ids.end());
+		const std::unordered_set<std::string> selected(selected_candidates.begin(), selected_candidates.end());
 		for (Candidate& candidate : m_candidates)
 		{
 			if (!selected.contains(candidate.summary.candidate_id)) continue;

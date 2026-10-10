@@ -52,6 +52,39 @@ namespace
 	}
 }
 
+UAM_TEST(StartupNativeHistoryImportAllIncludesEveryPageAndPreservesWorkspaceScope)
+{
+	for (bool scoped : {true, false})
+	{
+		TempDir temp(scoped ? "uam-startup-import-all-scoped" : "uam-startup-import-all-global");
+		uam::AppState app;
+		StartupWorkspace(app, temp.root);
+		fs::create_directories(temp.root / "other-workspace");
+		app.folders.push_back({"other", "Other", (temp.root / "other-workspace").string(), false, "local"});
+		std::vector<ChatSession> chats;
+		for (int index = 0; index < 205; ++index) chats.push_back(StartupHistory(temp.root / "workspace", "history-" + std::to_string(index)));
+		chats.push_back(StartupHistory(temp.root / "other-workspace", "outside"));
+		uam::StartupNativeImportService service(FixtureScanner(chats));
+		service.Initialize(app);
+		WaitForStartup(service, app);
+		const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+		UAM_ASSERT_EQ(ready.candidates.size(), std::size_t{100});
+		UAM_ASSERT_EQ(ready.total_count, std::size_t{206});
+		std::string error;
+		const std::string folder = scoped ? "known" : "";
+		UAM_ASSERT(!service.Decide(app, "stale", {}, {}, &error, folder, true));
+		UAM_ASSERT(!service.Decide(app, ready.generation, {ready.candidates.front().candidate_id}, {}, &error, folder, true));
+		UAM_ASSERT(!service.Decide(app, ready.generation, {}, {}, &error, "missing", true));
+		UAM_ASSERT(app.chats.empty());
+		UAM_ASSERT(!fs::exists(app.data_root));
+		UAM_ASSERT(service.Decide(app, ready.generation, {}, {}, &error, folder, true));
+		WaitForStartup(service, app);
+		UAM_ASSERT_EQ(app.chats.size(), scoped ? std::size_t{205} : std::size_t{206});
+		UAM_ASSERT_EQ(service.Snapshot().total_count, scoped ? std::size_t{1} : std::size_t{0});
+		if (scoped) UAM_ASSERT_EQ(service.Snapshot().candidates.front().native_session_id, std::string("outside"));
+	}
+}
+
 UAM_TEST(StartupNativeHistoryScansOnceOffThreadAndPublishesOnlySelectedChats)
 {
 	TempDir temp("uam-startup-history-selected");
