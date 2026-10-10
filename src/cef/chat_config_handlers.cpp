@@ -518,7 +518,7 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 
 	const bool chat_saved = expected_storage_revision.empty()
 	    ? ChatHistorySyncService().SaveChatWithStatus(m_app, *selected_chat, "", "")
-	    : ChatRepository::PublishPreparedChatSave(ChatRepository::PrepareChatSave(m_app.data_root, *selected_chat, expected_storage_revision));
+	    : ChatRepository::PublishPreparedChatSave(ChatRepository::PrepareChatSave(m_app.data_root, *selected_chat, expected_storage_revision), true, selected_chat);
 	if (!chat_saved)
 	{
 		if (select_chat)

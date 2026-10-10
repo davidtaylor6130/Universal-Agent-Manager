@@ -257,7 +257,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 			    if (current == nullptr || m_app.data_root != data_root || current->last_opened_at != metadata.last_opened_at ||
 			        current->interaction_at != metadata.interaction_at || current->attention_revision != metadata.attention_revision || current->settled_at != metadata.settled_at) return;
 			    if (m_app.pending_chat_save_at_by_chat_id.contains(metadata.id)) return;
-			    if (m_app.worktree_operation_chat_ids.contains(metadata.id) || !ChatRepository::PublishPreparedChatSave(*prepared))
+			    if (m_app.worktree_operation_chat_ids.contains(metadata.id) || !ChatRepository::PublishPreparedChatSave(*prepared, true, current))
 				    m_app.pending_chat_save_at_by_chat_id[metadata.id] = uam::GetAppTimeSeconds() + 1.0;
 		    }, TID_FILE_USER_BLOCKING)) m_app.pending_chat_save_at_by_chat_id[chat_id] = uam::GetAppTimeSeconds() + 1.0;
 	}

@@ -7875,7 +7875,9 @@ UAM_TEST(FastShutdownSettlesRemoteRestartPromptAsInterrupted)
 
 UAM_TEST(AcpQueuedPromptTextCannotGrowWithoutBound)
 {
+	TempDir temp("uam-acp-prompt-limit");
 	uam::AppState app;
+	app.data_root = temp.root;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	ChatSession chat;
 	chat.id = "chat-prompt-limit";

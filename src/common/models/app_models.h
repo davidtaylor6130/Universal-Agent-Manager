@@ -349,6 +349,10 @@ struct ChatSession
 	int remote_turn_serial = 0;
 	int remote_turn_user_message_index = -1;
 	std::vector<uam::AcpQueuedUserPromptState> acp_queued_prompts;
+	std::string acp_queue_storage_revision;
+	// Successful persistence refreshes this stamp; copied snapshots keep their earlier stamp.
+	mutable std::string acp_queue_full_save_revision;
+	bool acp_queue_storage_error = false;
 	bool acp_queue_held = false;
 	std::size_t acp_dispatched_queued_prompt_count = 0;
 	std::string temporary_parent_chat_id;

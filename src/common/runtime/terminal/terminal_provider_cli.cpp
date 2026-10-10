@@ -515,7 +515,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 		// Admit prepared cleanup metadata before any native files or remote channels can be staged.
 		if (state->history_preparation)
 		{
-			if (state->prepared_chat_save && !ChatRepository::PublishPreparedChatSave(state->prepared_chat_save))
+			if (state->prepared_chat_save && !ChatRepository::PublishPreparedChatSave(state->prepared_chat_save, true, &chat))
 			{
 				error = "Could not save provider context cleanup information.";
 				return false;
@@ -544,7 +544,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 			const std::string previous_handoff = chat.provider_handoff_session_id;
 			chat.native_session_id = *(resume + 1);
 			chat.provider_handoff_session_id = chat.native_session_id;
-			if (!state->prepared_chat_save || !ChatRepository::PublishPreparedChatSave(state->prepared_chat_save))
+			if (!state->prepared_chat_save || !ChatRepository::PublishPreparedChatSave(state->prepared_chat_save, true, &chat))
 			{
 				chat.native_session_id = previous_identity;
 				chat.provider_handoff_session_id = previous_handoff;
