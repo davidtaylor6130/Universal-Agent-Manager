@@ -17,6 +17,31 @@ function storage() {
 }
 
 describe('UsagePage', () => {
+  it('prefills reference prices, exposes their source, and preserves explicit manual blanks and zero', async () => {
+    storage()
+    const reference = { kind: 'reference', referenceModel: 'qwen3.8-27b', source: 'https://example.com/qwen', verifiedDate: '2026-10-10', cacheFallback: true, speedFallback: true, inputPerMillion: 0.5, cachedInputPerMillion: 0.1, cacheWritePerMillion: 0.625, outputPerMillion: 3 }
+    window.cefQuery = request => {
+      const { payload } = JSON.parse(request.request)
+      request.onSuccess(JSON.stringify({ version: 2, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, totals: total, complete: true, listingLimited: false,
+        filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 0, unidentifiedRecords: 0,
+        providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? total : blank), providerId, available: true, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
+        models: [{ ...total, providerId: 'codex-cli', modelId: 'test-model', speed: 'standard', priceReference: reference }], days: [], hours: [], providerDays: [], providerHours: [] }))
+    }
+    for (const manual of [false, true]) {
+      if (manual) values.set('uam-usage-prices-v1', JSON.stringify([{ providerId: 'codex-cli', modelId: 'test-model', speed: 'standard', inputPerMillion: 0, cachedInputPerMillion: null, cacheWritePerMillion: null, outputPerMillion: 2 }]))
+      const host = document.createElement('div'), root = createRoot(host)
+      try {
+        await act(async () => root.render(<UsagePage onClose={() => {}} />))
+        act(() => host.querySelector<HTMLButtonElement>('[aria-label="Inspect Codex test-model standard"]')!.click())
+        act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Model prices')!.click())
+        expect(Array.from(host.querySelectorAll<HTMLInputElement>('input')).map(input => input.value)).toEqual(manual ? ['0', '', '', '2'] : ['0.5', '0.1', '0.625', '3'])
+        expect(host.querySelector('a')?.getAttribute('href')).toBe('https://example.com/qwen')
+        expect(host.textContent).toContain('Unpublished cache rates use the input rate.')
+        expect(host.textContent).toContain('This speed uses the standard rate')
+      } finally { act(() => root.unmount()) }
+    }
+  })
+
   it('shows unknown costs, request diagnostics, token subsets and editable zero/blank rates', async () => {
     storage()
     const requests: Record<string, unknown>[] = []

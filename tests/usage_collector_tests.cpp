@@ -115,3 +115,31 @@ UAM_TEST(UsageCollectionSkipsUnchangedOpenCodeDatabaseAndDetectsMutableUsageInWa
 	write(40); UAM_ASSERT_EQ(fs::last_write_time(path), main_modified);
 	collect("changed-wal"); UAM_ASSERT_EQ(imports, std::size_t(2)); UAM_ASSERT_EQ(input, 40LL);
 }
+
+UAM_TEST(UsageCollectorPricesDiscoveredModelsWithoutChangingStoredReceiptsAndHonorsOverrides)
+{
+	TempDir temp("uam-usage-collector-prices");
+	const fs::path provider = temp.root / "provider"; fs::create_directories(provider);
+	const std::string line = nlohmann::json({{"type", "assistant"}, {"timestamp", uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(std::time(nullptr) - 2), uam::time::kIsoUtcTimestampFormat)}, {"sessionId", "session"}, {"requestId", "receipt"},
+	    {"message", {{"id", "receipt"}, {"model", "test-model"}, {"usage", {{"input_tokens", 12}, {"output_tokens", 3}}}}}}).dump() + "\n";
+	UAM_ASSERT(uam::io::WriteTextFile(provider / "session.jsonl", line));
+	uam::usage::Collector collector(temp.root / "data", {{uam::provider_ids::kClaudeCli, {provider}}}, [](std::stop_token) -> std::optional<std::string>
+	{
+		return nlohmann::json({{"test-model", {{"input_cost_per_token", 0.000002}, {"output_cost_per_token", 0.000010}}}}).dump();
+	});
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	nlohmann::json result;
+	do
+	{
+		result = collector.Query(7);
+		if (result.contains("models") && !result["models"].empty() && result["models"][0].contains("priceReference")) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	} while (std::chrono::steady_clock::now() < deadline);
+	UAM_ASSERT(result.contains("models"));
+	UAM_ASSERT_EQ(result["models"][0]["priceReference"]["kind"].get<std::string>(), std::string("reference"));
+	UAM_ASSERT(std::abs(result["totals"]["estimatedCostUsd"].get<double>() - 0.000054) < 1e-12);
+	const nlohmann::json manual = collector.Query(7, {{{"claude-cli", "test-model", "standard"}, {0, 0, 0, 0}}});
+	UAM_ASSERT_EQ(manual["totals"]["estimatedCostUsd"].get<double>(), 0.0);
+	UAM_ASSERT_EQ(manual["models"][0]["priceReference"]["kind"].get<std::string>(), std::string("manual"));
+	UAM_ASSERT_EQ(collector.Query(7)["totals"]["estimatedCostUsd"], result["totals"]["estimatedCostUsd"]);
+}

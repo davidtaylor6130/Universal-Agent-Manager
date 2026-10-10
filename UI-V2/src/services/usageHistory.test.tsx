@@ -17,6 +17,21 @@ function history(overrides: Partial<UsageHistory> = {}): UsageHistory {
 afterEach(() => { delete window.cefQuery; vi.useRealTimers() })
 
 describe('usage history contract', () => {
+  it('validates automatic price references and catalog freshness at the bridge boundary', () => {
+    const reference = { kind: 'reference', referenceModel: 'qwen3.8-27b', source: 'https://example.com/rates', verifiedDate: '2026-10-10', cacheFallback: true, speedFallback: false, inputPerMillion: 0.5, cachedInputPerMillion: null, cacheWritePerMillion: 0, outputPerMillion: 3 }
+    const pricing = { refreshing: true, source: 'https://example.com/catalog', status: 'cached', fetchedAtMs: 1000, error: '', aliasError: '' }
+    const data = history()
+    const value = { ...data, models: [{ ...data.models[0], priceReference: reference }], pricing }
+    expect(parseUsageHistory(value, 'local', windowRange).models[0].priceReference?.cacheWritePerMillion).toBe(0)
+    for (const changes of [{ source: 'javascript:alert(1)' }, { source: 'https://user:password@example.com' }, { inputPerMillion: -1 }, { cachedInputPerMillion: undefined }, { speedFallback: 'false' }, { verifiedDate: 'yesterday' }]) {
+      expect(() => parseUsageHistory({ ...value, models: [{ ...data.models[0], priceReference: { ...reference, ...changes } }] }, 'local', windowRange)).toThrow('breakdown')
+    }
+    for (const changes of [{ fetchedAtMs: 8640000000000001 }, { refreshing: 1 }, { source: 'file:///tmp/rates' }, { status: 'other' }]) {
+      expect(() => parseUsageHistory({ ...value, pricing: { ...pricing, ...changes } }, 'local', windowRange)).toThrow('pricing')
+    }
+    expect(() => parseUsageHistory({ ...data, version: 3, asOfMs: 8640000000000001, windowDays: 1, collecting: false, collectionError: '' }, 'local', windowRange)).toThrow('Cached usage')
+  })
+
   it('preserves unknown cost, real zero prices, partial coverage and reasoning as a subset', () => {
     const value = parseUsageHistory(history(), 'local', windowRange)
     expect(formatUsageCost(value.totals)).toBe('Unknown')
@@ -48,6 +63,26 @@ describe('usage history contract', () => {
 })
 
 describe('usage history loading', () => {
+  it('polls price refreshes promptly after history is complete, then returns to background cadence', async () => {
+    vi.useFakeTimers()
+    let calls = 0
+    window.cefQuery = request => {
+      calls++
+      request.onSuccess(JSON.stringify(history({ pricing: { refreshing: calls === 1, source: 'https://example.com/catalog', status: 'fresh', fetchedAtMs: 1000, error: '', aliasError: '' } })))
+    }
+    function Probe() { useUsageHistory('local', windowRange); return null }
+    const root = createRoot(document.createElement('div'))
+    try {
+      await act(async () => root.render(<Probe />))
+      await act(async () => vi.advanceTimersByTimeAsync(2000))
+      expect(calls).toBe(2)
+      await act(async () => vi.advanceTimersByTimeAsync(29999))
+      expect(calls).toBe(2)
+      await act(async () => vi.advanceTimersByTimeAsync(1))
+      expect(calls).toBe(3)
+    } finally { act(() => root.unmount()) }
+  })
+
   it('polls cached snapshots and ignores obsolete replies after selecting another host', async () => {
     vi.useFakeTimers()
     const pending: Parameters<NonNullable<typeof window.cefQuery>>[0][] = []

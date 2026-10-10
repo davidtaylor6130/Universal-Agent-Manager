@@ -45,7 +45,7 @@ function TokenBreakdown({ total }: { total: UsageTotals }) {
 
 function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; prices: UsagePriceOverride[]; onSave: (prices: UsagePriceOverride[]) => void; onClose: () => void }) {
   const existing = prices.find(price => modelKey(price) === modelKey(model))
-  const [fields, setFields] = useState(() => priceFields.map(([key]) => existing?.[key]?.toString() ?? ''))
+  const [fields, setFields] = useState(() => priceFields.map(([key]) => (existing ? existing[key] : model.priceReference?.[key])?.toString() ?? ''))
   const [error, setError] = useState('')
   const save = (remove = false) => {
     const next = prices.filter(price => modelKey(price) !== modelKey(model))
@@ -59,6 +59,11 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
   }
   return <form className="grid gap-3 py-4" aria-label={`Prices for ${model.modelId}`} onSubmit={event => { event.preventDefault(); save() }}>
     <p className="text-xs">USD per million tokens. Blank rates stay unknown. These estimates do not change provider billing.</p>
+    {model.priceReference?.kind === 'reference' && <div className="grid gap-1 text-xs">
+      <p>Reference: {model.priceReference.referenceModel} · <a href={model.priceReference.source} target="_blank" rel="noreferrer" className="underline">Rate source</a>{model.priceReference.verifiedDate && ` · Verified ${model.priceReference.verifiedDate}`}</p>
+      {model.priceReference.cacheFallback && <p>Unpublished cache rates use the input rate.</p>}
+      {model.priceReference.speedFallback && <p>This speed uses the standard rate because a separate rate is unavailable.</p>}
+    </div>}
     <div className="grid gap-3 sm:grid-cols-4">{priceFields.map(([key, label], index) => <label className="grid gap-1 text-xs" key={key}>{label}
       <input type="number" min="0" step="any" className="uam-usage-price-input w-full" value={fields[index]} onChange={event => setFields(previous => previous.map((value, i) => i === index ? event.target.value : value))} />
     </label>)}</div>
@@ -128,6 +133,11 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
         {data && <div className="grid gap-6" style={{ opacity: history.kept ? 0.5 : 1 }} data-kept={history.kept || undefined}>
           {history.kept && <p className="text-xs">Showing the previous answer while the selected range loads.</p>}
           {data.asOfMs && <time className="text-xs" dateTime={new Date(data.asOfMs).toISOString()}>Updated {new Date(data.asOfMs).toLocaleString()}</time>}
+          {metric === 'cost' && data.pricing && <div className="grid gap-1 text-xs">
+            <p>{data.pricing.refreshing ? 'Updating reference prices…' : data.pricing.status === 'unavailable' ? 'Using verified model references where available.' : `Using ${data.pricing.status === 'cached' ? 'cached' : 'current'} reference prices.`}{data.pricing.fetchedAtMs && ` Retrieved ${new Date(data.pricing.fetchedAtMs).toLocaleString()}.`}</p>
+            {data.pricing.error && <p>{data.pricing.error}</p>}
+            {data.pricing.aliasError && <p>{data.pricing.aliasError}</p>}
+          </div>}
           {!data.complete && <p className="text-xs">Partial history. Totals will update as loading continues.</p>}
           {data.listingLimited && <p className="text-xs">Some history is outside the scan limit. These totals are incomplete.</p>}
           {warnings.map(provider => <p key={provider.providerId} className="text-xs">{providerLabel(provider.providerId)}: {provider.errors} read errors, {provider.invalidLines} invalid records, {provider.oversizedLines} oversized records, {provider.pendingLines} unfinished lines.</p>)}

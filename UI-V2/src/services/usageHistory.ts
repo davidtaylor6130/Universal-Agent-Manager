@@ -36,6 +36,7 @@ export interface UsageModel extends UsageTotals {
   providerId: UsageProviderId
   modelId: string
   speed: UsageSpeed
+  priceReference?: UsagePriceReference
 }
 export interface UsagePeriod extends UsageTotals { startMs: number }
 export interface UsageProviderPeriod extends UsagePeriod { providerId: UsageProviderId }
@@ -45,6 +46,7 @@ export interface UsageHistory {
   windowDays?: UsageWindowDays
   collecting?: boolean
   collectionError?: string
+  pricing?: UsagePricing
   executionHostId: string
   source: 'native-transcripts'
   startMs: number
@@ -73,6 +75,22 @@ export interface UsagePriceOverride {
   cacheWritePerMillion: number | null
   outputPerMillion: number | null
 }
+export interface UsagePriceReference extends Omit<UsagePriceOverride, 'providerId' | 'modelId' | 'speed'> {
+  kind: 'manual' | 'reference'
+  referenceModel: string
+  source: string
+  verifiedDate: string
+  cacheFallback: boolean
+  speedFallback: boolean
+}
+export interface UsagePricing {
+  refreshing: boolean
+  source: string
+  status: 'unavailable' | 'cached' | 'fresh'
+  fetchedAtMs: number | null
+  error: string
+  aliasError: string
+}
 export interface UsageWindow { startMs: number; endMs: number; days?: UsageWindowDays }
 export const USAGE_WINDOWS: { days: UsageWindowDays; label: string }[] = [
   { days: 1, label: 'Past 24h' }, { days: 7, label: '7 days' }, { days: 30, label: '30 days' }, { days: 90, label: '90 days' },
@@ -87,6 +105,26 @@ const object = (value: unknown): value is Record<string, unknown> => typeof valu
 const provider = (value: unknown): value is UsageProviderId => USAGE_PROVIDERS.includes(value as UsageProviderId)
 const speed = (value: unknown): value is UsageSpeed => value === 'standard' || value === 'fast' || value === 'ultrafast'
 const countFields = ['inputTokens', 'cachedInputTokens', 'cacheWriteTokens', 'outputTokens', 'reasoningTokens', 'totalTokens', 'reportedCostTokens', 'estimatedCostTokens', 'unpricedTokens', 'records', 'sessions'] as const
+
+const timestamp = (value: unknown): value is number => integer(value) && value > 0 && value <= 8640000000000000
+function httpsSource(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false
+  try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password } catch { return false }
+}
+function priceReference(value: unknown): value is UsagePriceReference {
+  if (!object(value) || !['manual', 'reference'].includes(value.kind as string)
+    || typeof value.referenceModel !== 'string' || !value.referenceModel || value.referenceModel.length > 512
+    || (value.kind === 'manual' ? value.source !== '' : !httpsSource(value.source))
+    || typeof value.verifiedDate !== 'string' || (value.verifiedDate !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(value.verifiedDate))
+    || typeof value.cacheFallback !== 'boolean' || typeof value.speedFallback !== 'boolean') return false
+  return ['inputPerMillion', 'cachedInputPerMillion', 'cacheWritePerMillion', 'outputPerMillion'].every(key => value[key] === null || money(value[key]))
+}
+function pricing(value: unknown): value is UsagePricing {
+  return object(value) && typeof value.refreshing === 'boolean' && httpsSource(value.source)
+    && ['unavailable', 'cached', 'fresh'].includes(value.status as string)
+    && (value.fetchedAtMs === null || timestamp(value.fetchedAtMs))
+    && ['error', 'aliasError'].every(key => typeof value[key] === 'string' && (value[key] as string).length <= 1024)
+}
 
 function totals(value: unknown): value is UsageTotals {
   if (!object(value) || !countFields.every(key => integer(value[key])) || !['reportedCostUsd', 'estimatedCostUsd', 'estimatedCacheSavingsUsd'].every(key => money(value[key]))) return false
@@ -134,7 +172,7 @@ function sameTotals(a: UsageTotals, b: UsageTotals): boolean {
 export function parseUsageHistory(value: unknown, executionHostId: string, window: UsageWindow): UsageHistory {
   if (!object(value) || (value.version !== 2 && value.version !== 3)) throw new Error('Usage data is incompatible with this build. Update UAM and its runner.')
   if (value.version === 3) {
-    if (!integer(value.asOfMs) || value.asOfMs === 0 || value.windowDays !== window.days || typeof value.collecting !== 'boolean'
+    if (!timestamp(value.asOfMs) || value.windowDays !== window.days || typeof value.collecting !== 'boolean'
       || typeof value.collectionError !== 'string' || value.collectionError.length > 1024) throw new Error('Cached usage data is invalid. Refresh to try again.')
     window = usageWindow(window.days!, value.asOfMs)
   }
@@ -142,6 +180,7 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
   if (!totals(value.totals) || typeof value.complete !== 'boolean' || typeof value.listingLimited !== 'boolean'
     || !['filesChecked', 'filesTotal', 'bytesRead', 'duplicates', 'unidentifiedRecords'].every(key => integer(value[key]))
     || (value.filesChecked as number) > (value.filesTotal as number)) throw new Error('Usage data is incomplete or invalid. Refresh to try again.')
+  if (value.pricing !== undefined && !pricing(value.pricing)) throw new Error('Usage pricing data is invalid. Refresh to try again.')
   const seenProviders = new Set<string>(), seenModels = new Set<string>()
   if (!Array.isArray(value.providers) || value.providers.length !== USAGE_PROVIDERS.length || !value.providers.every(row => {
     if (!totals(row) || !object(row) || !provider(row.providerId) || seenProviders.has(row.providerId) || typeof row.available !== 'boolean'
@@ -150,7 +189,7 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
     return true
   })) throw new Error('Usage provider data is invalid. Refresh to try again.')
   if (!Array.isArray(value.models) || value.models.length > 20000 || !value.models.every(row => {
-    if (!totals(row) || !object(row) || !provider(row.providerId) || typeof row.modelId !== 'string' || !row.modelId || row.modelId.length > 512 || !speed(row.speed)) return false
+    if (!totals(row) || !object(row) || !provider(row.providerId) || typeof row.modelId !== 'string' || !row.modelId || row.modelId.length > 512 || !speed(row.speed) || (row.priceReference !== undefined && !priceReference(row.priceReference))) return false
     const key = JSON.stringify([row.providerId, row.modelId, row.speed])
     if (seenModels.has(key)) return false
     seenModels.add(key)

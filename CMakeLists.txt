@@ -500,6 +500,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/usage/usage_ledger.cpp
   src/common/usage/usage_store.cpp
   src/common/usage/usage_collector.cpp
+  src/common/usage/usage_pricing.cpp
+  src/common/usage/usage_pricing_cache.cpp
   src/core/chat_import_utils.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
@@ -1223,6 +1225,8 @@ if(UAM_BUILD_TESTS)
     tests/usage_ledger_tests.cpp
     tests/usage_store_tests.cpp
     tests/usage_collector_tests.cpp
+    tests/usage_pricing_tests.cpp
+    tests/usage_pricing_cache_tests.cpp
     tests/provider_mcp_settings_tests.cpp
     tests/uam_control_transport_tests.cpp
     src/common/utils/diagnostic_log.cpp
@@ -1295,6 +1299,8 @@ if(UAM_BUILD_TESTS)
     src/common/usage/usage_ledger.cpp
     src/common/usage/usage_store.cpp
     src/common/usage/usage_collector.cpp
+    src/common/usage/usage_pricing.cpp
+    src/common/usage/usage_pricing_cache.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp

@@ -42,7 +42,7 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
         }
         const data = parseUsageHistory(reply.data, executionHostId, window)
         setState({ data, loading: !data.complete, error: data.collectionError || '', scope, dataScope: scope })
-        timer = setTimeout(() => { void load() }, data.collecting ? 2000 : 30000)
+        timer = setTimeout(() => { void load() }, (data.collecting || data.pricing?.refreshing) ? 2000 : 30000)
       } catch (error) {
         clearTimeout(timeout)
         if (!obsolete) setState(previous => ({ ...previous, loading: false, scope, error: error instanceof Error ? error.message : 'Could not load usage history.' }))

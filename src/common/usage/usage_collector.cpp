@@ -22,10 +22,10 @@ namespace uam::usage
 	}
 
 	Collector::Collector(std::filesystem::path data_root)
-	    : m_dataRoot(std::move(data_root)), m_store(m_dataRoot), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	    : m_dataRoot(std::move(data_root)), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
-	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources)
-	    : m_dataRoot(std::move(data_root)), m_store(m_dataRoot), m_history(std::move(sources)), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates)
+	    : m_dataRoot(std::move(data_root)), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
 	Collector::~Collector()
 	{
@@ -62,6 +62,10 @@ namespace uam::usage
 					std::lock_guard<std::mutex> lock(m_mutex);
 					m_ledger = std::make_shared<const Ledger>(std::move(*ledger));
 				}
+			}
+			m_pricing.Refresh(Now(), stop, false);
+			{
+				std::lock_guard<std::mutex> lock(m_mutex); m_catalog = m_pricing.Catalog(); m_aliases = m_pricing.Aliases(); m_pricingMetadata = m_pricing.Metadata(Now());
 			}
 			std::size_t generation = 0;
 			while (!cancelled())
@@ -105,6 +109,13 @@ namespace uam::usage
 				{
 					std::lock_guard<std::mutex> lock(m_mutex); m_error = error; m_collecting = false;
 				}
+				{
+					std::lock_guard<std::mutex> lock(m_mutex); m_pricingMetadata["refreshing"] = true;
+				}
+				m_pricing.Refresh(Now(), stop);
+				{
+					std::lock_guard<std::mutex> lock(m_mutex); m_catalog = m_pricing.Catalog(); m_aliases = m_pricing.Aliases(); m_pricingMetadata = m_pricing.Metadata(Now());
+				}
 				std::unique_lock<std::mutex> wait_lock(m_waitMutex);
 				m_wake.wait_for(wait_lock, stop, std::chrono::seconds(30), [] { return false; });
 			}
@@ -116,16 +127,44 @@ namespace uam::usage
 	{
 		if (days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
 		std::shared_ptr<const Ledger> ledger;
+		std::shared_ptr<const RateCatalog> catalog;
+		ModelAliases aliases;
 		nlohmann::json result;
 		{
-			std::lock_guard<std::mutex> lock(m_mutex); ledger = m_ledger; result = m_metadata;
+			std::lock_guard<std::mutex> lock(m_mutex); ledger = m_ledger; catalog = m_catalog; aliases = m_aliases; result = m_metadata; result["pricing"] = m_pricingMetadata;
 			result["collecting"] = m_collecting; result["collectionError"] = m_error;
 		}
 		if (!ledger) return {{"pending", true}, {"collectionError", result["collectionError"]}};
 		const std::int64_t start = ledger->WindowStart(days), end = ledger->GeneratedMs();
-		const std::optional<Summary> summary = ledger->Query(start, end, prices);
+		std::optional<Summary> summary = ledger->Query(start, end);
+		if (!summary) return {{"error", "Usage totals exceed supported limits."}};
+		std::map<ModelKey, ModelPrices> resolved_prices;
+		std::map<ModelKey, ResolvedPrice> references;
+		if (catalog)
+			for (const std::pair<const ModelKey, Totals>& model : summary->models)
+			{
+				const std::optional<ResolvedPrice> reference = catalog->Resolve(model.first, aliases);
+				if (!reference) continue;
+				resolved_prices.emplace(model.first, reference->prices); references.emplace(model.first, *reference);
+			}
+		for (const std::pair<const ModelKey, ModelPrices>& price : prices) resolved_prices[price.first] = price.second;
+		if (!resolved_prices.empty()) summary = ledger->Query(start, end, resolved_prices);
 		if (!summary) return {{"error", "Usage totals or prices exceed supported limits."}};
 		ApplyUsageSummary(result, *summary, start, end);
+		for (nlohmann::json& row : result["models"])
+		{
+			const ModelKey key{row["providerId"].get<std::string>(), row["modelId"].get<std::string>(), row["speed"].get<std::string>()};
+			const bool manual = prices.contains(key);
+			if (!manual && !references.contains(key)) continue;
+			const ModelPrices& selected = resolved_prices.at(key);
+			row["priceReference"] = {{"kind", manual ? "manual" : "reference"}, {"referenceModel", manual ? std::get<1>(key) : references.at(key).reference_model},
+			    {"source", manual ? "" : references.at(key).source}, {"verifiedDate", manual ? "" : references.at(key).verified_date},
+			    {"cacheFallback", !manual && references.at(key).cache_fallback}, {"speedFallback", !manual && references.at(key).speed_fallback},
+			    {"inputPerMillion", selected.input_per_million ? nlohmann::json(*selected.input_per_million) : nlohmann::json(nullptr)},
+			    {"cachedInputPerMillion", selected.cached_input_per_million ? nlohmann::json(*selected.cached_input_per_million) : nlohmann::json(nullptr)},
+			    {"cacheWritePerMillion", selected.cache_write_per_million ? nlohmann::json(*selected.cache_write_per_million) : nlohmann::json(nullptr)},
+			    {"outputPerMillion", selected.output_per_million ? nlohmann::json(*selected.output_per_million) : nlohmann::json(nullptr)}};
+		}
 		result["asOfMs"] = end; result["windowDays"] = days;
 		return result;
 	}
