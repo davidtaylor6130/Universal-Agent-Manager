@@ -434,7 +434,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               </span>
               {lifecycleStatus?.type === 'processing' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums" style={{ color: 'var(--info)' }}>
-                  <CircleDashed size={13} className="shrink-0" aria-hidden />
+                  <CircleDashed size={13} className="uam-working-ring shrink-0" aria-hidden />
                   <span role="status">Working</span>
                   {workingStartedAtMs !== null && <span aria-hidden><WorkingDuration startedAtMs={workingStartedAtMs} /></span>}
                 </span>

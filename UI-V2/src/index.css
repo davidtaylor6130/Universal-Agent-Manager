@@ -1270,6 +1270,14 @@ summary,
   animation: uam-status-spin 1s linear infinite;
 }
 
+.uam-working-ring {
+  animation: uam-status-spin 1s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-working-ring { animation: none; }
+}
+
 @keyframes uam-status-spin {
   to { transform: rotate(360deg); }
 }
