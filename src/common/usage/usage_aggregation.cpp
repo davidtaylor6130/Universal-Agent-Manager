@@ -42,6 +42,11 @@ namespace uam::usage
 				if (prices->input_per_million && prices->cached_input_per_million)
 					totals.estimated_cache_savings_usd += record.tokens.cached_input * std::max(0.0, *prices->input_per_million - *prices->cached_input_per_million) / 1000000.0;
 			}
+			else if (!prices && record.estimated_cost_usd && std::isfinite(*record.estimated_cost_usd) && *record.estimated_cost_usd >= 0)
+			{
+				totals.estimated_cost_usd += *record.estimated_cost_usd;
+				totals.estimated_cost_tokens += record.tokens.Total();
+			}
 			else totals.unpriced_tokens += record.tokens.Total();
 			return std::isfinite(totals.reported_cost_usd) && std::isfinite(totals.estimated_cost_usd) && std::isfinite(totals.estimated_cache_savings_usd);
 		}

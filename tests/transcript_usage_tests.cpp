@@ -279,3 +279,30 @@ UAM_TEST(UsageCopilotDurableSnapshotsEmitOnlyNewTokensAndNeverPremiumRequestDoll
 	event["type"] = "session.shutdown"; event["agentId"] = "child";
 	UAM_ASSERT(uam::usage::CopilotRecords(event, "session", state).empty());
 }
+
+UAM_TEST(UsageOpenCodeAddsDisjointReasoningAndKeepsProviderEstimatesSeparateFromBills)
+{
+	nlohmann::json message{{"type", "assistant"}, {"model", {{"id", "model"}, {"providerID", "openai"}}}, {"cost", 0.03},
+	    {"tokens", {{"input", 10}, {"output", 5}, {"reasoning", 3}, {"cache", {{"read", 20}, {"write", 7}}}}}};
+	std::optional<uam::usage::Record> record = uam::usage::OpenCodeRecord(message, "session", "message", 100);
+	UAM_ASSERT(record);
+	UAM_ASSERT_EQ(record->tokens.output, 8LL);
+	UAM_ASSERT_EQ(record->tokens.reasoning, 3LL);
+	UAM_ASSERT_EQ(record->tokens.Total(), 45LL);
+	UAM_ASSERT_EQ(record->model_id, std::string("openai/model"));
+	UAM_ASSERT(record->estimated_cost_usd && !record->reported_cost_usd);
+	const std::optional<uam::usage::Summary> summary = uam::usage::Aggregate({*record}, 0, 200);
+	UAM_ASSERT(summary && summary->total.estimated_cost_usd == 0.03);
+	const std::map<uam::usage::ModelKey, uam::usage::ModelPrices> incomplete_prices{{{record->provider_id, record->model_id, "standard"}, {}}};
+	const std::optional<uam::usage::Summary> overridden = uam::usage::Aggregate({*record}, 0, 200, incomplete_prices);
+	UAM_ASSERT(overridden && overridden->total.unpriced_tokens == 45);
+	UAM_ASSERT_EQ(overridden->total.estimated_cost_tokens, 0LL);
+	message["cost"] = 0;
+	record = uam::usage::OpenCodeRecord(message, "session", "message", 100);
+	UAM_ASSERT(record && !record->estimated_cost_usd);
+	for (const nlohmann::json bad : {nlohmann::json(nullptr), nlohmann::json(-1), nlohmann::json(1.5), nlohmann::json(9007199254740992ULL)})
+	{
+		message["tokens"]["input"] = bad;
+		UAM_ASSERT(!uam::usage::OpenCodeRecord(message, "session", "message", 100));
+	}
+}

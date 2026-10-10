@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/usage/transcript_scan.h"
+#include "common/usage/opencode_history_scan.h"
 #include "common/usage/usage_aggregation.h"
 
 namespace uam::usage
@@ -9,6 +10,7 @@ namespace uam::usage
 	{
 		std::string provider_id;
 		std::vector<std::filesystem::path> directories;
+		std::vector<std::filesystem::path> databases;
 	};
 
 	struct HistoryRequest
@@ -37,6 +39,9 @@ namespace uam::usage
 		std::string m_refreshId;
 		std::vector<std::pair<std::string, std::filesystem::path>> m_files;
 		std::map<std::pair<std::string, std::filesystem::path>, TranscriptScan> m_cache;
+		std::vector<std::filesystem::path> m_databases;
+		std::map<std::filesystem::path, OpenCodeHistoryScan> m_databaseCache;
+		std::size_t m_nextDatabase = 0;
 		std::map<std::string, std::size_t> m_sourceErrors;
 		std::size_t m_nextFile = 0;
 		bool m_listingComplete = false;

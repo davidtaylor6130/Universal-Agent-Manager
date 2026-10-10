@@ -82,6 +82,22 @@ namespace uam::usage
 
 	std::vector<HistorySource> LocalHistorySources()
 	{
+		const std::optional<std::filesystem::path> configured_data = env::GetTrimmedPath("XDG_DATA_HOME");
+		const std::optional<std::filesystem::path> user_home = env::GetUserHomePath();
+		const std::filesystem::path opencode_root = (configured_data && configured_data->is_absolute() ? *configured_data : user_home ? *user_home / ".local" / "share" : std::filesystem::path{}) / "opencode";
+		std::vector<std::filesystem::path> opencode_databases;
+		const std::optional<std::filesystem::path> configured_database = env::GetTrimmedPath("OPENCODE_DB");
+		if (configured_database)
+		{
+			if (*configured_database != ":memory:") opencode_databases.push_back(configured_database->is_absolute() ? *configured_database : opencode_root / *configured_database);
+		}
+		else if (user_home || (configured_data && configured_data->is_absolute()))
+		{
+			opencode_databases.push_back(opencode_root / "opencode.db");
+			std::error_code error;
+			for (std::filesystem::directory_iterator file(opencode_root, error), end; !error && file != end; file.increment(error))
+				if (file->path().filename().string().starts_with("opencode-") && file->path().extension() == ".db") opencode_databases.push_back(file->path());
+		}
 		const std::filesystem::path codex_home = codex::CodexHomePath();
 		const std::optional<std::filesystem::path> configured_claude = env::GetTrimmedPath("CLAUDE_CONFIG_DIR");
 		const std::optional<std::filesystem::path> home = env::GetUserHomePath();
@@ -89,17 +105,29 @@ namespace uam::usage
 		const std::optional<std::filesystem::path> configured_gemini = env::GetTrimmedPath("GEMINI_CLI_HOME");
 		const std::filesystem::path gemini_home = configured_gemini ? *configured_gemini : home.value_or(std::filesystem::path{});
 		return {{provider_ids::kGeminiCli, gemini_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{gemini_home / ".gemini" / "tmp"}}, {provider_ids::kCodexCli, {codex_home / "sessions", codex_home / "archived_sessions"}},
-		    {provider_ids::kCopilotCli, {CopilotSessionStatePath()}}, {provider_ids::kClaudeCli, claude_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{claude_home / "projects"}}};
+		    {provider_ids::kOpenCodeCli, {}, std::move(opencode_databases)}, {provider_ids::kCopilotCli, {CopilotSessionStatePath()}}, {provider_ids::kClaudeCli, claude_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{claude_home / "projects"}}};
 	}
 
 	bool HistoryService::Enumerate(const std::function<bool()>& cancelled)
 	{
 		std::set<std::pair<std::string, std::filesystem::path>> seen;
 		m_files.clear();
+		m_databases.clear();
+		m_databaseCache.clear();
+		m_nextDatabase = 0;
 		m_sourceErrors.clear();
 		m_listingLimited = false;
 		for (const HistorySource& source : m_sources)
 		{
+			if (source.provider_id == provider_ids::kOpenCodeCli)
+			{
+				for (const std::filesystem::path& database : source.databases)
+				{
+					std::error_code error;
+					if (std::filesystem::is_regular_file(database, error)) m_databases.push_back(database);
+					else if (error && error != std::errc::no_such_file_or_directory) ++m_sourceErrors[source.provider_id];
+				}
+			}
 			for (const std::filesystem::path& directory : source.directories)
 			{
 				std::error_code error;
@@ -141,6 +169,8 @@ namespace uam::usage
 			}
 			if (m_listingLimited && m_files.size() >= 20000) break;
 		}
+		std::sort(m_databases.begin(), m_databases.end());
+		m_databases.erase(std::unique(m_databases.begin(), m_databases.end()), m_databases.end());
 		std::sort(m_files.begin(), m_files.end());
 		m_nextFile = 0;
 		return true;
@@ -185,6 +215,16 @@ namespace uam::usage
 			if (scanned.complete || !scanned.error.empty() || scanned.bytes_read < options.byte_budget) ++m_nextFile;
 			else break;
 		}
+		if (m_nextFile == m_files.size() && m_nextDatabase < m_databases.size())
+		{
+			const std::filesystem::path& path = m_databases[m_nextDatabase];
+			OpenCodeHistoryScan& scan = m_databaseCache[path];
+			const ScanResult scanned = scan.Refresh(path, start_ms, end_ms, cancelled);
+			bytes_read += scanned.bytes_read;
+			if (scanned.cancelled) return {{"cancelled", true}};
+			if (!scanned.error.empty()) ++m_sourceErrors[provider_ids::kOpenCodeCli];
+			if (scanned.complete || !scanned.error.empty()) ++m_nextDatabase;
+		}
 		std::vector<const Record*> records;
 		std::map<std::string, std::size_t> invalid_lines, oversized_lines, suppressed_forks, source_files, pending_lines;
 		for (const std::pair<const std::pair<std::string, std::filesystem::path>, TranscriptScan>& entry : m_cache)
@@ -197,10 +237,18 @@ namespace uam::usage
 			for (const Record& record : entry.second.Records()) records.push_back(&record);
 			if (records.size() > 500000) return {{"error", "Usage history exceeds the aggregate-record limit; totals are incomplete."}};
 		}
+		for (const std::pair<const std::filesystem::path, OpenCodeHistoryScan>& entry : m_databaseCache)
+		{
+			++source_files[provider_ids::kOpenCodeCli];
+			invalid_lines[provider_ids::kOpenCodeCli] += entry.second.InvalidRows();
+			suppressed_forks[provider_ids::kOpenCodeCli] += entry.second.SuppressedForkRecords();
+			for (const Record& record : entry.second.Records()) records.push_back(&record);
+			if (records.size() > 500000) return {{"error", "Usage history exceeds the aggregate-record limit; totals are incomplete."}};
+		}
 		const std::optional<Summary> summary = AggregateReferences(records, start_ms, end_ms, prices);
 		if (!summary) return {{"error", "Usage totals or prices exceed supported numeric limits."}};
 		nlohmann::json result{{"version", 2}, {"executionHostId", "local"}, {"source", "native-transcripts"}, {"startMs", start_ms}, {"endMs", end_ms},
-		    {"totals", SerializeTotals(summary->total)}, {"complete", m_nextFile == m_files.size()}, {"filesChecked", m_nextFile}, {"filesTotal", m_files.size()},
+		    {"totals", SerializeTotals(summary->total)}, {"complete", m_nextFile == m_files.size() && m_nextDatabase == m_databases.size()}, {"filesChecked", m_nextFile + m_nextDatabase}, {"filesTotal", m_files.size() + m_databases.size()},
 		    {"bytesRead", bytes_read}, {"duplicates", summary->duplicates}, {"unidentifiedRecords", summary->unidentified_records}, {"listingLimited", m_listingLimited}};
 		result["providers"] = nlohmann::json::array();
 		for (const char* provider : provider_ids::kAllCliProviderIds)
@@ -208,7 +256,7 @@ namespace uam::usage
 			const std::vector<HistorySource>::const_iterator source = std::find_if(m_sources.begin(), m_sources.end(), [provider](const HistorySource& candidate) { return candidate.provider_id == provider; });
 			nlohmann::json row = summary->providers.contains(provider) ? SerializeTotals(summary->providers.at(provider)) : SerializeTotals({});
 			row["providerId"] = provider;
-			row["available"] = source != m_sources.end() && !source->directories.empty();
+			row["available"] = source != m_sources.end() && (!source->directories.empty() || !source->databases.empty());
 			row["files"] = source_files[provider];
 			row["errors"] = m_sourceErrors[provider];
 			row["invalidLines"] = invalid_lines[provider];

@@ -36,6 +36,7 @@ namespace uam::usage
 		std::int64_t timestamp_ms = 0;
 		TokenCounts tokens;
 		std::optional<double> reported_cost_usd;
+		std::optional<double> estimated_cost_usd;
 	};
 
 	struct CodexScanState
@@ -65,6 +66,9 @@ namespace uam::usage
 
 	/// <summary>Normalize Claude usage; the collector deduplicates message/request identities across files.</summary>
 	std::optional<Record> ClaudeRecord(const nlohmann::json& event);
+
+	/// <summary>Normalize OpenCode disjoint token buckets; its saved cost is a model-price estimate.</summary>
+	std::optional<Record> OpenCodeRecord(const nlohmann::json& message, std::string_view session_id, std::string_view message_id, std::int64_t timestamp_ms);
 
 	/// <summary>Normalize Gemini saved message counts, with cached input and reasoning kept as subsets.</summary>
 	std::optional<Record> GeminiRecord(const nlohmann::json& message, std::string_view session_id);

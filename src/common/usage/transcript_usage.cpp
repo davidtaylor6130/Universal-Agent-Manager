@@ -127,6 +127,40 @@ namespace uam::usage
 		return record;
 	}
 
+	std::optional<Record> OpenCodeRecord(const nlohmann::json& message, std::string_view session_id, std::string_view message_id, std::int64_t timestamp_ms)
+	{
+		if ((detail::Text(message, "role") != "assistant" && detail::Text(message, "type") != "assistant") || session_id.empty() || message_id.empty() ||
+		    session_id.size() > 512 || message_id.size() > 512 || timestamp_ms < 0 || timestamp_ms > kMaxExactTokenCount) return std::nullopt;
+		const nlohmann::json* usage = nlohmann_json::FindObjectField(message, "tokens");
+		const nlohmann::json* cache = usage ? nlohmann_json::FindObjectField(*usage, "cache") : nullptr;
+		if (!usage || !cache) return std::nullopt;
+		for (const char* key : {"input", "output", "reasoning"})
+			if (!usage->contains(key) || !(*usage)[key].is_number_integer()) return std::nullopt;
+		for (const char* key : {"read", "write"})
+			if (!cache->contains(key) || !(*cache)[key].is_number_integer()) return std::nullopt;
+		const std::optional<std::int64_t> input = detail::Count(*usage, "input"), output = detail::Count(*usage, "output"), reasoning = detail::Count(*usage, "reasoning");
+		const std::optional<std::int64_t> read = detail::Count(*cache, "read"), write = detail::Count(*cache, "write");
+		if (!input || !output || !reasoning || !read || !write) return std::nullopt;
+		const TokenCounts tokens{*input, *read, *write, *output + *reasoning, *reasoning};
+		if (tokens.Total() <= 0 || tokens.Total() > kMaxExactTokenCount) return std::nullopt;
+		const nlohmann::json* model = nlohmann_json::FindObjectField(message, "model");
+		const std::string model_id = model ? detail::Text(*model, "id") : detail::Text(message, "modelID");
+		const std::string provider = model ? detail::Text(*model, "providerID") : detail::Text(message, "providerID");
+		if (model_id.empty() || provider.empty()) return std::nullopt;
+		Record record;
+		record.provider_id = provider_ids::kOpenCodeCli; record.model_id = provider + "/" + model_id;
+		record.session_id = session_id; record.timestamp_ms = timestamp_ms; record.tokens = tokens;
+		record.dedupe_key = nlohmann::json::array({session_id, message_id}).dump();
+		const nlohmann::json* cost = nlohmann_json::FindField(message, "cost");
+		if (cost && cost->is_number())
+		{
+			const double amount = cost->get<double>();
+			// OpenCode also writes zero when price metadata is unavailable; do not claim that unknown usage was free.
+			if (std::isfinite(amount) && amount > 0) record.estimated_cost_usd = amount;
+		}
+		return record;
+	}
+
 	std::optional<Record> GeminiRecord(const nlohmann::json& message, std::string_view session_id)
 	{
 		if (detail::Text(message, "type") != "gemini" || session_id.empty() || session_id.size() > 512) return std::nullopt;

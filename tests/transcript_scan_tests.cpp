@@ -1,5 +1,10 @@
 #include "test_harness.h"
 #include "common/usage/transcript_scan.h"
+#include "common/usage/opencode_history_scan.h"
+#include "common/usage/usage_aggregation.h"
+#include "common/usage/usage_history_service.h"
+#include <sqlite3.h>
+#include <memory>
 
 using namespace uam_test;
 
@@ -138,4 +143,86 @@ UAM_TEST(UsageCopilotScanCachesAppendedAccountingAndAvoidsDoubleCountingChildSes
 	UAM_ASSERT(uam::io::WriteTextFile(path, header.dump() + "\n" + first));
 	UAM_ASSERT(scan.Refresh(path).complete);
 	UAM_ASSERT(scan.Records().empty());
+}
+
+UAM_TEST(UsageOpenCodeDatabaseReadsBothSchemasWithoutWritingOrDuplicateBilling)
+{
+	TempDir temp("uam-opencode-usage-db");
+	const fs::path path = temp.root / "opencode.db";
+	sqlite3* raw = nullptr;
+	UAM_ASSERT_EQ(sqlite3_open(path.string().c_str(), &raw), SQLITE_OK);
+	std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+	UAM_ASSERT_EQ(sqlite3_exec(raw, "CREATE TABLE session(id TEXT PRIMARY KEY,time_created INTEGER); INSERT INTO session VALUES('session',50),('fork',150); CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, data TEXT); CREATE TABLE session_message(id TEXT,session_id TEXT,time_created INTEGER,type TEXT,data TEXT)", nullptr, nullptr, nullptr), SQLITE_OK);
+	const nlohmann::json message{{"role", "assistant"}, {"providerID", "anthropic"}, {"modelID", "model"}, {"cost", 0.02},
+	    {"tokens", {{"input", 10}, {"output", 5}, {"reasoning", 3}, {"cache", {{"read", 20}, {"write", 7}}}}}};
+	const std::string json = message.dump();
+	sqlite3_stmt* statement = nullptr;
+	UAM_ASSERT_EQ(sqlite3_prepare_v2(raw, "INSERT INTO message VALUES('msg','session',100,?1)", -1, &statement, nullptr), SQLITE_OK);
+	UAM_ASSERT_EQ(sqlite3_bind_text(statement, 1, json.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+	UAM_ASSERT_EQ(sqlite3_step(statement), SQLITE_DONE); sqlite3_finalize(statement);
+	UAM_ASSERT_EQ(sqlite3_exec(raw, "INSERT INTO session_message SELECT id,session_id,time_created,'assistant',data FROM message", nullptr, nullptr, nullptr), SQLITE_OK);
+	UAM_ASSERT_EQ(sqlite3_exec(raw, "INSERT INTO message VALUES('broken','session',101,'bad json')", nullptr, nullptr, nullptr), SQLITE_OK);
+	UAM_ASSERT_EQ(sqlite3_exec(raw, "INSERT INTO message SELECT 'fork-copy','fork',100,data FROM message WHERE id='msg'; INSERT INTO message SELECT 'fork-new','fork',160,data FROM message WHERE id='msg'", nullptr, nullptr, nullptr), SQLITE_OK);
+	database.reset();
+	const fs::file_time_type before = fs::last_write_time(path);
+	uam::usage::OpenCodeHistoryScan scan;
+	uam::usage::ScanResult result = scan.Refresh(path, 0, 200);
+	UAM_ASSERT(!result.complete && result.error.empty());
+	result = scan.Refresh(path, 0, 200);
+	UAM_ASSERT(result.complete && result.error.empty());
+	UAM_ASSERT_EQ(scan.Records().size(), std::size_t(3));
+	UAM_ASSERT_EQ(scan.SuppressedForkRecords(), std::size_t(1));
+	UAM_ASSERT_EQ(scan.InvalidRows(), std::size_t(1));
+	const std::optional<uam::usage::Summary> summary = uam::usage::Aggregate(scan.Records(), 0, 200);
+	UAM_ASSERT(summary);
+	UAM_ASSERT_EQ(summary->total.tokens.Total(), 90LL);
+	UAM_ASSERT_EQ(summary->duplicates, std::size_t(1));
+	UAM_ASSERT_EQ(summary->total.estimated_cost_tokens, 90LL);
+	UAM_ASSERT_EQ(summary->total.reported_cost_tokens, 0LL);
+	uam::usage::HistoryService service({{uam::provider_ids::kOpenCodeCli, {}, {path}}});
+	nlohmann::json reply = service.Refresh("request", 0, 200);
+	UAM_ASSERT(!reply["complete"].get<bool>());
+	reply = service.Refresh("request", 0, 200);
+	UAM_ASSERT(reply["complete"].get<bool>());
+	UAM_ASSERT_EQ(reply["totals"]["totalTokens"].get<int>(), 90);
+	UAM_ASSERT_EQ(reply["filesTotal"].get<int>(), 1);
+	UAM_ASSERT_EQ(reply["totals"]["estimatedCostTokens"].get<int>(), 90);
+	UAM_ASSERT_EQ(fs::last_write_time(path), before);
+	UAM_ASSERT_EQ(scan.Refresh(path, 0, 200).bytes_read, std::size_t(0));
+	UAM_ASSERT(scan.Refresh(path, 200, 300).reset);
+	UAM_ASSERT(scan.Records().empty());
+	const fs::path absent = temp.root / "missing.db";
+	UAM_ASSERT(!scan.Refresh(absent, 0, 200).error.empty());
+	UAM_ASSERT(!fs::exists(absent));
+}
+
+UAM_TEST(UsageOpenCodeDatabaseBoundsRowsAndPreservesProgressWhenCancelled)
+{
+	TempDir temp("uam-opencode-usage-pages");
+	const fs::path path = temp.root / "opencode.db";
+	sqlite3* raw = nullptr;
+	UAM_ASSERT_EQ(sqlite3_open(path.string().c_str(), &raw), SQLITE_OK);
+	std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+	UAM_ASSERT_EQ(sqlite3_exec(raw, "PRAGMA journal_mode=WAL; CREATE TABLE session(id TEXT PRIMARY KEY,time_created INTEGER); INSERT INTO session VALUES('session',50); CREATE TABLE session_message(id TEXT,session_id TEXT,time_created INTEGER,type TEXT,data TEXT)", nullptr, nullptr, nullptr), SQLITE_OK);
+	const nlohmann::json message{{"model", {{"id", "model"}, {"providerID", "openai"}}}, {"tokens", {{"input", 10}, {"output", 5}, {"reasoning", 3}, {"cache", {{"read", 20}, {"write", 7}}}}}};
+	const std::string json = message.dump();
+	sqlite3_stmt* statement = nullptr;
+	UAM_ASSERT_EQ(sqlite3_prepare_v2(raw, "INSERT INTO session_message VALUES(?1,'session',100,'assistant',?2)", -1, &statement, nullptr), SQLITE_OK);
+	for (int index = 0; index < 513; ++index)
+	{
+		const std::string id = std::to_string(index);
+		sqlite3_bind_text(statement, 1, id.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_text(statement, 2, json.c_str(), -1, SQLITE_TRANSIENT);
+		UAM_ASSERT_EQ(sqlite3_step(statement), SQLITE_DONE); sqlite3_reset(statement);
+	}
+	sqlite3_finalize(statement);
+	uam::usage::OpenCodeHistoryScan scan;
+	UAM_ASSERT(!scan.Refresh(path, 0, 200).complete);
+	UAM_ASSERT(scan.Refresh(path, 0, 200, []() { return true; }).cancelled);
+	UAM_ASSERT(scan.Records().empty());
+	uam::usage::ScanResult result = scan.Refresh(path, 0, 200);
+	UAM_ASSERT(result.error.empty() && !result.complete);
+	UAM_ASSERT_EQ(scan.Records().size(), std::size_t(512));
+	result = scan.Refresh(path, 0, 200);
+	UAM_ASSERT(result.complete && result.error.empty());
+	UAM_ASSERT_EQ(scan.Records().size(), std::size_t(513));
 }

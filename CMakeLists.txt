@@ -495,6 +495,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/usage/transcript_usage.cpp
   src/common/usage/usage_aggregation.cpp
   src/common/usage/transcript_scan.cpp
+  src/common/usage/opencode_history_scan.cpp
   src/common/usage/usage_history_service.cpp
   src/core/chat_import_utils.cpp
   src/common/config/settings_store.cpp
@@ -572,6 +573,18 @@ if(NOT ZLIB_FOUND)
   add_library(ZLIB::ZLIB ALIAS zlibstatic)
 endif()
 target_link_libraries(universal_agent_manager PRIVATE ZLIB::ZLIB)
+
+# OpenCode and other provider histories use SQLite. Read them directly with read-only connections.
+FetchContent_Declare(uam_sqlite
+  URL https://www.sqlite.org/2026/sqlite-amalgamation-3540000.zip
+  URL_HASH SHA256=68e913b0fe8ec6b4e5f391c594a28872884e80d6cd042a1e50c957be46b5aa4d
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(uam_sqlite)
+add_library(uam_sqlite STATIC "${uam_sqlite_SOURCE_DIR}/sqlite3.c")
+target_include_directories(uam_sqlite PUBLIC "${uam_sqlite_SOURCE_DIR}")
+target_compile_definitions(uam_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
+target_link_libraries(universal_agent_manager PRIVATE uam_sqlite)
 
 # CEF link targets depend on platform.
 # The CEF distribution's own CMakeLists.txt exposes 'libcef_dll_wrapper'.
@@ -1271,7 +1284,8 @@ if(UAM_BUILD_TESTS)
     src/common/usage/transcript_usage.cpp
     src/common/usage/usage_aggregation.cpp
     src/common/usage/transcript_scan.cpp
-    src/common/usage/usage_history_service.cpp
+    src/common/usage/opencode_history_scan.cpp
+  src/common/usage/usage_history_service.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
@@ -1325,6 +1339,7 @@ if(UAM_BUILD_TESTS)
     CXX_EXTENSIONS OFF
   )
 
+  target_link_libraries(uam_core_tests PRIVATE uam_sqlite)
   target_include_directories(uam_core_tests
     PRIVATE
       src
