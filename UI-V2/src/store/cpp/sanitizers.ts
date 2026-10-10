@@ -451,6 +451,7 @@ export function sanitizeCppCliTerminal(value: unknown): CppChat['cliTerminal'] |
 
   return {
     terminalId: isString(value.terminalId) ? value.terminalId : undefined,
+    startupTime: typeof value.startupTime === 'number' && Number.isFinite(value.startupTime) && value.startupTime >= 0 ? value.startupTime : undefined,
     frontendChatId: isString(value.frontendChatId) ? value.frontendChatId : undefined,
     sourceChatId: isString(value.sourceChatId) ? value.sourceChatId : undefined,
     idleCountdownStartsAtMs: typeof value.idleCountdownStartsAtMs === 'number' && Number.isFinite(value.idleCountdownStartsAtMs) ? value.idleCountdownStartsAtMs : undefined,

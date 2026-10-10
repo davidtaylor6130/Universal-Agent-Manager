@@ -725,6 +725,7 @@ namespace uam
 				const bool terminal_processing = uam::CliTerminalLifecycleIsProcessing(*terminal);
 				nlohmann::json terminal_json;
 				terminal_json["terminalId"] = terminal->terminal_id;
+				terminal_json["startupTime"] = terminal->startup_time_s;
 				terminal_json["frontendChatId"] = terminal->frontend_chat_id;
 				terminal_json["sourceChatId"] = uam::CliTerminalPrimaryChatId(*terminal);
 				terminal_json["running"] = terminal->running;
@@ -1279,6 +1280,7 @@ namespace uam
 
 				nlohmann::json terminal_json;
 				terminal_json["terminalId"] = terminal.terminal_id;
+				terminal_json["startupTime"] = terminal.startup_time_s;
 				terminal_json["frontendChatId"] = terminal.frontend_chat_id;
 				terminal_json["sourceChatId"] = uam::CliTerminalPrimaryChatId(terminal);
 				terminal_json["attachedSessionId"] = CliAttachedSessionIdForDiagnostics(app, terminal);

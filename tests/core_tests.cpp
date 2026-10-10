@@ -12014,11 +12014,16 @@ UAM_TEST(StateSerializerChatTerminalSummaryPrefersLiveOpenCodeTerminalOverStaleD
 	live_terminal->ui_attached = true;
 	live_terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
 	live_terminal->last_activity_time_s = 10.0;
+	live_terminal->startup_time_s = 12.5;
 	app.cli_terminals.push_back(std::move(live_terminal));
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json terminal = serialized["chats"][0]["cliTerminal"];
 	UAM_ASSERT_EQ(terminal.value("terminalId", ""), std::string("term-live"));
+	UAM_ASSERT_EQ(terminal.value("startupTime", 0.0), 12.5);
+	const nlohmann::json fingerprint = uam::StateSerializer::SerializeFingerprint(app);
+	app.cli_terminals.back()->startup_time_s = 13.5;
+	UAM_ASSERT(fingerprint != uam::StateSerializer::SerializeFingerprint(app));
 	UAM_ASSERT(terminal.value("running", false));
 	UAM_ASSERT(terminal.value("active", false));
 }

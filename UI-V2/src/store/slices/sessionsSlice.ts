@@ -2187,6 +2187,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       set((state: AppState) => {
         const existingBinding = state.cliBindingBySessionId[sessionId]
         const resolvedTerminalId = binding.terminalId ?? existingBinding?.terminalId ?? ''
+        const startupTime = binding.startupTime ?? (resolvedTerminalId === existingBinding?.terminalId ? existingBinding?.startupTime : undefined)
         const running = binding.running ?? existingBinding?.running ?? false
         const turnState = binding.turnState ?? existingBinding?.turnState ?? 'idle'
         const processing = binding.processing ?? existingBinding?.processing ?? false
@@ -2198,11 +2199,13 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const existingTranscript = state.cliTranscriptBySessionId[sessionId]
 
         if (existingTranscript && resolvedTerminalId) {
-          if (existingTranscript.terminalId && existingTranscript.terminalId !== resolvedTerminalId) {
+          if ((existingTranscript.terminalId && existingTranscript.terminalId !== resolvedTerminalId) ||
+              (startupTime !== undefined && existingTranscript.startupTime !== startupTime)) {
             nextTranscripts = {
               ...state.cliTranscriptBySessionId,
               [sessionId]: {
                 terminalId: resolvedTerminalId,
+                startupTime,
                 content: '',
               },
             }
@@ -2222,6 +2225,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             ...state.cliBindingBySessionId,
             [sessionId]: {
               terminalId: resolvedTerminalId,
+              startupTime,
               boundChatId: binding.boundChatId ?? existingBinding?.boundChatId ?? sessionId,
               running,
               lifecycleState,

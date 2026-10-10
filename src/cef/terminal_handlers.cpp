@@ -82,6 +82,7 @@ namespace
 	{
 		nlohmann::json data;
 		data["terminalId"] = terminal.terminal_id;
+		data["startupTime"] = terminal.startup_time_s;
 		data["sessionId"] = terminal.frontend_chat_id;
 		data["sourceChatId"] = uam::CliTerminalPrimaryChatId(terminal);
 		data["running"] = terminal.running;

@@ -49,10 +49,14 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
     const sessionId = isString(raw.sessionId) ? raw.sessionId : isString(raw.chatId) ? raw.chatId : undefined
     const sourceChatId = isString(raw.sourceChatId) ? raw.sourceChatId : isString(raw.chatId) ? raw.chatId : undefined
     const terminalId = isString(raw.terminalId) ? raw.terminalId : undefined
+    if (raw.startupTime !== undefined && (typeof raw.startupTime !== 'number' || !Number.isFinite(raw.startupTime) || raw.startupTime < 0)) {
+      return { ok: false, status: 'invalid-message', error: 'cliOutput requires a valid launch timestamp.' }
+    }
+    const startupTime = typeof raw.startupTime === 'number' ? raw.startupTime : undefined
 
     return {
       ok: true,
-      message: { type, data: raw.data, sessionId, sourceChatId, terminalId },
+      message: { type, data: raw.data, sessionId, sourceChatId, terminalId, startupTime },
     }
   }
 

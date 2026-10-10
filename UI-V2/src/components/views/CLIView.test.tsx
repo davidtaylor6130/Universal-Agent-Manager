@@ -322,6 +322,57 @@ describe('CLIView', () => {
     host.remove()
   })
 
+  it('rejects stale launch output in xterm when a terminal ID is reused', async () => {
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      onSuccess(JSON.stringify(JSON.parse(request).action === 'startCliTerminal'
+        ? { terminalId: 'term-reused', sourceChatId: 'chat-1', startupTime: 2, running: true, lifecycleState: 'idle' }
+        : {}))
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<CLIView session={session} />); await Promise.resolve() })
+      for (const startupTime of [1, undefined, 2]) {
+        window.dispatchEvent(new CustomEvent('uam-cli-output', { detail: {
+          sessionId: 'chat-1', terminalId: 'term-reused', startupTime, data: 'output',
+        } }))
+      }
+      expect(xtermState.writesByInstance[0]).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('preserves a newer same-ID launch when an earlier start reply arrives late', async () => {
+    let finishStart: ((data: string) => void) | undefined
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'startCliTerminal') finishStart = onSuccess
+      else onSuccess('{}')
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini Session', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<CLIView session={session} />); await Promise.resolve() })
+      await act(async () => {
+        useAppStore.getState().setCliBinding('chat-1', { terminalId: 'term-reused', startupTime: 2, running: true })
+        finishStart?.(JSON.stringify({ terminalId: 'term-reused', startupTime: 1, running: true, replayData: btoa('old replay') }))
+        await Promise.resolve()
+      })
+      expect(useAppStore.getState().cliBindingBySessionId['chat-1']?.startupTime).toBe(2)
+      expect(xtermState.writesByInstance[0]).toHaveLength(0)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('retries a transient terminal startup failure without remounting', async () => {
     let startCalls = 0
     ;(window as TestWindow).cefQuery = ({ request, onSuccess, onFailure }) => {

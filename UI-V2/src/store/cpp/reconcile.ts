@@ -303,18 +303,26 @@ export function clampCliTranscript(content: string): string {
     : content
 }
 
+export function cliOutputMatchesBinding(binding: Pick<CliBinding, 'terminalId' | 'startupTime'> | undefined, terminalId: string, startupTime?: number): boolean {
+  if (binding?.terminalId && terminalId && binding.terminalId !== terminalId) return false
+  return binding?.startupTime === undefined || binding.startupTime === startupTime
+}
+
 export function appendCliTranscriptChunk(
   existing: CliTranscript | undefined,
   terminalId: string,
-  chunk: string
+  chunk: string,
+  startupTime?: number
 ): CliTranscript {
   const nextTerminalId = terminalId || existing?.terminalId || ''
   const resetTranscript =
-    Boolean(existing?.terminalId) && Boolean(terminalId) && existing?.terminalId !== terminalId
+    (Boolean(existing?.terminalId) && Boolean(terminalId) && existing?.terminalId !== terminalId) ||
+    (startupTime !== undefined && existing?.startupTime !== startupTime)
   const nextContent = clampCliTranscript((resetTranscript ? '' : existing?.content ?? '') + chunk)
 
   return {
     terminalId: nextTerminalId,
+    startupTime,
     content: nextContent,
   }
 }
@@ -565,6 +573,7 @@ export function cliBindingsEquivalent(existing: CliBinding | undefined, next: Cl
   if (!existing) return false
   return (
     existing.terminalId === next.terminalId &&
+    existing.startupTime === next.startupTime &&
     existing.boundChatId === next.boundChatId &&
     existing.running === next.running &&
     existing.lifecycleState === next.lifecycleState &&
@@ -593,6 +602,7 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
   const processing = lifecycleState !== 'unknown' && (Boolean(chat.cliTerminal.processing) || cliLifecycleIsProcessing(lifecycleState))
   const next: CliBinding = {
     terminalId: chat.cliTerminal.terminalId ?? '',
+    startupTime: chat.cliTerminal.startupTime,
     boundChatId: chat.cliTerminal.sourceChatId ?? chat.id,
     idleCountdownStartsAtMs: chat.cliTerminal.idleCountdownStartsAtMs,
     idleShutdownAtMs: chat.cliTerminal.idleShutdownAtMs,
@@ -685,23 +695,26 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
 
 export function normalizeCliTranscript(
   existing: CliTranscript | undefined,
-  terminalId: string
+  terminalId: string,
+  startupTime?: number
 ): CliTranscript | undefined {
   if (!existing) {
     return undefined
   }
 
-  if (existing.terminalId && terminalId && existing.terminalId !== terminalId) {
+  if (!cliOutputMatchesBinding({ terminalId, startupTime }, existing.terminalId, existing.startupTime)) {
     return undefined
   }
 
   const nextTranscript: CliTranscript = {
     terminalId: terminalId || existing.terminalId || '',
+    startupTime: startupTime ?? existing.startupTime,
     content: clampCliTranscript(existing.content),
   }
 
   if (
     existing.terminalId === nextTranscript.terminalId &&
+    existing.startupTime === nextTranscript.startupTime &&
     existing.content === nextTranscript.content
   ) {
     return existing

@@ -931,6 +931,39 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().cliTranscriptBySessionId['chat-1']).toBeUndefined()
   })
 
+  it('rejects old launch output when the terminal ID is reused, including buffered chunks', async () => {
+    vi.useFakeTimers()
+    try {
+      const testWindow = ensureTestWindow()
+      vi.resetModules()
+      testWindow.dispatchEvent = vi.fn(() => true)
+      const initial = makeCppState(1)
+      Object.assign(initial.chats[0].cliTerminal!, { startupTime: 1 })
+      testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+      const { useAppStore: cefStore } = await import('./useAppStore')
+      await vi.runAllTimersAsync()
+      const output = (startupTime: number | undefined, text: string) => testWindow.uamPush?.({
+        type: 'cliOutput', sessionId: 'chat-1', sourceChatId: 'chat-1',
+        terminalId: 'term-chat-1', startupTime, data: btoa(text),
+      })
+      output(1, 'buffered old output')
+      const replacement = makeCppState(2)
+      Object.assign(replacement.chats[0].cliTerminal!, { startupTime: 2 })
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: replacement.chats } })
+      testWindow.dispatchEvent = vi.fn(() => true)
+      output(1, 'late old output')
+      output(undefined, 'unowned output')
+      expect(testWindow.dispatchEvent).not.toHaveBeenCalled()
+      output(2, 'current output')
+      const stopped = makeCppState(3, 'chat-1', { running: false })
+      Object.assign(stopped.chats[0].cliTerminal!, { startupTime: 2 })
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 3, chats: stopped.chats } })
+      await vi.runAllTimersAsync()
+      expect(cefStore.getState().cliBindingBySessionId['chat-1']).toMatchObject({ startupTime: 2 })
+      expect(cefStore.getState().cliTranscriptBySessionId['chat-1']?.content).toBe('current output')
+    } finally { vi.useRealTimers() }
+  })
+
   it('preserves remote CLI versions and routes refresh/install without changing local payloads', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

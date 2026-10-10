@@ -44,7 +44,7 @@ export {
 
 export * from './cpp/types'
 import type { AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
-import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, providerFromCppProvider, reconcileCppMessages, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
+import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
 import { persistTheme } from './slices/uiSlice'
@@ -225,7 +225,8 @@ function deserializeState(
     sessions.flatMap((session) => {
       const transcript = normalizeCliTranscript(
         existing.cliTranscriptBySessionId[session.id],
-        cliBindingBySessionId[session.id]?.terminalId ?? ''
+        cliBindingBySessionId[session.id]?.terminalId ?? '',
+        cliBindingBySessionId[session.id]?.startupTime
       )
 
       return transcript ? [[session.id, transcript]] : []
@@ -410,7 +411,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
       cliBindingBySessionId[chat.id] = nextCli
       const nextTranscript = normalizeCliTranscript(
         cliTranscriptBySessionId[chat.id],
-        nextCli.terminalId
+        nextCli.terminalId,
+        nextCli.startupTime
       )
       if (nextTranscript) cliTranscriptBySessionId[chat.id] = nextTranscript
       else delete cliTranscriptBySessionId[chat.id]
@@ -560,8 +562,7 @@ export const useAppStore = create<AppState>((set, get) => {
         if (!liveSessionIds.has(sessionId)) continue
         const chunk = pending.chunks.join('')
         if (!chunk) continue
-        const activeTerminalId = state.cliBindingBySessionId[sessionId]?.terminalId ?? ''
-        if (pending.terminalId && activeTerminalId && pending.terminalId !== activeTerminalId) {
+        if (!cliOutputMatchesBinding(state.cliBindingBySessionId[sessionId], pending.terminalId, pending.startupTime)) {
           continue
         }
 
@@ -572,7 +573,8 @@ export const useAppStore = create<AppState>((set, get) => {
         nextTranscripts[sessionId] = appendCliTranscriptChunk(
           nextTranscripts[sessionId],
           pending.terminalId,
-          chunk
+          chunk,
+          pending.startupTime
         )
       }
 
@@ -860,14 +862,15 @@ export const useAppStore = create<AppState>((set, get) => {
             if (sessionId) {
               const currentBinding = get().cliBindingBySessionId[sessionId]
               const terminalId = msg.terminalId ?? currentBinding?.terminalId ?? ''
-              if (currentBinding?.terminalId && terminalId && terminalId !== currentBinding.terminalId) break
+              if (!cliOutputMatchesBinding(currentBinding, terminalId, msg.startupTime)) break
               const boundChatId = msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId
               const existingPending = pendingCliTranscriptChunksBySessionId.get(sessionId)
-              if (existingPending && existingPending.terminalId === terminalId) {
+              if (existingPending && existingPending.terminalId === terminalId && existingPending.startupTime === msg.startupTime) {
                 existingPending.chunks.push(decodedData)
               } else {
                 pendingCliTranscriptChunksBySessionId.set(sessionId, {
                   terminalId,
+                  startupTime: msg.startupTime,
                   chunks: [decodedData],
                 })
               }
@@ -880,6 +883,7 @@ export const useAppStore = create<AppState>((set, get) => {
                   sessionId: msg.sessionId ?? '',
                   sourceChatId: msg.sourceChatId ?? '',
                   terminalId: msg.terminalId ?? '',
+                  startupTime: msg.startupTime,
                   data: decodedData,
                 },
               })
