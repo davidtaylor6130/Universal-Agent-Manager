@@ -1,4 +1,5 @@
 #include "common/memory/extraction_receipts.h"
+#include "common/memory/memory_storage_guard.h"
 #include "remote/runner_client.h"
 #include "common/config/execution_host_config.h"
 #include "app/memory_service.h"
@@ -47,6 +48,35 @@
 #include <utility>
 
 namespace fs = std::filesystem;
+
+struct PreparedMemoryOutput
+{
+	struct Entry
+	{
+		fs::path temporary;
+		std::string content;
+	};
+	fs::path data_root;
+	fs::path workspace_root;
+	std::string chat_id;
+	std::string folder_id;
+	std::string execution_host_id;
+	std::string workspace_directory;
+	std::string memory_level;
+	int processed_message_count = -1;
+	int message_count = 0;
+	int wrote_count = 0;
+	bool consumed = false;
+	std::stop_token stop_token;
+	std::map<fs::path, fs::path> bindings;
+	std::map<fs::path, std::map<fs::path, std::string>> categories;
+	std::map<fs::path, Entry> entries;
+	~PreparedMemoryOutput()
+	{
+		for (const std::pair<const fs::path, Entry>& entry : entries)
+			uam::io::RemoveAtomicTempNoThrow(entry.second.temporary);
+	}
+};
 
 namespace uam
 {
@@ -687,85 +717,134 @@ namespace
 		}
 	}
 
-	bool WriteMemoryEntry(const fs::path& root, const std::string& scope, const std::string& source_chat_id, const std::string& extraction_key, const nlohmann::json& entry, MemoryFileIndex& indexes, bool* wrote_out, std::string* error_out)
+	std::optional<std::map<fs::path, std::string>> MemoryCategoryRevisions(const fs::path& category)
 	{
-		if (wrote_out != nullptr)
+		std::map<fs::path, std::string> revisions;
+		std::error_code error;
+		for (fs::directory_iterator it(category, error), end; !error && it != end; it.increment(error))
 		{
-			*wrote_out = false;
-		}
-		if (!entry.is_object())
-		{
-			return true;
-		}
-
-		const std::string category = MemoryEntryCategory(entry);
-		const std::string title = MemoryEntryLine(entry, "title", 700);
-		const std::string body = MemoryEntryLine(entry, "memory", 1400);
-		const std::string evidence = MemoryEntryLine(entry, "evidence", 900);
-		const std::string confidence = MemoryEntryLineOr(entry, "confidence", "medium", 80);
-
-		if (!uam::memory::IsSupportedCategory(category) || title.empty() || body.empty())
-		{
-			SetError(error_out, "Memory worker returned an entry with missing title/body or unsupported category.");
-			return false;
-		}
-		if (uam::sensitive::LooksSensitiveText(title + "\n" + body + "\n" + evidence))
-		{
-			return true;
-		}
-
-		const fs::path category_path = MemoryService::CategoryPath(root, category);
-		std::error_code ec;
-		if (!uam::paths::CreateDirectoriesNoThrow(category_path, &ec))
-		{
-			SetError(error_out, "Failed to create memory category directory.");
-			return false;
-		}
-
-		fs::path target = FindExistingMemoryFile(category_path, title, indexes);
-		int count = 1;
-		std::vector<std::string> extraction_keys;
-		if (!target.empty())
-		{
-			const std::string existing = uam::io::ReadTextFile(target);
-			extraction_keys = uam::memory::ExistingExtractionKeys(existing);
-			if (!extraction_key.empty() && uam::ranges::Contains(extraction_keys, extraction_key)) return true;
-			count = ExistingCount(existing) + 1;
-		}
-		else
-		{
-			const std::string slug = uam::strings::AsciiSlug(title, 72, "memory");
-			target = category_path / (slug + ".md");
-			for (int i = 2; uam::paths::PathExistsNoThrow(target); ++i)
+			if (it->path().extension() != ".md") continue;
+			const fs::file_status status = it->symlink_status(error);
+			if (error || fs::is_symlink(status)) return std::nullopt;
+			if (!fs::is_regular_file(status))
 			{
-				target = category_path / (slug + "-" + std::to_string(i) + ".md");
+				revisions.emplace(it->path(), "type:" + std::to_string(static_cast<int>(status.type())));
+				continue;
 			}
+			const std::optional<std::string> revision = uam::memory::StorageRevision(it->path());
+			if (!revision || *revision == "missing") return std::nullopt;
+			revisions.emplace(it->path(), *revision);
 		}
+		return error ? std::nullopt : std::optional<std::map<fs::path, std::string>>(std::move(revisions));
+	}
 
-		MemoryMarkdownFields fields;
-		fields.title = title;
-		fields.scope = scope;
-		fields.category = category;
-		fields.confidence = confidence;
-		fields.source_chat_id = source_chat_id;
-		fields.body = body;
-		fields.evidence = evidence;
-		if (!extraction_key.empty()) extraction_keys.push_back(extraction_key);
-		if (extraction_keys.size() > 32) extraction_keys.erase(extraction_keys.begin(), extraction_keys.end() - 32);
-		fields.extraction_keys = std::move(extraction_keys);
-		fields.occurrence_count = count;
+	bool MemoryPreparationStorageMatches(const PreparedMemoryOutput& prepared)
+	{
+		for (const std::pair<const fs::path, fs::path>& binding : prepared.bindings)
+			if (uam::paths::NormalizeExistingPath(binding.first) != binding.second) return false;
+		for (const std::pair<const fs::path, std::map<fs::path, std::string>>& category : prepared.categories)
+			if (MemoryCategoryRevisions(category.first) != category.second) return false;
+		return true;
+	}
 
-		const bool wrote = uam::io::WriteTextFile(target, BuildMemoryMarkdown(fields));
-		if (!wrote)
+	std::shared_ptr<PreparedMemoryOutput> PrepareParsedMemoryOutput(const fs::path& data_root,
+	    const ChatSession& chat, const fs::path& workspace_root, const nlohmann::json& parsed,
+	    int processed_message_count, std::string* error_out, std::stop_token stop_token)
+	{
+		std::shared_ptr<PreparedMemoryOutput> prepared = std::make_shared<PreparedMemoryOutput>();
+		prepared->data_root = data_root;
+		prepared->workspace_root = workspace_root;
+		prepared->chat_id = chat.id;
+		prepared->folder_id = chat.folder_id;
+		prepared->execution_host_id = chat.execution_host_id;
+		prepared->workspace_directory = chat.workspace_directory;
+		prepared->memory_level = MemoryLevel(chat);
+		prepared->processed_message_count = processed_message_count;
+		prepared->message_count = MessageCount(chat);
+		prepared->stop_token = stop_token;
+		MemoryFileIndex indexes;
+		const std::string extraction_key = processed_message_count < 0 ? "" :
+		    chat.id + ":" + std::to_string(std::min(processed_message_count, MessageCount(chat)));
+		for (const nlohmann::json& entry : parsed["memories"])
 		{
-			SetError(error_out, "Failed to write memory entry.");
-		}
-		if (wrote)
-		{
+			if (stop_token.stop_requested()) { SetError(error_out, "Memory preparation canceled."); return nullptr; }
+			if (!ShouldSaveWorkerMemoryEntry(entry, prepared->memory_level)) continue;
+			const std::string scope = uam::nlohmann_json::TrimmedStringValueOr(entry, "scope", "local");
+			if (scope != "global" && workspace_root.empty()) continue;
+			const fs::path root = scope == "global" ? MemoryService::GlobalMemoryRoot(data_root) : MemoryService::LocalMemoryRoot(workspace_root);
+			if (root.empty()) continue;
+			const std::string category = MemoryEntryCategory(entry);
+			const std::string title = MemoryEntryLine(entry, "title", 700);
+			const std::string body = MemoryEntryLine(entry, "memory", 1400);
+			const std::string evidence = MemoryEntryLine(entry, "evidence", 900);
+			if (!uam::memory::IsSupportedCategory(category) || title.empty() || body.empty())
+			{
+				SetError(error_out, "Memory worker returned an entry with missing title/body or unsupported category."); return nullptr;
+			}
+			if (uam::sensitive::LooksSensitiveText(title + "\n" + body + "\n" + evidence)) continue;
+			if (!prepared->bindings.contains(root))
+			{
+				prepared->bindings.emplace(root, uam::paths::NormalizeExistingPath(root));
+				if (!MemoryService::EnsureMemoryLayout(root)) { SetError(error_out, "Failed to create memory layout."); return nullptr; }
+			}
+			const fs::path category_path = MemoryService::CategoryPath(root, category);
+			if (!prepared->categories.contains(category_path))
+			{
+				prepared->bindings.emplace(category_path, uam::paths::NormalizeExistingPath(category_path));
+				const std::optional<std::map<fs::path, std::string>> revisions = MemoryCategoryRevisions(category_path);
+				if (!revisions) { SetError(error_out, "Could not inspect saved memory entries."); return nullptr; }
+				prepared->categories.emplace(category_path, *revisions);
+			}
+			fs::path target = FindExistingMemoryFile(category_path, title, indexes);
+			int count = 1;
+			std::vector<std::string> keys;
+			if (!target.empty())
+			{
+				std::string existing;
+				const std::map<fs::path, PreparedMemoryOutput::Entry>::const_iterator staged = prepared->entries.find(target);
+				if (staged != prepared->entries.end()) existing = staged->second.content;
+				else if (!uam::io::TryReadTextFile(target, existing)) { SetError(error_out, "Failed to read existing memory entry."); return nullptr; }
+				keys = uam::memory::ExistingExtractionKeys(existing);
+				if (!extraction_key.empty() && uam::ranges::Contains(keys, extraction_key)) continue;
+				const int previous_count = ExistingCount(existing);
+				if (previous_count == std::numeric_limits<int>::max()) { SetError(error_out, "Memory occurrence count is too large."); return nullptr; }
+				count = previous_count + 1;
+			}
+			else
+			{
+				const std::string slug = uam::strings::AsciiSlug(title, 72, "memory");
+				target = category_path / (slug + ".md");
+				for (int suffix = 2; uam::paths::PathExistsNoThrow(target) || prepared->entries.contains(target); ++suffix)
+					target = category_path / (slug + "-" + std::to_string(suffix) + ".md");
+			}
+			MemoryMarkdownFields fields;
+			fields.title = title; fields.scope = scope == "global" ? "global" : "local"; fields.category = category;
+			fields.confidence = MemoryEntryLineOr(entry, "confidence", "medium", 80); fields.source_chat_id = chat.id;
+			fields.body = body; fields.evidence = evidence; fields.occurrence_count = count;
+			if (!extraction_key.empty()) keys.push_back(extraction_key);
+			if (keys.size() > 32) keys.erase(keys.begin(), keys.end() - 32);
+			fields.extraction_keys = std::move(keys);
+			prepared->entries[target].content = BuildMemoryMarkdown(fields);
 			indexes[category_path].try_emplace(uam::strings::NormalizeComparableKey(title), target);
-			if (wrote_out != nullptr) *wrote_out = true;
+			++prepared->wrote_count;
 		}
-		return wrote;
+		if (!MemoryPreparationStorageMatches(*prepared)) { SetError(error_out, "Saved memory changed during preparation."); return nullptr; }
+		for (std::pair<const fs::path, PreparedMemoryOutput::Entry>& entry : prepared->entries)
+		{
+			if (stop_token.stop_requested()) { SetError(error_out, "Memory preparation canceled."); return nullptr; }
+			entry.second.temporary = uam::io::MakeTempWritePath(entry.first);
+			uam::io::AtomicWriteResult result;
+			if (!uam::io::WriteAndSyncAtomicTemp(entry.second.temporary, entry.second.content, {}, result))
+			{
+				SetError(error_out, "Failed to prepare memory entry: " + result.error); return nullptr;
+			}
+			std::string().swap(entry.second.content);
+		}
+		if (stop_token.stop_requested() || !MemoryPreparationStorageMatches(*prepared))
+		{
+			SetError(error_out, "Memory preparation canceled or saved entries changed."); return nullptr;
+		}
+		return prepared;
 	}
 
 	bool ChatIsBusy(const uam::AppState& app, const std::string& chat_id)
@@ -1019,8 +1098,14 @@ namespace
 		std::optional<std::string> text;
 		if (task.extraction_state && task.extraction_state->output_prepared)
 		{
-			text = task.extraction_state->completed_text;
-			error = task.extraction_state->output_error;
+			if (task.extraction_state->prepared_output && MemoryService::PublishPreparedWorkerOutput(app, chat,
+			    task.workspace_root, task.extraction_state->prepared_output, &error, true))
+			{
+				RecordMemorySuccess(app, chat.id);
+				ResetGlobalMemoryFailure(app);
+				return true;
+			}
+			if (error.empty()) error = task.extraction_state->output_error;
 		}
 		else
 		{
@@ -1246,7 +1331,7 @@ namespace
 		const fs::path cwd = workspace_root.empty() ? uam::paths::CurrentPathOrDot() : workspace_root;
 		auto extraction_state = task.extraction_state;
 		task.worker = std::make_unique<std::jthread>(
-		    [state, extraction_state, invocation = std::move(invocation), cwd, data_root = app.data_root, chat_snapshot = MemoryService::CaptureWorkerInput(chat, start_message_index), start_message_index, remote_host, remote_workspace](std::stop_token stop_token) mutable
+		    [state, extraction_state, invocation = std::move(invocation), cwd, workspace_root, data_root = app.data_root, chat_snapshot = MemoryService::CaptureWorkerInput(chat, start_message_index), start_message_index, remote_host, remote_workspace](std::stop_token stop_token) mutable
 		    {
 			    ChatSession worker_chat = std::move(chat_snapshot);
 			    if (!worker_chat.messages_loaded)
@@ -1282,7 +1367,11 @@ namespace
 				    (void)ExtractMemoryJsonObject(state->result.output, &tool_activity);
 				    const std::optional<std::string> text = tool_activity ? std::nullopt : uam::provider_workers::CompletedTextWorkerOutput(state->provider_id, state->result.output, uam::platform::kCapturedCommandMaxOutputBytes);
 				    const std::optional<nlohmann::json> parsed = text ? ExtractMemoryJsonObject(*text, &tool_activity) : std::nullopt;
-				    if (parsed && !tool_activity) extraction_state->completed_text = parsed->dump();
+				    if (parsed && !tool_activity)
+				    {
+					    extraction_state->prepared_output = PrepareParsedMemoryOutput(data_root, worker_chat, workspace_root, *parsed,
+					        MessageCount(worker_chat), &extraction_state->output_error, stop_token);
+				    }
 				    else extraction_state->output_error = tool_activity ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return the required JSON object.";
 			    }
 			    state->completed.store(true, std::memory_order_release);
@@ -1582,69 +1671,63 @@ std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const Ch
 	return preface;
 }
 
-bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const fs::path& workspace_root, const std::string& output, int processed_message_count, std::string* error_out, bool refresh_counts_async)
+std::shared_ptr<PreparedMemoryOutput> MemoryService::PrepareWorkerOutput(const fs::path& data_root,
+    const ChatSession& chat, const fs::path& workspace_root, const std::string& output,
+    int processed_message_count, std::string* error_out, std::stop_token stop_token)
 {
-	bool tool_activity_detected = false;
-	const std::optional<nlohmann::json> parsed = ExtractMemoryJsonObject(output, &tool_activity_detected);
-	if (tool_activity_detected)
+	if (stop_token.stop_requested()) { SetError(error_out, "Memory preparation canceled."); return nullptr; }
+	bool tools = false;
+	const std::optional<nlohmann::json> parsed = ExtractMemoryJsonObject(output, &tools);
+	if (tools || !parsed)
 	{
-		SetError(error_out, "Memory worker attempted tool or file access; output was rejected.");
-		return false;
+		SetError(error_out, tools ? "Memory worker attempted tool or file access; output was rejected." :
+		    "Memory worker did not return the required JSON object.");
+		return nullptr;
 	}
-	if (!parsed)
-	{
-		SetError(error_out, "Memory worker did not return the required JSON object.");
-		return false;
-	}
+	return PrepareParsedMemoryOutput(data_root, chat, workspace_root, *parsed, processed_message_count, error_out, stop_token);
+}
 
-	MemoryFileIndex indexes;
-	std::set<fs::path> prepared_roots;
-	int wrote_count = 0;
-	const std::string extraction_key = processed_message_count < 0 ? "" : chat.id + ":" + std::to_string(std::min(processed_message_count, MessageCount(chat)));
-	for (const nlohmann::json& entry : (*parsed)["memories"])
+bool MemoryService::PublishPreparedWorkerOutput(uam::AppState& app, ChatSession& chat,
+    const fs::path& workspace_root, const std::shared_ptr<PreparedMemoryOutput>& prepared,
+    std::string* error_out, bool refresh_counts_async)
+{
+	if (!prepared || prepared->consumed || prepared->stop_token.stop_requested() || prepared->data_root != app.data_root || prepared->chat_id != chat.id ||
+	    prepared->folder_id != chat.folder_id || prepared->execution_host_id != chat.execution_host_id ||
+	    prepared->workspace_directory != chat.workspace_directory ||
+	    prepared->memory_level != MemoryLevel(chat) ||
+	    uam::paths::NormalizeExistingPath(prepared->workspace_root) != uam::paths::NormalizeExistingPath(workspace_root) ||
+	    MessageCount(chat) < prepared->message_count)
 	{
-		if (!ShouldSaveWorkerMemoryEntry(entry, MemoryLevel(chat)))
-		{
-			continue;
-		}
-
-		const std::string scope = entry.is_object() ? uam::nlohmann_json::TrimmedStringValueOr(entry, "scope", "local") : "local";
-		const bool global_scope = scope == "global";
-		if (!global_scope && workspace_root.empty())
-		{
-			continue;
-		}
-		const fs::path root = global_scope ? GlobalMemoryRoot(app.data_root) : LocalMemoryRoot(workspace_root);
-		if (root.empty())
-		{
-			continue;
-		}
-		if (prepared_roots.insert(root).second && !EnsureMemoryLayout(root))
-		{
-			SetError(error_out, "Failed to create memory layout.");
-			return false;
-		}
-		bool wrote = false;
-		if (!WriteMemoryEntry(root, scope == "global" ? "global" : "local", chat.id, extraction_key, entry, indexes, &wrote, error_out))
-		{
-			return false;
-		}
-		if (wrote)
-		{
-			++wrote_count;
-		}
+		SetError(error_out, "Memory scan owner changed before publication."); return false;
 	}
-
-	if (!SaveMemoryProgress(app, chat, processed_message_count))
+	std::lock_guard<std::mutex> lock(uam::memory::StorageMutex());
+	if (!MemoryPreparationStorageMatches(*prepared))
 	{
-		SetError(error_out, "Memory scan could not save chat progress.");
-		return false;
+		SetError(error_out, "Saved memory changed before publication."); return false;
 	}
-	app.memory_activity.last_created_count = wrote_count;
-	app.memory_last_status = wrote_count > 0 ? "Memory updated." : "Memory worker found no durable memories.";
+	prepared->consumed = true;
+	for (const std::pair<const fs::path, PreparedMemoryOutput::Entry>& entry : prepared->entries)
+	{
+		const uam::io::AtomicWriteResult result = uam::io::CommitSyncedAtomicTemp(entry.first, entry.second.temporary);
+		if (!result.success) { SetError(error_out, "Failed to publish memory entry: " + result.error); return false; }
+	}
+	if (!SaveMemoryProgress(app, chat, prepared->processed_message_count))
+	{
+		SetError(error_out, "Memory scan could not save chat progress."); return false;
+	}
+	app.memory_activity.last_created_count = prepared->wrote_count;
+	app.memory_last_status = prepared->wrote_count > 0 ? "Memory updated." : "Memory worker found no durable memories.";
 	if (refresh_counts_async) RefreshMemoryActivityAsync(app);
 	else RefreshMemoryActivity(app);
 	return true;
+}
+
+bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const fs::path& workspace_root,
+    const std::string& output, int processed_message_count, std::string* error_out, bool refresh_counts_async)
+{
+	const std::shared_ptr<PreparedMemoryOutput> prepared =
+	    PrepareWorkerOutput(app.data_root, chat, workspace_root, output, processed_message_count, error_out);
+	return prepared && PublishPreparedWorkerOutput(app, chat, workspace_root, prepared, error_out, refresh_counts_async);
 }
 
 uam::MemoryActivityState MemoryService::BuildMemoryActivity(const uam::AppState& app)
@@ -1888,7 +1971,12 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			continue;
 		}
 
-		uam::StopAsyncMemoryExtractionWorker(task);
+		if (task.worker)
+		{
+			if (task.worker->joinable()) task.worker->join();
+			task.worker.reset();
+		}
+		task.running = false;
 		if (task.data_root != app.data_root)
 		{
 			app.memory_last_status = "Memory scan discarded because its data directory changed.";

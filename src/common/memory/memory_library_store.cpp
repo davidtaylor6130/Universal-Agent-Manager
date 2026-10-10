@@ -1,4 +1,5 @@
 #include "common/memory/extraction_receipts.h"
+#include "common/memory/memory_storage_guard.h"
 #include "common/memory/memory_library_store.h"
 
 #include "common/memory/memory_categories.h"
@@ -530,6 +531,7 @@ std::vector<MemoryLibraryStore::Entry> MemoryLibraryStore::ListEntries(const Sco
 
 bool MemoryLibraryStore::CreateEntry(const Scope& scope, const Draft& input, Entry* created_entry, std::string* error_out)
 {
+	std::lock_guard<std::mutex> lock(uam::memory::StorageMutex());
 	ClearError(error_out);
 	if (created_entry != nullptr)
 	{
@@ -597,6 +599,7 @@ bool MemoryLibraryStore::DeleteEntry(const Scope& scope, std::string_view entry_
 	{
 		return DeleteAggregateEntry(scope, entry_id, error_out);
 	}
+	std::lock_guard<std::mutex> lock(uam::memory::StorageMutex());
 
 	fs::path entry_path;
 	if (!ResolveDeletableEntryPath(scope, entry_id, entry_path, error_out))

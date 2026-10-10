@@ -29,6 +29,10 @@ class MemoryService
 	static bool EnsureMemoryLayout(const std::filesystem::path& root);
 	static std::string BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt);
 	static bool ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count = -1, std::string* error_out = nullptr, bool refresh_counts_async = false);
+	/// <summary>Reads memory metadata and syncs private temporary entries without replacing saved memories.</summary>
+	static std::shared_ptr<PreparedMemoryOutput> PrepareWorkerOutput(const std::filesystem::path& data_root, const ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count, std::string* error_out = nullptr, std::stop_token stop_token = {});
+	/// <summary>Publishes prepared entries only while their chat, scope and saved category revisions still match.</summary>
+	static bool PublishPreparedWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::shared_ptr<PreparedMemoryOutput>& prepared, std::string* error_out = nullptr, bool refresh_counts_async = false);
 	static uam::MemoryActivityState BuildMemoryActivity(const uam::AppState& app);
 	static void RefreshMemoryActivity(uam::AppState& app);
 	static void RefreshMemoryActivityAsync(uam::AppState& app);
