@@ -5,7 +5,7 @@ import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion,
+  MessageCircleQuestion, ShieldQuestion, Copy,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -22,6 +22,7 @@ import {
 import { providerShortName } from '../../utils/providerMetadata'
 import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
+import { copyTextToClipboard } from '../../utils/copySelection'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon } from '../shared/CustomIcon'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
@@ -281,7 +282,18 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  const [copyState, setCopyState] = useState<'name' | 'id' | 'failed' | null>(null)
+  const [copying, setCopying] = useState(false)
+  const copyChatDetail = async (kind: 'name' | 'id') => {
+    if (copying) return
+    setCopying(true)
+    setCopyState(null)
+    try { setCopyState(await copyTextToClipboard(kind === 'id' ? sessionId : sessionName, document) ? kind : 'failed') }
+    catch { setCopyState('failed') }
+    finally { setCopying(false) }
+  }
   const showMenu = menuPos !== null
+  useEffect(() => { setCopyState(null) }, [showMenu])
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -695,6 +707,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             Rename
             <kbd className="uam-menu-kbd">F2</kbd>
           </button>
+          {(['name', 'id'] as const).map(kind => <button key={kind} type="button" role="menuitem" disabled={copying}
+            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
+            style={{ background: 'transparent', color: 'var(--text-2)', cursor: copying ? 'wait' : 'pointer', border: 'none', fontFamily: 'inherit' }}
+            onClick={() => { void copyChatDetail(kind) }}>
+            <Copy size={13} aria-hidden />{kind === 'name' ? 'Copy chat name' : 'Copy chat ID'}
+          </button>)}
+          {copyState && <p role={copyState === 'failed' ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: copyState === 'failed' ? 'var(--red)' : 'var(--text-2)' }}>
+            {copyState === 'failed' ? 'Could not copy. Try again.' : copyState === 'id' ? 'Chat ID copied.' : 'Chat name copied.'}
+          </p>}
           <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
             role="menuitem"

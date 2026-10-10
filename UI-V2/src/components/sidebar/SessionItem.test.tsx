@@ -154,6 +154,49 @@ describe('SessionItem status icons', () => {
     } finally { delete window.cefQuery; act(() => root.unmount()) }
   })
 
+  it.each([false, true])('copies the exact chat name and ID from the context menu (activity=%s)', async (activityLayout) => {
+    const copied: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const message = JSON.parse(request)
+      if (message.action === 'writeClipboardText') copied.push(message.payload.text)
+      onSuccess('{}')
+    }
+    const { host, root } = renderSessionItem(activityLayout)
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const button = (name: string) => Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === name)!
+      await act(async () => button('Copy chat name').click())
+      expect(copied).toEqual(['Chat 1'])
+      expect(menu.querySelector('[role="status"]')?.textContent).toBe('Chat name copied.')
+      await act(async () => button('Copy chat ID').click())
+      expect(copied).toEqual(['Chat 1', 'chat-1'])
+      expect(menu.querySelector('[role="status"]')?.textContent).toBe('Chat ID copied.')
+    } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps copy failures visible and allows retry without modifying the chat', async () => {
+    const writeText = vi.fn().mockRejectedValueOnce(new Error('Clipboard unavailable')).mockResolvedValueOnce(undefined)
+    const previous = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const button = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Copy chat ID')!
+      await act(async () => button.click())
+      expect(menu.querySelector('[role="alert"]')?.textContent).toBe('Could not copy. Try again.')
+      expect(button.disabled).toBe(false)
+      await act(async () => button.click())
+      expect(menu.querySelector('[role="status"]')?.textContent).toBe('Chat ID copied.')
+      expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
+    } finally {
+      act(() => root.unmount()); host.remove()
+      if (previous) Object.defineProperty(navigator, 'clipboard', previous)
+      else Reflect.deleteProperty(navigator, 'clipboard')
+    }
+  })
+
   it('shows provider and shortened worktree context when enabled', () => {
     useAppStore.setState({
       sessions: [{
