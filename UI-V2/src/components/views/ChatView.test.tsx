@@ -963,7 +963,7 @@ describe('ChatView', () => {
       error: '',
     }
     const getVcsCommitStatus = vi.fn(() => Promise.resolve(rangeStatus))
-    const getVcsFileDiff = vi.fn(() => Promise.reject(new Error('The saved comparison commit is unavailable.')))
+    const getVcsFileDiff = vi.fn<ReturnType<typeof useAppStore.getState>["getVcsFileDiff"]>(() => Promise.reject(new Error('The saved comparison commit is unavailable.')))
     const setCommitPanelOpen = vi.fn()
     useAppStore.setState((state) => ({
       repositoryReviewBySessionId: {},
@@ -1046,6 +1046,38 @@ describe('ChatView', () => {
     const dialog = document.body.querySelector('[aria-label="Changes in src/exact.ts"]') as HTMLElement
     expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('saved comparison commit is unavailable')
     expect(dialog.querySelector('.uam-diff-line')).toBeNull()
+
+    // Work resuming also retires an already-open diff, including a late response.
+    for (const work of ['child', 'parent', 'continuation'] as const) {
+      await act(async () => useAppStore.setState(state => ({
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          processing: work === 'parent', backgroundTaskCount: work === 'child' ? 1 : 0,
+        } },
+        goalsByChatId: { 'chat-1': [{ ...providerGoal, status: work === 'continuation' ? 'active' : 'complete' }] },
+      })))
+      expect(document.body.querySelector('[aria-label="Changes in src/exact.ts"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
+      await act(async () => useAppStore.setState(state => ({
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], processing: false, backgroundTaskCount: 0,
+        } },
+        goalsByChatId: { 'chat-1': [{ ...providerGoal, status: 'complete' }] },
+      })))
+      expect(document.body.querySelector('[aria-label="Changes in src/exact.ts"]')).toBeNull()
+      let finishDiff!: (diff: string) => void
+      getVcsFileDiff.mockImplementationOnce(() => new Promise((resolve) => { finishDiff = resolve }))
+      await act(async () => (host.querySelector('[aria-label="Review changes to src/exact.ts"]') as HTMLButtonElement).click())
+      expect(document.body.querySelector('[aria-label="Changes in src/exact.ts"]')).not.toBeNull()
+      await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: {
+        ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], backgroundTaskCount: 1 },
+      } })))
+      await act(async () => finishDiff("+Late stale diff"))
+      expect(document.body.querySelector('[aria-label="Changes in src/exact.ts"]')).toBeNull()
+    }
+    await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: {
+      ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], backgroundTaskCount: 0 },
+    } })))
 
     getVcsCommitStatus.mockResolvedValueOnce({ ...rangeStatus, available: false, changedFiles: [] })
     await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: {

@@ -23,6 +23,8 @@ std::size_t ProcessBufferedAcpStdoutAfterStop(AppState& app, AcpSessionState& se
 std::size_t ProcessBufferedAcpStdoutForTests(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser, std::size_t max_lines);
 bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser);
 bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// <summary>Settle observed live children and their history only after confirmed native termination.</summary>
+bool SettleClaudeBackgroundTasks(AcpSessionState& session, ChatSession* chat, const char* status);
 void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat = nullptr,
 	                      bool has_exit_code = false, int exit_code = 0,
 	                      bool preserve_active_turn = false);

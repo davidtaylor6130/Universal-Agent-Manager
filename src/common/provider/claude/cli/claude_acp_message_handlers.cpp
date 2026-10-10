@@ -122,7 +122,8 @@ namespace uam::acp_detail
 				else if (status == "stopped" || status == "cancelled" || status == "killed") tool.status = uam::acp_statuses::kCancelled;
 				else if (status == "pending" || status == "running" || status == "paused")
 				{
-					if (tool.status.empty() || tool.status == "paused" || uam::acp_statuses::IsActiveStatus(tool.status)) tool.status = status;
+					if (tool.status.empty() || tool.status == "paused" || uam::acp_statuses::IsActiveStatus(tool.status) ||
+					    (first_task_event && !uam::AcpSessionHasPendingCancel(session))) tool.status = status;
 				}
 				else return true;
 				const std::string summary = JsonDiagnosticStringValue(message, "summary");
@@ -483,7 +484,16 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	if (!cancelled && (is_error || uam::acp_claude_stream::IsResultErrorSubtype(subtype)))
 	{
 		const std::string result_text = uam::strings::JoinNonEmpty(std::vector<std::string>{ContentTextFromJson(JsonArrayValue(message, "errors")), JsonDiagnosticStringValue(message, "error"), uam::nlohmann_json::TrimmedStringValueOr(message, "result", "")}, "\n");
-		(void)FinalizeActiveAcpToolCallsAsFailed(chat, session);
+		// Parent failure does not prove that its process-owned background tasks failed.
+		for (AcpToolCallState& tool : session.tool_calls)
+		{
+			if (uam::acp_statuses::IsActiveStatus(tool.status) &&
+			    !session.claude_live_background_task_ids.contains(tool.task_id))
+			{
+				tool.status = uam::acp_statuses::kFailed;
+			}
+		}
+		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		FailAcpTurnOrSession(session, &chat,
 		                     uam::strings::NonEmptyOrFallback(result_text, "Claude stream-json turn failed."));
 	}

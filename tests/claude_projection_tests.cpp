@@ -215,6 +215,101 @@ UAM_TEST(ClaudeBackgroundAndChildEventsStayWithTheirOriginalTool)
 #endif
 }
 
+UAM_TEST(ClaudeFirstTaskUpdateOwnsWorkAfterTheLaunchReceipt)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string status : {"pending", "running", "paused"})
+	{
+		TempDir temp("uam-claude-first-task-update");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "first-task-update";
+		chat.provider_id = "claude-cli";
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.running = true;
+		session.session_ready = true;
+		session.processing = true;
+		const auto send = [&](const nlohmann::json& frame)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+		};
+		send({{"type", "assistant"}, {"message", {{"content", nlohmann::json::array({{{"type", "tool_use"}, {"id", "agent"}, {"name", "Agent"}, {"input", {{"description", "Review"}}}}})}}}});
+		send({{"type", "user"}, {"message", {{"content", nlohmann::json::array({{{"type", "tool_result"}, {"tool_use_id", "agent"}, {"content", "Launched"}}})}}}});
+		UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("completed"));
+		send({{"type", "result"}, {"subtype", "success"}, {"result", "Parent finished"}});
+		uam::acp_detail::ResetAcpTurnStreamState(session);
+		send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", "child"}, {"tool_use_id", "agent"}, {"patch", {{"status", status}}}});
+		UAM_ASSERT_EQ(session.tool_calls.front().status, status);
+		UAM_ASSERT(session.claude_live_background_task_ids.contains("child"));
+		UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(session, app.chats.front()));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().messages.front().tool_calls.front().status, status);
+		for (const std::string terminal : {"completed", "failed", "cancelled"})
+		{
+			send({{"type", "system"}, {"subtype", "task_notification"}, {"task_id", "child"}, {"status", terminal}});
+			send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", "child"}, {"tool_use_id", "agent"}, {"patch", {{"status", status}}}});
+			send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", "child"}, {"tool_use_id", "agent"}});
+			UAM_ASSERT(session.claude_live_background_task_ids.empty());
+			UAM_ASSERT_EQ(session.tool_calls.front().status, terminal);
+		}
+		// A first task update cannot undo an already-cancelled launch while Cancel is pending.
+		session.tool_calls.push_back({.id = "cancelled-agent", .status = "cancelled"});
+		session.cancel_requested = true;
+		send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", "cancelled-child"}, {"tool_use_id", "cancelled-agent"}, {"patch", {{"status", status}}}});
+		UAM_ASSERT_EQ(session.tool_calls.back().status, std::string("cancelled"));
+		UAM_ASSERT(session.claude_live_background_task_ids.empty());
+	}
+#endif
+}
+
+UAM_TEST(ClaudeParentFailureDoesNotSettleItsLiveNativeChildren)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-parent-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "parent-failure";
+	chat.provider_id = "claude-cli";
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.running = true;
+	session.processing = true;
+	const auto send = [&](const nlohmann::json& frame)
+	{
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+	};
+	send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", "child"}, {"tool_use_id", "agent"}, {"task_type", "local_agent"}});
+	send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", "paused-child"}, {"tool_use_id", "paused-agent"}, {"patch", {{"status", "paused"}}}});
+	send({{"type", "assistant"}, {"message", {{"content", nlohmann::json::array({{{"type", "tool_use"}, {"id", "read"}, {"name", "Read"}, {"input", {{"file_path", "parent.txt"}}}}})}}}});
+	send({{"type", "result"}, {"subtype", "error_during_execution"}, {"is_error", true}, {"error", "Parent failed"}});
+	UAM_ASSERT(!session.processing);
+	UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+	UAM_ASSERT_EQ(session.tool_calls[0].status, std::string("running"));
+	UAM_ASSERT_EQ(session.tool_calls[1].status, std::string("paused"));
+	UAM_ASSERT_EQ(session.tool_calls[2].status, std::string("failed"));
+	UAM_ASSERT(session.claude_live_background_task_ids.contains("child"));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().tool_calls.front().status, std::string("running"));
+	uam::acp_detail::ResetAcpTurnStreamState(session);
+	send({{"type", "system"}, {"subtype", "task_progress"}, {"task_id", "child"}});
+	UAM_ASSERT(session.claude_live_background_task_ids.contains("child"));
+	send({{"type", "system"}, {"subtype", "task_notification"}, {"task_id", "child"}, {"status", "completed"}, {"summary", "Child finished"}});
+	UAM_ASSERT(session.claude_live_background_task_ids.contains("paused-child"));
+	send({{"type", "system"}, {"subtype", "task_notification"}, {"task_id", "paused-child"}, {"status", "cancelled"}});
+	UAM_ASSERT(session.claude_live_background_task_ids.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages.front().tool_calls.front().status, std::string("completed"));
+	UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, chat.id).has_value());
+#endif
+}
+
 UAM_TEST(ClaudeImportPreservesBlockOrderAndNormalizesTaskNotifications)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
@@ -497,6 +592,10 @@ UAM_TEST(ClaudeNativeBackgroundTasksPreventIdleShutdownUntilTheirOwnTerminalEven
 		}
 		UAM_ASSERT(!session.running);
 		const bool surviving_process = exit_kind == "proxy";
+		UAM_ASSERT_EQ(session.claude_live_background_task_ids.contains("surviving-task"), surviving_process);
+		const std::optional<ChatSession> stopped_history = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(stopped_history.has_value());
+		UAM_ASSERT_EQ(stopped_history->messages.front().tool_calls.front().status, std::string(surviving_process ? "running" : "failed"));
 		UAM_ASSERT_EQ(session.recovering_remote_process, surviving_process);
 		UAM_ASSERT(!session.recovering_remote_turn);
 		UAM_ASSERT_EQ(app.chats.front().remote_process_exists, surviving_process);
@@ -516,4 +615,289 @@ UAM_TEST(ClaudeNativeBackgroundTasksPreventIdleShutdownUntilTheirOwnTerminalEven
 		UAM_ASSERT(app.chats.front().remote_interaction_responses.empty());
 	}
 #endif
+}
+
+UAM_TEST(ClaudeConfirmedProcessExitSettlesChildrenAcrossParentTurns)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string exit_kind : {"proxy", "native", "local"})
+	{
+		TempDir temp("uam-claude-child-process-exit");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "child-exit";
+		chat.provider_id = "claude-cli";
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.running = true;
+		session.session_ready = true;
+		session.processing = true;
+		const auto send = [&](const nlohmann::json& frame)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+		};
+		for (const std::string id : {"running", "paused", "completed"})
+		{
+			send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", id}, {"tool_use_id", "agent-" + id}});
+			if (id != "running") send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", id}, {"patch", {{"status", id}}}});
+		}
+		send({{"type", "result"}, {"subtype", "success"}, {"result", "Parent finished"}});
+		uam::acp_detail::ResetAcpTurnStreamState(session);
+		// Restore one live child into the current projection, leaving the other only in history.
+		send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", "paused"}, {"patch", {{"status", "paused"}}}});
+		const bool confirmed_exit = exit_kind != "proxy";
+		session.process_execution_host_id = exit_kind == "local" ? "local" : "ssh-fixture";
+		session.remote_source_exit_reported = exit_kind == "native";
+		uam::acp_detail::MarkAcpProcessExited(session, &app.chats.front(), true, exit_kind == "local" ? 0 : 70, false);
+		UAM_ASSERT_EQ(session.claude_live_background_task_ids.empty(), confirmed_exit);
+		const Message& saved = app.chats.front().messages.front();
+		UAM_ASSERT_EQ(saved.tool_calls[0].status, std::string(confirmed_exit ? "failed" : "running"));
+		UAM_ASSERT_EQ(saved.tool_calls[1].status, std::string(confirmed_exit ? "failed" : "paused"));
+		UAM_ASSERT_EQ(session.tool_calls.front().status, std::string(confirmed_exit ? "failed" : "paused"));
+		UAM_ASSERT_EQ(saved.tool_calls[2].status, std::string("completed"));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+	}
+#endif
+}
+
+UAM_TEST(ClaudeIdleLocalChildExitPersistsSettlementThroughProductionPolling)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const int code : {0, 70})
+	{
+		TempDir temp("uam-claude-idle-child-poll");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "idle-child-poll";
+		chat.provider_id = "claude-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.uam_control_enabled = false;
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		app.acp_sessions.push_back(std::move(owned));
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		struct Cleanup
+		{
+			IPlatformProcessService& process;
+			uam::AcpSessionState& session;
+			~Cleanup() { process.StopStdioProcess(session, true); process.CloseStdioProcessHandles(session); }
+		} cleanup{process, session};
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/c", "exit /b " + std::to_string(code)};
+#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", "exit " + std::to_string(code)};
+#endif
+		std::string error;
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, argv, &error));
+		session.process_execution_host_id = "local";
+		session.running = true;
+		session.session_ready = true;
+		session.processing = true;
+		const auto send = [&](const nlohmann::json& frame)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+		};
+		for (const std::string id : {"running", "paused"})
+		{
+			send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", id}, {"tool_use_id", "agent-" + id}});
+			if (id == "paused") send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", id}, {"patch", {{"status", id}}}});
+		}
+		send({{"type", "result"}, {"subtype", "success"}, {"result", "Parent finished"}});
+		uam::acp_detail::ResetAcpTurnStreamState(session);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		const std::optional<ChatSession> before = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(before.has_value());
+		UAM_ASSERT_EQ(before->messages.front().tool_calls.front().status, std::string("running"));
+		for (int attempt = 0; attempt < 200 && session.running; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			if (session.running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!session.running);
+		UAM_ASSERT(session.claude_live_background_task_ids.empty());
+		UAM_ASSERT_EQ(session.last_exit_code, code);
+		const std::optional<ChatSession> after = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(after.has_value());
+		UAM_ASSERT_EQ(after->messages.front().tool_calls[0].status, std::string("failed"));
+		UAM_ASSERT_EQ(after->messages.front().tool_calls[1].status, std::string("failed"));
+		UAM_ASSERT_EQ(after->messages.size(), before->messages.size());
+	}
+#endif
+}
+
+namespace
+{
+	void CheckClaudeExplicitStop(const std::string& kind)
+	{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		TempDir temp("uam-claude-child-explicit-stop");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "child-explicit-stop";
+		chat.provider_id = "claude-cli";
+		chat.execution_host_id = kind.starts_with("local") || kind == "shutdown-local" ? "local" : "ssh-fixture";
+		chat.uam_control_enabled = false;
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		app.acp_sessions.push_back(std::move(owned));
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		struct Cleanup
+		{
+			IPlatformProcessService& process;
+			uam::AppState& app;
+			~Cleanup()
+			{
+				for (const auto& stop : app.pending_acp_remote_stops)
+					if (stop != nullptr) { process.StopStdioProcess(*stop, true); process.CloseStdioProcessHandles(*stop); }
+				for (const auto& current : app.acp_sessions)
+					if (current != nullptr) { process.StopStdioProcess(*current, true); process.CloseStdioProcessHandles(*current); }
+			}
+		} cleanup{process, app};
+		const int code = kind.ends_with("unconfirmed") ? 70 : 0;
+	#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/d", "/c", kind == "local-delayed" ? "set /p line= & echo {\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"running\",\"patch\":{\"status\":\"completed\"}} & echo late stop stderr 1>&2 & exit /b 0" : "set /p line= & exit /b " + std::to_string(code)};
+	#else
+		const std::vector<std::string> argv = {"/bin/sh", "-c", kind == "local-delayed" ? "IFS= read -r line; printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"running\",\"patch\":{\"status\":\"completed\"}}'; printf 'late stop stderr\\n' >&2; exit 0" : "IFS= read -r line; exit " + std::to_string(code)};
+	#endif
+		std::string error;
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, argv, &error));
+		session.process_execution_host_id = chat.execution_host_id;
+		session.running = true;
+		session.session_ready = true;
+		session.processing = true;
+		const auto send = [&](const nlohmann::json& frame)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+		};
+		for (const std::string id : {"running", "paused", "completed"})
+		{
+			if (kind == "local-current" && id == "paused") continue;
+			send({{"type", "system"}, {"subtype", "task_started"}, {"task_id", id}, {"tool_use_id", "agent-" + id}});
+			if (id != "running") send({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", id}, {"patch", {{"status", id}}}});
+		}
+		send({{"type", "result"}, {"subtype", "success"}, {"result", "Parent finished"}});
+		if (kind != "local-current") uam::acp_detail::ResetAcpTurnStreamState(session);
+		const bool shutdown = kind.starts_with("shutdown");
+		if (kind == "shutdown-local")
+		{
+			session.queue_held = true;
+			session.queued_user_prompts.push_back({.text = "Keep held intent", .id = "held"});
+			app.chats.front().acp_queue_held = true;
+			app.chats.front().acp_queued_prompts.assign(session.queued_user_prompts.begin(), session.queued_user_prompts.end());
+		}
+		if (shutdown) uam::FastStopAcpSessionsForExit(app);
+		else
+		{
+			if (kind == "local-delayed")
+			{
+				// Reproduce an observer which returned before this owned process's final exit/output.
+				UAM_ASSERT(process.WriteToStdioProcess(session, "finish\n", 7, &error));
+				bool exited = false;
+				for (int attempt = 0; attempt < 200 && !exited; ++attempt)
+				{
+					exited = process.PollStdioProcessExited(session);
+					if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				}
+				UAM_ASSERT(exited);
+				uam::AsyncAcpProcessStopTask task;
+				task.chat_id = chat.id;
+				task.turn_serial = session.turn_serial;
+				task.observe_exit = true;
+				task.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
+				task.finished = std::make_shared<std::atomic<bool>>(true);
+				task.owned_process = std::make_shared<uam::platform::StdioProcessPlatformFields>();
+				uam::TransferStdioProcessFields(session, *task.owned_process);
+				app.acp_process_stop_tasks.push_back(std::move(task));
+				session.running = false;
+				session.local_stop_pending = true;
+			}
+			else (void)uam::StopAcpSession(app, chat.id);
+			UAM_ASSERT_EQ(session.claude_live_background_task_ids.size(), kind == "local-current" ? std::size_t{1} : std::size_t{2});
+			if (kind == "local-relaunch")
+			{
+				// Fail before attempting a launch if Stop has not established its admission gate.
+				UAM_ASSERT(session.local_stop_pending);
+				UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+				UAM_ASSERT(error.find("stopping") != std::string::npos);
+				UAM_ASSERT(!session.claude_live_background_task_ids.empty());
+				session.stdout_buffer += nlohmann::json({{"type", "system"}, {"subtype", "task_started"}, {"task_id", "late"}, {"tool_use_id", "agent-late"}}).dump() + "\n";
+				session.stdout_buffer += nlohmann::json({{"type", "system"}, {"subtype", "task_updated"}, {"task_id", "late-paused"}, {"tool_use_id", "agent-late-paused"}, {"patch", {{"status", "paused"}}}}).dump() + "\n";
+			}
+		}
+		bool stop_published = false;
+		for (int attempt = 0; attempt < 300 && (!app.pending_acp_remote_stops.empty() || !app.acp_process_stop_tasks.empty()); ++attempt)
+		{
+			stop_published = uam::PollAllAcpSessions(app) || stop_published;
+			if (!app.pending_acp_remote_stops.empty() || !app.acp_process_stop_tasks.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT(app.acp_process_stop_tasks.empty());
+		const bool confirmed = !kind.ends_with("unconfirmed");
+		if (shutdown) UAM_ASSERT(app.acp_sessions.empty());
+		else
+		{
+			UAM_ASSERT_EQ(session.claude_live_background_task_ids.empty(), confirmed);
+			if (confirmed) UAM_ASSERT(stop_published);
+		}
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->messages.front().tool_calls[0].status, std::string(kind == "local-delayed" ? "completed" : confirmed ? "cancelled" : "running"));
+		if (kind == "local-delayed") UAM_ASSERT(session.recent_stderr.find("late stop stderr") != std::string::npos);
+		if (kind != "local-current") UAM_ASSERT_EQ(saved->messages.front().tool_calls[1].status, std::string(confirmed ? "cancelled" : "paused"));
+		const std::size_t completed_index = kind == "local-current" ? 1 : 2;
+		UAM_ASSERT_EQ(saved->messages.front().tool_calls[completed_index].status, std::string("completed"));
+		if (kind == "local-relaunch")
+		{
+			std::size_t late_tasks = 0;
+			for (const Message& message : saved->messages)
+				for (const ToolCall& tool : message.tool_calls)
+					if (tool.task_id == "late" || tool.task_id == "late-paused")
+					{
+						++late_tasks;
+						UAM_ASSERT_EQ(tool.status, std::string("cancelled"));
+					}
+			UAM_ASSERT_EQ(late_tasks, std::size_t{2});
+		}
+		if (kind == "shutdown-local")
+		{
+			UAM_ASSERT(saved->acp_queue_held);
+			UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+			UAM_ASSERT_EQ(saved->acp_queued_prompts.front().id, std::string("held"));
+		}
+#else
+		(void)kind;
+#endif
+	}
+}
+
+UAM_TEST(ClaudeExplicitStopsSettleChildrenOnlyAfterConfirmedTermination)
+{
+	for (const std::string kind : {"local", "local-current", "local-delayed", "remote-confirmed", "remote-unconfirmed", "shutdown-confirmed", "shutdown-unconfirmed"})
+		CheckClaudeExplicitStop(kind);
+}
+
+UAM_TEST(ClaudeLocalChildStopBlocksImmediateReplacementLaunch)
+{
+	CheckClaudeExplicitStop("local-relaunch");
+}
+
+UAM_TEST(ClaudeLocalShutdownPersistsHistoricalChildSettlement)
+{
+	CheckClaudeExplicitStop("shutdown-local");
 }

@@ -530,6 +530,11 @@ bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSessi
 
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out)
 {
+	if (session.local_stop_pending)
+	{
+		if (error_out != nullptr) *error_out = "The provider is stopping.";
+		return false;
+	}
 	if (!session.model_discovery_only && chat.routing_mode == "automatic")
 	{
 		if (!ExecutionRoutingOwnsWork(app, chat) && chat.routing_assigned_connection_identity.empty())

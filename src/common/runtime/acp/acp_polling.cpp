@@ -10,6 +10,7 @@
 #include "common/config/settings_normalization.h"
 #include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
+#include "common/runtime/acp/acp_statuses.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
@@ -741,6 +742,28 @@ bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat)
 	return changed;
 }
 
+bool SettleClaudeBackgroundTasks(AcpSessionState& session, ChatSession* chat, const char* status)
+{
+	if (session.claude_live_background_task_ids.empty()) return false;
+	const auto settle_child = [&session, status](const std::string& task_id, std::string& current_status)
+	{
+		if (!session.claude_live_background_task_ids.contains(task_id) ||
+		    (!uam::acp_statuses::IsActiveStatus(current_status) && current_status != "paused")) return false;
+		current_status = status;
+		return true;
+	};
+	bool changed = false;
+	for (AcpToolCallState& tool : session.tool_calls) changed |= settle_child(tool.task_id, tool.status);
+	if (chat != nullptr)
+	{
+		for (Message& message : chat->messages)
+			for (ToolCall& tool : message.tool_calls) changed |= settle_child(tool.task_id, tool.status);
+		if (changed) chat->updated_at = AcpTimestampNow();
+	}
+	session.claude_live_background_task_ids.clear();
+	return true;
+}
+
 void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 	                      bool has_exit_code, int exit_code,
 	                      bool preserve_active_turn)
@@ -781,7 +804,10 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 	    ? session.process_execution_host_id != uam::execution_hosts::kLocalHostId
 	    : chat != nullptr && !uam::paths::IsControllerLocalWorkspace(*chat);
 	// A proxy exit alone does not establish that its runner-owned native process exited.
-	if (!remote_process || session.remote_source_exit_reported) session.claude_live_background_task_ids.clear();
+	if ((!remote_process || session.remote_source_exit_reported) && !session.claude_live_background_task_ids.empty())
+	{
+		(void)SettleClaudeBackgroundTasks(session, chat, uam::acp_statuses::kFailed);
+	}
 	session.running = false;
 	session.initialized = false;
 	session.session_ready = false;

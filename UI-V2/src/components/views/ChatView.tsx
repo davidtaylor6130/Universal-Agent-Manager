@@ -1305,6 +1305,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const repositoryComparisonRef = session.workspaceIsolationKind === 'gitWorktree' ? session.workspaceBaseRef?.trim() : undefined
   const reviewGoal = activeGoalId ? goals.find(goal => goal.id === activeGoalId) : null
   const chatWorking = chatHasUnfinishedWork(acp, cli, reviewGoal)
+  useEffect(() => {
+    if (chatWorking) setSelectedRepositoryFile(null)
+  }, [chatWorking])
   const completedTurnKey = !chatWorking && latestAssistantMessageIndex > latestUserMessageIndex
     ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
     : ''
@@ -2315,7 +2318,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           accentColor={accentColor}
         />
       )}
-      {selectedRepositoryFile && repositoryChanges && (
+      {!chatWorking && selectedRepositoryFile && repositoryChanges && (
         <RepositoryDiffDialog
           chatId={session.id}
           file={selectedRepositoryFile}
