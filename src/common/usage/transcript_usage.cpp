@@ -126,6 +126,28 @@ namespace uam::usage
 		return record;
 	}
 
+	std::optional<Record> GeminiRecord(const nlohmann::json& message, std::string_view session_id)
+	{
+		if (detail::Text(message, "type") != "gemini" || session_id.empty() || session_id.size() > 512) return std::nullopt;
+		const nlohmann::json* usage = nlohmann_json::FindObjectField(message, "tokens");
+		if (!usage || !usage->contains("input") || !usage->contains("output")) return std::nullopt;
+		const std::optional<std::int64_t> input = detail::Count(*usage, "input"), cached = detail::Count(*usage, "cached");
+		const std::optional<std::int64_t> output = detail::Count(*usage, "output"), thoughts = detail::Count(*usage, "thoughts"), tool = detail::Count(*usage, "tool"), total = detail::Count(*usage, "total");
+		const std::optional<std::int64_t> timestamp = TimestampMilliseconds(detail::Text(message, "timestamp"));
+		const std::string model = detail::Text(message, "model"), identity = detail::Text(message, "id");
+		if (!input || !cached || !output || !thoughts || !tool || !total || *cached > *input || !timestamp || model.empty()) return std::nullopt;
+		const TokenCounts tokens{*input - *cached + *tool, *cached, 0, *output + *thoughts, *thoughts};
+		if (tokens.Total() <= 0 || tokens.Total() > kMaxExactTokenCount || (*total > 0 && *total != tokens.Total())) return std::nullopt;
+		Record record;
+		record.provider_id = provider_ids::kGeminiCli;
+		record.model_id = model;
+		record.session_id = session_id;
+		record.timestamp_ms = *timestamp;
+		record.tokens = tokens;
+		if (!identity.empty()) record.dedupe_key = nlohmann::json::array({session_id, identity}).dump();
+		return record;
+	}
+
 	/// <summary>Track model/tier changes in a Codex rollout and emit per-turn usage, never cumulative totals.</summary>
 	std::optional<Record> CodexRecord(const nlohmann::json& event, CodexScanState& state)
 	{

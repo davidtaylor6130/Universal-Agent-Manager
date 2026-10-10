@@ -54,6 +54,9 @@ namespace uam::usage
 	/// <summary>Normalize Claude usage; the collector deduplicates message/request identities across files.</summary>
 	std::optional<Record> ClaudeRecord(const nlohmann::json& event);
 
+	/// <summary>Normalize Gemini saved message counts, with cached input and reasoning kept as subsets.</summary>
+	std::optional<Record> GeminiRecord(const nlohmann::json& message, std::string_view session_id);
+
 	/// <summary>Track Codex model/tier changes and emit per-turn usage, never cumulative totals.</summary>
 	std::optional<Record> CodexRecord(const nlohmann::json& event, CodexScanState& state);
 }

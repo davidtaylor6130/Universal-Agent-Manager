@@ -210,3 +210,29 @@ UAM_TEST(UsageAggregationDoesNotMoveCopiedParentUsageIntoANewDateWindow)
 		UAM_ASSERT_EQ(summary->duplicates, std::size_t(1));
 	}
 }
+
+UAM_TEST(UsageGeminiSeparatesCachedInputAndIncludesThoughtsOnlyOnce)
+{
+	nlohmann::json message{{"type", "gemini"}, {"id", "reply"}, {"model", "gemini-test"}, {"timestamp", "2026-10-10T12:00:00Z"},
+	    {"tokens", {{"input", 100}, {"cached", 40}, {"output", 20}, {"thoughts", 10}, {"tool", 5}, {"total", 135}}}};
+	const std::optional<uam::usage::Record> record = uam::usage::GeminiRecord(message, "session");
+	UAM_ASSERT(record);
+	UAM_ASSERT_EQ(record->tokens.input, 65LL);
+	UAM_ASSERT_EQ(record->tokens.cached_input, 40LL);
+	UAM_ASSERT_EQ(record->tokens.output, 30LL);
+	UAM_ASSERT_EQ(record->tokens.reasoning, 10LL);
+	UAM_ASSERT_EQ(record->tokens.Total(), 135LL);
+	UAM_ASSERT_EQ(record->provider_id, std::string(uam::provider_ids::kGeminiCli));
+	UAM_ASSERT(!uam::usage::GeminiRecord(message, ""));
+	for (const nlohmann::json invalid : {nlohmann::json(-1), nlohmann::json(1.5), nlohmann::json("100"), nlohmann::json(9007199254740992ULL)})
+	{
+		message["tokens"]["input"] = invalid;
+		UAM_ASSERT(!uam::usage::GeminiRecord(message, "session"));
+	}
+	message["tokens"]["input"] = 100;
+	message["tokens"]["cached"] = 101;
+	UAM_ASSERT(!uam::usage::GeminiRecord(message, "session"));
+	message["tokens"]["cached"] = 40;
+	message["tokens"]["total"] = 140;
+	UAM_ASSERT(!uam::usage::GeminiRecord(message, "session"));
+}

@@ -120,3 +120,75 @@ UAM_TEST(UsageAggregationReferencesMatchOwnedRecordsAndRejectNullPointers)
 	UAM_ASSERT_EQ(owned->models.size(), references->models.size());
 	UAM_ASSERT(!uam::usage::AggregateReferences({nullptr}, 0, 1));
 }
+
+UAM_TEST(UsageGeminiHistoryReadsLegacySnapshotsAndJsonlWithoutDuplicateBilling)
+{
+	TempDir temp("uam-usage-gemini");
+	const fs::path chats = temp.root / "project" / "chats";
+	fs::create_directories(chats);
+	const nlohmann::json message{{"type", "gemini"}, {"id", "reply"}, {"model", "gemini-test"}, {"timestamp", "2026-10-10T12:00:00Z"},
+	    {"tokens", {{"input", 100}, {"cached", 40}, {"output", 20}, {"thoughts", 10}, {"total", 130}}}};
+	nlohmann::json snapshot{{"sessionId", "session"}, {"messages", nlohmann::json::array({message})}};
+	const fs::path path = chats / "session-old.json";
+	UAM_ASSERT(uam::io::WriteTextFile(path, snapshot.dump()));
+	UAM_ASSERT(uam::io::WriteTextFile(chats / "session-new.jsonl", nlohmann::json({{"sessionId", "session"}}).dump() + "\n" + message.dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(chats / "settings.json", snapshot.dump()));
+	uam::usage::HistoryService service({{uam::provider_ids::kGeminiCli, {temp.root}}});
+	const std::int64_t start = *uam::usage::TimestampMilliseconds("2026-10-10T00:00:00Z");
+	nlohmann::json result = service.Refresh("first", start, start + 86400000);
+	UAM_ASSERT(result["complete"].get<bool>());
+	UAM_ASSERT_EQ(result["filesTotal"].get<int>(), 2);
+	UAM_ASSERT_EQ(result["totals"]["totalTokens"].get<int>(), 130);
+	UAM_ASSERT_EQ(result["duplicates"].get<int>(), 1);
+	UAM_ASSERT_EQ(service.Refresh("cached", start, start + 86400000)["bytesRead"].get<int>(), 0);
+	nlohmann::json next = message; next["id"] = "next";
+	snapshot["messages"].push_back(next);
+	UAM_ASSERT(uam::io::WriteTextFile(path, snapshot.dump()));
+	result = service.Refresh("changed", start, start + 86400000);
+	UAM_ASSERT_EQ(result["totals"]["totalTokens"].get<int>(), 260);
+	UAM_ASSERT_EQ(result["totals"]["sessions"].get<int>(), 1);
+	fs::create_directories(chats / "parent");
+	snapshot["sessionId"] = "child";
+	snapshot["messages"] = nlohmann::json::array({next});
+	UAM_ASSERT(uam::io::WriteTextFile(chats / "parent" / "child.json", snapshot.dump()));
+	result = service.Refresh("child", start, start + 86400000);
+	UAM_ASSERT_EQ(result["totals"]["totalTokens"].get<int>(), 390);
+	UAM_ASSERT_EQ(result["totals"]["sessions"].get<int>(), 2);
+}
+
+UAM_TEST(UsageGeminiSnapshotResumesBoundedReadsAndReportsMalformedRewrites)
+{
+	TempDir temp("uam-usage-gemini-bounded");
+	const fs::path path = temp.root / "session.json";
+	const nlohmann::json snapshot{{"sessionId", "session"}, {"messages", nlohmann::json::array({{{"type", "gemini"}, {"id", "reply"}, {"model", "gemini-test"}, {"timestamp", "2026-10-10T12:00:00Z"}, {"tokens", {{"input", 10}, {"output", 2}, {"total", 12}}}}})}};
+	UAM_ASSERT(uam::io::WriteTextFile(path, snapshot.dump()));
+	uam::usage::TranscriptScan scan(uam::provider_ids::kGeminiCli);
+	uam::usage::ScanOptions options; options.byte_budget = 32;
+	uam::usage::ScanResult result = scan.Refresh(path, options);
+	UAM_ASSERT(!result.complete); UAM_ASSERT_EQ(result.bytes_read, std::size_t(32));
+	UAM_ASSERT(scan.Records().empty());
+	for (int index = 0; index < 100 && !result.complete; ++index) result = scan.Refresh(path, options);
+	UAM_ASSERT(result.complete); UAM_ASSERT_EQ(scan.Records().size(), std::size_t(1));
+	UAM_ASSERT_EQ(scan.Refresh(path, options).bytes_read, std::size_t(0));
+	UAM_ASSERT(uam::io::WriteTextFile(path, "{broken"));
+	result = scan.Refresh(path, options);
+	UAM_ASSERT(result.reset); UAM_ASSERT(!result.error.empty()); UAM_ASSERT(scan.Records().empty());
+	UAM_ASSERT_EQ(scan.InvalidLines(), std::size_t(1));
+	UAM_ASSERT(scan.Refresh(path, options, [] { return true; }).cancelled);
+	nlohmann::json large = snapshot; large["padding"] = std::string(50000, 'x');
+	UAM_ASSERT(uam::io::WriteTextFile(path, large.dump()));
+	options.byte_budget = 65536;
+	int checks = 0;
+	result = scan.Refresh(path, options, [&]
+	{
+		if (++checks == 3)
+		{
+			large["sessionId"] = "changed";
+			UAM_ASSERT(uam::io::WriteTextFile(path, large.dump()));
+			fs::last_write_time(path, fs::last_write_time(path) + std::chrono::seconds(1));
+		}
+		return false;
+	});
+	UAM_ASSERT(result.error.find("changed during scanning") != std::string::npos);
+	UAM_ASSERT(scan.Records().empty());
+}

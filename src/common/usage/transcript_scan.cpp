@@ -1,5 +1,6 @@
 #include "common/usage/transcript_scan.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/nlohmann_json_utils.h"
 
 #include <algorithm>
 #include <array>
@@ -36,6 +37,7 @@ namespace uam::usage
 		m_invalidLines = 0;
 		m_oversizedLines = 0;
 		m_codexState = {};
+		m_geminiSessionId.clear();
 		m_records.clear();
 	}
 
@@ -46,6 +48,10 @@ namespace uam::usage
 		{
 			const nlohmann::json event = nlohmann::json::parse(m_pendingLine, nullptr, false);
 			if (event.is_discarded()) ++m_invalidLines;
+			else if (m_providerId == provider_ids::kGeminiCli)
+			{
+				if (!CommitGeminiEvent(event, options)) return false;
+			}
 			else
 			{
 				const CodexScanState previous_state = m_codexState;
@@ -67,10 +73,81 @@ namespace uam::usage
 		return true;
 	}
 
+	bool TranscriptScan::CommitGeminiEvent(const nlohmann::json& event, const ScanOptions& options)
+	{
+		const nlohmann::json* metadata = nlohmann_json::FindObjectField(event, "$set");
+		if (!metadata) metadata = &event;
+		const std::string_view identity = nlohmann_json::StringViewOrEmpty(*metadata, "sessionId");
+		if (!identity.empty() && identity.size() <= 512) m_geminiSessionId = identity;
+		const nlohmann::json* messages = nlohmann_json::FindArrayField(*metadata, "messages");
+		const std::size_t count = messages ? messages->size() : 1;
+		for (std::size_t index = 0; index < count; ++index)
+		{
+			const nlohmann::json& message = messages ? (*messages)[index] : event;
+			std::optional<Record> record = GeminiRecord(message, m_geminiSessionId);
+			if (!record) continue;
+			if (m_records.size() >= options.max_records) { m_recordLimitReached = true; return false; }
+			m_records.push_back(std::move(*record));
+		}
+		return true;
+	}
+
+	ScanResult TranscriptScan::RefreshGeminiSnapshot(const std::filesystem::path& path, const ScanOptions& options, const std::function<bool()>& cancelled)
+	{
+		ScanResult result;
+		if (cancelled && cancelled()) { result.cancelled = true; return result; }
+		std::filesystem::path native_path;
+		std::string native_error;
+		if (!io::NativeFilePath(path, native_path, native_error)) { result.error = "Could not resolve Gemini history path."; return result; }
+		std::error_code error;
+		const std::uintmax_t size = std::filesystem::file_size(native_path, error);
+		if (error) { result.error = "Could not inspect Gemini history."; return result; }
+		const std::filesystem::file_time_type modified = std::filesystem::last_write_time(native_path, error);
+		if (error) { result.error = "Could not inspect Gemini history timestamp."; return result; }
+		if (m_path != path || size != m_seenSize || modified != m_lastWriteTime)
+		{
+			Reset(); m_path = path; m_seenSize = size; m_lastWriteTime = modified; result.reset = true;
+		}
+		// Legacy sessions rewrite a JSON document. Bound its memory separately from incremental JSONL lines.
+		if (size > 32 * 1024 * 1024) { m_oversizedLines = 1; result.error = "Gemini history exceeds the 32 MiB snapshot limit; totals are incomplete."; return result; }
+		if (m_recordLimitReached) { result.error = "Gemini history exceeds the cached-record limit; totals are incomplete."; return result; }
+		if (m_readOffset == size && m_pendingLine.empty() && !result.reset) { result.complete = true; return result; }
+		std::ifstream input;
+		if (!io::OpenReadFile(path, input)) { result.error = "Could not open Gemini history."; return result; }
+		input.seekg(static_cast<std::streamoff>(m_readOffset));
+		std::array<char, 32768> buffer{};
+		while (m_readOffset < size && result.bytes_read < options.byte_budget)
+		{
+			if (cancelled && cancelled()) { result.cancelled = true; return result; }
+			const std::size_t requested = static_cast<std::size_t>(std::min<std::uintmax_t>({buffer.size(), size - m_readOffset, options.byte_budget - result.bytes_read}));
+			input.read(buffer.data(), static_cast<std::streamsize>(requested));
+			const std::size_t received = static_cast<std::size_t>(input.gcount());
+			if (!received) { result.error = "Gemini history changed or could not be read during scanning."; return result; }
+			m_pendingLine.append(buffer.data(), received); m_readOffset += received; result.bytes_read += received;
+		}
+		if (m_readOffset != size) return result;
+		const std::uintmax_t final_size = std::filesystem::file_size(native_path, error);
+		if (error) { result.error = "Could not verify Gemini history after reading."; return result; }
+		const std::filesystem::file_time_type final_modified = std::filesystem::last_write_time(native_path, error);
+		if (error || final_size != size || final_modified != modified)
+		{
+			Reset(); result.reset = true; result.error = "Gemini history changed during scanning. Refresh to retry."; return result;
+		}
+		const nlohmann::json event = nlohmann::json::parse(m_pendingLine, nullptr, false);
+		m_pendingLine.clear();
+		if (event.is_discarded() || !nlohmann_json::FindArrayField(event, "messages") || nlohmann_json::StringViewOrEmpty(event, "sessionId").empty())
+		{
+			++m_invalidLines; result.error = "Gemini history is incomplete or invalid."; return result;
+		}
+		if (!CommitGeminiEvent(event, options)) { result.error = "Gemini history exceeds the cached-record limit; totals are incomplete."; return result; }
+		result.complete = true;
+		return result;
+	}
+
 	ScanResult TranscriptScan::Refresh(const std::filesystem::path& path, const ScanOptions& options, const std::function<bool()>& cancelled)
 	{
 		ScanResult result;
-		if (m_providerId != provider_ids::kCodexCli && m_providerId != provider_ids::kClaudeCli)
+		if (m_providerId != provider_ids::kCodexCli && m_providerId != provider_ids::kClaudeCli && m_providerId != provider_ids::kGeminiCli)
 		{
 			result.error = "Historical transcript usage is unavailable for this provider.";
 			return result;
@@ -81,6 +158,7 @@ namespace uam::usage
 			result.error = "Invalid usage scan limits.";
 			return result;
 		}
+		if (m_providerId == provider_ids::kGeminiCli && path.extension() == ".json") return RefreshGeminiSnapshot(path, options, cancelled);
 		if (cancelled && cancelled()) { result.cancelled = true; return result; }
 		std::filesystem::path native_path;
 		std::string native_error;

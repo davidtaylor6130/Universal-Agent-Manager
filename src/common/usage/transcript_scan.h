@@ -38,6 +38,8 @@ namespace uam::usage
 
 	private:
 		void Reset();
+		ScanResult RefreshGeminiSnapshot(const std::filesystem::path& path, const ScanOptions& options, const std::function<bool()>& cancelled);
+		bool CommitGeminiEvent(const nlohmann::json& event, const ScanOptions& options);
 		bool CommitLine(const ScanOptions& options);
 		std::string m_providerId;
 		std::filesystem::path m_path;
@@ -52,6 +54,7 @@ namespace uam::usage
 		std::size_t m_invalidLines = 0;
 		std::size_t m_oversizedLines = 0;
 		CodexScanState m_codexState;
+		std::string m_geminiSessionId;
 		std::vector<Record> m_records;
 	};
 }
