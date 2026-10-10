@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpBinding } from '../../store/cpp/types'
-import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, CODEX_SPEED_INHERIT_ID, reasoningEffortForModel } from './modelOptions'
+import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, CODEX_SPEED_INHERIT_ID, reasoningEffortForModel, searchModelOptions } from './modelOptions'
 
 describe('reasoningEffortForModel', () => {
   it('defaults invalid or empty effort to the runtime model default', () => {
@@ -85,4 +85,17 @@ it('filters OpenCode providers and models while retaining a disabled current mod
   expect(options.find((option) => option.id === 'openai/hidden')).toMatchObject({ label: 'Hidden (hidden)', disabled: true })
   expect(acp.availableModels).toHaveLength(3)
   expect(buildModelOptions(acp, '', undefined, 'opencode-cli', true, visibility).some((option) => option.id === 'openai/hidden')).toBe(false)
+})
+
+describe('searchModelOptions', () => {
+  it('matches names, IDs and descriptions without changing model identity or availability', () => {
+    const options = buildModelOptions(undefined, '', undefined, 'gemini-cli', true)
+    expect(searchModelOptions(options, '   ')).toBe(options)
+    const candidate = options.find((option) => option.id)!
+    expect(searchModelOptions(options, candidate.id.toUpperCase())).toContain(candidate)
+    expect(searchModelOptions(options, 'no-such-model')).toEqual([])
+    const hidden = { ...candidate, disabled: true, detail: 'Hidden fast model' }
+    expect(searchModelOptions([hidden], 'FAST hidden')).toEqual([hidden])
+    expect(searchModelOptions([hidden], 'fast unavailable')).toEqual([])
+  })
 })

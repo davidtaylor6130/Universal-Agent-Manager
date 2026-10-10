@@ -206,3 +206,13 @@ export function buildCodexSpeedOptions(acp: ModelCatalogSource | undefined, mode
   if (!runtimeModel && selectedServiceTier && !ids.includes(selectedServiceTier)) ids.push(selectedServiceTier)
   return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_SPEED_LABELS))
 }
+
+/** Match all search terms against the model name, identifier and description. */
+export function searchModelOptions(options: ModelOption[], query: string): ModelOption[] {
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+  if (terms.length === 0) return options
+  return options.filter((option) => {
+    const text = `${option.id} ${option.label} ${option.detail}`.toLocaleLowerCase()
+    return terms.every((term) => text.includes(term))
+  })
+}

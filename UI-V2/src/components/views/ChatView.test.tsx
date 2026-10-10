@@ -3955,15 +3955,44 @@ describe('ChatView', () => {
     const modelOptions = menu.querySelector('[data-testid="model-options"]') as HTMLDivElement
     const options = Array.from(modelOptions.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
     expect(options).toHaveLength(12)
-    expect(modelOptions.style.maxHeight).toBe('520px')
+    expect(modelOptions.style.maxHeight).toBe('360px')
     expect(modelOptions.style.overflowY).toBe('auto')
+    const search = menu.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!
+    expect(document.activeElement).toBe(search)
+    act(() => search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
     expect(document.activeElement?.textContent).toContain('Model 0')
 
-    act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
     expect(document.activeElement?.textContent).toContain('Model 1')
     expect((document.activeElement as HTMLElement).style.boxShadow).toContain('inset')
-    act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'model-1')
+    expect(document.activeElement).toBe(trigger)
+
+    act(() => trigger.click())
+    const reopened = document.body.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!
+    const enterSearch = (query: string) => act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(reopened, query)
+      reopened.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    enterSearch('MODEL-11')
+    expect(document.activeElement).toBe(reopened)
+    const results = document.body.querySelector('[data-testid="model-options"]')!
+    expect(results.querySelectorAll('button')).toHaveLength(1)
+    expect(results.textContent).toContain('Model 11')
+    act(() => reopened.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(setSessionModel).toHaveBeenLastCalledWith('chat-1', 'model-11')
+    act(() => trigger.click())
+    const emptySearch = document.body.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(emptySearch, 'no-model-found')
+      emptySearch.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(document.body.textContent).toContain('No matching models')
+    const calls = setSessionModel.mock.calls.length
+    act(() => emptySearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    expect(setSessionModel).toHaveBeenCalledTimes(calls)
+    act(() => emptySearch.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     expect(document.activeElement).toBe(trigger)
 
     act(() => root.unmount())
