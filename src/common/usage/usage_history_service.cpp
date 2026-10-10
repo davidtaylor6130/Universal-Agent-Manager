@@ -12,6 +12,24 @@ namespace uam::usage
 {
 	namespace
 	{
+		std::string DatabaseFingerprint(const std::filesystem::path& path)
+		{
+			std::string fingerprint;
+			std::filesystem::path wal = path; wal += "-wal";
+			for (const std::filesystem::path& file : {path, wal})
+			{
+				std::error_code error;
+				const bool exists = std::filesystem::exists(file, error);
+				if (error) return {};
+				if (!exists) { fingerprint += "missing;"; continue; }
+				const std::uintmax_t size = std::filesystem::file_size(file, error);
+				if (error) return {};
+				const std::filesystem::file_time_type modified = std::filesystem::last_write_time(file, error);
+				if (error) return {};
+				fingerprint += std::to_string(size) + ":" + std::to_string(std::chrono::duration_cast<std::chrono::nanoseconds>(modified.time_since_epoch()).count()) + ";";
+			}
+			return fingerprint;
+		}
 		std::optional<std::int64_t> EpochField(const nlohmann::json& payload, const char* key)
 		{
 			const nlohmann::json* value = nlohmann_json::FindField(payload, key);
@@ -114,7 +132,6 @@ namespace uam::usage
 		std::set<std::pair<std::string, std::filesystem::path>> seen;
 		m_files.clear();
 		m_databases.clear();
-		m_databaseCache.clear();
 		m_nextDatabase = 0;
 		m_sourceErrors.clear();
 		m_listingLimited = false;
@@ -173,6 +190,8 @@ namespace uam::usage
 		std::sort(m_databases.begin(), m_databases.end());
 		m_databases.erase(std::unique(m_databases.begin(), m_databases.end()), m_databases.end());
 		std::sort(m_files.begin(), m_files.end());
+		if (!m_sourceErrors.contains(provider_ids::kOpenCodeCli))
+			std::erase_if(m_databaseCache, [&](const std::pair<const std::filesystem::path, OpenCodeHistoryScan>& entry) { return !std::binary_search(m_databases.begin(), m_databases.end(), entry.first); });
 		// Only a successful, complete listing proves that a previously cached file was removed.
 		if (!m_listingLimited)
 			std::erase_if(m_cache, [&](const std::pair<const std::pair<std::string, std::filesystem::path>, TranscriptScan>& entry)
@@ -186,6 +205,31 @@ namespace uam::usage
 	nlohmann::json HistoryService::Refresh(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms,
 	                                     const std::map<ModelKey, ModelPrices>& prices, const std::function<bool()>& cancelled)
 	{
+		return RefreshImpl(refresh_id, start_ms, end_ms, prices, cancelled, {});
+	}
+
+	nlohmann::json HistoryService::Collect(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const AccountingSink& sink, const std::function<bool()>& cancelled)
+	{
+		return RefreshImpl(refresh_id, start_ms, end_ms, {}, cancelled, sink);
+	}
+
+	nlohmann::json HistoryService::RefreshImpl(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, const std::function<bool()>& cancelled, const AccountingSink& sink)
+	{
+		const std::function<bool(const std::pair<std::string, std::filesystem::path>&, const std::vector<Record>&, bool, std::string&)> account = [&](const std::pair<std::string, std::filesystem::path>& source, const std::vector<Record>& records, bool reset, std::string& error)
+		{
+			if (!sink) return true;
+			std::size_t& position = m_accountedPositions[source];
+			if (reset || position > records.size()) position = 0;
+			const std::u8string utf8 = source.second.u8string();
+			const std::string identity(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+			if (position < records.size() && !sink(identity, records, position, error)) return false;
+			const std::size_t prior_position = position;
+			position = records.size();
+			// Future-dated receipts stay pending until the collector window reaches them.
+			for (std::size_t index = prior_position; index < records.size(); ++index)
+				if (records[index].timestamp_ms >= end_ms) { position = index; break; }
+			return true;
+		};
 		if (refresh_id.empty() || refresh_id.size() > 160 || start_ms < 0 || end_ms <= start_ms || end_ms - start_ms > 90LL * 86400000)
 			return {{"error", "Choose a valid usage window of up to 90 days."}};
 		if (m_resolveLocalSources)
@@ -217,6 +261,8 @@ namespace uam::usage
 			bytes_read += scanned.bytes_read;
 			++files_checked;
 			if (scanned.cancelled) return {{"cancelled", true}};
+			std::string accounting_error;
+			if (!account(file, entry.first->second.Records(), scanned.reset, accounting_error)) return {{"error", accounting_error}};
 			if (!scanned.error.empty()) ++m_sourceErrors[file.first];
 			// A stable unfinished tail is cached and resumed on the next refresh, not spun on immediately.
 			if (scanned.complete || !scanned.error.empty() || scanned.bytes_read < options.byte_budget) ++m_nextFile;
@@ -226,13 +272,34 @@ namespace uam::usage
 		{
 			const std::filesystem::path& path = m_databases[m_nextDatabase];
 			OpenCodeHistoryScan& scan = m_databaseCache[path];
-			const ScanResult scanned = scan.Refresh(path, start_ms, end_ms, cancelled);
-			bytes_read += scanned.bytes_read;
-			if (scanned.cancelled) return {{"cancelled", true}};
-			if (!scanned.error.empty()) ++m_sourceErrors[provider_ids::kOpenCodeCli];
-			if (scanned.complete || !scanned.error.empty()) ++m_nextDatabase;
+			const std::string fingerprint = sink ? DatabaseFingerprint(path) : std::string{};
+			if (sink && !fingerprint.empty() && m_completedDatabaseFingerprints[path] == fingerprint)
+			{
+				std::string accounting_error;
+				if (!account({provider_ids::kOpenCodeCli, path}, scan.Records(), false, accounting_error)) return {{"error", accounting_error}};
+				++m_nextDatabase;
+			}
+			else
+			{
+				if (sink && m_databaseScanRefreshIds[path] != refresh_id)
+				{
+					scan.Reset();
+					m_accountedPositions.erase({provider_ids::kOpenCodeCli, path});
+					m_databaseScanRefreshIds[path] = std::string(refresh_id);
+				}
+				const ScanResult scanned = scan.Refresh(path, start_ms, end_ms, cancelled);
+				if (scanned.reset) m_pendingDatabaseFingerprints[path] = fingerprint;
+				bytes_read += scanned.bytes_read;
+				if (scanned.cancelled) return {{"cancelled", true}};
+				std::string accounting_error;
+				if (!account({provider_ids::kOpenCodeCli, path}, scan.Records(), scanned.reset, accounting_error)) return {{"error", accounting_error}};
+				if (!scanned.error.empty()) ++m_sourceErrors[provider_ids::kOpenCodeCli];
+				if (sink && scanned.complete && scanned.error.empty()) m_completedDatabaseFingerprints[path] = m_pendingDatabaseFingerprints[path];
+				if (scanned.complete || !scanned.error.empty()) ++m_nextDatabase;
+			}
 		}
 		std::vector<const Record*> records;
+		std::size_t cached_records = 0;
 		std::map<std::string, std::size_t> invalid_lines, oversized_lines, suppressed_forks, source_files, pending_lines;
 		for (const std::pair<const std::pair<std::string, std::filesystem::path>, TranscriptScan>& entry : m_cache)
 		{
@@ -241,16 +308,18 @@ namespace uam::usage
 			oversized_lines[entry.first.first] += entry.second.OversizedLines();
 			suppressed_forks[entry.first.first] += entry.second.SuppressedForkRecords();
 			if (entry.second.PendingTail()) ++pending_lines[entry.first.first];
-			for (const Record& record : entry.second.Records()) records.push_back(&record);
-			if (records.size() > 500000) return {{"error", "Usage history exceeds the aggregate-record limit; totals are incomplete."}};
+			if (!sink) for (const Record& record : entry.second.Records()) records.push_back(&record);
+			if (entry.second.Records().size() > 500000 - cached_records) return {{"error", "Usage history exceeds the aggregate-record limit; totals are incomplete."}};
+			cached_records += entry.second.Records().size();
 		}
 		for (const std::pair<const std::filesystem::path, OpenCodeHistoryScan>& entry : m_databaseCache)
 		{
 			++source_files[provider_ids::kOpenCodeCli];
 			invalid_lines[provider_ids::kOpenCodeCli] += entry.second.InvalidRows();
 			suppressed_forks[provider_ids::kOpenCodeCli] += entry.second.SuppressedForkRecords();
-			for (const Record& record : entry.second.Records()) records.push_back(&record);
-			if (records.size() > 500000) return {{"error", "Usage history exceeds the aggregate-record limit; totals are incomplete."}};
+			if (!sink) for (const Record& record : entry.second.Records()) records.push_back(&record);
+			if (entry.second.Records().size() > 500000 - cached_records) return {{"error", "Usage history exceeds the aggregate-record limit; totals are incomplete."}};
+			cached_records += entry.second.Records().size();
 		}
 		const std::optional<Summary> summary = AggregateReferences(records, start_ms, end_ms, prices);
 		if (!summary) return {{"error", "Usage totals or prices exceed supported numeric limits."}};
@@ -272,35 +341,47 @@ namespace uam::usage
 			row["pendingLines"] = pending_lines[provider];
 			result["providers"].push_back(std::move(row));
 		}
+		ApplyUsageSummary(result, *summary, start_ms, end_ms);
+		return result;
+	}
+	void ApplyUsageSummary(nlohmann::json& result, const Summary& summary, std::int64_t start_ms, std::int64_t end_ms)
+	{
+		result["startMs"] = start_ms; result["endMs"] = end_ms; result["totals"] = SerializeTotals(summary.total);
+		result["duplicates"] = summary.duplicates; result["unidentifiedRecords"] = summary.unidentified_records;
+		for (nlohmann::json& row : result["providers"])
+		{
+			const std::string provider = row.value("providerId", std::string{});
+			row.update(SerializeTotals(summary.providers.contains(provider) ? summary.providers.at(provider) : Totals{}));
+		}
 		result["models"] = nlohmann::json::array();
-		for (const std::pair<const ModelKey, Totals>& model : summary->models)
+		for (const std::pair<const ModelKey, Totals>& model : summary.models)
 		{
 			nlohmann::json row = SerializeTotals(model.second);
 			row["providerId"] = std::get<0>(model.first); row["modelId"] = std::get<1>(model.first); row["speed"] = std::get<2>(model.first);
 			result["models"].push_back(std::move(row));
 		}
 		result["days"] = nlohmann::json::array(); result["hours"] = nlohmann::json::array();
-		for (const std::pair<const std::int64_t, Totals>& bucket : summary->days)
+		for (const std::pair<const std::int64_t, Totals>& bucket : summary.days)
 		{
 			nlohmann::json row = SerializeTotals(bucket.second); row["startMs"] = bucket.first; result["days"].push_back(std::move(row));
 		}
 		if (end_ms - start_ms <= 86400000)
-			for (const std::pair<const std::int64_t, Totals>& bucket : summary->hours)
+			for (const std::pair<const std::int64_t, Totals>& bucket : summary.hours)
 			{
 				nlohmann::json row = SerializeTotals(bucket.second); row["startMs"] = bucket.first; result["hours"].push_back(std::move(row));
 			}
 		result["providerDays"] = nlohmann::json::array(); result["providerHours"] = nlohmann::json::array();
-		for (const std::pair<const ProviderPeriodKey, Totals>& bucket : summary->provider_days)
+		for (const std::pair<const ProviderPeriodKey, Totals>& bucket : summary.provider_days)
 		{
 			nlohmann::json row = SerializeTotals(bucket.second); row["startMs"] = bucket.first.first; row["providerId"] = bucket.first.second;
 			result["providerDays"].push_back(std::move(row));
 		}
 		if (end_ms - start_ms <= 86400000)
-			for (const std::pair<const ProviderPeriodKey, Totals>& bucket : summary->provider_hours)
+			for (const std::pair<const ProviderPeriodKey, Totals>& bucket : summary.provider_hours)
 			{
 				nlohmann::json row = SerializeTotals(bucket.second); row["startMs"] = bucket.first.first; row["providerId"] = bucket.first.second;
 				result["providerHours"].push_back(std::move(row));
 			}
-		return result;
 	}
+
 }

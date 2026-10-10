@@ -37,6 +37,9 @@ namespace uam::usage
 		TokenCounts tokens;
 		std::optional<double> reported_cost_usd;
 		std::optional<double> estimated_cost_usd;
+		// Daily ledger rows retain original event counts without retaining individual older events.
+		std::size_t record_count = 1;
+		std::optional<std::size_t> unidentified_records;
 	};
 
 	struct CodexScanState

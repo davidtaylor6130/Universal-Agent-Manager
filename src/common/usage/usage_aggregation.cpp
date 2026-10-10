@@ -23,7 +23,8 @@ namespace uam::usage
 			totals.tokens.cache_write += record.tokens.cache_write;
 			totals.tokens.output += record.tokens.output;
 			totals.tokens.reasoning += record.tokens.reasoning;
-			++totals.records;
+			if (record.record_count == 0 || record.record_count > static_cast<std::size_t>(kMaxExactTokenCount) - totals.records) return false;
+			totals.records += record.record_count;
 			if (record.reported_cost_usd && std::isfinite(*record.reported_cost_usd) && *record.reported_cost_usd >= 0)
 			{
 				totals.reported_cost_usd += *record.reported_cost_usd;
@@ -96,7 +97,9 @@ namespace uam::usage
 			for (const std::int64_t count : {record.tokens.input, record.tokens.cached_input, record.tokens.cache_write, record.tokens.output, record.tokens.reasoning})
 				if (count < 0 || count > kMaxExactTokenCount) return std::nullopt;
 			if (record.tokens.reasoning > record.tokens.output || record.tokens.Total() > kMaxExactTokenCount) return std::nullopt;
-			if (record.dedupe_key.empty()) ++summary.unidentified_records;
+			const std::size_t unidentified = record.unidentified_records.value_or(record.dedupe_key.empty() ? record.record_count : 0);
+			if (unidentified > record.record_count || unidentified > static_cast<std::size_t>(kMaxExactTokenCount) - summary.unidentified_records) return std::nullopt;
+			summary.unidentified_records += unidentified;
 			const ModelKey model_key{record.provider_id, record.model_id, record.speed};
 			const std::map<ModelKey, ModelPrices>::const_iterator price = prices.find(model_key);
 			const ModelPrices* model_prices = price == prices.end() ? nullptr : &price->second;

@@ -8,6 +8,7 @@
 #include <stop_token>
 
 #include "cef/cef_includes.h"
+#include "include/cef_thread.h"
 #include "common/state/app_state.h"
 #include "app/transcript_retention_service.h"
 #include <nlohmann/json.hpp>
@@ -18,7 +19,7 @@
 
 namespace uam::query_handler_async { struct AsyncCefResult; }
 namespace uam { struct WorkspaceDeletionTask; }
-namespace uam::usage { class HistoryService; }
+namespace uam::usage { class Collector; }
 
 /// <summary>
 /// Handles all window.cefQuery() requests from the React frontend.
@@ -42,7 +43,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
   private:
 	uam::AppState& m_app;
 	uam::TranscriptRetentionService m_transcriptRetention;
-	std::shared_ptr<uam::usage::HistoryService> m_usageHistory;
+	std::shared_ptr<uam::usage::Collector> m_usageHistory;
+	CefRefPtr<CefThread> m_usageQueries;
 #if UAM_ENABLE_MOBILE_COMPANION
 	CefRefPtr<UamCompanionServer> m_companion;
 #endif

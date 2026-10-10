@@ -40,7 +40,11 @@ export interface UsageModel extends UsageTotals {
 export interface UsagePeriod extends UsageTotals { startMs: number }
 export interface UsageProviderPeriod extends UsagePeriod { providerId: UsageProviderId }
 export interface UsageHistory {
-  version: 2
+  version: 2 | 3
+  asOfMs?: number
+  windowDays?: UsageWindowDays
+  collecting?: boolean
+  collectionError?: string
   executionHostId: string
   source: 'native-transcripts'
   startMs: number
@@ -69,12 +73,12 @@ export interface UsagePriceOverride {
   cacheWritePerMillion: number | null
   outputPerMillion: number | null
 }
-export interface UsageWindow { startMs: number; endMs: number }
+export interface UsageWindow { startMs: number; endMs: number; days?: UsageWindowDays }
 export const USAGE_WINDOWS: { days: UsageWindowDays; label: string }[] = [
   { days: 1, label: 'Past 24h' }, { days: 7, label: '7 days' }, { days: 30, label: '30 days' }, { days: 90, label: '90 days' },
 ]
 export function usageWindow(days: UsageWindowDays, now = Date.now()): UsageWindow {
-  return { startMs: Math.max(0, now - days * 86400000), endMs: now }
+  return { startMs: Math.max(0, days === 1 ? now - 86400000 : Math.floor(now / 86400000) * 86400000 - (days - 1) * 86400000), endMs: now, days }
 }
 
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -128,7 +132,12 @@ function sameTotals(a: UsageTotals, b: UsageTotals): boolean {
 
 /** Reject incompatible, stale or malformed native summaries rather than presenting missing data as zero. */
 export function parseUsageHistory(value: unknown, executionHostId: string, window: UsageWindow): UsageHistory {
-  if (!object(value) || value.version !== 2) throw new Error('Usage data is incompatible with this build. Update UAM and its runner.')
+  if (!object(value) || (value.version !== 2 && value.version !== 3)) throw new Error('Usage data is incompatible with this build. Update UAM and its runner.')
+  if (value.version === 3) {
+    if (!integer(value.asOfMs) || value.asOfMs === 0 || value.windowDays !== window.days || typeof value.collecting !== 'boolean'
+      || typeof value.collectionError !== 'string' || value.collectionError.length > 1024) throw new Error('Cached usage data is invalid. Refresh to try again.')
+    window = usageWindow(window.days!, value.asOfMs)
+  }
   if (value.executionHostId !== executionHostId || value.startMs !== window.startMs || value.endMs !== window.endMs || value.source !== 'native-transcripts') throw new Error('Usage data belongs to a different host or time range. Refresh to try again.')
   if (!totals(value.totals) || typeof value.complete !== 'boolean' || typeof value.listingLimited !== 'boolean'
     || !['filesChecked', 'filesTotal', 'bytesRead', 'duplicates', 'unidentifiedRecords'].every(key => integer(value[key]))
