@@ -46,14 +46,14 @@ it('shows built-ins without delete buttons and deletes a user server only after 
 })
 
 it('adds a server through the form and blocks a relative program path', async () => {
-  await click('+ Add server')
+  await click('Add server')
   const inputs = () => [...host.querySelectorAll('input:not([type=checkbox])')] as HTMLInputElement[]
   await type(inputs()[0], 'docs')
   await type(inputs()[1], 'docs-server')
   await click('Save')
   expect(host.textContent).toContain('program path must be a full path')
   await type(inputs()[1], '/opt/docs/server')
-  await click('+ Add argument')
+  await click('Add argument')
   await type(host.querySelector('input[aria-label="Argument 1"]') as HTMLInputElement, '--stdio')
   await click('Save')
   expect(saveServers.mock.calls[0][0][1]).toMatchObject({ name: 'docs', transport: 'stdio', command: '/opt/docs/server', args: ['--stdio'] })

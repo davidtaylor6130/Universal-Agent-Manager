@@ -62,27 +62,23 @@ export function PermissionsSettings() {
       { id: 'accessibility', label: 'Accessibility', purpose: 'Computer Use', status: computer ? computer.accessibility ? 'allowed' : 'denied' : undefined, helper: true },
     ] : []),
   ]
-  return <section className="space-y-4 text-xs">
-    <div className="flex items-center justify-between gap-3">
-      <h3 className="font-semibold" style={{ color: 'var(--text)' }}>App permissions</h3>
-      <Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>Refresh</Button>
+  const statusColor = (status?: string) => status === 'allowed' ? 'var(--green)' : status === 'denied' ? 'var(--red)' : 'var(--text-3)'
+  return <section aria-label="App permissions" className="uam-settings-group">
+    <div className="flex items-center justify-between gap-3 mb-2">
+      <h3 className="uam-settings-group__title" style={{ margin: '0 0 0 2px' }}>App permissions</h3>
+      <Button size="sm" variant="secondary" loading={busy} disabled={busy} onClick={() => void refresh()}>Refresh</Button>
     </div>
-    <div className="overflow-x-auto">
-      <table className="w-full text-left">
-        <thead style={{ color: 'var(--text-2)' }}><tr>
-          <th className="py-2 font-medium">Permission</th><th className="py-2 font-medium">Status</th><th className="py-2 font-medium text-right">Actions</th>
-        </tr></thead>
-        <tbody>{rows.map((row) => <tr key={row.id} style={{ borderTop: '1px solid var(--border)' }}>
-          <td className="py-3 pr-3"><div style={{ color: 'var(--text)' }}>{row.label}</div><div className="mt-1" style={{ color: 'var(--text-3)' }}>{row.purpose}</div></td>
-          <td className="py-3 pr-3" style={{ color: row.status === 'allowed' ? 'var(--green)' : row.status === 'denied' ? 'var(--red)' : 'var(--text-2)' }}>{row.status ? labels[row.status] ?? 'Not checked' : 'Not checked'}</td>
-          <td className="py-3"><div className="flex justify-end gap-2">
-            {row.status !== 'allowed' && <Button size="sm" variant="secondary" disabled={busy || permissions?.platform !== 'macos' || row.status === 'restricted' || row.status === 'unsupported'} onClick={() => void act(row.id, row.helper, true)}>Request</Button>}
-            <Button size="sm" variant="ghost" disabled={busy || permissions?.platform !== 'macos'} onClick={() => void act(row.id, row.helper, false)}>System settings</Button>
-          </div></td>
-        </tr>)}</tbody>
-      </table>
+    <div className="uam-settings-group__body">
+      {rows.map((row) => <div key={row.id} data-permission-row className="uam-settings-row text-xs">
+        <div className="min-w-0"><div className="text-sm" style={{ color: 'var(--text)' }}>{row.label}</div><div className="mt-0.5" style={{ color: 'var(--text-3)' }}>Used by {row.purpose}</div></div>
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="inline-flex items-center gap-1.5" style={{ color: statusColor(row.status) }}><span aria-hidden className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: statusColor(row.status) }} />{row.status ? labels[row.status] ?? 'Not checked' : 'Not checked'}</span>
+          {row.status !== 'allowed' && <Button size="sm" variant="secondary" disabled={busy || permissions?.platform !== 'macos' || row.status === 'restricted' || row.status === 'unsupported'} onClick={() => void act(row.id, row.helper, true)}>Request</Button>}
+          <Button size="sm" variant="ghost" disabled={busy || permissions?.platform !== 'macos'} onClick={() => void act(row.id, row.helper, false)}>System settings</Button>
+        </div>
+      </div>)}
+      {MOBILE_COMPANION_ENABLED && <p className="text-xs" style={{ color: 'var(--text-3)' }}>macOS does not expose the saved Local Network decision. Check it in System Settings.</p>}
     </div>
-    {MOBILE_COMPANION_ENABLED && <p style={{ color: 'var(--text-2)' }}>macOS does not expose the saved Local Network decision. Check it in System Settings.</p>}
-    {message && <p role="status" style={{ color: 'var(--text-2)' }}>{message}</p>}
+    {message && <p role="status" className="mt-2 text-xs" style={{ color: 'var(--text-2)' }}>{message}</p>}
   </section>
 }

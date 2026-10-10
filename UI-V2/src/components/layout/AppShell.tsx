@@ -786,7 +786,8 @@ export function AppShell() {
         </>
       )}
 
-      {!updatesOpen && updateMonitor.updates.length > 0 && postponedUpdates !== updateNoticeIdentity && (
+      {/* Settings is a full page; the rail's update button stays available there. */}
+      {!updatesOpen && !isSettingsOpen && updateMonitor.updates.length > 0 && postponedUpdates !== updateNoticeIdentity && (
         <div className="uam-side-panel-in fixed bottom-4 right-14 z-40 w-80 max-w-[calc(100vw-2rem)] rounded-xl p-3" style={{ background: 'var(--surface-up)', color: 'var(--text)', boxShadow: 'var(--elev-3)', border: '1px solid var(--border-bright)' }} role="status">
           <div className="flex items-start gap-2.5">
             <ArrowUpCircle size={18} aria-hidden className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />
