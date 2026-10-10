@@ -188,7 +188,7 @@ bool SyncMessageBlocksFromTurnEvents(Message& message, const AcpSessionState& se
 Message* CurrentAssistantMessage(ChatSession& chat, const AcpSessionState& session);
 const Message* CurrentAssistantMessage(const ChatSession& chat, const AcpSessionState& session);
 bool SyncCurrentAssistantMessageBlocksFromTurnEvents(ChatSession& chat, AcpSessionState& session);
-void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity = {});
+void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity = {}, int64_t tokens_before = -1, int64_t tokens_after = -1);
 void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk);
 bool AppendThoughtTurnEvent(AcpSessionState& session, const std::string& chunk);
 bool HasTurnToolEvent(const AcpSessionState& session, const std::string& tool_call_id);

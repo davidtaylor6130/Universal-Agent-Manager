@@ -12332,6 +12332,11 @@ UAM_TEST(StateSerializerMessagePagesReturnLatestAndOlderSlices)
 	    chat, 2, std::nullopt, true, digest);
 	UAM_ASSERT(changed.contains("messages"));
 	UAM_ASSERT(latest["messagesDigest"] != changed["messagesDigest"]);
+	chat.messages[1].role = MessageRole::Assistant;
+	chat.messages[3].role = MessageRole::System;
+	const nlohmann::json navigation = uam::StateSerializer::SerializeMessagePage(chat, 2, std::nullopt);
+	UAM_ASSERT_EQ(navigation["userMessageIndices"], nlohmann::json::array({0, 2}));
+
 }
 
 UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
@@ -12348,6 +12353,8 @@ UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 	ToolCall large_tool = small_tool;
 	large_tool.id = "tool-large";
 	large_tool.result_text.assign((64 * 1024) + 1, 'x');
+	large_tool.is_sub_agent = true;
+	large_tool.child_activity = "Earlier activity\n\nReading package.json";
 	assistant.tool_calls.push_back(large_tool);
 	chat.messages.push_back(std::move(assistant));
 
@@ -12358,6 +12365,7 @@ UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 	UAM_ASSERT_EQ(serialized_small.value("content", ""), std::string("small result"));
 	UAM_ASSERT(serialized_large.value("contentDeferred", false));
 	UAM_ASSERT(!serialized_large.contains("content"));
+	UAM_ASSERT_EQ(serialized_large.value("currentActivity", ""), std::string("Reading package.json"));
 	const std::string persisted_digest = serialized_large.value("contentDigest", "");
 	UAM_ASSERT(!persisted_digest.empty());
 	chat.messages[0].tool_calls[1].result_text.back() = 'z';
@@ -12372,6 +12380,8 @@ UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 	uam::AcpToolCallState live_tool;
 	live_tool.id = "tool-live-large";
 	live_tool.content.assign((64 * 1024) + 1, 'y');
+	live_tool.is_sub_agent = true;
+	live_tool.child_activity = std::string(1000, 'z');
 	live_session->tool_calls.push_back(std::move(live_tool));
 	app.acp_sessions.push_back(std::move(live_session));
 	const nlohmann::json live_serialized = uam::StateSerializer::Serialize(app);
@@ -12379,6 +12389,7 @@ UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 	    live_serialized["chats"][0]["acpSession"]["toolCalls"][0];
 	UAM_ASSERT(serialized_live.value("contentDeferred", false));
 	UAM_ASSERT(!serialized_live.contains("content"));
+	UAM_ASSERT_EQ(serialized_live.value("currentActivity", "").size(), std::size_t{240});
 	const std::string live_digest = serialized_live.value("contentDigest", "");
 	UAM_ASSERT(!live_digest.empty());
 	app.acp_sessions[0]->tool_calls[0].content.back() = 'z';

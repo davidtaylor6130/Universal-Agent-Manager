@@ -253,7 +253,7 @@ export interface AcpConfigOption {
 export type AcpTurnEvent =
   | { type: 'assistant_text'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
-  | { type: 'context_compaction'; text: string; toolCallId?: string; requestId?: string }
+  | { type: 'context_compaction'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
   | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }
   | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
   | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
@@ -714,6 +714,7 @@ export interface OpenWorkspaceEditorResponse {
 }
 
 export interface ChatMessagesResponse {
+  userMessageIndices?: number[] | null
   chatId?: string
   messagesDigest?: string
   unchanged?: boolean

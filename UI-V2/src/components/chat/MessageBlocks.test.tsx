@@ -914,12 +914,12 @@ describe('persisted context compaction', () => {
     const root = createRoot(host)
     await act(async () => root.render(<PersistedMessageContent message={{
       id: 'compaction', sessionId: 'chat', role: 'assistant', content: '', createdAt: new Date(),
-      blocks: [{ type: 'context_compaction', text: 'Keep the selected workspace.', requestId: 'compact-1' }],
+      blocks: [{ type: 'context_compaction', text: 'Keep the selected workspace.', requestId: 'compact-1', tokensBefore: 27445, tokensAfter: 1192 }],
     }} workingMode="compact" onSelectTool={vi.fn()} />))
     const details = host.querySelector('details.context-compaction') as HTMLDetailsElement
     expect(details).not.toBeNull()
     expect(details.open).toBe(false)
-    expect(details.querySelector('summary')?.textContent).toBe('Context compacted')
+    expect(details.querySelector('summary')?.textContent).toBe('Context compacted · 27,445 → 1,192 tokens (96% reduced)')
     details.open = true
     expect(details.textContent).toContain('Keep the selected workspace.')
     await act(async () => root.unmount())

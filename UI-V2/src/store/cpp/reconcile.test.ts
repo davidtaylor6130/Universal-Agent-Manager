@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
-import { sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
+import { messageBlocksEquivalent, sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
 import { sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
 describe('Computer Use settings sanitization', () => {
@@ -412,3 +412,16 @@ describe('native compaction lifecycle', () => {
   expect(settled.backgroundTaskCount).toBe(0)
   for (const value of [-1, 1.5, '1', Infinity]) expect(sanitizeCppAcpSession({ backgroundTaskCount: value })?.backgroundTaskCount).toBe(0)
  })
+
+describe('reported compaction counts', () => {
+  it('preserves zero and rejects malformed counts without inventing a reduction', () => {
+    const valid = sanitizeCppMessage({ role: 'assistant', content: '', blocks: [{ type: 'context_compaction', tokensBefore: 1234, tokensAfter: 0 }] })
+    expect(valid?.blocks?.[0]).toMatchObject({ tokensBefore: 1234, tokensAfter: 0 })
+    for (const invalid of [-1, 1.5, '1200', Number.MAX_SAFE_INTEGER + 1, Infinity]) {
+      const result = sanitizeCppMessage({ role: 'assistant', content: '', blocks: [{ type: 'context_compaction', tokensBefore: invalid, tokensAfter: invalid }] })
+      expect(result?.blocks?.[0]).toMatchObject({ tokensBefore: undefined, tokensAfter: undefined })
+    }
+    expect(messageBlocksEquivalent([{ type: 'context_compaction', text: '', tokensBefore: 1234 }],
+      [{ type: 'context_compaction', text: '', tokensBefore: 1235 }])).toBe(false)
+  })
+})

@@ -202,7 +202,8 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.attentionRevision === next.attentionRevision &&
     previous.interactionAt?.getTime() === next.interactionAt?.getTime() &&
     (previous.interactionAt === null) === (next.interactionAt === null) &&
-    previous.settledAt === next.settledAt
+    previous.settledAt === next.settledAt &&
+    previous.userMessageIndices === next.userMessageIndices
 }
 
 export function sessionFromCppChat(
@@ -280,6 +281,7 @@ export function sessionFromCppChat(
     lastOpenedAt,
     attentionRevision: chat.attentionRevision,
     settledAt: chat.settledAt,
+    userMessageIndices: previous?.messagesDigest === chat.messagesDigest ? previous?.userMessageIndices : undefined,
   }
 
   return previous && sessionsEquivalent(previous, nextSession) ? previous : nextSession
@@ -435,6 +437,8 @@ function turnEventsEquivalent(existing: AcpTurnEvent[], next: AcpTurnEvent[]) {
   return existing.every((event, index) => {
     const other = next[index]
     if (event.type !== other.type) return false
+    if (event.type === 'context_compaction' && other.type === 'context_compaction' &&
+      (event.tokensBefore !== other.tokensBefore || event.tokensAfter !== other.tokensAfter)) return false
     if ('text' in event || 'text' in other) {
       if ((event as { text?: string }).text !== (other as { text?: string }).text) return false
     }
@@ -904,7 +908,8 @@ export function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]
       (tool.contentDigest ?? '') === (other.contentDigest ?? '') &&
       Boolean(tool.isSubAgent) === Boolean(other.isSubAgent) &&
       (tool.subAgentId ?? '') === (other.subAgentId ?? '') &&
-      (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '')
+      (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '') &&
+      (tool.currentActivity ?? '') === (other.currentActivity ?? '')
     )
   })
 }
@@ -913,6 +918,8 @@ export function messageBlocksEquivalent(existing: MessageBlock[], next: MessageB
   if (existing.length !== next.length) return false
   return existing.every((block, index) => {
     const other = next[index]
+    if (block.type === 'context_compaction' && other.type === 'context_compaction' &&
+      (block.tokensBefore !== other.tokensBefore || block.tokensAfter !== other.tokensAfter)) return false
     return (
       block.type === other.type &&
       (block.text ?? '') === (other.text ?? '') &&

@@ -11516,13 +11516,21 @@ UAM_TEST(ClaudeCompactionRetainsSharedSeparatorAndSummary)
 	const nlohmann::json started = {{"type", "system"}, {"subtype", "status"}, {"status", "compacting"}};
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, started.dump()));
 	UAM_ASSERT(session.context_compaction_in_progress);
-	const nlohmann::json boundary = {{"type", "system"}, {"subtype", "compact_boundary"}, {"uuid", "boundary"}, {"summary", "Remember the workspace."}};
+	const nlohmann::json boundary = {{"type", "system"}, {"subtype", "compact_boundary"}, {"uuid", "boundary"}, {"summary", "Remember the workspace."}, {"compact_metadata", {{"pre_tokens", 27445}, {"post_tokens", 1192}}}};
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, boundary.dump()));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, boundary.dump()));
 	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
 	UAM_ASSERT(!session.context_compaction_in_progress);
 	UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Remember the workspace."));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().compaction_tokens_before, int64_t{27445});
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().compaction_tokens_after, int64_t{1192});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+	UAM_ASSERT(restored.has_value());
+	UAM_ASSERT_EQ(restored->messages.back().blocks.front().compaction_tokens_after, int64_t{1192});
+	const nlohmann::json projected = uam::StateSerializer::SerializeSession(*restored);
+	UAM_ASSERT_EQ(projected["messages"][0]["blocks"][0]["tokensBefore"].get<int64_t>(), int64_t{27445});
 	UAM_ASSERT(chat.messages.back().content.empty());
 }
 

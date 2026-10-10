@@ -96,6 +96,7 @@ export function SubAgentRunningPanel({
               </span>
             </span>
             <span className="truncate" style={{ fontSize: 12, color: 'var(--text)' }}>{displayTitle}</span>
+            {tool.currentActivity && <span className="truncate text-xs" title={tool.currentActivity}>{tool.currentActivity}</span>}
           </span>
         </span>
         <span className="flex flex-col items-end gap-1">

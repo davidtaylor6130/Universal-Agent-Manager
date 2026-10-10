@@ -8,7 +8,7 @@
 namespace uam::acp_detail
 {
 
-void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity)
+void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity, int64_t tokens_before, int64_t tokens_after)
 {
 	session.context_compaction_in_progress = false;
 	for (AcpTurnEventState& event : session.turn_events)
@@ -16,6 +16,8 @@ void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatS
 		if (event.type == "context_compaction" && !identity.empty() && event.request_id_json == identity)
 		{
 			if (!summary.empty()) event.text = summary;
+			if (tokens_before >= 0) event.compaction_tokens_before = tokens_before;
+			if (tokens_after >= 0) event.compaction_tokens_after = tokens_after;
 			SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
 			ScheduleChatSave(app, chat, 0.0);
 			return;
@@ -25,6 +27,8 @@ void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatS
 	event.type = "context_compaction";
 	event.text = summary;
 	event.request_id_json = identity;
+	event.compaction_tokens_before = tokens_before;
+	event.compaction_tokens_after = tokens_after;
 	session.turn_events.push_back(std::move(event));
 	EnsureAssistantMessage(chat, session);
 	SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
@@ -39,7 +43,7 @@ bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<
 	}
 	for (std::size_t i = 0; i < lhs.size(); ++i)
 	{
-		if (lhs[i].type != rhs[i].type || lhs[i].text != rhs[i].text || lhs[i].tool_call_id != rhs[i].tool_call_id || lhs[i].request_id_json != rhs[i].request_id_json)
+		if (lhs[i].type != rhs[i].type || lhs[i].text != rhs[i].text || lhs[i].tool_call_id != rhs[i].tool_call_id || lhs[i].request_id_json != rhs[i].request_id_json || lhs[i].compaction_tokens_before != rhs[i].compaction_tokens_before || lhs[i].compaction_tokens_after != rhs[i].compaction_tokens_after)
 		{
 			return false;
 		}
@@ -121,6 +125,8 @@ std::vector<MessageBlock> MessageBlocksFromTurnEvents(const AcpSessionState& ses
 		block.text = event.text;
 		block.tool_call_id = event.tool_call_id;
 		block.request_id_json = event.request_id_json;
+		block.compaction_tokens_before = event.compaction_tokens_before;
+		block.compaction_tokens_after = event.compaction_tokens_after;
 		blocks.push_back(std::move(block));
 	}
 	return blocks;
@@ -198,6 +204,8 @@ void RestoreTurnEventsFromMessageBlocks(AcpSessionState& session, const Message&
 		event.text = block.text;
 		event.tool_call_id = block.tool_call_id;
 		event.request_id_json = block.request_id_json;
+		event.compaction_tokens_before = block.compaction_tokens_before;
+		event.compaction_tokens_after = block.compaction_tokens_after;
 		session.turn_events.push_back(std::move(event));
 	}
 }

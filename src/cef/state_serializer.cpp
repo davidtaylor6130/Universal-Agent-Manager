@@ -324,6 +324,25 @@ namespace uam
 			return result;
 		}
 
+	std::string LatestChildActivity(const std::string& activity)
+	{
+		if (!activity.empty())
+		{
+			const std::size_t end = activity.find_last_not_of("\r\n ");
+			if (end != std::string::npos)
+			{
+				const std::size_t newline = activity.rfind('\n', end);
+				const std::size_t start = newline == std::string::npos ? 0 : newline + 1;
+				std::size_t length = std::min<std::size_t>(end - start + 1, 240);
+				// Keep the preview bounded without cutting a UTF-8 code point.
+				while (start + length < activity.size() && length > 0 &&
+				       (static_cast<unsigned char>(activity[start + length]) & 0xC0) == 0x80) --length;
+				return activity.substr(start, length);
+			}
+		}
+		return {};
+	}
+
 	nlohmann::json SerializeToolCallForFrontend(const ToolCall& tool_call,
 	                                             bool defer_tool_call_content = false)
 	{
@@ -351,6 +370,7 @@ namespace uam
 		                             std::to_string(std::hash<std::string>{}(tool_call.child_activity));
 		if (!content_deferred)
 			tool_json["content"] = StateSerializer::ToolCallContentForFrontend(tool_call);
+		if (tool_call.is_sub_agent) tool_json["currentActivity"] = LatestChildActivity(tool_call.child_activity);
 		tool_json["isSubAgent"] = tool_call.is_sub_agent;
 			tool_json["subAgentId"] = tool_call.sub_agent_id;
 			tool_json["subAgentTitle"] = tool_call.sub_agent_title;
@@ -383,6 +403,8 @@ namespace uam
 			{
 				block_json["requestId"] = block.request_id_json;
 			}
+			if (block.compaction_tokens_before >= 0) block_json["tokensBefore"] = block.compaction_tokens_before;
+			if (block.compaction_tokens_after >= 0) block_json["tokensAfter"] = block.compaction_tokens_after;
 			return block_json;
 		}
 
@@ -620,6 +642,8 @@ namespace uam
 					FingerprintHashString(hash, block.text);
 					FingerprintHashString(hash, block.tool_call_id);
 					FingerprintHashString(hash, block.request_id_json);
+					FingerprintHashString(hash, std::to_string(block.compaction_tokens_before));
+					FingerprintHashString(hash, std::to_string(block.compaction_tokens_after));
 				}
 				FingerprintHashString(hash, std::to_string(message.markdown_store_files.size()));
 				for (const std::string& file : message.markdown_store_files)
@@ -758,6 +782,7 @@ namespace uam
 				nlohmann::json tool_call_json = {
 				    {"id", tool_call.id}, {"title", tool_call.title}, {"kind", tool_call.kind}, {"status", tool_call.status}, {"approvalStatus", tool_call.approval_status}, {"contentDeferred", content.size() > kInlineToolContentMaxBytes}, {"isSubAgent", tool_call.is_sub_agent}, {"subAgentId", tool_call.sub_agent_id}, {"subAgentTitle", tool_call.sub_agent_title},
 				};
+				if (tool_call.is_sub_agent) tool_call_json["currentActivity"] = LatestChildActivity(tool_call.child_activity);
 				if (content.size() <= kInlineToolContentMaxBytes)
 					tool_call_json["content"] = content;
 				else
@@ -862,6 +887,8 @@ namespace uam
 				{
 					event_json["requestId"] = event.request_id_json;
 				}
+				if (event.compaction_tokens_before >= 0) event_json["tokensBefore"] = event.compaction_tokens_before;
+				if (event.compaction_tokens_after >= 0) event_json["tokensAfter"] = event.compaction_tokens_after;
 				turn_events_json.push_back(std::move(event_json));
 			}
 			return turn_events_json;
@@ -1751,6 +1778,14 @@ namespace uam
 			return {{"startIndex", start}, {"totalCount", total_count},
 			        {"messagesDigest", digest}, {"unchanged", true}};
 		}
+		nlohmann::json user_message_indices = nlohmann::json::array();
+		for (std::size_t index = 0; index < total_count; ++index)
+		{
+			if (session.messages[index].role != MessageRole::User) continue;
+			user_message_indices.push_back(index);
+			// Keep the navigation detail within the existing bounded tail-cache budget.
+			if (user_message_indices.size() > 32768) { user_message_indices = nullptr; break; }
+		}
 		nlohmann::json messages = JsonArrayWithCapacity(end - start);
 		for (std::size_t index = start; index < end; ++index)
 		{
@@ -1759,6 +1794,7 @@ namespace uam
 
 		return {
 		    {"messages", std::move(messages)},
+		    {"userMessageIndices", std::move(user_message_indices)},
 		    {"startIndex", start},
 		    {"totalCount", total_count},
 		    {"messagesDigest", digest},

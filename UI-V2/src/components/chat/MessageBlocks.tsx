@@ -527,9 +527,12 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
   )
 }
 
-export function CompactionSeparator({ summary }: { summary: string }) {
+export function CompactionSeparator({ summary, tokensBefore, tokensAfter }: { summary: string; tokensBefore?: number; tokensAfter?: number }) {
+  const known = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value >= 0
+  const counts = known(tokensBefore) && known(tokensAfter) ? `${tokensBefore.toLocaleString()} → ${tokensAfter.toLocaleString()} tokens` : undefined
+  const reduction = counts && tokensBefore! > 0 && tokensAfter! <= tokensBefore! ? ` (${Math.round((1 - tokensAfter! / tokensBefore!) * 100)}% reduced)` : ''
   return <details className="context-compaction">
-    <summary>Context compacted</summary>
+    <summary>Context compacted{counts && ` · ${counts}${reduction}`}</summary>
     <div>{summary.trim() ? <MarkdownContent content={summary} /> : 'The provider did not include a summary.'}</div>
   </details>
 }
@@ -604,7 +607,7 @@ export function PersistedMessageBlocksContent({
       )}
       <div className={workingMode === 'compact' && expanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {renderedBlocks.map((block, index) => {
-        if (block.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} />
+        if (block.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} />
         if (block.type === 'assistant_text') {
           if (!expanded && index !== lastAssistantBlockIndex) return null
           const review = parseGoalReviewDecision(block.text)
@@ -933,7 +936,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
       )}
       <div className={workingMode === 'compact' && traceExpanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {renderedEvents.map((event, index) => {
-        if (event.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} />
+        if (event.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} />
         if (event.type === 'assistant_text') {
           if (!traceExpanded && index !== lastAssistantEventIndex) return null
           return <div className="conversation-trace__text" key={`text-${index}`}><MarkdownContent content={event.text} /></div>

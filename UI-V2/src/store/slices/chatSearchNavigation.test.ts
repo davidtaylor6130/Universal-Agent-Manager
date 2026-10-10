@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSessionsSlice } from './sessionsSlice'
+import { userMessageIndicesFromPage, createSessionsSlice } from './sessionsSlice'
 import type { AppState, ZustandSet } from '../storeTypes'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 
@@ -31,8 +31,9 @@ describe('search jump ownership', () => {
     expect(requests).toHaveLength(0)
     const jump = get().jumpToSessionMessage('chat', 100)
     expect(requests[0].payload).toMatchObject({ targetMessageIndex: 100, limit: 50, expectedMessagesDigest: 'snapshot' })
-    requests[0].reply(page())
+    requests[0].reply({ ...page(), userMessageIndices: [0, 10, 150] })
     expect(await jump).toBe(true)
+    expect(get().sessions[0].userMessageIndices).toEqual([0, 10, 150])
     expect(get().messages.chat).toHaveLength(50)
   })
   it('hydrates one verified bounded page, anchors once, and keeps composer text and attachments', async () => {
@@ -118,4 +119,12 @@ describe('search jump ownership', () => {
     expect(get().messages).toBe(original)
   })
 
+})
+
+it('rejects malformed user-message indices instead of creating assistant slots', () => {
+  expect(userMessageIndicesFromPage({ totalCount: 10, userMessageIndices: [0, 3, 9] })).toEqual([0, 3, 9])
+  expect(userMessageIndicesFromPage({ totalCount: 10, startIndex: 3, messages: [{ role: 'assistant', content: 'output' }], userMessageIndices: [3] })).toBeUndefined()
+  for (const indices of [[1, 1], [2, 1], [-1], [10], [1.5], Array(32769).fill(0)]) {
+    expect(userMessageIndicesFromPage({ totalCount: 10, userMessageIndices: indices })).toBeUndefined()
+  }
 })

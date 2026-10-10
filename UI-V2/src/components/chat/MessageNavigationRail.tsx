@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from 'react'
+import { useEffect, useMemo, useState, type RefObject } from 'react'
 import type { Message } from '../../types/message'
 
 /** Message positions stay evenly spaced regardless of message length. */
@@ -7,8 +7,8 @@ export function messageIndexAtPointer(count: number, top: number, height: number
   return Math.max(0, Math.min(count - 1, Math.round((pointer - top) / height * (count - 1))))
 }
 
-export function MessageNavigationRail({ count, startIndex, messages, currentIndex, viewportRef, busy, onNavigate }: {
-  count: number
+export function MessageNavigationRail({ userMessageIndices, startIndex, messages, currentIndex, viewportRef, busy, onNavigate }: {
+  userMessageIndices?: number[]
   startIndex: number
   messages: Message[]
   currentIndex: number
@@ -16,6 +16,8 @@ export function MessageNavigationRail({ count, startIndex, messages, currentInde
   busy: boolean
   onNavigate: (index: number) => void
 }) {
+  const indices = useMemo(() => userMessageIndices ?? messages.flatMap((message, index) => message.role === 'user' ? [startIndex + index] : []), [userMessageIndices, messages, startIndex])
+  const count = indices.length
   const [previewIndex, setPreviewIndex] = useState<number | null>(null)
   const [visibleIndex, setVisibleIndex] = useState(currentIndex)
   useEffect(() => setVisibleIndex(currentIndex), [currentIndex])
@@ -42,13 +44,20 @@ export function MessageNavigationRail({ count, startIndex, messages, currentInde
       if (frame !== null) cancelAnimationFrame(frame)
     }
   }, [messages, startIndex, viewportRef])
-  if (count < 2) return null
-  const index = Math.max(0, Math.min(count - 1, previewIndex ?? visibleIndex))
-  const message = messages[index - startIndex]
-  const label = `Message ${index + 1} of ${count}`
-  const preview = message ? `${message.role}: ${message.content.slice(0, 160)}` : 'Open this message'
+  if (count === 0) return null
+  let currentUserIndex = 0
+  let lastUserIndex = count - 1
+  while (currentUserIndex < lastUserIndex) {
+    const middle = Math.ceil((currentUserIndex + lastUserIndex) / 2)
+    if (indices[middle] <= visibleIndex) currentUserIndex = middle
+    else lastUserIndex = middle - 1
+  }
+  const index = Math.max(0, Math.min(count - 1, previewIndex ?? currentUserIndex))
+  const message = messages[indices[index] - startIndex]
+  const label = `${!userMessageIndices && startIndex > 0 ? 'Loaded user' : 'User'} message ${index + 1} of ${count}`
+  const preview = message ? message.content.slice(0, 160) : 'Open this message'
   return <div className="absolute left-0 top-4 z-10 w-5" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
-    <div role="slider" tabIndex={busy ? -1 : 0} aria-label="Navigate messages" aria-orientation="vertical"
+    <div role="slider" tabIndex={busy ? -1 : 0} aria-label="Navigate user messages" aria-orientation="vertical"
       aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={label} aria-disabled={busy}
       className="relative h-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
       title={`${label}\n${preview}`}
@@ -60,7 +69,7 @@ export function MessageNavigationRail({ count, startIndex, messages, currentInde
       onClick={(event) => {
         if (busy) return
         const rect = event.currentTarget.getBoundingClientRect()
-        onNavigate(messageIndexAtPointer(count, rect.top, rect.height, event.clientY))
+        onNavigate(indices[messageIndexAtPointer(count, rect.top, rect.height, event.clientY)])
       }}
       onKeyDown={(event) => {
         if (busy) return
@@ -71,14 +80,13 @@ export function MessageNavigationRail({ count, startIndex, messages, currentInde
         event.preventDefault()
         const target = next ?? index
         setPreviewIndex(target)
-        onNavigate(target)
+        onNavigate(indices[target])
       }}>
-      <span aria-hidden style={{ position: 'absolute', top: 0, bottom: 0, left: 9, width: 1, background: 'var(--border)' }} />
-      {messages.filter((message) => message.role === 'user').slice(0, 64).map((message) => {
-        const absoluteIndex = startIndex + messages.indexOf(message)
-        return <span key={message.id} aria-hidden style={{ position: 'absolute', top: `${absoluteIndex / (count - 1) * 100}%`, left: 6, width: 7, height: 2, background: 'var(--text-3)' }} />
-      })}
-      <span aria-hidden style={{ position: 'absolute', top: `${index / (count - 1) * 100}%`, left: 4, width: 11, height: 3, background: 'var(--accent)' }} />
+      <span aria-hidden style={{ position: 'absolute', top: count === 1 ? '50%' : 0, bottom: count === 1 ? undefined : -1, left: 6, width: 7, height: count === 1 ? 1 : undefined,
+        background: count === 1 ? 'var(--text-3)' : undefined,
+        backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--text-3) 1px, transparent 1px)' : undefined,
+        backgroundSize: count > 1 ? `100% ${100 / (count - 1)}%` : undefined }} />
+      <span aria-hidden style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 4, width: 11, height: 3, background: 'var(--accent)' }} />
     </div>
   </div>
 }

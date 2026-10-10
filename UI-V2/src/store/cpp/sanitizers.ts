@@ -260,13 +260,20 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
     isSubAgent: booleanOr(value.isSubAgent),
     subAgentId: stringOr(value.subAgentId),
     subAgentTitle: stringOr(value.subAgentTitle),
+    currentActivity: stringOr(value.currentActivity).slice(0, 240),
   }
 }
 
 export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
   if (!isRecord(value)) return null
   const type = value.type
-  if (type === 'assistant_text' || type === 'thought' || type === 'context_compaction') {
+  if (type === 'context_compaction') {
+    const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+    return { type, text: stringOr(value.text), toolCallId: isString(value.toolCallId) ? value.toolCallId : undefined,
+      requestId: isString(value.requestId) ? value.requestId : undefined,
+      tokensBefore: count(value.tokensBefore), tokensAfter: count(value.tokensAfter) }
+  }
+  if (type === 'assistant_text' || type === 'thought') {
     return {
       type,
       text: stringOr(value.text),

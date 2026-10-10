@@ -114,6 +114,18 @@ function computerUseFailure(error?: string): ComputerUseActionResult {
   return error ? { ok: false, error } : { ok: false }
 }
 
+/** Validate the optional bounded navigation index from current and legacy bridges. */
+export function userMessageIndicesFromPage(data: ChatMessagesResponse): number[] | undefined {
+  const indices = data.userMessageIndices
+  if (!Array.isArray(indices) || indices.length > 32768 || !Number.isSafeInteger(data.totalCount)) return undefined
+  return indices.every((index, position) => {
+    const localIndex = index - (data.startIndex ?? 0)
+    const loaded = data.messages?.[localIndex]
+    return Number.isSafeInteger(index) && index >= 0 && index < data.totalCount! &&
+      (position === 0 || index > indices[position - 1]) && (!loaded || loaded.role === 'user')
+  }) ? indices : undefined
+}
+
 export function withoutDeletedKeys<T>(values: Record<string, T>, deletedIds: Set<string>): Record<string, T> {
   return Object.fromEntries(Object.entries(values).filter(([id]) => !deletedIds.has(id)))
 }
@@ -265,8 +277,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         // Native summary tokens and authoritative page hashes have different contracts.
         const sessions = !streamedTail
           ? state.sessions.map((candidate) =>
-              candidate.id === chatId && candidate.messageCount !== totalCount
-                ? { ...candidate, messageCount: totalCount }
+              candidate.id === chatId && (candidate.messageCount !== totalCount || data.userMessageIndices !== undefined)
+                ? { ...candidate, messageCount: totalCount, userMessageIndices: userMessageIndicesFromPage(data) }
                 : candidate
             )
           : state.sessions
@@ -451,7 +463,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         messages: { ...state.messages, [hit.chatId]: page },
         historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [hit.chatId]: data.startIndex! },
         sessions: state.sessions.map((session) => session.id === hit.chatId
-          ? { ...session, messageCount: data.totalCount } : session),
+          ? { ...session, messageCount: data.totalCount, userMessageIndices: userMessageIndicesFromPage(data) } : session),
         chatHistoryErrorBySessionId: Object.fromEntries(Object.entries(state.chatHistoryErrorBySessionId).filter(([id]) => id !== hit.chatId)),
       }))
       return true
@@ -491,7 +503,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
         set((state) => ({ messages: { ...state.messages, [chatId]: data.messages!.map((message, index) => buildMessageFromCpp(chatId, message, data.startIndex! + index)) },
           historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: data.startIndex! },
-          sessions: state.sessions.map((session) => session.id === chatId ? { ...session, messageCount: data.totalCount } : session),
+          sessions: state.sessions.map((session) => session.id === chatId ? { ...session, messageCount: data.totalCount, userMessageIndices: userMessageIndicesFromPage(data) } : session),
         }))
       } finally { if (boundedTailReloads.get(chatId) === reloadGeneration) boundedTailReloads.delete(chatId) }
     },

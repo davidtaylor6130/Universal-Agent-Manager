@@ -30,7 +30,7 @@ namespace uam
 		if (!io::TryReadTextFile(prepared->summary_temp, text, 4 * 1024 * 1024)) return false;
 		nlohmann::json summary = nlohmann::json::parse(text, nullptr, false);
 		if (!summary.is_object() || summary.value("id", "") != chat.id) return false;
-		summary["frontendMessageTail"] = {{"version", 1}, {"sourceRevision", prepared->primary_revision},
+		summary["frontendMessageTail"] = {{"version", 2}, {"sourceRevision", prepared->primary_revision},
 		    {"page", StateSerializer::SerializeMessagePage(chat, 50, std::nullopt, true)}};
 		text = summary.dump();
 		if (text.size() > 512 * 1024) return false;
@@ -83,7 +83,7 @@ namespace uam
 		    summary.value("persisted_message_count", std::size_t(0)) != expected_count || summary.value("persisted_messages_digest", "") != expected_digest ||
 		    !summary.contains("frontendMessageTail")) return std::nullopt;
 		const nlohmann::json& tail = summary["frontendMessageTail"];
-		if (!tail.is_object() || tail.value("version", 0) != 1 || tail.value("sourceRevision", "") != *revision || !tail.contains("page")) return std::nullopt;
+		if (!tail.is_object() || tail.value("version", 0) != 2 || tail.value("sourceRevision", "") != *revision || !tail.contains("page")) return std::nullopt;
 		nlohmann::json page = tail["page"];
 		if (!page.is_object() || !page.contains("messages") || !page["messages"].is_array() ||
 		    page.value("totalCount", std::size_t(0)) != expected_count || page["messages"].size() != std::min(expected_count, std::size_t(50)) ||

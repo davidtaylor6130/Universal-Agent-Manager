@@ -1,7 +1,7 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MessageFrame, PermissionInlineCard, ToolCallModal, UserInputInlineCard } from './ToolCallViews'
+import { SubAgentRunningPanel, MessageFrame, PermissionInlineCard, ToolCallModal, UserInputInlineCard } from './ToolCallViews'
 import type { AcpPendingPermission, AcpPendingUserInput } from '../../store/useAppStore'
 import { sanitizePendingUserInput } from '../../store/cpp/sanitizers'
 
@@ -403,4 +403,10 @@ it.each(['failure', 'rejection'])('ignores a stale permission %s while the next 
     await act(async () => { finishNew(false) })
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('Try again')
     expect(button('Allow once').disabled).toBe(false)
+})
+
+it('shows the latest subagent activity while its transcript is deferred', async () => {
+    await render(<SubAgentRunningPanel tool={{ ...tool, status: 'running', isSubAgent: true, currentActivity: 'Reading package.json' }} onSelectTool={vi.fn()} />)
+    expect(host.querySelector('summary')?.textContent).toContain('Reading package.json')
+    expect(host.querySelector('details')?.open).toBe(false)
 })

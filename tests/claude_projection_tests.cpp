@@ -186,6 +186,10 @@ UAM_TEST(ClaudeBackgroundAndChildEventsStayWithTheirOriginalTool)
 	UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("running"));
 	UAM_ASSERT_EQ(session.tool_calls.front().child_activity, std::string("Child narration\n\ntests.cpp\n\nChild string answer\n\n[Image]"));
 	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Parent narration"));
+	send({{"type", "system"}, {"subtype", "task_progress"}, {"task_id", "background-1"}, {"description", "Reading package.json"}, {"last_tool_name", "Read"}});
+	send({{"type", "system"}, {"subtype", "task_progress"}, {"task_id", "background-1"}, {"description", "Reading package.json"}});
+	UAM_ASSERT(session.tool_calls.front().child_activity.ends_with("Reading package.json"));
+	UAM_ASSERT_EQ(session.tool_calls.front().child_activity.find("Reading package.json"), session.tool_calls.front().child_activity.rfind("Reading package.json"));
 	send({{"type", "result"}, {"subtype", "success"}, {"result", "Done"}});
 	// Model the next turn: a late notification must not move the earlier tool into it.
 	session.tool_calls.clear();
@@ -212,7 +216,7 @@ UAM_TEST(ClaudeBackgroundAndChildEventsStayWithTheirOriginalTool)
 	UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("cancelled"));
 	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(loaded.has_value());
-	UAM_ASSERT_EQ(loaded->messages.front().tool_calls.front().child_activity, std::string("Child narration\n\ntests.cpp\n\nChild string answer\n\n[Image]"));
+	UAM_ASSERT_EQ(loaded->messages.front().tool_calls.front().child_activity, std::string("Child narration\n\ntests.cpp\n\nChild string answer\n\n[Image]\n\nReading package.json"));
 #endif
 }
 

@@ -2646,7 +2646,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             <div ref={bottomRef} />
           </div>
           {session.messagesDigest && <MessageNavigationRail key={session.id}
-            count={Math.max(session.messageCount ?? 0, historyStartIndex + messages.length)} startIndex={historyStartIndex} messages={messages}
+            userMessageIndices={session.userMessageIndices} startIndex={historyStartIndex} messages={messages}
             currentIndex={searchNavigation?.messageIndex ?? Math.max(0, historyStartIndex + messages.length - 1)}
             viewportRef={scrollRef} busy={searchNavigation?.phase === 'loading'}
             onNavigate={(index) => { isNearBottomRef.current = false; void useAppStore.getState().jumpToSessionMessage(session.id, index) }} />}

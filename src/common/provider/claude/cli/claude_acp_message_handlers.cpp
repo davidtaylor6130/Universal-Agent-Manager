@@ -137,6 +137,16 @@ namespace uam::acp_detail
 			}
 			else if (tool.status.empty() || tool.status == "paused" || uam::acp_statuses::IsActiveStatus(tool.status) ||
 			         (first_task_event && !uam::AcpSessionHasPendingCancel(session))) tool.status = uam::acp_statuses::kRunning;
+			if (subtype == "task_progress" && uam::acp_statuses::IsActiveStatus(tool.status))
+			{
+				std::string activity = JsonDiagnosticStringValue(message, "description");
+				if (activity.empty()) activity = JsonDiagnosticStringValue(message, "last_tool_name");
+				if (!activity.empty() && !tool.child_activity.ends_with(activity))
+				{
+					if (!tool.child_activity.empty()) tool.child_activity += "\n\n";
+					tool.child_activity += activity;
+				}
+			}
 			if (!tool.task_id.empty())
 			{
 				if (uam::acp_statuses::IsActiveStatus(tool.status) || uam::strings::TrimAsciiView(tool.status) == "paused")
@@ -548,7 +558,20 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	}
 	if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == "compact_boundary")
 	{
-		AppendContextCompactionEvent(app, session, chat, JsonDiagnosticStringValue(message, "summary"), JsonDiagnosticStringValue(message, "uuid"));
+		const nlohmann::json metadata = JsonObjectValue(message, "compact_metadata");
+		const auto reported_count = [&metadata](const char* key) -> int64_t
+		{
+			const nlohmann::json* value = uam::nlohmann_json::FindField(metadata, key);
+			if (!value || !value->is_number_integer()) return -1;
+			if (value->is_number_unsigned())
+			{
+				const uint64_t count = value->get<uint64_t>();
+				return count <= 9'007'199'254'740'991ULL ? static_cast<int64_t>(count) : -1;
+			}
+			const int64_t count = value->get<int64_t>();
+			return count >= 0 && count <= 9'007'199'254'740'991LL ? count : -1;
+		};
+		AppendContextCompactionEvent(app, session, chat, JsonDiagnosticStringValue(message, "summary"), JsonDiagnosticStringValue(message, "uuid"), reported_count("pre_tokens"), reported_count("post_tokens"));
 		return;
 	}
 	if (type == "control_response")
