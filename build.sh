@@ -82,6 +82,7 @@ build_remote_runner()
     cmake -E copy_if_different "$build_dir/$binary" "$artifact_dir/$binary"
     cmake -E copy_if_different "$build_dir/uam-runner.sha256" "$artifact_dir/uam-runner.sha256"
     cmake -E copy_if_different "$build_dir/uam-runner.version" "$artifact_dir/uam-runner.version"
+    cmake -E copy_if_different "$build_dir/uam-runner.manifest.json" "$artifact_dir/uam-runner.manifest.json"
 }
 
 build_remote_runner linux-x86_64 uam-runner \
