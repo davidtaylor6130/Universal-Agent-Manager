@@ -6,12 +6,13 @@ import antigravityLogo from '../../assets/provider-logos/antigravity.svg'
 import geminiLogo from '../../assets/provider-logos/gemini-cli.png'
 import codexLogo from '../../assets/provider-logos/codex.svg'
 import claudeLogo from '../../assets/provider-logos/claude.svg'
+import copilotLogo from '../../assets/provider-logos/copilot.svg'
 
 describe('ProviderLogo', () => {
   it.each([16, 32])('renders bundled official marks decoratively at %i pixels on black', (size) => {
     const marks = [
       ['opencode-cli', opencodeLogo], ['antigravity-cli', antigravityLogo],
-      ['gemini-cli', geminiLogo], ['codex-cli', codexLogo], ['claude-cli', claudeLogo],
+      ['gemini-cli', geminiLogo], ['codex-cli', codexLogo], ['claude-cli', claudeLogo], ['copilot-cli', copilotLogo],
     ] as const
     for (const [providerId, asset] of marks) {
       const host = document.createElement('div')
@@ -46,8 +47,8 @@ describe('ProviderLogo', () => {
     expect(host.children[1].querySelector('img')?.getAttribute('src')).toBe(codexLogo)
     expect(host.children[2].querySelector('img')?.getAttribute('src')).toBe(claudeLogo)
     expect(host.children[3].querySelector('img')?.getAttribute('src')).toBe(opencodeLogo)
-    expect(host.children[4].querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 24 24')
-    expect(host.children[4].querySelector('img')).toBeNull()
+    expect(host.children[4].querySelector('img')?.getAttribute('src')).toBe(copilotLogo)
+    expect(host.children[4].querySelector('img')?.classList.contains('uam-provider-logo--copilot')).toBe(true)
     expect(host.children[5].querySelector('img')).not.toBeNull()
     expect(host.children[5].querySelector('img')?.getAttribute('src')).not.toBe(geminiLogo)
     expect(host.children[6].querySelector('img')?.getAttribute('src')).toBe(geminiLogo)

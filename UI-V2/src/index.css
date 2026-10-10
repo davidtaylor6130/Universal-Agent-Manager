@@ -151,7 +151,7 @@
   --provider-logo-codex-filter: invert(1);
 }
 
-.uam-provider-logo--codex { filter: var(--provider-logo-codex-filter); }
+.uam-provider-logo--codex, .uam-provider-logo--copilot { filter: var(--provider-logo-codex-filter); }
 
 /* ── Design System Scales (theme-independent) ─────────────────
    Redesign token layer. UI text is proportional sans; JetBrains Mono
