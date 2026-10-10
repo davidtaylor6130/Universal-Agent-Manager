@@ -10,6 +10,7 @@
 #include "common/runtime/acp/acp_tool_kinds.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/time_utils.h"
 
 namespace uam::acp_detail
 {
@@ -194,6 +195,26 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 	const nlohmann::json* content = uam::nlohmann_json::FindField(update, "content");
 	const std::string content_text = content == nullptr ? "" : ContentTextFromJson(*content);
 	std::string live_text;
+	if (update_type == "usage_update")
+	{
+		const nlohmann::json* identity = uam::nlohmann_json::FindField(params, "sessionId");
+		if (identity && (!identity->is_string() || identity->get_ref<const std::string&>() != session.session_id)) return;
+		const nlohmann::json* used = uam::nlohmann_json::FindField(update, "used");
+		const nlohmann::json* size = uam::nlohmann_json::FindField(update, "size");
+		const std::int64_t max_exact = 9007199254740991LL;
+		const std::function<std::optional<std::int64_t>(const nlohmann::json*)> count = [max_exact](const nlohmann::json* value) -> std::optional<std::int64_t>
+		{
+			if (!value || !value->is_number_integer()) return std::nullopt;
+			if (value->is_number_unsigned() && value->get<std::uint64_t>() > static_cast<std::uint64_t>(max_exact)) return std::nullopt;
+			const std::int64_t parsed = value->get<std::int64_t>();
+			return parsed >= 0 && parsed <= max_exact ? std::optional<std::int64_t>{parsed} : std::nullopt;
+		};
+		const std::optional<std::int64_t> used_count = count(used), size_count = count(size);
+		if (!used_count || !size_count || *size_count == 0 || *used_count > *size_count) return;
+		// Current context can shrink after compaction; it is not cumulative billed usage.
+		session.provider_usage.context_usage = {true, uam::time::SystemEpochMillisecondsNow(), *used_count, *size_count};
+		return;
+	}
 	if (update_type == uam::acp_stream_types::kSessionUpdateCurrentMode)
 	{
 		const std::string current_mode_id = uam::nlohmann_json::TrimmedStringValue(update, {"currentModeId"});

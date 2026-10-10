@@ -921,12 +921,15 @@ namespace uam
 
 		nlohmann::json SerializeAcpProviderUsage(const AcpProviderUsageState& usage)
 		{
-			if (!usage.token_usage.available && !usage.rate_limits.available)
+			if (!usage.token_usage.available && !usage.rate_limits.available && !usage.context_usage.available)
 			{
 				return nullptr;
 			}
 
 			nlohmann::json serialized;
+			serialized["contextUsage"] = usage.context_usage.available
+			    ? nlohmann::json{{"updatedAt", usage.context_usage.updated_at_ms}, {"usedTokens", usage.context_usage.used_tokens}, {"windowTokens", usage.context_usage.window_tokens}}
+			    : nlohmann::json(nullptr);
 			serialized["tokenUsage"] = usage.token_usage.available
 			    ? nlohmann::json{
 			          {"updatedAt", usage.token_usage.updated_at_ms},

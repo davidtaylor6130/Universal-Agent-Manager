@@ -210,6 +210,13 @@ describe('backend state reconciliation', () => {
     expect(next.idleShutdownAtMs).toBeUndefined()
   })
 
+  it('keeps current context separate from consumed tokens and rejects malformed snapshots', () => {
+    const contextUsage = { updatedAt: 1000, usedTokens: 1234, windowTokens: 200000 }
+    expect(sanitizeCppAcpSession({ providerUsage: { contextUsage } })?.providerUsage).toMatchObject({ contextUsage, tokenUsage: null, rateLimits: null })
+    expect(sanitizeCppAcpSession({ providerUsage: { contextUsage: { ...contextUsage, usedTokens: 0 } } })?.providerUsage?.contextUsage?.usedTokens).toBe(0)
+    for (const invalid of [{ usedTokens: -1 }, { usedTokens: null }, { usedTokens: 1.5 }, { usedTokens: 200001 }, { windowTokens: 0 }, { windowTokens: Number.MAX_SAFE_INTEGER + 1 }]) expect(sanitizeCppAcpSession({ providerUsage: { contextUsage: { ...contextUsage, ...invalid } } })?.providerUsage).toBeNull()
+  })
+
   it('sanitizes and reconciles provider usage updates', () => {
     const usage = {
       tokenUsage: {

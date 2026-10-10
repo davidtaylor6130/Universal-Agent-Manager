@@ -383,7 +383,14 @@ export interface AcpRateLimits {
   rateLimitReachedType: string
 }
 
+export interface AcpContextUsage {
+  updatedAt: number
+  usedTokens: number
+  windowTokens: number
+}
+
 export interface AcpProviderUsage {
+  contextUsage?: AcpContextUsage | null
   tokenUsage: AcpTokenUsage | null
   rateLimits: AcpRateLimits | null
 }

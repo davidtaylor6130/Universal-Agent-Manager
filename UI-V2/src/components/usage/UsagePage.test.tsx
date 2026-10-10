@@ -120,12 +120,13 @@ describe('UsageLimits', () => {
   it('uses the newest matching provider/host snapshot and labels passed resets', () => {
     const previous = useAppStore.getState()
     const limits = (percent: number, time: number) => ({ updatedAt: time, limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: Date.now() / 1000 - 60, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
-    useAppStore.setState({ sessions: [{ id: 'older', providerId: 'codex-cli' }, { id: 'newer', providerId: 'codex-cli' }, { id: 'remote', providerId: 'codex-cli', executionHostId: 'ssh' }, { id: 'mismatch', providerId: 'claude-cli' }] as typeof previous.sessions,
-      acpBindingBySessionId: { older: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(90, 1) } }, newer: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(25, 2) } }, remote: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(10, 3) } }, mismatch: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(5, 4) } } } as typeof previous.acpBindingBySessionId })
+    useAppStore.setState({ sessions: [{ id: 'older', providerId: 'codex-cli' }, { id: 'newer', name: 'Latest chat', providerId: 'codex-cli' }, { id: 'remote', providerId: 'codex-cli', executionHostId: 'ssh' }, { id: 'mismatch', providerId: 'claude-cli' }] as typeof previous.sessions,
+      acpBindingBySessionId: { older: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(90, 1) } }, newer: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, contextUsage: { updatedAt: 2, usedTokens: 1234, windowTokens: 200000 }, rateLimits: limits(25, 2) } }, remote: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(10, 3) } }, mismatch: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(5, 4) } } } as typeof previous.acpBindingBySessionId })
     const host = document.createElement('div'), root = createRoot(host)
     try {
       act(() => root.render(<UsageLimits executionHostId="local" />))
       expect(host.textContent).toContain('75% remaining')
+      expect(host.textContent).toContain('Context in Latest chat: 1,234 of 200,000 tokens')
       expect(host.textContent).not.toContain('90% remaining')
       expect(host.textContent).not.toContain('95% remaining')
       expect(host.textContent).toContain('reset passed, awaiting update')

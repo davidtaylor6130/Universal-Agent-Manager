@@ -263,6 +263,14 @@ namespace uam
 		std::int64_t model_context_window = 0;
 	};
 
+	struct AcpContextUsageState
+	{
+		bool available = false;
+		std::int64_t updated_at_ms = 0;
+		std::int64_t used_tokens = 0;
+		std::int64_t window_tokens = 0;
+	};
+
 	struct AcpRateLimitWindowState
 	{
 		bool available = false;
@@ -307,6 +315,7 @@ namespace uam
 	struct AcpProviderUsageState
 	{
 		AcpTokenUsageState token_usage;
+		AcpContextUsageState context_usage;
 		AcpRateLimitsState rate_limits;
 	};
 

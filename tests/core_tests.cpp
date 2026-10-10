@@ -25112,3 +25112,36 @@ UAM_TEST(SavedSearchMatchesCompleteResultsAndCancelsBetweenChats)
 	UAM_ASSERT(after_delete.has_value());
 	UAM_ASSERT_EQ((*after_delete)["chatIds"].size(), std::size_t(39));
 }
+
+UAM_TEST(AcpUsageUpdatesPreserveContextSeparatelyForEveryProvider)
+{
+	for (const std::string provider : {"gemini-cli", "codex-cli", "opencode-cli", "claude-cli", "copilot-cli", "antigravity-cli"})
+	{
+		uam::AppState app;
+		ChatSession chat; chat.id = "usage-chat"; chat.provider_id = provider;
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id; session->provider_id = provider; session->session_id = "native";
+		session->provider_usage.token_usage.total.total_tokens = 999;
+		uam::AcpSessionState* raw = session.get(); app.acp_sessions.push_back(std::move(session));
+		const std::function<void(nlohmann::json)> send = [&](nlohmann::json update)
+		{
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw, app.chats.front(), nlohmann::json({{"jsonrpc", "2.0"}, {"method", "session/update"}, {"params", {{"sessionId", "native"}, {"update", update}}}}).dump()));
+		};
+		send({{"sessionUpdate", "usage_update"}, {"used", 120}, {"size", 200000}});
+		if (!raw->provider_usage.context_usage.available) throw std::runtime_error("Missing standard context update for " + provider);
+		UAM_ASSERT_EQ(raw->provider_usage.context_usage.used_tokens, 120LL);
+		UAM_ASSERT_EQ(raw->provider_usage.token_usage.total.total_tokens, 999LL);
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other","update":{"sessionUpdate":"usage_update","used":300,"size":200000}}})"));
+		UAM_ASSERT_EQ(raw->provider_usage.context_usage.used_tokens, 120LL);
+		send({{"sessionUpdate", "usage_update"}, {"used", 0}, {"size", 200000}});
+		UAM_ASSERT_EQ(raw->provider_usage.context_usage.used_tokens, 0LL);
+		for (const nlohmann::json invalid : {nlohmann::json(-1), nlohmann::json(nullptr), nlohmann::json(1.5), nlohmann::json(200001), nlohmann::json(18446744073709551615ULL)})
+		{
+			send({{"sessionUpdate", "usage_update"}, {"used", invalid}, {"size", 200000}});
+			UAM_ASSERT_EQ(raw->provider_usage.context_usage.used_tokens, 0LL);
+		}
+		const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+		UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"]["providerUsage"]["contextUsage"]["windowTokens"].get<int>(), 200000);
+	}
+}

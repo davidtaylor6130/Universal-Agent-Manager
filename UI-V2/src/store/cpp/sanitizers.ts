@@ -691,6 +691,13 @@ function sanitizeSpendControlLimit(value: unknown) {
 function sanitizeProviderUsage(value: unknown): AcpProviderUsage | null {
   if (!isRecord(value)) return null
 
+  let contextUsage = null
+  if (isRecord(value.contextUsage)) {
+    const updatedAt = nonNegativeInteger(value.contextUsage.updatedAt)
+    const usedTokens = nonNegativeInteger(value.contextUsage.usedTokens)
+    const windowTokens = nonNegativeInteger(value.contextUsage.windowTokens)
+    if (updatedAt !== null && usedTokens !== null && windowTokens !== null && windowTokens > 0 && usedTokens <= windowTokens) contextUsage = { updatedAt, usedTokens, windowTokens }
+  }
   let tokenUsage = null
   if (isRecord(value.tokenUsage)) {
     const updatedAt = nonNegativeInteger(value.tokenUsage.updatedAt)
@@ -723,7 +730,7 @@ function sanitizeProviderUsage(value: unknown): AcpProviderUsage | null {
     }
   }
 
-  return tokenUsage || rateLimits ? { tokenUsage, rateLimits } : null
+  return tokenUsage || rateLimits || contextUsage ? { tokenUsage, rateLimits, contextUsage } : null
 }
 
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {

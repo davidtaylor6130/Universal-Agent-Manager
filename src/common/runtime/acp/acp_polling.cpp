@@ -480,6 +480,19 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 	}
 
 	{
+		// Standard context updates must survive provider-specific notification interception.
+		if (uam::nlohmann_json::StringViewOrEmpty(message, "method") == uam::acp_methods::kSessionUpdate)
+		{
+			const nlohmann::json* standard_params = uam::nlohmann_json::FindObjectField(message, "params");
+			const nlohmann::json* standard_update = standard_params ? uam::nlohmann_json::FindObjectField(*standard_params, "update") : nullptr;
+			if (standard_update && uam::nlohmann_json::StringViewOrEmpty(*standard_update, "sessionUpdate") == "usage_update")
+			{
+				HandleSessionUpdate(app, session, chat, *standard_params, browser);
+				RetireRemoteAcpRequests(app, session, chat);
+				MarkAcpRuntimeActivity(session);
+				return true;
+			}
+		}
 		const IProviderRuntime& poll_runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 		if (poll_runtime.OnAcpHandleMessage(app, session, chat, message, browser))
 		{

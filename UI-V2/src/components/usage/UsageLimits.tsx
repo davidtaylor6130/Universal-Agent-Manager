@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { USAGE_PROVIDERS } from '../../services/usageHistory'
-import type { AcpRateLimits } from '../../store/cpp/types'
+import type { AcpContextUsage, AcpRateLimits } from '../../store/cpp/types'
 import { providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 
@@ -11,24 +11,29 @@ export function UsageLimits({ executionHostId }: { executionHostId: string }) {
   const bindings = useAppStore(state => state.acpBindingBySessionId)
   const latest = useMemo(() => {
     const result = new Map<string, AcpRateLimits>()
+    const contexts = new Map<string, { usage: AcpContextUsage; title: string }>()
     for (const session of sessions) {
       if ((session.executionHostId || 'local') !== executionHostId) continue
       const binding = bindings[session.id]
       const limits = binding?.providerUsage?.rateLimits
       const provider = binding?.providerId
-      if (!limits || !provider || provider !== session.providerId) continue
-      if (limits.updatedAt > (result.get(provider)?.updatedAt ?? -1)) result.set(provider, limits)
+      if (!provider || provider !== session.providerId) continue
+      const context = binding.providerUsage?.contextUsage
+      if (context && context.updatedAt > (contexts.get(provider)?.usage.updatedAt ?? -1)) contexts.set(provider, { usage: context, title: session.name })
+      if (limits && limits.updatedAt > (result.get(provider)?.updatedAt ?? -1)) result.set(provider, limits)
     }
-    return result
+    return { limits: result, contexts }
   }, [sessions, bindings, executionHostId])
   const now = Date.now()
   return <div className="mx-auto grid max-w-6xl gap-6"><p className="text-xs">Latest limits reported by chats on this host. Providers update them while a chat is connected.</p>
     {USAGE_PROVIDERS.map(provider => {
-      const limits = latest.get(provider)
+      const limits = latest.limits.get(provider)
+      const context = latest.contexts.get(provider)
       const timestampValid = Boolean(limits && limits.updatedAt > 0 && limits.updatedAt <= now && Number.isFinite(new Date(limits.updatedAt).getTime()))
       const stale = Boolean(limits && (!timestampValid || now - limits.updatedAt >= 300000))
       return <section key={provider} className="grid gap-3 border-b pb-5" style={{ borderColor: 'var(--border)' }}>
         <h2 className="flex items-center gap-2 text-sm font-medium"><ProviderLogo providerId={provider} size={17} />{providerShortName(undefined, provider)}</h2>
+        {context && <p className="text-xs">Context in {context.title || 'chat'}: {context.usage.usedTokens.toLocaleString()} of {context.usage.windowTokens.toLocaleString()} tokens · {Math.round(context.usage.usedTokens / context.usage.windowTokens * 100)}%{now - context.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>}
         {!limits ? <p className="text-xs">No limits received.</p> : <div className="grid gap-3 text-xs">
           <p>{limits.planType || limits.limitName || 'Provider allowance'} · {timestampValid ? `Updated ${new Date(limits.updatedAt).toLocaleString()}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</p>
           {(['primary', 'secondary'] as const).map(key => {

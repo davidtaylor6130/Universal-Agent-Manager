@@ -651,6 +651,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		const std::string compatibility_error = ProviderRuntimeRegistry::Resolve(provider).LocalCliCompatibilityError(app);
 		if (!compatibility_error.empty())
 		{
+			session.provider_usage.context_usage = {};
 			session.provider_id = provider.id;
 			session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 			session.lifecycle_state = kAcpLifecycleError;
@@ -723,6 +724,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		session.goal_review_assistant_text = goal_review_assistant_text;
 	}
 	session.chat_id = chat.id;
+	session.provider_usage.context_usage = {};
 	session.provider_id = provider.id;
 	session.process_execution_host_id = chat.execution_host_id;
 	if (!recovering_remote_turn && !recovering_remote_process)
