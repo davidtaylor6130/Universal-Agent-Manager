@@ -208,8 +208,13 @@ namespace uam
 		}
 
 		bool PersistQueuedPromptOutbox(AppState& app, const AcpSessionState& session,
-		                               ChatSession& chat, std::string* error_out = nullptr)
+		                               ChatSession& chat, std::string* error_out = nullptr, bool queue_only = false)
 		{
+			if (chat.acp_queue_storage_error || app.worktree_operation_chat_ids.contains(chat.id))
+			{
+				if (error_out != nullptr) *error_out = "Queued input storage is unavailable. Wait for pending work or repair its saved journal.";
+				return false;
+			}
 			const bool pending_remote_delivery = !chat.acp_queued_prompts.empty() &&
 			    chat.acp_queued_prompts.front().prepared_for_delivery &&
 			    (!chat.acp_queued_prompts.front().claude_quota_continuation_id.empty() ||
@@ -225,7 +230,13 @@ namespace uam
 				chat.acp_dispatched_queued_prompt_count = 1;
 			}
 			chat.acp_queue_held = session.queue_held;
-			if (acp_detail::SaveChatQuietly(app, chat)) return true;
+			if (queue_only)
+			{
+				bool full_save_required = false;
+				if (ChatRepository::SaveQueuedPromptOutbox(app.data_root, chat, &full_save_required)) return true;
+				if (full_save_required && acp_detail::SaveChatQuietly(app, chat)) return true;
+			}
+			else if (acp_detail::SaveChatQuietly(app, chat)) return true;
 			if (error_out != nullptr)
 				*error_out = "Queued prompts could not be saved.";
 			return false;
@@ -624,6 +635,15 @@ namespace uam
 		std::size_t restored = 0;
 		for (ChatSession& chat : app.chats)
 		{
+			if (chat.acp_queue_storage_error)
+			{
+				AcpSessionState& holder = acp_detail::EnsureAcpSessionForChat(app, chat);
+				holder.queue_held = true;
+				holder.lifecycle_state = kAcpLifecycleError;
+				holder.last_error = "Queued input recovery is held because its saved journal is unreadable or mismatched.";
+				app.status_line = holder.last_error;
+				continue;
+			}
 			// An uncertain native continuation must never enter generic prepared-input recovery.
 			if (FindAcpSessionForChat(app, chat.id) == nullptr &&
 			    HasUncertainClaudeQuotaInput(chat))
@@ -1222,6 +1242,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out)
 		{
+			if (chat.acp_queue_storage_error)
+			{
+				if (error_out != nullptr) *error_out = "Queued input recovery is held because its saved journal is unreadable or mismatched.";
+				return false;
+			}
 			if (app.claude_quota_dispatch_id != chat.claude_quota_continuation.id && !acp_detail::CancelClaudeQuotaWait(app, chat))
 			{
 				if (error_out != nullptr) *error_out = "Could not save quota continuation cancellation.";
@@ -1582,6 +1607,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool BuildQueuedAcpUserPrompt(AppState& app, ChatSession& chat, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, const std::string& goal_id, bool computer_use_mode, AcpQueuedUserPromptState& queued, std::string* error_out)
 		{
+			if (chat.acp_queue_storage_error)
+			{
+				if (error_out != nullptr) *error_out = "Queued input recovery is held because its saved journal is unreadable or mismatched.";
+				return false;
+			}
 			if (!UAM_ENABLE_COMPUTER_USE && computer_use_mode)
 			{
 				if (error_out != nullptr) *error_out = "Computer use is disabled in this build.";
@@ -1970,7 +2000,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				session.queued_user_prompts.push_back(std::move(queued));
 			}
 			if (restart_remote_cancellation) chat.remote_restart_pending = true;
-			if (!PersistQueuedPromptOutbox(app, session, chat, error_out))
+			if (!PersistQueuedPromptOutbox(app, session, chat, error_out, !restart_remote_cancellation && !chat.small_model_mode))
 			{
 				session.queued_user_prompts = previous_queue;
 				chat.acp_queued_prompts = previous_outbox;
@@ -2140,7 +2170,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		item->text = updated_text;
 		item->attachments = std::move(updated_attachments);
 		++item->revision;
-		if (PersistQueuedPromptOutbox(app, *session, *chat, error_out)) return true;
+		if (PersistQueuedPromptOutbox(app, *session, *chat, error_out, true)) return true;
 		queue = previous_queue;
 		chat->acp_queued_prompts = previous_outbox;
 		chat->acp_dispatched_queued_prompt_count = previous_dispatched;
@@ -2182,7 +2212,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::vector<AcpQueuedUserPromptState> previous_outbox = chat->acp_queued_prompts;
 		const std::size_t previous_dispatched = chat->acp_dispatched_queued_prompt_count;
 		queue = std::move(reordered);
-		if (PersistQueuedPromptOutbox(app, *session, *chat, error_out)) return true;
+		if (PersistQueuedPromptOutbox(app, *session, *chat, error_out, true)) return true;
 		queue = previous_queue;
 		chat->acp_queued_prompts = previous_outbox;
 		chat->acp_dispatched_queued_prompt_count = previous_dispatched;
@@ -2217,7 +2247,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const bool previous_chat_held = chat->acp_queue_held;
 		session->queued_user_prompts.erase(session->queued_user_prompts.begin() + static_cast<std::ptrdiff_t>(index));
 		if (session->queued_user_prompts.empty()) session->queue_held = false;
-		if (!PersistQueuedPromptOutbox(app, *session, *chat, error_out))
+		if (!PersistQueuedPromptOutbox(app, *session, *chat, error_out, true))
 		{
 			session->queue_held = previous_held;
 			chat->acp_queue_held = previous_chat_held;
@@ -2261,7 +2291,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->queued_user_prompts.erase(session->queued_user_prompts.begin() + static_cast<std::ptrdiff_t>(index));
 		prompt.priority_steer = true;
 		session->queued_user_prompts.push_front(std::move(prompt));
-		if (!PersistQueuedPromptOutbox(app, *session, *chat, error_out))
+		if (!PersistQueuedPromptOutbox(app, *session, *chat, error_out, true))
 		{
 			session->queued_user_prompts = previous_queue;
 			chat->acp_queued_prompts.assign(previous_queue.begin(), previous_queue.end());
@@ -2308,7 +2338,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const bool previous_chat_held = chat->acp_queue_held;
 		session->queue_held = false;
 		chat->acp_queue_held = false;
-		if (!acp_detail::SaveChatQuietly(app, *chat))
+		if (!PersistQueuedPromptOutbox(app, *session, *chat, error_out, true))
 		{
 			session->queue_held = true;
 			chat->acp_queue_held = previous_chat_held;
@@ -2495,7 +2525,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat)
 	{
-		if (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held" ||
+		if (chat.acp_queue_storage_error || chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held" ||
 		    RemoteSourceCleanupPending(session, chat) || session.turn_checkpoint_commit_pending || session.queue_held) return false;
 		if (session.queued_user_prompts.empty())
 		{
@@ -4813,7 +4843,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				        [](const Message& live, const std::shared_ptr<const Message>& saved) { return live == *saved; }));
 				if (prepared && app.data_root == task->data_root && bodies_match &&
 				    !app.worktree_operation_chat_ids.contains(chat_id) && ChatRepository::ChatMetadataFingerprint(app.data_root, *chat) == task->metadata &&
-				    ChatRepository::PublishPreparedChatSave(prepared))
+				    ChatRepository::PublishPreparedChatSave(prepared, true, chat))
 				{
 					if (app.pending_chat_save_at_by_chat_id[chat_id] == task->due_at) app.pending_chat_save_at_by_chat_id.erase(chat_id);
 				}

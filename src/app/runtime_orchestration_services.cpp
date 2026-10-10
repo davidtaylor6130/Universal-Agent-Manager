@@ -2317,7 +2317,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 				result.Fail("A chat changed while its history was being imported; retry to refresh it.");
 				continue;
 			}
-			if (!ChatRepository::PublishPreparedChatSave(candidate.files, false)) { result.Fail("Failed to save imported chat " + candidate.chat.native_session_id + "."); continue; }
+			if (!ChatRepository::PublishPreparedChatSave(candidate.files, false, &candidate.chat)) { result.Fail("Failed to save imported chat " + candidate.chat.native_session_id + "."); continue; }
 			const std::string imported_id = candidate.chat.id;
 			const std::string resolved = NativeSessionLinkService().RealNativeSessionId(candidate.chat);
 			if (!resolved.empty()) app.resolved_native_sessions_by_chat_id[imported_id] = resolved;

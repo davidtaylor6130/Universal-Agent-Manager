@@ -38,6 +38,11 @@ namespace
 	namespace attachment_persisted_fields = uam::message_attachment_json::persisted;
 	// Refuse oversized saves before allocating the output or changing existing files.
 	constexpr std::size_t kMaxChatJsonBytes = 256U * 1024U * 1024U;
+	constexpr std::size_t kMaxQueueJournalBytes = 16U * 1024U * 1024U;
+	constexpr std::string_view kQueueRevisionField = "acp_queue_storage_revision";
+	constexpr std::string_view kQueueFullRevisionField = "acp_queue_full_save_revision";
+	std::optional<std::string> StorageRevision(const fs::path& path);
+	std::mutex& ChatSaveMutex();
 
 	constexpr std::string_view kLegacyProviderIdKey = "provider_id";
 	constexpr std::string_view kLegacyNativeSessionIdKey = "native_session_id";
@@ -1000,6 +1005,9 @@ namespace
 		       lhs.remote_active_turn_id == rhs.remote_active_turn_id &&
 		       lhs.remote_turn_serial == rhs.remote_turn_serial &&
 		       lhs.remote_turn_user_message_index == rhs.remote_turn_user_message_index &&
+		       lhs.acp_queue_full_save_revision == rhs.acp_queue_full_save_revision &&
+		       lhs.acp_queue_storage_revision == rhs.acp_queue_storage_revision &&
+		       lhs.acp_queue_storage_error == rhs.acp_queue_storage_error &&
 		       lhs.acp_queue_held == rhs.acp_queue_held &&
 		       lhs.acp_dispatched_queued_prompt_count == rhs.acp_dispatched_queued_prompt_count &&
 		       AcpQueuedPromptsEquivalentForRecovery(lhs.acp_queued_prompts, rhs.acp_queued_prompts);
@@ -1061,6 +1069,168 @@ namespace
 		}
 		const auto summary_time = fs::last_write_time(summary_path, ec);
 		return !ec && summary_time >= chat_time;
+	}
+
+	fs::path QueueJournalPath(const fs::path& data_root, std::string_view chat_id)
+	{
+		return data_root / "queue-outboxes" / (std::string(chat_id) + ".json");
+	}
+
+	std::string QueueOwner(const JsonValue& root)
+	{
+		JsonValue owner = uam::json::Object();
+		for (const std::string_view key : {kChatIdField, kChatCreatedAtField, kChatProviderIdField,
+		    kChatExecutionHostIdField, kChatNativeSessionIdField, kChatWorkspaceDirectoryField, kChatWorkspaceWorktreeDirectoryField})
+			uam::json::SetString(owner, key, JsonStringOrEmpty(root.Find(key)));
+		return SerializeJson(owner);
+	}
+
+	std::string QueueOwner(const ChatSession& chat)
+	{
+		JsonValue owner = uam::json::Object();
+		uam::json::SetString(owner, kChatIdField, chat.id);
+		uam::json::SetString(owner, kChatCreatedAtField, chat.created_at);
+		uam::json::SetString(owner, kChatProviderIdField, chat.provider_id);
+		uam::json::SetString(owner, kChatExecutionHostIdField, uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
+		uam::json::SetString(owner, kChatNativeSessionIdField, chat.native_session_id);
+		uam::json::SetString(owner, kChatWorkspaceDirectoryField, chat.workspace_directory);
+		uam::json::SetString(owner, kChatWorkspaceWorktreeDirectoryField, chat.workspace_worktree_directory);
+		return SerializeJson(owner);
+	}
+
+	struct QueueJournal
+	{
+		std::string revision;
+		std::string base_revision;
+		std::string base_queue_revision;
+		std::string owner;
+		std::vector<uam::AcpQueuedUserPromptState> prompts;
+		bool held = false;
+		std::size_t dispatched = 0;
+	};
+
+	std::optional<QueueJournal> ReadQueueJournal(const fs::path& path, bool& exists)
+	{
+		std::error_code error;
+		const fs::file_status parent = fs::symlink_status(path.parent_path(), error);
+		exists = true;
+		if (parent.type() == fs::file_type::not_found) { exists = false; return std::nullopt; }
+		if (error || !fs::is_directory(parent) || uam::paths::IsLinkOrReparsePointNoThrow(path.parent_path())) return std::nullopt;
+		const fs::file_status status = fs::symlink_status(path, error);
+		if (status.type() == fs::file_type::not_found) { exists = false; return std::nullopt; }
+		std::string text;
+		if (error || !fs::is_regular_file(status) || uam::paths::IsLinkOrReparsePointNoThrow(path) ||
+		    !uam::io::TryReadTextFile(path, text, kMaxQueueJournalBytes)) return std::nullopt;
+		const std::optional<JsonValue> root = ParseJson(text);
+		if (!root || root->type != JsonValue::Type::Object || JsonNumberOrDefault(root->Find("version"), 0) != 1) return std::nullopt;
+		QueueJournal journal;
+		journal.revision = JsonStringOrEmpty(root->Find("revision"));
+		journal.base_revision = JsonStringOrEmpty(root->Find("base_revision"));
+		journal.base_queue_revision = JsonStringOrEmpty(root->Find("base_queue_revision"));
+		journal.owner = JsonStringOrEmpty(root->Find("owner"));
+		const JsonValue* prompts = uam::json::ArrayOrNull(root->Find(kChatAcpQueuedPromptsField));
+		const JsonValue* held = root->Find(kChatAcpQueueHeldField);
+		const double dispatched = JsonNumberOrDefault(root->Find(kChatAcpDispatchedQueuedPromptCountField), -1);
+		if (journal.revision.empty() || journal.revision.size() > 128 || journal.base_revision.empty() ||
+		    journal.base_queue_revision.size() > 128 || journal.owner.empty() || prompts == nullptr ||
+		    prompts->array_value.size() > kMaxPersistedAcpQueuedPrompts || held == nullptr || held->type != JsonValue::Type::Bool ||
+		    !(dispatched >= 0 && dispatched <= prompts->array_value.size()) || dispatched != static_cast<std::size_t>(dispatched)) return std::nullopt;
+		journal.held = held->bool_value;
+		journal.dispatched = static_cast<std::size_t>(dispatched);
+		std::size_t bytes = 0;
+		std::unordered_set<std::string> ids;
+		for (const JsonValue& value : prompts->array_value)
+		{
+			std::optional<uam::AcpQueuedUserPromptState> prompt = AcpQueuedPromptFromJson(value, bytes);
+			if (!prompt || prompt->id.empty() || !ids.insert(prompt->id).second ||
+			    SerializeJson(AcpQueuedPromptToJson(*prompt)) != SerializeJson(value)) return std::nullopt;
+			journal.prompts.push_back(std::move(*prompt));
+		}
+		return journal;
+	}
+
+	std::optional<std::string> QueueJournalRevision(const fs::path& path)
+	{
+		bool exists = false;
+		const std::optional<QueueJournal> journal = ReadQueueJournal(path, exists);
+		if (journal) return journal->revision;
+		if (!exists) return std::string("missing");
+		return std::nullopt;
+	}
+
+	std::string QueuePayload(const ChatSession& chat)
+	{
+		JsonValue payload = uam::json::Object();
+		JsonValue prompts = uam::json::Array();
+		for (const uam::AcpQueuedUserPromptState& prompt : chat.acp_queued_prompts)
+			uam::json::PushValue(prompts, AcpQueuedPromptToJson(prompt));
+		uam::json::SetValue(payload, kChatAcpQueuedPromptsField, std::move(prompts));
+		uam::json::SetBool(payload, kChatAcpQueueHeldField, chat.acp_queue_held);
+		uam::json::SetNumber(payload, kChatAcpDispatchedQueuedPromptCountField, static_cast<double>(chat.acp_dispatched_queued_prompt_count));
+		return SerializeJson(payload, kMaxChatJsonBytes);
+	}
+
+	std::string QueuePayload(const JsonValue& root)
+	{
+		JsonValue payload = uam::json::Object();
+		const JsonValue* prompts = root.Find(kChatAcpQueuedPromptsField);
+		uam::json::SetValue(payload, kChatAcpQueuedPromptsField, prompts != nullptr ? *prompts : uam::json::Array());
+		uam::json::SetBool(payload, kChatAcpQueueHeldField, JsonBoolOrDefault(root.Find(kChatAcpQueueHeldField), false));
+		uam::json::SetNumber(payload, kChatAcpDispatchedQueuedPromptCountField, JsonNumberOrDefault(root.Find(kChatAcpDispatchedQueuedPromptCountField), 0));
+		return SerializeJson(payload, kMaxChatJsonBytes);
+	}
+
+	std::optional<JsonValue> SavedQueueMetadata(const fs::path& data_root, std::string_view chat_id)
+	{
+		const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
+		const fs::path summary = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
+		std::error_code error;
+		const std::uintmax_t size = fs::file_size(primary, error);
+		if (error) return std::nullopt;
+		std::string text;
+		if (SummaryCacheIsCurrent(primary, summary) && uam::io::TryReadTextFile(summary, text, 4 * 1024 * 1024))
+		{
+			std::optional<JsonValue> root = ParseJson(text);
+			if (root && root->type == JsonValue::Type::Object && JsonStringOrEmpty(root->Find(kChatIdField)) == chat_id &&
+			    NonNegativeUintmaxFieldOrZero(root->Find(kChatSummarySourceSizeField)) == size) return root;
+		}
+		if (!uam::io::TryReadTextFile(primary, text, kMaxChatJsonBytes)) return std::nullopt;
+		std::optional<JsonValue> root = ParseJson(text);
+		if (!root || root->type != JsonValue::Type::Object || JsonStringOrEmpty(root->Find(kChatIdField)) != chat_id) return std::nullopt;
+		root->object_value.erase(std::string(kChatMessagesField));
+		return root;
+	}
+
+	void ApplyQueueJournal(const fs::path& path, const JsonValue& root, ChatSession& chat)
+	{
+		chat.acp_queue_storage_revision = JsonStringOrEmpty(root.Find(kQueueRevisionField));
+		chat.acp_queue_full_save_revision = JsonStringOrEmpty(root.Find(kQueueFullRevisionField));
+		if (path.parent_path().filename() != "chats" && path.parent_path().filename() != "chat-summaries") return;
+		const fs::path data_root = path.parent_path().parent_path();
+		bool exists = false;
+		const std::optional<QueueJournal> journal = ReadQueueJournal(QueueJournalPath(data_root, chat.id), exists);
+		if (!exists) return;
+		if (journal && journal->revision == chat.acp_queue_storage_revision) return;
+		const bool matches = journal && journal->owner == QueueOwner(root) &&
+		    journal->base_queue_revision == chat.acp_queue_storage_revision &&
+		    ChatRepository::ChatStorageRevision(data_root, chat.id) == journal->base_revision;
+		if (matches)
+		{
+			chat.acp_queued_prompts = journal->prompts;
+			chat.acp_queue_held = journal->held;
+			chat.acp_dispatched_queued_prompt_count = journal->dispatched;
+			chat.acp_queue_storage_revision = journal->revision;
+			return;
+		}
+		if (journal && journal->owner == QueueOwner(root))
+		{
+			chat.acp_queued_prompts = journal->prompts;
+			chat.acp_dispatched_queued_prompt_count = journal->dispatched;
+			chat.acp_queue_storage_revision = journal->revision;
+		}
+		chat.acp_queue_held = true;
+		chat.acp_queue_storage_error = true;
+		uam::diagnostics::Write("Queued inputs held: journal is unreadable or does not match saved chat " + chat.id);
 	}
 
 	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0, bool publish_summary_cache = true)
@@ -1535,6 +1705,7 @@ namespace
 			(void)uam::io::WriteTextFile(SummaryCachePathForChatFile(path), SerializeJson(root));
 		}
 
+		ApplyQueueJournal(path, root, chat);
 		return {std::move(chat), ""};
 	}
 
@@ -1711,6 +1882,26 @@ try
 	}
 
 	const fs::path file_path = AppPaths::UamChatFilePath(data_root, chat.id);
+	const fs::path queue_path = QueueJournalPath(data_root, chat.id);
+	const std::optional<std::string> queue_revision = fingerprint == nullptr ? QueueJournalRevision(queue_path) : std::optional<std::string>("missing");
+	if (!queue_revision || (*queue_revision != "missing" &&
+	    (chat.acp_queue_storage_error || *queue_revision != chat.acp_queue_storage_revision))) return false;
+	std::string full_queue_revision = chat.acp_queue_full_save_revision;
+	if (fingerprint == nullptr && *queue_revision != "missing")
+	{
+		const std::optional<JsonValue> saved = SavedQueueMetadata(data_root, chat.id);
+		if (!saved || (chat.acp_queue_full_save_revision != JsonStringOrEmpty(saved->Find(kQueueFullRevisionField)) &&
+		    QueuePayload(chat) != QueuePayload(*saved))) return false;
+		full_queue_revision = uam::io::MakeTempWritePath(fs::path("queue-full")).filename().string();
+	}
+	if (prepared != nullptr)
+	{
+		prepared->chat_id = chat.id;
+		prepared->queue_storage_revision = chat.acp_queue_storage_revision;
+		prepared->published_queue_full_revision = full_queue_revision;
+		prepared->queue_path = queue_path;
+		prepared->expected_queue_revision = *queue_revision;
+	}
 	if (fail_if_exists &&
 	    (uam::paths::PathExistsNoThrow(file_path) ||
 	     uam::paths::PathExistsNoThrow(uam::io::MakeBackupPath(file_path))))
@@ -1842,6 +2033,8 @@ try
 		uam::json::PushValue(queued_prompts, AcpQueuedPromptToJson(prompt));
 	}
 	uam::json::SetValue(root, kChatAcpQueuedPromptsField, std::move(queued_prompts));
+	uam::json::SetString(root, kQueueRevisionField, chat.acp_queue_storage_revision);
+	uam::json::SetString(root, kQueueFullRevisionField, full_queue_revision);
 	uam::json::SetBool(root, kChatAcpQueueHeldField, chat.acp_queue_held);
 	uam::json::SetNumber(root, kChatAcpDispatchedQueuedPromptCountField,
 	                     static_cast<double>(std::min(
@@ -2022,6 +2215,7 @@ try
 
 	if (fingerprint != nullptr)
 	{
+		uam::json::SetBool(root, "validationQueueStorageError", chat.acp_queue_storage_error);
 		uam::json::SetBool(root, "validationMessagesLoaded", chat.messages_loaded);
 		uam::json::SetNumber(root, "validationPersistedCount", static_cast<double>(chat.persisted_message_count));
 		uam::json::SetString(root, "validationPersistedDigest", chat.persisted_messages_digest);
@@ -2070,6 +2264,7 @@ try
 	{
 		(void)uam::io::WriteTextFile(summary_path, summary_json);
 	}
+	chat.acp_queue_full_save_revision = full_queue_revision;
 	return true;
 }
 
@@ -2101,7 +2296,7 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path
 {
 	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return nullptr;
 	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
-	prepared->expected_storage_revision = expected_storage_revision;
+	prepared->expected_storage_revision = expected_storage_revision.empty() ? ChatStorageRevision(data_root, chat.id).value_or("unreadable") : std::string(expected_storage_revision);
 	if (!SaveChatImpl(data_root, chat, false, false, prepared.get())) return nullptr;
 	const std::optional<std::string> revision = StorageRevision(prepared->primary_temp);
 	if (!revision) return nullptr;
@@ -2110,10 +2305,13 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path
 	return prepared;
 }
 
-bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory)
+bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat)
 {
 	if (!prepared) return false;
+	if (committed_chat != nullptr && !prepared->chat_id.empty() &&
+	    (committed_chat->id != prepared->chat_id || committed_chat->acp_queue_storage_revision != prepared->queue_storage_revision)) return false;
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
+	if (!prepared->queue_path.empty() && QueueJournalRevision(prepared->queue_path) != prepared->expected_queue_revision) return false;
 	if (!prepared->expected_storage_revision.empty() && StorageRevision(prepared->primary_path) != prepared->expected_storage_revision) return false;
 	if (prepared->primary_temp.empty() && !prepared->expected_summary_revision.empty() && StorageRevision(prepared->summary_path) != prepared->expected_summary_revision) return false;
 	if (prepared->primary_temp.empty())
@@ -2121,6 +2319,7 @@ bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatS
 	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);
 	if (!primary.success) return false;
 	(void)uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory);
+	if (committed_chat != nullptr) committed_chat->acp_queue_full_save_revision = prepared->published_queue_full_revision;
 	return true;
 }
 
@@ -2134,6 +2333,78 @@ std::string ChatRepository::ChatMetadataFingerprint(const fs::path& data_root, c
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)
 {
 	return SaveChatImpl(data_root, chat, false, skip_unchanged);
+}
+
+bool ChatRepository::SaveQueuedPromptOutbox(const fs::path& data_root, ChatSession& chat, bool* full_save_required)
+try
+{
+	if (full_save_required != nullptr) *full_save_required = false;
+	if (!uam::chat_ids::IsSafeStorageChatId(chat.id) || chat.imported_read_only || chat.acp_queue_storage_error) return false;
+	std::unique_lock<std::mutex> lock(ChatSaveMutex());
+	const fs::path queue_path = QueueJournalPath(data_root, chat.id);
+	const std::optional<std::string> current = QueueJournalRevision(queue_path);
+	if (!current || (*current != "missing" && *current != chat.acp_queue_storage_revision)) return false;
+	const std::optional<std::string> primary_revision = ChatStorageRevision(data_root, chat.id);
+	if (!primary_revision || (*primary_revision == "missing" && !chat.acp_queue_storage_revision.empty())) return false;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat.id);
+	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
+	std::string text;
+	const bool summary_current = SummaryCacheIsCurrent(primary, summary_path) &&
+	    uam::io::TryReadTextFile(summary_path, text, 4 * 1024 * 1024);
+	const std::optional<JsonValue> summary = summary_current ? ParseJson(text) : std::nullopt;
+	if (!summary || summary->type != JsonValue::Type::Object || QueueOwner(*summary) != QueueOwner(chat) ||
+	    NonNegativeUintmaxFieldOrZero(summary->Find(kChatSummarySourceSizeField)) != fs::file_size(primary))
+	{
+		// A new chat or changed native identity needs the ordinary full durability barrier first.
+		if (full_save_required != nullptr) *full_save_required = true;
+		return false;
+	}
+	if (chat.acp_queue_full_save_revision != JsonStringOrEmpty(summary->Find(kQueueFullRevisionField))) return false;
+	JsonValue record = uam::json::Object();
+	const std::string revision = uam::io::MakeTempWritePath(fs::path("queue")).filename().string();
+	uam::json::SetNumber(record, "version", 1);
+	uam::json::SetString(record, "revision", revision);
+	uam::json::SetString(record, "base_revision", *primary_revision);
+	uam::json::SetString(record, "base_queue_revision", JsonStringOrEmpty(summary->Find(kQueueRevisionField)));
+	uam::json::SetString(record, "owner", QueueOwner(*summary));
+	JsonValue prompts = uam::json::Array();
+	std::size_t bytes = 0;
+	std::unordered_set<std::string> ids;
+	if (chat.acp_dispatched_queued_prompt_count > chat.acp_queued_prompts.size()) return false;
+	for (const uam::AcpQueuedUserPromptState& prompt : chat.acp_queued_prompts)
+	{
+		if (prompt.id.empty() || (prompt.id.size() > 128 && prompt.id.starts_with("legacy-queue-")))
+		{
+			// Legacy queues retain the full save path until their IDs are normalized during loading.
+			if (full_save_required != nullptr) *full_save_required = true;
+			return false;
+		}
+		if (prompts.array_value.size() >= kMaxPersistedAcpQueuedPrompts || !ids.insert(prompt.id).second) return false;
+		JsonValue value = AcpQueuedPromptToJson(prompt);
+		const std::optional<uam::AcpQueuedUserPromptState> validated = AcpQueuedPromptFromJson(value, bytes);
+		if (!validated || SerializeJson(AcpQueuedPromptToJson(*validated)) != SerializeJson(value)) return false;
+		uam::json::PushValue(prompts, std::move(value));
+	}
+	uam::json::SetValue(record, kChatAcpQueuedPromptsField, std::move(prompts));
+	uam::json::SetBool(record, kChatAcpQueueHeldField, chat.acp_queue_held);
+	uam::json::SetNumber(record, kChatAcpDispatchedQueuedPromptCountField, static_cast<double>(chat.acp_dispatched_queued_prompt_count));
+	const std::string encoded = SerializeJson(record, kMaxQueueJournalBytes);
+	if (!uam::paths::CreateDirectoriesNoThrow(queue_path.parent_path()) ||
+	    uam::paths::IsLinkOrReparsePointNoThrow(queue_path.parent_path()) ||
+	    !uam::io::WriteTextFile(queue_path, encoded)) return false;
+	chat.acp_queue_storage_revision = revision;
+	return true;
+}
+catch (const std::length_error&)
+{
+	// Oversized captured agent metadata retains the existing full-save limit.
+	if (full_save_required != nullptr) *full_save_required = true;
+	return false;
+}
+catch (const std::exception& error)
+{
+	uam::diagnostics::Write(std::string("Queue save rejected: ") + error.what());
+	return false;
 }
 
 std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLastOpenedAt(const fs::path& data_root, const ChatSession& metadata)
@@ -2206,6 +2477,7 @@ bool ChatRepository::SaveChatIfAbsent(const std::filesystem::path& data_root, co
 
 ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id)
 {
+	std::lock_guard<std::mutex> lock(ChatSaveMutex());
 	ChatStorageDeleteResult result;
 	if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
 	{
@@ -2213,7 +2485,13 @@ ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesy
 		return result;
 	}
 
+	if (uam::paths::IsLinkOrReparsePointNoThrow(QueueJournalPath(data_root, chat_id).parent_path()))
+	{
+		result.queue_file_error = std::make_error_code(std::errc::operation_not_permitted);
+		return result;
+	}
 	uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
+	uam::paths::RemoveFileNoThrow(QueueJournalPath(data_root, chat_id), &result.queue_file_error);
 	const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
 	uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
 	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
@@ -2414,6 +2692,9 @@ namespace
 		hydrated.remote_active_turn_id = summary.remote_active_turn_id;
 		hydrated.remote_turn_serial = summary.remote_turn_serial;
 		hydrated.remote_turn_user_message_index = summary.remote_turn_user_message_index;
+		hydrated.acp_queue_full_save_revision = summary.acp_queue_full_save_revision;
+		hydrated.acp_queue_storage_revision = summary.acp_queue_storage_revision;
+		hydrated.acp_queue_storage_error = summary.acp_queue_storage_error;
 		hydrated.acp_queued_prompts = summary.acp_queued_prompts;
 		hydrated.acp_queue_held = summary.acp_queue_held;
 		hydrated.acp_dispatched_queued_prompt_count =
@@ -2722,6 +3003,13 @@ bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root,
 	}
 
 	ChatSession hydrated = *loaded.chat;
+	if (hydrated.acp_queue_full_save_revision != chat.acp_queue_full_save_revision ||
+	    hydrated.acp_queue_storage_revision != chat.acp_queue_storage_revision ||
+	    hydrated.acp_queue_storage_error != chat.acp_queue_storage_error)
+	{
+		SetWarning(warning_out, "Queued inputs changed while history was loading. Reload the chat before continuing.");
+		return false;
+	}
 	CarrySummaryFieldsIntoHydratedChat(hydrated, chat);
 	chat = std::move(hydrated);
 	return true;

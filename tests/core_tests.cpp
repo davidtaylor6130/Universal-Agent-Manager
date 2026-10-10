@@ -7306,6 +7306,304 @@ UAM_TEST(ChatRepositoryRecoversBackupWhenPrimaryMessagesFieldIsNotAnArray)
 	UAM_ASSERT_EQ(loaded.front().messages.front().content, std::string("durable transcript"));
 }
 
+namespace
+{
+	ChatSession QueueJournalFixture(const fs::path& root)
+	{
+		ChatSession chat;
+		chat.id = "queue-journal";
+		chat.provider_id = "gemini-cli";
+		chat.created_at = "2026-10-10T12:00:00Z";
+		chat.updated_at = chat.created_at;
+		chat.workspace_directory = root.string();
+		chat.messages.push_back(Message{MessageRole::Assistant, std::string(1024 * 1024, 'x')});
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = "future";
+		prompt.text = "Original future request";
+		prompt.uam_agent_definition_snapshot = "Pinned agent instructions";
+		prompt.uam_agent_skills = {"skill.md"};
+		prompt.markdown_store_files = {"notes.md"};
+		prompt.markdown_store_prompt_blocks = {"Recorded markdown text"};
+		prompt.goal_mode = true;
+		prompt.goal_id = "goal-owner";
+		prompt.computer_use_mode = true;
+		prompt.attachments.push_back(MessageAttachment{.id = "image", .name = "image.png", .kind = "image", .mime_type = "image/png", .path = (root / "image.png").string(), .size_bytes = 123});
+		chat.acp_queued_prompts.push_back(std::move(prompt));
+		return chat;
+	}
+}
+
+UAM_TEST(QueueJournalSameEditSnapshotCannotResurrectConsumedInput)
+{
+	TempDir temp("uam-queue-journal-consumed-snapshot");
+	ChatSession chat;
+	chat.id = "queue-consumed";
+	chat.provider_id = "gemini-cli";
+	chat.created_at = "2026-10-10T12:00:00Z";
+	chat.updated_at = chat.created_at;
+	chat.messages.push_back(Message{MessageRole::Assistant, "Previous answer"});
+	uam::AcpQueuedUserPromptState prompt;
+	prompt.id = "future";
+	prompt.text = "Original";
+	chat.acp_queued_prompts.push_back(prompt);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.acp_queued_prompts.front().text = "Edited";
+	++chat.acp_queued_prompts.front().revision;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	const ChatSession stale = chat;
+	chat.acp_queued_prompts.clear();
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, stale));
+	UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, chat.id)->acp_queued_prompts.empty());
+}
+
+UAM_TEST(QueueJournalAcknowledgedEditsPreserveTranscriptAndColdReload)
+{
+	TempDir temp("uam-queue-journal-roundtrip");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const std::string original = ReadFile(primary);
+	chat.acp_queued_prompts.front().text = "Revised future request";
+	chat.acp_queued_prompts.front().revision = 2;
+	chat.acp_queue_held = true;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(!chat.acp_queue_storage_revision.empty());
+	UAM_ASSERT_EQ(ReadFile(primary), original);
+	for (const bool include_messages : {false, true})
+	{
+		std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, include_messages);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT(!loaded->acp_queue_storage_error);
+		UAM_ASSERT_EQ(loaded->acp_queue_storage_revision, chat.acp_queue_storage_revision);
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().text, "Revised future request");
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().revision, 2);
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().attachments, chat.acp_queued_prompts.front().attachments);
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().uam_agent_definition_snapshot, chat.acp_queued_prompts.front().uam_agent_definition_snapshot);
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().markdown_store_prompt_blocks, chat.acp_queued_prompts.front().markdown_store_prompt_blocks);
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().uam_agent_skills, chat.acp_queued_prompts.front().uam_agent_skills);
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().goal_id, "goal-owner");
+		UAM_ASSERT(loaded->acp_queued_prompts.front().computer_use_mode);
+		UAM_ASSERT(loaded->acp_queue_held);
+		UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, *loaded));
+		UAM_ASSERT_EQ(loaded->messages, chat.messages);
+	}
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChatSummariesReadOnly(temp.root).front().acp_queue_storage_revision, chat.acp_queue_storage_revision);
+	UAM_ASSERT_EQ(ReadFile(primary), original);
+}
+
+UAM_TEST(QueueJournalRejectsStaleFullAndPreparedSavesWithoutRevivingConsumedInput)
+{
+	TempDir temp("uam-queue-journal-stale");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const ChatSession stale = chat;
+	const std::shared_ptr<PreparedChatSave> old_prepared = ChatRepository::PrepareChatSave(temp.root, stale);
+	UAM_ASSERT(old_prepared != nullptr);
+	chat.acp_queued_prompts.front().text = "Edited";
+	++chat.acp_queued_prompts.front().revision;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, stale));
+	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(old_prepared));
+	const std::shared_ptr<PreparedChatSave> before_edit = ChatRepository::PrepareChatSave(temp.root, chat);
+	UAM_ASSERT(before_edit != nullptr);
+	const std::optional<std::string> primary_revision = ChatRepository::ChatStorageRevision(temp.root, chat.id);
+	chat.acp_queued_prompts.front().text = "Edited again";
+	++chat.acp_queued_prompts.front().revision;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(temp.root, chat.id), primary_revision);
+	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(before_edit));
+	const ChatSession before_dispatch = chat;
+	const std::shared_ptr<PreparedChatSave> before_dispatch_prepared = ChatRepository::PrepareChatSave(temp.root, chat);
+	UAM_ASSERT(before_dispatch_prepared != nullptr);
+	chat.acp_dispatched_queued_prompt_count = 1;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(before_dispatch_prepared));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, chat.id)->acp_dispatched_queued_prompt_count, std::size_t(1));
+	chat.acp_queued_prompts.clear();
+	chat.acp_dispatched_queued_prompt_count = 0;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(loaded->acp_queued_prompts.empty());
+	UAM_ASSERT(!loaded->acp_queue_storage_error);
+	UAM_ASSERT(fs::exists(temp.root / "queue-outboxes" / (chat.id + ".json")));
+	// The retained record is consumed by the marker in primary storage, not by deleting it.
+	UAM_ASSERT_EQ(loaded->acp_queue_storage_revision, before_dispatch.acp_queue_storage_revision);
+}
+
+UAM_TEST(QueueJournalCorruptionHoldsRecoveryWithoutProviderDispatch)
+{
+	TempDir temp("uam-queue-journal-corrupt");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	const fs::path journal = temp.root / "queue-outboxes" / (chat.id + ".json");
+	UAM_ASSERT(uam::io::WriteTextFile(journal, "{broken"));
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(loaded->acp_queue_storage_error);
+	UAM_ASSERT(loaded->acp_queue_held);
+	UAM_ASSERT(!ChatRepository::SaveQueuedPromptOutbox(temp.root, *loaded));
+	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *loaded));
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.chats.push_back(std::move(*loaded));
+	UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(app, true), std::size_t(0));
+	uam::AcpSessionState* holder = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(holder != nullptr);
+	UAM_ASSERT(!holder->running);
+	UAM_ASSERT(!holder->reconnect_pending);
+	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, *holder, app.chats.front()));
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "New user request", &error));
+	UAM_ASSERT(error.find("journal") != std::string::npos);
+	UAM_ASSERT_EQ(ReadFile(journal), "{broken");
+}
+
+UAM_TEST(QueueJournalFailedWritesAndStaleHydrationPreserveDurableState)
+{
+	TempDir temp("uam-queue-journal-failures");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	std::optional<ChatSession> cold = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(cold.has_value());
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const std::string original = ReadFile(primary);
+	const fs::path journal = temp.root / "queue-outboxes" / (chat.id + ".json");
+	fs::create_directories(journal);
+	chat.acp_queued_prompts.front().text = "Edited";
+	++chat.acp_queued_prompts.front().revision;
+	UAM_ASSERT(!ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(chat.acp_queue_storage_revision.empty());
+	UAM_ASSERT_EQ(ReadFile(primary), original);
+	fs::remove(journal);
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(!ChatRepository::HydrateChatMessages(temp.root, *cold));
+	UAM_ASSERT(!cold->messages_loaded);
+	const fs::path preserved = temp.root / "preserved-primary.json";
+	fs::rename(primary, preserved);
+	fs::create_directory(primary);
+	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, chat));
+	fs::remove(primary);
+	fs::rename(preserved, primary);
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, chat.id)->acp_queued_prompts.front().text, "Edited");
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id).Failed());
+	UAM_ASSERT(!fs::exists(journal));
+	UAM_ASSERT(!ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(!fs::exists(primary));
+}
+
+UAM_TEST(QueueJournalDeletionRecoveryRetainsSurvivorAndRemovesOwnedJournal)
+{
+	TempDir temp("uam-queue-journal-delete");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession target = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, target));
+	target.acp_queued_prompts.front().text = "Latest durable input";
+	++target.acp_queued_prompts.front().revision;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, target));
+	ChatSession survivor = QueueJournalFixture(temp.root);
+	survivor.id = "survivor";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, survivor));
+	const std::string survivor_bytes = ReadFile(AppPaths::UamChatFilePath(temp.root, survivor.id));
+	app.chats = {target, survivor};
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {target.id}, task));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+	const std::optional<ChatSession> staged = ChatRepository::LoadLocalChat(temp.root / ".deletion-transaction", target.id);
+	UAM_ASSERT(staged.has_value());
+	UAM_ASSERT_EQ(staged->acp_queued_prompts.front().text, "Latest durable input");
+	// Interrupt after staging; real recovery completes the transaction without native provider work.
+	UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+	UAM_ASSERT(!fs::exists(temp.root / "queue-outboxes" / (target.id + ".json")));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, target.id).has_value());
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(temp.root, survivor.id)), survivor_bytes);
+}
+
+UAM_TEST(QueueJournalBoundsAndBaseRevisionMismatchNeverAcknowledgeLostInput)
+{
+	TempDir temp("uam-queue-journal-boundaries");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	ChatSession oversized = chat;
+	oversized.acp_queued_prompts.front().text = std::string(2 * 1024 * 1024 + 1, 'q');
+	UAM_ASSERT(!ChatRepository::SaveQueuedPromptOutbox(temp.root, oversized));
+	ChatSession duplicate = chat;
+	duplicate.acp_queued_prompts.push_back(duplicate.acp_queued_prompts.front());
+	UAM_ASSERT(!ChatRepository::SaveQueuedPromptOutbox(temp.root, duplicate));
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	std::string changed = ReadFile(primary);
+	changed += " ";
+	UAM_ASSERT(uam::io::WriteTextFile(primary, changed));
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(held.has_value());
+	UAM_ASSERT(held->acp_queue_storage_error);
+	UAM_ASSERT(held->acp_queue_held);
+	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, chat.acp_queued_prompts.front().text);
+	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *held));
+}
+
+UAM_TEST(QueueJournalControlsKeepPendingTranscriptSaveAndDurableQueueOrder)
+{
+	TempDir temp("uam-queue-journal-controls");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = QueueJournalFixture(temp.root);
+	uam::AcpQueuedUserPromptState next = chat.acp_queued_prompts.front();
+	next.id = "next";
+	next.text = "Second future request";
+	chat.acp_queued_prompts.push_back(next);
+	chat.acp_queue_held = true;
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::string original = ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id));
+	app.chats.push_back(std::move(chat));
+	std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "gemini-cli";
+	session->processing = true;
+	session->queue_held = true;
+	session->queued_user_prompts.assign(app.chats.front().acp_queued_prompts.begin(), app.chats.front().acp_queued_prompts.end());
+	app.acp_sessions.push_back(std::move(session));
+	app.pending_chat_save_at_by_chat_id[app.chats.front().id] = 99;
+	std::string error;
+	UAM_ASSERT(uam::EditQueuedAcpPrompt(app, app.chats.front().id, "future", 1, "Edited first request", &error));
+	UAM_ASSERT(uam::ReorderQueuedAcpPrompts(app, app.chats.front().id, {{"future", 2}, {"next", 1}}, {"next", "future"}, &error));
+	UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, app.chats.front().id, 1, &error, std::pair<std::string, int>{"future", 2}));
+	UAM_ASSERT(uam::ResumeQueuedAcpPrompts(app, app.chats.front().id, {{"next", 1}}, &error));
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(temp.root, app.chats.front().id)), original);
+	UAM_ASSERT_EQ(app.pending_chat_save_at_by_chat_id.at(app.chats.front().id), 99.0);
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(temp.root, app.chats.front().id);
+	UAM_ASSERT(restored.has_value());
+	UAM_ASSERT_EQ(restored->acp_queued_prompts.size(), std::size_t(1));
+	UAM_ASSERT_EQ(restored->acp_queued_prompts.front().id, "next");
+	UAM_ASSERT(!restored->acp_queue_held);
+	UAM_ASSERT_EQ(restored->messages, app.chats.front().messages);
+}
+
+#if !defined(_WIN32)
+UAM_TEST(QueueJournalRefusesLinkedStorageRootWithoutTouchingExternalData)
+{
+	TempDir temp("uam-queue-journal-link");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::string original = ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id));
+	const fs::path outside = temp.root / "unrelated";
+	fs::create_directories(outside);
+	const fs::path sentinel = outside / (chat.id + ".json");
+	UAM_ASSERT(uam::io::WriteTextFile(sentinel, "Unrelated data"));
+	fs::create_directory_symlink(outside, temp.root / "queue-outboxes");
+	UAM_ASSERT(!ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(temp.root, chat.id).Failed());
+	UAM_ASSERT_EQ(ReadFile(sentinel), "Unrelated data");
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(temp.root, chat.id)), original);
+}
+#endif
+
 UAM_TEST(ChatRepositorySavesOpenedTimeWithoutRewritingMessages)
 {
 	TempDir temp("uam-chat-opened-time");

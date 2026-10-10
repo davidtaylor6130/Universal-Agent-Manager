@@ -20,6 +20,11 @@ struct PreparedChatSave
 	std::string expected_storage_revision;
 	std::string primary_revision;
 	std::string expected_summary_revision;
+	std::filesystem::path queue_path;
+	std::string expected_queue_revision;
+	std::string chat_id;
+	std::string queue_storage_revision;
+	std::string published_queue_full_revision;
 	~PreparedChatSave();
 };
 
@@ -31,13 +36,14 @@ struct ChatStorageDeleteResult
 	std::error_code metadata_backup_file_error;
 	std::error_code summary_file_error;
 	std::error_code summary_backup_file_error;
+	std::error_code queue_file_error;
 	std::error_code computer_use_directory_error;
 
 	bool Failed() const
 	{
 		return unsafe_chat_id || static_cast<bool>(legacy_directory_error) || static_cast<bool>(metadata_file_error) ||
 		       static_cast<bool>(metadata_backup_file_error) || static_cast<bool>(summary_file_error) ||
-		       static_cast<bool>(summary_backup_file_error) || static_cast<bool>(computer_use_directory_error);
+		       static_cast<bool>(summary_backup_file_error) || static_cast<bool>(queue_file_error) || static_cast<bool>(computer_use_directory_error);
 	}
 };
 
@@ -53,10 +59,12 @@ class ChatRepository
 	static std::optional<std::string> ChatStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	static std::optional<std::string> ChatSummaryStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	/// <summary>Publishes prepared files after the caller validates current chat and deletion state.</summary>
-	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true);
+	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true, ChatSession* committed_chat = nullptr);
 	static std::string ChatMetadataFingerprint(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
+	/// <summary>Durably saves future queued inputs without rewriting an already persisted transcript.</summary>
+	static bool SaveQueuedPromptOutbox(const std::filesystem::path& data_root, ChatSession& chat, bool* full_save_required = nullptr);
 	/// <summary>Persists selection time in the validated summary without rewriting an unchanged transcript.</summary>
 	/// <summary>Prepares selection metadata off-thread, preserving the primary transcript when its summary is current.</summary>
 	static std::shared_ptr<PreparedChatSave> PrepareLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& metadata);
