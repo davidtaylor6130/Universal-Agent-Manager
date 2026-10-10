@@ -1741,6 +1741,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id, bool computer_use_mode)
 	{
+		const auto preparation = app.branch_preparations.find(chat_id);
+		if (preparation != app.branch_preparations.end() && !preparation->second.expired())
+		{
+			if (error_out != nullptr) *error_out = "Chat preparation is still running. Wait before sending another prompt.";
+			return false;
+		}
+
 		ChatSession* chat_ptr = ChatDomainService().FindChatById(app, chat_id);
 		if (chat_ptr == nullptr)
 		{
@@ -1943,6 +1950,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool SteerAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id, bool computer_use_mode)
 	{
+		const auto preparation = app.branch_preparations.find(chat_id);
+		if (preparation != app.branch_preparations.end() && !preparation->second.expired())
+		{
+			if (error_out != nullptr) *error_out = "Chat preparation is still running. Wait before sending another prompt.";
+			return false;
+		}
+
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		if (chat == nullptr)
 		{

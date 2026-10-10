@@ -15,6 +15,7 @@
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "app/uam_control_service.h"
+#include "app/chat_domain_service.h"
 #include "app/attachment_preview_service.h"
 #include "common/utils/base64.h"
 #include "common/utils/io_utils.h"
@@ -473,10 +474,46 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	std::string hydrate_warning;
-	if (!ChatRepository::HydrateChatMessages(m_app.data_root, *chat, &hydrate_warning))
+	using namespace uam::query_handler_async;
+	const ChatDomainService domain;
+	const auto pending = m_app.branch_preparations.find(chat_id);
+	if (pending != m_app.branch_preparations.end() && !pending->second.expired())
 	{
-		cb->Failure(500, FailureDetailOrFallback(hydrate_warning, "Failed to load chat messages."));
+		cb->Failure(409, "Chat preparation is still running. Wait before sending another prompt.");
+		return;
+	}
+	if (!chat->messages_loaded)
+	{
+		const std::shared_ptr<ChatDomainService::ColdHistoryPreparation> preparation = domain.BeginColdHistoryPreparation(m_app, chat_id);
+		if (!preparation)
+		{
+			cb->Failure(409, "Chat history is changing. Retry after it settles.");
+			return;
+		}
+		const bool queued = RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [domain, preparation]()
+		    {
+			    std::string error;
+			    return domain.LoadColdHistoryPreparation(*preparation, error)
+			        ? AsyncSuccess(nlohmann::json::object())
+			        : AsyncFailure(409, FailureDetailOrFallback(error, "Chat history changed or preparation was stopped."));
+		    },
+		    [this, browser, payload, cb, domain, preparation](AsyncCefResult& result)
+		    {
+			    if (!result.ok)
+			    {
+				    (void)domain.ConsumeBranchPreparation(m_app, preparation->identity.chat_id, preparation->ownership);
+				    return;
+			    }
+			    if (!domain.CompleteColdHistoryPreparation(m_app, *preparation))
+			    {
+				    result = AsyncFailure(409, "Chat history changed or preparation was stopped. Retry the prompt.");
+				    return;
+			    }
+			    HandleSendAcpPrompt(browser, payload, cb);
+			    result.callback_deferred = true;
+		    });
+		if (!queued) (void)domain.ConsumeBranchPreparation(m_app, chat_id, preparation->ownership);
 		return;
 	}
 

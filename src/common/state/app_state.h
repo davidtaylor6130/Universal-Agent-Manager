@@ -918,10 +918,11 @@ namespace uam
 		std::string source_signature;
 	};
 
-	/// <summary>Identity of one cold branch preparation, owned until its UI completion.</summary>
+	/// <summary>Identity of one cold chat action, owned until its UI completion.</summary>
 	struct BranchPreparationOwnership
 	{
 		std::string existing_branch_id;
+		std::stop_source cancellation;
 	};
 
 	/// <summary>Shared application state for the CEF/React provider CLI release slice.</summary>

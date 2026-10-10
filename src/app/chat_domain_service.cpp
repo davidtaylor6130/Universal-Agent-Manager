@@ -711,8 +711,53 @@ void ChatDomainService::CancelBranchPreparations(uam::AppState& app, const std::
 	std::erase_if(app.branch_preparations, [&chat_id](const std::pair<const std::string, std::weak_ptr<uam::BranchPreparationOwnership>>& pending)
 	{
 		const std::shared_ptr<uam::BranchPreparationOwnership> ownership = pending.second.lock();
-		return ownership == nullptr || pending.first == chat_id || ownership->existing_branch_id == chat_id;
+		const bool cancel = ownership == nullptr || pending.first == chat_id || ownership->existing_branch_id == chat_id;
+		if (cancel && ownership != nullptr) ownership->cancellation.request_stop();
+		return cancel;
 	});
+}
+
+std::shared_ptr<ChatDomainService::ColdHistoryPreparation> ChatDomainService::BeginColdHistoryPreparation(uam::AppState& app, const std::string& chat_id) const
+{
+	const ChatSession* chat = FindChatById(app, chat_id);
+	if (chat == nullptr || chat->messages_loaded || app.worktree_operation_chat_ids.contains(chat_id) ||
+	    app.pending_chat_save_at_by_chat_id.contains(chat_id)) return nullptr;
+	const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(app.data_root, chat_id);
+	if (!revision) return nullptr;
+	const std::shared_ptr<uam::BranchPreparationOwnership> ownership = BeginBranchPreparation(app, chat_id, "");
+	if (!ownership) return nullptr;
+	const std::shared_ptr<ColdHistoryPreparation> preparation = std::make_shared<ColdHistoryPreparation>();
+	preparation->data_root = app.data_root;
+	preparation->identity = CaptureBranchHistoryIdentity(*chat);
+	preparation->snapshot = *chat;
+	preparation->storage_revision = *revision;
+	preparation->ownership = ownership;
+	return preparation;
+}
+
+bool ChatDomainService::LoadColdHistoryPreparation(ColdHistoryPreparation& preparation, std::string& error) const
+{
+	if (preparation.ownership->cancellation.stop_requested()) return false;
+	if (ChatRepository::ChatStorageRevision(preparation.data_root, preparation.identity.chat_id) != preparation.storage_revision ||
+	    !ChatRepository::HydrateChatMessages(preparation.data_root, preparation.snapshot, &error) ||
+	    preparation.ownership->cancellation.stop_requested() ||
+	    !MatchesBranchHistoryIdentity(preparation.snapshot, preparation.identity) ||
+	    ChatRepository::ChatStorageRevision(preparation.data_root, preparation.identity.chat_id) != preparation.storage_revision) return false;
+	return true;
+}
+
+bool ChatDomainService::CompleteColdHistoryPreparation(uam::AppState& app, ColdHistoryPreparation& preparation) const
+{
+	if (!ConsumeBranchPreparation(app, preparation.identity.chat_id, preparation.ownership) ||
+	    preparation.ownership->cancellation.stop_requested() || app.data_root != preparation.data_root ||
+	    app.worktree_operation_chat_ids.contains(preparation.identity.chat_id) ||
+	    app.pending_chat_save_at_by_chat_id.contains(preparation.identity.chat_id) ||
+	    ChatRepository::ChatStorageRevision(app.data_root, preparation.identity.chat_id) != preparation.storage_revision) return false;
+	ChatSession* current = FindChatById(app, preparation.identity.chat_id);
+	if (current == nullptr || !MatchesPreparedBranchHistory(*current, preparation.identity, false, &preparation.snapshot)) return false;
+	if (current->messages_loaded) return true;
+	return ChatRepository::AdoptHydratedMessagesIfUnchanged(*current, std::move(preparation.snapshot),
+	    preparation.identity.message_count, preparation.identity.messages_digest);
 }
 
 bool ChatDomainService::MatchesPreparedBranchHistory(const ChatSession& current, const BranchHistoryIdentity& identity, bool was_loaded, const ChatSession* loaded) const

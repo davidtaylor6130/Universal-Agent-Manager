@@ -29,6 +29,22 @@ class ChatDomainService
 		std::string messages_digest;
 	};
 
+	struct ColdHistoryPreparation
+	{
+		std::filesystem::path data_root;
+		BranchHistoryIdentity identity;
+		ChatSession snapshot;
+		std::string storage_revision;
+		std::shared_ptr<uam::BranchPreparationOwnership> ownership;
+	};
+
+	/// <summary>Reserve before reading; prompt and branch actions cannot overtake each other.</summary>
+	std::shared_ptr<ColdHistoryPreparation> BeginColdHistoryPreparation(uam::AppState& app, const std::string& chat_id) const;
+	/// <summary>Hydrate only a worker snapshot; Stop never joins this read.</summary>
+	bool LoadColdHistoryPreparation(ColdHistoryPreparation& preparation, std::string& error) const;
+	/// <summary>Consume ownership and validate storage/history before adopting messages.</summary>
+	bool CompleteColdHistoryPreparation(uam::AppState& app, ColdHistoryPreparation& preparation) const;
+
 	struct MessageAnalytics
 	{
 		std::string provider;

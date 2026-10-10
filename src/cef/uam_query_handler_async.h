@@ -34,6 +34,41 @@ inline AsyncCefResult AsyncFailure(int status, std::string error)
 	return {false, status, "", std::move(error)};
 }
 
+/// <summary>Resolve completion errors before responding; forwarding is deferred only after success.</summary>
+template <typename Callback>
+void CompleteAsyncCefQuery(Callback callback, AsyncCefResult& result,
+                                  const std::function<void(AsyncCefResult&)>& completion = {})
+{
+	if (completion)
+	{
+		try
+		{
+			completion(result);
+		}
+		catch (const nlohmann::json::exception& ex)
+		{
+			if (!result.callback_deferred) result = AsyncFailure(400, std::string("Invalid bridge payload: ") + ex.what());
+		}
+		catch (const std::exception& ex)
+		{
+			if (!result.callback_deferred) result = AsyncFailure(500, ex.what());
+		}
+		catch (...)
+		{
+			if (!result.callback_deferred) result = AsyncFailure(500, "Async bridge completion failed.");
+		}
+	}
+	if (!callback || result.callback_deferred) return;
+	if (result.ok)
+	{
+		callback->Success(result.body);
+	}
+	else
+	{
+		callback->Failure(result.status, result.error);
+	}
+}
+
 class CefQueryCallbackTask : public CefTask
 {
   public:
@@ -48,30 +83,7 @@ class CefQueryCallbackTask : public CefTask
 	{
 		if (m_lifetime.expired()) return;
 		CEF_REQUIRE_UI_THREAD();
-		if (m_completion)
-		{
-			try
-			{
-				m_completion(m_result);
-			}
-			catch (const std::exception& ex)
-			{
-				if (!m_result.callback_deferred) m_result = AsyncFailure(500, ex.what());
-			}
-			catch (...)
-			{
-				if (!m_result.callback_deferred) m_result = AsyncFailure(500, "Async bridge completion failed.");
-			}
-		}
-		if (!m_callback || m_result.callback_deferred) return;
-		if (m_result.ok)
-		{
-			m_callback->Success(m_result.body);
-		}
-		else
-		{
-			m_callback->Failure(m_result.status, m_result.error);
-		}
+		CompleteAsyncCefQuery(m_callback, m_result, m_completion);
 	}
 
   private:

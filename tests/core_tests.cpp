@@ -7946,6 +7946,182 @@ UAM_TEST(ChatDomainServiceBranchOperationIdIsIdempotentAndRejectsCollisions)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
 }
 
+
+
+UAM_TEST(ColdPromptCompletionParsingFailureRespondsOnceBeforeDeferral)
+{
+	using namespace uam::query_handler_async;
+	struct Callback
+	{
+		void Success(const std::string&) { ++successes; }
+		void Failure(int code, const std::string&) { ++failures; status = code; }
+		int successes = 0;
+		int failures = 0;
+		int status = 0;
+	};
+	Callback captured;
+	Callback* callback = &captured;
+	AsyncCefResult response = AsyncSuccess({});
+	CompleteAsyncCefQuery(callback, response, [&](AsyncCefResult& result)
+	{
+		const nlohmann::json malformed{{"goalMode", "invalid"}};
+		(void)malformed.value("goalMode", false);
+		result.callback_deferred = true;
+	});
+	UAM_ASSERT_EQ(callback->failures, 1);
+	UAM_ASSERT_EQ(callback->status, 400);
+	UAM_ASSERT_EQ(callback->successes, 0);
+	UAM_ASSERT(!response.callback_deferred);
+	response = AsyncSuccess({});
+	CompleteAsyncCefQuery(callback, response, [&](AsyncCefResult& result)
+	{
+		callback->Success("{}");
+		result.callback_deferred = true;
+	});
+	UAM_ASSERT_EQ(callback->failures, 1);
+	UAM_ASSERT_EQ(callback->successes, 1);
+}
+
+UAM_TEST(ColdPromptPreparationStopAndOldCompletionCannotReleaseNewAdmission)
+{
+	TempDir temp("uam-cold-prompt-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const ChatDomainService domain;
+	ChatSession saved = domain.CreateNewChat("", "codex-cli");
+	saved.id = "cold-prompt";
+	saved.messages.push_back(Message{MessageRole::User, "Keep durable history"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, saved));
+	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+	const auto first = domain.BeginColdHistoryPreparation(app, saved.id);
+	UAM_ASSERT(first != nullptr);
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(app, saved.id, "must not overtake", &error));
+	UAM_ASSERT(!uam::SteerAcpPrompt(app, saved.id, "must not steer", {}, {}, false, &error));
+	UAM_ASSERT(domain.LoadColdHistoryPreparation(*first, error));
+	UAM_ASSERT(uam::StopAcpSession(app, saved.id));
+	UAM_ASSERT(first->ownership->cancellation.stop_requested());
+	const auto second = domain.BeginColdHistoryPreparation(app, saved.id);
+	UAM_ASSERT(second != nullptr);
+	UAM_ASSERT(!domain.CompleteColdHistoryPreparation(app, *first));
+	UAM_ASSERT(domain.BeginColdHistoryPreparation(app, saved.id) == nullptr);
+	UAM_ASSERT(!app.chats.front().messages_loaded);
+	UAM_ASSERT(app.acp_sessions.empty());
+	UAM_ASSERT(uam::CancelAcpTurn(app, saved.id));
+	UAM_ASSERT(!domain.LoadColdHistoryPreparation(*second, error));
+	UAM_ASSERT(!domain.CompleteColdHistoryPreparation(app, *second));
+	const auto persisted = ChatRepository::LoadLocalChat(temp.root, saved.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->messages, saved.messages);
+}
+
+UAM_TEST(ColdPromptPreparationRejectsStaleIdentityStorageAndWarmBody)
+{
+	TempDir temp("uam-cold-prompt-stale");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const ChatDomainService domain;
+	ChatSession saved = domain.CreateNewChat("", "codex-cli");
+	saved.id = "cold-prompt-stale";
+	saved.native_session_id = "123e4567-e89b-12d3-a456-426614174000";
+	saved.messages.push_back(Message{MessageRole::User, "Original history"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, saved));
+	for (int variation = 0; variation < 7; ++variation)
+	{
+		app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+		const auto prepared = domain.BeginColdHistoryPreparation(app, saved.id);
+		UAM_ASSERT(prepared != nullptr);
+		std::string error;
+		UAM_ASSERT(domain.LoadColdHistoryPreparation(*prepared, error));
+		switch (variation)
+		{
+		case 0: app.chats.front().native_session_id = "native-changed"; break;
+		case 1: app.chats.front().provider_id = "claude-cli"; break;
+		case 2: app.chats.front().execution_host_id = "changed-host"; break;
+		case 3:
+			UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, app.chats.front()));
+			app.chats.front().messages.front().content = "Modified history";
+			break;
+		case 4: app.pending_chat_save_at_by_chat_id[saved.id] = 1; break;
+		case 5: app.worktree_operation_chat_ids.insert(saved.id); break;
+		case 6:
+			saved.messages.front().content += " changed on disk";
+			UAM_ASSERT(ChatRepository::SaveChat(temp.root, saved));
+			break;
+		}
+		UAM_ASSERT(!domain.CompleteColdHistoryPreparation(app, *prepared));
+		UAM_ASSERT(app.acp_sessions.empty());
+		app.pending_chat_save_at_by_chat_id.clear();
+		app.worktree_operation_chat_ids.clear();
+	}
+	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+	const auto prepared = domain.BeginColdHistoryPreparation(app, saved.id);
+	UAM_ASSERT(prepared != nullptr);
+	std::string error;
+	UAM_ASSERT(domain.LoadColdHistoryPreparation(*prepared, error));
+	app.chats.front().title = "Keep live title";
+	UAM_ASSERT(domain.CompleteColdHistoryPreparation(app, *prepared));
+	UAM_ASSERT_EQ(app.chats.front().messages, saved.messages);
+	UAM_ASSERT_EQ(app.chats.front().title, std::string("Keep live title"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, saved.native_session_id);
+	UAM_ASSERT(!domain.CompleteColdHistoryPreparation(app, *prepared));
+}
+
+
+UAM_TEST(ColdPromptPreparationContinuesThroughDurableFifoOutbox)
+{
+	TempDir temp("uam-cold-prompt-outbox");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const ChatDomainService domain;
+	ChatSession saved = domain.CreateNewChat("", app.provider_profiles.front().id);
+	saved.id = "cold-prompt-outbox";
+	saved.workspace_directory = temp.root.string();
+	saved.messages.push_back(Message{MessageRole::User, "Keep prior conversation"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, saved));
+	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+	const auto prepared = domain.BeginColdHistoryPreparation(app, saved.id);
+	UAM_ASSERT(prepared != nullptr);
+	std::string error;
+	UAM_ASSERT(domain.LoadColdHistoryPreparation(*prepared, error));
+	UAM_ASSERT(domain.CompleteColdHistoryPreparation(app, *prepared));
+	// A busy in-memory transport queues without launching or writing to any provider.
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = saved.id;
+	owned_session->provider_id = saved.provider_id;
+	owned_session->running = true;
+	owned_session->processing = true;
+	app.acp_sessions.push_back(std::move(owned_session));
+	UAM_ASSERT(uam::SendAcpPrompt(app, saved.id, "first accepted", &error));
+	UAM_ASSERT(uam::SendAcpPrompt(app, saved.id, "second accepted", &error));
+	const auto persisted = ChatRepository::LoadLocalChat(temp.root, saved.id);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->messages.front().content, saved.messages.front().content);
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts[0].text, std::string("first accepted\n\nsecond accepted"));
+}
+
+UAM_TEST(ColdPromptPreparationUnreadableHistoryNeverPublishes)
+{
+	TempDir temp("uam-cold-prompt-unreadable");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const ChatDomainService domain;
+	ChatSession saved = domain.CreateNewChat("", "codex-cli");
+	saved.id = "cold-prompt-unreadable";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, saved));
+	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+	const auto prepared = domain.BeginColdHistoryPreparation(app, saved.id);
+	UAM_ASSERT(prepared != nullptr);
+	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(temp.root, saved.id).Failed() == false);
+	std::string error;
+	UAM_ASSERT(!domain.LoadColdHistoryPreparation(*prepared, error));
+	UAM_ASSERT(!domain.CompleteColdHistoryPreparation(app, *prepared));
+	UAM_ASSERT(!app.chats.front().messages_loaded);
+	UAM_ASSERT(app.acp_sessions.empty());
+}
+
 UAM_TEST(ColdBranchPreparationStopOwnsSourceBeforeAnyBranchExists)
 {
 	uam::AppState app;
