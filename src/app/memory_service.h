@@ -35,6 +35,8 @@ class MemoryService
 	static bool PollMemoryActivity(uam::AppState& app);
 	static std::string BuildWorkerCommandForTests(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::string& model_id);
 	static std::string BuildWorkerPromptForTests(const ChatSession& chat, int start_message_index = -1);
+	/// <summary>Captures extraction text without copying warm tool, thought or attachment payloads.</summary>
+	static ChatSession CaptureWorkerInput(const ChatSession& chat);
 	static std::vector<ManualScanCandidate> ListManualScanCandidates(const uam::AppState& app);
 	static bool QueueManualScan(uam::AppState& app, const std::vector<std::string>& chat_ids, int* queued_count_out = nullptr, std::string* error_out = nullptr);
 	static bool ProcessDueMemoryWork(uam::AppState& app);

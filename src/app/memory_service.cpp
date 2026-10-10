@@ -1230,7 +1230,7 @@ namespace
 		const fs::path cwd = workspace_root.empty() ? uam::paths::CurrentPathOrDot() : workspace_root;
 		auto extraction_state = task.extraction_state;
 		task.worker = std::make_unique<std::jthread>(
-		    [state, extraction_state, invocation = std::move(invocation), cwd, data_root = app.data_root, chat_snapshot = chat, start_message_index, remote_host, remote_workspace](std::stop_token stop_token) mutable
+		    [state, extraction_state, invocation = std::move(invocation), cwd, data_root = app.data_root, chat_snapshot = MemoryService::CaptureWorkerInput(chat), start_message_index, remote_host, remote_workspace](std::stop_token stop_token) mutable
 		    {
 			    ChatSession worker_chat = std::move(chat_snapshot);
 			    if (!worker_chat.messages_loaded)
@@ -1688,6 +1688,30 @@ std::string MemoryService::BuildWorkerCommandForTests(const ProviderProfile& pro
 std::string MemoryService::BuildWorkerPromptForTests(const ChatSession& chat, int start_message_index)
 {
 	return BuildWorkerPrompt(chat, start_message_index);
+}
+
+ChatSession MemoryService::CaptureWorkerInput(const ChatSession& chat)
+{
+	// Cold hydration still requires the complete live summary as its metadata baseline.
+	if (!chat.messages_loaded) return chat;
+	ChatSession result = uam::CaptureVcsChatContext(chat);
+	result.messages_loaded = true;
+	result.native_session_id = chat.native_session_id;
+	result.persisted_message_count = chat.persisted_message_count;
+	result.persisted_messages_digest = chat.persisted_messages_digest;
+	result.memory_enabled = chat.memory_enabled;
+	result.memory_level = chat.memory_level;
+	result.memory_last_processed_message_count = chat.memory_last_processed_message_count;
+	result.memory_last_processed_at = chat.memory_last_processed_at;
+	result.messages.reserve(chat.messages.size());
+	for (const Message& source : chat.messages)
+	{
+		Message message;
+		message.role = source.role;
+		message.content = source.content;
+		result.messages.push_back(std::move(message));
+	}
+	return result;
 }
 
 std::vector<MemoryService::ManualScanCandidate> MemoryService::ListManualScanCandidates(const uam::AppState& app)
