@@ -723,7 +723,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onStartRename={() => startRenameFolder(folder)}
       onDelete={() => {
         setDeleteFolderError('')
-        setPendingDeleteFolderId(folder.id)
+        if (selectedFolderIds.has(folder.id)) {
+          const visible = new Set(visibleFolderRows().map((row) => row.dataset.workspaceId))
+          const ids = [...selectedFolderIds].filter((id) => visible.has(id))
+          if (ids.length > 0) setPendingDeleteFolderIds(ids)
+        } else {
+          setPendingDeleteFolderId(folder.id)
+        }
       }}
       onRescan={() => {
         setActionError('')
@@ -1970,7 +1976,7 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
           <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
           {!isCompanionContext() && <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />}
-          {!isCompanionContext() && <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete folder" danger onClick={() => { setMenuPos(null); onDelete() }} />}
+          {!isCompanionContext() && <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={selected ? 'Delete selected workspaces' : 'Delete folder'} danger onClick={() => { setMenuPos(null); onDelete() }} />}
         </ViewportMenu>
       )}
 

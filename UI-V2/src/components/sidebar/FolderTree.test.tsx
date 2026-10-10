@@ -19,6 +19,8 @@ const now = new Date('2026-01-01T12:00:00.000Z')
 const originalAddFolder = useAppStore.getState().addFolder
 const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
 const originalSetActiveSession = useAppStore.getState().setActiveSession
+const originalDeleteFolder = useAppStore.getState().deleteFolder
+const originalDeleteFolders = useAppStore.getState().deleteFolders
 
 function makeFolder(): Folder {
   return {
@@ -1561,6 +1563,51 @@ describe('FolderTree', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it.each(['c', 'd'])('right-click deletion respects workspace selection for target %s', async (target) => {
+    const deleteFolder = vi.fn(originalDeleteFolder)
+    const deleteFolders = vi.fn(originalDeleteFolders)
+    useAppStore.setState({
+      folders: ['a', 'b', 'c', 'd'].map((id) => ({ ...makeFolder(), id, name: id })),
+      sessions: ['a', 'b', 'c', 'd'].map((id, index) => ({ ...makeSession(index), folderId: id })),
+      deleteFolder,
+      deleteFolders,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-a"]')!.click())
+      act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+      act(() => host.querySelector<HTMLElement>(`[data-testid="folder-header-${target}"]`)!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+      const selectedTarget = target === 'c'
+      const menuLabel = selectedTarget ? 'Delete selected workspaces' : 'Delete folder'
+      const menuItem = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menu"] button')).find((button) => button.textContent === menuLabel)!
+      expect(menuItem).toBeTruthy()
+      act(() => menuItem.click())
+      expect(deleteFolders).not.toHaveBeenCalled()
+      expect(deleteFolder).not.toHaveBeenCalled()
+      const dialog = host.querySelector(selectedTarget ? '[role="alertdialog"]' : '[role="dialog"][aria-label="Delete folder and chats"]')!
+      expect(dialog.textContent).toContain(selectedTarget ? '3 workspaces and 3 chats' : 'd')
+      const confirm = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === (selectedTarget ? 'Delete workspaces' : 'Delete Folder'))!
+      await act(async () => confirm.click())
+      if (selectedTarget) {
+        expect(deleteFolders).toHaveBeenCalledExactlyOnceWith(['a', 'b', 'c'])
+        expect(deleteFolder).not.toHaveBeenCalled()
+        expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['d'])
+        expect(useAppStore.getState().sessions.map((session) => session.id)).toEqual(['chat-3'])
+      } else {
+        expect(deleteFolder).toHaveBeenCalledExactlyOnceWith('d')
+        expect(deleteFolders).not.toHaveBeenCalled()
+        expect(useAppStore.getState().folders.map((folder) => folder.id)).toEqual(['a', 'b', 'c'])
+        expect(useAppStore.getState().sessions.map((session) => session.id)).toEqual(['chat-0', 'chat-1', 'chat-2'])
+      }
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('selects workspace ranges, cancels, reports failures, and submits one batch', async () => {
