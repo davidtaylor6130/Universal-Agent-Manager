@@ -266,7 +266,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 	return false;
 }
 
-bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t /*query_id*/, const CefString& request, bool /*persistent*/, CefRefPtr<Callback> callback)
+bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id, const CefString& request, bool /*persistent*/, CefRefPtr<Callback> callback)
 {
 	CEF_REQUIRE_UI_THREAD();
 
@@ -288,6 +288,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 
 	try
 	{
+		if (action == "searchChatMessages") m_searchQueryId = query_id;
 		if (!DispatchAction(action, browser, payload, callback))
 		{
 			callback->Failure(404, "Unknown action: " + action);
@@ -305,7 +306,12 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	return true;
 }
 
-void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> /*frame*/, int64_t /*query_id*/)
+void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> /*frame*/, int64_t query_id)
 {
-	// Persistent queries are not used; nothing to cancel.
+	if (query_id == m_searchQueryId)
+	{
+		++*m_searchGeneration;
+		m_searchQueryId = -1;
+	}
+	// Only the latest deep-search owner is cancellable here.
 }

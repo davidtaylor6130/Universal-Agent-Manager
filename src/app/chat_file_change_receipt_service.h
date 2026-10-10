@@ -33,6 +33,13 @@ namespace uam
 	{
 	public:
 		static bool MatchesPersistedSnapshot(const ChatSession& loaded, std::string_view chat_id, std::size_t message_count, std::string_view digest);
+		struct Snapshot
+		{
+			ChatSession chat;
+			std::size_t omitted_count = 0;
+		};
+		static Snapshot Capture(const ChatSession& chat);
+		static bool Matches(const ChatSession& chat, const Snapshot& snapshot);
 		static ChatFileChangeReceipts Extract(const ChatSession& chat, std::string_view workspace_root);
 	};
 }

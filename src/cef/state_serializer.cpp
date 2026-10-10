@@ -1781,50 +1781,98 @@ namespace uam
 		return ToolCallContentForFrontend(acp_detail::PersistedToolCallFromAcpToolCall(tool_call));
 	}
 
-	nlohmann::json StateSerializer::ToolCallContentPageForFrontend(
-	    std::string_view content, std::size_t requested_offset)
+	static nlohmann::json ToolContentPage(
+	    const std::vector<std::string_view>& parts, std::size_t requested_offset)
 	{
+		std::size_t total_bytes = 0;
+		for (std::string_view part : parts) total_bytes += part.size();
+		const auto byte_at = [&](std::size_t index)
+		{
+			for (std::string_view part : parts)
+			{
+				if (index < part.size()) return static_cast<unsigned char>(part[index]);
+				index -= part.size();
+			}
+			return static_cast<unsigned char>(0);
+		};
 		constexpr std::size_t kPageMaxBytes = 128 * 1024;
 		const auto is_continuation = [&](std::size_t index)
 		{
-			return index < content.size() &&
-			       (static_cast<unsigned char>(content[index]) & 0xC0U) == 0x80U;
+			return index < total_bytes &&
+			       (byte_at(index) & 0xC0U) == 0x80U;
 		};
 		const auto boundary_at_or_after = [&](std::size_t offset)
 		{
-			offset = std::min(offset, content.size());
+			offset = std::min(offset, total_bytes);
 			while (is_continuation(offset)) ++offset;
 			return offset;
 		};
 		const auto boundary_at_or_before = [&](std::size_t offset)
 		{
-			offset = std::min(offset, content.size());
+			offset = std::min(offset, total_bytes);
 			while (offset > 0 && is_continuation(offset)) --offset;
 			return offset;
 		};
 
-		const std::size_t last_offset = content.size() > kPageMaxBytes
-		                                    ? boundary_at_or_after(content.size() - kPageMaxBytes)
+		const std::size_t last_offset = total_bytes > kPageMaxBytes
+		                                    ? boundary_at_or_after(total_bytes - kPageMaxBytes)
 		                                    : 0;
-		const std::size_t offset = requested_offset > content.size()
+		const std::size_t offset = requested_offset > total_bytes
 		                               ? last_offset
 		                               : boundary_at_or_before(requested_offset);
-		std::size_t next_offset = std::min(content.size(), offset + kPageMaxBytes);
-		while (next_offset < content.size() && is_continuation(next_offset)) --next_offset;
+		std::size_t next_offset = std::min(total_bytes, offset + kPageMaxBytes);
+		while (next_offset < total_bytes && is_continuation(next_offset)) --next_offset;
 		const std::size_t previous_offset = offset > kPageMaxBytes
 		                                        ? boundary_at_or_after(offset - kPageMaxBytes)
 		                                        : 0;
 
+		std::string content;
+		content.reserve(next_offset - offset);
+		std::size_t position = 0;
+		for (std::string_view part : parts)
+		{
+			const std::size_t begin = std::max(offset, position);
+			const std::size_t end = std::min(next_offset, position + part.size());
+			if (begin < end) content.append(part.substr(begin - position, end - begin));
+			position += part.size();
+		}
 		return {
-		    {"content", std::string(content.substr(offset, next_offset - offset))},
+		    {"content", std::move(content)},
 		    {"offset", offset},
 		    {"nextOffset", next_offset},
 		    {"previousOffset", previous_offset},
 		    {"lastOffset", last_offset},
-		    {"totalBytes", content.size()},
+		    {"totalBytes", total_bytes},
 		    {"hasPrevious", offset > 0},
-		    {"hasMore", next_offset < content.size()},
+		    {"hasMore", next_offset < total_bytes},
 		};
+	}
+
+
+	static nlohmann::json ToolFieldsPage(std::string_view arguments, std::string_view result, std::string_view approval,
+	    std::string_view child, std::size_t offset)
+	{
+		std::vector<std::string_view> parts;
+		if (!approval.empty()) parts.insert(parts.end(), {"Approval: ", approval, "\n\n"});
+		if (!arguments.empty() && !result.empty()) parts.insert(parts.end(), {"Arguments:\n", arguments, "\n\nResult:\n", result});
+		else parts.push_back(result.empty() ? arguments : result);
+		if (!child.empty()) parts.insert(parts.end(), {"\n\nChild activity:\n", child});
+		return ToolContentPage(parts, offset);
+	}
+
+	nlohmann::json StateSerializer::ToolCallContentPageForFrontend(std::string_view content, std::size_t offset)
+	{
+		return ToolContentPage({content}, offset);
+	}
+
+	nlohmann::json StateSerializer::ToolCallContentPageForFrontend(const ToolCall& tool, std::size_t offset)
+	{
+		return ToolFieldsPage(tool.args_json, tool.result_text, tool.approval_status, tool.child_activity, offset);
+	}
+
+	nlohmann::json StateSerializer::ToolCallContentPageForFrontend(const AcpToolCallState& tool, std::size_t offset)
+	{
+		return ToolFieldsPage(tool.args_json, tool.content, tool.approval_status, tool.child_activity, offset);
 	}
 
 	nlohmann::json StateSerializer::SerializeFolder(const ChatFolder& folder, bool probe_directory)

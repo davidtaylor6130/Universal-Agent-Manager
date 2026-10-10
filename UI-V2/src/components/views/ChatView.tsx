@@ -2638,9 +2638,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               </div>
               </SubAgentDisclosureProvider>
+            {acp?.compacting && <div role="status" className="px-4 py-2 text-xs" style={{ color: 'var(--accent)' }}>Compacting context…</div>}
             </div>
             {/* Follow the padded end so the latest output clears the floating composer. */}
-            {acp?.compacting && <div role="status" className="px-4 py-2 text-xs" style={{ color: 'var(--accent)' }}>Compacting context…</div>}
             <div ref={bottomRef} />
           </div>
           {session.messagesDigest && <MessageNavigationRail key={session.id}

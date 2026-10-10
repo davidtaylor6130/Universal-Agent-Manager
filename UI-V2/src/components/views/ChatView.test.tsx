@@ -3916,6 +3916,32 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('refuses hidden OpenCode models for both mouse and keyboard selection', () => {
+    const setSessionModel = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'opencode-cli', modelId: 'test/hidden' } : session),
+      providerChatDefaults: { ...state.providerChatDefaults, 'opencode-cli': { ...state.providerChatDefaults['opencode-cli'], hiddenModelIds: ['test/hidden'] } },
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'opencode-cli', lifecycleState: 'ready', processing: false,
+        availableModels: [{ id: 'test/hidden', name: 'Hidden', description: '' }, { id: 'test/visible', name: 'Visible', description: '' }], currentModelId: 'test/hidden' } },
+      setSessionModel,
+    }))
+    const host = document.createElement('div'); document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+      const menu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]')!
+      const options = Array.from(menu.querySelectorAll<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]'))
+      const hidden = options.find((option) => option.textContent?.includes('Hidden'))!
+      expect(hidden.disabled).toBe(true)
+      act(() => hidden.click())
+      expect(setSessionModel).not.toHaveBeenCalled()
+      act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+      act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+      expect(setSessionModel).not.toHaveBeenCalledWith('chat-1', 'test/hidden')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('navigates long model lists with the keyboard and keeps them scrollable', () => {
     const setSessionModel = vi.fn(() => Promise.resolve(true))
     const availableModels = Array.from({ length: 12 }, (_, index) => ({

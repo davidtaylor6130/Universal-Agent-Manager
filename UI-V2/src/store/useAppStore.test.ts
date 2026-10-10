@@ -919,6 +919,12 @@ describe('useAppStore Gemini CLI slice', () => {
         chats: replacement.chats,
       },
     })
+    testWindow.dispatchEvent = vi.fn(() => true)
+    testWindow.uamPush?.({
+      type: 'cliOutput', sessionId: 'chat-1', sourceChatId: 'chat-1',
+      terminalId: 'term-old', data: btoa('late stale output'),
+    })
+    expect(testWindow.dispatchEvent).not.toHaveBeenCalled()
     await new Promise((resolve) => setTimeout(resolve, 120))
 
     expect(cefStore.getState().cliBindingBySessionId['chat-1']?.terminalId).toBe('term-new')

@@ -28,9 +28,11 @@ class MemoryService
 	static std::filesystem::path CategoryPath(const std::filesystem::path& root, const std::string& category);
 	static bool EnsureMemoryLayout(const std::filesystem::path& root);
 	static std::string BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt);
-	static bool ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count = -1, std::string* error_out = nullptr);
+	static bool ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count = -1, std::string* error_out = nullptr, bool refresh_counts_async = false);
 	static uam::MemoryActivityState BuildMemoryActivity(const uam::AppState& app);
 	static void RefreshMemoryActivity(uam::AppState& app);
+	static void RefreshMemoryActivityAsync(uam::AppState& app);
+	static bool PollMemoryActivity(uam::AppState& app);
 	static std::string BuildWorkerCommandForTests(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::string& model_id);
 	static std::string BuildWorkerPromptForTests(const ChatSession& chat, int start_message_index = -1);
 	static std::vector<ManualScanCandidate> ListManualScanCandidates(const uam::AppState& app);

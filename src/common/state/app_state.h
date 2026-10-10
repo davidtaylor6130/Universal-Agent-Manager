@@ -760,6 +760,9 @@ namespace uam
 		std::string hydrated_messages_digest;
 		bool low_signal_skip = false;
 		bool hydration_failed = false;
+		bool output_prepared = false;
+		std::optional<std::string> completed_text;
+		std::string output_error;
 		bool remote_applied = false;
 		int remote_entry_count = 0;
 	};
@@ -934,6 +937,7 @@ namespace uam
 
 	/// <summary>Shared application state for the CEF/React provider CLI release slice.</summary>
 	struct PendingChatSaveTask;
+	struct MemoryActivityRefreshTask;
 	struct AppState
 	{
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
@@ -1026,6 +1030,7 @@ namespace uam
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
 		std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>> pending_chat_save_tasks;
+		std::shared_ptr<MemoryActivityRefreshTask> memory_activity_refresh_task;
 		std::unordered_map<std::string, double> remote_recovery_hydration_retry_not_before_by_chat_id;
 		std::unordered_set<std::string> worktree_operation_chat_ids;
 		std::unordered_map<std::string, std::weak_ptr<void>> remote_vcs_operation_leases_by_host_id;

@@ -10,7 +10,6 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
-#include <atomic>
 
 namespace uam::query_handler_async
 {
@@ -100,14 +99,9 @@ class CefQueryWorkerTask : public CefTask
   public:
 	CefQueryWorkerTask(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback,
 	                   std::function<AsyncCefResult()> worker,
-	                   std::function<void(AsyncCefResult&)> completion = {}, std::atomic_bool* busy_flag = nullptr)
-	    : m_lifetime(std::move(lifetime)), m_callback(std::move(callback)), m_worker(std::move(worker)), m_completion(std::move(completion)), m_busyFlag(busy_flag)
+	                   std::function<void(AsyncCefResult&)> completion = {})
+	    : m_lifetime(std::move(lifetime)), m_callback(std::move(callback)), m_worker(std::move(worker)), m_completion(std::move(completion))
 	{
-	}
-
-	~CefQueryWorkerTask() override
-	{
-		if (m_busyFlag != nullptr) m_busyFlag->store(false);
 	}
 
 	void Execute() override
@@ -134,28 +128,8 @@ class CefQueryWorkerTask : public CefTask
 	CefRefPtr<CefMessageRouterBrowserSide::Callback> m_callback;
 	std::function<AsyncCefResult()> m_worker;
 	std::function<void(AsyncCefResult&)> m_completion;
-	std::atomic_bool* m_busyFlag = nullptr;
 	IMPLEMENT_REFCOUNTING(CefQueryWorkerTask);
 };
-
-/// <summary>Isolates long metadata preparation from the history-loading file queue.</summary>
-template <typename Worker, typename Completion>
-bool RunIndependentCefQuery(std::weak_ptr<void> lifetime, Worker worker, Completion completion)
-{
-	static std::atomic_bool busy = false;
-	if (busy.exchange(true)) return false;
-	try
-	{
-		CefRefPtr<CefQueryWorkerTask> task = new CefQueryWorkerTask(std::move(lifetime), nullptr, std::move(worker), std::move(completion), &busy);
-		if (!CefPostTask(TID_FILE_USER_VISIBLE, task))
-		{
-			busy.store(false);
-			return false;
-		}
-		return true;
-	}
-	catch (const std::exception&) { busy.store(false); return false; }
-}
 
 template <typename Worker>
 bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
@@ -169,9 +143,9 @@ bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBr
 }
 
 template <typename Worker, typename Completion>
-bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion)
+bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion, CefThreadId thread_id = TID_FILE_BACKGROUND)
 {
-	if (!CefPostTask(TID_FILE_BACKGROUND,
+	if (!CefPostTask(thread_id,
 	                 new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion))))
 	{
 		if (callback) callback->Failure(503, "The background task queue is unavailable.");

@@ -415,6 +415,10 @@ describe('CLIView', () => {
       { chatId: 'chat-1', terminalId: 'term-1', rows: 30, cols: 100 },
     ])
     onRender.mockClear()
+    act(() => window.dispatchEvent(new CustomEvent('uam-cli-output', {
+      detail: { sessionId: session.id, terminalId: 'replaced-terminal', data: 'stale' },
+    })))
+    expect(xtermState.writesByInstance[0]).toHaveLength(0)
     await act(async () => {
       window.dispatchEvent(new CustomEvent('uam-cli-output', { detail: { sessionId: session.id, terminalId: 'term-1', data: '\x1b[32moutput\r\n' } }))
       useAppStore.setState({ cliTranscriptBySessionId: { 'chat-1': { terminalId: 'term-1', content: 'output' } } })

@@ -42,6 +42,8 @@ namespace
 
 void UamQueryHandler::HandleSearchChatMessages(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	const std::shared_ptr<std::atomic<std::uint64_t>> generation = m_searchGeneration;
+	const std::uint64_t owner = ++*generation;
 	const std::vector<std::string> tokens = SearchTokens(payload.value("query", ""));
 	const std::filesystem::path data_root = m_app.data_root;
 	const std::string request_id = payload.value("requestId", "");
@@ -59,19 +61,18 @@ void UamQueryHandler::HandleSearchChatMessages(CefRefPtr<CefBrowser> /*browser*/
 	}
 
 	RunAsyncCefQuery(m_asyncLifetime, cb,
-	                 [data_root, tokens, request_id]()
-	                 {
-		                 std::string warning;
-		                 const std::vector<ChatSession> chats = ChatRepository::LoadLocalChats(data_root, &warning);
-		                 nlohmann::json async_result = uam::SearchChatMessages(chats, tokens);
-		                 if (!request_id.empty()) async_result["requestId"] = request_id;
-
-		                 if (!warning.empty())
-		                 {
-			                 async_result["warning"] = warning;
-		                 }
-		                 return AsyncSuccess(std::move(async_result));
-	                 });
+	    [data_root, tokens, request_id, generation, owner]()
+	    {
+		    std::optional<nlohmann::json> result = uam::SearchSavedChatMessages(data_root, tokens, [generation, owner]() { return generation->load() != owner; });
+		    if (!result) return AsyncFailure(409, "Search was superseded by a newer query.");
+		    if (!request_id.empty()) (*result)["requestId"] = request_id;
+		    return AsyncSuccess(std::move(*result));
+	    },
+	    [this, data_root, generation, owner](AsyncCefResult& response)
+	    {
+		    if (generation->load() != owner || m_app.data_root != data_root)
+			    response = AsyncFailure(409, "Search was superseded by a newer query.");
+	    }, TID_FILE_USER_VISIBLE);
 }
 
 void UamQueryHandler::HandleListMemoryEntries(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -183,7 +184,7 @@ void UamQueryHandler::HandleCreateMemoryEntry(CefRefPtr<CefBrowser> browser, con
 	response["folderId"] = created.folder_id;
 	response["scopeLabel"] = created.scope_label;
 	response["rootPath"] = uam::paths::Utf8PathString(created.root_path);
-	MemoryService::RefreshMemoryActivity(m_app);
+	MemoryService::RefreshMemoryActivityAsync(m_app);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success(response.dump());
 }
@@ -204,7 +205,7 @@ void UamQueryHandler::HandleDeleteMemoryEntry(CefRefPtr<CefBrowser> browser, con
 		return;
 	}
 
-	MemoryService::RefreshMemoryActivity(m_app);
+	MemoryService::RefreshMemoryActivityAsync(m_app);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

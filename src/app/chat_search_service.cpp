@@ -1,5 +1,6 @@
 #include "app/chat_search_service.h"
 #include "cef/state_serializer.h"
+#include "common/chat/chat_repository.h"
 #include "common/utils/string_utils.h"
 #include <algorithm>
 #include <array>
@@ -38,14 +39,25 @@ namespace uam
 		if (tokens.empty()) return result;
 		for (const ChatSession& chat : chats)
 		{
-			std::string haystack = strings::ToLowerAscii(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
+			std::vector<bool> matched(tokens.size(), false);
+			std::string carry;
+			std::size_t max_token_size = 0;
+			for (const std::string& token : tokens) max_token_size = std::max(max_token_size, token.size());
+			const auto scan_field = [&](const std::string& field)
+			{
+				const std::string lowered = carry + " " + strings::ToLowerAscii(field);
+				for (std::size_t index = 0; index < tokens.size(); ++index)
+					matched[index] = matched[index] || strings::Contains(lowered, tokens[index]);
+				carry = lowered.substr(lowered.size() > max_token_size ? lowered.size() - max_token_size : 0);
+			};
+			scan_field(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
 			for (const Message& message : chat.messages)
 			{
-				haystack += " " + strings::ToLowerAscii(message.content);
-				haystack += " " + strings::ToLowerAscii(message.thoughts);
-				haystack += " " + strings::ToLowerAscii(message.plan_summary);
+				scan_field(message.content);
+				scan_field(message.thoughts);
+				scan_field(message.plan_summary);
 			}
-			if (!std::ranges::all_of(tokens, [&](const std::string& token) { return strings::Contains(haystack, token); })) continue;
+			if (!std::ranges::all_of(matched, [](bool found) { return found; })) continue;
 			result["chatIds"].push_back(chat.id);
 			if (result["hits"].size() >= kMaxHits) continue;
 			const std::string digest = StateSerializer::MessageDigest(chat);
@@ -64,6 +76,28 @@ namespace uam
 					break;
 				}
 			}
+		}
+		return result;
+	}
+
+	std::optional<nlohmann::json> SearchSavedChatMessages(const std::filesystem::path& root, const std::vector<std::string>& tokens, const std::function<bool()>& canceled)
+	{
+		nlohmann::json result{{"chatIds", nlohmann::json::array()}, {"hits", nlohmann::json::array()}};
+		if (canceled()) return std::nullopt;
+		std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(root);
+		std::ranges::sort(summaries, [](const ChatSession& left, const ChatSession& right) { return left.updated_at > right.updated_at; });
+		for (const ChatSession& summary : summaries)
+		{
+			if (canceled()) return std::nullopt;
+			std::optional<ChatSession> chat = ChatRepository::LoadLocalChat(root, summary.id, true, nullptr, false);
+			if (canceled()) return std::nullopt;
+			if (!chat) continue;
+			std::vector<ChatSession> single;
+			single.push_back(std::move(*chat));
+			nlohmann::json found = SearchChatMessages(single, tokens);
+			for (nlohmann::json& id : found["chatIds"]) result["chatIds"].push_back(std::move(id));
+			for (nlohmann::json& hit : found["hits"])
+				if (result["hits"].size() < kMaxHits) result["hits"].push_back(std::move(hit));
 		}
 		return result;
 	}

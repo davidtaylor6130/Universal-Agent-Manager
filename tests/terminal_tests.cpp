@@ -3589,3 +3589,25 @@ UAM_TEST(CodexHandoffWarmEditRacingCompletionNeverPublishes)
 		UAM_ASSERT(!fs::exists(temp.root / "runtime-context"));
 	}
 }
+
+UAM_TEST(NativeHistoryDigestTracksEarlierCorrectionsAndToolThoughtUpdates)
+{
+	ChatSession chat;
+	chat.id = "native-history-corrections";
+	chat.messages.push_back({MessageRole::User, "original", "now"});
+	chat.messages.push_back({MessageRole::Assistant, "answer", "now"});
+	ToolCall tool;
+	tool.id = "tool";
+	tool.result_text = "first";
+	chat.messages.back().tool_calls.push_back(tool);
+	const std::string original = uam::NativeHistorySnapshotDigest({chat});
+	ChatSession changed = chat;
+	changed.messages.front().content = "modified";
+	UAM_ASSERT(uam::NativeHistorySnapshotDigest({changed}) != original);
+	changed = chat;
+	changed.messages.back().thoughts = "new thoughts";
+	UAM_ASSERT(uam::NativeHistorySnapshotDigest({changed}) != original);
+	changed = chat;
+	changed.messages.back().tool_calls.front().result_text = "later";
+	UAM_ASSERT(uam::NativeHistorySnapshotDigest({changed}) != original);
+}

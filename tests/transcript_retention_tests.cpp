@@ -344,3 +344,21 @@ UAM_TEST(CopiedLegacyChatUpgradeReopensWithoutChangingOriginalOrRollbackBackup)
 	UAM_ASSERT_EQ(ReadFile(original), legacy);
 	UAM_ASSERT_EQ(ReadFile(uam::io::MakeBackupPath(copied)), legacy);
 }
+
+UAM_TEST(TranscriptReleaseTransfersLargeBuffersWithoutDestroyingThemOnCompletion)
+{
+	uam::AppState app;
+	app.chats.push_back(RetentionChat());
+	app.chats.front().messages.front().content.assign(8 * 1024 * 1024, 'x');
+	const ChatSession persisted = app.chats.front();
+	const char* original = app.chats.front().messages.front().content.data();
+	uam::TranscriptRetentionService retention;
+	retention.SetVisibleChatIds({});
+	const auto generation = retention.BeginRelease(app, persisted.id);
+	UAM_ASSERT(generation.has_value());
+	std::vector<Message> released;
+	UAM_ASSERT(retention.CompleteRelease(app, persisted.id, *generation, persisted, &released));
+	UAM_ASSERT(!app.chats.front().messages_loaded);
+	UAM_ASSERT(app.chats.front().messages.empty());
+	UAM_ASSERT_EQ(released.front().content.data(), original);
+}

@@ -123,7 +123,7 @@ namespace uam
 		void SetVisibleChatIds(const std::vector<std::string>& chat_ids);
 		void Invalidate(const std::string& chat_id);
 		std::optional<std::uint64_t> BeginRelease(const AppState& app, const std::string& chat_id);
-		bool CompleteRelease(AppState& app, const std::string& chat_id, std::uint64_t generation, const ChatSession& persisted);
+		bool CompleteRelease(AppState& app, const std::string& chat_id, std::uint64_t generation, const ChatSession& persisted, std::vector<Message>* released = nullptr);
 
 	private:
 		bool CanRelease(const AppState& app, const ChatSession& chat) const;
