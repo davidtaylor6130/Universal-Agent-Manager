@@ -396,7 +396,7 @@ namespace uam::remote
 			for (const char character : rollback) quoted += character == '\'' ? "'\\''" : std::string(1, character);
 			quoted += "'";
 			std::string quoted_trap = "'";
-			for (const char character : "sh -c " + quoted) quoted_trap += character == '\'' ? "'\\''" : std::string(1, character);
+			for (const char character : "sh -c " + quoted + " 9>&-") quoted_trap += character == '\'' ? "'\\''" : std::string(1, character);
 			quoted_trap += "'";
 			const std::string recover =
 			    "journal=\"$root/install.transaction\"; if test -f \"$journal\"; then test ! -L \"$journal\"; "
@@ -406,14 +406,14 @@ namespace uam::remote
 			    "installed=\"$root/$v/uam-runner\"; backup=\"$root/$v/uam-runner.rollback-$n\"; marker=\"$root/$v/uam-runner.activation-$n\"; "
 			    "if test -f \"$marker\"; then test ! -L \"$installed\"; test ! -L \"$backup\"; test ! -L \"$marker\"; "
 			    "if test -f \"$installed\"; then \"$installed\" stop --socket \"$root/uam-$v-p$p.sock\" || true; fi; "
-			    "if test -f \"$backup\"; then cp -p \"$backup\" \"$installed\"; \"$installed\" start --socket \"$root/uam-$v-p$p.sock\" >/dev/null; "
+			    "if test -f \"$backup\"; then cp -p \"$backup\" \"$installed\"; \"$installed\" start --socket \"$root/uam-$v-p$p.sock\" >/dev/null 9>&-; "
 			    "else rm -f \"$installed\"; fi; rm -f \"$marker\" \"$backup\"; fi; rm -f \"$journal\"; fi; ";
 			command = "set -eu; umask 077; root=\"$HOME/" + root + "\"; mkdir -p \"$root\"; "
 			    "test ! -L \"$root/install.lock\"; exec 9>\"$root/install.lock\"; "
 			    "if ! flock -n 9; then printf '%s\\n' 'The remote helper is busy with another installation.' >&2; exit 73; fi; " +
 			    recover + "trap " + quoted_trap + " EXIT; printf '%s\\n' 'UAM_INSTALL_LOCK_READY:" + plan.nonce + "'; "
 			    "while IFS= read -r line; do case \"$line\" in *[!a-zA-Z0-9+/=]*|'') exit 2;; esac; "
-			    "command=$(printf '%s' \"$line\" | base64 -d); if output=$(sh -c \"$command\" 2>&1); then status=0; else status=$?; fi; "
+			    "command=$(printf '%s' \"$line\" | base64 -d); if output=$(sh -c \"$command\" 9>&- 2>&1); then status=0; else status=$?; fi; "
 			    "printf 'UAM_INSTALL_RESULT:%s:%s\\n' \"$status\" \"$(printf '%s' \"$output\" | base64 -w 0)\"; done";
 		}
 		else
