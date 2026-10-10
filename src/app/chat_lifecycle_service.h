@@ -9,12 +9,25 @@
 
 namespace uam
 {
+	/// <summary>Only the workspace and session needed to protect shared native history.</summary>
+	struct NativeDeletionOwner
+	{
+		std::string workspace_directory;
+		std::string native_session_id;
+		bool unresolved_session = false;
+	};
+
 	/// <summary>Owned snapshot for background staging and cleanup. Live state is committed on the UI thread.</summary>
 	struct WorkspaceDeletionTask
 	{
 		AppState snapshot;
 		std::vector<std::string> folder_ids;
 		std::unordered_set<std::string> deleted_ids;
+		std::unordered_set<std::string> retained_native_keys;
+		std::unordered_set<std::string> retained_workspace_keys;
+		std::vector<NativeDeletionOwner> retained_native_owners;
+		std::unordered_map<std::string, std::string> native_stores_by_directory;
+		bool commit_rejected = false;
 		bool deleting_chats = false;
 		bool metadata_saved = false;
 		bool settings_saved = false;

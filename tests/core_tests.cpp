@@ -19099,6 +19099,348 @@ UAM_TEST(ChatDeletionPersistsRootNormalizationForSurvivingBranch)
 	UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
 }
 
+UAM_TEST(WorkspaceDeletionKeepsSurvivingTranscriptStorage)
+{
+	TempDir temp("uam-delete-survivor-storage");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"delete", "Delete", temp.root.string(), false}, {"keep", "Keep", temp.root.string(), false}};
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, app.folders));
+	ChatSession doomed;
+	doomed.id = "doomed";
+	doomed.folder_id = "delete";
+	ChatSession survivor;
+	survivor.id = "survivor";
+	survivor.folder_id = "keep";
+	survivor.messages.push_back({MessageRole::User, std::string(4U * 1024U * 1024U, 'x')});
+	app.chats = {doomed, survivor};
+	ChatBranching::Normalize(app.chats);
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const char* body = app.chats[1].messages.front().content.data();
+	const std::string saved = uam::io::ReadTextFile(AppPaths::UamChatFilePath(temp.root, survivor.id));
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"delete"}, task));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT(app.chats.front().messages.front().content.data() == body);
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(AppPaths::UamChatFilePath(temp.root, survivor.id)), saved);
+}
+
+UAM_TEST(DeletionPreservesNativeHistoryOwnedBySurvivingAliases)
+{
+	for (const bool folder_deletion : {false, true})
+	for (const bool recovery : {false, true})
+	for (const bool nested : {false, true})
+	{
+		TempDir temp("uam-delete-shared-native");
+		const fs::path workspace = temp.root / "workspace";
+		const fs::path source = temp.root / "gemini" / "tmp" / "project";
+		ScopedEnvVar home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+		fs::create_directories(workspace / "sub");
+		fs::create_directories(source / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+		const fs::path native = source / "chats" / "shared-native.json";
+		const std::string native_bytes = R"({"sessionId":"shared-native","messages":[{"type":"user","content":"shared"}]})";
+		UAM_ASSERT(uam::io::WriteTextFile(native, native_bytes));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		const fs::path retained_workspace = workspace / (nested ? "sub" : ".");
+		app.folders = {{"delete", "Delete", workspace.string(), false}, {"alias", "Alias", retained_workspace.string(), false}};
+		UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+		ChatSession doomed;
+		doomed.id = "doomed";
+		doomed.folder_id = "delete";
+		doomed.provider_id = "gemini-cli";
+		doomed.native_session_id = "shared-native";
+		doomed.workspace_directory = workspace.string();
+		doomed.messages.push_back({MessageRole::User, "conflicting original"});
+		ChatSession survivor = doomed;
+		survivor.id = "survivor";
+		survivor.folder_id = "alias";
+		survivor.workspace_directory = retained_workspace.string();
+		survivor.messages.front().content = "conflicting survivor";
+		app.chats = {doomed, survivor};
+		ChatBranching::Normalize(app.chats);
+		for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const std::string saved = uam::io::ReadTextFile(AppPaths::UamChatFilePath(app.data_root, survivor.id));
+		if (recovery)
+		{
+			uam::WorkspaceDeletionTask task;
+			if (folder_deletion) UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"delete"}, task));
+			else UAM_ASSERT(uam::PrepareChatDeletion(app, {doomed.id}, task));
+			UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+			UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+		}
+		else if (folder_deletion) UAM_ASSERT(DeleteFolderById(app, "delete"));
+		else UAM_ASSERT(RemoveChatById(app, doomed.id));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(native), native_bytes);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(AppPaths::UamChatFilePath(app.data_root, survivor.id)), saved);
+		UAM_ASSERT(!fs::exists(app.data_root / "deletion-transaction.json"));
+		const fs::path tombstones = app.data_root / "native-import-tombstones.json";
+		UAM_ASSERT(!fs::exists(tombstones) || nlohmann::json::parse(uam::io::ReadTextFile(tombstones)).empty());
+		uam::AppState reopened;
+		reopened.data_root = app.data_root;
+		reopened.provider_profiles = app.provider_profiles;
+		reopened.folders = ChatFolderStore::Load(app.data_root);
+		reopened.chats = ChatRepository::LoadLocalChats(app.data_root);
+		UAM_ASSERT(RemoveChatById(reopened, survivor.id));
+		UAM_ASSERT(!fs::exists(native));
+	}
+}
+
+UAM_TEST(DeletionDoesNotTombstoneSurvivingNativeOwners)
+{
+	for (const std::string provider : {std::string("gemini-cli"), std::string("codex-cli")})
+	for (const bool recovery : {false, true})
+	{
+		TempDir temp("uam-delete-shared-tombstone");
+		ScopedEnvVar home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession doomed;
+		doomed.id = "doomed";
+		doomed.provider_id = provider;
+		doomed.native_session_id = "019c3c97-3c20-75d1-be43-2a6e4e67b02d";
+		doomed.workspace_directory = (temp.root / "workspace").string();
+		doomed.messages.push_back({MessageRole::User, "original"});
+		ChatSession survivor = doomed;
+		survivor.id = "survivor";
+		survivor.messages.front().content = "different history";
+		app.chats = {doomed, survivor};
+		ChatBranching::Normalize(app.chats);
+		for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const std::string saved = uam::io::ReadTextFile(AppPaths::UamChatFilePath(app.data_root, survivor.id));
+		if (recovery)
+		{
+			uam::WorkspaceDeletionTask task;
+			UAM_ASSERT(uam::PrepareChatDeletion(app, {doomed.id}, task));
+			UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+			UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+		}
+		else UAM_ASSERT(RemoveChatById(app, doomed.id));
+		const fs::path tombstones = app.data_root / "native-import-tombstones.json";
+		UAM_ASSERT(!fs::exists(tombstones) || nlohmann::json::parse(uam::io::ReadTextFile(tombstones)).empty());
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(AppPaths::UamChatFilePath(app.data_root, survivor.id)), saved);
+		const std::vector<ChatSession> reopened = ChatRepository::LoadLocalChats(app.data_root);
+		UAM_ASSERT_EQ(reopened.size(), std::size_t{1});
+		UAM_ASSERT_EQ(reopened.front().native_session_id, survivor.native_session_id);
+		uam::AppState final_owner;
+		final_owner.data_root = app.data_root;
+		final_owner.provider_profiles = app.provider_profiles;
+		final_owner.chats = reopened;
+		UAM_ASSERT(RemoveChatById(final_owner, survivor.id));
+		UAM_ASSERT_EQ(nlohmann::json::parse(uam::io::ReadTextFile(tombstones)).size(), std::size_t{1});
+	}
+}
+
+UAM_TEST(NativeDeletionNeverFallsBackToAnotherHostOrWorkspace)
+{
+	TempDir temp("uam-delete-native-scope");
+	ScopedEnvVar home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	const fs::path workspace = temp.root / "local-workspace";
+	const fs::path source = temp.root / "gemini" / "tmp" / "project";
+	fs::create_directories(workspace);
+	fs::create_directories(source / "chats");
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+	const fs::path native = source / "chats" / "same-id.json";
+	const std::string bytes = R"({"sessionId":"same-id","messages":[{"type":"user","content":"local sentinel"}]})";
+	UAM_ASSERT(uam::io::WriteTextFile(native, bytes));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	for (const bool remote : {true, false})
+	{
+		ChatSession chat;
+		chat.id = "doomed";
+		chat.provider_id = "gemini-cli";
+		chat.native_session_id = "same-id";
+		chat.execution_host_id = remote ? "remote-host" : "local";
+		chat.workspace_directory = (temp.root / "other-workspace").string();
+		std::error_code error;
+		UAM_ASSERT(!ChatHistorySyncService().DeleteNativeSessionFileForChat(app, chat, &error));
+		UAM_ASSERT(!error);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(native), bytes);
+	}
+	ChatSession local;
+	local.id = "local-owner";
+	local.provider_id = "gemini-cli";
+	local.native_session_id = "same-id";
+	local.workspace_directory = workspace.string();
+	std::error_code error;
+	UAM_ASSERT(ChatHistorySyncService().DeleteNativeSessionFileForChat(app, local, &error));
+	UAM_ASSERT(!error);
+	UAM_ASSERT(!fs::exists(native));
+}
+
+UAM_TEST(DeletionProtectsResolvedNativeOwnersBeforeAndAfterStaging)
+{
+	for (const bool resolve_late : {false, true})
+	for (const bool native_id_collision : {false, true})
+	for (const int interruption : {0, 1, 2})
+	{
+		TempDir temp("uam-delete-resolved-owner");
+		ScopedEnvVar home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+		const fs::path workspace = temp.root / "workspace";
+		const fs::path source = temp.root / "gemini" / "tmp" / "project";
+		fs::create_directories(workspace / "sub");
+		fs::create_directories(source / "chats");
+		UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+		const fs::path native = source / "chats" / "shared.json";
+		const std::string bytes = R"({"sessionId":"shared","messages":[{"type":"user","content":"keep"}]})";
+		UAM_ASSERT(uam::io::WriteTextFile(native, bytes));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession doomed;
+		doomed.id = native_id_collision ? "shared" : "chat-doomed";
+		doomed.provider_id = "gemini-cli";
+		doomed.native_session_id = "shared";
+		doomed.workspace_directory = workspace.string();
+		ChatSession survivor;
+		survivor.id = "chat-survivor";
+		survivor.provider_id = "gemini-cli";
+		survivor.workspace_directory = (workspace / "sub").string();
+		app.chats = {doomed, survivor};
+		ChatBranching::Normalize(app.chats);
+		for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		if (!resolve_late) app.resolved_native_sessions_by_chat_id[survivor.id] = "shared";
+		uam::WorkspaceDeletionTask task;
+		UAM_ASSERT(uam::PrepareChatDeletion(app, {doomed.id}, task));
+		UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+		if (resolve_late) app.resolved_native_sessions_by_chat_id[survivor.id] = "shared";
+		if (interruption != 1) uam::CommitWorkspaceDeletion(app, task);
+		if (interruption == 0) UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+		else
+		{
+			uam::AppState restarted;
+			restarted.data_root = app.data_root;
+			restarted.provider_profiles = app.provider_profiles;
+			UAM_ASSERT(uam::RecoverPendingDeletionTransaction(restarted));
+		}
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(native), bytes);
+		const fs::path tombstones = app.data_root / "native-import-tombstones.json";
+		UAM_ASSERT(!fs::exists(tombstones) || nlohmann::json::parse(uam::io::ReadTextFile(tombstones)).empty());
+		UAM_ASSERT_EQ(app.resolved_native_sessions_by_chat_id.at(survivor.id), std::string("shared"));
+	}
+}
+
+UAM_TEST(ChatDeletionPersistsFolderWorkspaceWithoutUsingCleanupWorkingDirectory)
+{
+	for (const bool cold : {false, true})
+	for (const bool recovery : {false, true})
+	{
+		TempDir temp("uam-delete-folder-location");
+		ScopedEnvVar home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+		const fs::path intended = temp.root / "intended";
+		const fs::path unrelated = temp.root / "unrelated";
+		for (const std::string name : {std::string("intended"), std::string("unrelated")})
+		{
+			fs::create_directories(temp.root / name);
+			const fs::path store = temp.root / "gemini" / "tmp" / name;
+			fs::create_directories(store / "chats");
+			UAM_ASSERT(uam::io::WriteTextFile(store / ".project_root", (temp.root / name).string()));
+			UAM_ASSERT(uam::io::WriteTextFile(store / "chats" / "same-id.json", R"({"sessionId":"same-id","messages":[{"type":"user","content":"sentinel"}]})"));
+		}
+		struct RestoreDirectory
+		{
+			fs::path previous = fs::current_path();
+			~RestoreDirectory() { std::error_code error; fs::current_path(previous, error); }
+		} restore;
+		fs::current_path(unrelated);
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.folders = {{"intended", "Intended", intended.string(), false}};
+		UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+		ChatSession chat;
+		chat.id = "chat-folder-location";
+		chat.folder_id = "intended";
+		chat.provider_id = "gemini-cli";
+		chat.native_session_id = "same-id";
+		chat.messages.push_back({MessageRole::User, "intended transcript"});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		if (cold) chat = *ChatRepository::LoadLocalChat(app.data_root, chat.id, false);
+		app.chats.push_back(chat);
+		uam::WorkspaceDeletionTask task;
+		UAM_ASSERT(uam::PrepareChatDeletion(app, {chat.id}, task));
+		UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+		const std::optional<ChatSession> staged = ChatRepository::LoadLocalChat(app.data_root / ".deletion-transaction", chat.id);
+		UAM_ASSERT(staged.has_value());
+		UAM_ASSERT_EQ(staged->workspace_directory, intended.string());
+		if (recovery) UAM_ASSERT(uam::RecoverPendingDeletionTransaction(app));
+		else
+		{
+			uam::CommitWorkspaceDeletion(app, task);
+			UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+		}
+		UAM_ASSERT(!fs::exists(temp.root / "gemini" / "tmp" / "intended" / "chats" / "same-id.json"));
+		UAM_ASSERT(fs::exists(temp.root / "gemini" / "tmp" / "unrelated" / "chats" / "same-id.json"));
+	}
+}
+
+UAM_TEST(DeletionRejectsOwnershipPublicationFailureBeforeChangingLiveHistory)
+{
+	for (const bool primary_failure : {false, true})
+	{
+		TempDir temp("uam-delete-ownership-save-failure");
+		ScopedEnvVar home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "chat-keep-on-failure";
+		chat.messages.push_back({MessageRole::User, "keep"});
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		const std::string saved = uam::io::ReadTextFile(AppPaths::UamChatFilePath(temp.root, chat.id));
+		uam::WorkspaceDeletionTask task;
+		UAM_ASSERT(uam::PrepareChatDeletion(app, {chat.id}, task));
+		UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+		const fs::path intent_path = temp.root / "deletion-transaction.json";
+		const fs::path backup = primary_failure ? intent_path : uam::io::MakeBackupPath(intent_path);
+		if (primary_failure) fs::rename(intent_path, temp.root / "staged-intent.json");
+		fs::create_directory(backup);
+		UAM_ASSERT(uam::io::WriteTextFile(backup / "blocker", "keep backup collision"));
+		uam::CommitWorkspaceDeletion(app, task);
+		UAM_ASSERT(task.commit_rejected);
+		UAM_ASSERT(app.worktree_operation_chat_ids.contains(chat.id));
+		UAM_ASSERT(!task.metadata_saved);
+		UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(AppPaths::UamChatFilePath(temp.root, chat.id)), saved);
+		UAM_ASSERT(!uam::CleanupWorkspaceDeletion(task));
+		UAM_ASSERT(fs::exists(temp.root / "deletion-transaction.json"));
+	}
+}
+
+UAM_TEST(DeletionRecoveryRejectsMalformedRetainedOwnershipWithoutDeletingHistory)
+{
+	for (const int malformed : {0, 1, 2, 3})
+	{
+		TempDir temp("uam-delete-ownership-malformed");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "chat-keep-on-corruption";
+		chat.messages.push_back({MessageRole::User, "keep"});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		const std::string saved = uam::io::ReadTextFile(AppPaths::UamChatFilePath(temp.root, chat.id));
+		nlohmann::json intent = {{"version", 2}, {"complete", true}, {"folderIds", nlohmann::json::array()},
+		    {"chatIds", {chat.id}}, {"retainedNativeKeys", nlohmann::json::array()},
+		    {"retainedNativeOwners", nlohmann::json::array()}, {"ownershipFinalized", true}};
+		if (malformed == 0) intent["retainedNativeKeys"] = nlohmann::json::array({42});
+		if (malformed == 1) intent["retainedNativeOwners"] = nlohmann::json::array({{{"directory", 42}, {"sessionId", "s"}}});
+		if (malformed == 2) intent["ownershipFinalized"] = "yes";
+		if (malformed == 3) intent.erase("retainedNativeOwners");
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "deletion-transaction.json", intent.dump()));
+		UAM_ASSERT(!uam::RecoverPendingDeletionTransaction(app));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(AppPaths::UamChatFilePath(temp.root, chat.id)), saved);
+		UAM_ASSERT(fs::exists(temp.root / "deletion-transaction.json"));
+	}
+}
+
 UAM_TEST(WorkspaceDeletionLargeBatchStagesAndCleansOutsideTheUiPhases)
 {
 	TempDir temp("uam-workspace-background-large");

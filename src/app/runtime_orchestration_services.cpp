@@ -1168,40 +1168,6 @@ namespace
 		}
 	}
 
-	std::optional<fs::path> FindNativeSessionFileAcrossDiscoveredSources(const ProviderProfile& provider, const std::string& native_session_id)
-	{
-		if (uam::strings::IsBlank(native_session_id))
-		{
-			return std::nullopt;
-		}
-
-		const ProviderDiscoveryResult discovery = ProviderRuntime::DiscoverChatSources(provider);
-
-		if (!discovery.error.empty())
-		{
-			return std::nullopt;
-		}
-
-		std::optional<fs::path> matched_file;
-
-		for (const ProviderChatSource& source : discovery.sources)
-		{
-			const auto session_file = ChatHistorySyncService().FindNativeSessionFilePath(source.chats_dir, native_session_id);
-
-			if (session_file)
-			{
-				if (matched_file && *matched_file != *session_file)
-				{
-					return std::nullopt;
-				}
-
-				matched_file = session_file;
-			}
-		}
-
-		return matched_file;
-	}
-
 	bool RemoveNativeSessionFileIfPresent(const fs::path& chats_dir, const std::string& native_session_id, std::error_code* error_out)
 	{
 		if (error_out != nullptr)
@@ -1548,7 +1514,8 @@ fs::path ChatHistorySyncService::ResolveNativeHistoryChatsDirForChat(const uam::
 bool ChatHistorySyncService::AddNativeImportTombstones(
     const fs::path& data_root,
     const std::vector<ChatSession>& chats,
-    std::vector<std::string>& added_keys) const
+    std::vector<std::string>& added_keys,
+    const std::unordered_set<std::string>& retained_keys) const
 {
 	added_keys.clear();
 	std::unordered_set<std::string> candidate_keys;
@@ -1556,7 +1523,8 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 	{
 		if (!uam::strings::IsBlank(chat.native_session_id))
 		{
-			candidate_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+			const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+			if (!retained_keys.contains(key)) candidate_keys.insert(key);
 		}
 	}
 	if (candidate_keys.empty())
@@ -3554,7 +3522,7 @@ bool ChatHistorySyncService::DeleteNativeSessionFileForChat(const uam::AppState&
 
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 
-	if (!ProviderRuntime::UsesNativeOverlayHistory(provider))
+	if (!uam::paths::IsControllerLocalWorkspace(chat) || !ProviderRuntime::UsesNativeOverlayHistory(provider))
 	{
 		return false;
 	}
@@ -3568,10 +3536,6 @@ bool ChatHistorySyncService::DeleteNativeSessionFileForChat(const uam::AppState&
 	const fs::path chats_dir = ResolveNativeHistoryChatsDirForChat(app, chat);
 	auto session_file = FindNativeSessionFilePath(chats_dir, session_id);
 
-	if (!session_file)
-	{
-		session_file = FindNativeSessionFileAcrossDiscoveredSources(provider, session_id);
-	}
 
 	if (!session_file)
 	{

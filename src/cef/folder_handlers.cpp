@@ -247,6 +247,11 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 	    {
 		    if (!response.ok) { unlock(); return; }
 		    uam::CommitWorkspaceDeletion(m_app, *task);
+		    if (task->commit_rejected)
+		    {
+			    response = uam::query_handler_async::AsyncFailure(500, m_app.status_line);
+			    return;
+		    }
 		    const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
 		    if (single_chat)
 		        response = uam::query_handler_async::AsyncSuccess({});

@@ -155,7 +155,7 @@ class ChatHistorySyncService
 	    std::string* error = nullptr);
 	static RemoteCodexTranscript ParseRemoteCodexTranscript(const nlohmann::json& result);
 	ImportResult ImportCodexRolloutChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
-	bool AddNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<ChatSession>& chats, std::vector<std::string>& added_keys) const;
+	bool AddNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<ChatSession>& chats, std::vector<std::string>& added_keys, const std::unordered_set<std::string>& retained_keys = {}) const;
 	bool RemoveNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<std::string>& keys) const;
 	/// <summary>Save a validated native transcript before replacing the live chat; keep active or unsaved work.</summary>
 	bool SaveNativeTranscript(uam::AppState& app, ChatSession& current, std::vector<Message> messages) const;

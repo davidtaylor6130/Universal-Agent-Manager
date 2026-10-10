@@ -8,11 +8,13 @@
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
+#include "app/startup_native_import_service.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/conversation_handoff.h"
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/native_chat_identity.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/workspace_root.h"
@@ -23,6 +25,7 @@
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
@@ -179,6 +182,15 @@ namespace
 		});
 	}
 
+	void CaptureDeletionChatLocation(const uam::AppState& app, ChatSession& snapshot)
+	{
+		const std::string resolved = uam::ResolvedNativeSessionIdForChat(app, snapshot);
+		if (!resolved.empty()) snapshot.native_session_id = resolved;
+		if (uam::paths::IsControllerLocalWorkspace(snapshot) &&
+		    uam::strings::IsBlank(snapshot.workspace_directory) && uam::strings::IsBlank(snapshot.workspace_worktree_directory))
+			snapshot.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, snapshot));
+	}
+
 	DeletedChatsSelection CollectChatsInFolder(const uam::AppState& app,
 	                                           const std::unordered_set<std::string>& folder_ids)
 	{
@@ -193,7 +205,11 @@ namespace
 		ExpandDependentChatIds(app, target_chat_ids, selection.ids);
 		selection.chats.reserve(selection.ids.size());
 		for (const ChatSession& chat : app.chats)
-			if (selection.ids.contains(chat.id)) selection.chats.push_back(chat);
+			if (selection.ids.contains(chat.id))
+			{
+				selection.chats.push_back(chat);
+				CaptureDeletionChatLocation(app, selection.chats.back());
+			}
 		return selection;
 	}
 
@@ -227,9 +243,13 @@ namespace
 			app.filtered_chat_ids.erase(deleted_chat_id);
 		}
 
+		std::unordered_set<std::string> surviving_chat_ids;
+		surviving_chat_ids.reserve(app.chats.size());
+		for (const ChatSession& chat : app.chats) surviving_chat_ids.insert(chat.id);
 		for (auto it = app.resolved_native_sessions_by_chat_id.begin(); it != app.resolved_native_sessions_by_chat_id.end();)
 		{
-			if (ContainsDeletedChatId(deleted_chat_ids, it->first) || ContainsDeletedChatId(deleted_chat_ids, it->second))
+			if (ContainsDeletedChatId(deleted_chat_ids, it->first) ||
+			    !surviving_chat_ids.contains(it->first))
 			{
 				it = app.resolved_native_sessions_by_chat_id.erase(it);
 			}
@@ -263,6 +283,9 @@ namespace
 	{
 		std::vector<std::string> chat_ids;
 		std::vector<std::string> folder_ids;
+		std::unordered_set<std::string> retained_native_keys;
+		std::vector<uam::NativeDeletionOwner> retained_native_owners;
+		bool ownership_finalized = true;
 	};
 
 	std::filesystem::path DeletionIntentPath(const std::filesystem::path& data_root)
@@ -319,6 +342,25 @@ namespace
 			if (!id.empty()) decoded.folder_ids.push_back(id);
 		}
 		if (decoded.chat_ids.empty() && decoded.folder_ids.empty()) return false;
+		if (parsed.contains("retainedNativeKeys") || parsed.contains("retainedNativeOwners") || parsed.contains("ownershipFinalized"))
+		{
+			if (!parsed.contains("retainedNativeKeys") || !parsed["retainedNativeKeys"].is_array() ||
+			    !parsed.contains("retainedNativeOwners") || !parsed["retainedNativeOwners"].is_array() ||
+			    !parsed.contains("ownershipFinalized") || !parsed["ownershipFinalized"].is_boolean()) return false;
+			for (const nlohmann::json& key : parsed["retainedNativeKeys"])
+			{
+				if (!key.is_string()) return false;
+				decoded.retained_native_keys.insert(key.get<std::string>());
+			}
+			for (const nlohmann::json& owner : parsed["retainedNativeOwners"])
+			{
+				if (!owner.is_object() || !owner.contains("directory") || !owner["directory"].is_string() ||
+				    !owner.contains("sessionId") || !owner["sessionId"].is_string()) return false;
+				if (owner.contains("unresolvedSession") && !owner["unresolvedSession"].is_boolean()) return false;
+				decoded.retained_native_owners.push_back({owner["directory"].get<std::string>(), owner["sessionId"].get<std::string>(), owner.value("unresolvedSession", false)});
+			}
+			decoded.ownership_finalized = parsed["ownershipFinalized"].get<bool>();
+		}
 		intent = std::move(decoded);
 		return true;
 	}
@@ -334,7 +376,21 @@ namespace
 		return false;
 	}
 
-	bool BeginDeletionTransaction(const uam::AppState& app, const std::vector<ChatSession>& deleted_chats, const std::vector<std::string>& folder_ids)
+	void EncodeDeletionOwnership(nlohmann::json& encoded, const std::unordered_set<std::string>& keys,
+	                             const std::vector<uam::NativeDeletionOwner>& owners, bool finalized)
+	{
+		std::vector<std::string> ordered_keys(keys.begin(), keys.end());
+		std::ranges::sort(ordered_keys);
+		encoded["retainedNativeKeys"] = ordered_keys;
+		encoded["retainedNativeOwners"] = nlohmann::json::array();
+		for (const uam::NativeDeletionOwner& owner : owners)
+			encoded["retainedNativeOwners"].push_back({{"directory", owner.workspace_directory}, {"sessionId", owner.native_session_id}, {"unresolvedSession", owner.unresolved_session}});
+		encoded["ownershipFinalized"] = finalized;
+	}
+
+	bool BeginDeletionTransaction(const uam::AppState& app, const std::vector<ChatSession>& deleted_chats, const std::vector<std::string>& folder_ids,
+	                              const std::unordered_set<std::string>& retained_keys,
+	                              const std::vector<uam::NativeDeletionOwner>& retained_owners)
 	{
 		const std::filesystem::path intent_path = DeletionIntentPath(app.data_root);
 		const std::filesystem::path staging_root = DeletionStagingRoot(app.data_root);
@@ -357,8 +413,9 @@ namespace
 			else
 			{
 				ChatSession snapshot = chat;
-				if (!ChatRepository::HydrateChatMessages(app.data_root, snapshot) ||
-				    !ChatRepository::SaveChat(staging_root, snapshot)) return false;
+				if (!ChatRepository::HydrateChatMessages(app.data_root, snapshot)) return false;
+				snapshot.native_session_id = chat.native_session_id;
+				if (!ChatRepository::SaveChat(staging_root, snapshot)) return false;
 			}
 		}
 		if (!folder_ids.empty() && !ChatFolderStore::Save(staging_root, app.folders)) return false;
@@ -370,6 +427,7 @@ namespace
 		    {"chatIds", nlohmann::json::array()},
 		};
 		for (const ChatSession& chat : deleted_chats) encoded["chatIds"].push_back(chat.id);
+		EncodeDeletionOwnership(encoded, retained_keys, retained_owners, false);
 		if (!uam::io::WriteTextFileWithBackup(intent_path, encoded.dump()))
 		{
 			(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(staging_root);
@@ -417,11 +475,127 @@ namespace
 		return uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(staging_root);
 	}
 
+	/// <summary>Retains native ownership without copying unrelated transcript bodies.</summary>
+	void CollectRetainedDeletionOwnership(const uam::AppState& app, const DeletionIntent& intent,
+	                                     std::unordered_set<std::string>& native_keys,
+	                                     std::unordered_set<std::string>& workspace_keys,
+	                                     std::vector<uam::NativeDeletionOwner>* native_owners = nullptr)
+	{
+		native_keys.clear();
+		workspace_keys.clear();
+		if (native_owners != nullptr) native_owners->clear();
+		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
+		const std::unordered_set<std::string> deleted_folders(intent.folder_ids.begin(), intent.folder_ids.end());
+		for (const ChatSession& chat : app.chats)
+		{
+			if (deleted_ids.contains(chat.id)) continue;
+			if (!uam::strings::IsBlank(chat.native_session_id))
+				native_keys.insert(uam::chat_identity::NativeIdentityKeyForHistoryImport(chat));
+			ChatSession linked;
+			linked.provider_id = chat.provider_id;
+			linked.execution_host_id = chat.execution_host_id;
+			linked.workspace_directory = chat.workspace_directory;
+			linked.workspace_worktree_directory = chat.workspace_worktree_directory;
+			linked.folder_id = chat.folder_id;
+			if (uam::paths::IsControllerLocalWorkspace(chat) && uam::strings::IsBlank(linked.workspace_directory) &&
+			    uam::strings::IsBlank(linked.workspace_worktree_directory))
+				linked.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
+			linked.native_session_id = chat.native_session_id;
+			if (!uam::strings::IsBlank(linked.native_session_id)) native_keys.insert(uam::chat_identity::NativeIdentityKeyForHistoryImport(linked));
+			const std::string resolved = uam::ResolvedNativeSessionIdForChat(app, chat);
+			if (!resolved.empty())
+			{
+				linked.native_session_id = resolved;
+				native_keys.insert(uam::chat_identity::NativeIdentityKeyForHistoryImport(linked));
+			}
+			const std::string& directory = uam::strings::IsBlank(chat.workspace_worktree_directory)
+			    ? chat.workspace_directory : chat.workspace_worktree_directory;
+			if (!uam::strings::IsBlank(directory))
+				workspace_keys.insert(uam::paths::WorkspaceOwnershipKey(app, chat.execution_host_id, directory));
+			if (native_owners != nullptr && uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				uam::NativeDeletionOwner owner;
+				owner.workspace_directory = directory.empty()
+				    ? uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, chat)) : directory;
+				if (ProviderRuntime::UsesNativeOverlayHistory(ProviderResolutionService().ProviderForChatOrDefault(app, chat)))
+					{
+					owner.native_session_id = chat.native_session_id;
+					owner.unresolved_session = uam::strings::IsBlank(chat.native_session_id) && resolved.empty();
+					if (!resolved.empty() && resolved != chat.native_session_id)
+						native_owners->push_back({owner.workspace_directory, resolved});
+				}
+				native_owners->push_back(std::move(owner));
+			}
+		}
+		for (const ChatFolder& folder : app.folders)
+			if (!deleted_folders.contains(uam::strings::Trim(folder.id)) && !uam::strings::IsBlank(folder.directory))
+			{
+				workspace_keys.insert(uam::paths::WorkspaceOwnershipKey(app, folder.execution_host_id, folder.directory));
+				if (native_owners != nullptr && uam::paths::IsControllerLocalWorkspace(folder))
+				{
+					uam::NativeDeletionOwner owner;
+					owner.workspace_directory = folder.directory;
+					native_owners->push_back(std::move(owner));
+				}
+			}
+	}
+
+	std::string NativeDeletionStore(const std::string& directory, std::unordered_map<std::string, std::string>& cache, bool allow_resolution = true)
+	{
+		if (directory.empty()) return {};
+		const std::unordered_map<std::string, std::string>::const_iterator found = cache.find(directory);
+		if (found != cache.end()) return found->second;
+		if (!allow_resolution) return {};
+		const std::optional<std::filesystem::path> store = AppPaths::ResolveGeminiProjectTmpDir(uam::paths::ExpandTrimmedWorkspacePath(directory));
+		const std::string key = store ? uam::paths::Utf8PathString(*store) : std::string{};
+		cache.emplace(directory, key);
+		return key;
+	}
+
+	void CollectRetainedNativeStores(const std::vector<uam::NativeDeletionOwner>& owners,
+	                                std::unordered_map<std::string, std::string>& cache,
+	                                std::unordered_set<std::string>& stores,
+	                                std::unordered_set<std::string>& sessions, bool allow_resolution = true)
+	{
+		for (const uam::NativeDeletionOwner& owner : owners)
+		{
+			const std::string store = NativeDeletionStore(owner.workspace_directory, cache, allow_resolution);
+			if (store.empty()) continue;
+			stores.insert(store);
+			if (!uam::strings::IsBlank(owner.native_session_id))
+				sessions.insert(store + "\n" + uam::strings::Trim(owner.native_session_id));
+		}
+	}
+
+	/// <summary>Resolves physical shared-session ownership on the staging worker, keeping opaque import keys intact.</summary>
+	void ProtectSharedNativeDeletionKeys(const uam::AppState& app, const std::vector<ChatSession>& deleted_chats,
+	                                    const std::vector<uam::NativeDeletionOwner>& owners, std::unordered_set<std::string>& retained_keys,
+	                                    std::unordered_map<std::string, std::string>& cache, bool allow_resolution = true)
+	{
+		std::unordered_set<std::string> stores;
+		std::unordered_set<std::string> sessions;
+		CollectRetainedNativeStores(owners, cache, stores, sessions, allow_resolution);
+		for (const ChatSession& chat : deleted_chats)
+		{
+			if (!uam::paths::IsControllerLocalWorkspace(chat) ||
+			    !ProviderRuntime::UsesNativeOverlayHistory(ProviderResolutionService().ProviderForChatOrDefault(app, chat))) continue;
+			const std::string directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
+			if (sessions.contains(NativeDeletionStore(directory, cache, allow_resolution) + "\n" + uam::strings::Trim(chat.native_session_id)) ||
+			    (!allow_resolution && std::ranges::any_of(owners, [&](const uam::NativeDeletionOwner& owner)
+			    {
+				    return !uam::strings::IsBlank(owner.native_session_id) && uam::strings::TrimmedEquals(owner.native_session_id, chat.native_session_id) &&
+				        NativeDeletionStore(owner.workspace_directory, cache, false).empty();
+			    })))
+				retained_keys.insert(uam::chat_identity::NativeIdentityKeyForHistoryImport(chat));
+		}
+	}
+
 	bool CommitDeletionMetadata(uam::AppState& app,
 	                            const DeletionIntent& intent,
 	                            std::vector<ChatSession>& next_chats,
 	                            std::vector<ChatFolder>& next_folders,
-	                            const std::vector<ChatSession>& deleted_chats)
+	                            const std::vector<ChatSession>& deleted_chats,
+	                            const std::unordered_set<std::string>& retained_native_keys)
 	{
 		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
 		next_chats = app.chats;
@@ -436,7 +610,7 @@ namespace
 		}
 
 		std::vector<std::string> added_tombstones;
-		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones)) return false;
+		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones, retained_native_keys)) return false;
 
 		// Only branch metadata can change on surviving chats. Avoid rewriting unrelated history.
 		std::unordered_map<std::string, const ChatSession*> original_by_id;
@@ -463,7 +637,8 @@ namespace
 	bool CommitDeletionMetadataInPlace(uam::AppState& app,
 	                                   const DeletionIntent& intent,
 	                                   std::vector<ChatFolder>& next_folders,
-	                                   const std::vector<ChatSession>& deleted_chats)
+	                                   const std::vector<ChatSession>& deleted_chats,
+	                            const std::unordered_set<std::string>& retained_native_keys)
 	{
 		struct BranchMetadata
 		{
@@ -479,7 +654,7 @@ namespace
 
 		bool saved = true;
 		std::vector<std::string> added_tombstones;
-		const bool tombstones_saved = ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones);
+		const bool tombstones_saved = ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones, retained_native_keys);
 		saved = tombstones_saved && saved;
 
 		ChatBranching::ReparentChildrenAfterDeletes(app.chats, deleted_ids);
@@ -509,13 +684,21 @@ namespace
 		return saved;
 	}
 
-	bool CleanupDeletionTransaction(uam::AppState& app, const DeletionIntent& intent, const std::vector<ChatSession>& deleted_chats, bool& native_cleanup_failed)
+	bool CleanupDeletionTransaction(uam::AppState& app, const DeletionIntent& intent, const std::vector<ChatSession>& deleted_chats, bool& native_cleanup_failed,
+	                                const std::unordered_set<std::string>& retained_native_keys,
+	                                const std::unordered_set<std::string>& retained_workspace_keys,
+	                                const std::vector<uam::NativeDeletionOwner>& retained_native_owners)
 	{
 		for (const std::string& id : intent.chat_ids)
 		{
 			if (ChatRepository::DeleteChatStorageFiles(app.data_root, id).Failed()) return false;
 		}
 
+		// Gemini resolves related working directories to one physical project store.
+		std::unordered_map<std::string, std::string> stores_by_directory;
+		std::unordered_set<std::string> retained_stores;
+		std::unordered_set<std::string> retained_sessions;
+		CollectRetainedNativeStores(retained_native_owners, stores_by_directory, retained_stores, retained_sessions);
 		native_cleanup_failed = false;
 		if (!intent.folder_ids.empty())
 		{
@@ -524,6 +707,8 @@ namespace
 			for (const ChatFolder& folder : staged_folders)
 			{
 				if (!folder_ids.contains(uam::strings::Trim(folder.id))) continue;
+				if (retained_workspace_keys.contains(uam::paths::WorkspaceOwnershipKey(app, folder.execution_host_id, folder.directory)) ||
+				    (uam::paths::IsControllerLocalWorkspace(folder) && retained_stores.contains(NativeDeletionStore(folder.directory, stores_by_directory)))) continue;
 				std::error_code error;
 				ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error);
 				native_cleanup_failed = native_cleanup_failed || static_cast<bool>(error);
@@ -533,6 +718,10 @@ namespace
 		if (native_cleanup_failed) return false;
 		for (const ChatSession& chat : deleted_chats)
 		{
+			if (retained_native_keys.contains(uam::chat_identity::NativeIdentityKeyForHistoryImport(chat))) continue;
+			const std::string directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
+			if (uam::paths::IsControllerLocalWorkspace(chat) &&
+			    retained_sessions.contains(NativeDeletionStore(directory, stores_by_directory) + "\n" + uam::strings::Trim(chat.native_session_id))) continue;
 			std::error_code error;
 			DeleteNativeHistoryForChatIfNeeded(app, chat, &error);
 			native_cleanup_failed = native_cleanup_failed || static_cast<bool>(error);
@@ -548,8 +737,34 @@ namespace
 	                                 bool& native_cleanup_failed)
 	{
 		deleted_chats = DeletedChatSnapshots(app.data_root, intent, app.chats);
-		return CommitDeletionMetadata(app, intent, next_chats, next_folders, deleted_chats) &&
-		       CleanupDeletionTransaction(app, intent, deleted_chats, native_cleanup_failed);
+		std::unordered_set<std::string> retained_native_keys;
+		std::unordered_set<std::string> retained_workspace_keys;
+		std::vector<uam::NativeDeletionOwner> retained_native_owners;
+		CollectRetainedDeletionOwnership(app, intent, retained_native_keys, retained_workspace_keys, &retained_native_owners);
+		std::unordered_map<std::string, std::string> native_stores_by_directory;
+		retained_native_keys.insert(intent.retained_native_keys.begin(), intent.retained_native_keys.end());
+		retained_native_owners.insert(retained_native_owners.end(), intent.retained_native_owners.begin(), intent.retained_native_owners.end());
+		ProtectSharedNativeDeletionKeys(app, deleted_chats, retained_native_owners, retained_native_keys, native_stores_by_directory);
+		if (!intent.ownership_finalized)
+		{
+			std::unordered_set<std::string> retained_stores;
+			for (const uam::NativeDeletionOwner& owner : retained_native_owners)
+			{
+				if (!owner.unresolved_session) continue;
+				const std::string store = NativeDeletionStore(owner.workspace_directory, native_stores_by_directory);
+				if (!store.empty()) retained_stores.insert(store);
+			}
+			for (const ChatSession& chat : deleted_chats)
+			{
+				if (!uam::paths::IsControllerLocalWorkspace(chat) ||
+				    !ProviderRuntime::UsesNativeOverlayHistory(ProviderResolutionService().ProviderForChatOrDefault(app, chat))) continue;
+				const std::string directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
+				if (retained_stores.contains(NativeDeletionStore(directory, native_stores_by_directory)))
+					retained_native_keys.insert(uam::chat_identity::NativeIdentityKeyForHistoryImport(chat));
+			}
+		}
+		return CommitDeletionMetadata(app, intent, next_chats, next_folders, deleted_chats, retained_native_keys) &&
+		       CleanupDeletionTransaction(app, intent, deleted_chats, native_cleanup_failed, retained_native_keys, retained_workspace_keys, retained_native_owners);
 	}
 
 	std::string StatusAfterFolderDelete(std::size_t deleted_chat_count, bool settings_saved, bool native_cleanup_failed)
@@ -1439,6 +1654,7 @@ bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_i
 		return false;
 	}
 	uam::CommitWorkspaceDeletion(app, task);
+	if (task.commit_rejected) return false;
 	(void)uam::CleanupWorkspaceDeletion(task);
 	app.status_line = task.snapshot.status_line;
 	return true;
@@ -1496,6 +1712,12 @@ bool DeleteFolderById(uam::AppState& app, const std::string& folder_id)
 
 bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>& folder_ids, WorkspaceDeletionTask& task)
 {
+	if (app.startup_native_import_service != nullptr && app.startup_native_import_service->ImportPending())
+	{
+		app.status_line = "Wait for native history loading to finish.";
+		return false;
+	}
+
 	std::unordered_set<std::string> target_folder_ids;
 	for (const std::string& requested_id : folder_ids)
 	{
@@ -1582,11 +1804,19 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	task.snapshot.provider_profiles = app.provider_profiles;
 	task.snapshot.folders = app.folders;
 	task.snapshot.chats = std::move(deleted.chats);
+	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
+	CollectRetainedDeletionOwnership(app, intent, task.retained_native_keys, task.retained_workspace_keys, &task.retained_native_owners);
 	return true;
 }
 
 bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& chat_ids, WorkspaceDeletionTask& task)
 {
+	if (app.startup_native_import_service != nullptr && app.startup_native_import_service->ImportPending())
+	{
+		app.status_line = "Wait for native history loading to finish.";
+		return false;
+	}
+
 	std::vector<std::string> target_chat_ids;
 	std::unordered_set<std::string> deleted_chat_ids;
 	for (const std::string& requested_id : chat_ids)
@@ -1654,6 +1884,7 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 	{
 		if (!deleted_chat_ids.contains(chat.id)) continue;
 		ChatSession snapshot = chat;
+		CaptureDeletionChatLocation(app, snapshot);
 		if (!chat.messages_loaded)
 		{
 			snapshot.messages.clear();
@@ -1671,13 +1902,17 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 	task.snapshot.data_root = app.data_root;
 	task.snapshot.settings = app.settings;
 	task.snapshot.provider_profiles = app.provider_profiles;
+	task.snapshot.folders = app.folders;
 	task.snapshot.chats = std::move(targets);
+	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
+	CollectRetainedDeletionOwnership(app, intent, task.retained_native_keys, task.retained_workspace_keys, &task.retained_native_owners);
 	return true;
 }
 
 bool uam::StageWorkspaceDeletion(WorkspaceDeletionTask& task)
 {
-	if (!BeginDeletionTransaction(task.snapshot, task.snapshot.chats, task.folder_ids))
+	ProtectSharedNativeDeletionKeys(task.snapshot, task.snapshot.chats, task.retained_native_owners, task.retained_native_keys, task.native_stores_by_directory);
+	if (!BeginDeletionTransaction(task.snapshot, task.snapshot.chats, task.folder_ids, task.retained_native_keys, task.retained_native_owners))
 	{
 		task.snapshot.status_line = task.deleting_chats
 		    ? "Failed to create a durable chat deletion transaction."
@@ -1692,18 +1927,27 @@ void uam::CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task)
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const int previous_selected_chat_index = app.selected_chat_index;
 	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
-	std::vector<ChatSession> next_chats;
+	const std::unordered_set<std::string> staged_retained_keys = std::move(task.retained_native_keys);
+	CollectRetainedDeletionOwnership(app, intent, task.retained_native_keys, task.retained_workspace_keys, &task.retained_native_owners);
+	task.retained_native_keys.insert(staged_retained_keys.begin(), staged_retained_keys.end());
+	ProtectSharedNativeDeletionKeys(task.snapshot, task.snapshot.chats, task.retained_native_owners, task.retained_native_keys, task.native_stores_by_directory, false);
+	nlohmann::json encoded = {{"version", 2}, {"complete", true}, {"folderIds", task.folder_ids},
+	    {"chatIds", std::vector<std::string>(task.deleted_ids.begin(), task.deleted_ids.end())}};
+	EncodeDeletionOwnership(encoded, task.retained_native_keys, task.retained_native_owners, true);
+	const std::filesystem::path intent_path = DeletionIntentPath(app.data_root);
+	std::error_code backup_error;
+	const std::filesystem::file_status backup_status = std::filesystem::symlink_status(uam::io::MakeBackupPath(intent_path), backup_error);
+	const bool invalid_backup = backup_error && backup_error != std::errc::no_such_file_or_directory;
+	if (invalid_backup || (std::filesystem::exists(backup_status) && !std::filesystem::is_regular_file(backup_status)) ||
+	    !uam::io::WriteTextFileWithBackup(intent_path, encoded.dump()))
+	{
+		task.commit_rejected = true;
+		app.worktree_operation_chat_ids.insert(task.deleted_ids.begin(), task.deleted_ids.end());
+		app.status_line = "Failed to save deletion ownership. Deletion is pending until restart.";
+		return;
+	}
 	std::vector<ChatFolder> next_folders;
-	if (task.deleting_chats)
-	{
-		task.metadata_saved = CommitDeletionMetadataInPlace(app, intent, next_folders, task.snapshot.chats);
-	}
-	else
-	{
-		task.metadata_saved = CommitDeletionMetadata(app, intent, next_chats, next_folders, task.snapshot.chats);
-		app.chats = std::move(next_chats);
-		app.folders = std::move(next_folders);
-	}
+	task.metadata_saved = CommitDeletionMetadataInPlace(app, intent, next_folders, task.snapshot.chats, task.retained_native_keys);
 	ApplyDeletedChatsToUiState(app, task.deleted_ids, selected_chat_id, previous_selected_chat_index, !task.deleted_ids.empty());
 	if (std::ranges::find(task.folder_ids, uam::strings::Trim(app.new_chat_folder_id)) != task.folder_ids.end())
 		app.new_chat_folder_id.clear();
@@ -1715,7 +1959,7 @@ bool uam::CleanupWorkspaceDeletion(WorkspaceDeletionTask& task)
 {
 	bool native_cleanup_failed = false;
 	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
-	const bool completed = task.metadata_saved && CleanupDeletionTransaction(task.snapshot, intent, task.snapshot.chats, native_cleanup_failed);
+	const bool completed = task.metadata_saved && CleanupDeletionTransaction(task.snapshot, intent, task.snapshot.chats, native_cleanup_failed, task.retained_native_keys, task.retained_workspace_keys, task.retained_native_owners);
 	task.snapshot.status_line = completed
 	    ? (task.deleting_chats
 	        ? std::to_string(task.deleted_ids.size()) + " chat(s) deleted." +
@@ -1738,6 +1982,7 @@ bool DeleteFoldersByIds(uam::AppState& app, const std::vector<std::string>& fold
 		return false;
 	}
 	uam::CommitWorkspaceDeletion(app, task);
+	if (task.commit_rejected) return false;
 	(void)uam::CleanupWorkspaceDeletion(task);
 	app.status_line = task.snapshot.status_line;
 	return true;

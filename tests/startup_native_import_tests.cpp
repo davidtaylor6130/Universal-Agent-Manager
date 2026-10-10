@@ -625,3 +625,42 @@ UAM_TEST(StartupSelectedRemoteAliasesPreserveSingleNativeOwnerAcrossPreparationA
 		UAM_ASSERT_EQ(app.folders.size(), registered_alias ? std::size_t{3} : std::size_t{1});
 	}
 }
+
+UAM_TEST(DeletionWaitsForStartupImportPublicationBeforeCapturingTargets)
+{
+	TempDir temp("uam-delete-startup-import");
+	ScopedEnvVar home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	ChatSession existing = StartupHistory(temp.root / "workspace", "existing");
+	existing.folder_id = "known";
+	app.chats.push_back(existing);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, existing));
+	app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>(
+	    FixtureScanner({StartupHistory(temp.root / "workspace", "new-import")}));
+	uam::StartupNativeImportService& service = *app.startup_native_import_service;
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.candidates.size(), std::size_t{1});
+	std::string error;
+	UAM_ASSERT(service.Decide(app, ready.generation, {ready.candidates.front().candidate_id}, {}, &error));
+	UAM_ASSERT(service.ImportPending());
+	uam::WorkspaceDeletionTask folder_task;
+	uam::WorkspaceDeletionTask chat_task;
+	UAM_ASSERT(!uam::PrepareWorkspaceDeletion(app, {"known"}, folder_task));
+	UAM_ASSERT(!uam::PrepareChatDeletion(app, {existing.id}, chat_task));
+	UAM_ASSERT(!fs::exists(app.data_root / "deletion-transaction.json"));
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{2});
+	uam::WorkspaceDeletionTask settled;
+	UAM_ASSERT(uam::PrepareWorkspaceDeletion(app, {"known"}, settled));
+	UAM_ASSERT_EQ(settled.deleted_ids.size(), std::size_t{2});
+	UAM_ASSERT(uam::StageWorkspaceDeletion(settled));
+	uam::CommitWorkspaceDeletion(app, settled);
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(settled));
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT(ChatRepository::LoadLocalChats(app.data_root).empty());
+}
