@@ -860,10 +860,10 @@ namespace uam
 			result.message = CommandOutputOrFallback(commit_result, fallback_message);
 		}
 
-		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::filesystem::path& git_root, bool validate = false)
+		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::filesystem::path& git_root, bool validate, const AppSettings& settings)
 		{
 			std::string root;
-			if (GitAvailable(workspace, &root, validate))
+			if (settings.git_enabled && GitAvailable(workspace, &root, validate))
 			{
 				status.vcs_types.push_back(VcsType::Git);
 				if (!root.empty())
@@ -871,7 +871,7 @@ namespace uam
 					git_root = uam::paths::PathFromUtf8(root);
 				}
 			}
-			if (SvnAvailable(workspace, validate))
+			if (settings.svn_enabled && SvnAvailable(workspace, validate))
 			{
 				status.vcs_types.push_back(VcsType::Svn);
 			}
@@ -1243,7 +1243,7 @@ namespace uam
 		VcsCommitStatus RemoteStatus(RemoteVcsContext& context, const ChatSession& chat,
 		                             const VcsType requested_type,
 		                             const bool include_line_stats,
-		                             const std::string& comparison_ref, bool context_only = false)
+		                             const std::string& comparison_ref, bool context_only, const AppSettings& settings)
 		{
 			VcsCommitStatus status;
 			status.line_stats_ready = include_line_stats;
@@ -1251,11 +1251,11 @@ namespace uam
 			if (!context.Ready(&status.error)) return status;
 
 			std::string git_root;
-			if (RemoteOutput(context, status.workspace_directory,
+			if (settings.git_enabled && RemoteOutput(context, status.workspace_directory,
 			                 {"git", "rev-parse", "--show-toplevel"}, &git_root))
 				status.vcs_types.push_back(VcsType::Git);
 			std::string ignored;
-			if (RemoteOutput(context, status.workspace_directory,
+			if (settings.svn_enabled && RemoteOutput(context, status.workspace_directory,
 			                 {"svn", "info", "--show-item", "revision", "."}, &ignored))
 				status.vcs_types.push_back(VcsType::Svn);
 			status.available = !status.vcs_types.empty();
@@ -1346,10 +1346,10 @@ namespace uam
 
 		std::string RemoteDiff(RemoteVcsContext& context, const ChatSession& chat,
 		                       const std::string& path, const VcsType type,
-		                       std::string* error_out, const std::string& comparison_ref)
+		                       std::string* error_out, const std::string& comparison_ref, const AppSettings& settings)
 		{
 			const VcsCommitStatus status = RemoteStatus(context, chat, type, false,
-			                                                  comparison_ref);
+			                                                  comparison_ref, false, settings);
 			if (!status.error.empty())
 			{
 				if (error_out != nullptr) *error_out = status.error;
@@ -1401,10 +1401,10 @@ namespace uam
 
 		VcsCommitResult RemoteCommit(RemoteVcsContext& context, const ChatSession& chat,
 		                             const VcsType type, const std::string& message,
-		                             const std::vector<std::string>& files)
+		                             const std::vector<std::string>& files, const AppSettings& settings)
 		{
 			VcsCommitResult result;
-			result.status = RemoteStatus(context, chat, type, true, {});
+			result.status = RemoteStatus(context, chat, type, true, {}, false, settings);
 			if (!result.status.available)
 			{
 				result.error = uam::strings::NonEmptyOrFallback(result.status.error,
@@ -1492,7 +1492,7 @@ namespace uam
 				result.error = CommandOutputOrError(committed);
 				return result;
 			}
-			CompleteSuccessfulCommit(result, RemoteStatus(context, chat, type, true, {}),
+			CompleteSuccessfulCommit(result, RemoteStatus(context, chat, type, true, {}, false, settings),
 			                         committed, type == VcsType::Git
 			                             ? "Git commit created." : "SVN commit created.");
 			return result;
@@ -1511,11 +1511,17 @@ namespace uam
 
 	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, VcsType requested_type, bool include_line_stats, std::string_view comparison_ref, bool context_only) const
 	{
+		if (!app.settings.git_enabled && !app.settings.svn_enabled)
+		{
+			VcsCommitStatus disabled;
+			disabled.warning = "Version control is disabled in Settings.";
+			return disabled;
+		}
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
 			return RemoteStatus(context, chat, requested_type, include_line_stats,
-			                    uam::strings::Trim(comparison_ref), context_only);
+			                    uam::strings::Trim(comparison_ref), context_only, app.settings);
 		}
 		VcsCommitStatus status;
 		status.line_stats_ready = include_line_stats;
@@ -1523,7 +1529,7 @@ namespace uam
 		status.workspace_directory = uam::paths::Utf8PathString(workspace);
 		std::filesystem::path git_root = workspace;
 
-		PopulateAvailableVcsTypes(status, workspace, git_root, context_only);
+		PopulateAvailableVcsTypes(status, workspace, git_root, context_only, app.settings);
 		if (!status.available)
 		{
 			status.warning = "No Git or SVN repository detected for this workspace.";
@@ -1547,6 +1553,8 @@ namespace uam
 
 	std::string VcsCommitService::Diff(const AppState& app, const ChatSession& chat, const std::string& path, const VcsType type, std::string* error_out, std::string_view comparison_ref) const
 	{
+		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		{ if (error_out != nullptr) *error_out = "This version control system is disabled in Settings."; return {}; }
 		const std::string trimmed_path = uam::strings::Trim(path);
 		if (trimmed_path.empty())
 		{
@@ -1560,7 +1568,7 @@ namespace uam
 		{
 			RemoteVcsContext context(app, chat);
 			return RemoteDiff(context, chat, trimmed_path, type, error_out,
-			                  uam::strings::Trim(comparison_ref));
+			                  uam::strings::Trim(comparison_ref), app.settings);
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 		std::filesystem::path diff_workspace = workspace;
@@ -1602,10 +1610,12 @@ namespace uam
 
 	VcsCommitResult VcsCommitService::Commit(const AppState& app, const ChatSession& chat, const VcsType type, const std::string& message, const std::vector<std::string>& files) const
 	{
+		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		{ VcsCommitResult disabled; disabled.error = "This version control system is disabled in Settings."; return disabled; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
-			return RemoteCommit(context, chat, type, message, files);
+			return RemoteCommit(context, chat, type, message, files, app.settings);
 		}
 		VcsCommitResult result;
 		result.status = Status(app, chat, type);
@@ -1663,6 +1673,8 @@ namespace uam
 
 	VcsCommitMessageSuggestion VcsCommitService::GenerateMessage(const AppState& app, const ChatSession& chat, const VcsType type, const std::vector<std::string>& files) const
 	{
+		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		{ VcsCommitMessageSuggestion disabled; disabled.error = "This version control system is disabled in Settings."; return disabled; }
 		VcsCommitMessageSuggestion suggestion;
 		if (TrimmedFileSet(files).empty())
 		{

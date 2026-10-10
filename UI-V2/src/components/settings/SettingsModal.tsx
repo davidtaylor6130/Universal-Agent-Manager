@@ -1,3 +1,4 @@
+import { VcsSettings } from './VcsSettings'
 import { TypographySettings } from './TypographySettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { ProviderConnections } from './ProviderConnections'
@@ -134,7 +135,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
+type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -173,6 +174,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'central-configuration', label: 'Central Setup', icon: Server },
   { id: 'mcp-servers', label: 'MCP Servers', icon: TerminalSquare },
   { id: 'computer-use', label: 'Computer Use', icon: MousePointerClick },
+  { id: 'vcs', label: 'Version Control', icon: FolderOpen },
   { id: 'editors', label: 'Editors', icon: Pencil },
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
@@ -185,7 +187,7 @@ const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'Connections', sections: ['remote-hosts', 'mcp-servers'] },
   { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
   { label: 'Security', sections: ['permissions', 'computer-use'] },
-  { label: 'Workspace', sections: ['editors'] },
+  { label: 'Workspace', sections: ['vcs', 'editors'] },
   { label: 'App', sections: ['chat-data', 'about'] },
 ]
 const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
@@ -198,6 +200,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   'central-configuration': 'Instructions and skills installed when providers launch locally or over SSH.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
   'computer-use': 'Which apps agents may see and control.',
+  vcs: 'Enable Git and SVN integrations.',
   editors: 'Which editor opens each kind of file.',
   'shell-actions': 'Finder and Explorer actions for workspaces.',
   'memory-settings': 'What gets remembered between chats, and which models do it.',
@@ -213,6 +216,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
 // Terms name controls inside each page so searches work beyond sidebar titles.
 const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   permissions: 'privacy local network microphone speech recording accessibility authorization',
+  vcs: 'git svn source control version control worktrees checkpoints commits revisions',
   typography: 'font fonts size text code monospace terminal message input',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity',
   defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
@@ -1487,6 +1491,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
+    if (selectedSection === 'vcs') return <VcsSettings />
     if (selectedSection === 'typography') return <TypographySettings />
 
     if (selectedSection === 'defaults') {

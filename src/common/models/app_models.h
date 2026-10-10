@@ -638,6 +638,8 @@ struct AppSettings
 	std::string ui_theme = "focus";
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
+	bool git_enabled = true;
+	bool svn_enabled = true;
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;
 	bool remember_last_chat = true;

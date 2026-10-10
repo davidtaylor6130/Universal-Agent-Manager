@@ -598,6 +598,8 @@ export interface CppSettings {
   theme: StoredTheme
   showProviderIconsInSidebar?: boolean
   showWorktreePathInSidebar?: boolean
+  gitEnabled?: boolean
+  svnEnabled?: boolean
   memoryEnabledDefault: boolean
   memoryLevelDefault?: MemoryLevel
   memoryIdleDelaySeconds: number

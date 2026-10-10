@@ -3,6 +3,7 @@ import type { AcpBinding } from './cpp/types'
 import { CppAppState, useAppStore } from './useAppStore'
 import { createUiSlice } from './slices/uiSlice'
 import { parseUamPushPayload } from './push/uamPush'
+import { sanitizeCppStatePatch } from './cpp/sanitizers'
 import { preferredFamilyChat, setPreferredFamilyChat } from '../utils/branchPreferenceStorage'
 
 type TestWindow = Window & typeof globalThis & {
@@ -5693,6 +5694,25 @@ describe('useAppStore Gemini CLI slice', () => {
     })
     expect(useAppStore.getState().showProviderIconsInSidebar).toBe(true)
     expect(useAppStore.getState().showWorktreePathInSidebar).toBe(false)
+  })
+
+  it('hydrates persisted VCS switches and enables them for older settings files', () => {
+    const cpp = makeCppState(1)
+    cpp.settings.gitEnabled = false
+    cpp.settings.svnEnabled = true
+    useAppStore.getState().loadFromCef(cpp)
+    expect(useAppStore.getState()).toMatchObject({ gitEnabled: false, svnEnabled: true })
+    useAppStore.getState().loadFromCef(makeCppState(2))
+    expect(useAppStore.getState()).toMatchObject({ gitEnabled: true, svnEnabled: true })
+  })
+
+  it('keeps VCS switches absent from unrelated or malformed settings patches', () => {
+    expect(sanitizeCppStatePatch({ stateRevision: 2, settings: { theme: 'focus' } })?.settings)
+      .toMatchObject({ gitEnabled: undefined, svnEnabled: undefined })
+    expect(sanitizeCppStatePatch({ stateRevision: 3, settings: { gitEnabled: false, svnEnabled: true } })?.settings)
+      .toMatchObject({ gitEnabled: false, svnEnabled: true })
+    expect(sanitizeCppStatePatch({ stateRevision: 4, settings: { gitEnabled: 'false', svnEnabled: null } })?.settings)
+      .toMatchObject({ gitEnabled: undefined, svnEnabled: undefined })
   })
 
   it('saves and applies shell actions through CEF', async () => {

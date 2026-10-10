@@ -104,6 +104,8 @@ namespace uam::settings_frontend_json
 		settings_json["theme"] = uam::settings::NormalizeThemeId(settings.ui_theme);
 		settings_json["showProviderIconsInSidebar"] = settings.show_provider_icons_in_sidebar;
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
+		settings_json["gitEnabled"] = settings.git_enabled;
+		settings_json["svnEnabled"] = settings.svn_enabled;
 		settings_json["memoryEnabledDefault"] = settings.memory_enabled_default;
 		settings_json["memoryLevelDefault"] = uam::memory_levels::Normalize(settings.memory_level_default, settings.memory_enabled_default);
 		settings_json["memoryIdleDelaySeconds"] = std::clamp(settings.memory_idle_delay_seconds, uam::settings::kMinMemoryIdleDelaySeconds, uam::settings::kMaxMemoryIdleDelaySeconds);

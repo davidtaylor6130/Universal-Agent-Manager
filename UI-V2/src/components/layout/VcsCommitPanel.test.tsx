@@ -19,6 +19,8 @@ beforeEach(() => {
       { id: 'chat-b', name: 'B', viewMode: 'chat', folderId: null, workspaceDirectory: '/tmp/b', createdAt: new Date(), updatedAt: new Date() },
     ],
     activeSessionId: 'chat-a',
+    gitEnabled: true,
+    svnEnabled: true,
     getVcsCommitStatus: vi.fn(async () => ({
       available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/a', branchOrRevision: 'main',
       changedFiles: [{ path: 'owned-by-a.ts', status: ' M', staged: false, additions: 1, deletions: 0, binary: false }],
@@ -62,6 +64,27 @@ describe('commit draft ownership', () => {
   async function selectFile() {
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Select owned-by-a.ts"]')!.click())
   }
+  it('preserves a draft and ignores a pending suggestion when VCS support changes', async () => {
+    type Suggestion = Awaited<ReturnType<ReturnType<typeof useAppStore.getState>['generateVcsCommitMessage']>>
+    let finish!: (value: Suggestion) => void
+    const original = useAppStore.getState().generateVcsCommitMessage
+    useAppStore.setState({ generateVcsCommitMessage: vi.fn(() => new Promise<Suggestion>((resolve) => { finish = resolve })) })
+    try {
+      await act(async () => root.render(<VcsCommitPanel />))
+      await selectFile()
+      edit('Commit summary', 'Keep my summary')
+      edit('Commit description', 'Keep my description')
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Generate commit message"]')!.click())
+      await act(async () => useAppStore.setState({ gitEnabled: false }))
+      await act(async () => finish({ title: 'Obsolete suggestion', description: 'Obsolete details' }))
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Commit summary"]')!.value).toBe('Keep my summary')
+      expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Commit description"]')!.value).toBe('Keep my description')
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Generate commit message"]')!.disabled).toBe(true)
+      await act(async () => useAppStore.setState({ gitEnabled: true }))
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Commit summary"]')!.value).toBe('Keep my summary')
+    } finally { act(() => useAppStore.setState({ generateVcsCommitMessage: original })) }
+  })
+
   it('keeps newer summary and description edits when an older generated message arrives', async () => {
     type Suggestion = Awaited<ReturnType<ReturnType<typeof useAppStore.getState>['generateVcsCommitMessage']>>
     let finish!: (value: Suggestion) => void

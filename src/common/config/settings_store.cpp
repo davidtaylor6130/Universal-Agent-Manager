@@ -48,6 +48,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kUiThemeKey = "ui_theme";
 	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
+	constexpr std::string_view kGitEnabledKey = "git_enabled";
+	constexpr std::string_view kSvnEnabledKey = "svn_enabled";
 	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
 	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
 	constexpr std::string_view kRememberLastChatKey = "remember_last_chat";
@@ -578,6 +580,8 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
 	WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
 	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
+	WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
+	WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
 	WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
 	WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
 	WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
@@ -711,6 +715,14 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kShowWorktreePathInSidebarKey)
 		{
 			settings.show_worktree_path_in_sidebar = uam::parse::BoolOr(value, settings.show_worktree_path_in_sidebar);
+		}
+		else if (key == kGitEnabledKey)
+		{
+			settings.git_enabled = uam::parse::BoolOr(value, settings.git_enabled);
+		}
+		else if (key == kSvnEnabledKey)
+		{
+			settings.svn_enabled = uam::parse::BoolOr(value, settings.svn_enabled);
 		}
 		else if (key == kConfirmDeleteChatKey)
 		{

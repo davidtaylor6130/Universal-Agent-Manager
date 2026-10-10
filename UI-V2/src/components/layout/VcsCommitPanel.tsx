@@ -25,6 +25,8 @@ function statusColor(status: string) {
 }
 
 export function VcsCommitPanel() {
+  const gitEnabled = useAppStore((s) => s.gitEnabled)
+  const svnEnabled = useAppStore((s) => s.svnEnabled)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const session = useAppStore((s) => s.sessions.find((candidate) => candidate.id === s.activeSessionId) ?? null)
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
@@ -66,6 +68,15 @@ export function VcsCommitPanel() {
     setCommitting(false)
   }, [activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId])
 
+  useEffect(() => {
+    latestStatusRequestRef.current = ''
+    latestGenerateRequestRef.current += 1
+    setStatus(emptyStatus(session?.workspaceDirectory ?? ''))
+    setDiffSelection(null)
+    setLoading(false)
+    setGenerating(false)
+  }, [gitEnabled, svnEnabled])
+
   const refresh = useCallback(async (vcsType = selectedVcsType, includeLineStats = false) => {
     if (!activeSessionId) {
       setStatus(emptyStatus())
@@ -92,15 +103,16 @@ export function VcsCommitPanel() {
         setSelectedFiles((current) => current.filter((file) => detailed.changedFiles.some((changed) => changed.path === file)))
       }
     }
-  }, [activeSessionId, getVcsCommitStatus, selectedVcsType, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId])
+  }, [activeSessionId, getVcsCommitStatus, selectedVcsType, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, gitEnabled, svnEnabled])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
   const commitMessage = [title.trim(), description.trim()].filter(Boolean).join('\n\n')
-  const commitDisabled = committing || !status.available || selectedFiles.length === 0 || title.trim().length === 0
-  const generateDisabled = generating || !status.available || selectedFiles.length === 0
+  const systemEnabled = selectedVcsType === 'git' ? gitEnabled : svnEnabled
+  const commitDisabled = !systemEnabled || committing || !status.available || selectedFiles.length === 0 || title.trim().length === 0
+  const generateDisabled = !systemEnabled || generating || !status.available || selectedFiles.length === 0
   const selectedFileSet = useMemo(() => new Set(selectedFiles), [selectedFiles])
   const allSelected = status.changedFiles.length > 0 && status.changedFiles.every((file) => selectedFileSet.has(file.path))
   const lineStatsReady = status.lineStatsReady !== false
@@ -188,7 +200,7 @@ export function VcsCommitPanel() {
       {reviewScope === 'recorded' ? (
         activeSessionId && session ? (
           <RecordedChatEdits
-            key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId])}
+            key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, gitEnabled, svnEnabled])}
             chatId={activeSessionId}
             workspaceDirectory={session?.workspaceDirectory}
             workspaceWorktreeDirectory={session?.workspaceWorktreeDirectory}

@@ -773,7 +773,13 @@ namespace uam
 		status.base_ref = uam::strings::Trim(chat.workspace_base_ref);
 
 		const std::filesystem::path source_candidate = EffectiveSourceWorkspace(app, chat);
-		status.is_svn_workspace = IsSvnWorkspace(source_candidate);
+		status.is_svn_workspace = app.settings.svn_enabled && IsSvnWorkspace(source_candidate);
+		if (!app.settings.git_enabled)
+		{
+			status.warning = "Git is disabled in Settings.";
+			status.worktree_missing = status.isolated && !uam::paths::IsDirectoryNoThrow(TrimmedPathOrEmpty(chat.workspace_worktree_directory));
+			return status;
+		}
 		PopulateSourceRepositoryStatus(status, source_candidate);
 		if (status.isolated && !status.is_git_repository)
 		{
@@ -793,6 +799,12 @@ namespace uam
 		if (chat.workspace_isolation_kind != uam::paths::kPendingGitWorktreeIsolationKind ||
 		    !uam::paths::IsControllerLocalWorkspace(chat) || chat.imported_read_only ||
 		    !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty()) return true;
+		if (!app.settings.git_enabled)
+		{
+			// Only an uncreated default is cleared; existing isolated paths remain owned.
+			chat.workspace_isolation_kind.clear();
+			return true;
+		}
 		const GitWorktreeOperationResult result = CreateForChat(app, chat);
 		if (!result.ok && error_out != nullptr)
 		{
@@ -804,6 +816,7 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::CreateForChat(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (!app.settings.git_enabled) { result.message = "Git is disabled in Settings."; return result; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
@@ -952,6 +965,7 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const
 	{
 		GitWorktreeOperationResult result;
+		if (!app.settings.git_enabled) { result.message = "Git is disabled in Settings."; return result; }
 		if (!uam::paths::IsControllerLocalWorkspace(source) || !uam::paths::IsControllerLocalWorkspace(branch))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
@@ -1106,6 +1120,7 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::DiscardChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (!app.settings.git_enabled) { result.message = "Git is disabled in Settings."; return result; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
@@ -1146,6 +1161,7 @@ namespace uam
 	GitWorktreeOperationResult GitWorktreeService::PortChatChanges(AppState& app, ChatSession& chat) const
 	{
 		GitWorktreeOperationResult result;
+		if (!app.settings.git_enabled) { result.message = "Git is disabled in Settings."; return result; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
@@ -1252,9 +1268,10 @@ namespace uam
 		return result;
 	}
 
-	bool GitWorktreeService::CanCheckpointTurn(const AppState& /*app*/, const ChatSession& chat, std::string* reason_out, std::stop_token stop_token) const
+	bool GitWorktreeService::CanCheckpointTurn(const AppState& app, const ChatSession& chat, std::string* reason_out, std::stop_token stop_token) const
 	{
 		if (reason_out != nullptr) reason_out->clear();
+		if (!app.settings.git_enabled) { if (reason_out != nullptr) *reason_out = "Git is disabled in Settings."; return false; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			if (reason_out != nullptr) *reason_out = std::string(kRemoteWorkspaceUnsupported);
@@ -1289,6 +1306,7 @@ namespace uam
 	GitTurnCheckpointResult GitWorktreeService::CreateTurnCheckpoint(AppState& app, ChatSession& chat, int assistant_message_index, std::stop_token stop_token, bool persist_chat) const
 	{
 		GitTurnCheckpointResult result;
+		if (!app.settings.git_enabled) { result.message = "Git is disabled in Settings."; return result; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);
@@ -1376,6 +1394,7 @@ namespace uam
 	GitTurnCheckpointResult GitWorktreeService::PreviewTurnRollback(const AppState& app, const ChatSession& chat, int assistant_message_index) const
 	{
 		GitTurnCheckpointResult result;
+		if (!app.settings.git_enabled) { result.message = "Git is disabled in Settings."; return result; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			result.message = std::string(kRemoteWorkspaceUnsupported);

@@ -942,3 +942,21 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 		cb->Failure(400, "OpenCode import requires optional file and workspace path strings.");
 	}
 }
+
+void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<bool> git_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "gitEnabled");
+	const std::optional<bool> svn_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "svnEnabled");
+	if (!git_enabled || !svn_enabled) { cb->Failure(400, "VCS settings must be booleans."); return; }
+	const AppSettings previous = m_app.settings;
+	m_app.settings.git_enabled = *git_enabled;
+	m_app.settings.svn_enabled = *svn_enabled;
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Could not save VCS settings."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}

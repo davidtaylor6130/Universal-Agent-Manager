@@ -107,7 +107,7 @@ namespace uam::acp_detail
 	{
 		session.turn_checkpoint_eligible = false;
 		session.turn_checkpoint_preflight_pending = false;
-		if (!uam::paths::IsGitWorktreeIsolated(chat) || HasTurnCheckpointTask(app, chat.id))
+		if (!app.settings.git_enabled || !uam::paths::IsGitWorktreeIsolated(chat) || HasTurnCheckpointTask(app, chat.id))
 		{
 			return false;
 		}
@@ -161,7 +161,7 @@ namespace uam::acp_detail
 		                                  bool completed_review_turn,
 		                                  const std::string& goal_id)
 		{
-			if (assistant_message_index < 0 || assistant_message_index >= static_cast<int>(chat.messages.size()) ||
+			if (!app.settings.git_enabled || assistant_message_index < 0 || assistant_message_index >= static_cast<int>(chat.messages.size()) ||
 		    HasTurnCheckpointTask(app, chat.id))
 			{
 				return false;

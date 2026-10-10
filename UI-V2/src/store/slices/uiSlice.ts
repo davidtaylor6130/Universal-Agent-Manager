@@ -141,6 +141,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     collapsibleWorkSections: storedShellLayout.collapsibleWorkSections,
     showProviderIconsInSidebar: true,
     showWorktreePathInSidebar: true,
+    gitEnabled: true,
+    svnEnabled: true,
     isNewChatModalOpen: false,
     newChatFolderId: null as string | null,
     isSettingsOpen: false,
@@ -216,6 +218,21 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       set({ customThemes, theme: nextTheme })
       persistTheme(nextTheme, customThemes)
       return true
+    },
+
+    setVcsSettings: async (settings: Pick<AppState, 'gitEnabled' | 'svnEnabled'>) => {
+      const previous = { gitEnabled: get().gitEnabled, svnEnabled: get().svnEnabled }
+      const optimisticRevision = rememberOptimisticFields(Object.keys(settings))
+      set(settings)
+      if (!isCefContext()) return true
+      try {
+        const response = await sendToCEF({ action: 'setVcsSettings', payload: settings }, false)
+        if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
+        return response.ok
+      } catch {
+        set(latestOptimisticRollback(previous, optimisticRevision))
+        return false
+      }
     },
 
     setSidebarSettings: async (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => {

@@ -95,6 +95,8 @@ export interface AppState {
   runnerProtocolVersion: number
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
+  gitEnabled: boolean
+  svnEnabled: boolean
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
   updateLastCheckedAt: string
@@ -313,6 +315,7 @@ export interface AppState {
   refreshCustomThemes: () => Promise<boolean>
   saveCustomTheme: (theme: CustomTheme) => Promise<CustomTheme | null>
   deleteCustomTheme: (id: string) => Promise<boolean>
+  setVcsSettings: (settings: Pick<AppState, 'gitEnabled' | 'svnEnabled'>) => Promise<boolean>
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
   setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
   setSettingsOpen: (open: boolean) => void
