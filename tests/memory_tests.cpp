@@ -2095,6 +2095,47 @@ UAM_TEST(CodexMemoryCompletionCannotPersistReasoningWhenAssistantRefuses)
 	}
 }
 
+UAM_TEST(MemoryActivityTimestampReadsPreserveLegacyFilesAndWorkspaceScopes)
+{
+	TempDir temp("uam-memory-timestamp-headers");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path global = MemoryService::CategoryPath(MemoryService::GlobalMemoryRoot(app.data_root), "Lessons/User_Lessons");
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path local = MemoryService::CategoryPath(MemoryService::LocalMemoryRoot(workspace), "Lessons/User_Lessons");
+	fs::create_directories(global);
+	fs::create_directories(local);
+	UAM_ASSERT(uam::io::WriteTextFile(global / "early.md", "# Early\r\n  Last observed: 2026-10-08T12:00:00Z  \r\n" + std::string(2 * 1024 * 1024, 'm')));
+	UAM_ASSERT(uam::io::WriteTextFile(global / "legacy.md", "\x1a Legacy preface\n" + std::string(65536, 'm') + "\n\tLast observed: 2026-10-09T12:00:00Z\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(global / "undated.md", "# Undated\n## Memory\nNo observation timestamp."));
+	UAM_ASSERT(uam::io::WriteTextFile(local / "latest.md", "# Latest\nLast observed: 2026-10-10T12:00:00Z\nLast observed: 2099-01-01T00:00:00Z\n"));
+	ChatFolder folder;
+	folder.id = "workspace";
+	folder.directory = workspace.string();
+	app.folders.push_back(folder);
+	ChatSession chat;
+	chat.id = "workspace-chat";
+	chat.folder_id = folder.id;
+	chat.workspace_directory = workspace.string();
+	app.chats.push_back(chat);
+	const uam::MemoryActivityState before = MemoryService::BuildMemoryActivity(app);
+	UAM_ASSERT_EQ(before.entry_count, 4);
+	UAM_ASSERT_EQ(before.last_created_at, "2026-10-10T12:00:00Z");
+	UAM_ASSERT(fs::remove(local / "latest.md"));
+	const uam::MemoryActivityState after = MemoryService::BuildMemoryActivity(app);
+	UAM_ASSERT_EQ(after.entry_count, 3);
+	UAM_ASSERT_EQ(after.last_created_at, "2026-10-09T12:00:00Z");
+	MemoryService::RefreshMemoryActivityAsync(app);
+	for (int iteration = 0; iteration < 400 && app.memory_activity_refresh_task; ++iteration)
+	{
+		MemoryService::PollMemoryActivity(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!app.memory_activity_refresh_task);
+	UAM_ASSERT_EQ(app.memory_activity.entry_count, after.entry_count);
+	UAM_ASSERT_EQ(app.memory_activity.last_created_at, after.last_created_at);
+}
+
 UAM_TEST(MemoryActivityCountsRejectChangedRootWithoutCopyingResidentHistory)
 {
 	TempDir temp("uam-memory-background-counts");
