@@ -145,7 +145,8 @@ it('uses the explicit source chat in shared normal and side persisted rendering'
     payload: { chatId: 'source-chat', messageIndex: 23, attachmentId: 'owned-image' },
   }, false)
   expect(host.querySelector('img')).toBeNull()
-  expect(host.textContent).toContain('/untrusted/path')
+  expect(host.textContent).toContain('photo.png')
+  expect(host.querySelector('[title="/untrusted/path"]')).not.toBeNull()
 })
 
 it('replaces stale renderer indices instead of retaining shifted preview identity', () => {
