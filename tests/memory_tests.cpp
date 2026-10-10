@@ -111,6 +111,47 @@ UAM_TEST(MemoryServiceWritesDedupesAndBuildsRecall)
 	UAM_ASSERT(recall.find("Prefer Allman brace style") != std::string::npos);
 }
 
+UAM_TEST(MemoryEntryIndexPreservesBatchDeduplicationScopesAndFreshFiles)
+{
+	TempDir temp("uam-memory-entry-index");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "memory-index";
+	chat.memory_level = "open";
+	chat.workspace_directory = (temp.root / "workspace").string();
+	chat.messages.push_back({MessageRole::User, "Remember these conventions.", "now"});
+	chat.messages.push_back({MessageRole::User, "Remember them again.", "later"});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const fs::path local = MemoryService::CategoryPath(MemoryService::LocalMemoryRoot(chat.workspace_directory), "Lessons/User_Lessons");
+	const fs::path global = MemoryService::CategoryPath(MemoryService::GlobalMemoryRoot(app.data_root), "Lessons/User_Lessons");
+	fs::create_directories(local);
+	const fs::path legacy = local / "legacy-name.md";
+	UAM_ASSERT(uam::io::WriteTextFile(legacy, "# Existing convention\n\nOccurrence count: 3\n"));
+	nlohmann::json memories = nlohmann::json::array();
+	for (const std::string& title : {std::string("Existing convention"), std::string("EXISTING CONVENTION"), std::string(72, 'a') + " first", std::string(72, 'a') + " second", std::string("New convention"), std::string("NEW CONVENTION")})
+		memories.push_back({{"scope", "local"}, {"category", "Lessons/User_Lessons"}, {"title", title}, {"memory", "Use the recorded convention."}, {"evidence", "The user requested this convention."}, {"confidence", "high"}});
+	memories.push_back({{"scope", "global"}, {"category", "Lessons/User_Lessons"}, {"title", "Existing convention"}, {"memory", "Use the global convention."}, {"evidence", "The user requested the global convention."}, {"confidence", "high"}});
+	const std::string output = nlohmann::json{{"memories", memories}}.dump();
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), chat.workspace_directory, output, 1, &error));
+	UAM_ASSERT(ReadFile(legacy).find("Occurrence count: 4") != std::string::npos);
+	UAM_ASSERT(ReadFile(local / "new-convention.md").find("Occurrence count: 1") != std::string::npos);
+	UAM_ASSERT(fs::exists(local / (std::string(72, 'a') + ".md")));
+	UAM_ASSERT(fs::exists(local / (std::string(72, 'a') + "-2.md")));
+	UAM_ASSERT(ReadFile(global / "existing-convention.md").find("Occurrence count: 1") != std::string::npos);
+	const fs::path renamed = local / "renamed.md";
+	fs::rename(legacy, renamed);
+	UAM_ASSERT(uam::io::WriteTextFile(renamed, "# Existing convention\n\nOccurrence count: 7\n"));
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), chat.workspace_directory, output, 2, &error));
+	UAM_ASSERT(!fs::exists(legacy));
+	UAM_ASSERT(ReadFile(renamed).find("Occurrence count: 8") != std::string::npos);
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded && loaded->messages == chat.messages);
+	UAM_ASSERT_EQ(loaded->memory_last_processed_message_count, 2);
+}
+
 UAM_TEST(MemoryServiceRetriesDoNotApplyTheSameExtractionTwice)
 {
 	TempDir temp("uam-memory-idempotent-retry");

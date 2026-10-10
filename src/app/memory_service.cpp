@@ -37,6 +37,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -449,7 +450,9 @@ namespace
 		return "";
 	}
 
-	fs::path FindExistingMemoryFile(const fs::path& category_path, const std::string& title)
+	using MemoryFileIndex = std::map<fs::path, std::map<std::string, fs::path>>;
+
+	fs::path FindExistingMemoryFile(const fs::path& category_path, const std::string& title, MemoryFileIndex& indexes)
 	{
 		const std::string wanted = uam::strings::NormalizeComparableKey(title);
 		if (wanted.empty() || !uam::paths::IsDirectoryNoThrow(category_path))
@@ -457,20 +460,19 @@ namespace
 			return {};
 		}
 
-		std::error_code ec;
-		for (fs::directory_iterator it(category_path, ec), end; !ec && it != end; it.increment(ec))
+		const std::pair<MemoryFileIndex::iterator, bool> category = indexes.try_emplace(category_path);
+		if (category.second)
 		{
-			const fs::directory_entry& item = *it;
-			if (!uam::paths::IsRegularFileWithExtensionNoThrow(item, ".md"))
+			std::error_code ec;
+			for (fs::directory_iterator it(category_path, ec), end; !ec && it != end; it.increment(ec))
 			{
-				continue;
-			}
-			if (ReadFirstTitle(item.path()) == wanted)
-			{
-				return item.path();
+				const fs::directory_entry& item = *it;
+				if (uam::paths::IsRegularFileWithExtensionNoThrow(item, ".md"))
+					category.first->second.try_emplace(ReadFirstTitle(item.path()), item.path());
 			}
 		}
-		return {};
+		const std::map<std::string, fs::path>::const_iterator found = category.first->second.find(wanted);
+		return found == category.first->second.end() ? fs::path{} : found->second;
 	}
 
 	int ExistingCount(const std::string& text)
@@ -682,7 +684,7 @@ namespace
 		}
 	}
 
-	bool WriteMemoryEntry(const fs::path& root, const std::string& scope, const std::string& source_chat_id, const std::string& extraction_key, const nlohmann::json& entry, bool* wrote_out, std::string* error_out)
+	bool WriteMemoryEntry(const fs::path& root, const std::string& scope, const std::string& source_chat_id, const std::string& extraction_key, const nlohmann::json& entry, MemoryFileIndex& indexes, bool* wrote_out, std::string* error_out)
 	{
 		if (wrote_out != nullptr)
 		{
@@ -717,7 +719,7 @@ namespace
 			return false;
 		}
 
-		fs::path target = FindExistingMemoryFile(category_path, title);
+		fs::path target = FindExistingMemoryFile(category_path, title, indexes);
 		int count = 1;
 		std::vector<std::string> extraction_keys;
 		if (!target.empty())
@@ -755,9 +757,10 @@ namespace
 		{
 			SetError(error_out, "Failed to write memory entry.");
 		}
-		if (wrote && wrote_out != nullptr)
+		if (wrote)
 		{
-			*wrote_out = true;
+			indexes[category_path].try_emplace(uam::strings::NormalizeComparableKey(title), target);
+			if (wrote_out != nullptr) *wrote_out = true;
 		}
 		return wrote;
 	}
@@ -1539,6 +1542,7 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
 		return false;
 	}
 
+	MemoryFileIndex indexes;
 	int wrote_count = 0;
 	const std::string extraction_key = processed_message_count < 0 ? "" : chat.id + ":" + std::to_string(std::min(processed_message_count, MessageCount(chat)));
 	for (const nlohmann::json& entry : (*parsed)["memories"])
@@ -1565,7 +1569,7 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
 			return false;
 		}
 		bool wrote = false;
-		if (!WriteMemoryEntry(root, scope == "global" ? "global" : "local", chat.id, extraction_key, entry, &wrote, error_out))
+		if (!WriteMemoryEntry(root, scope == "global" ? "global" : "local", chat.id, extraction_key, entry, indexes, &wrote, error_out))
 		{
 			return false;
 		}
