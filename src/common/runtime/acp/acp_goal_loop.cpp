@@ -640,7 +640,8 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 	{
 		return false;
 	}
-	if (session.goal_resume_suppressed || !CanQueueGoalInternalPrompt(session))
+	if (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held" ||
+	    session.goal_resume_suppressed || !CanQueueGoalInternalPrompt(session))
 	{
 		return false;
 	}

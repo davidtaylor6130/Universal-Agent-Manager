@@ -1034,12 +1034,12 @@ namespace uam
 			acp_json["protocolKind"] = "";
 			acp_json["threadId"] = session_id;
 			acp_json["running"] = false;
-			acp_json["processing"] = false;
+			acp_json["processing"] = (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held");
 			acp_json["backgroundTaskCount"] = ManagedChildRunCountForChat(app, chat);
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
 			acp_json["lastStopReason"] = chat.last_stop_reason;
 			acp_json["attentionKind"] = nullptr;
-			acp_json["lifecycleState"] = "stopped";
+			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : "stopped";
 			acp_json["lastError"] = "";
 			acp_json["recentStderr"] = "";
 			acp_json["lastExitCode"] = nullptr;
@@ -1056,6 +1056,12 @@ namespace uam
 			acp_json["turnAssistantMessageIndex"] = -1;
 			acp_json["turnSerial"] = 0;
 			acp_json["queuedPrompts"] = nlohmann::json::array();
+			const std::size_t dispatched = std::min(chat.acp_dispatched_queued_prompt_count, chat.acp_queued_prompts.size());
+			for (std::size_t index = dispatched; index < chat.acp_queued_prompts.size(); ++index)
+			{
+				const AcpQueuedUserPromptState& prompt = chat.acp_queued_prompts[index];
+				if (!prompt.prepared_for_delivery && prompt.claude_quota_continuation_id.empty()) acp_json["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(prompt));
+			}
 			acp_json["queueHeld"] = chat.acp_queue_held;
 			acp_json["waitIsStale"] = false;
 			acp_json["waitStaleReason"] = "";
@@ -1090,7 +1096,7 @@ namespace uam
 			acp_json["protocolKind"] = session->protocol_kind;
 			acp_json["threadId"] = session->codex_thread_id.empty() ? session->session_id : session->codex_thread_id;
 			acp_json["running"] = session->running;
-			acp_json["processing"] = session->processing;
+			acp_json["processing"] = session->processing || (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held");
 			acp_json["backgroundTaskCount"] = session->claude_live_background_task_ids.size() + ManagedChildRunCountForChat(app, chat);
 			if (AcpSessionCanIdleShutdown(*session, chat))
 				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
@@ -1104,7 +1110,7 @@ namespace uam
 					? "question"
 					: AcpAttentionKindForFrontend(*session);
 			acp_json["attentionKind"] = uam::nlohmann_json::StringOrNull(attention_kind);
-			acp_json["lifecycleState"] = session->lifecycle_state;
+			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : session->lifecycle_state;
 			acp_json["lastError"] = session->last_error;
 			acp_json["recentStderr"] = session->recent_stderr;
 			acp_json["lastExitCode"] = uam::nlohmann_json::IntOrNull(session->has_last_exit_code, session->last_exit_code);

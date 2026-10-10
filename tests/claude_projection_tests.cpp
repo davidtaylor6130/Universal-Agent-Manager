@@ -1,3 +1,4 @@
+#include "common/runtime/acp/claude_quota_continuation.h"
 #include "test_harness.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
@@ -900,4 +901,583 @@ UAM_TEST(ClaudeLocalChildStopBlocksImmediateReplacementLaunch)
 UAM_TEST(ClaudeLocalShutdownPersistsHistoricalChildSettlement)
 {
 	CheckClaudeExplicitStop("shutdown-local");
+}
+
+UAM_TEST(ClaudeFiveHourQuotaOwnsSettledTurnWithoutReplayingAcceptedWork)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-quota");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "quota-chat";
+	chat.provider_id = "claude-cli";
+	chat.native_session_id = "quota-native";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Already accepted prompt";
+	chat.messages.push_back(user);
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.session_id = chat.native_session_id;
+	session.processing = true;
+	session.prompt_request_id = 0;
+	session.turn_serial = 1;
+	session.turn_user_message_index = 0;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), nlohmann::json({
+	    {"type", "assistant"}, {"session_id", chat.native_session_id}, {"error", "rate_limit"},
+	    {"message", {{"content", nlohmann::json::array()}}}}).dump()));
+	const int64_t reset = uam::time::TimestampNowSec() + 3600;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), nlohmann::json({
+	    {"type", "rate_limit_event"}, {"session_id", chat.native_session_id},
+	    {"rate_limit_info", {{"status", "rejected"}, {"rateLimitType", "five_hour"}, {"resetsAt", reset}}}}).dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), nlohmann::json({
+	    {"type", "result"}, {"session_id", chat.native_session_id}, {"subtype", "error_during_execution"},
+	    {"is_error", true}, {"errors", nlohmann::json::array({"Usage limit"})}}).dump()));
+	UAM_ASSERT_EQ(session.lifecycle_state, std::string("waiting_quota"));
+	UAM_ASSERT(session.queued_prompt.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, user.content);
+#endif
+}
+
+namespace
+{
+	struct ClaudeQuotaFixture
+	{
+		TempDir temp{"uam-quota-boundary"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+		int64_t now = uam::time::TimestampNowSec();
+		std::unique_ptr<ScopedEnvVar> fixture_path;
+		ClaudeQuotaFixture()
+		{
+#if !defined(_WIN32)
+			const fs::path stub = temp.root / "claude";
+			UAM_ASSERT(uam::io::WriteTextFile(stub, "#!/bin/sh\nexit 93\n"));
+			fs::permissions(stub, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+			fixture_path = std::make_unique<ScopedEnvVar>("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or(""));
+#endif
+			app.data_root = temp.root;
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+			app.runtime_cli_versions_by_provider_id["claude-cli"].checked = true;
+			app.runtime_cli_versions_by_provider_id["claude-cli"].supported = true;
+			ChatSession chat;
+			chat.id = "quota-boundary";
+			chat.provider_id = "claude-cli";
+			chat.native_session_id = "33333333-3333-4333-8333-333333333333";
+			chat.workspace_directory = temp.root.string();
+			chat.approval_mode = "default";
+			chat.messages.push_back(Message{MessageRole::User, "ACCEPTED-PROMPT-MUST-NOT-REPLAY"});
+			app.chats.push_back(chat);
+			std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+			session = owned.get();
+			session->chat_id = chat.id;
+			session->provider_id = chat.provider_id;
+			session->protocol_kind = "claude-code-stream-json";
+			session->session_id = chat.native_session_id;
+			session->process_execution_host_id = "local";
+			session->processing = true;
+			session->prompt_request_id = 0;
+			session->turn_serial = 1;
+			session->turn_user_message_index = 0;
+			session->active_uam_agent_definition_hash = "builtin-build-v1";
+			app.acp_sessions.push_back(std::move(owned));
+		}
+		~ClaudeQuotaFixture()
+		{
+			uam::FastStopAcpSessionsForExit(app);
+		}
+		nlohmann::json Event() const
+		{
+			return {{"type", "rate_limit_event"}, {"session_id", app.chats.front().native_session_id},
+			    {"rate_limit_info", {{"status", "rejected"}, {"rateLimitType", "five_hour"}, {"resetsAt", now + 60}}}};
+		}
+		nlohmann::json Result() const
+		{
+			return {{"type", "result"}, {"session_id", app.chats.front().native_session_id},
+			    {"subtype", "error_during_execution"}, {"is_error", true}, {"errors", nlohmann::json::array({"Quota rejected"})}};
+		}
+		void Send(const nlohmann::json& message)
+		{
+			if (message.value("type", "") == "rate_limit_event")
+				UAM_ASSERT(uam::ProcessAcpLineForTests(app, *session, app.chats.front(), nlohmann::json({
+				    {"type", "assistant"}, {"session_id", app.chats.front().native_session_id}, {"error", "rate_limit"},
+				    {"message", {{"content", nlohmann::json::array()}}}}).dump()));
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, *session, app.chats.front(), message.dump()));
+		}
+		void Wait()
+		{
+			Send(Event());
+			Send(Result());
+			UAM_ASSERT_EQ(app.chats.front().claude_quota_continuation.state, std::string("waiting"));
+		}
+	};
+}
+
+UAM_TEST(ClaudeQuotaRejectsUntrustworthyResetsAndNonFiveHourWindows)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string invalid : {"allowed", "weekly", "overage", "missing", "string", "fraction", "past", "far", "overflow", "wrong-session", "mixed-week", "bad-windows", "mismatched-reset", "overage-rejected"})
+	{
+		ClaudeQuotaFixture fixture;
+		nlohmann::json event = fixture.Event();
+		nlohmann::json& info = event["rate_limit_info"];
+		if (invalid == "allowed") info["status"] = "allowed_warning";
+		if (invalid == "weekly") info["rateLimitType"] = "seven_day_opus";
+		if (invalid == "overage") info["rateLimitType"] = "overage";
+		if (invalid == "missing") info.erase("resetsAt");
+		if (invalid == "string") info["resetsAt"] = std::to_string(fixture.now + 60);
+		if (invalid == "fraction") info["resetsAt"] = static_cast<double>(fixture.now) + 60.5;
+		if (invalid == "past") info["resetsAt"] = fixture.now - 1;
+		if (invalid == "far") info["resetsAt"] = fixture.now + 20000;
+		if (invalid == "overflow") info["resetsAt"] = std::numeric_limits<uint64_t>::max();
+		if (invalid == "wrong-session") event["session_id"] = "foreign";
+		if (invalid == "mixed-week") info["unifiedWindows"] = {{"seven_day", {{"utilization", 1.0}, {"resetsAt", fixture.now + 86400}}}};
+		if (invalid == "bad-windows") info["unifiedWindows"] = nlohmann::json::array();
+		if (invalid == "mismatched-reset") info["unifiedWindows"] = {{"five_hour", {{"utilization", 1.0}, {"resetsAt", fixture.now + 120}}}};
+		if (invalid == "overage-rejected") info["overageStatus"] = "rejected";
+		fixture.Send(event);
+		fixture.Send(fixture.Result());
+		UAM_ASSERT(fixture.app.chats.front().claude_quota_continuation.id.empty());
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaRequiresAcceptedTerminalFailureAndClearsStaleEvidence)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string boundary : {"undelivered", "cancelled", "new-turn", "allowed-later", "success", "foreign-result", "duplicate-result", "event-alone"})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.Send(fixture.Event());
+		if (boundary == "event-alone") { UAM_ASSERT(fixture.app.chats.front().claude_quota_continuation.id.empty()); continue; }
+		if (boundary == "undelivered") fixture.app.chats.front().messages.front().acp_prompt_not_sent = true;
+		if (boundary == "cancelled") fixture.session->cancel_requested = true;
+		if (boundary == "new-turn") ++fixture.session->turn_serial;
+		if (boundary == "allowed-later") { nlohmann::json event = fixture.Event(); event["rate_limit_info"]["status"] = "allowed"; fixture.Send(event); }
+		nlohmann::json result = fixture.Result();
+		if (boundary == "success") { result["subtype"] = "success"; result["is_error"] = false; }
+		if (boundary == "foreign-result") result["session_id"] = "foreign";
+		fixture.Send(result);
+		if (boundary == "duplicate-result")
+		{
+			const ClaudeQuotaContinuation owner = fixture.app.chats.front().claude_quota_continuation;
+			fixture.Send(result);
+			UAM_ASSERT(fixture.app.chats.front().claude_quota_continuation == owner);
+		}
+		else UAM_ASSERT(fixture.app.chats.front().claude_quota_continuation.id.empty());
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaPersistsResetOwnershipAndCrashClaimsWithoutTranscriptReplay)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.session->tool_calls.push_back({.id = "acknowledged-write", .title = "Completed write", .status = "completed", .content = "COMPLETED-TOOL-MUST-NOT-REPLAY"});
+	fixture.Wait();
+	const ClaudeQuotaContinuation original = fixture.app.chats.front().claude_quota_continuation;
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(fixture.temp.root, "quota-boundary");
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(loaded->claude_quota_continuation == original);
+	UAM_ASSERT_EQ(loaded->messages.front().content, std::string("ACCEPTED-PROMPT-MUST-NOT-REPLAY"));
+	for (const std::string state : {"claimed", "continued", "cancelled", "held", "completed"})
+	{
+		fixture.app.chats.front().claude_quota_continuation.state = state;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, fixture.app.chats.front()));
+		const std::optional<ChatSession> reloaded = ChatRepository::LoadLocalChat(fixture.temp.root, "quota-boundary");
+		UAM_ASSERT(reloaded.has_value());
+		UAM_ASSERT_EQ(reloaded->claude_quota_continuation.state, state == "claimed" || state == "continued" ? std::string("held") : state);
+		UAM_ASSERT_EQ(reloaded->claude_quota_continuation.resets_at_epoch_s, original.resets_at_epoch_s);
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaHoldsUnresolvedToolsBackgroundChildrenAndManagedDeadlines)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string kind : {"running", "paused", "failed", "background", "managed", "retry"})
+	{
+		ClaudeQuotaFixture fixture;
+		if (kind == "background") fixture.session->claude_live_background_task_ids.insert("child");
+		else if (kind == "managed") fixture.app.chats.front().agent_run_id = "bounded-run";
+		else if (kind == "retry") fixture.session->claude_quota_delivery_id = "already-attempted";
+		else fixture.session->tool_calls.push_back({.id = "unresolved-write", .status = kind});
+		fixture.Send(fixture.Event());
+		fixture.Send(fixture.Result());
+		UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("held"));
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 61));
+		UAM_ASSERT(fixture.session->queued_prompt.empty());
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaCancellationAndIdentityChangesPreventWakeAcrossRestart)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string boundary : {"cancel", "stop", "native", "provider", "workspace", "model", "approval", "host", "new-message", "edited-message", "branch"})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.Wait();
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 59));
+		ChatSession& chat = fixture.app.chats.front();
+		if (boundary == "cancel") UAM_ASSERT(uam::CancelAcpTurn(fixture.app, chat.id));
+		if (boundary == "stop") UAM_ASSERT(uam::StopAcpSession(fixture.app, chat.id));
+		if (boundary == "native") chat.native_session_id = "replacement";
+		if (boundary == "provider") chat.provider_id = "codex-cli";
+		if (boundary == "workspace") chat.workspace_directory += "/different";
+		if (boundary == "model") chat.model_id = "different";
+		if (boundary == "approval") chat.approval_mode = "plan";
+		if (boundary == "host") fixture.app.settings.execution_hosts.front().instruction_file = "different";
+		if (boundary == "new-message") chat.messages.push_back(Message{MessageRole::User, "new work"});
+		if (boundary == "edited-message") chat.messages.front().content = "replacement";
+		if (boundary == "branch") chat.claude_quota_continuation.chat_id = "parent";
+		(void)uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 61);
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
+		UAM_ASSERT(fixture.session->queued_prompt.empty());
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(fixture.temp.root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT(loaded->claude_quota_continuation.state != "waiting");
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaNativeContinuationWritesOnlyOneNewInstructionAfterWarmOrColdReset)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && !defined(_WIN32)
+	for (const std::string kind : {"warm", "cold", "queued", "queued-settings", "goal"})
+	{
+		const bool cold = kind == "cold";
+		ClaudeQuotaFixture fixture;
+		const fs::path shim = fixture.temp.root / "claude";
+		UAM_ASSERT(uam::io::WriteTextFile(shim, "#!/bin/sh\nprintf '%s\\n' \"$@\" > launch-args.txt\nexec /bin/cat >> received.jsonl\n"));
+		fs::permissions(shim, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+		const std::string inherited_path = uam::env::GetNonEmptyString("PATH").value_or("");
+		ScopedEnvVar path_env("PATH", fixture.temp.root.string() + ":" + inherited_path);
+		fixture.session->tool_calls.push_back({.id = "completed-write", .status = "completed", .content = "COMPLETED-TOOL-MUST-NOT-REPLAY"});
+		if (kind.starts_with("queued"))
+		{
+			uam::AcpQueuedUserPromptState pending;
+			pending.text = "FOLLOWUP-MUST-WAIT-FOR-CONTINUATION";
+			pending.id = "future-prompt";
+			fixture.session->queued_user_prompts.push_back(pending);
+			fixture.app.chats.front().acp_queued_prompts.push_back(pending);
+		}
+		fixture.Wait();
+		const std::string native_id = fixture.app.chats.front().native_session_id;
+		const ClaudeQuotaContinuation owner = fixture.app.chats.front().claude_quota_continuation;
+		if (cold)
+		{
+			fixture.app.acp_sessions.clear();
+			fixture.session = nullptr;
+			fixture.app.chats = ChatRepository::LoadLocalChatSummaries(fixture.temp.root);
+			UAM_ASSERT(!fixture.app.chats.front().messages_loaded);
+			UAM_ASSERT(fixture.app.chats.front().claude_quota_continuation == owner);
+		}
+		else
+		{
+			std::string error;
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*fixture.session, fixture.temp.root, {shim.string(), "--resume", native_id}, &error));
+			fixture.session->running = true;
+			fixture.session->initialized = true;
+			fixture.session->session_ready = true;
+			fixture.session->current_mode_id = kind == "queued-settings" ? "plan" : "default";
+		}
+		struct Cleanup
+		{
+			uam::AppState& app;
+			~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+		} cleanup{fixture.app};
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 59));
+		std::string received;
+		bool answered_init = false;
+		for (int attempt = 0; attempt < 300; ++attempt)
+		{
+			(void)uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60);
+			fixture.session = uam::FindAcpSessionForChat(fixture.app, "quota-boundary");
+			if (fixture.session != nullptr && fixture.session->initialize_request_id != 0 && !answered_init)
+			{
+				fixture.Send({{"type", "control_response"}, {"response", {{"subtype", "success"},
+				    {"request_id", std::to_string(fixture.session->initialize_request_id)}, {"response", nlohmann::json::object()}}}});
+				answered_init = true;
+			}
+			(void)uam::PollAllAcpSessions(fixture.app);
+			(void)uam::io::TryReadTextFile(fixture.temp.root / "received.jsonl", received);
+			if (received.find(uam::acp_detail::kClaudeQuotaContinuationPrompt) != std::string::npos) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(received.find(uam::acp_detail::kClaudeQuotaContinuationPrompt) != std::string::npos);
+		UAM_ASSERT(received.find("ACCEPTED-PROMPT-MUST-NOT-REPLAY") == std::string::npos);
+		UAM_ASSERT(received.find("COMPLETED-TOOL-MUST-NOT-REPLAY") == std::string::npos);
+		UAM_ASSERT_EQ(fixture.app.chats.front().native_session_id, native_id);
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages.front().content, std::string("ACCEPTED-PROMPT-MUST-NOT-REPLAY"));
+		UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("continued"));
+		std::string arguments;
+		UAM_ASSERT(uam::io::TryReadTextFile(fixture.temp.root / "launch-args.txt", arguments));
+		UAM_ASSERT(arguments.find("--resume\n" + native_id) != std::string::npos);
+		const std::string before = received;
+		for (int iteration = 0; iteration < 5; ++iteration)
+			UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 120));
+		UAM_ASSERT(uam::io::TryReadTextFile(fixture.temp.root / "received.jsonl", received));
+		UAM_ASSERT_EQ(received, before);
+		std::size_t users = 0;
+		std::istringstream lines(received);
+		for (std::string line; std::getline(lines, line);)
+			if (nlohmann::json::parse(line).value("type", "") == "user") ++users;
+		UAM_ASSERT_EQ(users, std::size_t{1});
+		if (kind == "goal")
+		{
+			fixture.Send({{"type", "result"}, {"session_id", native_id}, {"subtype", "success"}, {"is_error", false}});
+			UAM_ASSERT(uam::acp_detail::QueueGoalInternalPrompt(fixture.app, *fixture.session, fixture.app.chats.front(), "NEW-INTERNAL-GOAL-TURN", false, "", false));
+			UAM_ASSERT(fixture.session->claude_quota_delivery_id.empty());
+			UAM_ASSERT(fixture.session->last_error.empty());
+		}
+		if (kind.starts_with("queued"))
+		{
+			UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+			UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts.size(), std::size_t{1});
+			const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(fixture.temp.root, "quota-boundary");
+			UAM_ASSERT(persisted.has_value());
+			UAM_ASSERT_EQ(persisted->acp_queued_prompts.size(), std::size_t{1});
+			UAM_ASSERT_EQ(persisted->acp_queued_prompts.front().id, std::string("future-prompt"));
+			fixture.Send({{"type", "result"}, {"session_id", native_id}, {"subtype", "success"}, {"is_error", false}});
+			for (int attempt = 0; attempt < 200; ++attempt)
+			{
+				(void)uam::PollAllAcpSessions(fixture.app);
+				(void)uam::io::TryReadTextFile(fixture.temp.root / "received.jsonl", received);
+				if (received.find("FOLLOWUP-MUST-WAIT-FOR-CONTINUATION") != std::string::npos) break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+			UAM_ASSERT(received.find("FOLLOWUP-MUST-WAIT-FOR-CONTINUATION") != std::string::npos);
+			UAM_ASSERT(fixture.session->queued_user_prompts.empty());
+		}
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaPersistenceFailureNeverDispatchesOrDropsCancellation)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.Wait();
+	const fs::path blocker = fixture.temp.root / "not-a-directory";
+	UAM_ASSERT(uam::io::WriteTextFile(blocker, "block"));
+	fixture.app.data_root = blocker;
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+	UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("waiting"));
+	UAM_ASSERT(!uam::CancelAcpTurn(fixture.app, "quota-boundary"));
+	UAM_ASSERT(!uam::CancelAcpTurn(fixture.app, "quota-boundary"));
+	UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("cancelled"));
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 120));
+	UAM_ASSERT(fixture.session->queued_prompt.empty());
+	fixture.app.data_root = fixture.temp.root;
+	UAM_ASSERT(uam::CancelAcpTurn(fixture.app, "quota-boundary"));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(fixture.temp.root, "quota-boundary");
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->claude_quota_continuation.state, std::string("cancelled"));
+#endif
+}
+
+UAM_TEST(ClaudeQuotaRevalidatesNativeOwnershipAtTheActualWriteBoundary)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string change : {"cancel", "host", "model", "native", "reset", "new-owner", "resolved", "edited-message", "new-message"})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.Wait();
+		ChatSession& chat = fixture.app.chats.front();
+		chat.claude_quota_continuation.state = "claimed";
+		fixture.session->claude_quota_delivery_id = chat.claude_quota_continuation.id;
+		fixture.session->queued_prompt = uam::acp_detail::kClaudeQuotaContinuationPrompt;
+		fixture.session->processing = true;
+		fixture.session->running = true;
+		fixture.session->initialized = true;
+		fixture.session->session_ready = true;
+		fixture.session->current_mode_id = "default";
+		chat.messages.push_back(Message{MessageRole::User, uam::acp_detail::kClaudeQuotaContinuationPrompt});
+		UAM_ASSERT(uam::acp_detail::ValidateClaudeQuotaDelivery(fixture.app, *fixture.session, chat));
+		if (change == "cancel") UAM_ASSERT(uam::acp_detail::CancelClaudeQuotaWait(fixture.app, chat));
+		if (change == "host") fixture.app.settings.execution_hosts.front().ssh_alias = "different";
+		if (change == "model") chat.model_id = "different";
+		if (change == "native") chat.native_session_id = "replacement";
+		if (change == "reset") chat.native_session_reset_pending = true;
+		if (change == "new-owner") chat.claude_quota_continuation.id = "replacement-owner";
+		if (change == "resolved") fixture.app.resolved_native_sessions_by_chat_id[chat.id] = "replacement";
+		if (change == "edited-message") chat.messages.front().content = "replacement";
+		if (change == "new-message") chat.messages.push_back(Message{MessageRole::User, "other work"});
+		UAM_ASSERT(!uam::acp_detail::ValidateClaudeQuotaDelivery(fixture.app, *fixture.session, chat));
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, chat));
+		UAM_ASSERT(fixture.session->queued_prompt.empty());
+		UAM_ASSERT_EQ(fixture.session->lifecycle_state, std::string("error"));
+		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
+		fixture.session->running = false;
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaSnapshotReportsWaitAsBusyWithoutChangingNativeTurnState)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.Wait();
+	UAM_ASSERT(!fixture.session->processing);
+	UAM_ASSERT(uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["processing"] == true);
+	fixture.app.acp_sessions.clear();
+	const nlohmann::json stopped = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+	UAM_ASSERT(stopped["processing"] == true);
+	UAM_ASSERT_EQ(stopped["lifecycleState"], nlohmann::json("waiting_quota"));
+	UAM_ASSERT(uam::CancelAcpTurn(fixture.app, "quota-boundary"));
+	UAM_ASSERT(uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["processing"] == false);
+#endif
+}
+
+UAM_TEST(ClaudeQuotaWaitsForCompatibilityWithoutCreatingAnUnownedDeferredPrompt)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.Wait();
+	fixture.app.runtime_cli_versions_by_provider_id["claude-cli"].checked = false;
+	fixture.app.runtime_cli_versions_by_provider_id["claude-cli"].supported = false;
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+	UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("waiting"));
+	UAM_ASSERT(fixture.session->queued_user_prompts.empty());
+	UAM_ASSERT(fixture.session->queued_prompt.empty());
+	UAM_ASSERT(fixture.session->claude_quota_delivery_id.empty());
+#endif
+}
+
+UAM_TEST(ClaudeQuotaRestartHoldsPreparedRemoteContinuationWithoutGenericRecovery)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.Wait();
+		fixture.app.chats.front().claude_quota_continuation.state = "held";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, fixture.app.chats.front()));
+		fixture.app.acp_sessions.clear();
+		fixture.session = nullptr;
+		fixture.app.chats = ChatRepository::LoadLocalChatSummaries(fixture.temp.root);
+		UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(fixture.app), std::size_t{0});
+		UAM_ASSERT(!fixture.app.chats.front().acp_queue_held);
+		UAM_ASSERT(uam::CancelAcpTurn(fixture.app, "quota-boundary"));
+		UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("cancelled"));
+	}
+	for (const std::string state : {"claimed", "continued", "cancelled"})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.Wait();
+		ChatSession& chat = fixture.app.chats.front();
+		chat.execution_host_id = "missing-isolated-host";
+		chat.claude_quota_continuation.state = state;
+		uam::AcpQueuedUserPromptState pending;
+		pending.text = uam::acp_detail::kClaudeQuotaContinuationPrompt;
+		pending.prepared_for_delivery = true;
+		pending.append_user_message = false;
+		pending.claude_quota_continuation_id = chat.claude_quota_continuation.id;
+		chat.acp_queued_prompts.push_back(pending);
+		chat.acp_dispatched_queued_prompt_count = 1;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, chat));
+		fixture.app.acp_sessions.clear();
+		fixture.session = nullptr;
+		fixture.app.chats = ChatRepository::LoadLocalChatSummaries(fixture.temp.root);
+		UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts.front().claude_quota_continuation_id, pending.claude_quota_continuation_id);
+		UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(fixture.app), std::size_t{0});
+		UAM_ASSERT(fixture.app.acp_sessions.empty());
+		UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(fixture.app, false), std::size_t{0});
+		UAM_ASSERT(fixture.app.acp_sessions.empty());
+		UAM_ASSERT(fixture.app.chats.front().acp_queue_held);
+		UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts.size(), std::size_t{1});
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaHoldsSameIdAgentDefinitionChangesBeforeNativeStartup)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string access : {"write", "read"})
+	{
+		ClaudeQuotaFixture fixture;
+		fs::create_directories(fixture.temp.root / "agents");
+		const fs::path definition = fixture.temp.root / "agents" / "quota-agent.md";
+		UAM_ASSERT(uam::io::WriteTextFile(definition, "---\nversion: 1\nname: quota-agent\ndescription: fixture\nmode: primary\nworkspaceAccess: write\nskills: []\ndelegates: []\n---\nOriginal instructions.\n"));
+		const uam::AgentDefinitionCatalog original = uam::AgentDefinitionService::Load(fixture.temp.root, fixture.temp.root);
+		const std::vector<uam::AgentDefinition>::const_iterator accepted = std::ranges::find(original.definitions, std::string("quota-agent"), &uam::AgentDefinition::id);
+		UAM_ASSERT(accepted != original.definitions.end());
+		fixture.app.chats.front().uam_agent_id = "quota-agent";
+		fixture.session->active_uam_agent_id = "quota-agent";
+		fixture.session->active_uam_agent_definition_hash = accepted->definition_hash;
+		fixture.Wait();
+		UAM_ASSERT(uam::io::WriteTextFile(definition, "---\nversion: 1\nname: quota-agent\ndescription: fixture\nmode: primary\nworkspaceAccess: " + access + "\nskills: []\ndelegates: []\n---\nChanged same-ID instructions.\n"));
+		const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(fixture.temp.root, fixture.temp.root);
+		const std::vector<uam::AgentDefinition>::const_iterator changed = std::ranges::find(catalog.definitions, std::string("quota-agent"), &uam::AgentDefinition::id);
+		UAM_ASSERT(changed != catalog.definitions.end());
+		UAM_ASSERT(changed->definition_hash != accepted->definition_hash);
+		UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+		UAM_ASSERT_EQ(fixture.app.chats.front().claude_quota_continuation.state, std::string("held"));
+		UAM_ASSERT(!fixture.session->running);
+		UAM_ASSERT(fixture.session->queued_prompt.empty());
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1});
+	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaHeldFutureQueueRemainsVisibleEditableAndCannotBeOverwrittenAfterRestart)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string boundary : std::vector<std::string>{"local-visible", "remote-visible", "local-send"})
+	{
+		ClaudeQuotaFixture fixture;
+		fixture.Wait();
+		ChatSession& chat = fixture.app.chats.front();
+		if (boundary == "remote-visible") chat.execution_host_id = "missing-isolated-host";
+		chat.claude_quota_continuation.state = "claimed";
+		uam::AcpQueuedUserPromptState uncertain;
+		uncertain.text = uam::acp_detail::kClaudeQuotaContinuationPrompt;
+		uncertain.prepared_for_delivery = true;
+		uncertain.claude_quota_continuation_id = chat.claude_quota_continuation.id;
+		uam::AcpQueuedUserPromptState future;
+		future.id = "future-visible";
+		future.text = "Preserve future work";
+		chat.acp_queued_prompts = {uncertain, future};
+		chat.acp_dispatched_queued_prompt_count = 1;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, chat));
+		fixture.app.acp_sessions.clear();
+		fixture.session = nullptr;
+		fixture.app.chats = ChatRepository::LoadLocalChatSummaries(fixture.temp.root);
+		UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(fixture.app), std::size_t{0});
+		std::string error;
+		if (boundary == "local-send")
+		{
+			UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, "quota-boundary", "Replacement must not erase saved work", &error));
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.temp.root, "quota-boundary");
+			UAM_ASSERT(saved.has_value());
+			UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{2});
+			UAM_ASSERT_EQ(saved->acp_queued_prompts.back().id, future.id);
+			UAM_ASSERT_EQ(saved->claude_quota_continuation.state, std::string("held"));
+			continue;
+		}
+		fixture.session = uam::FindAcpSessionForChat(fixture.app, "quota-boundary");
+		UAM_ASSERT(fixture.session != nullptr);
+		UAM_ASSERT(!fixture.session->running && !fixture.session->reconnect_pending && fixture.session->queue_held);
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+		const nlohmann::json snapshot = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+		UAM_ASSERT_EQ(snapshot["queuedPrompts"].size(), std::size_t{1});
+		UAM_ASSERT(snapshot["queueHeld"] == true);
+		UAM_ASSERT(uam::EditQueuedAcpPrompt(fixture.app, "quota-boundary", future.id, 1, "Edited future work", &error));
+		const std::optional<ChatSession> edited = ChatRepository::LoadLocalChat(fixture.temp.root, "quota-boundary");
+		UAM_ASSERT(edited.has_value());
+		UAM_ASSERT_EQ(edited->acp_queued_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(edited->acp_queued_prompts.front().claude_quota_continuation_id, uncertain.claude_quota_continuation_id);
+		UAM_ASSERT_EQ(edited->acp_queued_prompts.back().text, std::string("Edited future work"));
+		UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(fixture.app, "quota-boundary", {{future.id, 2}}, &error));
+		UAM_ASSERT(!fixture.session->running && !fixture.session->reconnect_pending && fixture.session->queue_held);
+		UAM_ASSERT(uam::RemoveQueuedAcpPrompt(fixture.app, "quota-boundary", 0, &error));
+		UAM_ASSERT(fixture.session->queued_user_prompts.empty());
+		UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts.size(), std::size_t{1});
+	}
+#endif
 }

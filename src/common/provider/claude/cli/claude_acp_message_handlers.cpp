@@ -1,3 +1,5 @@
+#include "common/utils/time_utils.h"
+#include "common/runtime/acp/claude_quota_continuation.h"
 #include "common/provider/claude/cli/claude_acp_message_handlers.h"
 #include "common/provider/claude/cli/claude_tool_projection.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -435,6 +437,9 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 
 void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
+	const bool quota_wait = OwnClaudeQuotaWait(app, session, chat, message, uam::time::TimestampNowSec());
+	if (!quota_wait && chat.claude_quota_continuation.state == "continued")
+		chat.claude_quota_continuation.state = "completed";
 	const std::string session_id = uam::nlohmann_json::TrimmedStringValueOr(message, "session_id", "");
 	if (!session_id.empty())
 	{
@@ -507,6 +512,12 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	{
 		uam::PushStreamDone(browser, chat.id);
 	}
+	if (quota_wait)
+	{
+		chat.claude_quota_continuation.message_count = chat.messages.size();
+		session.lifecycle_state = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : "quota_held";
+		session.goal_resume_suppressed = true;
+	}
 	SaveChatQuietly(app, chat);
 	MarkAcpChatUnseenIfBackground(app, chat);
 }
@@ -514,6 +525,15 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
 	const std::string type = JsonDiagnosticStringValue(message, "type");
+	if (type == "assistant" && session.processing && session.turn_serial > 0 && session.queued_prompt.empty() &&
+	    JsonDiagnosticStringValue(message, "session_id") == session.session_id && session.session_id == chat.native_session_id &&
+	    JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && JsonDiagnosticStringValue(message, "error") == "rate_limit")
+		session.claude_quota_usage_error = true;
+	if (type == "rate_limit_event")
+	{
+		ObserveClaudeQuota(session, chat, message, uam::time::TimestampNowSec());
+		return;
+	}
 	if (type == "system" && HandleClaudeTaskEvent(app, session, chat, message)) return;
 	if (HandleClaudeChildMessage(app, session, chat, message)) return;
 	if (type == "user")

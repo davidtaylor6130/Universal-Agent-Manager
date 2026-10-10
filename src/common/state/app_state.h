@@ -90,6 +90,7 @@ namespace uam
 	};
 
 	struct AcpSessionState;
+	struct ClaudeQuotaHistoryTask;
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
 		std::shared_ptr<AcpSessionState> uam_control_session;
@@ -550,6 +551,11 @@ namespace uam
 		int model_change_request_id = 0;
 		bool awaiting_model_config_options = false;
 		int prompt_request_id = 0;
+		std::string claude_quota_delivery_id;
+		bool claude_quota_usage_error = false;
+		int claude_quota_evidence_turn_serial = 0;
+		int64_t claude_quota_reset_epoch_s = 0;
+		int64_t claude_quota_observed_epoch_s = 0;
 		int cancel_request_id = 0;
 		int current_assistant_message_index = -1;
 		int turn_first_user_message_index = -1;
@@ -931,6 +937,8 @@ namespace uam
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::shared_ptr<StartupNativeImportService> startup_native_import_service;
 		// Weak reservations expire if the async callback is discarded during bridge shutdown.
+		std::vector<std::shared_ptr<ClaudeQuotaHistoryTask>> claude_quota_history_tasks;
+		std::string claude_quota_dispatch_id;
 		std::unordered_map<std::string, std::weak_ptr<BranchPreparationOwnership>> branch_preparations;
 		std::unordered_map<std::string, std::string> execution_routing_waits;
 		std::unordered_map<std::string, double> execution_routing_retry_at_by_chat_id;

@@ -1,3 +1,4 @@
+#include "common/runtime/acp/claude_quota_continuation.h"
 #include "app/execution_routing_integration.h"
 #include "app/provider_configuration_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -315,6 +316,7 @@ bool SendInitialize(AcpSessionState& session, std::string* error_out)
 
 void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	const std::string quota_delivery_id = session.claude_quota_delivery_id;
 	if (!session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	InterruptUnconfirmedAcpSteers(app, session, chat);
 	if (!session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
@@ -395,6 +397,8 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.pending_request_methods.clear();
 	session.pending_steer_requests.clear();
 	ResetAcpTurnStreamState(session);
+	// A transport reset retains the current turn ownership; a new turn clears it.
+	session.claude_quota_delivery_id = quota_delivery_id;
 	session.codex_turn_id.clear();
 	ResetAcpPendingInteractionState(session);
 }
@@ -506,6 +510,15 @@ AcpSessionState& EnsureAcpSessionForChat(AppState& app, const ChatSession& chat)
 	session->protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	session->managed_agent_run_id = chat.agent_run_id;
 	session->queue_held = chat.acp_queue_held;
+	if (session->queue_held)
+	{
+		const std::size_t dispatched = std::min(chat.acp_dispatched_queued_prompt_count, chat.acp_queued_prompts.size());
+		for (std::size_t index = dispatched; index < chat.acp_queued_prompts.size(); ++index)
+		{
+			const AcpQueuedUserPromptState& prompt = chat.acp_queued_prompts[index];
+			if (!prompt.prepared_for_delivery && prompt.claude_quota_continuation_id.empty()) session->queued_user_prompts.push_back(prompt);
+		}
+	}
 	if (chat.execution_host_id != uam::execution_hosts::kLocalHostId)
 	{
 		session->next_request_id = chat.remote_next_request_id;
@@ -1262,6 +1275,13 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		return false;
 	}
+	if (!ValidateClaudeQuotaDelivery(app, session, chat))
+	{
+		(void)CancelClaudeQuotaWait(app, chat);
+		FailAcpTurnOrSession(session, &chat, "Native continuation ownership changed before delivery.");
+		SaveChatQuietly(app, chat);
+		return true;
+	}
 	if (SendStartupModeIfNeeded(session, chat))
 	{
 		return false;
@@ -1647,6 +1667,9 @@ bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session
 		return false;
 	}
 
+	if (!chat.claude_quota_continuation.id.empty() &&
+	    (chat.native_session_id != chat.claude_quota_continuation.native_session_id || normalized_session_id != chat.claude_quota_continuation.native_session_id))
+		chat.claude_quota_continuation.state = "cancelled";
 	chat.native_session_id = normalized_session_id;
 	chat.native_session_reset_pending = false;
 	return true;

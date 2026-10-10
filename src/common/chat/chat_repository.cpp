@@ -307,6 +307,8 @@ namespace
 		uam::json::SetBool(obj, "append_user_message", prompt.append_user_message);
 		if (prompt.prepared_for_delivery)
 			uam::json::SetBool(obj, "prepared_for_delivery", true);
+		if (!prompt.claude_quota_continuation_id.empty())
+			uam::json::SetString(obj, "claude_quota_continuation_id", prompt.claude_quota_continuation_id);
 		if (prompt.prepared_user_message_count > 0)
 			uam::json::SetNumber(obj, "prepared_user_message_count", prompt.prepared_user_message_count);
 		uam::json::SetBool(obj, "goal_mode", prompt.goal_mode);
@@ -424,6 +426,7 @@ namespace
 		if (prompt.text.empty() && prompt.attachments.empty()) return std::nullopt;
 		prompt.append_user_message = JsonBoolOrDefault(obj.Find("append_user_message"), true);
 		prompt.prepared_for_delivery = JsonBoolOrDefault(obj.Find("prepared_for_delivery"), false);
+		prompt.claude_quota_continuation_id = JsonStringOrEmpty(obj.Find("claude_quota_continuation_id"));
 		prompt.prepared_user_message_count = std::min(NonNegativeIntFieldOrZero(
 		    obj.Find("prepared_user_message_count")), 64);
 		prompt.goal_mode = JsonBoolOrDefault(obj.Find("goal_mode"), false);
@@ -869,6 +872,7 @@ namespace
 		       MessageAttachmentsEquivalentForRecovery(lhs.attachments, rhs.attachments) &&
 		       lhs.append_user_message == rhs.append_user_message &&
 		       lhs.prepared_for_delivery == rhs.prepared_for_delivery &&
+		       lhs.claude_quota_continuation_id == rhs.claude_quota_continuation_id &&
 		       lhs.prepared_user_message_count == rhs.prepared_user_message_count &&
 		       lhs.goal_mode == rhs.goal_mode && lhs.goal_id == rhs.goal_id &&
 		       lhs.computer_use_mode == rhs.computer_use_mode &&
@@ -1096,6 +1100,39 @@ namespace
 		    JsonStringOrEmpty(root.Find(kChatExecutionHostIdField)), "local");
 		chat.provider_id = JsonStringOrEmpty(root.Find(kChatProviderIdField));
 		chat.native_session_id = JsonStringOrEmpty(root.Find(kChatNativeSessionIdField));
+		if (const JsonValue* quota = root.Find("claude_quota_continuation"); quota != nullptr && quota->type == JsonValue::Type::Object)
+		{
+			ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
+			owner.id = JsonStringOrEmpty(quota->Find("id"));
+			owner.state = JsonStringOrEmpty(quota->Find("state"));
+			owner.chat_id = JsonStringOrEmpty(quota->Find("chat_id"));
+			owner.native_session_id = JsonStringOrEmpty(quota->Find("native_session_id"));
+			owner.context = JsonStringOrEmpty(quota->Find("context"));
+			owner.accepted_message_digest = JsonStringOrEmpty(quota->Find("accepted_message_digest"));
+			owner.agent_id = JsonStringOrEmpty(quota->Find("agent_id"));
+			owner.agent_definition_hash = JsonStringOrEmpty(quota->Find("agent_definition_hash"));
+			owner.agent_workspace_access = JsonStringOrEmpty(quota->Find("agent_workspace_access"));
+			owner.agent_execution_capability = JsonStringOrEmpty(quota->Find("agent_execution_capability"));
+			const double observed = JsonNumberOrDefault(quota->Find("observed_at_epoch_s"), 0);
+			const double reset = JsonNumberOrDefault(quota->Find("resets_at_epoch_s"), 0);
+			const double index = JsonNumberOrDefault(quota->Find("user_message_index"), -1);
+			const double count = JsonNumberOrDefault(quota->Find("message_count"), 0);
+			if (observed > 0 && observed <= 253402282739 && std::floor(observed) == observed &&
+			    reset > observed && reset <= observed + 18060 && std::floor(reset) == reset &&
+			    index >= 0 && index <= std::numeric_limits<int>::max() && std::floor(index) == index &&
+			    count > index && count <= std::numeric_limits<int>::max() && std::floor(count) == count &&
+			    !owner.id.empty() && owner.id.size() <= 128 && owner.context.size() <= 32768 && owner.accepted_message_digest.size() == 16 &&
+			    owner.chat_id == chat.id && owner.native_session_id == chat.native_session_id && chat.provider_id == "claude-cli")
+			{
+				owner.observed_at_epoch_s = static_cast<int64_t>(observed);
+				owner.resets_at_epoch_s = static_cast<int64_t>(reset);
+				owner.user_message_index = static_cast<int>(index);
+				owner.message_count = static_cast<std::size_t>(count);
+				// A crash between claiming and dispatch cannot prove whether input reached Claude.
+				if (owner.state != "waiting" && owner.state != "cancelled" && owner.state != "completed") owner.state = "held";
+			}
+			else owner = {};
+		}
 		chat.remote_claude_session_unstarted = JsonBoolOrDefault(
 		    root.Find(kChatRemoteClaudeSessionUnstartedField), false);
 		chat.remote_turn_reconnect_pending = JsonBoolOrDefault(
@@ -1693,6 +1730,26 @@ try
 	    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"));
 	uam::json::SetString(root, kChatProviderIdField, chat.provider_id);
 	uam::json::SetString(root, kChatNativeSessionIdField, chat.native_session_id);
+	if (!chat.claude_quota_continuation.id.empty())
+	{
+		const ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
+		JsonValue quota = uam::json::Object();
+		uam::json::SetString(quota, "id", owner.id);
+		uam::json::SetString(quota, "state", owner.state);
+		uam::json::SetString(quota, "chat_id", owner.chat_id);
+		uam::json::SetString(quota, "native_session_id", owner.native_session_id);
+		uam::json::SetString(quota, "context", owner.context);
+		uam::json::SetString(quota, "accepted_message_digest", owner.accepted_message_digest);
+		uam::json::SetString(quota, "agent_id", owner.agent_id);
+		uam::json::SetString(quota, "agent_definition_hash", owner.agent_definition_hash);
+		uam::json::SetString(quota, "agent_workspace_access", owner.agent_workspace_access);
+		uam::json::SetString(quota, "agent_execution_capability", owner.agent_execution_capability);
+		uam::json::SetNumber(quota, "observed_at_epoch_s", static_cast<double>(owner.observed_at_epoch_s));
+		uam::json::SetNumber(quota, "resets_at_epoch_s", static_cast<double>(owner.resets_at_epoch_s));
+		uam::json::SetNumber(quota, "user_message_index", owner.user_message_index);
+		uam::json::SetNumber(quota, "message_count", static_cast<double>(owner.message_count));
+		uam::json::SetValue(root, "claude_quota_continuation", std::move(quota));
+	}
 	uam::json::SetBool(root, kChatRemoteClaudeSessionUnstartedField,
 	                   chat.remote_claude_session_unstarted);
 	uam::json::SetBool(root, kChatRemoteTurnReconnectPendingField,

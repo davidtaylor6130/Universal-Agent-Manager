@@ -1,3 +1,4 @@
+#include "common/runtime/acp/claude_quota_continuation.h"
 #include "app/execution_routing_integration.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/config/build_features.h"
@@ -194,14 +195,22 @@ namespace uam
 			    ChatDomainService().FindChatById(app, pending.chat_id), browser);
 		}
 
+		bool HasUncertainClaudeQuotaInput(const ChatSession& chat)
+		{
+			return chat.claude_quota_continuation.state == "held" || chat.claude_quota_continuation.state == "claimed" ||
+			    chat.claude_quota_continuation.state == "continued" ||
+			    std::ranges::any_of(chat.acp_queued_prompts, [](const AcpQueuedUserPromptState& prompt)
+			    { return !prompt.claude_quota_continuation_id.empty(); });
+		}
+
 		bool PersistQueuedPromptOutbox(AppState& app, const AcpSessionState& session,
 		                               ChatSession& chat, std::string* error_out = nullptr)
 		{
-			const bool pending_remote_delivery =
-			    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
-			    !chat.remote_turn_reconnect_pending && !session.queued_prompt.empty() &&
-			    !chat.acp_queued_prompts.empty() &&
-			    chat.acp_queued_prompts.front().prepared_for_delivery;
+			const bool pending_remote_delivery = !chat.acp_queued_prompts.empty() &&
+			    chat.acp_queued_prompts.front().prepared_for_delivery &&
+			    (!chat.acp_queued_prompts.front().claude_quota_continuation_id.empty() ||
+			     (chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
+			      !chat.remote_turn_reconnect_pending && !session.queued_prompt.empty()));
 			AcpQueuedUserPromptState pending;
 			if (pending_remote_delivery) pending = chat.acp_queued_prompts.front();
 			chat.acp_queued_prompts.assign(
@@ -611,6 +620,25 @@ namespace uam
 		std::size_t restored = 0;
 		for (ChatSession& chat : app.chats)
 		{
+			// An uncertain native continuation must never enter generic prepared-input recovery.
+			if (FindAcpSessionForChat(app, chat.id) == nullptr &&
+			    HasUncertainClaudeQuotaInput(chat))
+			{
+				if (!chat.acp_queue_held && !chat.acp_queued_prompts.empty())
+				{
+					chat.acp_queue_held = true;
+					if (!acp_detail::SaveChatQuietly(app, chat)) acp_detail::ScheduleChatSave(app, chat, 1.0);
+				}
+				const std::size_t dispatched = std::min(chat.acp_dispatched_queued_prompt_count, chat.acp_queued_prompts.size());
+				if (std::ranges::any_of(chat.acp_queued_prompts.begin() + static_cast<std::ptrdiff_t>(dispatched), chat.acp_queued_prompts.end(),
+				    [](const AcpQueuedUserPromptState& prompt) { return !prompt.prepared_for_delivery && prompt.claude_quota_continuation_id.empty(); }))
+				{
+					AcpSessionState& holder = acp_detail::EnsureAcpSessionForChat(app, chat);
+					holder.session_id = acp_detail::ResolvedAcpResumeIdForChat(app, chat);
+					holder.lifecycle_state = "quota_held";
+				}
+				continue;
+			}
 			if (initial_restore && !chat.imported_read_only)
 			{
 				const std::size_t dispatched = std::min(chat.acp_dispatched_queued_prompt_count, chat.acp_queued_prompts.size());
@@ -1190,6 +1218,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out)
 		{
+			if (app.claude_quota_dispatch_id != chat.claude_quota_continuation.id && !acp_detail::CancelClaudeQuotaWait(app, chat))
+			{
+				if (error_out != nullptr) *error_out = "Could not save quota continuation cancellation.";
+				return false;
+			}
 			if (RemoteSourceCleanupPending(session, chat))
 			{
 				if (error_out != nullptr) *error_out = "Wait for the exited remote provider to finish cleanup.";
@@ -1214,6 +1247,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			const AcpQueuedUserPromptState& first = batch.front();
+			if (std::ranges::any_of(batch, [](const AcpQueuedUserPromptState& prompt)
+			    { return !prompt.claude_quota_continuation_id.empty(); }))
+			{
+				if (error_out != nullptr) *error_out = "This native continuation needs explicit recovery.";
+				return false;
+			}
 			if (chat.workspace_isolation_kind == uam::paths::kPendingGitWorktreeIsolationKind &&
 			    uam::paths::IsControllerLocalWorkspace(chat) && chat.agent_run_id.empty() && chat.goal_owner_chat_id.empty())
 			{
@@ -1260,7 +1299,20 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    (session.active_uam_agent_id != first.uam_agent_id ||
 			     session.active_uam_agent_definition_hash != first.uam_agent_definition_hash ||
 			     session.active_uam_agent_execution_capability != first.uam_agent_execution_capability);
-			if (native_adapter_changed || settings_require_restart)
+			if ((native_adapter_changed || settings_require_restart) && !app.claude_quota_dispatch_id.empty())
+			{
+				// Keep the durable future outbox intact even if Stop or this process fails mid-restart.
+				session.queue_held = true;
+				if (!StopAcpSession(app, chat.id, AcpStopPurpose::Interrupt, true))
+				{
+					chat.acp_queue_held = true;
+					(void)SaveChatQuietly(app, chat);
+					if (error_out != nullptr) *error_out = "Could not restart the provider for the native continuation.";
+					return false;
+				}
+				session.queue_held = false;
+			}
+			else if (native_adapter_changed || settings_require_restart)
 			{
 				std::deque<AcpQueuedUserPromptState> pending = std::move(session.queued_user_prompts);
 				if (!StopAcpSession(app, chat.id))
@@ -1337,6 +1389,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			RememberAssistantReplayPrefixes(session, chat, session.turn_user_message_index);
 			RememberLoadHistoryReplayUpdates(session, chat, session.turn_user_message_index);
 			ResetAcpTurnStreamState(session);
+			session.claude_quota_delivery_id = app.claude_quota_dispatch_id;
 			ResetAcpPendingInteractionState(session);
 			session.turn_started_time_s = GetAppTimeSeconds();
 			session.last_runtime_activity_time_s = session.turn_started_time_s;
@@ -1359,6 +1412,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				pending.text = session.queued_prompt;
 				pending.append_user_message = false;
 				pending.prepared_for_delivery = true;
+				pending.claude_quota_continuation_id = app.claude_quota_dispatch_id;
 				pending.prepared_user_message_count =
 				    static_cast<int>(std::min<std::size_t>(appended_message_count, 64));
 				chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(), std::move(pending));
@@ -1759,6 +1813,17 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		ChatSession& chat = *chat_ptr;
+		if (!chat.acp_queued_prompts.empty() && HasUncertainClaudeQuotaInput(chat) &&
+		    (chat.acp_queue_held || FindAcpSessionForChat(app, chat_id) == nullptr))
+		{
+			if (error_out != nullptr) *error_out = "Resolve the held native continuation before adding prompts.";
+			return false;
+		}
+		if (app.claude_quota_dispatch_id != chat.claude_quota_continuation.id && !acp_detail::CancelClaudeQuotaWait(app, chat))
+		{
+			if (error_out != nullptr) *error_out = "Could not save quota continuation cancellation.";
+			return false;
+		}
 		const AcpSessionState* existing_session = FindAcpSessionForChat(app, chat_id);
 		if (existing_session != nullptr && RemoteSourceCleanupPending(*existing_session, chat))
 		{
@@ -2223,6 +2288,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		};
 		if (chat == nullptr || session == nullptr || chat->imported_read_only || !session->queue_held)
 			return reject("Restored queue is no longer held. Refresh the queue.");
+		if (HasUncertainClaudeQuotaInput(*chat))
+			return reject("Resolve the held native continuation before resuming this queue.");
 		const std::deque<AcpQueuedUserPromptState>& queue = session->queued_user_prompts;
 		if (queue.empty() || queue.size() != expected.size() || expected.size() > 32)
 			return reject("Queue changed. Refresh before resuming.");
@@ -2424,7 +2491,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat)
 	{
-		if (RemoteSourceCleanupPending(session, chat) || session.turn_checkpoint_commit_pending || session.queue_held) return false;
+		if (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held" ||
+		    RemoteSourceCleanupPending(session, chat) || session.turn_checkpoint_commit_pending || session.queue_held) return false;
 		if (session.queued_user_prompts.empty())
 		{
 			return false;
@@ -2537,6 +2605,30 @@ For desktop observation and input, use only the provider's built-in controller; 
 	}
 
 	} // namespace acp_detail
+
+	bool acp_detail::StartClaudeQuotaContinuation(AppState& app, ChatSession& chat, std::string* error_out)
+	{
+		// This path never admits the control instruction to the ordinary mergeable user queue.
+		if (app.claude_quota_dispatch_id.empty() || app.claude_quota_dispatch_id != chat.claude_quota_continuation.id ||
+		    chat.claude_quota_continuation.state != "claimed" || chat.provider_id != "claude-cli") return false;
+		AcpQueuedUserPromptState continuation;
+		if (!BuildQueuedAcpUserPrompt(app, chat, kClaudeQuotaContinuationPrompt, {}, {}, false, "", false, continuation, error_out)) return false;
+		const ClaudeQuotaContinuation& owner = chat.claude_quota_continuation;
+		if (continuation.uam_agent_id != owner.agent_id || continuation.uam_agent_definition_hash != owner.agent_definition_hash ||
+		    continuation.uam_agent_workspace_access != owner.agent_workspace_access || continuation.uam_agent_execution_capability != owner.agent_execution_capability)
+		{
+			if (error_out != nullptr) *error_out = "The agent definition changed while the native continuation was waiting.";
+			return false;
+		}
+		AcpSessionState& session = EnsureAcpSessionForChat(app, chat);
+		if (session.queued_user_prompts.empty() && !chat.acp_queued_prompts.empty())
+		{
+			if (chat.acp_dispatched_queued_prompt_count != 0 || chat.acp_queue_held ||
+			    std::ranges::any_of(chat.acp_queued_prompts, [](const AcpQueuedUserPromptState& prompt) { return prompt.prepared_for_delivery; })) return false;
+			session.queued_user_prompts.assign(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
+		}
+		return StartAcpUserPrompt(app, session, chat, continuation, error_out);
+	}
 
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, std::string* error_out)
 	{
@@ -2756,6 +2848,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		acp_detail::CancelTurnCheckpointTasksForChat(app, chat_id);
 		acp_detail::StopPermissionReviewTasks(app, chat_id);
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat != nullptr && !acp_detail::CancelClaudeQuotaWait(app, *chat))
+		{
+			if (error_out != nullptr) *error_out = "Could not save quota continuation cancellation.";
+			return false;
+		}
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (session == nullptr && chat != nullptr &&
 		    chat->execution_host_id != uam::execution_hosts::kLocalHostId &&
@@ -3287,6 +3384,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose, bool preserve_held_queue)
 	{
+		if (!preserve_held_queue)
+		{
+			ChatSession* owner = ChatDomainService().FindChatById(app, chat_id);
+			if (owner != nullptr && app.claude_quota_dispatch_id != owner->claude_quota_continuation.id &&
+			    !acp_detail::CancelClaudeQuotaWait(app, *owner)) return false;
+		}
 		ChatDomainService().CancelBranchPreparations(app, chat_id);
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (session == nullptr)
@@ -3813,7 +3916,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser)
 	{
-		bool changed = RetryPendingRemoteAcpSessionHydration(app) > 0;
+		bool changed = acp_detail::PollClaudeQuotaContinuations(app, uam::time::TimestampNowSec());
+		changed = RetryPendingRemoteAcpSessionHydration(app) > 0 || changed;
 		changed = PollCompletedAcpProcessStops(app, browser) || changed;
 		std::erase_if(app.remote_context_tasks, [](const RemoteContextTask& task)
 		{ return task.state != nullptr && task.state->finished.load(std::memory_order_acquire); });

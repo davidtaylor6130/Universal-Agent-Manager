@@ -26,6 +26,10 @@ void ResetAcpPendingInteractionState(AcpSessionState& session)
 
 void ResetAcpTurnStreamState(AcpSessionState& session)
 {
+	session.claude_quota_delivery_id.clear();
+	session.claude_quota_usage_error = false;
+	session.claude_quota_reset_epoch_s = 0;
+	session.claude_quota_evidence_turn_serial = 0;
 	session.pending_assistant_thoughts.clear();
 	session.tool_calls.clear();
 	session.tool_call_message_indices.clear();

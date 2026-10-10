@@ -94,6 +94,7 @@ namespace uam
 		std::vector<MessageAttachment> attachments;
 		bool append_user_message = true;
 		bool prepared_for_delivery = false;
+		std::string claude_quota_continuation_id;
 		int prepared_user_message_count = 0;
 		bool goal_mode = false;
 		std::string goal_id;
@@ -273,6 +274,26 @@ struct ProviderHandoffCliContext
 	bool operator==(const ProviderHandoffCliContext&) const = default;
 };
 
+/// <summary>One durable native-session continuation; claimed delivery is never replayed after restart.</summary>
+struct ClaudeQuotaContinuation
+{
+	std::string id;
+	std::string state;
+	std::string chat_id;
+	std::string native_session_id;
+	std::string context;
+	std::string accepted_message_digest;
+	std::string agent_id;
+	std::string agent_definition_hash;
+	std::string agent_workspace_access;
+	std::string agent_execution_capability;
+	int64_t observed_at_epoch_s = 0;
+	int64_t resets_at_epoch_s = 0;
+	int user_message_index = -1;
+	std::size_t message_count = 0;
+	bool operator==(const ClaudeQuotaContinuation&) const = default;
+};
+
 struct ChatSession
 {
 	std::string id;
@@ -285,6 +306,7 @@ struct ChatSession
 	bool routing_reservation_pending = false;
 	std::string provider_id;
 	std::string native_session_id;
+	ClaudeQuotaContinuation claude_quota_continuation;
 	bool native_session_reset_pending = false;
 	// New Claude chats may assign an owned CLI ID on first local or remote launch.
 	// Keep the persisted legacy field name; older unbound chats may already have history.
