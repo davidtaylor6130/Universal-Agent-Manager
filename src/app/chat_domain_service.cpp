@@ -671,7 +671,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		return false;
 	}
 
-	const ChatSession source = app.chats[source_index];
+	const ChatSession& source = app.chats[source_index];
 
 	if (message_index < 0 || message_index >= static_cast<int>(source.messages.size()))
 	{
