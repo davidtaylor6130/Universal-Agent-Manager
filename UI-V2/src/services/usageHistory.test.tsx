@@ -9,10 +9,10 @@ const windowRange = { startMs: 86400000, endMs: 172800000 }
 const total: UsageTotals = { inputTokens: 10, cachedInputTokens: 5, cacheWriteTokens: 0, outputTokens: 2, reasoningTokens: 1, totalTokens: 17,
   reportedCostUsd: 0, estimatedCostUsd: 0, estimatedCacheSavingsUsd: 0, reportedCostTokens: 0, estimatedCostTokens: 0, unpricedTokens: 17, records: 1, sessions: 1 }
 function history(overrides: Partial<UsageHistory> = {}): UsageHistory {
-  return { version: 1, source: 'native-transcripts', executionHostId: 'local', ...windowRange, totals: { ...total }, complete: true,
+  return { version: 2, source: 'native-transcripts', executionHostId: 'local', ...windowRange, totals: { ...total }, complete: true,
     filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 0, unidentifiedRecords: 0, listingLimited: false,
-    providers: USAGE_PROVIDERS.map(providerId => ({ ...total, providerId, available: providerId === 'codex-cli', files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
-    models: [{ ...total, providerId: 'codex-cli', modelId: 'test-model', speed: 'standard' }], days: [{ ...total, startMs: 86400000 }], hours: [], ...overrides }
+    providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? total : { ...total, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, unpricedTokens: 0, records: 0, sessions: 0 }), providerId, available: providerId === 'codex-cli', files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
+    models: [{ ...total, providerId: 'codex-cli', modelId: 'test-model', speed: 'standard' }], days: [{ ...total, startMs: 86400000 }], hours: [], providerDays: [{ ...total, providerId: 'codex-cli', startMs: 86400000 }], providerHours: [], ...overrides }
 }
 afterEach(() => { delete window.cefQuery; vi.useRealTimers() })
 
@@ -38,6 +38,10 @@ describe('usage history contract', () => {
     expect(() => parseUsageHistory({ ...value, models: [...value.models, ...value.models] }, 'local', windowRange)).toThrow('breakdown')
     for (const startMs of [86400001, 0, 172800000]) expect(() => parseUsageHistory({ ...value, days: [{ ...total, startMs }] }, 'local', windowRange)).toThrow('breakdown')
     expect(() => parseUsageHistory({ ...value, filesChecked: 2 }, 'local', windowRange)).toThrow('invalid')
+    expect(() => parseUsageHistory({ ...value, providerDays: [] }, 'local', windowRange)).toThrow('period')
+    expect(() => parseUsageHistory({ ...value, providerDays: [...value.providerDays, ...value.providerDays] }, 'local', windowRange)).toThrow('breakdown')
+    expect(() => parseUsageHistory({ ...value, providerDays: [{ ...value.providerDays[0], sessions: 0 }] }, 'local', windowRange)).toThrow('period')
+    expect(() => parseUsageHistory({ ...value, providers: value.providers.map(provider => ({ ...provider, sessions: 0 })) }, 'local', windowRange)).toThrow('provider')
     expect(usageWindow(90, 10000000000).endMs - usageWindow(90, 10000000000).startMs).toBe(90 * 86400000)
   })
 })

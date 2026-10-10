@@ -188,7 +188,7 @@ namespace uam::usage
 		}
 		const std::optional<Summary> summary = AggregateReferences(records, start_ms, end_ms, prices);
 		if (!summary) return {{"error", "Usage totals or prices exceed supported numeric limits."}};
-		nlohmann::json result{{"version", 1}, {"executionHostId", "local"}, {"source", "native-transcripts"}, {"startMs", start_ms}, {"endMs", end_ms},
+		nlohmann::json result{{"version", 2}, {"executionHostId", "local"}, {"source", "native-transcripts"}, {"startMs", start_ms}, {"endMs", end_ms},
 		    {"totals", SerializeTotals(summary->total)}, {"complete", m_nextFile == m_files.size()}, {"filesChecked", m_nextFile}, {"filesTotal", m_files.size()},
 		    {"bytesRead", bytes_read}, {"duplicates", summary->duplicates}, {"unidentifiedRecords", summary->unidentified_records}, {"listingLimited", m_listingLimited}};
 		result["providers"] = nlohmann::json::array();
@@ -222,6 +222,18 @@ namespace uam::usage
 			for (const std::pair<const std::int64_t, Totals>& bucket : summary->hours)
 			{
 				nlohmann::json row = SerializeTotals(bucket.second); row["startMs"] = bucket.first; result["hours"].push_back(std::move(row));
+			}
+		result["providerDays"] = nlohmann::json::array(); result["providerHours"] = nlohmann::json::array();
+		for (const std::pair<const ProviderPeriodKey, Totals>& bucket : summary->provider_days)
+		{
+			nlohmann::json row = SerializeTotals(bucket.second); row["startMs"] = bucket.first.first; row["providerId"] = bucket.first.second;
+			result["providerDays"].push_back(std::move(row));
+		}
+		if (end_ms - start_ms <= 86400000)
+			for (const std::pair<const ProviderPeriodKey, Totals>& bucket : summary->provider_hours)
+			{
+				nlohmann::json row = SerializeTotals(bucket.second); row["startMs"] = bucket.first.first; row["providerId"] = bucket.first.second;
+				result["providerHours"].push_back(std::move(row));
 			}
 		return result;
 	}

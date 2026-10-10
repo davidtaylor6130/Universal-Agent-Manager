@@ -9,6 +9,7 @@
 namespace uam::usage
 {
 	using ModelKey = std::tuple<std::string, std::string, std::string>;
+	using ProviderPeriodKey = std::pair<std::int64_t, std::string>;
 
 	struct ModelPrices
 	{
@@ -39,6 +40,8 @@ namespace uam::usage
 		// UTC bucket starts, converted to display timezone by the frontend.
 		std::map<std::int64_t, Totals> days;
 		std::map<std::int64_t, Totals> hours;
+		std::map<ProviderPeriodKey, Totals> provider_days;
+		std::map<ProviderPeriodKey, Totals> provider_hours;
 		std::size_t duplicates = 0;
 		std::size_t unidentified_records = 0;
 	};

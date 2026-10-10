@@ -161,6 +161,16 @@ UAM_TEST(UsageAggregationDeduplicatesAcrossFilesAndSeparatesReportedEstimatedAnd
 	UAM_ASSERT_EQ(summary->days.size(), std::size_t(1));
 	UAM_ASSERT_EQ(summary->hours.size(), std::size_t(2));
 	UAM_ASSERT_EQ(summary->providers.at(uam::provider_ids::kClaudeCli).sessions, std::size_t(1));
+	UAM_ASSERT_EQ(summary->provider_days.size(), std::size_t(2));
+	UAM_ASSERT_EQ(summary->provider_hours.size(), std::size_t(3));
+	const uam::usage::Totals& claude_day = summary->provider_days.at({start / 86400000 * 86400000, uam::provider_ids::kClaudeCli});
+	UAM_ASSERT_EQ(claude_day.tokens.Total(), 150LL);
+	UAM_ASSERT_EQ(claude_day.sessions, std::size_t(1));
+	UAM_ASSERT_EQ(claude_day.reported_cost_usd, 0.125);
+	const uam::usage::Totals& codex_day = summary->provider_days.at({start / 86400000 * 86400000, uam::provider_ids::kCodexCli});
+	UAM_ASSERT_EQ(codex_day.tokens.Total(), 300LL);
+	UAM_ASSERT_EQ(codex_day.sessions, std::size_t(1));
+	UAM_ASSERT_EQ(codex_day.unpriced_tokens, 150LL);
 	std::map<uam::usage::ModelKey, uam::usage::ModelPrices> incomplete_prices = prices;
 	incomplete_prices.begin()->second.output_per_million.reset();
 	const std::optional<uam::usage::Summary> incomplete = uam::usage::Aggregate({estimated}, start, start + 86400000, incomplete_prices);

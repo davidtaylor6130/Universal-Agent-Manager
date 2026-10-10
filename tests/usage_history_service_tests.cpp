@@ -34,6 +34,12 @@ UAM_TEST(UsageHistoryServiceReturnsBoundedProgressAndCachedProviderModelTimeBrea
 	UAM_ASSERT_EQ(result["models"].size(), std::size_t(1));
 	UAM_ASSERT_EQ(result["days"].size(), std::size_t(1));
 	UAM_ASSERT_EQ(result["hours"].size(), std::size_t(1));
+	UAM_ASSERT_EQ(result["version"].get<int>(), 2);
+	UAM_ASSERT_EQ(result["providerDays"].size(), std::size_t(1));
+	UAM_ASSERT_EQ(result["providerHours"].size(), std::size_t(1));
+	UAM_ASSERT_EQ(result["providerDays"][0]["providerId"].get<std::string>(), std::string(uam::provider_ids::kClaudeCli));
+	UAM_ASSERT_EQ(result["providerDays"][0]["totalTokens"].get<int>(), 129 * 15);
+	UAM_ASSERT_EQ(result["providerDays"][0]["sessions"].get<int>(), 1);
 	UAM_ASSERT_EQ(result["providers"].size(), std::size_t(6));
 	UAM_ASSERT_EQ(service.Refresh("request", start, start + 86400000)["bytesRead"].get<int>(), 0);
 	result = service.Refresh("fresh", start, start + 86400000);

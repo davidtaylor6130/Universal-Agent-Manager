@@ -77,6 +77,7 @@ namespace uam::usage
 		std::map<std::string, std::set<std::string>> provider_sessions;
 		std::map<ModelKey, std::set<std::string>> model_sessions;
 		std::map<std::int64_t, std::set<std::pair<std::string, std::string>>> day_sessions, hour_sessions;
+		std::map<ProviderPeriodKey, std::set<std::string>> provider_day_sessions, provider_hour_sessions;
 		for (std::size_t index = 0; index < records.size(); ++index)
 		{
 			const Record& record = *records[index];
@@ -97,7 +98,8 @@ namespace uam::usage
 			const std::int64_t day = record.timestamp_ms / 86400000 * 86400000;
 			const std::int64_t hour = record.timestamp_ms / 3600000 * 3600000;
 			if (!Add(summary.total, record, model_prices) || !Add(summary.providers[record.provider_id], record, model_prices) ||
-			    !Add(summary.models[model_key], record, model_prices) || !Add(summary.days[day], record, model_prices) || !Add(summary.hours[hour], record, model_prices)) return std::nullopt;
+			    !Add(summary.models[model_key], record, model_prices) || !Add(summary.days[day], record, model_prices) || !Add(summary.hours[hour], record, model_prices) ||
+			    !Add(summary.provider_days[{day, record.provider_id}], record, model_prices) || !Add(summary.provider_hours[{hour, record.provider_id}], record, model_prices)) return std::nullopt;
 			if (!record.session_id.empty())
 			{
 				sessions.insert({record.provider_id, record.session_id});
@@ -105,6 +107,8 @@ namespace uam::usage
 				model_sessions[model_key].insert(record.session_id);
 				day_sessions[day].insert({record.provider_id, record.session_id});
 				hour_sessions[hour].insert({record.provider_id, record.session_id});
+				provider_day_sessions[{day, record.provider_id}].insert(record.session_id);
+				provider_hour_sessions[{hour, record.provider_id}].insert(record.session_id);
 			}
 		}
 		summary.total.sessions = sessions.size();
@@ -112,6 +116,8 @@ namespace uam::usage
 		for (std::pair<const ModelKey, Totals>& bucket : summary.models) bucket.second.sessions = model_sessions[bucket.first].size();
 		for (std::pair<const std::int64_t, Totals>& bucket : summary.days) bucket.second.sessions = day_sessions[bucket.first].size();
 		for (std::pair<const std::int64_t, Totals>& bucket : summary.hours) bucket.second.sessions = hour_sessions[bucket.first].size();
+		for (std::pair<const ProviderPeriodKey, Totals>& bucket : summary.provider_days) bucket.second.sessions = provider_day_sessions[bucket.first].size();
+		for (std::pair<const ProviderPeriodKey, Totals>& bucket : summary.provider_hours) bucket.second.sessions = provider_hour_sessions[bucket.first].size();
 		return summary;
 	}
 }

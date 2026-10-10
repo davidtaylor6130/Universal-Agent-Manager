@@ -24,10 +24,10 @@ describe('UsagePage', () => {
     window.cefQuery = request => {
       const { payload } = JSON.parse(request.request)
       requests.push(payload)
-      request.onSuccess(JSON.stringify({ version: 1, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, totals: total, complete: true, listingLimited: true,
+      request.onSuccess(JSON.stringify({ version: 2, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, totals: total, complete: true, listingLimited: true,
         filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 1, unidentifiedRecords: 0,
         providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? total : blank), providerId, available: providerId === 'codex-cli', files: providerId === 'codex-cli' ? 1 : 0, errors: 0, invalidLines: providerId === 'codex-cli' ? 1 : 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
-        models: Array.from({ length: modelCount }, (_, index) => ({ ...total, providerId: 'codex-cli', modelId: index === 0 ? 'test-model' : `model-${index}`, speed: 'standard' })), days: [], hours: [] }))
+        models: Array.from({ length: modelCount }, (_, index) => ({ ...total, providerId: 'codex-cli', modelId: index === 0 ? 'test-model' : `model-${index}`, speed: 'standard' })), days: [], hours: [], providerDays: [], providerHours: [] }))
     }
     const host = document.createElement('div'), root = createRoot(host)
     document.body.appendChild(host)
@@ -59,6 +59,44 @@ describe('UsagePage', () => {
       expect(requests).toHaveLength(count)
       expect(host.textContent).toContain('No limits received')
     } finally { act(() => root.unmount()); host.remove() }
+  })
+  it('filters totals, chart bands and models together without rescanning history', async () => {
+    storage()
+    let requests = 0
+    window.cefQuery = request => {
+      requests++
+      const { payload } = JSON.parse(request.request)
+      const startMs = Math.floor(payload.startMs / 86400000) * 86400000
+      const combined = Object.fromEntries(Object.entries(total).map(([key, value]) => [key, value * 2]))
+      const providers = USAGE_PROVIDERS.map(providerId => ({ ...(['codex-cli', 'claude-cli'].includes(providerId) ? total : blank), providerId, available: ['codex-cli', 'claude-cli'].includes(providerId), files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 }))
+      request.onSuccess(JSON.stringify({ version: 2, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, totals: combined, complete: true, listingLimited: false,
+        filesChecked: 2, filesTotal: 2, bytesRead: 0, duplicates: 0, unidentifiedRecords: 0, providers,
+        models: ['codex-cli', 'claude-cli'].map(providerId => ({ ...total, providerId, modelId: 'test-model', speed: 'standard' })),
+        days: [{ ...combined, startMs }], hours: [], providerDays: ['codex-cli', 'claude-cli'].map(providerId => ({ ...total, startMs, providerId })), providerHours: [] }))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Tokens')!.click())
+      expect(host.textContent).toContain('2 sessions')
+      expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(2)
+      const chart = () => host.querySelector('[role="img"]')!
+      expect(chart().querySelectorAll('[title="Codex · 17"], [title="Claude · 17"]')).toHaveLength(2)
+      const codex = host.querySelector<HTMLButtonElement>('[aria-label="Include Codex usage"]')!
+      act(() => codex.click())
+      expect(codex.getAttribute('aria-pressed')).toBe('false')
+      expect(host.textContent).toContain('1 sessions')
+      expect(host.querySelector('[aria-label="Inspect Codex test-model standard"]')).toBeNull()
+      expect(chart().querySelector('[title="Codex · 17"]')).toBeNull()
+      expect(chart().querySelector('[title="Claude · 17"]')).not.toBeNull()
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Include Claude usage"]')!.click())
+      expect(host.textContent).toContain('0 sessions')
+      expect(chart().querySelectorAll('[title="Claude · 17"]')).toHaveLength(0)
+      expect(requests).toBe(1)
+      act(() => codex.click())
+      expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(1)
+      expect(chart().querySelector('[title="Codex · 17"]')).not.toBeNull()
+    } finally { act(() => root.unmount()) }
   })
   it('rejects malformed saved prices without treating missing fields as zero', () => {
     const price = { providerId: 'codex-cli', modelId: 'test-model', speed: 'standard', inputPerMillion: 0, cachedInputPerMillion: null, cacheWritePerMillion: null, outputPerMillion: 1 }

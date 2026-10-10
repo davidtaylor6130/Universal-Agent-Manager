@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
-import { USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageWindow, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
+import { EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageWindow, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
 import { useAppStore } from '../../store/useAppStore'
 import { providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -30,6 +30,7 @@ function readPrices(): UsagePriceOverride[] {
 }
 const modelKey = (model: Pick<UsageModel, 'providerId' | 'modelId' | 'speed'>) => JSON.stringify([model.providerId, model.modelId, model.speed])
 const providerLabel = (id: string) => providerShortName(undefined, id)
+const providerColors = ['var(--accent)', 'var(--blue)', 'var(--green)', 'var(--teal)', 'var(--yellow)', 'var(--text-2)']
 
 function TokenBreakdown({ total }: { total: UsageTotals }) {
   const fields = [['Input', total.inputTokens], ['Cached input', total.cachedInputTokens], ['Cache writes', total.cacheWriteTokens], ['Output', total.outputTokens]] as const
@@ -78,21 +79,31 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const [editingPrice, setEditingPrice] = useState(false)
   const [modelLimit, setModelLimit] = useState(100)
+  const [hiddenProviders, setHiddenProviders] = useState<ReadonlySet<UsageProviderId>>(() => new Set())
   const history = useUsageHistory(hostId, range, prices, metric !== 'limits')
   const headingRef = useRef<HTMLHeadingElement>(null)
   useEffect(() => { headingRef.current?.focus() }, [])
   const data = history.data
-  const models = useMemo(() => [...(data?.models ?? [])].sort((a, b) => metric === 'cost' ? (usageCost(b) ?? -1) - (usageCost(a) ?? -1) : b.totalTokens - a.totalTokens), [data, metric])
+  const totals = useMemo(() => sumProviderUsage((data?.providers ?? []).filter(provider => !hiddenProviders.has(provider.providerId))), [data, hiddenProviders])
+  const models = useMemo(() => (data?.models ?? []).filter(model => !hiddenProviders.has(model.providerId)).sort((a, b) => metric === 'cost' ? (usageCost(b) ?? -1) - (usageCost(a) ?? -1) : b.totalTokens - a.totalTokens), [data, metric, hiddenProviders])
   const hourly = data ? data.endMs - data.startMs <= 86400000 : days === 1
   const periods = useMemo(() => {
     if (!data) return []
     const width = hourly ? 3600000 : 86400000
-    const present = new Map((hourly ? data.hours : data.days).map(period => [period.startMs, period]))
-    const empty: UsageTotals = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, reportedCostUsd: 0, estimatedCostUsd: 0, estimatedCacheSavingsUsd: 0, reportedCostTokens: 0, estimatedCostTokens: 0, unpricedTokens: 0, records: 0, sessions: 0 }
+    const present = new Map<number, typeof data.providerDays>()
+    for (const row of hourly ? data.providerHours : data.providerDays) {
+      if (hiddenProviders.has(row.providerId)) continue
+      const rows = present.get(row.startMs) ?? []
+      rows.push(row)
+      present.set(row.startMs, rows)
+    }
     const result = []
-    for (let startMs = Math.floor(data.startMs / width) * width; startMs < data.endMs; startMs += width) result.push(present.get(startMs) ?? { ...empty, startMs })
+    for (let startMs = Math.floor(data.startMs / width) * width; startMs < data.endMs; startMs += width) {
+      const bands = present.get(startMs) ?? []
+      result.push({ ...EMPTY_USAGE_TOTALS, ...sumProviderUsage(bands), startMs, bands })
+    }
     return result
-  }, [data, hourly])
+  }, [data, hourly, hiddenProviders])
   const amount = (total: UsageTotals) => metric === 'cost' ? formatUsageCost(total) : formatUsageCount(total.totalTokens)
   const numeric = (total: UsageTotals) => metric === 'cost' ? usageCost(total) ?? 0 : total.totalTokens
   const peak = Math.max(0, ...periods.map(numeric))
@@ -121,19 +132,19 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
           {warnings.map(provider => <p key={provider.providerId} className="text-xs">{providerLabel(provider.providerId)}: {provider.errors} read errors, {provider.invalidLines} invalid records, {provider.oversizedLines} oversized records, {provider.pendingLines} unfinished lines.</p>)}
           <section className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
             <div className="grid content-start gap-4">
-              <div><div className="text-4xl font-semibold tabular-nums" title={data.totals.totalTokens.toLocaleString()}>{amount(data.totals)}</div><p className="mt-2 text-xs">{data.totals.sessions.toLocaleString()} sessions{metric === 'cost' ? ' · API equivalent' : ' · tokens'}</p></div>
-              {metric === 'cost' && <p className="text-xs">Reported: {data.totals.reportedCostTokens || !data.totals.totalTokens ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(data.totals.reportedCostUsd) : 'Unknown'}. Estimated: {data.totals.estimatedCostTokens || !data.totals.totalTokens ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(data.totals.estimatedCostUsd) : 'Unknown'}.{data.totals.unpricedTokens > 0 && ` ${formatUsageCount(data.totals.unpricedTokens)} tokens are unpriced.`}</p>}
-              <div className="grid gap-3">{data.providers.map(provider => <div key={provider.providerId} className="flex items-center justify-between gap-3 text-xs"><span className="flex items-center gap-2"><ProviderLogo providerId={provider.providerId} size={16} />{providerLabel(provider.providerId)}</span><span className="tabular-nums" title={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}>{provider.available ? amount(provider) : 'Unavailable'}</span></div>)}</div>
+              <div><div className="text-4xl font-semibold tabular-nums" title={totals.totalTokens.toLocaleString()}>{amount(totals)}</div><p className="mt-2 text-xs">{totals.sessions.toLocaleString()} sessions{metric === 'cost' ? ' · API equivalent' : ' · tokens'}</p></div>
+              {metric === 'cost' && <p className="text-xs">Reported: {totals.reportedCostTokens || !totals.totalTokens ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(totals.reportedCostUsd) : 'Unknown'}. Estimated: {totals.estimatedCostTokens || !totals.totalTokens ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(totals.estimatedCostUsd) : 'Unknown'}.{totals.unpricedTokens > 0 && ` ${formatUsageCount(totals.unpricedTokens)} tokens are unpriced.`}</p>}
+              <div className="grid gap-3">{data.providers.map(provider => <button key={provider.providerId} type="button" aria-label={`Include ${providerLabel(provider.providerId)} usage`} aria-pressed={!hiddenProviders.has(provider.providerId)} className="uam-btn uam-btn--ghost uam-usage-model-row text-xs" style={{ opacity: hiddenProviders.has(provider.providerId) ? 0.5 : 1 }} onClick={() => { setHiddenProviders(previous => { const next = new Set(previous); if (next.has(provider.providerId)) next.delete(provider.providerId); else next.add(provider.providerId); return next }); setSelectedModel(null); setEditingPrice(false) }}><span className="flex items-center gap-2"><span className="h-2 w-2" aria-hidden="true" style={{ background: providerColors[USAGE_PROVIDERS.indexOf(provider.providerId)] }} /><ProviderLogo providerId={provider.providerId} size={16} />{providerLabel(provider.providerId)}</span><span className="tabular-nums" title={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}>{provider.available ? amount(provider) : 'Unavailable'}</span></button>)}</div>
             </div>
             <div className="grid content-start gap-4"><h2 className="text-sm font-medium">{hourly ? 'Hourly usage' : 'Daily usage'}</h2>
               <div className="relative flex h-40 items-end gap-1 border-b" role="img" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'known costs, unpriced tokens excluded' : 'tokens'} from loaded history`} style={{ borderColor: 'var(--border)' }}>
-                {metric === 'cost' && peak === 0 && data.totals.unpricedTokens > 0 && <span className="absolute inset-0 flex items-center justify-center text-xs">No priced usage in this range.</span>}
-                {periods.map(period => <div key={period.startMs} className="flex h-full min-w-0 flex-1 items-end" title={`${new Date(period.startMs).toLocaleString()} · ${amount(period)}`}><div className="w-full" style={{ height: `${peak ? numeric(period) / peak * 100 : 0}%`, minHeight: numeric(period) > 0 ? 2 : 0, background: 'var(--accent)' }} /></div>)}
-              </div><p className="text-xs">{new Date(data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ' · Daily buckets use UTC' : ''}{metric === 'cost' && data.totals.unpricedTokens > 0 ? ' · Unpriced usage excluded' : ''}</p>
+                {metric === 'cost' && peak === 0 && totals.unpricedTokens > 0 && <span className="absolute inset-0 flex items-center justify-center text-xs">No priced usage in this range.</span>}
+                {periods.map(period => <div key={period.startMs} className="flex h-full min-w-0 flex-1 items-end" title={`${new Date(period.startMs).toLocaleString()} · ${amount(period)}`}><div className="flex w-full flex-col-reverse" style={{ height: `${peak ? numeric(period) / peak * 100 : 0}%`, minHeight: numeric(period) > 0 ? 2 : 0 }}>{period.bands.map(band => <div key={band.providerId} className="w-full" title={`${providerLabel(band.providerId)} · ${amount(band)}`} style={{ height: `${numeric(period) ? numeric(band) / numeric(period) * 100 : 0}%`, background: providerColors[USAGE_PROVIDERS.indexOf(band.providerId)] }} />)}</div></div>)}
+              </div><p className="text-xs">{new Date(data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ' · Daily buckets use UTC' : ''}{metric === 'cost' && totals.unpricedTokens > 0 ? ' · Unpriced usage excluded' : ''}</p>
             </div>
           </section>
-          <section className="grid gap-3"><h2 className="text-sm font-medium">Totals</h2><TokenBreakdown total={data.totals} />
-            {metric === 'cost' && <dl className="flex flex-wrap gap-6 text-xs"><div><dt>Estimated cache savings</dt><dd className="mt-1 tabular-nums">{data.totals.estimatedCostTokens || !data.totals.totalTokens ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(data.totals.estimatedCacheSavingsUsd) : 'Unknown'}</dd></div><div><dt>Unpriced tokens</dt><dd className="mt-1">{formatUsageCount(data.totals.unpricedTokens)}</dd></div></dl>}
+          <section className="grid gap-3"><h2 className="text-sm font-medium">Totals</h2><TokenBreakdown total={totals} />
+            {metric === 'cost' && <dl className="flex flex-wrap gap-6 text-xs"><div><dt>Estimated cache savings</dt><dd className="mt-1 tabular-nums">{totals.estimatedCostTokens || !totals.totalTokens ? new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' }).format(totals.estimatedCacheSavingsUsd) : 'Unknown'}</dd></div><div><dt>Unpriced tokens</dt><dd className="mt-1">{formatUsageCount(totals.unpricedTokens)}</dd></div></dl>}
           </section>
           <section className="grid gap-3"><div className="flex items-center justify-between gap-3"><h2 className="text-sm font-medium">Breakdown</h2><div role="group" aria-label="Usage breakdown" className="flex gap-1"><Button size="sm" variant={breakdown === 'model' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'model'} onClick={() => setBreakdown('model')}>Models</Button><Button size="sm" variant={breakdown === 'time' ? 'secondary' : 'ghost'} aria-pressed={breakdown === 'time'} onClick={() => setBreakdown('time')}>Time</Button></div></div>
             {breakdown === 'model' ? <div>{models.length === 0 && <p className="py-4 text-xs">No model usage in this range.</p>}{models.slice(0, modelLimit).map(model => <div key={modelKey(model)} className="border-b" style={{ borderColor: 'var(--border)' }}>
@@ -141,7 +152,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
                 <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><span className="truncate" title={model.modelId}>{model.modelId}</span>{model.speed !== 'standard' && <span>{model.speed}</span>}</span><span className="shrink-0 tabular-nums">{amount(model)}</span>
               </button>
               {currentModel === model && <div className="grid gap-3 pb-4"><TokenBreakdown total={model} /><p className="text-xs">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button>{editingPrice && <PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} />}</div>}
-            </div>)}{models.length > modelLimit && <Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button>}</div> : <div>{periods.map(period => <div key={period.startMs} className="flex justify-between gap-4 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="tabular-nums">{amount(period)}</span></div>)}</div>}
+            </div>)}{models.length > modelLimit && <Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button>}</div> : <div>{[...periods].reverse().map(period => <div key={period.startMs} className="flex justify-between gap-4 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="tabular-nums">{amount(period)}</span></div>)}</div>}
           </section>
           {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <details className="text-xs"><summary className="cursor-pointer">History diagnostics</summary><p className="mt-2">{data.duplicates} duplicate records, {data.unidentifiedRecords} records without stable identity, {data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0)} copied fork records suppressed.</p></details>}
         </div>}
