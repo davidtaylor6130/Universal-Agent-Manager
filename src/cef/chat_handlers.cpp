@@ -27,6 +27,7 @@
 #include "common/state/app_state.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/time_utils.h"
+#include "common/runtime/app_time.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -234,26 +235,38 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	const bool messages_pending_save = m_app.pending_chat_save_at_by_chat_id.contains(chat_id);
-	const bool saved = messages_pending_save
-	    ? ChatRepository::SaveChat(m_app.data_root, *selected_chat)
-	    : ChatRepository::SaveLastOpenedAt(m_app.data_root, *selected_chat);
-	if (!saved)
+	if (!m_app.pending_chat_save_at_by_chat_id.contains(chat_id))
 	{
-		m_app.status_line = "Failed to persist selected chat.";
-		selected_chat->last_opened_at = previous_last_opened_at;
-		ChatDomainService().SelectChatById(m_app, previous_selected_chat_id);
-		(void)PersistenceCoordinator().SaveSettings(m_app);
-		cb->Failure(500, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
-		return;
+		ChatSession metadata;
+		metadata.id = selected_chat->id;
+		metadata.last_opened_at = selected_chat->last_opened_at;
+		metadata.interaction_at = selected_chat->interaction_at;
+		metadata.attention_revision = selected_chat->attention_revision;
+		metadata.settled_at = selected_chat->settled_at;
+		const std::filesystem::path data_root = m_app.data_root;
+		std::shared_ptr<std::shared_ptr<PreparedChatSave>> prepared = std::make_shared<std::shared_ptr<PreparedChatSave>>();
+		if (!uam::query_handler_async::RunIndependentCefQuery(m_asyncLifetime,
+		    [data_root, metadata, prepared]()
+		    {
+			    *prepared = ChatRepository::PrepareLastOpenedAt(data_root, metadata);
+			    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
+		    },
+		    [this, data_root, metadata, prepared](uam::query_handler_async::AsyncCefResult&)
+		    {
+			    ChatSession* current = ChatDomainService().FindChatById(m_app, metadata.id);
+			    if (current == nullptr || m_app.data_root != data_root || current->last_opened_at != metadata.last_opened_at ||
+			        current->interaction_at != metadata.interaction_at || current->attention_revision != metadata.attention_revision || current->settled_at != metadata.settled_at) return;
+			    if (m_app.pending_chat_save_at_by_chat_id.contains(metadata.id)) return;
+			    if (m_app.worktree_operation_chat_ids.contains(metadata.id) || !ChatRepository::PublishPreparedChatSave(*prepared))
+				    m_app.pending_chat_save_at_by_chat_id[metadata.id] = uam::GetAppTimeSeconds() + 1.0;
+		    })) m_app.pending_chat_save_at_by_chat_id[chat_id] = uam::GetAppTimeSeconds() + 1.0;
 	}
-	if (messages_pending_save) m_app.pending_chat_save_at_by_chat_id.erase(chat_id);
 	m_app.status_line.clear();
 
 	ChatDomainService().SortChatsByRecent(m_app.chats);
 	ChatDomainService().SelectChatById(m_app, chat_id);
-	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+	uam::PushStateUpdateIfChanged(browser, m_app);
 }
 
 void UamQueryHandler::HandleSetVisibleChatIds(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -347,23 +360,34 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		const std::size_t expected_count = chat->persisted_message_count;
 		const std::string expected_digest = chat->persisted_messages_digest;
 		auto loaded = std::make_shared<std::optional<ChatSession>>();
+		auto tail = std::make_shared<std::shared_ptr<PreparedChatSave>>();
+		auto cached_revision = std::make_shared<std::optional<std::string>>();
 		uam::query_handler_async::RunAsyncCefQuery(
 		    m_asyncLifetime, cb,
-		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded]()
+		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded, tail, cached_revision, expected_count, expected_digest]()
 		    {
+			    if (page && !page->second && page->first <= 50 && defer_tool_call_content && !search_target)
+			    {
+				    *cached_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
+				    const std::optional<nlohmann::json> cached = uam::MessageTailCache::Read(data_root, chat_id, expected_count, expected_digest, page->first, known_digest);
+				    if (cached && *cached_revision == ChatRepository::ChatStorageRevision(data_root, chat_id))
+					    return uam::query_handler_async::AsyncSuccess(*cached);
+				    cached_revision->reset();
+			    }
 			    std::string warning;
 			    *loaded = ChatRepository::LoadLocalChat(data_root, chat_id, true, &warning);
 			    if (!loaded->has_value())
 				    return uam::query_handler_async::AsyncFailure(500,
 				        uam::query_handler_internal::FailureDetailOrFallback(warning, "Failed to load chat messages."));
+			    *tail = uam::MessageTailCache::Prepare(data_root, **loaded);
 			    return SerializeGuardedChatMessagesResult(**loaded, known_digest, page, defer_tool_call_content, search_target);
 		    },
 		    [this, chat_id, known_digest, page, defer_tool_call_content, search_target, expected_count,
-		     expected_digest, loaded](uam::query_handler_async::AsyncCefResult& response)
+		     expected_digest, loaded, tail, cached_revision, data_root](uam::query_handler_async::AsyncCefResult& response)
 		    {
 			    if (!response.ok) return;
 			    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
-			    if (current == nullptr)
+			    if (current == nullptr || m_app.data_root != data_root)
 			    {
 				    response = uam::query_handler_async::AsyncFailure(404, "Chat was removed while its history was loading.");
 				    return;
@@ -373,9 +397,19 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == current->id);
 				    return;
 			    }
+			    if (cached_revision->has_value())
+			    {
+				    if (current->persisted_message_count != expected_count || current->persisted_messages_digest != expected_digest ||
+				        m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.worktree_operation_chat_ids.contains(chat_id) ||
+				        ChatRepository::ChatStorageRevision(data_root, chat_id) != *cached_revision)
+					    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
+				    return;
+			    }
 			    if (!uam::TranscriptRetentionService::CompleteHistoryLoad(
 			            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value()))
 				    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
+			    else if (!m_app.pending_chat_save_at_by_chat_id.contains(chat_id) && !m_app.worktree_operation_chat_ids.contains(chat_id))
+				    (void)ChatRepository::PublishPreparedChatSave(*tail);
 		    });
 		return;
 	}

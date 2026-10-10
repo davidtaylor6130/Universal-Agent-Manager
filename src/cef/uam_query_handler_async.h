@@ -10,6 +10,8 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
+#include <thread>
+#include <atomic>
 
 namespace uam::query_handler_async
 {
@@ -131,12 +133,27 @@ class CefQueryWorkerTask : public CefTask
 	IMPLEMENT_REFCOUNTING(CefQueryWorkerTask);
 };
 
+/// <summary>Isolates long metadata preparation from the history-loading file queue.</summary>
+template <typename Worker, typename Completion>
+bool RunIndependentCefQuery(std::weak_ptr<void> lifetime, Worker worker, Completion completion)
+{
+	static std::atomic_bool busy = false;
+	if (busy.exchange(true)) return false;
+	try
+	{
+		CefRefPtr<CefQueryWorkerTask> task = new CefQueryWorkerTask(std::move(lifetime), nullptr, std::move(worker), std::move(completion));
+		std::thread([task]() { task->Execute(); busy.store(false); }).detach();
+		return true;
+	}
+	catch (const std::exception&) { busy.store(false); return false; }
+}
+
 template <typename Worker>
 bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
 {
 	if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker))))
 	{
-		callback->Failure(503, "The background task queue is unavailable.");
+		if (callback) callback->Failure(503, "The background task queue is unavailable.");
 		return false;
 	}
 	return true;
@@ -148,7 +165,7 @@ bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBr
 	if (!CefPostTask(TID_FILE_BACKGROUND,
 	                 new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion))))
 	{
-		callback->Failure(503, "The background task queue is unavailable.");
+		if (callback) callback->Failure(503, "The background task queue is unavailable.");
 		return false;
 	}
 	return true;

@@ -18,6 +18,8 @@ struct PreparedChatSave
 	std::filesystem::path summary_temp;
 	bool preserve_backup = true;
 	std::string expected_storage_revision;
+	std::string primary_revision;
+	std::string expected_summary_revision;
 	~PreparedChatSave();
 };
 
@@ -49,12 +51,15 @@ class ChatRepository
 	static std::shared_ptr<PreparedChatSave> PrepareChatSave(const std::filesystem::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision = {});
 	/// <summary>Captures primary-file metadata without reading transcript bodies; missing files have a stable revision.</summary>
 	static std::optional<std::string> ChatStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
+	static std::optional<std::string> ChatSummaryStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	/// <summary>Publishes prepared files after the caller validates current chat and deletion state.</summary>
 	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true);
 	static std::string ChatMetadataFingerprint(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
 	/// <summary>Persists selection time in the validated summary without rewriting an unchanged transcript.</summary>
+	/// <summary>Prepares selection metadata off-thread, preserving the primary transcript when its summary is current.</summary>
+	static std::shared_ptr<PreparedChatSave> PrepareLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& metadata);
 	static bool SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Saves one chat only when neither its primary nor backup storage already exists.</summary>
 	static bool SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat);

@@ -9,9 +9,99 @@
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/utils/string_utils.h"
 #include <algorithm>
+#include "cef/state_serializer.h"
+#include "common/paths/app_paths.h"
+#include "common/utils/io_utils.h"
 
 namespace uam
 {
+	bool MessageTailCache::Attach(const std::filesystem::path&, const ChatSession& chat, const std::shared_ptr<PreparedChatSave>& prepared)
+	try
+	{
+		if (!prepared || !chat.messages_loaded || prepared->primary_revision.empty()) return false;
+		std::size_t text_bytes = 0;
+		for (std::size_t index = chat.messages.size() > 50 ? chat.messages.size() - 50 : 0; index < chat.messages.size(); ++index)
+		{
+			text_bytes += chat.messages[index].content.size();
+			for (const MessageBlock& block : chat.messages[index].blocks) text_bytes += block.text.size();
+			if (text_bytes > 256 * 1024) return false;
+		}
+		std::string text;
+		if (!io::TryReadTextFile(prepared->summary_temp, text, 4 * 1024 * 1024)) return false;
+		nlohmann::json summary = nlohmann::json::parse(text, nullptr, false);
+		if (!summary.is_object() || summary.value("id", "") != chat.id) return false;
+		summary["frontendMessageTail"] = {{"version", 1}, {"sourceRevision", prepared->primary_revision},
+		    {"page", StateSerializer::SerializeMessagePage(chat, 50, std::nullopt, true)}};
+		text = summary.dump();
+		if (text.size() > 512 * 1024) return false;
+		const std::filesystem::path replacement = io::MakeTempWritePath(prepared->summary_path);
+		io::AtomicWriteResult result;
+		if (!io::WriteAndSyncAtomicTemp(replacement, text, {}, result)) { io::RemoveAtomicTempNoThrow(replacement); return false; }
+		io::RemoveAtomicTempNoThrow(prepared->summary_temp);
+		prepared->summary_temp = replacement;
+		return true;
+	}
+
+	catch (const std::exception&) { return false; }
+
+	std::shared_ptr<PreparedChatSave> MessageTailCache::Prepare(const std::filesystem::path& data_root, const ChatSession& chat)
+	try
+	{
+		const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(data_root, chat.id);
+		if (!revision || *revision == "missing") return nullptr;
+		std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
+		prepared->primary_path = AppPaths::UamChatFilePath(data_root, chat.id);
+		prepared->summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
+		prepared->summary_temp = io::MakeTempWritePath(prepared->summary_path);
+		prepared->expected_storage_revision = *revision;
+		prepared->primary_revision = *revision;
+		const std::optional<std::string> summary_revision = ChatRepository::ChatSummaryStorageRevision(data_root, chat.id);
+		if (!summary_revision) return nullptr;
+		prepared->expected_summary_revision = *summary_revision;
+		std::string text;
+		if (!io::TryReadTextFile(prepared->summary_path, text, 4 * 1024 * 1024)) return nullptr;
+		const nlohmann::json summary = nlohmann::json::parse(text, nullptr, false);
+		if (!summary.is_object() || summary.value("persisted_message_count", std::size_t(0)) != chat.messages.size()) return nullptr;
+		io::AtomicWriteResult result;
+		if (!io::WriteAndSyncAtomicTemp(prepared->summary_temp, text, {}, result) || !Attach(data_root, chat, prepared)) return nullptr;
+		return prepared;
+	}
+
+	catch (const std::exception&) { return nullptr; }
+
+	std::optional<nlohmann::json> MessageTailCache::Read(const std::filesystem::path& data_root, std::string_view chat_id,
+	    std::size_t expected_count, std::string_view expected_digest, std::size_t limit, std::string_view known_digest)
+	try
+	{
+		if (limit == 0 || limit > 50) return std::nullopt;
+		const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
+		if (!revision || *revision == "missing") return std::nullopt;
+		std::string text;
+		if (!io::TryReadTextFile(AppPaths::UamChatSummaryFilePath(data_root, chat_id), text, 4 * 1024 * 1024)) return std::nullopt;
+		const nlohmann::json summary = nlohmann::json::parse(text, nullptr, false);
+		if (!summary.is_object() || summary.value("id", "") != chat_id ||
+		    summary.value("persisted_message_count", std::size_t(0)) != expected_count || summary.value("persisted_messages_digest", "") != expected_digest ||
+		    !summary.contains("frontendMessageTail")) return std::nullopt;
+		const nlohmann::json& tail = summary["frontendMessageTail"];
+		if (!tail.is_object() || tail.value("version", 0) != 1 || tail.value("sourceRevision", "") != *revision || !tail.contains("page")) return std::nullopt;
+		nlohmann::json page = tail["page"];
+		if (!page.is_object() || !page.contains("messages") || !page["messages"].is_array() ||
+		    page.value("totalCount", std::size_t(0)) != expected_count || page["messages"].size() != std::min(expected_count, std::size_t(50)) ||
+		    page.value("startIndex", std::size_t(0)) + page["messages"].size() != expected_count || !page.contains("messagesDigest") || !page["messagesDigest"].is_string()) return std::nullopt;
+		for (const nlohmann::json& message : page["messages"])
+			if (!message.is_object() || !message.contains("role") || !message["role"].is_string() ||
+			    !message.contains("content") || !message["content"].is_string()) return std::nullopt;
+		if (ChatRepository::ChatStorageRevision(data_root, chat_id) != revision) return std::nullopt;
+		const std::size_t size = std::min(limit, expected_count);
+		page["messages"].erase(page["messages"].begin(), page["messages"].end() - static_cast<std::ptrdiff_t>(size));
+		page["startIndex"] = expected_count - size;
+		page["chatId"] = chat_id;
+		page["unchanged"] = !known_digest.empty() && page["messagesDigest"].get_ref<const std::string&>() == known_digest;
+		if (page["unchanged"].get<bool>()) page.erase("messages");
+		return page;
+	}
+	catch (const std::exception&) { return std::nullopt; }
+
 	namespace
 	{
 		bool IsTerminalManagedRun(std::string_view status)

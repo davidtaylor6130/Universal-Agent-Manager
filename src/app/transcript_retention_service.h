@@ -9,9 +9,21 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <nlohmann/json.hpp>
+#include "common/chat/chat_repository.h"
 
 namespace uam
 {
+	/// <summary>Derived, bounded frontend tails live in existing summary files and never replace provider history.</summary>
+	class MessageTailCache
+	{
+	  public:
+		static bool Attach(const std::filesystem::path& data_root, const ChatSession& chat, const std::shared_ptr<PreparedChatSave>& prepared);
+		static std::shared_ptr<PreparedChatSave> Prepare(const std::filesystem::path& data_root, const ChatSession& chat);
+		static std::optional<nlohmann::json> Read(const std::filesystem::path& data_root, std::string_view chat_id,
+		    std::size_t expected_count, std::string_view expected_digest, std::size_t limit, std::string_view known_digest = {});
+	};
+
 	struct ManagedAgentTranscriptReadIdentity
 	{
 		std::string root_chat_id;

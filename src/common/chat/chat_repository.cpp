@@ -1719,7 +1719,7 @@ try
 	}
 
 	std::error_code ec;
-	if (!uam::paths::CreateDirectoriesNoThrow(file_path.parent_path(), &ec))
+	if (fingerprint == nullptr && !uam::paths::CreateDirectoriesNoThrow(file_path.parent_path(), &ec))
 	{
 		return false;
 	}
@@ -2091,12 +2091,21 @@ std::optional<std::string> ChatRepository::ChatStorageRevision(const fs::path& d
 	return StorageRevision(AppPaths::UamChatFilePath(data_root, chat_id));
 }
 
+std::optional<std::string> ChatRepository::ChatSummaryStorageRevision(const fs::path& data_root, std::string_view chat_id)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id)) return std::nullopt;
+	return StorageRevision(AppPaths::UamChatSummaryFilePath(data_root, chat_id));
+}
+
 std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision)
 {
 	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return nullptr;
 	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
 	prepared->expected_storage_revision = expected_storage_revision;
 	if (!SaveChatImpl(data_root, chat, false, false, prepared.get())) return nullptr;
+	const std::optional<std::string> revision = StorageRevision(prepared->primary_temp);
+	if (!revision) return nullptr;
+	prepared->primary_revision = *revision;
 	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return nullptr;
 	return prepared;
 }
@@ -2106,6 +2115,9 @@ bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatS
 	if (!prepared) return false;
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
 	if (!prepared->expected_storage_revision.empty() && StorageRevision(prepared->primary_path) != prepared->expected_storage_revision) return false;
+	if (prepared->primary_temp.empty() && !prepared->expected_summary_revision.empty() && StorageRevision(prepared->summary_path) != prepared->expected_summary_revision) return false;
+	if (prepared->primary_temp.empty())
+		return uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory).success;
 	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);
 	if (!primary.success) return false;
 	(void)uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory);
@@ -2122,6 +2134,46 @@ std::string ChatRepository::ChatMetadataFingerprint(const fs::path& data_root, c
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)
 {
 	return SaveChatImpl(data_root, chat, false, skip_unchanged);
+}
+
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLastOpenedAt(const fs::path& data_root, const ChatSession& metadata)
+{
+	const std::optional<std::string> revision = ChatStorageRevision(data_root, metadata.id);
+	if (!revision) return nullptr;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, metadata.id);
+	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, metadata.id);
+	const std::optional<std::string> summary_revision = StorageRevision(summary_path);
+	if (!summary_revision) return nullptr;
+	std::error_code error;
+	const std::uintmax_t source_size = fs::file_size(primary, error);
+	std::optional<JsonValue> summary;
+	if (!error && SummaryCacheIsCurrent(primary, summary_path)) summary = ParseJson(uam::io::ReadTextFile(summary_path));
+	if (!summary || summary->type != JsonValue::Type::Object || JsonStringOrEmpty(summary->Find(kChatIdField)) != metadata.id ||
+	    NonNegativeUintmaxFieldOrZero(summary->Find(kChatSummarySourceSizeField)) != source_size)
+	{
+		std::optional<ChatSession> persisted = LoadLocalChat(data_root, metadata.id, true, nullptr, false);
+		if (!persisted) return nullptr;
+		persisted->last_opened_at = metadata.last_opened_at;
+		persisted->interaction_at = metadata.interaction_at;
+		persisted->attention_revision = metadata.attention_revision;
+		persisted->settled_at = metadata.settled_at;
+		return PrepareChatSave(data_root, *persisted, *revision);
+	}
+	uam::json::SetString(*summary, kChatLastOpenedAtField, metadata.last_opened_at);
+	uam::json::SetString(*summary, "interaction_at", metadata.interaction_at);
+	uam::json::SetString(*summary, "attention_revision", metadata.attention_revision);
+	uam::json::SetString(*summary, "settled_at", metadata.settled_at);
+	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
+	prepared->primary_path = primary;
+	prepared->summary_path = summary_path;
+	prepared->summary_temp = uam::io::MakeTempWritePath(summary_path);
+	prepared->expected_storage_revision = *revision;
+	prepared->primary_revision = *revision;
+	prepared->expected_summary_revision = *summary_revision;
+	uam::io::AtomicWriteResult result;
+	if (!uam::io::WriteAndSyncAtomicTemp(prepared->summary_temp, SerializeJson(*summary), {}, result) ||
+	    ChatStorageRevision(data_root, metadata.id) != revision) return nullptr;
+	return prepared;
 }
 
 bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat)

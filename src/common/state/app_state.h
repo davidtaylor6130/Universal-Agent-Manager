@@ -932,6 +932,7 @@ namespace uam
 	};
 
 	/// <summary>Shared application state for the CEF/React provider CLI release slice.</summary>
+	struct PendingChatSaveTask;
 	struct AppState
 	{
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
@@ -1023,6 +1024,7 @@ namespace uam
 		std::unordered_map<std::string, platform::AsyncNativeChatLoadTask> native_chat_load_tasks;
 
 		std::unordered_map<std::string, double> pending_chat_save_at_by_chat_id;
+		std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>> pending_chat_save_tasks;
 		std::unordered_map<std::string, double> remote_recovery_hydration_retry_not_before_by_chat_id;
 		std::unordered_set<std::string> worktree_operation_chat_ids;
 		std::unordered_map<std::string, std::weak_ptr<void>> remote_vcs_operation_leases_by_host_id;

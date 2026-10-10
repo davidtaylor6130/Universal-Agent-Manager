@@ -6,6 +6,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "app/startup_native_import_service.h"
 #include "app/model_discovery_service.h"
+#include "app/computer_use_service.h"
 
 #include <future>
 #include <chrono>
@@ -46,6 +47,7 @@ class Application
   private:
 	uam::AppState m_app;
 	uam::StartupModelDiscoveryService m_startupModelDiscovery;
+	uam::ComputerUseService m_computerUseService;
 	PlatformServices* m_platformServices = nullptr;
 	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	std::shared_ptr<std::atomic_bool> m_lifetimeToken = std::make_shared<std::atomic_bool>(true);
@@ -55,7 +57,9 @@ class Application
 	bool m_cefInitialized = false;
 	bool m_shutdownComplete = false;
 	bool m_shellActionInvocation = false;
-	std::string m_workspaceFolderAvailabilityFingerprint;
+	std::future<std::vector<ChatFolder>> m_workspaceAvailabilityScan;
+	double m_nextWorkspaceAvailabilityScan = 0.0;
+	bool PollWorkspaceAvailability();
 	std::filesystem::path m_pendingBundledMarkdownRoot;
 	std::string m_pendingMarkdownStoreDirectory;
 	std::vector<std::string> m_launchArguments;
