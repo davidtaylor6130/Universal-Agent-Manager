@@ -3611,3 +3611,33 @@ UAM_TEST(NativeHistoryDigestTracksEarlierCorrectionsAndToolThoughtUpdates)
 	changed.messages.back().tool_calls.front().result_text = "later";
 	UAM_ASSERT(uam::NativeHistorySnapshotDigest({changed}) != original);
 }
+
+UAM_TEST(CliStoppedTerminalRetainsItsLaunchIdentityForFinalOutput)
+{
+	uam::CliTerminalState terminal;
+	terminal.startup_time_s = 12.5;
+	uam::StopCliTerminal(terminal);
+	UAM_ASSERT(!terminal.running);
+	UAM_ASSERT_EQ(terminal.startup_time_s, 12.5);
+}
+
+UAM_TEST(StatePushPublishesChangedCliLaunchDespiteSelectedSummaryThrottle)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "launch-patch";
+	app.chats.push_back(chat);
+	app.selected_chat_index = 0;
+	std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->terminal_id = "term-reused";
+	terminal->frontend_chat_id = chat.id;
+	terminal->running = true;
+	terminal->startup_time_s = 1.0;
+	app.cli_terminals.push_back(std::move(terminal));
+	uam::PushStateUpdate(nullptr, app);
+	app.chats.front().title = "updated";
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	app.cli_terminals.front()->startup_time_s = 2.0;
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(!uam::HasDeferredStatePush());
+}

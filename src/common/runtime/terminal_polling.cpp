@@ -296,6 +296,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	constexpr int kReadBudgetChunksPerTick = 4;
 	constexpr std::size_t kReadBudgetBytesPerTick = 32 * 1024;
 
+	const bool first_launch_output = terminal.last_output_time_s <= 0.0;
 	bool changed = false;
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const ChatSession* terminal_chat = FindChatForCliTerminal(app, terminal);
@@ -402,8 +403,10 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			terminal.current_turn_output_bytes.erase(0, terminal.current_turn_output_bytes.size() - kTerminalPromptScanLimit);
 		}
 
+		// Publish the launch binding before its first bytes, including background restarts.
+		if (first_launch_output) uam::PushStateUpdateIfChanged(browser, app);
 		const std::string primary_chat_id = CliTerminalPrimaryChatId(terminal);
-		uam::PushCliOutput(browser, primary_chat_id, primary_chat_id, terminal.terminal_id, output_for_frontend);
+		uam::PushCliOutput(browser, primary_chat_id, primary_chat_id, terminal.terminal_id, terminal.startup_time_s, output_for_frontend);
 	}
 
 	terminal.native_activity_provider_id = terminal_is_controller_local ? terminal_provider.id : std::string{};

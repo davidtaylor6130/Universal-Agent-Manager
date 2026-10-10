@@ -10,7 +10,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { FOCUS_ACTIVE_INPUT_EVENT } from '../../utils/activeInputFocus'
 import { getTopmostModal } from '../../utils/modalFocus'
 import { sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
-import { normalizeCliLifecycleState, cliLifecycleIsProcessing } from '../../store/cpp/reconcile'
+import { normalizeCliLifecycleState, cliLifecycleIsProcessing, cliOutputMatchesBinding } from '../../store/cpp/reconcile'
 import type { CliLifecycleState } from '../../store/useAppStore'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import { resolveDocumentTheme } from '../../utils/themeStorage'
@@ -23,6 +23,7 @@ interface CLIViewProps {
 
 interface StartCliTerminalResponse {
   terminalId?: string
+  startupTime?: number
   sessionId?: string
   sourceChatId?: string
   running?: boolean
@@ -284,14 +285,15 @@ export function CLIView({ session }: CLIViewProps) {
 
         // Receive PTY output pushed from C++ via window.uamPush → CustomEvent.
         const onCliOutput = (e: Event) => {
-          const { sessionId, sourceChatId, terminalId, data } = (e as CustomEvent<{
+          const { sessionId, sourceChatId, terminalId, startupTime, data } = (e as CustomEvent<{
             sessionId?: string
             sourceChatId?: string
             terminalId?: string
+            startupTime?: number
             data: string
           }>).detail
           const binding = useAppStore.getState().cliBindingBySessionId[session.id]
-          if (binding?.terminalId && terminalId && binding.terminalId !== terminalId) return
+          if (!cliOutputMatchesBinding(binding, terminalId ?? '', startupTime)) return
           const sessionMatch = sessionId === session.id
           const sourceChatMatch = sourceChatId === session.id
           const terminalMatch = Boolean(binding?.terminalId) && Boolean(terminalId) && binding?.terminalId === terminalId
@@ -342,12 +344,16 @@ export function CLIView({ session }: CLIViewProps) {
           }
 
           if (data) {
+            const currentBinding = useAppStore.getState().cliBindingBySessionId[session.id]
+            if (currentBinding?.terminalId === returnedTerminalId && currentBinding.startupTime !== undefined &&
+                (data.startupTime === undefined || currentBinding.startupTime > data.startupTime)) return
             const running = Boolean(data.running)
             retryCopilotAfterCompatibilityCheck(data.lastError ?? '')
             const lifecycleState = normalizeCliLifecycleState(data.lifecycleState, running, data.turnState)
             const processing = cliLifecycleIsProcessing(lifecycleState)
           setCliBinding(session.id, {
             terminalId: data.terminalId ?? cliBinding?.terminalId ?? '',
+            startupTime: data.startupTime,
             boundChatId: data.sourceChatId ?? session.id,
             running,
             lifecycleState,

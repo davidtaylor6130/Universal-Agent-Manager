@@ -418,7 +418,7 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 	terminal.native_identity_deferred_input.clear();
 	terminal.native_session_discovery_ambiguous = false;
 	terminal.input_ready = false;
-	terminal.startup_time_s = 0.0;
+	// Retain the launch identity for final output; the next launch assigns a new timestamp.
 	MarkCliTerminalStopped(terminal);
 	terminal.last_output_time_s = 0.0;
 	terminal.idle_interaction_started_time_s = 0.0;

@@ -193,6 +193,18 @@ namespace
 		return chat_order;
 	}
 
+	/// <summary>Publish launch ownership before output, independently of transcript throttling.</summary>
+	bool CliLaunchIdentityChanged(const nlohmann::json& previous, const nlohmann::json& current)
+	{
+		const nlohmann::json::const_iterator before = previous.find("cliTerminal");
+		const nlohmann::json::const_iterator after = current.find("cliTerminal");
+		if (before == previous.end() || after == current.end())
+			return before != previous.end() || after != current.end();
+		if (!before->is_object() || !after->is_object()) return *before != *after;
+		return before->value("terminalId", nlohmann::json()) != after->value("terminalId", nlohmann::json()) ||
+		    before->value("startupTime", nlohmann::json()) != after->value("startupTime", nlohmann::json());
+	}
+
 	ChatPatchDiff BuildChatPatchDiff(const uam::AppState& app, const nlohmann::json& fingerprint_state, const std::string& selected_chat_id)
 	{
 		ChatPatchDiff diff;
@@ -220,7 +232,9 @@ namespace
 			{
 				const auto now = std::chrono::steady_clock::now();
 				const auto last_summary_push_it = g_last_summary_push_time_by_chat_id.find(chat_id);
-				const bool summary_throttled = chat_id == selected_chat_id &&
+				const bool launch_changed = previous_chat_it == g_last_pushed_chat_summaries_by_chat_id.end() ||
+				    CliLaunchIdentityChanged(previous_chat_it->second, chat);
+				const bool summary_throttled = !launch_changed && chat_id == selected_chat_id &&
 				                               !ChatSummaryHasPendingInteraction(chat) &&
 				                               last_summary_push_it != g_last_summary_push_time_by_chat_id.end() &&
 				                               now - last_summary_push_it->second < kSelectedChatSummaryMinPushInterval;
@@ -443,12 +457,13 @@ namespace uam
 		PostPush(browser, DumpFrontendJson(msg));
 	}
 
-	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, const std::string& raw_bytes)
+	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, double startup_time_s, const std::string& raw_bytes)
 	{
 		nlohmann::json msg = PushMessage(kPushTypeCliOutput);
 		msg["sessionId"] = frontend_chat_id;
 		msg["sourceChatId"] = source_chat_id;
 		msg["terminalId"] = terminal_id;
+		msg["startupTime"] = startup_time_s;
 		msg["data"] = uam::base64::Encode(raw_bytes);
 		PostPush(browser, DumpFrontendJson(msg));
 	}

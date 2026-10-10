@@ -130,6 +130,7 @@ export interface CppChat {
   messages?: CppMessage[]
   cliTerminal?: {
     terminalId?: string
+    startupTime?: number
     frontendChatId?: string
     sourceChatId?: string
     idleCountdownStartsAtMs?: number
@@ -789,6 +790,7 @@ export interface CppStatePatch {
 }
 
 export interface CliBinding {
+  startupTime?: number
   idleCountdownStartsAtMs?: number
   idleShutdownAtMs?: number
   idleShutdownTimeoutSeconds?: number
@@ -856,6 +858,7 @@ export interface AcpBinding {
 }
 
 export interface CliTranscript {
+  startupTime?: number
   terminalId: string
   content: string
 }
@@ -876,6 +879,7 @@ export type ParsedPushMessage =
       sessionId?: string
       sourceChatId?: string
       terminalId?: string
+      startupTime?: number
     }
   | { type: 'streamToken'; chatId: string; token: string; messageIndex?: number }
   | { type: 'streamDone'; chatId: string }

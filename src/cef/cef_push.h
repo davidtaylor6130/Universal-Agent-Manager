@@ -43,7 +43,7 @@ namespace uam
 	/// <summary>
 	/// Forwards raw PTY bytes (base64-encoded) from a CLI terminal session to xterm.js.
 	/// </summary>
-	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, const std::string& raw_bytes);
+	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, double startup_time_s, const std::string& raw_bytes);
 
 	/// <summary>
 	/// Delivers one native speech-recognition event to the prompt composer.

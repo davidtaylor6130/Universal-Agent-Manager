@@ -32,7 +32,18 @@ UAM_TEST(MemoryWorkerInputExcludesUnusedWarmPayloadsWithoutChangingPrompts)
 			UAM_ASSERT(message.attachments.empty());
 		}
 		for (const int start : {-1, 0, 3, 9})
+		{
 			UAM_ASSERT_EQ(MemoryService::BuildWorkerPromptForTests(input, start), MemoryService::BuildWorkerPromptForTests(chat, start));
+			const ChatSession scoped = MemoryService::CaptureWorkerInput(chat, start);
+			UAM_ASSERT_EQ(scoped.messages.size(), chat.messages.size());
+			UAM_ASSERT_EQ(MemoryService::BuildWorkerPromptForTests(scoped, start), MemoryService::BuildWorkerPromptForTests(chat, start));
+			const std::size_t first = static_cast<std::size_t>(start < 0 ? 1 : start);
+			for (std::size_t index = 0; index < scoped.messages.size(); ++index)
+			{
+				UAM_ASSERT(scoped.messages[index].role == chat.messages[index].role);
+				UAM_ASSERT_EQ(scoped.messages[index].content, index < first ? std::string{} : chat.messages[index].content);
+			}
+		}
 	}
 	chat.messages_loaded = false;
 	chat.persisted_message_count = 7;
@@ -128,7 +139,7 @@ UAM_TEST(MemoryEntryIndexPreservesBatchDeduplicationScopesAndFreshFiles)
 	const fs::path global = MemoryService::CategoryPath(MemoryService::GlobalMemoryRoot(app.data_root), "Lessons/User_Lessons");
 	fs::create_directories(local);
 	const fs::path legacy = local / "legacy-name.md";
-	UAM_ASSERT(uam::io::WriteTextFile(legacy, "# Existing convention\n\nOccurrence count: 3\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(legacy, "\x1a legacy preface\n\n# Existing convention\n\nOccurrence count: 3\n"));
 	nlohmann::json memories = nlohmann::json::array();
 	for (const std::string& title : {std::string("Existing convention"), std::string("EXISTING CONVENTION"), std::string(72, 'a') + " first", std::string(72, 'a') + " second", std::string("New convention"), std::string("NEW CONVENTION")})
 		memories.push_back({{"scope", "local"}, {"category", "Lessons/User_Lessons"}, {"title", title}, {"memory", "Use the recorded convention."}, {"evidence", "The user requested this convention."}, {"confidence", "high"}});
