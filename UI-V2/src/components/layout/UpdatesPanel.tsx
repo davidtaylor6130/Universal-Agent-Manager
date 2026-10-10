@@ -10,6 +10,8 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
   const [updatingAll, setUpdatingAll] = useState(false)
   const [blockedUpdate, setBlockedUpdate] = useState<(typeof monitor.updates)[number] | null>(null)
   const batchRef = useRef<AbortController | null>(null)
+  const pendingInstalls = useRef(new Set<string>())
+  const [pendingInstallIds, setPendingInstallIds] = useState<Set<string>>(() => new Set())
   useEffect(() => () => batchRef.current?.abort(), [])
 
   const checkFailure = monitor.error || checkError
@@ -43,9 +45,9 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               leadingIcon={<Download size={14} aria-hidden />}
               aria-label="Update everything"
               loading={updatingAll}
-              disabled={updatingAll || monitor.providerTaskRunning || Boolean(monitor.remoteHelperUpdatingId)}
+              disabled={updatingAll || pendingInstallIds.size > 0 || monitor.providerTaskRunning || Boolean(monitor.remoteHelperUpdatingId)}
               onClick={async () => {
-                if (batchRef.current) return
+                if (batchRef.current || pendingInstalls.current.size > 0) return
                 const batch = new AbortController()
                 batchRef.current = batch
                 setUpdatingAll(true)
@@ -247,14 +249,22 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                         variant="primary"
                         leadingIcon={<Download size={14} aria-hidden />}
                         aria-label={`Update ${update.name} to ${update.latestVersion}`}
-                        loading={providerRunning}
-                        disabled={updatingAll || providerRunning}
+                        loading={providerRunning || pendingInstallIds.has(update.id)}
+                        disabled={updatingAll || providerRunning || pendingInstallIds.has(update.id)}
                         onClick={async () => {
+                          if (pendingInstalls.current.has(update.id) || batchRef.current) return
                           setInstallError('')
                           if (providerState?.blockingChatIds?.length) { setBlockedUpdate(update); return }
-                          const result = await monitor.requestCliProviderUpdate(update.providerId!, update.latestVersion, ...update.executionHostId ? [update.executionHostId] : [])
-                          if (!result.ok) {
-                            setInstallError(`${update.name} update could not be started. ${result.error?.trim() || 'Check its installation and connection, then retry.'}`)
+                          pendingInstalls.current.add(update.id)
+                          setPendingInstallIds(new Set(pendingInstalls.current))
+                          try {
+                            const result = await monitor.requestCliProviderUpdate(update.providerId!, update.latestVersion, ...update.executionHostId ? [update.executionHostId] : [])
+                            if (!result.ok) setInstallError(`${update.name} update could not be started. ${result.error?.trim() || 'Check its installation and connection, then retry.'}`)
+                          } catch {
+                            setInstallError(`${update.name} update could not be started. Check its installation and connection, then retry.`)
+                          } finally {
+                            pendingInstalls.current.delete(update.id)
+                            setPendingInstallIds(new Set(pendingInstalls.current))
                           }
                         }}
                       >

@@ -101,6 +101,29 @@ describe('UpdatesPanel', () => {
     act(() => root.unmount())
   })
 
+  it.each([false, true])('admits one manual install while awaiting native admission and permits retry after failure (throws: %s)', async (throws) => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    let resolve!: (value: { ok: boolean; error?: string }) => void
+    let reject!: (reason: Error) => void
+    const request = vi.fn(() => new Promise<{ ok: boolean; error?: string }>((done, fail) => { resolve = done; reject = fail }))
+    const state = monitor({ requestCliProviderUpdate: request })
+    await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+    const install = host.querySelector<HTMLButtonElement>('[aria-label="Update Codex CLI to 0.130.0"]')!
+    act(() => { install.click(); install.click(); host.querySelector<HTMLButtonElement>('[aria-label="Update everything"]')!.click() })
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(state.installProviderUpdates).not.toHaveBeenCalled()
+    expect(install.disabled).toBe(true)
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="Update everything"]')!.disabled).toBe(true)
+    await act(async () => { if (throws) reject(new Error('Connection lost')); else resolve({ ok: false, error: 'Not admitted' }) })
+    expect(install.disabled).toBe(false)
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('update could not be started')
+    act(() => install.click())
+    expect(request).toHaveBeenCalledTimes(2)
+    await act(async () => resolve({ ok: true }))
+    act(() => root.unmount())
+  })
+
   it('surfaces a provider update that the backend refuses to start', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
