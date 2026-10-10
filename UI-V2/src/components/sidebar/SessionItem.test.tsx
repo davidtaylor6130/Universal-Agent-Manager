@@ -117,6 +117,43 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it.each([false, true])('updates provider icons through a switch and rollback despite an old runtime (activity=%s)', async (activityLayout) => {
+    useAppStore.setState({
+      providers: [
+        { id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '#fff', description: '' },
+        { id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', color: '#fff', description: '' },
+      ],
+      sessions: [{ ...makeSession(), providerId: 'opencode-cli' }],
+      acpBindingBySessionId: { 'chat-1': makeAcpBinding({ providerId: 'opencode-cli' }) },
+    })
+    const host = document.createElement('div'), root = createRoot(host)
+    function Row() {
+      const session = useAppStore(state => state.sessions.find(item => item.id === 'chat-1'))
+      return <SessionItem sessionId="chat-1" session={session} familySessionIds={['chat-1']} activityLayout={activityLayout} />
+    }
+    let reject!: () => void
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      if (JSON.parse(request).action === 'setChatProvider') reject = () => onFailure(500, 'Provider switch failed')
+      else onSuccess('{}')
+    }
+    try {
+      await act(async () => root.render(<Row />))
+      expect(host.querySelector('[aria-label="Provider: OpenCode"]')).toBeTruthy()
+      let switching!: Promise<boolean>
+      act(() => { switching = useAppStore.getState().setSessionProvider('chat-1', 'codex-cli') })
+      expect(host.querySelector('[aria-label="Provider: Codex"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Provider: OpenCode"]')).toBeNull()
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ providerId: 'opencode-cli', lastError: 'Old runner exited' }) } }))
+      expect(host.querySelector('[aria-label="Provider: Codex"]')).toBeTruthy()
+      await act(async () => { reject(); expect(await switching).toBe(false) })
+      expect(host.querySelector('[aria-label="Provider: OpenCode"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Provider: Codex"]')).toBeNull()
+      delete window.cefQuery
+      await act(async () => { expect(await useAppStore.getState().setSessionProvider('chat-1', 'codex-cli')).toBe(true) })
+      expect(host.querySelector('[aria-label="Provider: Codex"]')).toBeTruthy()
+    } finally { delete window.cefQuery; act(() => root.unmount()) }
+  })
+
   it('shows provider and shortened worktree context when enabled', () => {
     useAppStore.setState({
       sessions: [{
