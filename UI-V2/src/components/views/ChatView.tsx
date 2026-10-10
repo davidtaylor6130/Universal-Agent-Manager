@@ -928,6 +928,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     setWorkspaceFeedback(null)
     setWorkspaceActionBusy(false)
     setWorkspaceMenuOpen(false)
+    setSelectedRepositoryFile(null)
     setGoalArmNextMessage(false)
     setSlashMessage('')
     setPermissionMenuOpen(false)

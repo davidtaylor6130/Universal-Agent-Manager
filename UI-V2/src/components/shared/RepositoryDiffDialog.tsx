@@ -4,6 +4,7 @@ import { FileText, X } from 'lucide-react'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
 import { CopyTextButton } from '../chat/StatusHelpers'
 import { IconButton } from '../ui'
+import { UnifiedDiff } from './UnifiedDiff'
 import { getTopmostModal } from '../../utils/modalFocus'
 
 export function RepositoryDiffDialog({
@@ -45,7 +46,11 @@ export function RepositoryDiffDialog({
   }, [onClose])
 
   useEffect(() => {
-    if (file.binary) return
+    if (file.binary) {
+      setDiff('')
+      setError('')
+      return
+    }
     let cancelled = false
     setDiff(null)
     setError('')
@@ -59,7 +64,6 @@ export function RepositoryDiffDialog({
     return () => { cancelled = true }
   }, [chatId, comparisonRef, file.binary, file.path, getDiff, vcsType])
 
-  const lines = diff?.split('\n') ?? []
 
   return createPortal(
     <div
@@ -89,7 +93,7 @@ export function RepositoryDiffDialog({
           {diff && <CopyTextButton text={diff} label="Copy diff" title="Copy file diff" />}
           <IconButton icon={<X size={16} />} label="Close file changes" onClick={onClose} />
         </header>
-        <div className="min-h-0 flex-1 overflow-auto" style={{ background: 'var(--bg)' }}>
+        <div className="min-h-0 flex-1 flex flex-col overflow-auto" style={{ background: 'var(--bg)' }}>
           {file.binary ? (
             <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>Binary changes cannot be previewed.</div>
           ) : error ? (
@@ -99,32 +103,7 @@ export function RepositoryDiffDialog({
           ) : diff.length === 0 ? (
             <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>No textual diff is available for this file.</div>
           ) : (
-            <pre className="min-w-full w-max py-2 font-mono text-[11px] leading-5 sm:text-xs" aria-label={`Unified diff for ${file.path}`}>
-              {lines.map((line, index) => {
-                const added = line.startsWith('+') && !line.startsWith('+++')
-                const removed = line.startsWith('-') && !line.startsWith('---')
-                const hunk = line.startsWith('@@')
-                const header = line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')
-                return (
-                  <span
-                    key={`${index}-${line}`}
-                    className="block min-h-5 whitespace-pre px-3 sm:px-4"
-                    style={{
-                      color: added ? 'var(--green)' : removed ? 'var(--red)' : hunk ? 'var(--accent)' : header ? 'var(--text-2)' : 'var(--text)',
-                      background: added
-                        ? 'color-mix(in srgb, var(--green) 9%, transparent)'
-                        : removed
-                          ? 'color-mix(in srgb, var(--red) 9%, transparent)'
-                          : hunk
-                            ? 'var(--accent-dim)'
-                            : 'transparent',
-                    }}
-                  >
-                    {line || ' '}
-                  </span>
-                )
-              })}
-            </pre>
+            <UnifiedDiff key={`${chatId}:${file.path}:${comparisonRef ?? ""}`} diff={diff} path={file.path} />
           )}
         </div>
       </section>
