@@ -12,6 +12,63 @@
 
 namespace uam
 {
+	struct ManagedAgentTranscriptReadIdentity
+	{
+		std::string root_chat_id;
+		std::string root_provider_id;
+		std::string root_execution_host_id;
+		std::string root_native_session_id;
+		std::string root_workspace_directory;
+		std::string root_folder_id;
+		std::string root_native_identity_key;
+		std::optional<ExecutionHost> root_host;
+		std::string run_id;
+		std::string run_agent_id;
+		std::string run_provider_id;
+		std::string run_execution_capability;
+		std::string run_resumed_from_run_id;
+		std::string run_status;
+		std::string run_updated_at;
+		bool run_delivers_result = false;
+		bool run_result_delivered = false;
+		std::string transcript_chat_id;
+		std::string transcript_provider_id;
+		std::string transcript_execution_host_id;
+		std::string transcript_native_session_id;
+		std::string transcript_workspace_directory;
+		std::string transcript_folder_id;
+		std::string transcript_updated_at;
+		std::string transcript_native_identity_key;
+		std::size_t transcript_message_count = 0;
+		std::string transcript_messages_digest;
+		std::optional<ExecutionHost> transcript_host;
+	};
+
+	enum class ManagedAgentTranscriptReadStatus
+	{
+		Ready,
+		Unavailable,
+		Changed
+	};
+
+	struct ManagedAgentTranscriptReadResult
+	{
+		ManagedAgentTranscriptReadStatus status = ManagedAgentTranscriptReadStatus::Unavailable;
+		ChatSession transcript;
+		std::string error;
+	};
+
+	/// <summary>Capture authorization and cold transcript identity without copying message bodies.</summary>
+	std::optional<ManagedAgentTranscriptReadIdentity> CaptureManagedAgentTranscriptRead(
+	    const AppState& app, std::string_view root_chat_id, std::string_view transcript_chat_id);
+	/// <summary>Read a cold managed transcript on a worker without adopting it into live state.</summary>
+	ManagedAgentTranscriptReadResult LoadManagedAgentTranscriptDetached(
+	    const std::filesystem::path& data_root, const ManagedAgentTranscriptReadIdentity& expected);
+	/// <summary>Revalidate authorization and identity before returning a detached read result.</summary>
+	bool MatchesManagedAgentTranscriptRead(const AppState& app,
+	                                      const ManagedAgentTranscriptReadIdentity& expected,
+	                                      const ChatSession& loaded_transcript);
+
 	struct ToolCallContentIdentity
 	{
 		std::string chat_id;

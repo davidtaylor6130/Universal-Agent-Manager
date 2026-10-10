@@ -1022,8 +1022,9 @@ void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlo
 	cb->Success(nlohmann::json{{"id", imported.id}, {"description", imported.description}, {"mode", imported.mode}}.dump());
 }
 
-void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	using namespace uam::query_handler_async;
 	const std::string root_chat_id = payload.value("chatId", "");
 	const std::string transcript_chat_id = payload.value("transcriptChatId", "");
 	const ChatSession* root_chat = ChatDomainService().FindChatById(m_app, root_chat_id);
@@ -1040,27 +1041,99 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser>, con
 		cb->Failure(404, "Managed agent transcript is outside this chat or no longer exists.");
 		return;
 	}
-	std::optional<ChatSession> loaded_transcript;
 	ChatSession* transcript = ChatDomainService().FindChatById(m_app, transcript_chat_id);
-	if (transcript == nullptr)
+	if (m_workspaceDeletionPending && m_app.worktree_operation_chat_ids.contains(transcript_chat_id))
 	{
-		std::string warning;
-		loaded_transcript = ChatRepository::LoadLocalChat(m_app.data_root, transcript_chat_id, true, &warning);
-		if (!loaded_transcript.has_value())
-		{
-			cb->Failure(404, FailureDetailOrFallback(warning, "Managed agent transcript is unavailable."));
-			return;
-		}
-		transcript = &*loaded_transcript;
+		cb->Failure(409, "Managed agent transcript is being deleted.");
+		return;
 	}
-	if (transcript->agent_run_id != run->id)
+	if (transcript != nullptr && transcript->agent_run_id != run->id)
 	{
 		cb->Failure(404, "Managed agent transcript is unavailable.");
 		return;
 	}
+	if (transcript != nullptr && !transcript->messages_loaded)
+	{
+		const std::optional<uam::ManagedAgentTranscriptReadIdentity> identity =
+		    uam::CaptureManagedAgentTranscriptRead(m_app, root_chat_id, transcript_chat_id);
+		if (identity)
+		{
+			if (m_nativeHistoryRequests.contains(transcript_chat_id))
+			{
+				cb->Failure(409, "Managed agent transcript history is already loading.");
+				return;
+			}
+			const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
+			m_nativeHistoryRequests[transcript_chat_id] = request;
+			const std::filesystem::path data_root = m_app.data_root;
+			auto read_result = std::make_shared<uam::ManagedAgentTranscriptReadResult>();
+			auto detached_response = std::make_shared<nlohmann::json>();
+			if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+			    [data_root, identity = *identity, request, read_result, detached_response]()
+			    {
+				    if (request->stop_requested())
+					    return AsyncFailure(409, "A newer transcript history request was made.");
+				    *read_result = uam::LoadManagedAgentTranscriptDetached(data_root, identity);
+				    if (read_result->status == uam::ManagedAgentTranscriptReadStatus::Ready)
+				    {
+					    const nlohmann::json serialized = uam::StateSerializer::SerializeSession(read_result->transcript);
+					    *detached_response = {
+					        {"runId", identity.run_id}, {"agentId", identity.run_agent_id}, {"status", identity.run_status},
+					        {"providerId", identity.run_provider_id}, {"executionCapability", identity.run_execution_capability},
+					        {"resumedFromRunId", identity.run_resumed_from_run_id},
+					        {"title", read_result->transcript.title},
+					        {"messages", serialized.value("messages", nlohmann::json::array())}};
+					    return AsyncSuccess({});
+				    }
+				    return AsyncFailure(read_result->status == uam::ManagedAgentTranscriptReadStatus::Unavailable ? 404 : 409,
+				        uam::strings::NonEmptyOrFallback(read_result->error, "Managed agent transcript is unavailable."));
+			    },
+		    [this, identity = *identity, request, read_result, detached_response, transcript_chat_id](AsyncCefResult& response)
+			    {
+				    const auto pending = m_nativeHistoryRequests.find(transcript_chat_id);
+				    if (pending == m_nativeHistoryRequests.end() || pending->second != request)
+				    {
+					    response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
+					    return;
+				    }
+				    m_nativeHistoryRequests.erase(pending);
+				    if (!response.ok) return;
+				    if (!uam::MatchesManagedAgentTranscriptRead(m_app, identity, read_result->transcript))
+				    {
+					    response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
+					    return;
+				    }
+				    response = AsyncSuccess(std::move(*detached_response));
+			    }))
+			{
+				const auto pending = m_nativeHistoryRequests.find(transcript_chat_id);
+				if (pending != m_nativeHistoryRequests.end() && pending->second == request)
+					m_nativeHistoryRequests.erase(pending);
+				return;
+			}
+			return;
+		}
+		cb->Failure(409, "Managed agent transcript is active or changed. Retry after it settles.");
+		return;
+	}
 	std::string hydrate_warning;
-	if (!transcript->messages_loaded &&
-	    !ChatRepository::HydrateChatMessages(m_app.data_root, *transcript, &hydrate_warning))
+	std::optional<ChatSession> loaded_transcript;
+	if (transcript == nullptr)
+	{
+		loaded_transcript = ChatRepository::LoadLocalChat(m_app.data_root, transcript_chat_id, true, &hydrate_warning);
+		if (!loaded_transcript)
+		{
+			cb->Failure(404, FailureDetailOrFallback(hydrate_warning, "Managed agent transcript is unavailable."));
+			return;
+		}
+		transcript = &*loaded_transcript;
+		if (transcript->agent_run_id != run->id)
+		{
+			cb->Failure(404, "Managed agent transcript is unavailable.");
+			return;
+		}
+	}
+	if (!transcript->messages_loaded && !ChatRepository::HydrateChatMessages(m_app.data_root, *transcript, &hydrate_warning))
 	{
 		cb->Failure(500, FailureDetailOrFallback(hydrate_warning, "Failed to load the managed agent transcript."));
 		return;

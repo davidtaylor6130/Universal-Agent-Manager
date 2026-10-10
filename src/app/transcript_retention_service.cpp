@@ -1,13 +1,184 @@
 #include "transcript_retention_service.h"
 #include "app/chat_domain_service.h"
+#include "app/runtime_orchestration_internal.h"
 #include "app/uam_control_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/native_chat_identity.h"
+#include "common/config/execution_host_config.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/utils/string_utils.h"
 #include <algorithm>
 
 namespace uam
 {
+	namespace
+	{
+		bool IsTerminalManagedRun(std::string_view status)
+		{
+			return status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted";
+		}
+
+		std::optional<ExecutionHost> CaptureTranscriptHost(const AppState& app, std::string_view host_id)
+		{
+			const std::string normalized = uam::strings::NonEmptyOrFallback(uam::strings::Trim(host_id), "local");
+			if (normalized == "local") return std::nullopt;
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, normalized);
+			if (host == nullptr) return std::nullopt;
+			return *host;
+		}
+
+		bool HostStillMatches(const AppState& app, const std::optional<ExecutionHost>& expected,
+		                      std::string_view host_id)
+		{
+			const std::string normalized = uam::strings::NonEmptyOrFallback(uam::strings::Trim(host_id), "local");
+			if (normalized == "local") return !expected.has_value();
+			if (!expected) return false;
+			const ExecutionHost* current = uam::execution_hosts::Find(app.settings.execution_hosts, normalized);
+			return current != nullptr && uam::execution_hosts::SameConnection(*current, *expected);
+		}
+
+		void CaptureTranscriptChatIdentity(const AppState& app, ManagedAgentTranscriptReadIdentity& identity, const ChatSession& chat)
+		{
+			identity.transcript_chat_id = chat.id;
+			identity.transcript_provider_id = chat.provider_id;
+			identity.transcript_execution_host_id = chat.execution_host_id;
+			identity.transcript_native_session_id = chat.native_session_id;
+			identity.transcript_workspace_directory = chat.workspace_directory;
+			identity.transcript_folder_id = chat.folder_id;
+			identity.transcript_updated_at = chat.updated_at;
+			identity.transcript_native_identity_key = uam::chat_identity::NativeIdentityKeyForHistoryImport(chat);
+			identity.transcript_message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+			identity.transcript_messages_digest = chat.persisted_messages_digest;
+			identity.transcript_host = CaptureTranscriptHost(app, chat.execution_host_id);
+		}
+
+		bool TranscriptIdentityMatches(const ManagedAgentTranscriptReadIdentity& expected,
+		                               const ChatSession& chat)
+		{
+			const std::size_t message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+			return chat.id == expected.transcript_chat_id && chat.agent_run_id == expected.run_id &&
+			       chat.provider_id == expected.transcript_provider_id &&
+			       chat.execution_host_id == expected.transcript_execution_host_id &&
+			       chat.native_session_id == expected.transcript_native_session_id &&
+			       chat.workspace_directory == expected.transcript_workspace_directory &&
+			       chat.folder_id == expected.transcript_folder_id && chat.updated_at == expected.transcript_updated_at &&
+			       uam::chat_identity::NativeIdentityKeyForHistoryImport(chat) == expected.transcript_native_identity_key &&
+			       message_count == expected.transcript_message_count &&
+			       chat.persisted_messages_digest == expected.transcript_messages_digest;
+		}
+	}
+
+	std::optional<ManagedAgentTranscriptReadIdentity> CaptureManagedAgentTranscriptRead(
+	    const AppState& app, std::string_view root_chat_id, std::string_view transcript_chat_id)
+	{
+		const ChatSession* root = ChatDomainService().FindChatById(app, std::string(root_chat_id));
+		if (root == nullptr || !root->agent_run_id.empty()) return std::nullopt;
+		const auto run = std::ranges::find_if(app.agent_runs, [&](const AgentRun& candidate) {
+			return candidate.root_chat_id == root_chat_id && candidate.transcript_chat_id == transcript_chat_id;
+		});
+		if (run == app.agent_runs.end() || !IsTerminalManagedRun(run->status) ||
+		    (run->deliver_result_to_root_chat && !run->root_result_delivered)) return std::nullopt;
+
+		ManagedAgentTranscriptReadIdentity identity;
+		identity.root_chat_id = root->id;
+		identity.root_provider_id = root->provider_id;
+		identity.root_execution_host_id = root->execution_host_id;
+		identity.root_native_session_id = root->native_session_id;
+		identity.root_workspace_directory = root->workspace_directory;
+		identity.root_folder_id = root->folder_id;
+		identity.root_native_identity_key = uam::chat_identity::NativeIdentityKeyForHistoryImport(*root);
+		identity.root_host = CaptureTranscriptHost(app, root->execution_host_id);
+		if (uam::strings::NonEmptyOrFallback(uam::strings::Trim(root->execution_host_id), "local") != "local" && !identity.root_host)
+			return std::nullopt;
+		identity.run_id = run->id;
+		identity.run_agent_id = run->agent_id;
+		identity.run_provider_id = run->provider_id;
+		identity.run_execution_capability = run->execution_capability;
+		identity.run_resumed_from_run_id = run->resumed_from_run_id;
+		identity.run_status = run->status;
+		identity.run_updated_at = run->updated_at;
+		identity.run_delivers_result = run->deliver_result_to_root_chat;
+		identity.run_result_delivered = run->root_result_delivered;
+		identity.transcript_chat_id = std::string(transcript_chat_id);
+
+		const ChatSession* transcript = ChatDomainService().FindChatById(app, std::string(transcript_chat_id));
+		if (transcript == nullptr || transcript->agent_run_id != run->id || transcript->provider_id != run->provider_id ||
+		    transcript->messages_loaded ||
+		    uam::runtime_orch_impl::ChatNeedsTranscriptPreserved(app, *transcript) ||
+		    ChatHasActiveCliTerminal(app, transcript->id)) return std::nullopt;
+		CaptureTranscriptChatIdentity(app, identity, *transcript);
+		if (uam::strings::NonEmptyOrFallback(uam::strings::Trim(identity.transcript_execution_host_id), "local") != "local" && !identity.transcript_host)
+			return std::nullopt;
+		return identity;
+	}
+
+	ManagedAgentTranscriptReadResult LoadManagedAgentTranscriptDetached(
+	    const std::filesystem::path& data_root, const ManagedAgentTranscriptReadIdentity& expected)
+	{
+		ManagedAgentTranscriptReadResult result;
+		std::string warning;
+		std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(data_root, expected.transcript_chat_id, true, &warning);
+		if (!loaded)
+		{
+			result.status = ManagedAgentTranscriptReadStatus::Unavailable;
+			result.error = uam::strings::NonEmptyOrFallback(warning, "Managed agent transcript is unavailable.");
+			return result;
+		}
+		if (!loaded->messages_loaded || !TranscriptIdentityMatches(expected, *loaded))
+		{
+			result.status = ManagedAgentTranscriptReadStatus::Changed;
+			result.error = "Managed agent transcript changed while it was loading.";
+			return result;
+		}
+		result.status = ManagedAgentTranscriptReadStatus::Ready;
+		result.transcript = std::move(*loaded);
+		return result;
+	}
+
+	bool MatchesManagedAgentTranscriptRead(const AppState& app,
+	                                      const ManagedAgentTranscriptReadIdentity& expected,
+	                                      const ChatSession& loaded_transcript)
+	{
+		const ChatSession* root = ChatDomainService().FindChatById(app, expected.root_chat_id);
+		if (root == nullptr || !root->agent_run_id.empty() || root->provider_id != expected.root_provider_id ||
+		    root->execution_host_id != expected.root_execution_host_id ||
+		    root->native_session_id != expected.root_native_session_id ||
+		    root->workspace_directory != expected.root_workspace_directory || root->folder_id != expected.root_folder_id ||
+		    uam::chat_identity::NativeIdentityKeyForHistoryImport(*root) != expected.root_native_identity_key ||
+		    !HostStillMatches(app, expected.root_host, root->execution_host_id)) return false;
+
+		const auto run = std::ranges::find_if(app.agent_runs, [&](const AgentRun& candidate) {
+			return candidate.id == expected.run_id && candidate.root_chat_id == expected.root_chat_id &&
+			       candidate.transcript_chat_id == expected.transcript_chat_id;
+		});
+		if (run == app.agent_runs.end() || run->agent_id != expected.run_agent_id ||
+		    run->provider_id != expected.run_provider_id || run->execution_capability != expected.run_execution_capability ||
+		    run->resumed_from_run_id != expected.run_resumed_from_run_id ||
+		    run->status != expected.run_status || run->updated_at != expected.run_updated_at ||
+		    run->deliver_result_to_root_chat != expected.run_delivers_result ||
+		    run->root_result_delivered != expected.run_result_delivered || !IsTerminalManagedRun(run->status) ||
+		    (run->deliver_result_to_root_chat && !run->root_result_delivered)) return false;
+
+		const ChatSession* current = ChatDomainService().FindChatById(app, expected.transcript_chat_id);
+		if (current != nullptr)
+		{
+			if (current->messages_loaded ||
+			    uam::runtime_orch_impl::ChatNeedsTranscriptPreserved(app, *current) ||
+			    ChatHasActiveCliTerminal(app, current->id) ||
+			    !TranscriptIdentityMatches(expected, *current)) return false;
+		}
+		else return false;
+		return loaded_transcript.id == expected.transcript_chat_id &&
+		       loaded_transcript.agent_run_id == expected.run_id &&
+		       loaded_transcript.provider_id == expected.transcript_provider_id &&
+		       loaded_transcript.execution_host_id == expected.transcript_execution_host_id &&
+		       loaded_transcript.workspace_directory == expected.transcript_workspace_directory &&
+		       loaded_transcript.folder_id == expected.transcript_folder_id &&
+		       HostStillMatches(app, expected.transcript_host, loaded_transcript.execution_host_id) &&
+		       TranscriptIdentityMatches(expected, loaded_transcript);
+	}
+
 	ToolCallContentIdentity CaptureToolCallContentIdentity(
 	    const ChatSession& chat, std::optional<std::size_t> message_index)
 	{
