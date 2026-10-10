@@ -3281,6 +3281,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.model_discovery_only = false;
 		session.processing = false;
 		session.manual_compaction_pending = false;
+		session.context_compaction_in_progress = false;
 		session.recovering_remote_turn = false;
 		session.recovering_remote_process = false;
 		session.turn_checkpoint_eligible = false;

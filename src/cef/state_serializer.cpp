@@ -1097,6 +1097,7 @@ namespace uam
 			acp_json["threadId"] = session->codex_thread_id.empty() ? session->session_id : session->codex_thread_id;
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing || (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held");
+			acp_json["compacting"] = session->running && (session->manual_compaction_pending || session->context_compaction_in_progress);
 			acp_json["backgroundTaskCount"] = session->claude_live_background_task_ids.size() + ManagedChildRunCountForChat(app, chat);
 			if (AcpSessionCanIdleShutdown(*session, chat))
 				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);

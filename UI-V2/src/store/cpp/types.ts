@@ -402,6 +402,7 @@ export interface CppAcpSession {
   threadId?: string
   running?: boolean
   processing?: boolean
+  compacting?: boolean
   backgroundTaskCount?: number
   readySinceLastSelect?: boolean
   attentionKind?: AcpAttentionKind | null
@@ -809,6 +810,7 @@ export interface AcpBinding {
   running: boolean
   lifecycleState: AcpLifecycleState
   processing: boolean
+  compacting?: boolean
   backgroundTaskCount?: number
   readySinceLastSelect: boolean
   attentionKind?: AcpAttentionKind | null

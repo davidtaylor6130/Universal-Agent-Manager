@@ -541,6 +541,11 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 		const nlohmann::json notification = uam::claude::TaskNotification(ClaudeContentTextFromMessage(JsonObjectValue(message, "message")));
 		if (notification.is_object() && HandleClaudeTaskEvent(app, session, chat, notification)) return;
 	}
+	if (type == "system" && JsonDiagnosticStringValue(message, "subtype") == "status")
+	{
+		session.context_compaction_in_progress = JsonDiagnosticStringValue(message, "status") == "compacting";
+		return;
+	}
 	if (type == uam::acp_claude_stream::kMessageTypeSystem && JsonDiagnosticStringValue(message, "subtype") == "compact_boundary")
 	{
 		AppendContextCompactionEvent(app, session, chat, JsonDiagnosticStringValue(message, "summary"), JsonDiagnosticStringValue(message, "uuid"));
@@ -667,6 +672,7 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 
 	if (type == uam::acp_claude_stream::kMessageTypeResult)
 	{
+		session.context_compaction_in_progress = false;
 		HandleClaudeResult(app, session, chat, message, browser);
 		return;
 	}

@@ -329,6 +329,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.mcp_sse_supported = false;
 	session.processing = false;
 	session.manual_compaction_pending = false;
+	session.context_compaction_in_progress = false;
 	session.recovering_remote_turn = false;
 	session.restart_marker_save_pending = false;
 	session.restart_after_remote_stop_cleanup = false;
@@ -1258,6 +1259,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			session.goal_review_turn = false;
 			session.processing = false;
 			session.manual_compaction_pending = false;
+			session.context_compaction_in_progress = false;
 			session.lifecycle_state = session.running ? kAcpLifecycleReady : kAcpLifecycleStopped;
 			return true;
 		}
@@ -1732,6 +1734,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.prompt_request_id = 0;
 	session.processing = false;
 	session.manual_compaction_pending = false;
+	session.context_compaction_in_progress = false;
 	session.recovering_remote_turn = false;
 	session.cancel_requested = false;
 	session.cancel_requested_time_s = 0.0;

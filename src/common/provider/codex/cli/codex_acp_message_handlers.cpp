@@ -784,6 +784,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			});
 			session.pending_request_methods.erase(session.cancel_request_id);
 			session.manual_compaction_pending = false;
+			session.context_compaction_in_progress = false;
 			session.processing = false;
 			session.inactivity_timeout_pending = false;
 			session.cancel_requested_time_s = 0.0;
@@ -947,6 +948,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	}
 	if (method == "thread/compacted")
 	{
+		session.context_compaction_in_progress = false;
 		const std::string prefix = "codex-compaction:" + JsonDiagnosticStringValue(params, "turnId") + ":";
 		if (std::ranges::none_of(session.turn_events, [&prefix](const AcpTurnEventState& event)
 		    { return event.type == "context_compaction" && event.request_id_json.starts_with(prefix); }))
@@ -958,6 +960,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		const nlohmann::json item = JsonObjectValue(params, "item");
 		if (JsonDiagnosticStringValue(item, "type") == "contextCompaction")
 		{
+			session.context_compaction_in_progress = method == "item/started";
 			if (method == "item/completed")
 			{
 				const std::string prefix = "codex-compaction:" + JsonDiagnosticStringValue(params, "turnId") + ":";

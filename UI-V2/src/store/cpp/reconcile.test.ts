@@ -389,6 +389,19 @@ describe('remote recovery snapshot reconciliation', () => {
   })
 })
 
+describe('native compaction lifecycle', () => {
+  it('propagates start and completion without changing turn identity and rejects stale stopped state', () => {
+    const chat = { id: 'compacting', acpSession: sanitizeCppAcpSession({ running: true, processing: true, lifecycleState: 'processing', compacting: true }) } as CppChat
+    const active = acpBindingFromCppChat(chat, undefined)
+    expect(active.compacting).toBe(true)
+    const completed = acpBindingFromCppChat({ ...chat, acpSession: { ...chat.acpSession, compacting: false } }, active)
+    expect(completed).not.toBe(active)
+    expect(completed.compacting).toBe(false)
+    expect(acpBindingFromCppChat({ ...chat, acpSession: { ...chat.acpSession, running: false, processing: false, lifecycleState: 'stopped' } }, active).compacting).toBe(false)
+    expect(sanitizeCppAcpSession({ compacting: 'true' })?.compacting).toBe(false)
+  })
+})
+
  it('propagates native child activity through sanitization and immutable binding reconciliation', () => {
   const chat = { id: 'child-parent', acpSession: sanitizeCppAcpSession({ lifecycleState: 'ready', running: true, processing: false, backgroundTaskCount: 1 }) } as CppChat
   const working = acpBindingFromCppChat(chat, undefined)

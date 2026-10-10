@@ -10,6 +10,7 @@ namespace uam::acp_detail
 
 void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity)
 {
+	session.context_compaction_in_progress = false;
 	for (AcpTurnEventState& event : session.turn_events)
 	{
 		if (event.type == "context_compaction" && !identity.empty() && event.request_id_json == identity)

@@ -11513,11 +11513,15 @@ UAM_TEST(ClaudeCompactionRetainsSharedSeparatorAndSummary)
 	session.provider_id = chat.provider_id;
 	session.protocol_kind = "claude-code-stream-json";
 	session.processing = true;
+	const nlohmann::json started = {{"type", "system"}, {"subtype", "status"}, {"status", "compacting"}};
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, started.dump()));
+	UAM_ASSERT(session.context_compaction_in_progress);
 	const nlohmann::json boundary = {{"type", "system"}, {"subtype", "compact_boundary"}, {"uuid", "boundary"}, {"summary", "Remember the workspace."}};
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, boundary.dump()));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, boundary.dump()));
 	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT(!session.context_compaction_in_progress);
 	UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("Remember the workspace."));
 	UAM_ASSERT(chat.messages.back().content.empty());
 }
@@ -11540,9 +11544,14 @@ UAM_TEST(CodexCompactionNotificationsDeduplicateEnrichAndPreserveDistinctEvents)
 	{
 		return nlohmann::json{{"method", "item/completed"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"item", {{"type", "contextCompaction"}, {"id", id}, {"summary", summary}}}}}};
 	};
+	const nlohmann::json started = {{"method", "item/started"}, {"params", {{"threadId", "thread-1"}, {"turnId", "turn-1"}, {"item", {{"type", "contextCompaction"}, {"id", "first"}}}}}};
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, started.dump()));
+	UAM_ASSERT(session.context_compaction_in_progress);
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, legacy.dump()));
+	UAM_ASSERT(!session.context_compaction_in_progress);
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, completed("first", "").dump()));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, legacy.dump()));
+	UAM_ASSERT(!session.context_compaction_in_progress);
 	UAM_ASSERT_EQ(session.turn_events.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, completed("first", "Remember the chosen workspace.").dump()));
 	UAM_ASSERT_EQ(session.turn_events.size(), static_cast<std::size_t>(1));

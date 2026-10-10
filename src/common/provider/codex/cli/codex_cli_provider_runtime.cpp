@@ -425,6 +425,7 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 	if (failure.method == uam::acp_methods::kThreadCompactStart)
 	{
 		session.manual_compaction_pending = false;
+		session.context_compaction_in_progress = false;
 		session.processing = false;
 		session.lifecycle_state = kAcpLifecycleReady;
 		session.last_error = formatted_error;
