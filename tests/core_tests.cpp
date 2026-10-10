@@ -12595,6 +12595,28 @@ UAM_TEST(RemoteCliElevationRefusalNeverFallsBackAndKeepsNpmPrefix)
 }
 #endif
 
+UAM_TEST(RemoteDisabledStartupErrorDoesNotBlockUnrelatedHostOptions)
+{
+	for (const std::string status : {"disabled", "error", "pending", "enabled"})
+	for (const bool previous_enabled : {false, true})
+	for (const bool enabled : {false, true})
+	{
+		ExecutionHost previous;
+		previous.startup_enabled = previous_enabled;
+		previous.startup_status = status;
+		ExecutionHost current = previous;
+		current.startup_enabled = enabled;
+		current.cli_updates_as_admin = true;
+		current.instruction_file = "/home/david/AGENTS.md";
+		const bool configure = uam::execution_hosts::NeedsStartupConfiguration(current, previous);
+		UAM_ASSERT_EQ(configure, enabled != previous_enabled || enabled || status == "pending");
+		// Disabled errors remain visible; unrelated choices require no SSH startup operation.
+		current.startup_status = configure ? "pending" : previous.startup_status;
+		UAM_ASSERT(current.cli_updates_as_admin);
+		if (!configure) UAM_ASSERT_EQ(current.startup_status, status);
+	}
+}
+
 UAM_TEST(RemoteStartupFailurePreservesSavedCliElevationAndInstructions)
 {
 	for (const bool previous_enabled : {false, true})

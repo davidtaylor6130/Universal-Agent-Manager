@@ -487,8 +487,8 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 		return;
 	}
 	const ExecutionHost observed = *host;
-	const bool configure_startup = updated.startup_enabled != observed.startup_enabled || updated.startup_enabled || observed.startup_status == "pending" || observed.startup_status == "error";
-	updated.startup_status = configure_startup ? "pending" : "disabled";
+	const bool configure_startup = uam::execution_hosts::NeedsStartupConfiguration(updated, observed);
+	updated.startup_status = configure_startup ? "pending" : observed.startup_status;
 	const AppSettings previous = m_app.settings;
 	*host = updated;
 	if (!PersistenceCoordinator().SaveSettings(m_app))

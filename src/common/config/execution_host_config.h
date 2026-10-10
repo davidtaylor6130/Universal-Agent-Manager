@@ -24,6 +24,13 @@ namespace uam::execution_hosts
 		return {};
 	}
 
+	/// <summary>Determines whether saving host options must also configure remote startup.</summary>
+	inline bool NeedsStartupConfiguration(const ExecutionHost& current, const ExecutionHost& previous)
+	{
+		return current.startup_enabled != previous.startup_enabled || current.startup_enabled ||
+		       previous.startup_status == "pending";
+	}
+
 	/// <summary>Applies startup confirmation after the host's local options were saved.</summary>
 	inline void ApplyStartupConfigurationResult(ExecutionHost& current, const ExecutionHost& previous, bool succeeded)
 	{
