@@ -11584,7 +11584,8 @@ UAM_TEST(CodexUamControlUsesVersionGatedPerThreadConfigLocallyAndRemotely)
 		chat.provider_id = "codex-cli";
 		chat.workspace_directory = temp.root.string();
 		chat.execution_host_id = remote ? "lab" : "local";
-		chat.uam_control_enabled = true;
+		chat.uam_control_enabled = false;
+		app.settings.central_provider_configuration.mcp_overrides.push_back({chat.provider_id, chat.execution_host_id, "uam-mcp", true});
 		app.chats.push_back(std::move(chat));
 		std::string error;
 		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
@@ -11624,6 +11625,7 @@ UAM_TEST(CodexUamControlUsesVersionGatedPerThreadConfigLocallyAndRemotely)
 		}
 		const nlohmann::json request = nlohmann::json::parse(output.substr(0, output.find('\n')));
 		UAM_ASSERT_EQ(request.value("method", ""), std::string("thread/start"));
+		UAM_ASSERT(!app.chats.front().uam_control_enabled);
 		const nlohmann::json& server = request["params"]["config"]["mcp_servers.uam-control"];
 		UAM_ASSERT(server.value("required", false));
 		UAM_ASSERT(!session.uam_control_capability_id.empty());

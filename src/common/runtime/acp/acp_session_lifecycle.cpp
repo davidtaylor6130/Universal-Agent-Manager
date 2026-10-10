@@ -45,7 +45,7 @@ namespace
 	                                    std::string_view method,
 	                                    nlohmann::json* provider_request)
 	{
-		if (!chat.uam_control_enabled) return true;
+		if (!UamControlService::EnabledForChat(app.settings, chat)) return true;
 		const int runner_protocol_version = execution_host.runner_protocol_version == 0 &&
 		                                    (session.recovering_remote_turn || session.recovering_remote_process)
 		                                        ? 2
@@ -153,7 +153,7 @@ namespace
 		if (method == uam::acp_methods::kThreadStart || method == uam::acp_methods::kThreadResume)
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
-			if (chat == nullptr || !chat->uam_control_enabled) return true;
+			if (chat == nullptr || !UamControlService::EnabledForChat(app.settings, *chat)) return true;
 			// The installed 0.159.2 schema verifies per-thread config on start and resume.
 			if (!CliProviderVersionAtLeast(session.agent_version, "0.159.2"))
 			{
@@ -779,7 +779,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	nlohmann::json launch_control_servers = nlohmann::json::array();
 	AppSettings configuration_settings = app.settings;
-	if (!session.model_discovery_only && (provider.id == uam::provider_ids::kClaudeCli || provider.id == uam::provider_ids::kAntigravityCli) && chat.uam_control_enabled)
+	if (!session.model_discovery_only && (provider.id == uam::provider_ids::kClaudeCli || provider.id == uam::provider_ids::kAntigravityCli) && UamControlService::EnabledForChat(app.settings, chat))
 	{
 		nlohmann::json control_request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
 		if (!UamControlService::AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, control_request, &startup_error))
