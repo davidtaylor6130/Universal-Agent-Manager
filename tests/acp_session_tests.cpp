@@ -3998,6 +3998,7 @@ UAM_TEST(CodexAppServerPersistsOrderedBlocksAcrossReload)
 	UAM_ASSERT(assistant.blocks[3].text.find("Second thought.") != std::string::npos);
 	UAM_ASSERT_EQ(assistant.blocks[4].type, std::string("plan"));
 
+	uam::FlushPendingChatSaves(app, true);
 	const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root);
 	UAM_ASSERT_EQ(loaded.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(loaded.front().messages.size(), static_cast<std::size_t>(1));
@@ -12676,5 +12677,60 @@ UAM_TEST(ClaudeImagePreparationCancelAndStopReleaseSessionLease)
 		std::string error;
 		UAM_ASSERT(stop ? uam::StopAcpSession(app, chat.id) : uam::CancelAcpTurn(app, chat.id, &error));
 		UAM_ASSERT(state->cancel.stop_requested()); UAM_ASSERT(app.acp_sessions.front()->claude_input_preparation == nullptr);
+	}
+}
+
+UAM_TEST(CodexStreamingPlanAndToolEventsDeferTranscriptWritesUntilSaveBarrier)
+{
+	for (const std::string method : {"item/plan/delta", "turn/plan/updated", "item/started", "item/completed"})
+	{
+		TempDir temp("uam-codex-deferred-events");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "deferred-codex";
+		chat.provider_id = "codex-cli";
+		chat.messages.push_back({MessageRole::User, "Inspect the project and report the result."});
+		app.chats.push_back(std::move(chat));
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		const fs::path file = AppPaths::UamChatFilePath(app.data_root, app.chats.front().id);
+		const std::string baseline = ReadFile(file);
+		const std::optional<std::string> baseline_revision = ChatRepository::ChatStorageRevision(app.data_root, app.chats.front().id);
+		UAM_ASSERT(baseline_revision.has_value());
+		uam::AcpSessionState session;
+		session.chat_id = app.chats.front().id;
+		session.provider_id = "codex-cli";
+		session.protocol_kind = "codex-app-server";
+		session.running = true;
+		session.session_ready = true;
+		session.processing = true;
+		nlohmann::json params;
+		if (method == "item/plan/delta") params = {{"itemId", "plan-1"}, {"delta", "Inspect the project."}};
+		else if (method == "turn/plan/updated") params = {{"explanation", "Inspect the project."}, {"plan", {{{"step", "Inspect"}, {"status", "inProgress"}}}}};
+		else params = {{"item", {{"id", "command-1"}, {"type", "commandExecution"}, {"command", "fixture-command"}, {"status", method == "item/started" ? "inProgress" : "completed"}, {"aggregatedOutput", "Fixture output."}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+		    nlohmann::json{{"jsonrpc", "2.0"}, {"method", method}, {"params", params}}.dump()));
+		if (ReadFile(file) != baseline || ChatRepository::ChatStorageRevision(app.data_root, app.chats.front().id) != baseline_revision) throw std::runtime_error("Synchronous transcript write for " + method);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
+		const std::vector<Message> expected = app.chats.front().messages;
+		if (method == "item/started" || method == "item/completed") UAM_ASSERT(!session.tool_calls.empty());
+		else UAM_ASSERT(expected.size() > 1);
+		uam::FlushPendingChatSaves(app, true);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+		UAM_ASSERT(restored.has_value());
+		UAM_ASSERT_EQ(restored->messages, expected);
+		UAM_ASSERT(ChatRepository::ChatStorageRevision(app.data_root, app.chats.front().id) != baseline_revision);
+		const std::string saved_activity = ReadFile(file);
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+		    R"({"jsonrpc":"2.0","method":"item/plan/delta","params":{"itemId":"final-plan","delta":"Final verification."}})"));
+		UAM_ASSERT_EQ(ReadFile(file), saved_activity);
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
+		    R"({"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}})"));
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		const std::optional<ChatSession> final = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+		UAM_ASSERT(final.has_value());
+		UAM_ASSERT_EQ(final->messages, app.chats.front().messages);
+		UAM_ASSERT(ReadFile(file) != saved_activity);
 	}
 }

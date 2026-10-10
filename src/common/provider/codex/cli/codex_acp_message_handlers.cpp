@@ -917,7 +917,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		entry->content += JsonDiagnosticStringValue(params, "delta");
 		AppendPlanTurnEventIfNeeded(session);
 		(void)SyncAcpPlanToAssistantMessage(chat, session, true);
-		SaveChatQuietly(app, chat);
+		ScheduleChatSave(app, chat, 0.0);
 		return;
 	}
 	if (method == uam::acp_methods::kTurnPlanUpdated)
@@ -942,7 +942,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		AppendPlanTurnEventIfNeeded(session);
 		if (SyncAcpPlanToAssistantMessage(chat, session, true))
 		{
-			SaveChatQuietly(app, chat);
+			ScheduleChatSave(app, chat, 0.0);
 		}
 		return;
 	}
@@ -972,7 +972,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			return;
 		}
 		HandleCodexToolItem(session, chat, item, method == uam::acp_methods::kItemCompleted);
-		SaveChatQuietly(app, chat);
+		ScheduleChatSave(app, chat, 0.0);
 		return;
 	}
 	if (uam::acp_methods::IsCodexToolOutputDeltaMethod(method))
