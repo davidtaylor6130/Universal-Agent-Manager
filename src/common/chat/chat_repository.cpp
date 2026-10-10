@@ -1107,6 +1107,7 @@ namespace
 		std::vector<uam::AcpQueuedUserPromptState> prompts;
 		bool held = false;
 		std::size_t dispatched = 0;
+		std::optional<std::pair<int, std::string>> memory_progress;
 	};
 
 	std::optional<QueueJournal> ReadQueueJournal(const fs::path& path, bool& exists)
@@ -1137,6 +1138,14 @@ namespace
 		    !(dispatched >= 0 && dispatched <= prompts->array_value.size()) || dispatched != static_cast<std::size_t>(dispatched)) return std::nullopt;
 		journal.held = held->bool_value;
 		journal.dispatched = static_cast<std::size_t>(dispatched);
+		if (root->Find(kChatMemoryLastProcessedMessageCountField) != nullptr || root->Find(kChatMemoryLastProcessedAtField) != nullptr)
+		{
+			const double count = JsonNumberOrDefault(root->Find(kChatMemoryLastProcessedMessageCountField), -1);
+			const JsonValue* timestamp = root->Find(kChatMemoryLastProcessedAtField);
+			if (!(count >= 0 && count <= std::numeric_limits<int>::max()) || std::floor(count) != count ||
+			    timestamp == nullptr || timestamp->type != JsonValue::Type::String || timestamp->string_value.size() > 128) return std::nullopt;
+			journal.memory_progress = std::make_pair(static_cast<int>(count), timestamp->string_value);
+		}
 		std::size_t bytes = 0;
 		std::unordered_set<std::string> ids;
 		for (const JsonValue& value : prompts->array_value)
@@ -1167,6 +1176,8 @@ namespace
 		uam::json::SetValue(payload, kChatAcpQueuedPromptsField, std::move(prompts));
 		uam::json::SetBool(payload, kChatAcpQueueHeldField, chat.acp_queue_held);
 		uam::json::SetNumber(payload, kChatAcpDispatchedQueuedPromptCountField, static_cast<double>(chat.acp_dispatched_queued_prompt_count));
+		uam::json::SetNumber(payload, kChatMemoryLastProcessedMessageCountField, chat.memory_last_processed_message_count);
+		uam::json::SetString(payload, kChatMemoryLastProcessedAtField, chat.memory_last_processed_at);
 		return SerializeJson(payload, kMaxChatJsonBytes);
 	}
 
@@ -1177,6 +1188,8 @@ namespace
 		uam::json::SetValue(payload, kChatAcpQueuedPromptsField, prompts != nullptr ? *prompts : uam::json::Array());
 		uam::json::SetBool(payload, kChatAcpQueueHeldField, JsonBoolOrDefault(root.Find(kChatAcpQueueHeldField), false));
 		uam::json::SetNumber(payload, kChatAcpDispatchedQueuedPromptCountField, JsonNumberOrDefault(root.Find(kChatAcpDispatchedQueuedPromptCountField), 0));
+		uam::json::SetNumber(payload, kChatMemoryLastProcessedMessageCountField, JsonNumberOrDefault(root.Find(kChatMemoryLastProcessedMessageCountField), 0));
+		uam::json::SetString(payload, kChatMemoryLastProcessedAtField, JsonStringOrEmpty(root.Find(kChatMemoryLastProcessedAtField)));
 		return SerializeJson(payload, kMaxChatJsonBytes);
 	}
 
@@ -1220,6 +1233,11 @@ namespace
 			chat.acp_queue_held = journal->held;
 			chat.acp_dispatched_queued_prompt_count = journal->dispatched;
 			chat.acp_queue_storage_revision = journal->revision;
+			if (journal->memory_progress)
+			{
+				chat.memory_last_processed_message_count = journal->memory_progress->first;
+				chat.memory_last_processed_at = journal->memory_progress->second;
+			}
 			return;
 		}
 		if (journal && journal->owner == QueueOwner(root))
@@ -2360,6 +2378,12 @@ try
 		return false;
 	}
 	if (chat.acp_queue_full_save_revision != JsonStringOrEmpty(summary->Find(kQueueFullRevisionField))) return false;
+	if (chat.memory_last_processed_message_count > 0 && static_cast<std::size_t>(chat.memory_last_processed_message_count) >
+	    NonNegativeUintmaxFieldOrZero(summary->Find(kChatPersistedMessageCountField)))
+	{
+		if (full_save_required != nullptr) *full_save_required = true;
+		return false;
+	}
 	JsonValue record = uam::json::Object();
 	const std::string revision = uam::io::MakeTempWritePath(fs::path("queue")).filename().string();
 	uam::json::SetNumber(record, "version", 1);
@@ -2388,6 +2412,9 @@ try
 	uam::json::SetValue(record, kChatAcpQueuedPromptsField, std::move(prompts));
 	uam::json::SetBool(record, kChatAcpQueueHeldField, chat.acp_queue_held);
 	uam::json::SetNumber(record, kChatAcpDispatchedQueuedPromptCountField, static_cast<double>(chat.acp_dispatched_queued_prompt_count));
+	if (chat.memory_last_processed_message_count < 0 || chat.memory_last_processed_at.size() > 128) return false;
+	uam::json::SetNumber(record, kChatMemoryLastProcessedMessageCountField, chat.memory_last_processed_message_count);
+	uam::json::SetString(record, kChatMemoryLastProcessedAtField, chat.memory_last_processed_at);
 	const std::string encoded = SerializeJson(record, kMaxQueueJournalBytes);
 	if (!uam::paths::CreateDirectoriesNoThrow(queue_path.parent_path()) ||
 	    uam::paths::IsLinkOrReparsePointNoThrow(queue_path.parent_path()) ||

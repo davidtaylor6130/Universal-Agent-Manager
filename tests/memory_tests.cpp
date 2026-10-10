@@ -158,6 +158,8 @@ UAM_TEST(MemoryServiceRetriesDoNotApplyTheSameExtractionTwice)
 	const std::optional<ChatSession> preserved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
 	UAM_ASSERT(preserved && preserved->messages.size() == 1);
 	UAM_ASSERT_EQ(preserved->messages[0].content, chat.messages[0].content);
+	UAM_ASSERT(!ChatRepository::SaveChat(app.data_root, chat));
+	chat = *preserved;
 	chat.messages.push_back({MessageRole::User, "Remember it again.", "later"});
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
@@ -2041,4 +2043,47 @@ UAM_TEST(MemoryActivityCountsRejectChangedRootWithoutCopyingResidentHistory)
 	}
 	UAM_ASSERT(!app.memory_activity_refresh_task);
 	UAM_ASSERT_EQ(app.memory_activity.entry_count, 0);
+}
+
+UAM_TEST(MemoryProgressJournalPreservesTranscriptAndFreshReload)
+{
+	TempDir temp("uam-memory-progress-journal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "memory-progress";
+	chat.provider_id = "gemini-cli";
+	chat.created_at = "2026-10-10T12:00:00Z";
+	chat.updated_at = chat.created_at;
+	chat.memory_enabled = true;
+	chat.memory_level = "medium";
+	Message message{MessageRole::Assistant, "Remember the agreed workspace rules."};
+	message.thoughts.assign(1024 * 1024, 't');
+	chat.messages.push_back(std::move(message));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats.push_back(chat);
+	const std::optional<std::string> before = ChatRepository::ChatStorageRevision(app.data_root, chat.id);
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), {}, R"({"memories":[]})", 1, &error));
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(app.data_root, chat.id), before);
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->memory_last_processed_message_count, 1);
+	UAM_ASSERT_EQ(loaded->memory_last_processed_at, app.chats.front().memory_last_processed_at);
+	UAM_ASSERT_EQ(loaded->messages, chat.messages);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(app.data_root, chat.id)->memory_last_processed_message_count, 1);
+	std::optional<ChatSession> cold = ChatRepository::LoadLocalChat(app.data_root, chat.id, false);
+	UAM_ASSERT(cold.has_value());
+	UAM_ASSERT_EQ(cold->memory_last_processed_message_count, 1);
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(app.data_root, *cold));
+	UAM_ASSERT_EQ(cold->messages, chat.messages);
+	app.chats.front().messages.push_back(Message{MessageRole::User, "A new unsaved preference"});
+	app.pending_chat_save_at_by_chat_id[chat.id] = 99.0;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), {}, R"({"memories":[]})", 2, &error));
+	const std::optional<ChatSession> dirty_saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(dirty_saved.has_value());
+	UAM_ASSERT_EQ(dirty_saved->messages, app.chats.front().messages);
+	UAM_ASSERT_EQ(dirty_saved->memory_last_processed_message_count, 2);
+	UAM_ASSERT_EQ(app.pending_chat_save_at_by_chat_id[chat.id], 99.0);
 }

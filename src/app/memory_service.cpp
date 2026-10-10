@@ -275,7 +275,10 @@ namespace
 		const std::string previous_timestamp = chat.memory_last_processed_at;
 		chat.memory_last_processed_message_count = processed_message_count >= 0 ? std::min(processed_message_count, MessageCount(chat)) : MessageCount(chat);
 		chat.memory_last_processed_at = uam::time::TimestampNow();
-		if (ChatRepository::SaveChat(app.data_root, chat))
+		const bool pending_history = app.pending_chat_save_at_by_chat_id.contains(chat.id);
+		bool full_save_required = false;
+		if ((!pending_history && ChatRepository::SaveQueuedPromptOutbox(app.data_root, chat, &full_save_required)) ||
+		    ((pending_history || full_save_required) && ChatRepository::SaveChat(app.data_root, chat)))
 		{
 			return true;
 		}
