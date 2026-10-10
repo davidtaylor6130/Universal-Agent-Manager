@@ -96,6 +96,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"repairCompanionLanAddress", &UamQueryHandler::HandleRepairCompanionLanAddress},
 		{"selectSession", &UamQueryHandler::HandleSelectSession},
 		{"acknowledgeChatAttention", &UamQueryHandler::HandleAcknowledgeChatAttention},
+		{"setChatSnoozedUntil", &UamQueryHandler::HandleSetChatSnoozedUntil},
 		{"setChatSettled", &UamQueryHandler::HandleSetChatSettled},
 		{"setVisibleChatIds", &UamQueryHandler::HandleSetVisibleChatIds},
 		{"releaseChatMessages", &UamQueryHandler::HandleReleaseChatMessages},

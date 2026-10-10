@@ -1229,6 +1229,7 @@ if(UAM_BUILD_TESTS)
     tests/usage_collector_tests.cpp
     tests/chat_title_tests.cpp
     tests/vcs_settings_tests.cpp
+    tests/chat_snooze_tests.cpp
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
     tests/provider_mcp_settings_tests.cpp

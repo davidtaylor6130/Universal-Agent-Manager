@@ -34,6 +34,7 @@ export type DisplayedChatStatus =
   | null
 
 export interface ChatSearchFilterContext {
+  nowMs?: number
   cliBindingBySessionId?: Record<string, ChatSearchCliBinding>
   acpBindingBySessionId?: Record<string, ChatSearchAcpBinding>
 }
@@ -48,6 +49,7 @@ export interface ChatSearchModel {
   isSearching: boolean
   pinnedSessionIds: string[]
   /** Running and open chats in one list, newest activity first. */
+  snoozedSessionIds: string[]
   activeSessionIds: string[]
   folderRows: ChatSearchFolderRow[]
   unfolderedSessionIds: string[]
@@ -58,6 +60,7 @@ export interface ChatSearchSessionGroups {
   isSearching: boolean
   sessionIdsByFolderId: Map<string, string[]>
   pinnedSessionIds: string[]
+  snoozedSessionIds: string[]
   activeSessionIds: string[]
   unfolderedSessionIds: string[]
 }
@@ -240,6 +243,7 @@ export function buildChatSearchSessionGroups(
 
   const sessionIdsByFolderId = new Map<string, string[]>()
   const pinnedSessionIds: string[] = []
+  const snoozedSessionIds: string[] = []
   const activeSessionIds: string[] = []
   const unfolderedSessionIds: string[] = []
   // Sections follow structured runtimes only: a CLI terminal looks busy as soon as it
@@ -253,7 +257,7 @@ export function buildChatSearchSessionGroups(
     familyStatus.set(rootId, mergeDisplayedStatus(familyStatus.get(rootId) ?? null, sessionStatus(candidate)))
     familyUpdatedMs.set(rootId, Math.max(familyUpdatedMs.get(rootId) ?? 0, candidate.interactionAt === null ? 0 : sessionRecentTime(candidate)))
   }
-  const nowMs = Date.now()
+  const nowMs = filterContext.nowMs ?? Date.now()
   const returnedAtMs = new Map<string, number>()
 
   for (const session of sortedSessions) {
@@ -268,12 +272,15 @@ export function buildChatSearchSessionGroups(
       : familyUpdatedMs.get(rootId) ?? 0
     // Marking done clears a stale "ready" too; only running turns and questions outrank it.
     const unsettled = isUnsettledChat(updatedMs, session.settledAt, nowMs)
-    if (status?.type === 'processing' || status?.type === 'attention' || unsettled || (status?.type === 'done' && !session.settledAt)) {
+    const snoozed = (session.snoozedUntilMs ?? 0) > nowMs && (status?.type !== 'attention' || status.kind === 'error')
+    const wokeAt = (session.snoozedUntilMs ?? 0) > 0 && !snoozed ? session.snoozedUntilMs! : 0
+    if (snoozed) snoozedSessionIds.push(session.id)
+    if (!snoozed && (status?.type === 'processing' || status?.type === 'attention' || unsettled || isUnsettledChat(wokeAt, session.settledAt, nowMs) || (status?.type === 'done' && !session.settledAt))) {
       activeSessionIds.push(session.id)
-      returnedAtMs.set(session.id, updatedMs)
+      returnedAtMs.set(session.id, Math.max(updatedMs, wokeAt))
     }
 
-    if (session.isPinned) {
+    if (session.isPinned && !snoozed) {
       pinnedSessionIds.push(session.id)
     }
 
@@ -294,6 +301,7 @@ export function buildChatSearchSessionGroups(
     isSearching,
     sessionIdsByFolderId,
     pinnedSessionIds,
+    snoozedSessionIds,
     activeSessionIds,
     unfolderedSessionIds,
   }
@@ -326,12 +334,14 @@ export function buildChatSearchModelFromGroups(
   const hasMatches =
     groups.pinnedSessionIds.length > 0 ||
     groups.activeSessionIds.length > 0 ||
+    groups.snoozedSessionIds.length > 0 ||
     folderRows.some((row) => row.sessionIds.length > 0) ||
     unfolderedSessionIds.length > 0
 
   return {
     isSearching: groups.isSearching,
     pinnedSessionIds: groups.pinnedSessionIds,
+    snoozedSessionIds: groups.snoozedSessionIds,
     activeSessionIds: groups.activeSessionIds,
     folderRows,
     unfolderedSessionIds,

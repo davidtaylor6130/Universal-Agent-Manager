@@ -1,3 +1,4 @@
+import { useSnoozeClock } from './useSnoozeClock'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { isCompanionContext } from '../../ipc/cefBridge'
 import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
@@ -153,6 +154,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     () => new Map(sessions.map((session, index) => [session.id, runtimeStatuses[index]])),
     [runtimeStatuses, sessions],
   )
+  const snoozeNowMs = useSnoozeClock(sessions)
   const runtimeBindings = useMemo<ChatSearchFilterContext>(() => {
     const acpBindingBySessionId: NonNullable<ChatSearchFilterContext['acpBindingBySessionId']> = {}
     sessions.forEach((session, index) => {
@@ -161,8 +163,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       else if (status === 'done') acpBindingBySessionId[session.id] = { readySinceLastSelect: true }
       else if (status) acpBindingBySessionId[session.id] = { attentionKind: status.slice('attention:'.length) as AcpAttentionKind }
     })
-    return { acpBindingBySessionId }
-  }, [runtimeStatuses, sessions])
+    return { acpBindingBySessionId, nowMs: snoozeNowMs }
+  }, [runtimeStatuses, sessions, snoozeNowMs])
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -197,6 +199,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [deleteFolderError, setDeleteFolderError] = useState('')
   const [deletingFolder, setDeletingFolder] = useState(false)
   const [activeCollapsed, setActiveCollapsed] = useState(false)
+  const [snoozedCollapsed, setSnoozedCollapsed] = useState(false)
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false)
   const [allChatsCollapsed, setAllChatsCollapsed] = useState(false)
   const [unsortedCollapsed, setUnsortedCollapsed] = useState(false)
@@ -323,6 +326,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     activeStatusCounts.attention ? `${activeStatusCounts.attention} attention` : '',
     activeStatusCounts.done ? `${activeStatusCounts.done} done` : '',
   ].filter(Boolean).join(' · ')
+  const snoozedExpanded = searchModel.isSearching || !snoozedCollapsed
   const activeExpanded = searchModel.isSearching || !activeCollapsed
   const pinnedExpanded = searchModel.isSearching || !pinnedCollapsed
   const allChatsExpanded = searchModel.isSearching || !allChatsCollapsed
@@ -855,6 +859,18 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
                 : `${activeStatusCounts.attention} chats need attention`}
             </button>
           )}
+        </div>
+      )}
+
+      {searchModel.snoozedSessionIds.length > 0 && (
+        <div className="mb-0.5" data-testid="snoozed-chats">
+          <SidebarSectionHeader label="Snoozed" listId="snoozed-chat-list" expanded={snoozedExpanded} onToggle={() => setSnoozedCollapsed((value) => !value)}
+            trailing={<span className="ml-auto text-[10px]">{searchModel.snoozedSessionIds.length}</span>} />
+          <div id="snoozed-chat-list" hidden={!snoozedExpanded} aria-hidden={!snoozedExpanded} {...(!snoozedExpanded ? { inert: '' } : {})}>
+            {searchModel.snoozedSessionIds.map((id) => (
+              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+            ))}
+          </div>
         </div>
       )}
 

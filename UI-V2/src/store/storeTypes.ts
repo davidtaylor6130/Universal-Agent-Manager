@@ -166,6 +166,7 @@ export interface AppState {
 
   // Session actions
   acknowledgeChatAttention: (id: string, revision: string) => Promise<boolean>
+  setChatSnoozedUntil: (id: string, untilMs: number) => Promise<{ ok: boolean; error?: string }>
   setChatSettled: (id: string, settled: boolean) => Promise<boolean>
   setActiveSession: (id: string | null) => void
   loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void

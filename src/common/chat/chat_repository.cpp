@@ -1504,6 +1504,7 @@ namespace
 		chat.interaction_at = JsonStringOrEmpty(root.Find("interaction_at"));
 		chat.attention_revision = JsonStringOrEmpty(root.Find("attention_revision"));
 		chat.settled_at = JsonStringOrEmpty(root.Find("settled_at"));
+		chat.snoozed_until_ms = NonNegativeInt64FieldOrZero(root.Find("snoozed_until_ms"));
 		chat.last_stop_reason = JsonStringOrEmpty(root.Find("last_stop_reason"));
 		chat.goal_command_revision = JsonStringOrEmpty(root.Find("goal_command_revision"));
 		chat.goal_pending_continuation_id = JsonStringOrEmpty(root.Find("goal_pending_continuation_id"));
@@ -2086,6 +2087,7 @@ try
 	uam::json::SetString(root, "interaction_at", chat.interaction_at);
 	uam::json::SetString(root, "attention_revision", chat.attention_revision);
 	uam::json::SetString(root, "settled_at", chat.settled_at);
+	uam::json::SetNumber(root, "snoozed_until_ms", static_cast<double>(chat.snoozed_until_ms));
 	uam::json::SetString(root, "last_stop_reason", chat.last_stop_reason);
 	uam::json::SetString(root, "goal_command_revision", chat.goal_command_revision);
 	uam::json::SetString(root, "goal_pending_continuation_id", chat.goal_pending_continuation_id);
@@ -2463,12 +2465,14 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLastOpenedAt(const fs::
 		persisted->interaction_at = metadata.interaction_at;
 		persisted->attention_revision = metadata.attention_revision;
 		persisted->settled_at = metadata.settled_at;
+		persisted->snoozed_until_ms = metadata.snoozed_until_ms;
 		return PrepareChatSave(data_root, *persisted, *revision);
 	}
 	uam::json::SetString(*summary, kChatLastOpenedAtField, metadata.last_opened_at);
 	uam::json::SetString(*summary, "interaction_at", metadata.interaction_at);
 	uam::json::SetString(*summary, "attention_revision", metadata.attention_revision);
 	uam::json::SetString(*summary, "settled_at", metadata.settled_at);
+	uam::json::SetNumber(*summary, "snoozed_until_ms", static_cast<double>(metadata.snoozed_until_ms));
 	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
 	prepared->primary_path = primary;
 	prepared->summary_path = summary_path;
@@ -2502,6 +2506,7 @@ bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, co
 	uam::json::SetString(*summary, "interaction_at", chat.interaction_at);
 	uam::json::SetString(*summary, "attention_revision", chat.attention_revision);
 	uam::json::SetString(*summary, "settled_at", chat.settled_at);
+	uam::json::SetNumber(*summary, "snoozed_until_ms", static_cast<double>(chat.snoozed_until_ms));
 	return uam::io::WriteTextFile(summary_path, SerializeJson(*summary)) || SaveChat(data_root, chat);
 }
 
@@ -2671,6 +2676,7 @@ namespace
 			hydrated.last_opened_at = summary.last_opened_at;
 		hydrated.attention_revision = summary.attention_revision;
 		hydrated.settled_at = summary.settled_at;
+		hydrated.snoozed_until_ms = summary.snoozed_until_ms;
 		hydrated.last_stop_reason = summary.last_stop_reason;
 		hydrated.execution_host_id = summary.execution_host_id;
 		hydrated.folder_id = summary.folder_id;
@@ -2772,6 +2778,7 @@ namespace
 			chat.attention_revision = summary.chat->attention_revision;
 			chat.interaction_at = summary.chat->interaction_at;
 			chat.settled_at = summary.chat->settled_at;
+			chat.snoozed_until_ms = summary.chat->snoozed_until_ms;
 		}
 	}
 

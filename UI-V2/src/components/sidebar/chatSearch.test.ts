@@ -456,3 +456,43 @@ it('keeps a parent working until its native children settle', () => {
  expect(displayedChatStatus([], [{ processing: false, backgroundTaskCount: 1, readySinceLastSelect: true }])).toEqual({ type: 'processing' })
  expect(displayedChatStatus([], [{ processing: false, backgroundTaskCount: 0, readySinceLastSelect: true }])).toEqual({ type: 'done' })
 })
+
+
+describe('snoozed sidebar grouping', () => {
+  it('parks running and pinned chats until expiry without losing workspace discoverability', () => {
+    const nowMs = Date.now()
+    const chat = makeSession('snoozed', 'Snoozed', null)
+    chat.isPinned = true; chat.snoozedUntilMs = nowMs + 60_000
+    const context = { nowMs, acpBindingBySessionId: { snoozed: { processing: true } } }
+    const parked = searchModel('', [], [chat], undefined, context)
+    expect(parked.snoozedSessionIds).toEqual(['snoozed'])
+    expect(parked.activeSessionIds).toEqual([]); expect(parked.pinnedSessionIds).toEqual([])
+    expect(parked.unfolderedSessionIds).toEqual(['snoozed'])
+    const awake = searchModel('', [], [chat], undefined, { ...context, nowMs: nowMs + 60_001 })
+    expect(awake.snoozedSessionIds).toEqual([]); expect(awake.activeSessionIds).toEqual(['snoozed'])
+    expect(awake.pinnedSessionIds).toEqual(['snoozed'])
+  })
+
+  it('raises pending requests even with a future persisted snooze time', () => {
+    const chat = makeSession('asking', 'Question', null); chat.snoozedUntilMs = Date.now() + 60_000
+    const model = searchModel('', [], [chat], undefined, { acpBindingBySessionId: { asking: { attentionKind: 'question' } } })
+    expect(model.snoozedSessionIds).toEqual([]); expect(model.activeSessionIds).toEqual(['asking'])
+  })
+
+  it('returns an expired snooze on an old settled chat to Active chats', () => {
+    const nowMs = Date.now(); const chat = makeSession('old', 'Old', null)
+    chat.interactionAt = new Date(nowMs - 7 * 86_400_000); chat.updatedAt = chat.interactionAt
+    chat.settledAt = chat.interactionAt.toISOString(); chat.snoozedUntilMs = nowMs - 1000
+    const model = searchModel('', [], [chat], undefined, { nowMs })
+    expect(model.activeSessionIds).toEqual(['old']); expect(model.snoozedSessionIds).toEqual([])
+  })
+})
+
+
+it('parks an already failed chat but raises a fresh native wake', () => {
+  const chat = makeSession('failed', 'Failed', null); chat.snoozedUntilMs = Date.now() + 60_000
+  const context = { acpBindingBySessionId: { failed: { attentionKind: 'error' as const } } }
+  expect(searchModel('', [], [chat], undefined, context).snoozedSessionIds).toEqual(['failed'])
+  chat.snoozedUntilMs = 0; chat.interactionAt = new Date()
+  expect(searchModel('', [], [chat], undefined, context).activeSessionIds).toEqual(['failed'])
+})

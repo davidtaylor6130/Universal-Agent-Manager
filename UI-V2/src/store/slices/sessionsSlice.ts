@@ -364,6 +364,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok
     },
 
+    setChatSnoozedUntil: async (id: string, untilMs: number) => {
+      if (!isCefContext()) return { ok: false, error: 'Snoozing requires the desktop app.' }
+      return sendToCEF({ action: 'setChatSnoozedUntil', payload: { chatId: id, untilMs } }, false)
+    },
+
     setChatSettled: async (id: string, settled: boolean) => {
       const response = await sendToCEF({ action: 'setChatSettled', payload: { chatId: id, settled } })
       return response.ok

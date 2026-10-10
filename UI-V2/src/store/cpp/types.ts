@@ -125,6 +125,7 @@ export interface CppChat {
   lastOpenedAt?: string
   attentionRevision?: string
   settledAt?: string
+  snoozedUntilMs?: number
   messageCount?: number
   messagesDigest?: string
   messages?: CppMessage[]

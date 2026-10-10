@@ -58,6 +58,9 @@ class ChatDomainService
 	std::string AttentionRevision(const uam::AppState& app, const ChatSession& chat) const;
 	void MarkChatNeedsAttention(uam::AppState& app, const std::string& chat_id) const;
 	bool AcknowledgeChatAttention(uam::AppState& app, const std::string& chat_id, const std::string& revision) const;
+	/// Snoozes attention until a future epoch timestamp; zero wakes without stopping the run.
+	bool ValidateChatSnooze(const uam::AppState& app, const std::string& chat_id, std::int64_t until_ms, std::string* error_out = nullptr) const;
+	bool SetChatSnoozedUntil(uam::AppState& app, const std::string& chat_id, std::int64_t until_ms, std::string* error_out = nullptr) const;
 	bool SetChatSettled(uam::AppState& app, const std::string& chat_id, bool settled) const;
 	std::string NewFolderId() const;
 	int FindFolderIndexById(const uam::AppState& app, const std::string& folder_id) const;

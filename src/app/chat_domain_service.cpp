@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <functional>
 #include <limits>
 #include <set>
 #include <string>
@@ -89,7 +90,11 @@ namespace
 
 		chat.messages.push_back(std::move(message));
 		chat.updated_at = timestamp;
-		if (role == MessageRole::User) chat.interaction_at = uam::time::InteractionTimestampNow();
+		if (role == MessageRole::User)
+		{
+			chat.interaction_at = uam::time::InteractionTimestampNow();
+			chat.snoozed_until_ms = 0;
+		}
 
 		if (should_auto_replace_title)
 		{
@@ -1051,6 +1056,17 @@ void ChatDomainService::MarkChatNeedsAttention(uam::AppState& app, const std::st
 	if (chat == nullptr) return;
 	if (const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id))
 		chat->interaction_at = uam::time::LatestInteractionTimestamp(chat->interaction_at, session->interaction_at);
+	const std::string root_id = uam::strings::NonEmptyOrFallback(chat->branch_root_chat_id, chat->parent_chat_id);
+	if (!root_id.empty() && root_id != chat_id)
+	{
+		ChatSession* root = FindChatById(app, root_id);
+		if (root != nullptr && root->snoozed_until_ms != 0)
+		{
+			root->snoozed_until_ms = 0;
+			if (!app.data_root.empty()) app.pending_chat_save_at_by_chat_id[root_id] = 0.0;
+		}
+	}
+	chat->snoozed_until_ms = 0;
 	chat->attention_revision = uam::chat_ids::NewChatId();
 	app.chats_with_unseen_updates.insert(chat_id);
 	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
@@ -1073,6 +1089,57 @@ bool ChatDomainService::AcknowledgeChatAttention(uam::AppState& app, const std::
 		return false;
 	}
 	app.chats_with_unseen_updates.erase(chat_id);
+	return true;
+}
+
+bool ChatDomainService::ValidateChatSnooze(const uam::AppState& app, const std::string& chat_id, const std::int64_t until_ms, std::string* error_out) const
+{
+	const std::function<bool(const char*)> fail = [error_out](const char* error)
+	{
+		if (error_out != nullptr) *error_out = error;
+		return false;
+	};
+	if (FindChatById(app, chat_id) == nullptr) return fail("Chat no longer exists.");
+	if (until_ms != 0 && (until_ms <= uam::time::SystemEpochMillisecondsNow() || until_ms > 8'640'000'000'000'000LL))
+		return fail("Choose a future wake time.");
+	if (until_ms != 0)
+	{
+		for (const ChatSession& candidate : app.chats)
+		{
+			const std::string root = uam::strings::NonEmptyOrFallback(candidate.branch_root_chat_id,
+			    uam::strings::NonEmptyOrFallback(candidate.parent_chat_id, candidate.id));
+			if (candidate.id != chat_id && root != chat_id) continue;
+			const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, candidate.id);
+			if (!candidate.acp_queued_prompts.empty() || (session != nullptr &&
+			    (session->waiting_for_permission || session->waiting_for_user_input || !session->queued_prompt.empty())))
+				return fail("Respond to pending requests or queued messages before snoozing.");
+		}
+	}
+	return true;
+}
+
+bool ChatDomainService::SetChatSnoozedUntil(uam::AppState& app, const std::string& chat_id, const std::int64_t until_ms, std::string* error_out) const
+{
+	if (!ValidateChatSnooze(app, chat_id, until_ms, error_out)) return false;
+	ChatSession* chat = FindChatById(app, chat_id);
+	const std::int64_t previous = chat->snoozed_until_ms;
+	const std::string previous_settled = chat->settled_at;
+	const std::string previous_interaction = chat->interaction_at;
+	chat->snoozed_until_ms = until_ms;
+	if (until_ms == 0 && previous != 0)
+	{
+		chat->settled_at.clear();
+		chat->interaction_at = uam::time::InteractionTimestampNow();
+	}
+	if (until_ms == previous) return true;
+	if (!app.data_root.empty() && !ChatRepository::SaveLastOpenedAt(app.data_root, *chat))
+	{
+		chat->snoozed_until_ms = previous;
+		chat->settled_at = previous_settled;
+		chat->interaction_at = previous_interaction;
+		if (error_out != nullptr) *error_out = "Could not save the wake time. Try again.";
+		return false;
+	}
 	return true;
 }
 

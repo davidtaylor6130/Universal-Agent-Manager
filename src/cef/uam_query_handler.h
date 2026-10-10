@@ -1,5 +1,7 @@
 #pragma once
 
+#include <set>
+
 #include "common/config/build_features.h"
 #if UAM_ENABLE_MOBILE_COMPANION
 #include "cef/companion_server.h"
@@ -46,6 +48,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::shared_ptr<uam::usage::Collector> m_usageHistory;
 	CefRefPtr<CefThread> m_usageQueries;
 	CefRefPtr<CefThread> m_titleQueries;
+	CefRefPtr<CefThread> m_snoozeQueries;
+	std::set<std::string> m_snoozeRequests;
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
 #if UAM_ENABLE_MOBILE_COMPANION
 	CefRefPtr<UamCompanionServer> m_companion;
@@ -67,6 +71,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleResolveStartupNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetInitialState(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleAcknowledgeChatAttention(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetChatSnoozedUntil(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatSettled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSelectSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetVisibleChatIds(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

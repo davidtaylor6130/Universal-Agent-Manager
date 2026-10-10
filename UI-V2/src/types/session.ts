@@ -125,6 +125,7 @@ export interface Session {
   attentionRevision?: string
   /** ISO time the user marked this chat done in Active chats. */
   settledAt?: string
+  snoozedUntilMs?: number
   userMessageIndices?: number[]
 }
 

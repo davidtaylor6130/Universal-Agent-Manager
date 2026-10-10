@@ -1,3 +1,4 @@
+import { SnoozeMenu } from './SnoozeMenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
@@ -180,6 +181,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       return {
         name: session.name,
         attentionRevision: session.attentionRevision,
+        snoozedUntilMs: session.snoozedUntilMs ?? 0,
         lastOpenedAt: session.lastOpenedAt ?? session.updatedAt ?? null,
         isPinned: session.isPinned ?? false,
         providerId: session.providerId,
@@ -194,6 +196,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     return {
       name: storeSession?.name ?? '',
       attentionRevision: storeSession?.attentionRevision,
+      snoozedUntilMs: storeSession?.snoozedUntilMs ?? 0,
       lastOpenedAt: storeSession?.lastOpenedAt ?? storeSession?.updatedAt ?? null,
       isPinned: storeSession?.isPinned ?? false,
       providerId: storeSession?.providerId,
@@ -762,6 +765,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           {copyState && <p role={copyState === 'failed' ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: copyState === 'failed' ? 'var(--red)' : 'var(--text-2)' }}>
             {copyState === 'failed' ? 'Could not copy. Try again.' : copyState === 'id' ? 'Chat ID copied.' : 'Chat name copied.'}
           </p>}
+          <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={sessionSummary.snoozedUntilMs} />
           <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
             role="menuitem"

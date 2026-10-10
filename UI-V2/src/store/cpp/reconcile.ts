@@ -203,6 +203,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.interactionAt?.getTime() === next.interactionAt?.getTime() &&
     (previous.interactionAt === null) === (next.interactionAt === null) &&
     previous.settledAt === next.settledAt &&
+    previous.snoozedUntilMs === next.snoozedUntilMs &&
     previous.userMessageIndices === next.userMessageIndices
 }
 
@@ -281,6 +282,7 @@ export function sessionFromCppChat(
     lastOpenedAt,
     attentionRevision: chat.attentionRevision,
     settledAt: chat.settledAt,
+    snoozedUntilMs: chat.snoozedUntilMs ?? 0,
     userMessageIndices: previous?.messagesDigest === chat.messagesDigest ? previous?.userMessageIndices : undefined,
   }
 

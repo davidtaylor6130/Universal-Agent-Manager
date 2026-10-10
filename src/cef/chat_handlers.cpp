@@ -243,6 +243,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		metadata.interaction_at = selected_chat->interaction_at;
 		metadata.attention_revision = selected_chat->attention_revision;
 		metadata.settled_at = selected_chat->settled_at;
+		metadata.snoozed_until_ms = selected_chat->snoozed_until_ms;
 		const std::filesystem::path data_root = m_app.data_root;
 		std::shared_ptr<std::shared_ptr<PreparedChatSave>> prepared = std::make_shared<std::shared_ptr<PreparedChatSave>>();
 		if (!uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr,
@@ -255,7 +256,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		    {
 			    ChatSession* current = ChatDomainService().FindChatById(m_app, metadata.id);
 			    if (current == nullptr || m_app.data_root != data_root || current->last_opened_at != metadata.last_opened_at ||
-			        current->interaction_at != metadata.interaction_at || current->attention_revision != metadata.attention_revision || current->settled_at != metadata.settled_at) return;
+			        current->interaction_at != metadata.interaction_at || current->attention_revision != metadata.attention_revision || current->settled_at != metadata.settled_at || current->snoozed_until_ms != metadata.snoozed_until_ms) return;
 			    if (m_app.pending_chat_save_at_by_chat_id.contains(metadata.id)) return;
 			    if (m_app.worktree_operation_chat_ids.contains(metadata.id) || !ChatRepository::PublishPreparedChatSave(*prepared, true, current))
 				    m_app.pending_chat_save_at_by_chat_id[metadata.id] = uam::GetAppTimeSeconds() + 1.0;
@@ -1203,6 +1204,72 @@ void UamQueryHandler::HandleMoveChatWorkspace(CefRefPtr<CefBrowser> browser, con
 		    { result = uam::query_handler_async::AsyncFailure(409, m_app.status_line); return; }
 		    uam::PushStateUpdateIfChanged(browser, m_app);
 	    });
+}
+
+void UamQueryHandler::HandleSetChatSnoozedUntil(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.contains("chatId") || !payload["chatId"].is_string() || !payload.contains("untilMs") ||
+	    !payload["untilMs"].is_number_integer() || payload["untilMs"] < 0 || payload["untilMs"] > 8'640'000'000'000'000LL)
+	{
+		cb->Failure(400, "Choose a valid chat and wake time.");
+		return;
+	}
+	const std::string chat_id = payload["chatId"].get<std::string>();
+	const std::int64_t until_ms = payload["untilMs"].get<std::int64_t>();
+	std::string error;
+	if (!ChatDomainService().ValidateChatSnooze(m_app, chat_id, until_ms, &error)) { cb->Failure(409, error); return; }
+	if (m_snoozeRequests.contains(chat_id) || m_snoozeRequests.size() >= 64)
+	{ cb->Failure(409, "A wake time is still being saved. Try again shortly."); return; }
+	const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
+	ChatSession metadata;
+	metadata.id = chat_id;
+	metadata.last_opened_at = chat->last_opened_at;
+	metadata.interaction_at = chat->interaction_at;
+	metadata.attention_revision = chat->attention_revision;
+	metadata.settled_at = chat->settled_at;
+	const std::int64_t previous_until = chat->snoozed_until_ms;
+	metadata.snoozed_until_ms = until_ms;
+	const std::string previous_interaction = metadata.interaction_at;
+	const std::string previous_settled = metadata.settled_at;
+	if (until_ms == 0 && previous_until != 0)
+	{
+		metadata.interaction_at = uam::time::InteractionTimestampNow();
+		metadata.settled_at.clear();
+	}
+	if (!m_snoozeQueries) m_snoozeQueries = CefThread::CreateThread("uam-chat-snooze");
+	if (!m_snoozeQueries) { cb->Failure(503, "The wake-time worker is unavailable."); return; }
+	const std::filesystem::path data_root = m_app.data_root;
+	const std::shared_ptr<std::shared_ptr<PreparedChatSave>> prepared = std::make_shared<std::shared_ptr<PreparedChatSave>>();
+	m_snoozeRequests.insert(chat_id);
+	if (!m_snoozeQueries->GetTaskRunner()->PostTask(new uam::query_handler_async::CefQueryWorkerTask(m_asyncLifetime, cb,
+	    [data_root, metadata, prepared]()
+	    {
+		    *prepared = ChatRepository::PrepareLastOpenedAt(data_root, metadata);
+		    return *prepared ? uam::query_handler_async::AsyncSuccess({}) : uam::query_handler_async::AsyncFailure(409, "The chat changed or could not be saved. Try again.");
+	    },
+	    [this, browser, data_root, metadata, prepared, previous_until, previous_interaction, previous_settled](uam::query_handler_async::AsyncCefResult& result)
+	    {
+		    m_snoozeRequests.erase(metadata.id);
+		    if (!result.ok) return;
+		    ChatSession* current = ChatDomainService().FindChatById(m_app, metadata.id);
+		    std::string validation_error;
+		    if (current == nullptr || m_app.data_root != data_root || current->snoozed_until_ms != previous_until ||
+		        current->last_opened_at != metadata.last_opened_at || current->interaction_at != previous_interaction ||
+		        current->attention_revision != metadata.attention_revision || current->settled_at != previous_settled ||
+		        m_workspaceDeletionPending || m_app.worktree_operation_chat_ids.contains(metadata.id) || m_app.pending_chat_save_tasks.contains(metadata.id) ||
+		        !ChatDomainService().ValidateChatSnooze(m_app, metadata.id, metadata.snoozed_until_ms, &validation_error))
+		    { result = uam::query_handler_async::AsyncFailure(409, validation_error.empty() ? "The chat changed. Its current wake time was kept. Try again." : validation_error); return; }
+		    if (!ChatRepository::PublishPreparedChatSave(*prepared, true, current))
+		    { result = uam::query_handler_async::AsyncFailure(409, "The chat changed or could not be saved. Try again."); return; }
+		    current->snoozed_until_ms = metadata.snoozed_until_ms;
+		    current->interaction_at = metadata.interaction_at;
+		    current->settled_at = metadata.settled_at;
+		    uam::PushStateUpdateIfChanged(browser, m_app);
+	    })))
+	{
+		m_snoozeRequests.erase(chat_id);
+		cb->Failure(503, "The wake-time worker is unavailable.");
+	}
 }
 
 void UamQueryHandler::HandleSetChatSettled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
