@@ -1577,6 +1577,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
         instructionFile: stringOr(entry.instructionFile),
         startupEnabled: booleanOr(entry.startupEnabled, false),
+        cliUpdatesAsAdmin: booleanOr(entry.cliUpdatesAsAdmin, false),
         startupStatus: stringOr(entry.startupStatus, 'disabled'),
       })
     }

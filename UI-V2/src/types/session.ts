@@ -21,6 +21,7 @@ export interface ExecutionHost {
   runnerDirectory?: string
   runnerProtocolVersion?: number
   instructionFile?: string
+  cliUpdatesAsAdmin?: boolean
   startupEnabled?: boolean
   startupStatus?: string
 }

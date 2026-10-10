@@ -252,6 +252,7 @@ namespace uam::execution_hosts
 			    {"runnerProtocolVersion", host.runner_protocol_version},
 			    {"instructionFile", host.instruction_file},
 			    {"startupEnabled", host.startup_enabled}, {"startupStatus", host.startup_status},
+			    {"cliUpdatesAsAdmin", host.cli_updates_as_admin},
 			    {"customIcon", uam::icons::Serialize(host.custom_icon)},
 			});
 		}
@@ -276,6 +277,7 @@ namespace uam::execution_hosts
 				    entry.value("instructionFile", ""), entry.value("startupEnabled", false),
 				    entry.value("startupStatus", "disabled"),
 				    uam::icons::Parse(entry.value("customIcon", nlohmann::json(nullptr))),
+				    entry.value("cliUpdatesAsAdmin", false),
 				});
 			}
 		}

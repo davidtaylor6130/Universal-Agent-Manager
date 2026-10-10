@@ -172,6 +172,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		host.instruction_file = collision->instruction_file;
 		host.startup_enabled = collision->startup_enabled;
 		host.startup_status = collision->startup_status;
+		host.cli_updates_as_admin = collision->cli_updates_as_admin;
 	}
 	uam::remote::BootstrapPlan plan;
 	if (!BuildPlan(host, plan, error))
@@ -454,6 +455,25 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 	ExecutionHost updated = *host;
 	updated.instruction_file = uam::strings::Trim(payload.value("instructionFile", host->instruction_file));
 	updated.startup_enabled = payload.value("startupEnabled", host->startup_enabled);
+	updated.cli_updates_as_admin = payload.value("cliUpdatesAsAdmin", host->cli_updates_as_admin);
+	if (updated.cli_updates_as_admin && updated.platform != "linux")
+	{
+		cb->Failure(400, "CLI update elevation is supported only on Linux SSH hosts.");
+		return;
+	}
+	if (updated.cli_updates_as_admin != host->cli_updates_as_admin)
+	{
+		for (const auto& [key, task] : m_app.runtime_cli_install_tasks)
+		{
+			if (task.running && task.execution_host.id == id)
+			{ cb->Failure(409, "Wait for this host's CLI update to finish before changing elevation."); return; }
+		}
+		for (const auto& [key, pending] : m_app.pending_cli_updates)
+		{
+			if (pending.execution_host.id == id)
+			{ cb->Failure(409, "Wait for this host's pending CLI update before changing elevation."); return; }
+		}
+	}
 	if (g_remote_install_tokens.contains(id) ||
 	    (updated.instruction_file != host->instruction_file && HostHasActiveRuntimeWork(m_app, id)))
 	{
