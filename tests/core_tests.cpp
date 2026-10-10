@@ -12546,6 +12546,132 @@ UAM_TEST(StateSerializerProviderJsonIncludesNpmPackageAndShortName)
 	UAM_ASSERT_EQ(claude_it->value("npmPackageName", ""), std::string("@anthropic-ai/claude-code"));
 }
 
+UAM_TEST(RemoteCliElevationIsOptInAndOnlyElevatesLinuxNpmInstall)
+{
+	ExecutionHost host;
+	host.id = "homelab";
+	host.transport = "ssh";
+	host.ssh_alias = "uam-homelab";
+	host.platform = "linux";
+	const std::string command = BuildBulkNpmInstallCommand({{"codex-cli", "latest"}, {"claude-cli", "latest"}});
+	UAM_ASSERT_EQ(BuildRemoteCliCommandArgv(host, command, true, "npm"), (std::vector<std::string>{"sh", "-lc", command}));
+	host.cli_updates_as_admin = true;
+	const std::vector<std::string> elevated = BuildRemoteCliCommandArgv(host, command, true, "npm");
+	UAM_ASSERT_EQ(elevated.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT(elevated.back().find("npm prefix -g") != std::string::npos);
+	UAM_ASSERT(elevated.back().ends_with("exec sudo -n -- npm --prefix \"$uam_update_prefix\" " + command.substr(4)));
+	UAM_ASSERT_EQ(BuildRemoteCliCommandArgv(host, "codex --version", false, "npm"), (std::vector<std::string>{"sh", "-lc", "codex --version"}));
+	UAM_ASSERT(BuildRemoteCliCommandArgv(host, "brew upgrade codex", true, "homebrew").empty());
+	host.platform = "windows";
+	UAM_ASSERT(BuildRemoteCliCommandArgv(host, command, true, "npm").empty());
+	host.platform = "linux";
+	host.transport = "local";
+	UAM_ASSERT(BuildRemoteCliCommandArgv(host, command, true, "npm").empty());
+}
+
+#if !defined(_WIN32)
+UAM_TEST(RemoteCliElevationRefusalNeverFallsBackAndKeepsNpmPrefix)
+{
+	TempDir fixture("uam-elevation");
+	const fs::path npm = fixture.root / "npm";
+	const fs::path sudo = fixture.root / "sudo";
+	{
+		std::ofstream script(npm);
+		script << "#!/bin/sh\nif [ \"$1\" = prefix ]; then echo /usr; else echo UNELEVATED_INSTALL; fi\n";
+	}
+	{
+		std::ofstream script(sudo);
+		script << "#!/bin/sh\nprintf 'SUDO_ARG:%s\\n' \"$@\"\nexit 17\n";
+	}
+	fs::permissions(npm, fs::perms::owner_exec, fs::perm_options::add);
+	fs::permissions(sudo, fs::perms::owner_exec, fs::perm_options::add);
+	ExecutionHost host;
+	host.id = "homelab";
+	host.transport = "ssh";
+	host.platform = "linux";
+	host.cli_updates_as_admin = true;
+	const std::string install = BuildBulkNpmInstallCommand({{"codex-cli", "latest"}});
+	const std::string command = "PATH=" + ShellQuoteForTest(fixture.root.string()) + ":/usr/bin:/bin; export PATH; " + BuildRemoteCliCommandArgv(host, install, true, "npm").back();
+	const ProcessExecutionResult refused = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, 10000);
+	UAM_ASSERT_EQ(refused.exit_code, 17);
+	UAM_ASSERT(refused.output.find("SUDO_ARG:-n\nSUDO_ARG:--\nSUDO_ARG:npm\nSUDO_ARG:--prefix\nSUDO_ARG:/usr\n") != std::string::npos);
+	UAM_ASSERT(refused.output.find("UNELEVATED_INSTALL") == std::string::npos);
+	{
+		std::ofstream script(npm);
+		script << "#!/bin/sh\necho relative-prefix\n";
+	}
+	const ProcessExecutionResult invalid = PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, 10000);
+	UAM_ASSERT_EQ(invalid.exit_code, 1);
+	UAM_ASSERT(invalid.output.find("SUDO_ARG:") == std::string::npos);
+}
+#endif
+
+UAM_TEST(RemoteDisabledStartupErrorDoesNotBlockUnrelatedHostOptions)
+{
+	for (const std::string status : {"disabled", "error", "pending", "enabled"})
+	for (const bool previous_enabled : {false, true})
+	for (const bool enabled : {false, true})
+	{
+		ExecutionHost previous;
+		previous.startup_enabled = previous_enabled;
+		previous.startup_status = status;
+		ExecutionHost current = previous;
+		current.startup_enabled = enabled;
+		current.cli_updates_as_admin = true;
+		current.instruction_file = "/home/david/AGENTS.md";
+		const bool configure = uam::execution_hosts::NeedsStartupConfiguration(current, previous);
+		UAM_ASSERT_EQ(configure, enabled != previous_enabled || enabled || status == "pending");
+		// Disabled errors remain visible; unrelated choices require no SSH startup operation.
+		current.startup_status = configure ? "pending" : previous.startup_status;
+		UAM_ASSERT(current.cli_updates_as_admin);
+		if (!configure) UAM_ASSERT_EQ(current.startup_status, status);
+	}
+}
+
+UAM_TEST(RemoteStartupFailurePreservesSavedCliElevationAndInstructions)
+{
+	for (const bool previous_enabled : {false, true})
+	for (const bool succeeded : {false, true})
+	{
+		ExecutionHost previous;
+		previous.id = "ssh-options";
+		previous.transport = "ssh";
+		previous.platform = "linux";
+		previous.ssh_alias = "homelab";
+		previous.startup_enabled = previous_enabled;
+		ExecutionHost current = previous;
+		current.startup_enabled = !previous_enabled;
+		current.cli_updates_as_admin = true;
+		current.instruction_file = "/home/david/AGENTS.md";
+		uam::execution_hosts::ApplyStartupConfigurationResult(current, previous, succeeded);
+		UAM_ASSERT(current.cli_updates_as_admin);
+		UAM_ASSERT_EQ(current.instruction_file, "/home/david/AGENTS.md");
+		UAM_ASSERT_EQ(current.startup_enabled, succeeded ? !previous_enabled : previous_enabled);
+		UAM_ASSERT_EQ(current.startup_status, succeeded ? (!previous_enabled ? "enabled" : "disabled") : "error");
+		const std::vector<ExecutionHost> restored = uam::execution_hosts::Parse(uam::execution_hosts::Serialize({uam::execution_hosts::LocalHost(), current}));
+		UAM_ASSERT_EQ(restored.size(), 2u);
+		UAM_ASSERT(restored[1].cli_updates_as_admin);
+		UAM_ASSERT_EQ(restored[1].instruction_file, current.instruction_file);
+	}
+}
+
+UAM_TEST(RemoteCliElevationSettingSurvivesSerializationAndDefaultsOff)
+{
+	ExecutionHost host;
+	host.id = "homelab";
+	host.transport = "ssh";
+	host.ssh_alias = "uam-homelab";
+	host.platform = "linux";
+	host.cli_updates_as_admin = true;
+	nlohmann::json saved = uam::execution_hosts::Serialize({host});
+	std::vector<ExecutionHost> loaded = uam::execution_hosts::Parse(saved);
+	UAM_ASSERT(!loaded.front().cli_updates_as_admin);
+	UAM_ASSERT(loaded.back().cli_updates_as_admin);
+	saved.back().erase("cliUpdatesAsAdmin");
+	loaded = uam::execution_hosts::Parse(saved);
+	UAM_ASSERT(!loaded.back().cli_updates_as_admin);
+}
+
 UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 {
 	const ProviderCliCompatibilityService service;

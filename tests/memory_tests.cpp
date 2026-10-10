@@ -2,6 +2,50 @@
 
 using namespace uam_test;
 
+UAM_TEST(MemoryWorkerInputExcludesUnusedWarmPayloadsWithoutChangingPrompts)
+{
+	ChatSession chat;
+	chat.id = "memory-input";
+	chat.messages_loaded = true;
+	chat.memory_last_processed_message_count = 3;
+	for (int index = 0; index < 5; ++index)
+	{
+		Message message;
+		message.role = index % 2 == 0 ? MessageRole::User : MessageRole::Assistant;
+		message.content = "Remember preference " + std::to_string(index);
+		message.thoughts = std::string(1024 * 1024, 't');
+		message.tool_calls.resize(1);
+		message.attachments.resize(1);
+		chat.messages.push_back(std::move(message));
+	}
+	for (const std::string level : {"strict", "balanced", "open"})
+	{
+		chat.memory_level = level;
+		const ChatSession input = MemoryService::CaptureWorkerInput(chat);
+		UAM_ASSERT_EQ(input.id, chat.id);
+		UAM_ASSERT_EQ(input.messages.size(), chat.messages.size());
+		UAM_ASSERT_EQ(input.memory_last_processed_message_count, 3);
+		for (const Message& message : input.messages)
+		{
+			UAM_ASSERT(message.thoughts.empty());
+			UAM_ASSERT(message.tool_calls.empty());
+			UAM_ASSERT(message.attachments.empty());
+		}
+		for (const int start : {-1, 0, 3, 9})
+			UAM_ASSERT_EQ(MemoryService::BuildWorkerPromptForTests(input, start), MemoryService::BuildWorkerPromptForTests(chat, start));
+	}
+	chat.messages_loaded = false;
+	chat.persisted_message_count = 7;
+	chat.persisted_messages_digest = "persisted-body";
+	chat.native_session_id = "native-owner";
+	const ChatSession cold = MemoryService::CaptureWorkerInput(chat);
+	UAM_ASSERT(!cold.messages_loaded);
+	UAM_ASSERT_EQ(cold.persisted_message_count, 7);
+	UAM_ASSERT_EQ(cold.persisted_messages_digest, "persisted-body");
+	UAM_ASSERT_EQ(cold.native_session_id, "native-owner");
+	UAM_ASSERT(cold.messages == chat.messages);
+}
+
 namespace
 {
 	void DrainMemoryWork(uam::AppState& app)

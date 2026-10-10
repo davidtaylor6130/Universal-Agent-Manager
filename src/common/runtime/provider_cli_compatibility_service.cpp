@@ -168,12 +168,18 @@ namespace
 				}
 			}
 		}
-		const std::vector<std::string> argv = host.platform == "windows"
-		    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", command}
-		    : std::vector<std::string>{"sh", "-lc", command};
+		const std::vector<std::string> argv = BuildRemoteCliCommandArgv(host, command, installing, install_manager);
+		if (argv.empty())
+		{
+			result.ok = false;
+			result.error = "CLI update elevation supports npm on Linux SSH hosts only. Disable it for this installer.";
+			return finish();
+		}
 		// The fixed install ID excludes a second installer while an uncertain old lease remains.
 		const std::string process_id = installing ? "cli-update-" + (install_manager.empty() || install_manager == "winget" ? provider_id : install_manager) : "cli-check-" + service.GenerateUuid();
 		result = client.ExecuteCommand(process_id, uam::paths::PathFromUtf8(home.directory), argv, timeout_ms, stop_token);
+		if (installing && install_manager == "npm" && host.platform == "linux" && !host.cli_updates_as_admin && result.exit_code != 0 && result.output.find("EACCES") != std::string::npos)
+			result.error = "The system npm installation requires administrator permission. Enable Run CLI updates with sudo in this host's options, or update it manually as administrator.";
 		return finish();
 	}
 
@@ -853,6 +859,9 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 		return FailProviderCliInstall(error_out, "Provider CLI installs are not supported for this provider.");
 	}
 
+	if (host->id != "local" && BuildRemoteCliCommandArgv(*host, command, true, InstallManager(provider_state.install_method)).empty())
+		return FailProviderCliInstall(error_out, "CLI update elevation supports npm on Linux SSH hosts only. Disable it for this installer.");
+
 	const auto blocking = ProviderCliBlockingChatIds(app, resolved.provider_id, host->id);
 	if (!blocking.empty())
 	{
@@ -1300,4 +1309,20 @@ bool ValidateRemoteCliInstallProbeForTests(std::string_view previous, std::strin
 std::string BuildInstallAwareCliProbeForTests(std::string_view provider_id, std::string_view platform)
 {
 	return BuildInstallAwareProbeCommand(ResolveProviderCliPolicy(provider_id).policy, platform);
+}
+
+std::vector<std::string> BuildRemoteCliCommandArgv(const ExecutionHost& host, const std::string& command, bool installing, std::string_view install_manager)
+{
+	if (installing && host.cli_updates_as_admin)
+	{
+		if (host.transport != "ssh" || host.platform != "linux" || install_manager != "npm" || !command.starts_with("npm install -g ")) return {};
+		// SSH updates cannot collect a sudo password; never fall back to an unelevated install.
+		return {"sh", "-lc", "command -v sudo >/dev/null 2>&1 || { echo 'sudo is unavailable on this host.' >&2; exit 1; }; "
+		    "uam_update_prefix=$(npm prefix -g) || exit $?; "
+		    "case \"$uam_update_prefix\" in /*) ;; *) echo 'Could not identify the existing npm installation prefix.' >&2; exit 1;; esac; "
+		    "exec sudo -n -- npm --prefix \"$uam_update_prefix\" " + command.substr(4)};
+	}
+	return host.platform == "windows"
+	    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", command}
+	    : std::vector<std::string>{"sh", "-lc", command};
 }

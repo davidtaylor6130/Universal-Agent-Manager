@@ -24,6 +24,24 @@ namespace uam::execution_hosts
 		return {};
 	}
 
+	/// <summary>Determines whether saving host options must also configure remote startup.</summary>
+	inline bool NeedsStartupConfiguration(const ExecutionHost& current, const ExecutionHost& previous)
+	{
+		return current.startup_enabled != previous.startup_enabled || current.startup_enabled ||
+		       previous.startup_status == "pending";
+	}
+
+	/// <summary>Applies startup confirmation after the host's local options were saved.</summary>
+	inline void ApplyStartupConfigurationResult(ExecutionHost& current, const ExecutionHost& previous, bool succeeded)
+	{
+		if (succeeded) current.startup_status = current.startup_enabled ? "enabled" : "disabled";
+		else
+		{
+			current.startup_enabled = previous.startup_enabled;
+			current.startup_status = "error";
+		}
+	}
+
 	/// Records a completed probe only while its host configuration and health snapshot remain current.
 	inline bool ApplyHealthObservation(ExecutionHost& current, const ExecutionHost& observed,
 	                                   bool connected, std::string_view timestamp)
@@ -252,6 +270,7 @@ namespace uam::execution_hosts
 			    {"runnerProtocolVersion", host.runner_protocol_version},
 			    {"instructionFile", host.instruction_file},
 			    {"startupEnabled", host.startup_enabled}, {"startupStatus", host.startup_status},
+			    {"cliUpdatesAsAdmin", host.cli_updates_as_admin},
 			    {"customIcon", uam::icons::Serialize(host.custom_icon)},
 			});
 		}
@@ -276,6 +295,7 @@ namespace uam::execution_hosts
 				    entry.value("instructionFile", ""), entry.value("startupEnabled", false),
 				    entry.value("startupStatus", "disabled"),
 				    uam::icons::Parse(entry.value("customIcon", nlohmann::json(nullptr))),
+				    entry.value("cliUpdatesAsAdmin", false),
 				});
 			}
 		}

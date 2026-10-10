@@ -640,10 +640,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteLabel('')
   }
 
-  const saveRemoteHostOptions = async (host: ExecutionHost, instructionFile: string, startupEnabled: boolean) => {
+  const saveRemoteHostOptions = async (host: ExecutionHost, instructionFile: string, startupEnabled: boolean, cliUpdatesAsAdmin: boolean) => {
     if (remoteBusy) return
     setRemoteBusy(true)
-    const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, instructionFile, startupEnabled } })
+    const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, instructionFile, startupEnabled, cliUpdatesAsAdmin } })
     setRemoteBusy(false)
     setRemoteMessage(response.ok ? `${host.label} options saved.` : response.error || 'SSH host options could not be saved.')
   }
@@ -2205,13 +2205,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <form className="mt-3 grid gap-2" onSubmit={(event) => {
                         event.preventDefault()
                         const fields = new FormData(event.currentTarget)
-                        void saveRemoteHostOptions(host, String(fields.get('instructionFile') || ''), fields.get('startupEnabled') === 'on')
+                        void saveRemoteHostOptions(host, String(fields.get('instructionFile') || ''), fields.get('startupEnabled') === 'on', fields.get('cliUpdatesAsAdmin') === 'on')
                       }}>
                         <label className="flex items-center gap-2">
                           <input type="checkbox" name="startupEnabled" defaultChecked={host.startupEnabled || false} />
                           Start runner at login
                         </label>
                         <div style={{ color: 'var(--text-3)' }}>{host.startupStatus || 'disabled'} · Windows login or Linux systemd user session</div>
+                        {host.platform === 'linux' && <label className="flex items-center gap-2">
+                          <input type="checkbox" name="cliUpdatesAsAdmin" title="Requires passwordless sudo for npm. Chat sessions continue as your SSH user." defaultChecked={host.cliUpdatesAsAdmin || false} />
+                          Run CLI updates with sudo
+                        </label>}
                         <label className="grid gap-1">
                           Host instruction file
                           <input name="instructionFile" aria-label={`Instruction file on ${host.label}`} defaultValue={host.instructionFile || ''} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="px-2 py-1 font-mono outline-none" style={{ color: 'var(--text)', background: '#000', border: '1px solid var(--border)' }} />

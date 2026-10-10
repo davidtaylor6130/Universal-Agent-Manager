@@ -10,6 +10,10 @@ namespace uam
 	struct AppState;
 }
 
+struct ExecutionHost;
+/// <summary>Applies the host's opt-in elevation policy only to remote npm updates.</summary>
+std::vector<std::string> BuildRemoteCliCommandArgv(const ExecutionHost& host, const std::string& command, bool installing, std::string_view install_manager);
+
 struct CliProviderVersionOption
 {
 	std::string version;

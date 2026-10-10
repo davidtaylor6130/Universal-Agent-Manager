@@ -508,6 +508,28 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it.each([false, true])('saves the chosen Linux CLI elevation setting: %s', async (enabled) => {
+    useAppStore.setState({ executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', cliUpdatesAsAdmin: !enabled }] })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      const checkbox = host.querySelector<HTMLInputElement>('[name="cliUpdatesAsAdmin"]')!
+      expect(checkbox.checked).toBe(!enabled)
+      await act(async () => { checkbox.click() })
+      const button = Array.from(checkbox.form!.querySelectorAll('button')).find(candidate => candidate.type === 'submit')!
+      await act(async () => { button.click() })
+      expect(requests.find(request => request.action === 'saveRemoteHostOptions')?.payload.cliUpdatesAsAdmin).toBe(enabled)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it.each(['default submitter', 'Check file'] as const)('owns remote host options actions for %s', async (interaction) => {
     useAppStore.setState({
       executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' }],
@@ -536,7 +558,7 @@ describe('SettingsModal memory settings', () => {
       expect(actions).toEqual([{
         action: interaction === 'default submitter' ? 'saveRemoteHostOptions' : 'checkRemoteHostInstruction',
         payload: interaction === 'default submitter'
-          ? { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md', startupEnabled: false }
+          ? { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md', startupEnabled: false, cliUpdatesAsAdmin: false }
           : { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md' },
       }])
     } finally {

@@ -589,6 +589,7 @@ struct ExecutionHost
 	bool startup_enabled = false;
 	std::string startup_status = "disabled";
 	CustomIcon custom_icon;
+	bool cli_updates_as_admin = false;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
