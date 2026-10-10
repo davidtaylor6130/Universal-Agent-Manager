@@ -27,6 +27,19 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove() })
 
 describe('inline queued prompts', () => {
+  it.each(['stable', 'legacy'] as const)('identifies files in an attachment-only %s row without changing the queue', (identity) => {
+    const queued = { ...prompt('a', '', [{ id: 'image', name: 'photo.png', path: '/project/photo.png', type: 'image', size: 1 }]), markdownStoreFiles: ['C:\\skills\\review.md'] }
+    props.prompts = [identity === 'legacy' ? { ...queued, id: undefined, revision: undefined } : queued]
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    const files = host.querySelector('[aria-label="Queued 1 files"]')!
+    expect(files.textContent).toContain('photo.png')
+    expect(files.textContent).toContain('review.md')
+    expect(files.querySelector('[title="/project/photo.png"]')).not.toBeNull()
+    expect(files.querySelector('button')).toBeNull()
+    expect(props.onEdit).not.toHaveBeenCalled()
+    expect(props.onSteer).not.toHaveBeenCalled()
+    expect(props.prompts[0].attachments).toEqual(queued.attachments)
+  })
   it('edits only the queue snapshot and submits its stable ID and revision', async () => {
     await click(button('Edit queued prompt'))
     editText('Changed queued text')

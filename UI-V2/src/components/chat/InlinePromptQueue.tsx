@@ -64,7 +64,7 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
   }
   return <div className="mb-1.5" role="group" aria-label="Queued prompt">
     <span className="sr-only" role="status">{prompts.length} queued prompt{prompts.length === 1 ? '' : 's'}</span>
-    {held && <div className="flex items-center gap-2 py-1 text-[11px]" style={{ color: 'var(--text-2)' }}><span>Restored queue is paused.</span><Button type="button" size="sm" variant="ghost" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'Queue changed or could not be resumed. Your queued prompts are kept.')}>Resume queue</Button></div>}
+    {held && <div className="flex items-center gap-2 py-1 text-[11px]" style={{ color: 'var(--text-2)' }}><span>Restored queue is paused.</span><Button type="button" size="sm" variant="secondary" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'Queue changed or could not be resumed. Your queued prompts are kept.')}>Resume queue</Button></div>}
     <div className="max-h-40 overflow-y-auto">{prompts.map((prompt, index) => <div key={prompt.id ?? `legacy-${index}`} className="uam-queued-prompt border-b border-[var(--border)] py-1.5 text-[11px]">
       <div className="flex items-center gap-1">
         <span className="shrink-0 font-medium mr-1">Queued {prompts.length > 1 ? index + 1 : ''}</span>
@@ -75,7 +75,16 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
         <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Steer with this prompt now" disabled={held || blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onSteer(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'Queued prompt could not be sent. Try again.')} />
         <IconButton size="sm" icon={<X size={14} />} label="Remove queued prompt" disabled={blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onRemove(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'Queued prompt could not be removed. Try again.')} />
       </div>
-      {(prompt.attachments.length > 0 || prompt.markdownStoreFiles.length > 0) && <span style={{ color: 'var(--text-3)' }}>{prompt.attachments.length + prompt.markdownStoreFiles.length} attachment{prompt.attachments.length + prompt.markdownStoreFiles.length === 1 ? '' : 's'}</span>}
+      {(!editing || editing.id !== prompt.id) && (prompt.attachments.length > 0 || prompt.markdownStoreFiles.length > 0) && <div className="flex flex-wrap gap-2 pt-1" aria-label={`Queued ${index + 1} files`}>
+        {prompt.attachments.map((attachment) => <span key={attachment.id} className="inline-flex max-w-full text-[11px]" title={attachment.path || attachment.name}
+          style={{ border: '1px solid var(--border)', borderRadius: 999, background: 'var(--surface-up)', color: 'var(--text-2)', padding: '3px 7px' }}>
+          <span className="truncate max-w-[260px]">{attachment.name}</span>
+        </span>)}
+        {prompt.markdownStoreFiles.map((filePath) => <span key={filePath} className="inline-flex max-w-full text-[11px]" title={filePath}
+          style={{ border: '1px solid var(--border)', borderRadius: 999, background: 'var(--surface-up)', color: 'var(--text-2)', padding: '3px 7px' }}>
+          <span className="truncate max-w-[260px]">{filePath.split(/[\\/]/).pop() || filePath}</span>
+        </span>)}
+      </div>}
     </div>)}</div>
     {editing && <div className="pt-1.5 text-[11px]" style={{ color: 'var(--text-2)' }}>
       <div className="pb-1">{editedPromptIndex >= 0 ? `Editing queued ${editedPromptIndex + 1}` : 'Editing queued prompt'}</div>
