@@ -1,8 +1,11 @@
+import type { ContextReference } from '../types/contextReference'
+import { sanitizeContextReferences } from './contextReferences'
 import type { Attachment } from '../types/message'
 
 export interface ChatComposerDraft {
   text: string
   attachments: Attachment[]
+  references?: ContextReference[]
 }
 
 const chatPrefix = 'uam-chat-composer-draft-v1:'
@@ -30,8 +33,10 @@ export function readChatComposerDraft(sessionId: string): ChatComposerDraft {
   try {
     const stored = storage()?.getItem(`${chatPrefix}${sessionId}`)
     if (stored === null || stored === undefined) return chatDraftMemory.get(sessionId) ?? { text: '', attachments: [] }
-    const parsed = JSON.parse(stored) as { text?: unknown; attachments?: unknown }
+    const parsed = JSON.parse(stored) as { text?: unknown; attachments?: unknown; references?: unknown }
+    const references = sanitizeContextReferences(parsed.references)
     const draft = {
+      ...(references.length > 0 ? { references } : {}),
       text: typeof parsed.text === 'string' ? parsed.text : '',
       attachments: Array.isArray(parsed.attachments) ? parsed.attachments.map(attachment).filter((item): item is Attachment => item !== null) : [],
     }
@@ -43,14 +48,15 @@ export function readChatComposerDraft(sessionId: string): ChatComposerDraft {
 }
 
 export function writeChatComposerDraft(sessionId: string, draft: ChatComposerDraft): void {
-  const snapshot = { text: draft.text, attachments: [...draft.attachments] }
-  if (!draft.text && draft.attachments.length === 0) chatDraftMemory.delete(sessionId)
+  const references = sanitizeContextReferences(draft.references ?? readChatComposerDraft(sessionId).references)
+  const snapshot = { text: draft.text, attachments: [...draft.attachments], ...(references.length > 0 ? { references } : {}) }
+  if (!draft.text && draft.attachments.length === 0 && references.length === 0) chatDraftMemory.delete(sessionId)
   else chatDraftMemory.set(sessionId, snapshot)
   try {
     const key = `${chatPrefix}${sessionId}`
     const target = storage()
     if (!target) throw new Error('Draft persistence is unavailable.')
-    if (!draft.text && draft.attachments.length === 0) target.removeItem(key)
+    if (!draft.text && draft.attachments.length === 0 && references.length === 0) target.removeItem(key)
     else target.setItem(key, JSON.stringify(snapshot))
     chatDraftDirty.delete(sessionId)
   } catch {

@@ -8,7 +8,7 @@ import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLea
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const originalActions = { setActiveSession: useAppStore.getState().setActiveSession, setSessionPinned: useAppStore.getState().setSessionPinned }
+const originalActions = { setActiveSession: useAppStore.getState().setActiveSession, setSessionPinned: useAppStore.getState().setSessionPinned, moveResourceToCollection: useAppStore.getState().moveResourceToCollection }
 
 const now = new Date('2026-01-01T12:00:00.000Z')
 
@@ -58,13 +58,13 @@ function makeAcpBinding(overrides: Partial<AcpBinding> = {}): AcpBinding {
   }
 }
 
-function renderSessionItem() {
+function renderSessionItem(activityLayout = false) {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const root = createRoot(host)
 
   act(() => {
-    root.render(<SessionItem sessionId="chat-1" />)
+    root.render(<SessionItem sessionId="chat-1" activityLayout={activityLayout} />)
   })
 
   return { host, root }
@@ -362,6 +362,33 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+
+  it.each([false, true])('pins and unpins a running chat from its context menu (activity=%s)', async (activityLayout) => {
+    const setSessionPinned = vi.fn(async () => true)
+    const setActiveSession = vi.fn()
+    useAppStore.setState({ activeSessionId: 'chat-1', sessions: [makeSession()], setSessionPinned, setActiveSession,
+      acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true }) } })
+    const { host, root } = renderSessionItem(activityLayout)
+    try {
+      const row = host.querySelector<HTMLElement>('[data-session-id="chat-1"]')!
+      act(() => row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
+      const pin = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.trim() === 'Pin chat')
+      expect(pin).toBeTruthy()
+      await act(async () => pin!.click())
+      expect(setSessionPinned).toHaveBeenCalledWith('chat-1', true)
+      expect(setActiveSession).not.toHaveBeenCalled()
+      act(() => useAppStore.setState({ sessions: [{ ...makeSession(), isPinned: true }] }))
+      act(() => row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
+      const unpin = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.trim() === 'Unpin chat')
+      expect(unpin).toBeTruthy()
+      await act(async () => unpin!.click())
+      expect(setSessionPinned).toHaveBeenLastCalledWith('chat-1', false)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('unpins from the persistent button without selecting or dragging its chat', () => {
     const setSessionPinned = vi.fn(async () => true)
     const setActiveSession = vi.fn()
@@ -598,10 +625,10 @@ describe('SessionItem status icons', () => {
   })
 
   it('moves a chat to a collection from its right-click menu', async () => {
-    const addResourceReference = vi.fn().mockResolvedValue(true)
+    const moveResourceToCollection = vi.fn().mockResolvedValue(true)
     useAppStore.setState({
       resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
-      addResourceReference,
+      moveResourceToCollection,
       removeResourceReference: vi.fn().mockResolvedValue(true),
     })
     const { host, root } = renderSessionItem()
@@ -610,7 +637,7 @@ describe('SessionItem status icons', () => {
     act(() => move?.click())
     const work = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === 'Work')
     await act(async () => { work?.click(); await Promise.resolve() })
-    expect(addResourceReference).toHaveBeenCalledWith('work', 'chat', 'chat-1', 'Chat 1')
+    expect(moveResourceToCollection).toHaveBeenCalledWith('work', 'chat', 'chat-1', 'Chat 1')
     act(() => root.unmount())
     host.remove()
   })

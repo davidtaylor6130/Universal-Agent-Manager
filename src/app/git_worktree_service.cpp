@@ -1189,6 +1189,17 @@ namespace uam
 			result.message = "Automatic checkpoints require an available UAM isolated Git worktree.";
 			return result;
 		}
+		// Preflight was clean, but a user can stage work while the provider runs.
+		// Skip the automatic commit rather than consume their current index.
+		std::string staged_paths;
+		if (!GitOutput(worktree, "diff --cached --name-only -z --", &staged_paths, &result.message, stop_token)) return result;
+		if (!staged_paths.empty())
+		{
+			result.ok = true;
+			result.message = "Automatic checkpoint skipped because staged changes exist. Your staging was preserved.";
+			return result;
+		}
+
 		bool dirty = false;
 		if (!IsDirty(worktree, &dirty, &result.message, stop_token)) return result;
 		if (!dirty)

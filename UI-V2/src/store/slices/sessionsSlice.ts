@@ -1,10 +1,13 @@
+import type { ContextReference } from '../../types/contextReference'
+import { sanitizeContextReferences, CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
+import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
-import type { McpServerConfiguration } from '../cpp/types'
+import type { ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -450,6 +453,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       delete cliTranscriptBySessionId[id]
       delete chatHistoryErrorBySessionId[id]
       set({ messages, historyStartIndexBySessionId, cliTranscriptBySessionId, chatHistoryErrorBySessionId })
+      if (isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
     },
 
     addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '') => {
@@ -822,6 +826,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.data ?? null
     },
 
+    getChatFileChangeReceipts: async (id: string): Promise<ChatFileChangeReceiptsResponse> => {
+      const response = await sendToCEF<ChatFileChangeReceiptsResponse>({ action: 'getChatFileChangeReceipts', payload: { chatId: id } })
+      if (!response.ok || !response.data) throw new Error(response.error || 'Could not load chat file changes.')
+      return response.data
+    },
+
     getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitStatus>({
@@ -993,6 +1003,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return true
       }
 
+      const organizationSequence = get().organizationMutationSequence + 1
+      set({ organizationMutationSequence: organizationSequence })
       const applyPinned = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
@@ -1013,6 +1025,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         })
 
         if (response.ok) {
+          if (get().organizationMutationSequence === organizationSequence && isLatestPendingRequest(requestKey, response.requestId) && (get().sessions.find((session) => session.id === id)?.isPinned ?? false) === pinned) {
+            set({ organizationUndo: { label: pinned ? 'Pin chat' : 'Unpin chat', change: { kind: 'pin', chatId: id, expected: pinned, replacement: previousSession.isPinned ?? false } } })
+          }
           clearPendingRequest(requestKey, response.requestId)
           return true
         }
@@ -1030,6 +1045,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       }
 
       applyPinned()
+      set({ organizationUndo: { label: pinned ? 'Pin chat' : 'Unpin chat', change: { kind: 'pin', chatId: id, expected: pinned, replacement: previousSession.isPinned ?? false } } })
       return true
     },
 
@@ -2095,6 +2111,25 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         }
       }),
 
+    stageChatContextReference: (sessionId: string, reference: ContextReference): boolean => {
+      if (!get().sessions.some((session) => session.id === sessionId)) return false
+      const validated = sanitizeContextReferences([reference])[0]
+      const source = get().sessions.find((session) => session.id === reference.sourceChatId)
+      if (!validated || !source || (source.executionHostId || 'local') !== validated.executionHostId ||
+        (source.workspaceWorktreeDirectory || source.workspaceDirectory || '') !== validated.workspaceDirectory) return false
+      if (validated.kind === 'message') {
+        const index = validated.sourceMessageIndex! - (get().historyStartIndexBySessionId[source.id] ?? 0)
+        const message = get().messages[source.id]?.[index]
+        if (!message || message.isStreaming || (validated.sourceMessageId && message.id !== validated.sourceMessageId) || !message.content.includes(validated.text)) return false
+      }
+      if (validated.kind === 'terminal' && get().cliBindingBySessionId[source.id]?.terminalId !== validated.terminalId) return false
+      const draft = readChatComposerDraft(sessionId)
+      const references = draft.references ?? []
+      if (references.length >= CONTEXT_REFERENCE_MAX_COUNT || references.some((item) => item.id === validated.id)) return false
+      writeChatComposerDraft(sessionId, { ...draft, references: [...references, validated] })
+      return true
+    },
+
     stageChatAttachments: async (sessionId: string, items: ChatAttachmentInput[]): Promise<Attachment[]> => {
       if (items.length === 0) return []
       if (isCefContext()) {
@@ -2319,6 +2354,35 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           },
         }
       })
+      return true
+    },
+
+    editQueuedAcpPrompt: async (sessionId: string, promptId: string, expectedRevision: number, text: string): Promise<boolean> => {
+      if (!promptId || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1 || !text.trim()) return false
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: { chatId: sessionId, operation: 'edit', promptId, expectedRevision, text } })
+        return response.ok
+      }
+      const queue = get().acpBindingBySessionId[sessionId]?.queuedPrompts ?? []
+      const index = queue.findIndex((prompt) => prompt.id === promptId && prompt.revision === expectedRevision)
+      if (index < 0) return false
+      const next = queue.map((prompt, position) => position === index ? { ...prompt, text, revision: expectedRevision + 1 } : prompt)
+      set((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, [sessionId]: { ...state.acpBindingBySessionId[sessionId], queuedPrompts: next } } }))
+      return true
+    },
+
+    reorderQueuedAcpPrompts: async (sessionId: string, expected: { id: string; revision: number }[], orderedIds: string[]): Promise<boolean> => {
+      if (expected.length !== orderedIds.length || expected.length > 32 || new Set(orderedIds).size !== orderedIds.length ||
+        expected.some((entry) => !entry.id || !Number.isSafeInteger(entry.revision) || entry.revision < 1) ||
+        orderedIds.some((id) => !expected.some((entry) => entry.id === id))) return false
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: { chatId: sessionId, operation: 'reorder', expected, orderedIds } })
+        return response.ok
+      }
+      const queue = get().acpBindingBySessionId[sessionId]?.queuedPrompts ?? []
+      if (queue.length !== expected.length || queue.some((prompt, index) => prompt.id !== expected[index].id || prompt.revision !== expected[index].revision)) return false
+      const next = orderedIds.map((id) => queue.find((prompt) => prompt.id === id)!)
+      set((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, [sessionId]: { ...state.acpBindingBySessionId[sessionId], queuedPrompts: next } } }))
       return true
     },
 

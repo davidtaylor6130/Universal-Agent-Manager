@@ -193,7 +193,7 @@ namespace uam::provider_setup
 	                  const std::filesystem::path& workspace, std::vector<std::string>& argv,
 	                  Environment& environment, std::string& error, const nlohmann::json& session_servers = nlohmann::json::array())
 	{
-		if (argv.empty() || (provider != uam::provider_ids::kCodexCli && provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kGeminiCli && provider != uam::provider_ids::kOpenCodeCli && provider != uam::provider_ids::kCopilotCli))
+		if (argv.empty() || (provider != uam::provider_ids::kCodexCli && provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kGeminiCli && provider != uam::provider_ids::kOpenCodeCli && provider != uam::provider_ids::kCopilotCli && provider != uam::provider_ids::kAntigravityCli))
 		{ error = "Central configuration does not support this provider."; return false; }
 		if (!session_servers.is_array()) { error = "Session MCP configuration is invalid."; return false; }
 		std::string owner;
@@ -263,7 +263,28 @@ namespace uam::provider_setup
 		}
 		if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) { error = "Could not install central MCP configuration."; return false; }
 		const std::string instruction_file = uam::paths::Utf8PathString(instruction_path);
-		if (provider == uam::provider_ids::kClaudeCli)
+		if (provider == uam::provider_ids::kAntigravityCli)
+		{
+			// Native --add-dir discovers this private directory without changing cwd or user configuration.
+			for (nlohmann::json& server : native_servers)
+			{
+				if (server.contains("url"))
+				{
+					server["serverUrl"] = server["url"];
+					server.erase("url");
+				}
+				server.erase("type");
+			}
+			const std::filesystem::path isolated_config = runtime / ".agents" / "mcp_config.json";
+			if (!NoSymlinks(isolated_config)) { error = "Central runtime path contains a symbolic link."; return false; }
+			std::filesystem::create_directories(isolated_config.parent_path(), ec);
+			if (ec) { error = "Could not create private Antigravity configuration directory."; return false; }
+			std::filesystem::permissions(isolated_config.parent_path(), std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
+			if (ec) { error = "Could not secure private Antigravity configuration directory."; return false; }
+			if (!WriteRuntimeFile(isolated_config, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) return false;
+			argv.insert(argv.end(), {"--add-dir", uam::paths::Utf8PathString(runtime)});
+		}
+		else if (provider == uam::provider_ids::kClaudeCli)
 		{
 			for (std::size_t index = 1; index + 1 < argv.size();)
 			{

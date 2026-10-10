@@ -834,7 +834,8 @@ namespace uam
 		       protocol == uam::provider_profile_constants::kProtocolGeminiAcp ||
 		       protocol == uam::provider_profile_constants::kProtocolOpenCodeAcp ||
 		       protocol == uam::provider_profile_constants::kProtocolCopilotAcp ||
-		       protocol == uam::provider_profile_constants::kProtocolClaudeCodeStreamJson;
+		       protocol == uam::provider_profile_constants::kProtocolClaudeCodeStreamJson ||
+               protocol == uam::provider_profile_constants::kProtocolAntigravityStreamJson;
 	}
 
 		int UamControlService::RunStdioServerFromEnvironment()

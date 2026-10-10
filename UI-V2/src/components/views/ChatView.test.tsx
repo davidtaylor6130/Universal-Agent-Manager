@@ -1,3 +1,4 @@
+import { captureContextReference } from '../../utils/contextReferences'
 import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -1272,6 +1273,50 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it.each([true, false])('quotes captured references only in the submitted prompt and consumes them only on acceptance=%s', async (accepted) => {
+    let finishSend!: (ok: boolean) => void
+    const send = vi.fn(() => new Promise<boolean>((resolve) => { finishSend = resolve }))
+    const stageChatAttachments = vi.fn((_chatId, items) => Promise.resolve(items.map((item: { id: string; name: string }) => ({ id: item.id, name: item.name, type: 'image', size: 4, path: '/tmp/new.png' }))))
+    useAppStore.setState({ sendAcpPrompt: send, stageChatAttachments })
+    const reference = captureContextReference({ kind: 'message', sourceChatId: 'source', sourceMessageIndex: 4, executionHostId: 'local', workspaceDirectory: '/tmp/source', capturedAt: '2026-10-07T12:00:00.000Z', label: 'Source message', text: 'Selected source text' })!
+    writeChatComposerDraft('chat-1', { text: 'My draft', attachments: [{ id: 'sent-file', name: 'sent.png', type: 'image', size: 4, path: '/tmp/sent.png' }], references: [reference] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      expect(textarea.value).toBe('My draft')
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Queue prompt"]')!.click())
+      expect(send).toHaveBeenCalledTimes(1)
+      const submitted = send.mock.calls[0] as unknown as [string, string]
+      expect(submitted[1]).toContain('My draft')
+      expect(submitted[1]).toContain('Selected source text')
+      expect(submitted[1]).toContain('"sourceMessageIndex":4')
+      expect(textarea.value).toBe('My draft')
+      const added = { ...reference, id: 'added-during-send', text: 'New reference' }
+      writeChatComposerDraft('chat-1', { ...readChatComposerDraft('chat-1'), references: [reference, added] })
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'New unsent draft')
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      const fileInput = host.querySelector('input[type="file"]') as HTMLInputElement
+      const file = new File(['data'], 'new.png', { type: 'image/png' })
+      Object.defineProperty(file, 'path', { value: '/tmp/new.png' })
+      Object.defineProperty(fileInput, 'files', { value: [file], configurable: true })
+      await act(async () => fileInput.dispatchEvent(new Event('change', { bubbles: true })))
+      expect(host.textContent).toContain('new.png')
+      await act(async () => finishSend(accepted))
+      expect(host.textContent).toContain('new.png')
+      expect(host.textContent?.includes('sent.png')).toBe(!accepted)
+      expect(readChatComposerDraft('chat-1').references?.map((entry) => entry.id)).toEqual(accepted ? [added.id] : [reference.id, added.id])
+      expect(textarea.value).toBe('New unsent draft')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('submits a prompt only once before the submitting state rerenders', async () => {

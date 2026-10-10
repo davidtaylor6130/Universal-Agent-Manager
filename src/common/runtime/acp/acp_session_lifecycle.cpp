@@ -543,8 +543,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	const ProviderProfile* selected_provider = ProviderResolutionService().ProviderForChat(app, chat);
-	if ((selected_provider != nullptr && !selected_provider->supports_structured) ||
-	    uam::provider_ids::NormalizeCliProviderAlias(chat.provider_id) == uam::provider_ids::kAntigravityCli)
+	if (selected_provider != nullptr && !selected_provider->supports_structured)
 	{
 		if (error_out != nullptr) *error_out = "This provider supports terminal chat only.";
 		return false;
@@ -735,7 +734,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	nlohmann::json launch_control_servers = nlohmann::json::array();
 	AppSettings configuration_settings = app.settings;
-	if (!session.model_discovery_only && provider.id == uam::provider_ids::kClaudeCli && chat.uam_control_enabled)
+	if (!session.model_discovery_only && (provider.id == uam::provider_ids::kClaudeCli || provider.id == uam::provider_ids::kAntigravityCli) && chat.uam_control_enabled)
 	{
 		nlohmann::json control_request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
 		if (!UamControlService::AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, control_request, &startup_error))
@@ -760,7 +759,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 					return false;
 				}
 			}
-			const std::string channel = "claude-control-" + chat.remote_uam_control_channel_id;
+			const std::string channel = (provider.id == uam::provider_ids::kClaudeCli ? "claude-control-" : "antigravity-control-") + chat.remote_uam_control_channel_id;
 			std::vector<std::string> control_argv{server["command"].get<std::string>()};
 			for (const nlohmann::json& argument : server["args"]) control_argv.push_back(argument.get<std::string>());
 			uam::provider_setup::Environment control_environment;

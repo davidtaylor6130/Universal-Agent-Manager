@@ -157,6 +157,7 @@ export function CLIView({ session }: CLIViewProps) {
       if (companion) {
         let cancelled = false
         let reading = false
+        let reconnectAfterRead = false
         let inputFailed = false
         let timer: ReturnType<typeof setTimeout> | undefined
         let attached: { terminalId: string; startupTime: number; cursor: number } | null = null
@@ -168,28 +169,38 @@ export function CLIView({ session }: CLIViewProps) {
         const read = async (operation: 'attach' | 'read') => {
           if (cancelled || reading || document.visibilityState === 'hidden') return
           reading = true
-          const binding = useAppStore.getState().cliBindingBySessionId[session.id]
-          const terminalId = attached?.terminalId || binding?.terminalId || ''
-          const response = await sendToCEF<CompanionTerminalResponse>({ action: 'companionCliTerminal', payload: {
-            chatId: session.id, terminalId, operation,
-            ...(attached ? { startupTime: attached.startupTime, cursor: attached.cursor } : {}),
-          } })
-          reading = false
-          if (cancelled) return
-          if (!response.ok || !response.data) {
-            fail(response.error || 'Terminal unavailable. Retry attaching to continue.')
-            return
+          try {
+            const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+            const terminalId = attached?.terminalId || binding?.terminalId || ''
+            const response = await sendToCEF<CompanionTerminalResponse>({ action: 'companionCliTerminal', payload: {
+              chatId: session.id, terminalId, operation,
+              ...(attached ? { startupTime: attached.startupTime, cursor: attached.cursor } : {}),
+            } })
+            if (cancelled) return
+            if (!response.ok || !response.data) {
+              fail(response.error || 'Terminal unavailable. Retry attaching to continue.')
+              return
+            }
+            const data = response.data
+            if (operation === 'attach') term.reset()
+            // Preserve the owned process grid without resizing the desktop terminal.
+            term.resize(data.cols, data.rows)
+            const screen = term.element?.querySelector<HTMLElement>('.xterm-screen')
+            if (terminalRef.current && screen?.style.width) terminalRef.current.style.width = screen.style.width
+            if (data.replayData) term.write(decodeReplayData(data.replayData))
+            attached = { terminalId: data.terminalId, startupTime: data.startupTime, cursor: data.cursor }
+            if (!inputFailed) setCliBinding(session.id, { lastError: '' })
+            timer = setTimeout(() => { void read('read').catch(() => fail('Connection lost. Retry attaching to continue.')) }, 500)
+          } finally {
+            reading = false
+            // An online/visible event can precede the failed request settling.
+            // Coalesce it into one retry while retaining the owned process cursor.
+            if (reconnectAfterRead && !cancelled && !document.hidden) {
+              reconnectAfterRead = false
+              if (timer) clearTimeout(timer)
+              void read(attached ? 'read' : 'attach').catch(() => fail('Connection lost. Retry attaching to continue.'))
+            }
           }
-          const data = response.data
-          if (operation === 'attach') term.reset()
-          // Preserve the owned process grid without resizing the desktop terminal.
-          term.resize(data.cols, data.rows)
-          const screen = term.element?.querySelector<HTMLElement>('.xterm-screen')
-          if (terminalRef.current && screen?.style.width) terminalRef.current.style.width = screen.style.width
-          if (data.replayData) term.write(decodeReplayData(data.replayData))
-          attached = { terminalId: data.terminalId, startupTime: data.startupTime, cursor: data.cursor }
-          if (!inputFailed) setCliBinding(session.id, { lastError: '' })
-          timer = setTimeout(() => { void read('read').catch(() => fail('Connection lost. Retry attaching to continue.')) }, 500)
         }
         const onData = term.onData((data) => {
           if (cancelled || !attached) return
@@ -198,8 +209,9 @@ export function CLIView({ session }: CLIViewProps) {
           } }).then((response) => { if (!response.ok) fail(response.error || 'Terminal input could not be delivered.', true) })
         })
         const reconnect = () => {
-          if (document.visibilityState === 'hidden') { if (timer) clearTimeout(timer); return }
+          if (document.visibilityState === 'hidden') { reconnectAfterRead = false; if (timer) clearTimeout(timer); return }
           if (timer) clearTimeout(timer)
+          if (reading) { reconnectAfterRead = true; return }
           void read(attached ? 'read' : 'attach').catch(() => fail('Connection lost. Retry attaching to continue.'))
         }
         document.addEventListener('visibilitychange', reconnect)

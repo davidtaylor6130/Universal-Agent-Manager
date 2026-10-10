@@ -189,29 +189,13 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       const previous = get().folders
       const byId = new Map(previous.map((folder) => [folder.id, folder]))
       const seen = new Set<string>()
-      const reordered = folderIds.flatMap((id) => {
-        const folder = byId.get(id)
-        return folder && !seen.has(id) ? (seen.add(id), [folder]) : []
-      })
-      reordered.push(...previous.filter((folder) => !seen.has(folder.id)))
-      set({ folders: reordered })
-      if (!isCefContext()) return true
-
-      const requestKey = 'reorderFolders'
-      const requestId = createRequestId(requestKey)
-      rememberPendingRequest(requestKey, requestId)
-      const response = await sendToCEF({
-        action: 'reorderFolders',
-        payload: { folderIds: reordered.map((folder) => folder.id) },
-        requestId,
-      })
-      if (response.ok) {
-        clearPendingRequest(requestKey, response.requestId)
-      } else if (isLatestPendingRequest(requestKey, response.requestId)) {
-        set({ folders: previous })
-        pendingRequestIdsByKey.delete(requestKey)
-      }
-      return response.ok
+      const ordered = folderIds.filter((id) => byId.has(id) && !seen.has(id) && (seen.add(id), true))
+      ordered.push(...previous.filter((folder) => !seen.has(folder.id)).map((folder) => folder.id))
+      const expected = previous.map((folder) => folder.id)
+      if (JSON.stringify(expected) === JSON.stringify(ordered)) return true
+      if (!await get().applyOrganizationChange({ kind: 'folderOrder', expected, replacement: ordered })) return false
+      set({ organizationUndo: { label: 'Reorder workspaces', change: { kind: 'folderOrder', expected: ordered, replacement: expected } } })
+      return true
     },
 
     rescanFolderChats: async (id: string): Promise<boolean> => {

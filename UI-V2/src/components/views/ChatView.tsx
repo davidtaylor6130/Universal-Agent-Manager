@@ -1,3 +1,4 @@
+import { formatContextReferences, sanitizeContextReferences } from '../../utils/contextReferences'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
@@ -539,6 +540,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const cliVersionManager = useAppStore((s) => s.cliVersionManager)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
+  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+    const references = sanitizeContextReferences(readChatComposerDraft(chatId).references)
+    const context = formatContextReferences(references)
+    const submittedText = context ? `${text}\n\n${context}` : text
+    const accepted = await (steerNow !== undefined ? sendAcpPrompt(chatId, submittedText, attachments, steerNow)
+      : attachments !== undefined ? sendAcpPrompt(chatId, submittedText, attachments) : sendAcpPrompt(chatId, submittedText))
+    if (accepted && references.length > 0 && useAppStore.getState().sessions.some((candidate) => candidate.id === chatId)) {
+      const sentIds = new Set(references.map((reference) => reference.id))
+      const current = readChatComposerDraft(chatId)
+      writeChatComposerDraft(chatId, { ...current, references: (current.references ?? []).filter((reference) => !sentIds.has(reference.id)) })
+    }
+    return accepted
+  }, [sendAcpPrompt])
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
@@ -1083,11 +1097,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 	  const goalAttachments = composerAttachments
 	    .filter((attachment) => attachment.status === 'ready')
 	    .map(({ status, error, ...attachment }) => attachment)
-	  const sent = goalResult.ok ? await sendAcpPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
+	  const sent = goalResult.ok ? await sendComposerPrompt(session.id, providerManaged ? `${nativeGoalCommand} ${objective}` : objective, goalAttachments) : false
 
-	  if (goalResult.ok && sent) {
-        setDraft('')
-	    setComposerAttachments([])
+	  if (goalResult.ok && sent && currentSessionIdRef.current === session.id) {
+        setDraft((current) => current === draft ? '' : current)
+	    setComposerAttachments((current) => current.filter((attachment) => !goalAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
 	    setAttachmentError('')
         setGoalError('')
       } else {
@@ -1183,14 +1197,15 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 	  setGoalSubmitting(true)
 	  try {
 		const goalResult = await setGoalStore(session.id, objective, defaultGoalTokenBudget, 'provider')
-		const ok = goalResult.ok ? await sendAcpPrompt(session.id, prompt, readyAttachments) : false
+		const ok = goalResult.ok ? await sendComposerPrompt(session.id, prompt, readyAttachments) : false
 		if (!ok) {
 		  setGoalError(goalResult.ok ? 'Goal was created, but the provider command failed to send.' : (goalResult.error || 'Failed to create goal.'))
 		  return
 		}
+		if (currentSessionIdRef.current !== submittedSessionId) return
 		setGoalError('')
-		setDraft('')
-		setComposerAttachments([])
+		setDraft((current) => current === draft ? '' : current)
+		setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
 		setAttachmentError('')
 	  } catch {
 		setGoalError('Failed to create goal.')
@@ -1217,16 +1232,17 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 		  return
 		}
 		const ok = steerNow
-		  ? await sendAcpPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments, true)
-		  : await sendAcpPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments)
+		  ? await sendComposerPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments, true)
+		  : await sendComposerPrompt(session.id, providerGoalCommand ? `${providerGoalCommand} ${prompt}` : prompt, readyAttachments)
 		if (!ok) {
 		  setGoalError('Goal was created, but the first prompt failed to send.')
 		  return
 		}
+		if (currentSessionIdRef.current !== submittedSessionId) return
 		setGoalError('')
 		setGoalArmNextMessage(false)
-		setDraft('')
-		setComposerAttachments([])
+		setDraft((current) => current === draft ? '' : current)
+		setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
 		setAttachmentError('')
 	  } catch {
 		setGoalError('Failed to create goal.')
@@ -1250,8 +1266,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     let ok = false
     try {
       ok = await (steerNow
-        ? sendAcpPrompt(session.id, prompt, readyAttachments, true)
-        : sendAcpPrompt(session.id, prompt, readyAttachments))
+        ? sendComposerPrompt(session.id, prompt, readyAttachments, true)
+        : sendComposerPrompt(session.id, prompt, readyAttachments))
     } catch {
       ok = false
     }
@@ -1261,8 +1277,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       if (steerNow) setSteering(false)
     }
     if (ok && currentSessionIdRef.current === submittedSessionId) {
-      setDraft('')
-      setComposerAttachments([])
+      setDraft((current) => current === draft ? '' : current)
+      setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
       setAttachmentError('')
     }
   }
@@ -2170,6 +2186,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return
     }
 
+    const submittedSessionId = session.id
+    const submittedDraft = draft
     setSubmitting(true)
     const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(session.id, 'default')
     if (!modeOk) {
@@ -2189,11 +2207,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       .filter((attachment) => attachment.status === 'ready')
       .map(({ status, error, ...attachment }) => attachment)
     const ok = readyAttachments.length > 0
-      ? await sendAcpPrompt(session.id, prompt, readyAttachments)
-      : await sendAcpPrompt(session.id, prompt)
-    if (ok) {
-      setDraft('')
-      setComposerAttachments([])
+      ? await sendComposerPrompt(session.id, prompt, readyAttachments)
+      : await sendComposerPrompt(session.id, prompt)
+    if (ok && currentSessionIdRef.current === submittedSessionId) {
+      setDraft((current) => current === submittedDraft ? '' : current)
+      setComposerAttachments((current) => current.filter((attachment) => !readyAttachments.some((sentAttachment) => sentAttachment.id === attachment.id)))
       setAttachmentError('')
       setClaudePlanPrompt(null)
     }

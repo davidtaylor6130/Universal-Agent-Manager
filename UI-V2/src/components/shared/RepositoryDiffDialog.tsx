@@ -4,6 +4,7 @@ import { FileText, X } from 'lucide-react'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
 import { CopyTextButton } from '../chat/StatusHelpers'
 import { IconButton } from '../ui'
+import { getTopmostModal } from '../../utils/modalFocus'
 
 export function RepositoryDiffDialog({
   chatId,
@@ -26,13 +27,18 @@ export function RepositoryDiffDialog({
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null
-    dialogRef.current?.focus()
-    return () => previouslyFocused?.focus?.()
+    const dialog = dialogRef.current
+    dialog?.focus()
+    return () => {
+      if (previouslyFocused?.isConnected && (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement))) previouslyFocused.focus()
+    }
   }, [])
 
   useEffect(() => {
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Escape' || event.defaultPrevented || getTopmostModal() !== dialogRef.current) return
+      event.preventDefault()
+      onClose()
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)

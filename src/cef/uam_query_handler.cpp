@@ -34,6 +34,8 @@ void UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 #if UAM_ENABLE_MOBILE_COMPANION
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	m_companion = UamCompanionServer::StartFromEnvironment([this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
+		if (request.value("action", std::string{}) == "setVisibleChatIds" || request.value("action", std::string{}) == "releaseChatMessages")
+		{ callback->Failure(403, "Desktop transcript ownership is required."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
 		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
 			callback->Failure(404, "Unknown companion action.");
@@ -86,7 +88,11 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"selectSession", &UamQueryHandler::HandleSelectSession},
 		{"acknowledgeChatAttention", &UamQueryHandler::HandleAcknowledgeChatAttention},
 		{"setChatSettled", &UamQueryHandler::HandleSetChatSettled},
+		{"setVisibleChatIds", &UamQueryHandler::HandleSetVisibleChatIds},
+		{"releaseChatMessages", &UamQueryHandler::HandleReleaseChatMessages},
 		{"getChatMessages", &UamQueryHandler::HandleGetChatMessages},
+		{"getChatFileChangeReceipts", &UamQueryHandler::HandleGetChatFileChangeReceipts},
+		{"applyOrganizationAction", &UamQueryHandler::HandleOrganizationAction},
 		{"getToolCallContent", &UamQueryHandler::HandleGetToolCallContent},
 		{"createSideChat", &UamQueryHandler::HandleCreateSideChat},
 		{"dismissSideChat", &UamQueryHandler::HandleDismissSideChat},

@@ -950,11 +950,11 @@ describe('AppShell', () => {
   })
   it('retains real move failures after toast dismissal and allows explicit history dismissal', async () => {
     vi.useFakeTimers()
-    const originalAdd = useAppStore.getState().addResourceReference
+    const originalMove = useAppStore.getState().moveResourceToCollection
     useAppStore.setState({
       updateChecksEnabled: false,
       resourceCollections: [{ id: 'destination', name: 'Destination', collapsed: false, references: [] }],
-      addResourceReference: vi.fn().mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('Transport closed')),
+      moveResourceToCollection: vi.fn().mockResolvedValueOnce(false).mockRejectedValueOnce(new Error('Transport closed')),
     })
     const host = document.createElement('div')
     document.body.append(host)
@@ -986,8 +986,78 @@ describe('AppShell', () => {
     } finally {
       act(() => root.unmount())
       host.remove()
-      useAppStore.setState({ addResourceReference: originalAdd })
+      useAppStore.setState({ moveResourceToCollection: originalMove })
       vi.useRealTimers()
+    }
+  })
+
+  it('navigates to attention chats while leaving modal and consumed key events owned', async () => {
+    const select = vi.fn()
+    const previousSelect = useAppStore.getState().setActiveSession
+    useAppStore.setState({
+      sessions: ['busy', 'attention'].map((id) => ({ id, name: id, folderId: null, viewMode: 'chat' as const, createdAt: new Date(), updatedAt: new Date() })),
+      activeSessionId: 'busy',
+      acpBindingBySessionId: { busy: { processing: true }, attention: { attentionKind: 'permission' } },
+      setActiveSession: select,
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<AppShell />))
+      const dispatch = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'J', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }))
+      act(dispatch)
+      expect(select).toHaveBeenCalledExactlyOnceWith('attention')
+      select.mockClear()
+      const modal = document.createElement('div')
+      modal.setAttribute('aria-modal', 'true')
+      document.body.appendChild(modal)
+      act(dispatch)
+      expect(select).not.toHaveBeenCalled()
+      modal.remove()
+      const consumed = new KeyboardEvent('keydown', { key: 'J', ctrlKey: true, shiftKey: true, cancelable: true })
+      consumed.preventDefault()
+      act(() => window.dispatchEvent(consumed))
+      expect(select).not.toHaveBeenCalled()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ setActiveSession: previousSelect })
+    }
+  })
+
+  it('keeps text editor undo native and only handles organization undo outside editors', async () => {
+    const undo = vi.fn(async () => true)
+    const originalUndo = useAppStore.getState().undoOrganization
+    useAppStore.setState({ undoOrganization: undo, organizationUndo: { label: 'Pin chat', change: { kind: 'pin', chatId: 'chat', expected: true, replacement: false } } })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const key = () => new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })
+    try {
+      await act(async () => root.render(<AppShell />))
+      const input = host.querySelector('input[aria-label="Chat draft"]')!
+      const inputKey = key()
+      act(() => input.dispatchEvent(inputKey))
+      expect(inputKey.defaultPrevented).toBe(false)
+      expect(undo).not.toHaveBeenCalled()
+      const editor = document.createElement('div')
+      editor.setAttribute('contenteditable', 'true')
+      host.appendChild(editor)
+      act(() => editor.dispatchEvent(key()))
+      expect(undo).not.toHaveBeenCalled()
+      const backgroundKey = key()
+      act(() => host.dispatchEvent(backgroundKey))
+      expect(backgroundKey.defaultPrevented).toBe(true)
+      expect(undo).toHaveBeenCalledTimes(1)
+      useAppStore.setState({ organizationUndo: null })
+      const noUndo = key()
+      act(() => host.dispatchEvent(noUndo))
+      expect(noUndo.defaultPrevented).toBe(false)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ undoOrganization: originalUndo, organizationUndo: null })
     }
   })
 

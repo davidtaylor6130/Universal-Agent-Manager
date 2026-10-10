@@ -3,7 +3,7 @@
   Universal Agent Manager
 </h1>
 
-Run Gemini CLI, Codex CLI, Claude Code CLI, OpenCode CLI, GitHub Copilot CLI, and Antigravity CLI from one local desktop app. Antigravity uses its native terminal; the other five providers also support structured chat. UAM provides structured chat, embedded terminals, persistent history, flexible multi-pane layouts, and SSH execution on remote machines.
+Run Gemini CLI, Codex CLI, Claude Code CLI, OpenCode CLI, GitHub Copilot CLI, and Antigravity CLI from one local desktop app. All six providers support structured chat and native terminals. UAM provides structured chat, embedded terminals, persistent history, flexible multi-pane layouts, and SSH execution on remote machines.
 
 [![CI](https://github.com/davidtaylor6130/Universal-Agent-Manager/actions/workflows/ci.yml/badge.svg)](https://github.com/davidtaylor6130/Universal-Agent-Manager/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/davidtaylor6130/Universal-Agent-Manager)](https://github.com/davidtaylor6130/Universal-Agent-Manager/releases)
@@ -37,7 +37,7 @@ Remote hosts use existing OpenSSH aliases. UAM installs a versioned helper in th
 ## What UAM does
 
 - Runs six built-in CLI providers without removing their native command-line workflows.
-- Gives five providers a structured chat view and all six an embedded xterm.js terminal.
+- Gives all six providers a structured chat view and an embedded xterm.js terminal.
 - Stores normalized chat history locally, with native provider resume when the provider exposes a reusable session ID.
 - Opens up to nine chats in a recursive split layout with horizontal and vertical splits, resizing, per-pane state, and persisted layout.
 - Runs chats on the local computer or a configured SSH host.
@@ -65,17 +65,17 @@ Portable chat imports are passive, read-only transcripts. Reconnect workspaces, 
 | Claude Code CLI | stream JSON | Yes | When the CLI exposes a session ID |
 | OpenCode CLI | ACP | Yes | When ACP exposes a session ID |
 | GitHub Copilot CLI | ACP | Yes | When ACP exposes a session ID |
-| Antigravity CLI | None | Yes | Existing saved conversation IDs; CLI resume picker |
+| Antigravity CLI | Native stream JSON | Yes | Captured conversation IDs; saved-ID resume |
 
 Structured sessions surface the provider features available through that transport. Terminal fallback remains an opaque provider-controlled PTY, so UAM cannot mediate its internal tool approvals.
 
 The release-gating capability matrix is in [provider runtime parity](docs/provider-runtime-parity.md).
 
-### Antigravity CLI (terminal only)
+### Antigravity CLI
 
-Install and sign in to `agy` using [Google's installation instructions](https://www.antigravity.google/docs/cli/install/). Put it on the selected computer's PATH, then create an Antigravity chat in UAM. The CLI controls its model and permissions. UAM saves the terminal chat and forwards an existing saved conversation ID with `--conversation`; it does not capture new IDs or import native history. Use the CLI's own resume picker for those conversations.
+Install and sign in to `agy` using [Google's installation instructions](https://www.antigravity.google/docs/cli/install/). Put it on the selected computer's PATH, then create an Antigravity chat in UAM. Structured chat uses the native stream JSON protocol, captures conversation IDs and resumes with `--conversation`. The terminal remains available for interactive native permissions and the CLI's resume picker.
 
-Antigravity does not support UAM structured chat, managed MCP/central configuration, provider-history handoff, text workers or `/compact`. Keep UAM central configuration off and configure MCP in the CLI. UAM rejects requests for these managed features without changing the CLI's settings.
+Managed instructions and MCP configuration load through a private `--add-dir` directory. UAM preserves existing workspace and global configuration. Headless MCP discovery does not grant permission to call tools: Antigravity's native policy may deny calls, and UAM does not bypass it. Native permission callbacks, text workers, provider-native history import and `/compact` are unavailable for this provider.
 
 ## Permission modes
 

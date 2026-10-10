@@ -50,7 +50,7 @@ class ProviderProfileStore
 	static ProviderProfile DefaultCopilotProfile();
 	/// <summary>Returns the built-in provider profiles for this build.</summary>
 	static std::vector<ProviderProfile> BuiltInProfiles();
-	/// <summary>Returns the terminal-only Antigravity CLI profile.</summary>
+	/// <summary>Returns the native structured Antigravity CLI profile with terminal fallback.</summary>
 	static ProviderProfile DefaultAntigravityProfile();
 	/// <summary>Ensures enabled built-in provider profiles exist in the profile list.</summary>
 	static void EnsureDefaultProfile(std::vector<ProviderProfile>& profiles);

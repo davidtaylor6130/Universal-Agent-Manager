@@ -13,6 +13,7 @@ namespace uam::provider_profile_constants
 	inline constexpr const char* kOutputModeCli = "cli";
 	inline constexpr const char* kOutputModeStructured = "structured";
 
+	inline constexpr const char* kProtocolAntigravityStreamJson = "antigravity-stream-json";
 	inline constexpr const char* kProtocolNone = kNone;
 	inline constexpr const char* kProtocolGeminiAcp = "gemini-acp";
 	inline constexpr const char* kProtocolCodexAppServer = "codex-app-server";
