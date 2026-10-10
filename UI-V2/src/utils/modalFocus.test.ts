@@ -4,6 +4,14 @@ import { getTopmostModal, trapModalTab } from './modalFocus'
 afterEach(() => { document.body.innerHTML = '' })
 
 describe('trapModalTab', () => {
+  it.each(['hidden', 'display', 'visibility'])('ignores a modal beneath a %s ancestor', (kind) => {
+    document.body.innerHTML = '<section id="open" aria-modal="true"><button>Open</button></section><div id="hidden-parent" style="z-index:1000"><section aria-modal="true"><button>Hidden</button></section></div>'
+    const parent = document.getElementById('hidden-parent')!
+    if (kind === 'hidden') parent.hidden = true
+    else if (kind === 'display') parent.style.display = 'none'
+    else parent.style.visibility = 'hidden'
+    expect(getTopmostModal()?.id).toBe('open')
+  })
   it('keeps keyboard focus inside the topmost modal', () => {
     document.body.innerHTML = `
       <button id="background">Background</button>

@@ -7,6 +7,7 @@ import { AlertTriangle, X } from 'lucide-react'
 import { Session } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { FOCUS_ACTIVE_INPUT_EVENT } from '../../utils/activeInputFocus'
+import { getTopmostModal } from '../../utils/modalFocus'
 import { sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import { normalizeCliLifecycleState, cliLifecycleIsProcessing } from '../../store/cpp/reconcile'
 import type { CliLifecycleState } from '../../store/useAppStore'
@@ -105,7 +106,7 @@ export function CLIView({ session }: CLIViewProps) {
     const node = terminalRef.current
     if (!node) return
     const onFocusInput = (event: Event) => {
-      if (!termInstanceRef.current || document.querySelector('[aria-modal="true"]')) return
+      if (!termInstanceRef.current || getTopmostModal()) return
       termInstanceRef.current.focus()
       event.preventDefault()
     }

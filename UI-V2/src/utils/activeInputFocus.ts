@@ -1,13 +1,15 @@
+import { getTopmostModal } from './modalFocus'
+
 export const FOCUS_ACTIVE_INPUT_EVENT = 'uam-focus-active-input'
 
 /** Focus only an existing input in the currently focused visible chat pane. */
 export function focusActiveInput(doc: Document = document): boolean {
-  if (doc.querySelector('[aria-modal="true"]')) return false
+  if (getTopmostModal(doc)) return false
   const panes = Array.from(doc.querySelectorAll<HTMLElement>('.uam-chat-pane[data-focused="true"]')).filter((pane) => {
     for (let element: HTMLElement | null = pane; element; element = element.parentElement) {
       if (element.matches('[hidden], [inert], [aria-hidden="true"]')) return false
       const style = doc.defaultView?.getComputedStyle(element)
-      if (style?.display === 'none' || style?.visibility === 'hidden') return false
+      if (style?.display === 'none' || style?.visibility === 'hidden' || style?.visibility === 'collapse') return false
     }
     return true
   })

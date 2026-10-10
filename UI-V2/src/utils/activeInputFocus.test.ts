@@ -26,9 +26,17 @@ describe('active input focus', () => {
     expect(focusActiveInput()).toBe(false)
     pane.hidden = false; pane.style.display = 'none'
     expect(focusActiveInput()).toBe(false)
+    pane.style.display = ''; pane.style.visibility = 'collapse'
+    expect(focusActiveInput()).toBe(false)
+    pane.style.visibility = ''
     pane.style.display = ''; owner.setAttribute('aria-modal', 'true')
     expect(focusActiveInput()).toBe(false)
-    owner.removeAttribute('aria-modal'); document.body.appendChild(pane.cloneNode(true))
+    owner.setAttribute('data-state', 'closed')
+    expect(focusActiveInput()).toBe(true)
+    owner.removeAttribute('data-state'); owner.hidden = true
+    expect(focusActiveInput()).toBe(true)
+    owner.hidden = false; owner.removeAttribute('aria-modal'); document.body.appendChild(pane.cloneNode(true))
+    owner.focus()
     expect(focusActiveInput()).toBe(false)
     expect(document.activeElement).toBe(owner)
   })
