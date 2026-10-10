@@ -491,6 +491,9 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_repository.cpp
   src/common/chat/chat_branching.cpp
   src/common/chat/native_chat_identity.cpp
+  src/common/usage/transcript_usage.cpp
+  src/common/usage/usage_aggregation.cpp
+  src/common/usage/transcript_scan.cpp
   src/core/chat_import_utils.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
@@ -1196,6 +1199,8 @@ if(UAM_BUILD_TESTS)
     tests/transcript_retention_tests.cpp
     tests/chat_search_tests.cpp
     tests/provider_configuration_tests.cpp
+    tests/transcript_usage_tests.cpp
+    tests/transcript_scan_tests.cpp
     tests/provider_mcp_settings_tests.cpp
     tests/uam_control_transport_tests.cpp
     src/common/utils/diagnostic_log.cpp
@@ -1260,6 +1265,9 @@ if(UAM_BUILD_TESTS)
     src/common/chat/chat_repository.cpp
     src/common/chat/chat_branching.cpp
     src/common/chat/native_chat_identity.cpp
+    src/common/usage/transcript_usage.cpp
+    src/common/usage/usage_aggregation.cpp
+    src/common/usage/transcript_scan.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
