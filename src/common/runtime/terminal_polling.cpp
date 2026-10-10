@@ -18,6 +18,7 @@
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "cef/cef_push.h"
+#include "cef/state_serializer.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -58,15 +59,7 @@ std::string NativeHistorySnapshotDigest(const std::vector<ChatSession>& chats)
 		hash_string(chat.updated_at);
 		hash_string(std::to_string(chat.messages.size()));
 
-		if (!chat.messages.empty())
-		{
-			const Message& last_message = chat.messages.back();
-			hash_string(std::to_string(static_cast<int>(last_message.role)));
-			hash_string(last_message.created_at);
-			hash_string(last_message.provider);
-			hash_string(last_message.content);
-			hash_string(std::to_string(last_message.tool_calls.size()));
-		}
+		hash_string(uam::StateSerializer::MessageDigest(chat));
 	}
 
 	return uam::hashing::Hex64Padded(hash);

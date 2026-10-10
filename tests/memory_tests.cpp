@@ -1973,3 +1973,28 @@ UAM_TEST(CodexMemoryCompletionCannotPersistReasoningWhenAssistantRefuses)
 		if (!valid_empty) UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[chat.id], 1);
 	}
 }
+
+UAM_TEST(MemoryActivityCountsRejectChangedRootWithoutCopyingResidentHistory)
+{
+	TempDir temp("uam-memory-background-counts");
+	uam::AppState app;
+	app.data_root = temp.root / "first";
+	ChatSession chat;
+	chat.id = "large-memory-chat";
+	chat.messages.push_back(Message{MessageRole::User, std::string(8 * 1024 * 1024, 'x')});
+	app.chats.push_back(std::move(chat));
+	const char* resident = app.chats.front().messages.front().content.data();
+	MemoryService::RefreshMemoryActivityAsync(app);
+	UAM_ASSERT(app.memory_activity_refresh_task);
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content.data(), resident);
+	app.data_root = temp.root / "second";
+	app.chats.clear();
+	app.memory_activity.entry_count = 123;
+	for (int iteration = 0; iteration < 400 && app.memory_activity_refresh_task; ++iteration)
+	{
+		MemoryService::PollMemoryActivity(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!app.memory_activity_refresh_task);
+	UAM_ASSERT_EQ(app.memory_activity.entry_count, 0);
+}

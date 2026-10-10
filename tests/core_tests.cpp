@@ -24908,3 +24908,70 @@ UAM_TEST(BoundedMessageTailPreservesPagingAndRejectsSameSizeStorageReplacement)
 	UAM_ASSERT_EQ(newest->messages.size(), std::size_t(204));
 	UAM_ASSERT_EQ(newest->messages.front().content.back(), 'y');
 }
+
+UAM_TEST(VcsContextSnapshotPreservesWorkspaceWithoutTranscriptCopies)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "vcs-context";
+	chat.provider_id = "opencode-cli";
+	chat.execution_host_id = "remote-host";
+	chat.folder_id = "folder";
+	chat.workspace_directory = "/srv/project";
+	chat.workspace_isolation_kind = "git-worktree";
+	chat.workspace_worktree_directory = "/srv/worktree";
+	chat.messages.push_back({MessageRole::Assistant, std::string(8 * 1024 * 1024, 'x')});
+	const ChatSession context = uam::CaptureVcsChatContext(chat);
+	UAM_ASSERT(context.messages.empty());
+	UAM_ASSERT(!context.messages_loaded);
+	UAM_ASSERT_EQ(context.execution_host_id, chat.execution_host_id);
+	UAM_ASSERT_EQ(context.provider_id, chat.provider_id);
+	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, context), uam::paths::ResolveWorkspaceRootPath(app, chat));
+}
+
+UAM_TEST(ToolFieldPagingMatchesFormattingWithoutMaterializingWholePayload)
+{
+	ToolCall tool;
+	tool.approval_status = "allowed";
+	tool.args_json = std::string(256 * 1024 - 25, 'a') + "\xE2\x82\xAC";
+	tool.result_text = std::string(2 * 1024 * 1024, 'b');
+	tool.child_activity = "child completed";
+	const std::string full = uam::StateSerializer::ToolCallContentForFrontend(tool);
+	uam::AcpToolCallState live;
+	live.approval_status = tool.approval_status;
+	live.args_json = tool.args_json;
+	live.content = tool.result_text;
+	live.child_activity = tool.child_activity;
+	for (std::size_t offset : {std::size_t(0), std::size_t(128 * 1024), std::size_t(256 * 1024), std::numeric_limits<std::size_t>::max()})
+	{
+		const nlohmann::json expected = uam::StateSerializer::ToolCallContentPageForFrontend(full, offset);
+		UAM_ASSERT_EQ(uam::StateSerializer::ToolCallContentPageForFrontend(tool, offset), expected);
+		UAM_ASSERT_EQ(uam::StateSerializer::ToolCallContentPageForFrontend(live, offset), expected);
+	}
+}
+
+UAM_TEST(SavedSearchMatchesCompleteResultsAndCancelsBetweenChats)
+{
+	TempDir temp("uam-bounded-search");
+	for (int index = 0; index < 40; ++index)
+	{
+		ChatSession chat;
+		chat.id = "search-" + std::to_string(index);
+		chat.created_at = "2026-10-10T18:00:00Z";
+		chat.updated_at = chat.created_at + std::to_string(index);
+		chat.messages.push_back({MessageRole::Assistant, "alpha", "now"});
+		chat.messages.push_back({MessageRole::Assistant, "beta", "now"});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	}
+	const std::vector<std::string> tokens{"alpha", "beta"};
+	const nlohmann::json expected = uam::SearchChatMessages(ChatRepository::LoadLocalChats(temp.root), tokens);
+	const std::optional<nlohmann::json> actual = uam::SearchSavedChatMessages(temp.root, tokens, []() { return false; });
+	UAM_ASSERT(actual.has_value());
+	UAM_ASSERT_EQ(*actual, expected);
+	int checks = 0;
+	UAM_ASSERT(!uam::SearchSavedChatMessages(temp.root, tokens, [&checks]() { return ++checks >= 4; }));
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, "search-39").Failed());
+	const std::optional<nlohmann::json> after_delete = uam::SearchSavedChatMessages(temp.root, tokens, []() { return false; });
+	UAM_ASSERT(after_delete.has_value());
+	UAM_ASSERT_EQ((*after_delete)["chatIds"].size(), std::size_t(39));
+}

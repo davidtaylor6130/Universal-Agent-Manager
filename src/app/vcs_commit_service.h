@@ -9,6 +9,9 @@
 
 namespace uam
 {
+	/// <summary>Captures only repository/provider context, never transcript or tool payloads.</summary>
+	ChatSession CaptureVcsChatContext(const ChatSession& chat);
+
 	enum class VcsType
 	{
 		Git,

@@ -418,7 +418,7 @@ namespace uam
 		return ++m_generations[chat_id];
 	}
 
-	bool TranscriptRetentionService::CompleteRelease(AppState& app, const std::string& chat_id, std::uint64_t generation, const ChatSession& persisted)
+	bool TranscriptRetentionService::CompleteRelease(AppState& app, const std::string& chat_id, std::uint64_t generation, const ChatSession& persisted, std::vector<Message>* released)
 	{
 		const auto current = m_generations.find(chat_id);
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
@@ -426,7 +426,8 @@ namespace uam
 		    persisted.id != chat_id || !persisted.messages_loaded || persisted.messages != chat->messages) return false;
 		chat->persisted_message_count = persisted.messages.size();
 		chat->persisted_messages_digest = persisted.persisted_messages_digest;
-		std::vector<Message>().swap(chat->messages);
+		if (released) released->swap(chat->messages);
+		else std::vector<Message>().swap(chat->messages);
 		chat->messages_loaded = false;
 		return true;
 	}

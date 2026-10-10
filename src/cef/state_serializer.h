@@ -56,6 +56,8 @@ class StateSerializer
 	/// Return one bounded, UTF-8-safe page of tool-call output.
 	static nlohmann::json ToolCallContentPageForFrontend(std::string_view content,
 	                                                     std::size_t offset);
+	static nlohmann::json ToolCallContentPageForFrontend(const ToolCall& tool, std::size_t offset);
+	static nlohmann::json ToolCallContentPageForFrontend(const AcpToolCallState& tool, std::size_t offset);
 
 	/// Serialise a single folder.
 	static nlohmann::json SerializeFolder(const ChatFolder& folder, bool probe_directory = true);

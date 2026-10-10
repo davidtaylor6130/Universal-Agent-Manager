@@ -484,7 +484,7 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 	const bool include_line_stats = payload.value("includeLineStats", true);
 	const std::string request_id = payload.value("requestId", "");
 	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
-	const ChatSession chat_snapshot = *chat;
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	const std::filesystem::path expected_workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
 	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
 	const std::optional<ExecutionHost> expected_host = host == nullptr ? std::nullopt : std::optional<ExecutionHost>(*host);
@@ -523,7 +523,7 @@ void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, co
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	const std::string request_id = payload.value("requestId", "");
 	const std::string comparison_ref(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "comparisonRef"));
-	const ChatSession chat_snapshot = *chat;
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 
@@ -557,7 +557,7 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 	const std::vector<std::string> files = uam::nlohmann_json::TrimmedStringArrayField(payload, "files");
 	const std::string message = payload.value("message", "");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
-	const ChatSession chat_snapshot = *chat;
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 	uam::AppState* live_app = &m_app;
@@ -586,7 +586,7 @@ void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*bro
 	std::vector<std::string> files = uam::nlohmann_json::TrimmedStringArrayField(payload, "files");
 	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	const std::string request_id = payload.value("requestId", "");
-	const ChatSession chat_snapshot = *chat;
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const std::shared_ptr<void> remote_vcs_lease = BeginRemoteVcsOperationLease(m_app, chat->execution_host_id);
 

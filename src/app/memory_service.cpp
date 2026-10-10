@@ -4,6 +4,8 @@
 #include "app/memory_service.h"
 
 #include "app/chat_domain_service.h"
+#include "app/vcs_commit_service.h"
+#include <future>
 #include "app/persistence_coordinator.h"
 #include "app/provider_worker_command.h"
 #include "app/provider_resolution_service.h"
@@ -42,6 +44,17 @@
 #include <utility>
 
 namespace fs = std::filesystem;
+
+namespace uam
+{
+	struct MemoryActivityRefreshTask
+	{
+		std::filesystem::path data_root;
+		std::string context;
+		std::future<MemoryActivityState> result;
+		bool refresh_again = false;
+	};
+}
 
 namespace
 {
@@ -994,10 +1007,19 @@ namespace
 			return true;
 		}
 		bool tool_activity = false;
-		(void)ExtractMemoryJsonObject(task.state->result.output, &tool_activity);
-		const std::optional<std::string> text = tool_activity ? std::nullopt : uam::provider_workers::CompletedTextWorkerOutput(task.state->provider_id, task.state->result.output, uam::platform::kCapturedCommandMaxOutputBytes);
-		if (!text) error = tool_activity ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return a completed text response.";
-		if (text && MemoryService::ApplyWorkerOutput(app, chat, task.workspace_root, *text, task.message_count, &error))
+		std::optional<std::string> text;
+		if (task.extraction_state && task.extraction_state->output_prepared)
+		{
+			text = task.extraction_state->completed_text;
+			error = task.extraction_state->output_error;
+		}
+		else
+		{
+			(void)ExtractMemoryJsonObject(task.state->result.output, &tool_activity);
+			text = tool_activity ? std::nullopt : uam::provider_workers::CompletedTextWorkerOutput(task.state->provider_id, task.state->result.output, uam::platform::kCapturedCommandMaxOutputBytes);
+			if (!text) error = tool_activity ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return a completed text response.";
+		}
+		if (text && MemoryService::ApplyWorkerOutput(app, chat, task.workspace_root, *text, task.message_count, &error, true))
 		{
 			RecordMemorySuccess(app, task.chat_id);
 			ResetGlobalMemoryFailure(app);
@@ -1236,7 +1258,17 @@ namespace
 				    invocation.standard_input = "This is an SSH project memory scan. Return only local project memories.\n" + invocation.standard_input;
 				    state->result = ExecuteRemoteMemoryWorker(*remote_host, remote_workspace, invocation, worker_chat, state->provider_id, *extraction_state, stop_token);
 			    }
-			    else state->result = uam::ExecuteProviderWorkerInvocation(invocation, cwd, kMemoryWorkerTimeoutMs, stop_token);
+			    else
+			    {
+				    state->result = uam::ExecuteProviderWorkerInvocation(invocation, cwd, kMemoryWorkerTimeoutMs, stop_token);
+				    extraction_state->output_prepared = true;
+				    bool tool_activity = false;
+				    (void)ExtractMemoryJsonObject(state->result.output, &tool_activity);
+				    const std::optional<std::string> text = tool_activity ? std::nullopt : uam::provider_workers::CompletedTextWorkerOutput(state->provider_id, state->result.output, uam::platform::kCapturedCommandMaxOutputBytes);
+				    const std::optional<nlohmann::json> parsed = text ? ExtractMemoryJsonObject(*text, &tool_activity) : std::nullopt;
+				    if (parsed && !tool_activity) extraction_state->completed_text = parsed->dump();
+				    else extraction_state->output_error = tool_activity ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return the required JSON object.";
+			    }
 			    state->completed.store(true, std::memory_order_release);
 		    });
 
@@ -1487,7 +1519,7 @@ std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const Ch
 	return preface;
 }
 
-bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const fs::path& workspace_root, const std::string& output, int processed_message_count, std::string* error_out)
+bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const fs::path& workspace_root, const std::string& output, int processed_message_count, std::string* error_out, bool refresh_counts_async)
 {
 	bool tool_activity_detected = false;
 	const std::optional<nlohmann::json> parsed = ExtractMemoryJsonObject(output, &tool_activity_detected);
@@ -1545,7 +1577,8 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
 	}
 	app.memory_activity.last_created_count = wrote_count;
 	app.memory_last_status = wrote_count > 0 ? "Memory updated." : "Memory worker found no durable memories.";
-	RefreshMemoryActivity(app);
+	if (refresh_counts_async) RefreshMemoryActivityAsync(app);
+	else RefreshMemoryActivity(app);
 	return true;
 }
 
@@ -1576,6 +1609,67 @@ uam::MemoryActivityState MemoryService::BuildMemoryActivity(const uam::AppState&
 void MemoryService::RefreshMemoryActivity(uam::AppState& app)
 {
 	app.memory_activity = BuildMemoryActivity(app);
+}
+
+namespace
+{
+	std::string MemoryActivityContext(const uam::AppState& app)
+	{
+		nlohmann::json context = nlohmann::json::array();
+		for (const ChatFolder& folder : app.folders) context.push_back({folder.id, folder.directory, folder.execution_host_id});
+		for (const ChatSession& chat : app.chats) context.push_back({chat.id, chat.folder_id, chat.workspace_directory, chat.execution_host_id, chat.workspace_isolation_kind, chat.workspace_source_directory, chat.workspace_worktree_directory, chat.workspace_branch_name});
+		return context.dump();
+	}
+}
+
+void MemoryService::RefreshMemoryActivityAsync(uam::AppState& app)
+{
+	app.memory_activity.running_count = RunningMemoryTaskCount(app);
+	app.memory_activity.last_status = uam::strings::NonEmptyOrFallback(app.memory_last_status, app.memory_activity.last_status);
+	if (app.memory_activity_refresh_task)
+	{
+		app.memory_activity_refresh_task->refresh_again = true;
+		return;
+	}
+	const auto snapshot = std::make_shared<uam::AppState>();
+	snapshot->data_root = app.data_root;
+	snapshot->folders = app.folders;
+	snapshot->settings = app.settings;
+	for (const ChatSession& chat : app.chats) snapshot->chats.push_back(uam::CaptureVcsChatContext(chat));
+	const auto task = std::make_shared<uam::MemoryActivityRefreshTask>();
+	task->data_root = app.data_root;
+	task->context = MemoryActivityContext(app);
+	std::packaged_task<uam::MemoryActivityState()> worker([snapshot]() { return BuildMemoryActivity(*snapshot); });
+	task->result = worker.get_future();
+	try
+	{
+		std::thread(std::move(worker)).detach();
+		app.memory_activity_refresh_task = task;
+	}
+	catch (const std::exception&)
+	{
+		app.memory_last_status = "Memory counts could not be refreshed.";
+	}
+}
+
+bool MemoryService::PollMemoryActivity(uam::AppState& app)
+{
+	const auto task = app.memory_activity_refresh_task;
+	if (!task || task->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+	const bool current = task->data_root == app.data_root && task->context == MemoryActivityContext(app);
+	try
+	{
+		const uam::MemoryActivityState result = task->result.get();
+		if (current)
+		{
+			app.memory_activity.entry_count = result.entry_count;
+			app.memory_activity.last_created_at = result.last_created_at;
+		}
+	}
+	catch (const std::exception&) { app.memory_last_status = "Memory counts could not be refreshed."; }
+	app.memory_activity_refresh_task.reset();
+	if (task->refresh_again || !current) RefreshMemoryActivityAsync(app);
+	return true;
 }
 
 std::string MemoryService::BuildWorkerCommandForTests(const ProviderProfile& profile, const AppSettings& settings, const std::string& prompt, const std::string& model_id)
@@ -1692,7 +1786,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 
 bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 {
-	bool changed = false;
+	bool changed = PollMemoryActivity(app);
 	bool memory_entries_may_have_changed = false;
 	for (auto it = app.memory_extraction_tasks.begin(); it != app.memory_extraction_tasks.end();)
 	{
@@ -1882,7 +1976,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		{
 			if (memory_entries_may_have_changed)
 			{
-				RefreshMemoryActivity(app);
+				RefreshMemoryActivityAsync(app);
 			}
 			else
 			{
@@ -1939,7 +2033,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 	{
 		if (memory_entries_may_have_changed)
 		{
-			RefreshMemoryActivity(app);
+			RefreshMemoryActivityAsync(app);
 		}
 		else
 		{
@@ -1960,5 +2054,5 @@ void MemoryService::StopMemoryTasks(uam::AppState& app)
 	app.memory_extraction_tasks.clear();
 	app.memory_extraction_queue.clear();
 	app.memory_activity.running_count = 0;
-	RefreshMemoryActivity(app);
+	RefreshMemoryActivityAsync(app);
 }

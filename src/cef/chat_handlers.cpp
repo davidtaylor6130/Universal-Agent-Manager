@@ -245,7 +245,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 		metadata.settled_at = selected_chat->settled_at;
 		const std::filesystem::path data_root = m_app.data_root;
 		std::shared_ptr<std::shared_ptr<PreparedChatSave>> prepared = std::make_shared<std::shared_ptr<PreparedChatSave>>();
-		if (!uam::query_handler_async::RunIndependentCefQuery(m_asyncLifetime,
+		if (!uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr,
 		    [data_root, metadata, prepared]()
 		    {
 			    *prepared = ChatRepository::PrepareLastOpenedAt(data_root, metadata);
@@ -259,7 +259,7 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 			    if (m_app.pending_chat_save_at_by_chat_id.contains(metadata.id)) return;
 			    if (m_app.worktree_operation_chat_ids.contains(metadata.id) || !ChatRepository::PublishPreparedChatSave(*prepared))
 				    m_app.pending_chat_save_at_by_chat_id[metadata.id] = uam::GetAppTimeSeconds() + 1.0;
-		    })) m_app.pending_chat_save_at_by_chat_id[chat_id] = uam::GetAppTimeSeconds() + 1.0;
+		    }, TID_FILE_USER_BLOCKING)) m_app.pending_chat_save_at_by_chat_id[chat_id] = uam::GetAppTimeSeconds() + 1.0;
 	}
 	m_app.status_line.clear();
 
@@ -293,12 +293,21 @@ void UamQueryHandler::HandleReleaseChatMessages(CefRefPtr<CefBrowser>, const nlo
 	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
 	    [data_root, id, persisted]()
 	    {
-		    *persisted = ChatRepository::LoadLocalChat(data_root, id, true);
+		    *persisted = ChatRepository::LoadLocalChat(data_root, id, true, nullptr, false);
 		    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
 	    },
-	    [this, id, generation, persisted](uam::query_handler_async::AsyncCefResult&)
+	    [this, id, generation, persisted, data_root](uam::query_handler_async::AsyncCefResult&)
 	    {
-		    if (persisted->has_value()) m_transcriptRetention.CompleteRelease(m_app, id, *generation, **persisted);
+		    const auto released = std::make_shared<std::vector<Message>>();
+		    if (m_app.data_root == data_root && persisted->has_value())
+			    m_transcriptRetention.CompleteRelease(m_app, id, *generation, **persisted, released.get());
+		    // Dispose both large vectors on the managed worker, including rejected releases.
+		    uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr, [released, persisted]()
+		    {
+			    released->clear();
+			    persisted->reset();
+			    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
+		    });
 	    });
 }
 
@@ -634,8 +643,7 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 		    [&](const uam::AcpToolCallState& candidate) { return candidate.id == tool_call_id; });
 		if (active_tool != session->tool_calls.end())
 		{
-			const std::string content = uam::StateSerializer::ToolCallContentForFrontend(*active_tool);
-			cb->Success(uam::StateSerializer::ToolCallContentPageForFrontend(content, offset).dump());
+			cb->Success(uam::StateSerializer::ToolCallContentPageForFrontend(*active_tool, offset).dump());
 			return;
 		}
 	}
@@ -655,9 +663,8 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 			    if (!*resolved)
 				    return uam::query_handler_async::AsyncFailure(404,
 				        "Tool call not found or its transcript changed while loading.");
-			    const std::string content = uam::StateSerializer::ToolCallContentForFrontend((*resolved)->tool_call);
 			    return uam::query_handler_async::AsyncSuccess(
-			        uam::StateSerializer::ToolCallContentPageForFrontend(content, offset));
+			        uam::StateSerializer::ToolCallContentPageForFrontend((*resolved)->tool_call, offset));
 		    },
 		    [this, chat_id, resolved](uam::query_handler_async::AsyncCefResult& response)
 		    {
@@ -693,7 +700,7 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 		return;
 	}
 	cb->Success(uam::StateSerializer::ToolCallContentPageForFrontend(
-	    uam::StateSerializer::ToolCallContentForFrontend(*match), offset).dump());
+	    *match, offset).dump());
 }
 
 void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

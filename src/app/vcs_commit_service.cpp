@@ -34,6 +34,23 @@
 
 namespace uam
 {
+	ChatSession CaptureVcsChatContext(const ChatSession& chat)
+	{
+		ChatSession result;
+		result.id = chat.id;
+		result.provider_id = chat.provider_id;
+		result.execution_host_id = chat.execution_host_id;
+		result.folder_id = chat.folder_id;
+		result.imported_read_only = chat.imported_read_only;
+		result.workspace_directory = chat.workspace_directory;
+		result.workspace_isolation_kind = chat.workspace_isolation_kind;
+		result.workspace_source_directory = chat.workspace_source_directory;
+		result.workspace_worktree_directory = chat.workspace_worktree_directory;
+		result.workspace_branch_name = chat.workspace_branch_name;
+		result.messages_loaded = false;
+		return result;
+	}
+
 	namespace
 	{
 		constexpr int kDefaultCommandTimeoutMs = 120000;
