@@ -1059,6 +1059,44 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('keeps settled turn dates cached while typing and streaming, but refreshes changed metadata', () => {
+    const createdAt = new Date('2026-01-01T00:00:00Z')
+    const messages: Message[] = Array.from({ length: 200 }, (_, index) => ({
+      id: `date-${index}`, sessionId: 'chat-1', role: index % 2 ? 'assistant' : 'user',
+      content: `Message ${index}`, createdAt, providerId: 'gemini-cli', modelId: 'original-model',
+    }))
+    useAppStore.setState((state) => ({ messages: { 'chat-1': messages }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, turnEvents: [], toolCalls: [], pendingPermission: null },
+    } }))
+    const format = vi.spyOn(Date.prototype, 'toLocaleString')
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const initialFormats = format.mock.calls.length
+      expect(initialFormats).toBeGreaterThanOrEqual(100)
+      const textarea = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+      for (const value of ['a', 'ab', 'abc']) act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, value)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(format).toHaveBeenCalledTimes(initialFormats)
+      act(() => useAppStore.setState((state) => ({ messages: { 'chat-1': messages.map((message, index) => index === 199 ? { ...message, content: 'Streamed replacement', isStreaming: true } : message) }, acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, turnUserMessageIndex: 198, turnAssistantMessageIndex: 199, turnEvents: [{ type: 'assistant_text', text: 'Streamed replacement' }] } } })))
+      expect(host.textContent).toContain('Streamed replacement')
+      expect(format).toHaveBeenCalledTimes(initialFormats)
+      const replacementDate = new Date('2026-02-02T03:04:00Z')
+      act(() => useAppStore.setState((state) => ({ messages: { 'chat-1': state.messages['chat-1'].map((message, index) => index === 0 ? { ...message, createdAt: replacementDate, providerId: 'codex-cli', modelId: 'replacement-model' } : message) } })))
+      const first = host.querySelector<HTMLTimeElement>('time.conversation-turn-start')!
+      expect(first.dateTime).toBe(replacementDate.toISOString())
+      expect(first.textContent).toContain('Codex · replacement-model')
+      expect(format).toHaveBeenCalledTimes(initialFormats + 1)
+      act(() => useAppStore.setState((state) => ({ messages: { 'chat-1': state.messages['chat-1'].map((message, index) => index === 0 ? { ...message, providerId: 'claude-cli' } : message) } })))
+      expect(first.textContent).toContain('Claude · replacement-model')
+      act(() => useAppStore.setState((state) => ({ messages: { 'chat-1': state.messages['chat-1'].map((message, index) => index === 0 ? { ...message, modelId: 'model-only-change' } : message) } })))
+      expect(first.textContent).toContain('Claude · model-only-change')
+      expect(format).toHaveBeenCalledTimes(initialFormats + 3)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('reveals a collapsed historical search target and anchors each owned generation once without changing its draft', () => {
     const draft = 'Keep my unfinished prompt'
     writeChatComposerDraft('chat-1', { text: draft, attachments: [] })

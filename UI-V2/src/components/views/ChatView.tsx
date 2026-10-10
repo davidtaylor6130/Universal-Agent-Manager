@@ -300,6 +300,16 @@ export function reviewAssistantLabel(provider: string, message?: Message) {
   return [provider, model, time].filter(Boolean).join(' · ')
 }
 
+/** Settled turn metadata must not reformat dates on composer or stream updates. */
+const TurnStartTime = memo(function TurnStartTime({ timestamp, providerName, modelId }: { timestamp: number; providerName: string; modelId?: string }) {
+  const createdAt = new Date(timestamp)
+  return <time className="conversation-turn-start" dateTime={createdAt.toISOString()}>{[
+    providerName,
+    modelId,
+    createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
+  ].filter(Boolean).join(' · ')}</time>
+})
+
 type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planActions']
 
 const PersistedMessageRow = memo(function PersistedMessageRow({
@@ -2402,11 +2412,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 return (
                   <WorkSectionContext.Provider key={message.id} value={sectionControl}>
                   <div className="space-y-1" data-message-index={index + historyStartIndex}>
-                    {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <time className="conversation-turn-start" dateTime={sectionStart.createdAt.toISOString()}>{[
-                      sectionProviderName,
-                      sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : ''),
-                      sectionStart.createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
-                    ].filter(Boolean).join(' · ')}</time>}
+                    {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <TurnStartTime
+                      timestamp={sectionStart.createdAt.getTime()}
+                      providerName={sectionProviderName}
+                      modelId={sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : '')}
+                    />}
                     {message.role !== 'user' && heading}
                     {shouldRenderTimelineAtAssistant ? (
                       <MessageFrame
