@@ -216,7 +216,8 @@ namespace uam::provider_setup
 		const std::string root = uam::paths::Utf8PathString(directory);
 		instructions = ReplaceRoot(instructions, root);
 		std::error_code workspace_error;
-		if (!mcp_only && std::filesystem::exists(workspace / "AGENTS.md", workspace_error))
+		// Codex loads workspace AGENTS.md natively; copying it into -c duplicates context and can exceed Windows argv limits.
+		if (!mcp_only && provider != uam::provider_ids::kCodexCli && std::filesystem::exists(workspace / "AGENTS.md", workspace_error))
 		{
 			std::string workspace_instructions;
 			if (!ReadFile(workspace / "AGENTS.md", workspace_instructions, error)) return false;

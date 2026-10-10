@@ -134,6 +134,33 @@ UAM_TEST(CentralLaunchContractsCoverAllFiveProvidersAndPreserveOpenCodeConfig)
 	}
 }
 
+UAM_TEST(CodexCentralSetupLeavesWorkspaceInstructionsToNativeDiscovery)
+{
+	TempDir temp("uam-codex-native-workspace-instructions");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = "Shared central preference";
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	ExecutionHost host;
+	const std::string workspace_instructions = "Workspace-only marker\n" + std::string(128 * 1024, 'x');
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "AGENTS.md", workspace_instructions));
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error));
+	std::vector<std::string> argv{"codex", "app-server", "--listen", "stdio://"};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT(std::ranges::any_of(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions=") && argument.find("Shared central preference") != std::string::npos; }));
+	UAM_ASSERT(std::ranges::none_of(argv, [](const std::string& argument) { return argument.find("Workspace-only marker") != std::string::npos || argument.size() > 12 * 1024; }));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(temp.root / "AGENTS.md"), workspace_instructions);
+	argv = {"claude"};
+	UAM_ASSERT(uam::provider_setup::Apply(uam::provider_ids::kClaudeCli, bundle.local_directory, temp.root, argv, environment, error));
+	const std::vector<std::string>::iterator file_flag = std::ranges::find(argv, "--append-system-prompt-file");
+	UAM_ASSERT(file_flag != argv.end() && std::next(file_flag) != argv.end());
+	UAM_ASSERT(uam::io::ReadTextFile(uam::paths::PathFromUtf8(*std::next(file_flag))).find(workspace_instructions) != std::string::npos);
+}
+
 UAM_TEST(CentralSshPreparationIsResumableAndRejectsUnownedDirectories)
 {
 	TempDir temp("uam-central-ssh");

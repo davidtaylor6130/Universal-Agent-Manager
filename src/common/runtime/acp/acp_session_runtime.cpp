@@ -126,6 +126,12 @@ namespace uam
 
 		std::optional<std::string> ConfirmedRemoteConfigurationStartupError(const AcpSessionState& session, int exit_code)
 		{
+			// Older runners report this deterministic pre-launch rejection without an ownership marker.
+			constexpr std::string_view legacy_instruction_limit = "Codex central instructions exceed the OS launch limit. Move reference material into skills.";
+			if (exit_code == 70 && session.provider_id == provider_ids::kCodexCli && !session.remote_source_exit_reported &&
+			    !session.initialized && !session.session_ready && session.prompt_request_id == 0 &&
+			    strings::TrimAsciiView(session.recent_stderr) == legacy_instruction_limit)
+				return std::string(legacy_instruction_limit);
 			if (exit_code != uam::remote::kRemoteConfigurationStartupFailureExitCode || session.remote_output_delivery_token.empty() ||
 			    session.remote_source_exit_reported || session.initialized || session.session_ready || session.prompt_request_id != 0)
 				return std::nullopt;

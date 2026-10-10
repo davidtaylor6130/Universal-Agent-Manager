@@ -9260,6 +9260,7 @@ UAM_TEST(RemoteProxyConfigurationCapabilityRejectionNeverStartsProvider)
 
 UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 {
+	for (const bool legacy : {false, true})
 	for (const bool input_failed : {false, true})
 	{
 		TempDir temp("uam-acp-confirmed-config-startup-failure");
@@ -9286,12 +9287,16 @@ UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 		owned_session->turn_user_message_index = 0;
 		owned_session->turn_first_user_message_index = 0;
 		uam::AcpSessionState* session = owned_session.get();
+		const std::string expected_error = legacy
+		    ? "Codex central instructions exceed the OS launch limit. Move reference material into skills."
+		    : "Update the SSH helper before using central provider configuration.";
+		const int expected_exit = legacy ? 70 : 71;
 #if defined(_WIN32)
 		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
-		    "echo Update the SSH helper before using central provider configuration. 1>&2 & echo UAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration 1>&2 & exit /b 71"};
+		    "echo " + expected_error + " 1>&2" + (legacy ? "" : " & echo UAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration 1>&2") + " & exit /b " + std::to_string(expected_exit)};
 #else
 		const std::vector<std::string> argv = {"/bin/sh", "-c",
-		    "printf 'Update the SSH helper before using central provider configuration.\\nUAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration\\n' >&2; exit 71"};
+		    "printf '" + expected_error + "\\n" + (legacy ? "" : "UAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration\\n") + "' >&2; exit " + std::to_string(expected_exit)};
 #endif
 		std::string error;
 		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
@@ -9306,7 +9311,7 @@ UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 			       std::chrono::steady_clock::now() < deadline)
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 			UAM_ASSERT(session->stdin_writer->FailureOrStall());
-			UAM_ASSERT_EQ(exit_code, 71);
+			UAM_ASSERT_EQ(exit_code, expected_exit);
 			session->process_exit_observed = true;
 			session->observed_process_exit_code = exit_code;
 		}
@@ -9317,7 +9322,7 @@ UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
 		}
 		UAM_ASSERT(!session->running);
-		UAM_ASSERT_EQ(session->last_error, std::string("Update the SSH helper before using central provider configuration."));
+		UAM_ASSERT_EQ(session->last_error, expected_error);
 		UAM_ASSERT_EQ(session->lifecycle_state, std::string("error"));
 		UAM_ASSERT(!session->processing && !session->reconnect_pending && !session->recovering_remote_turn);
 		UAM_ASSERT_EQ(session->crash_restart_attempts, 0);
