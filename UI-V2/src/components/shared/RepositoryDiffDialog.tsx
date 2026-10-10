@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { FileText, X } from 'lucide-react'
+import { Columns2, FileText, Rows3, X } from 'lucide-react'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
 import { CopyTextButton } from '../chat/StatusHelpers'
 import { IconButton } from '../ui'
@@ -25,6 +25,13 @@ export function RepositoryDiffDialog({
   const dialogRef = useRef<HTMLElement>(null)
   const [diff, setDiff] = useState<string | null>(file.binary ? '' : null)
   const [error, setError] = useState('')
+  const [layout, setLayout] = useState<'unified' | 'split'>(() => {
+    try { return localStorage.getItem('uam-diff-layout') === 'unified' ? 'unified' : 'split' } catch { return 'split' }
+  })
+  const chooseLayout = (next: 'unified' | 'split') => {
+    setLayout(next)
+    try { localStorage.setItem('uam-diff-layout', next) } catch { /* The view still works when storage is unavailable. */ }
+  }
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null
@@ -90,6 +97,10 @@ export function RepositoryDiffDialog({
               {!file.binary && <><span style={{ color: 'var(--green)' }}>+{file.additions}</span><span style={{ color: 'var(--red)' }}>-{file.deletions}</span></>}
             </div>
           </div>
+          {!file.binary && <div role="group" aria-label="Diff layout" className="flex items-center gap-1">
+            <button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} title="Unified diff view" className="p-1.5" style={{ color: layout === 'unified' ? 'var(--accent)' : 'var(--text-2)', background: 'transparent', border: 'none' }} onClick={() => chooseLayout('unified')}><Rows3 size={16} aria-hidden /></button>
+            <button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} title="Split diff view" className="p-1.5" style={{ color: layout === 'split' ? 'var(--accent)' : 'var(--text-2)', background: 'transparent', border: 'none' }} onClick={() => chooseLayout('split')}><Columns2 size={16} aria-hidden /></button>
+          </div>}
           {diff && <CopyTextButton text={diff} label="Copy diff" title="Copy file diff" />}
           <IconButton icon={<X size={16} />} label="Close file changes" onClick={onClose} />
         </header>
@@ -103,7 +114,7 @@ export function RepositoryDiffDialog({
           ) : diff.length === 0 ? (
             <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>No textual diff is available for this file.</div>
           ) : (
-            <UnifiedDiff key={`${chatId}:${file.path}:${comparisonRef ?? ""}`} diff={diff} path={file.path} />
+            <UnifiedDiff key={`${chatId}:${file.path}:${comparisonRef ?? ""}`} diff={diff} path={file.path} layout={layout} />
           )}
         </div>
       </section>
