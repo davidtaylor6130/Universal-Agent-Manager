@@ -22,6 +22,19 @@ function fixture() {
 }
 afterEach(() => { delete window.cefQuery; vi.restoreAllMocks() })
 describe('search jump ownership', () => {
+  it('opens a rail position using a digest-checked page and rejects invalid positions', async () => {
+    const { get, requests } = fixture()
+    Object.assign(get().sessions[0], { messageCount: 200, messagesDigest: 'snapshot' })
+    expect(await get().jumpToSessionMessage('chat', -1)).toBe(false)
+    expect(await get().jumpToSessionMessage('chat', 200)).toBe(false)
+    expect(await get().jumpToSessionMessage('other', 0)).toBe(false)
+    expect(requests).toHaveLength(0)
+    const jump = get().jumpToSessionMessage('chat', 100)
+    expect(requests[0].payload).toMatchObject({ targetMessageIndex: 100, limit: 50, expectedMessagesDigest: 'snapshot' })
+    requests[0].reply(page())
+    expect(await jump).toBe(true)
+    expect(get().messages.chat).toHaveLength(50)
+  })
   it('hydrates one verified bounded page, anchors once, and keeps composer text and attachments', async () => {
     const { get, requests } = fixture()
     const draft = { text: 'Unsent draft', attachments: [{ id: 'image', name: 'image.png', type: 'image', size: 12, path: '/tmp/image.png' }] }
