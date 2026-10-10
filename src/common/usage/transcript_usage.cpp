@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <nlohmann/json.hpp>
 
 namespace uam::usage
@@ -146,6 +147,59 @@ namespace uam::usage
 		record.tokens = tokens;
 		if (!identity.empty()) record.dedupe_key = nlohmann::json::array({session_id, identity}).dump();
 		return record;
+	}
+
+	std::vector<Record> CopilotRecords(const nlohmann::json& event, std::string_view session_id, CopilotScanState& state)
+	{
+		const std::string type = detail::Text(event, "type");
+		const nlohmann::json* data = nlohmann_json::FindObjectField(event, "data");
+		if (!data) return {};
+		if (type == "session.start")
+		{
+			state.is_subagent = state.is_subagent || !detail::Text(*data, "detachedFromSpawningParentSessionId").empty();
+			return {};
+		}
+		if (state.is_subagent || !detail::Text(event, "agentId").empty() || session_id.empty() || session_id.size() > 512 ||
+		    (type != "session.shutdown" && type != "session.usage_checkpoint")) return {};
+		const std::function<std::vector<Record>()> reject = [&state]() { ++state.rejected_snapshots; return std::vector<Record>{}; };
+		const std::optional<std::int64_t> timestamp = TimestampMilliseconds(detail::Text(event, "timestamp"));
+		if (!timestamp) return reject();
+		const nlohmann::json* snapshot = nlohmann_json::FindObjectField(*data, "accountingSnapshot");
+		if (!snapshot) snapshot = data;
+		const nlohmann::json* models = nlohmann_json::FindObjectField(*snapshot, "modelMetrics");
+		if (!models || models->size() > 200) return reject();
+		std::vector<Record> records;
+		std::map<std::string, TokenCounts> next_totals = state.model_totals;
+		for (nlohmann::json::const_iterator model = models->begin(); model != models->end(); ++model)
+		{
+			if (model.key().empty() || model.key().size() > 512) return reject();
+			const nlohmann::json* usage = nlohmann_json::FindObjectField(model.value(), "usage");
+			if (!usage || !usage->contains("inputTokens") || !usage->contains("outputTokens") || !usage->contains("cacheReadTokens") || !usage->contains("cacheWriteTokens")) return reject();
+			for (const char* key : {"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens"})
+			{
+				const nlohmann::json* value = nlohmann_json::FindField(*usage, key);
+				if (value && !value->is_number_integer()) return reject();
+			}
+			const std::optional<std::int64_t> input = detail::Count(*usage, "inputTokens"), cached = detail::Count(*usage, "cacheReadTokens");
+			const std::optional<std::int64_t> written = detail::Count(*usage, "cacheWriteTokens"), output = detail::Count(*usage, "outputTokens"), reasoning = detail::Count(*usage, "reasoningTokens");
+			if (!input || !cached || !written || !output || !reasoning || *cached + *written > *input || *reasoning > *output) return reject();
+			const TokenCounts cumulative{*input - *cached - *written, *cached, *written, *output, *reasoning};
+			if (cumulative.Total() > kMaxExactTokenCount) return reject();
+			const TokenCounts previous = next_totals.contains(model.key()) ? next_totals.at(model.key()) : TokenCounts{};
+			const TokenCounts delta{cumulative.input - previous.input, cumulative.cached_input - previous.cached_input,
+			    cumulative.cache_write - previous.cache_write, cumulative.output - previous.output, cumulative.reasoning - previous.reasoning};
+			// Durable checkpoints subsume previous usage. Reject regressions rather than treating restored totals as a fresh bill.
+			if (delta.input < 0 || delta.cached_input < 0 || delta.cache_write < 0 || delta.output < 0 || delta.reasoning < 0 || delta.reasoning > delta.output) return reject();
+			if (delta.Total() == 0) continue;
+			Record record;
+			record.provider_id = provider_ids::kCopilotCli;
+			record.model_id = model.key(); record.session_id = session_id; record.timestamp_ms = *timestamp; record.tokens = delta;
+			record.dedupe_key = nlohmann::json::array({session_id, model.key(), cumulative.input, cumulative.cached_input, cumulative.cache_write, cumulative.output, cumulative.reasoning}).dump();
+			records.push_back(std::move(record)); next_totals[model.key()] = cumulative;
+		}
+		if (next_totals.size() > 200) return reject();
+		state.model_totals = std::move(next_totals);
+		return records;
 	}
 
 	/// <summary>Track model/tier changes in a Codex rollout and emit per-turn usage, never cumulative totals.</summary>

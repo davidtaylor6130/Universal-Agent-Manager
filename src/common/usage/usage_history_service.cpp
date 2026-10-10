@@ -1,6 +1,7 @@
 #include "common/usage/usage_history_service.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/utils/env_utils.h"
+#include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 
 #include <algorithm>
 #include <cmath>
@@ -88,7 +89,7 @@ namespace uam::usage
 		const std::optional<std::filesystem::path> configured_gemini = env::GetTrimmedPath("GEMINI_CLI_HOME");
 		const std::filesystem::path gemini_home = configured_gemini ? *configured_gemini : home.value_or(std::filesystem::path{});
 		return {{provider_ids::kGeminiCli, gemini_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{gemini_home / ".gemini" / "tmp"}}, {provider_ids::kCodexCli, {codex_home / "sessions", codex_home / "archived_sessions"}},
-		    {provider_ids::kClaudeCli, claude_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{claude_home / "projects"}}};
+		    {provider_ids::kCopilotCli, {CopilotSessionStatePath()}}, {provider_ids::kClaudeCli, claude_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{claude_home / "projects"}}};
 	}
 
 	bool HistoryService::Enumerate(const std::function<bool()>& cancelled)
@@ -118,6 +119,7 @@ namespace uam::usage
 					if (error) { ++m_sourceErrors[source.provider_id]; error.clear(); continue; }
 					if (symlink) { iterator.disable_recursion_pending(); continue; }
 					if (iterator->path().extension() != ".jsonl" && !(source.provider_id == provider_ids::kGeminiCli && iterator->path().extension() == ".json")) continue;
+					if (source.provider_id == provider_ids::kCopilotCli && iterator->path().filename() != "events.jsonl") continue;
 					if (source.provider_id == provider_ids::kGeminiCli)
 					{
 						const std::filesystem::path parent = iterator->path().parent_path();

@@ -37,6 +37,7 @@ namespace uam::usage
 		m_invalidLines = 0;
 		m_oversizedLines = 0;
 		m_codexState = {};
+		m_copilotState = {};
 		m_geminiSessionId.clear();
 		m_records.clear();
 	}
@@ -48,6 +49,14 @@ namespace uam::usage
 		{
 			const nlohmann::json event = nlohmann::json::parse(m_pendingLine, nullptr, false);
 			if (event.is_discarded()) ++m_invalidLines;
+			else if (m_providerId == provider_ids::kCopilotCli)
+			{
+				CopilotScanState next = m_copilotState;
+				std::vector<Record> records = CopilotRecords(event, m_path.parent_path().filename().string(), next);
+				if (records.size() > options.max_records - m_records.size()) { m_recordLimitReached = true; return false; }
+				m_copilotState = std::move(next);
+				for (Record& record : records) m_records.push_back(std::move(record));
+			}
 			else if (m_providerId == provider_ids::kGeminiCli)
 			{
 				if (!CommitGeminiEvent(event, options)) return false;
@@ -147,7 +156,7 @@ namespace uam::usage
 	ScanResult TranscriptScan::Refresh(const std::filesystem::path& path, const ScanOptions& options, const std::function<bool()>& cancelled)
 	{
 		ScanResult result;
-		if (m_providerId != provider_ids::kCodexCli && m_providerId != provider_ids::kClaudeCli && m_providerId != provider_ids::kGeminiCli)
+		if (m_providerId != provider_ids::kCodexCli && m_providerId != provider_ids::kClaudeCli && m_providerId != provider_ids::kGeminiCli && m_providerId != provider_ids::kCopilotCli)
 		{
 			result.error = "Historical transcript usage is unavailable for this provider.";
 			return result;

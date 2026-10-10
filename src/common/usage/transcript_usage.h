@@ -6,6 +6,8 @@
 #include <nlohmann/json_fwd.hpp>
 #include <cstdint>
 #include <optional>
+#include <map>
+#include <vector>
 #include <string>
 #include <string_view>
 
@@ -47,6 +49,16 @@ namespace uam::usage
 		std::int64_t fork_anchor_ms = 0;
 		std::size_t suppressed_fork_records = 0;
 	};
+
+	struct CopilotScanState
+	{
+		std::map<std::string, TokenCounts> model_totals;
+		bool is_subagent = false;
+		std::size_t rejected_snapshots = 0;
+	};
+
+	/// <summary>Emit increments from durable Copilot accounting snapshots; premium request multipliers are not USD.</summary>
+	std::vector<Record> CopilotRecords(const nlohmann::json& event, std::string_view session_id, CopilotScanState& state);
 
 	/// <summary>Parse a timezone-qualified ISO timestamp without using local timezone state.</summary>
 	std::optional<std::int64_t> TimestampMilliseconds(std::string_view text);

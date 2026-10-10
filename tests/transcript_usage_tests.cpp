@@ -236,3 +236,46 @@ UAM_TEST(UsageGeminiSeparatesCachedInputAndIncludesThoughtsOnlyOnce)
 	message["tokens"]["total"] = 140;
 	UAM_ASSERT(!uam::usage::GeminiRecord(message, "session"));
 }
+
+UAM_TEST(UsageCopilotDurableSnapshotsEmitOnlyNewTokensAndNeverPremiumRequestDollars)
+{
+	uam::usage::CopilotScanState state;
+	nlohmann::json event{{"type", "session.shutdown"}, {"timestamp", "2026-10-10T12:00:00Z"},
+	    {"data", {{"modelMetrics", {{"claude-sonnet", {{"requests", {{"cost", 1}}}, {"usage", {{"inputTokens", 100}, {"cacheReadTokens", 30}, {"cacheWriteTokens", 10}, {"outputTokens", 20}, {"reasoningTokens", 5}}}}}}}}}};
+	std::vector<uam::usage::Record> records = uam::usage::CopilotRecords(event, "session", state);
+	UAM_ASSERT_EQ(records.size(), std::size_t(1));
+	UAM_ASSERT_EQ(records[0].tokens.input, 60LL);
+	UAM_ASSERT_EQ(records[0].tokens.Total(), 120LL);
+	UAM_ASSERT(!records[0].reported_cost_usd);
+	UAM_ASSERT(uam::usage::CopilotRecords(event, "session", state).empty());
+	event["type"] = "session.usage_checkpoint";
+	event["data"]["accountingSnapshot"] = event["data"];
+	event["data"].erase("modelMetrics");
+	nlohmann::json& usage = event["data"]["accountingSnapshot"]["modelMetrics"]["claude-sonnet"]["usage"];
+	usage["inputTokens"] = 150; usage["cacheReadTokens"] = 50; usage["outputTokens"] = 30;
+	records = uam::usage::CopilotRecords(event, "session", state);
+	UAM_ASSERT_EQ(records.size(), std::size_t(1));
+	UAM_ASSERT_EQ(records[0].tokens.input, 30LL);
+	UAM_ASSERT_EQ(records[0].tokens.cached_input, 20LL);
+	UAM_ASSERT_EQ(records[0].tokens.Total(), 60LL);
+	const std::string first_key = records[0].dedupe_key;
+	for (const nlohmann::json bad : {nlohmann::json(nullptr), nlohmann::json(-1), nlohmann::json(1.5), nlohmann::json(9007199254740992ULL)})
+	{
+		usage["inputTokens"] = bad;
+		UAM_ASSERT(uam::usage::CopilotRecords(event, "session", state).empty());
+	}
+	usage["inputTokens"] = 140;
+	UAM_ASSERT(uam::usage::CopilotRecords(event, "session", state).empty());
+	UAM_ASSERT_EQ(state.rejected_snapshots, std::size_t(5));
+	usage["inputTokens"] = 150;
+	UAM_ASSERT(uam::usage::CopilotRecords(event, "session", state).empty());
+	usage["inputTokens"] = 160;
+	records = uam::usage::CopilotRecords(event, "session", state);
+	UAM_ASSERT_EQ(records.size(), std::size_t(1));
+	UAM_ASSERT_EQ(records[0].tokens.Total(), 10LL);
+	UAM_ASSERT(records[0].dedupe_key != first_key);
+	event["type"] = "assistant.usage";
+	UAM_ASSERT(uam::usage::CopilotRecords(event, "session", state).empty());
+	event["type"] = "session.shutdown"; event["agentId"] = "child";
+	UAM_ASSERT(uam::usage::CopilotRecords(event, "session", state).empty());
+}

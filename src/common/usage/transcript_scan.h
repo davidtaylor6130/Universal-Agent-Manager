@@ -31,7 +31,7 @@ namespace uam::usage
 		explicit TranscriptScan(std::string provider_id);
 		ScanResult Refresh(const std::filesystem::path& path, const ScanOptions& options = {}, const std::function<bool()>& cancelled = {});
 		const std::vector<Record>& Records() const { return m_records; }
-		std::size_t InvalidLines() const { return m_invalidLines; }
+		std::size_t InvalidLines() const { return m_invalidLines + m_copilotState.rejected_snapshots; }
 		std::size_t OversizedLines() const { return m_oversizedLines; }
 		std::size_t SuppressedForkRecords() const { return m_codexState.suppressed_fork_records; }
 		bool PendingTail() const { return !m_pendingLine.empty() || m_pendingOversized; }
@@ -54,6 +54,7 @@ namespace uam::usage
 		std::size_t m_invalidLines = 0;
 		std::size_t m_oversizedLines = 0;
 		CodexScanState m_codexState;
+		CopilotScanState m_copilotState;
 		std::string m_geminiSessionId;
 		std::vector<Record> m_records;
 	};

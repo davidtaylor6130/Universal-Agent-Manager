@@ -192,3 +192,22 @@ UAM_TEST(UsageGeminiSnapshotResumesBoundedReadsAndReportsMalformedRewrites)
 	UAM_ASSERT(result.error.find("changed during scanning") != std::string::npos);
 	UAM_ASSERT(scan.Records().empty());
 }
+
+UAM_TEST(UsageCopilotHistoryServiceReadsOnlyAccountingEventLogs)
+{
+	TempDir temp("uam-copilot-usage-service");
+	const fs::path root = temp.root / "session-state";
+	fs::create_directories(root / "session");
+	const nlohmann::json event{{"type", "session.shutdown"}, {"timestamp", "2026-10-10T12:00:00Z"}, {"data", {{"modelMetrics", {{"model", {{"usage", {{"inputTokens", 100}, {"cacheReadTokens", 30}, {"cacheWriteTokens", 10}, {"outputTokens", 20}}}}}}}}}};
+	UAM_ASSERT(uam::io::WriteTextFile(root / "session" / "events.jsonl", event.dump() + "\n" + event.dump() + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(root / "session" / "unrelated.jsonl", event.dump() + "\n"));
+	uam::usage::HistoryService service({{uam::provider_ids::kCopilotCli, {root}}});
+	const std::int64_t start = *uam::usage::TimestampMilliseconds("2026-10-10T00:00:00Z");
+	const nlohmann::json result = service.Refresh("request", start, start + 86400000);
+	UAM_ASSERT(!result.contains("error"));
+	UAM_ASSERT_EQ(result["filesTotal"].get<int>(), 1);
+	UAM_ASSERT_EQ(result["totals"]["totalTokens"].get<int>(), 120);
+	UAM_ASSERT_EQ(result["totals"]["cachedInputTokens"].get<int>(), 30);
+	UAM_ASSERT_EQ(result["totals"]["unpricedTokens"].get<int>(), 120);
+	UAM_ASSERT_EQ(service.Refresh("fresh", start, start + 86400000)["bytesRead"].get<int>(), 0);
+}

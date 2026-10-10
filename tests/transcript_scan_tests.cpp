@@ -112,6 +112,30 @@ UAM_TEST(UsageScanReportsOversizedMalformedAndLimitedHistoryAndSupportsCancellat
 	UAM_ASSERT(!limited.Refresh(path, options).error.empty());
 	options.byte_budget = 0;
 	UAM_ASSERT(!scan.Refresh(path, options).error.empty());
-	uam::usage::TranscriptScan unsupported(uam::provider_ids::kCopilotCli);
+	uam::usage::TranscriptScan unsupported(uam::provider_ids::kOpenCodeCli);
 	UAM_ASSERT(unsupported.Refresh(path).error.find("unavailable") != std::string::npos);
+}
+
+UAM_TEST(UsageCopilotScanCachesAppendedAccountingAndAvoidsDoubleCountingChildSessions)
+{
+	TempDir temp("uam-copilot-usage");
+	const fs::path path = temp.root / "session" / "events.jsonl";
+	fs::create_directories(path.parent_path());
+	nlohmann::json event{{"type", "session.shutdown"}, {"timestamp", "2026-10-10T12:00:00Z"}, {"data", {{"modelMetrics", {{"model", {{"usage", {{"inputTokens", 100}, {"cacheReadTokens", 30}, {"cacheWriteTokens", 0}, {"outputTokens", 20}}}}}}}}}};
+	const std::string first = event.dump() + "\n";
+	UAM_ASSERT(uam::io::WriteTextFile(path, first));
+	uam::usage::TranscriptScan scan(uam::provider_ids::kCopilotCli);
+	UAM_ASSERT(scan.Refresh(path).complete);
+	UAM_ASSERT_EQ(scan.Records().size(), std::size_t(1));
+	UAM_ASSERT_EQ(scan.Records()[0].session_id, std::string("session"));
+	UAM_ASSERT_EQ(scan.Refresh(path).bytes_read, std::size_t(0));
+	event["data"]["modelMetrics"]["model"]["usage"]["inputTokens"] = 110;
+	UAM_ASSERT(uam::io::WriteTextFile(path, first + first + event.dump() + "\n"));
+	UAM_ASSERT(scan.Refresh(path).complete);
+	UAM_ASSERT_EQ(scan.Records().size(), std::size_t(2));
+	UAM_ASSERT_EQ(scan.Records()[1].tokens.Total(), 10LL);
+	const nlohmann::json header{{"type", "session.start"}, {"data", {{"detachedFromSpawningParentSessionId", "parent"}}}};
+	UAM_ASSERT(uam::io::WriteTextFile(path, header.dump() + "\n" + first));
+	UAM_ASSERT(scan.Refresh(path).complete);
+	UAM_ASSERT(scan.Records().empty());
 }
