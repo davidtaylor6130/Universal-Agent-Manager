@@ -17,6 +17,7 @@
 #include <unordered_map>
 
 namespace uam::query_handler_async { struct AsyncCefResult; }
+namespace uam { struct WorkspaceDeletionTask; }
 
 /// <summary>
 /// Handles all window.cefQuery() requests from the React frontend.
@@ -50,6 +51,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::string m_trustedUiIndexUrl;
 	using ActionHandler = void (UamQueryHandler::*)(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback>);
 	bool DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	bool HasActiveDeletionHistoryLoad() const;
 
 	// ---- action handlers -------------------------------------------------
 	void HandleGetStartupNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -156,6 +158,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleRenameFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleDeleteFolders(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void StartWorkspaceDeletion(CefRefPtr<CefBrowser> browser, const std::vector<std::string>& folder_ids, CefRefPtr<Callback> cb);
+	void StartChatDeletion(CefRefPtr<CefBrowser> browser, const std::vector<std::string>& chat_ids, bool single_chat, CefRefPtr<Callback> cb);
+	void StartPreparedDeletion(CefRefPtr<CefBrowser> browser, std::shared_ptr<uam::WorkspaceDeletionTask> task, bool single_chat, CefRefPtr<Callback> cb);
 	void HandleDeleteFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleReorderFolders(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

@@ -929,14 +929,7 @@ void UamQueryHandler::HandleDeleteSession(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	if (!RemoveChatById(m_app, chat_id))
-	{
-		cb->Failure(409, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to delete chat: " + chat_id));
-		return;
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	StartChatDeletion(browser, {chat_id}, true, cb);
 }
 
 void UamQueryHandler::HandleDeleteSessions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -948,26 +941,7 @@ void UamQueryHandler::HandleDeleteSessions(CefRefPtr<CefBrowser> browser, const 
 		cb->Failure(400, validation_error);
 		return;
 	}
-	std::vector<std::string> chat_ids_before;
-	chat_ids_before.reserve(m_app.chats.size());
-	for (const ChatSession& chat : m_app.chats) chat_ids_before.push_back(chat.id);
-	if (!RemoveChatsByIds(m_app, chat_ids))
-	{
-		cb->Failure(409, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Failed to delete selected chats."));
-		return;
-	}
-
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	const std::string selected_chat_id = ChatDomainService().SelectedChatId(m_app);
-	nlohmann::json deleted_chat_ids = nlohmann::json::array();
-	for (const std::string& id : chat_ids_before)
-	{
-		if (std::ranges::none_of(m_app.chats, [&id](const ChatSession& chat) { return chat.id == id; }))
-			deleted_chat_ids.push_back(id);
-	}
-	cb->Success(nlohmann::json{
-	    {"selectedChatId", selected_chat_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_chat_id)},
-	    {"deletedChatIds", std::move(deleted_chat_ids)}}.dump());
+	StartChatDeletion(browser, chat_ids, false, cb);
 }
 
 void UamQueryHandler::HandleAcknowledgeChatAttention(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

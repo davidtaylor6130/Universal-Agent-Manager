@@ -15,12 +15,15 @@ namespace uam
 		AppState snapshot;
 		std::vector<std::string> folder_ids;
 		std::unordered_set<std::string> deleted_ids;
+		bool deleting_chats = false;
 		bool metadata_saved = false;
 		bool settings_saved = false;
 	};
 
 	/// <summary>Checks live runtime safeguards and captures deletion snapshots on the UI thread.</summary>
 	bool PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>& folder_ids, WorkspaceDeletionTask& task);
+	/// <summary>Preflights selected chats and captures only their rollback snapshots.</summary>
+	bool PrepareChatDeletion(AppState& app, const std::vector<std::string>& chat_ids, WorkspaceDeletionTask& task);
 	/// <summary>Writes the durable recovery transaction using only owned snapshots on a worker.</summary>
 	bool StageWorkspaceDeletion(WorkspaceDeletionTask& task);
 	/// <summary>Persists branch and folder metadata, then merges deletion into current live state on the UI thread.</summary>

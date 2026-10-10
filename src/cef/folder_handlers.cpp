@@ -173,19 +173,59 @@ void UamQueryHandler::HandleDeleteFolders(CefRefPtr<CefBrowser> browser, const n
 	StartWorkspaceDeletion(browser, ids->get<std::vector<std::string>>(), cb);
 }
 
+bool UamQueryHandler::HasActiveDeletionHistoryLoad() const
+{
+	return m_app.native_chat_load_task.running ||
+	       std::ranges::any_of(m_app.native_chat_load_tasks, [](const auto& entry) { return entry.second.running; });
+}
+
 void UamQueryHandler::StartWorkspaceDeletion(CefRefPtr<CefBrowser> browser, const std::vector<std::string>& folder_ids, CefRefPtr<Callback> cb)
 {
+	if (HasActiveDeletionHistoryLoad())
+	{
+		cb->Failure(409, "Wait for native history loading to finish.");
+		return;
+	}
 	const std::shared_ptr<uam::WorkspaceDeletionTask> task = std::make_shared<uam::WorkspaceDeletionTask>();
 	if (!uam::PrepareWorkspaceDeletion(m_app, folder_ids, *task))
 	{
 		cb->Failure(FolderFailureCode(m_app.status_line), m_app.status_line);
 		return;
 	}
+	StartPreparedDeletion(browser, task, false, cb);
+}
+
+void UamQueryHandler::StartChatDeletion(CefRefPtr<CefBrowser> browser, const std::vector<std::string>& chat_ids, bool single_chat, CefRefPtr<Callback> cb)
+{
+	if (HasActiveDeletionHistoryLoad())
+	{
+		cb->Failure(409, "Wait for native history loading to finish.");
+		return;
+	}
+	const std::shared_ptr<uam::WorkspaceDeletionTask> task = std::make_shared<uam::WorkspaceDeletionTask>();
+	if (!uam::PrepareChatDeletion(m_app, chat_ids, *task))
+	{
+		cb->Failure(409, m_app.status_line);
+		return;
+	}
+	StartPreparedDeletion(browser, task, single_chat, cb);
+}
+
+void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
+                                             std::shared_ptr<uam::WorkspaceDeletionTask> task,
+                                             bool single_chat,
+                                             CefRefPtr<Callback> cb)
+{
+	if (HasActiveDeletionHistoryLoad())
+	{
+		cb->Failure(409, "Wait for native history loading to finish.");
+		return;
+	}
 	for (const std::string& id : task->deleted_ids)
 	{
 		if (m_nativeHistoryRequests.contains(id))
 		{
-			cb->Failure(409, "Wait for workspace history to finish loading.");
+			cb->Failure(409, task->deleting_chats ? "Wait for chat history to finish loading." : "Wait for workspace history to finish loading.");
 			return;
 		}
 	}
@@ -203,16 +243,17 @@ void UamQueryHandler::StartWorkspaceDeletion(CefRefPtr<CefBrowser> browser, cons
 		        ? uam::query_handler_async::AsyncSuccess({})
 		        : uam::query_handler_async::AsyncFailure(500, task->snapshot.status_line);
 	    },
-	    [this, browser, cb, task, unlock](uam::query_handler_async::AsyncCefResult& response)
+	    [this, browser, cb, task, single_chat, unlock](uam::query_handler_async::AsyncCefResult& response)
 	    {
 		    if (!response.ok) { unlock(); return; }
 		    uam::CommitWorkspaceDeletion(m_app, *task);
 		    const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
-		    response = uam::query_handler_async::AsyncSuccess({
-		        {"deletedChatIds", task->deleted_ids},
-		        {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}});
-		    // Acknowledge the committed deletion before serializing the sidebar or cleaning files.
-		    // The renderer can close confirmation and paint immediately while native work continues.
+		    if (single_chat)
+		        response = uam::query_handler_async::AsyncSuccess({});
+		    else
+		        response = uam::query_handler_async::AsyncSuccess({
+		            {"deletedChatIds", task->deleted_ids},
+		            {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}});
 		    cb->Success(response.body);
 		    response.callback_deferred = true;
 		    uam::PushStateUpdateIfChanged(browser, m_app);
@@ -226,12 +267,16 @@ void UamQueryHandler::StartWorkspaceDeletion(CefRefPtr<CefBrowser> browser, cons
 		        {
 			        unlock();
 			        m_app.status_line = result.ok ? task->snapshot.status_line
-			            : "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+			            : (task->deleting_chats
+			                ? "Chat deletion is committed. Disk cleanup will finish safely on restart."
+			                : "Workspace deletion is committed. Disk cleanup will finish safely on restart.");
 			        uam::PushStateUpdateIfChanged(browser, m_app);
 		        })))
 		    {
 			    unlock();
-			    m_app.status_line = "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+			    m_app.status_line = task->deleting_chats
+			        ? "Chat deletion is committed. Disk cleanup will finish safely on restart."
+			        : "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
 		    }
 	    })) unlock();
 }

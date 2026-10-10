@@ -129,21 +129,6 @@ namespace
 		return all_saved;
 	}
 
-	bool HydrateDeletedChatsForRollback(
-	    const std::filesystem::path& data_root,
-	    std::vector<ChatSession>& chats,
-	    const std::unordered_set<std::string>& deleted_chat_ids)
-	{
-		for (ChatSession& chat : chats)
-		{
-			if (deleted_chat_ids.contains(chat.id) && !ChatRepository::HydrateChatMessages(data_root, chat))
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-
 	bool IsTerminalAgentRun(const AgentRun& run)
 	{
 		return run.status == "completed" || run.status == "failed" ||
@@ -471,11 +456,57 @@ namespace
 		}
 
 		for (const ChatSession& chat : deleted_chats)
-		{
 			if (!uam::StageCliProviderContextCleanup(app, chat)) return false;
+		return true;
+	}
+
+	bool CommitDeletionMetadataInPlace(uam::AppState& app,
+	                                   const DeletionIntent& intent,
+	                                   std::vector<ChatFolder>& next_folders,
+	                                   const std::vector<ChatSession>& deleted_chats)
+	{
+		struct BranchMetadata
+		{
+			std::string parent_chat_id;
+			std::string branch_root_chat_id;
+			int branch_from_message_index = -1;
+		};
+		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
+		std::unordered_map<std::string, BranchMetadata> original_branch_metadata;
+		original_branch_metadata.reserve(app.chats.size());
+		for (const ChatSession& chat : app.chats)
+			original_branch_metadata.emplace(chat.id, BranchMetadata{chat.parent_chat_id, chat.branch_root_chat_id, chat.branch_from_message_index});
+
+		bool saved = true;
+		std::vector<std::string> added_tombstones;
+		const bool tombstones_saved = ChatHistorySyncService().AddNativeImportTombstones(app.data_root, deleted_chats, added_tombstones);
+		saved = tombstones_saved && saved;
+
+		ChatBranching::ReparentChildrenAfterDeletes(app.chats, deleted_ids);
+		std::erase_if(app.chats, [&deleted_ids](const ChatSession& chat) { return deleted_ids.contains(chat.id); });
+		ChatBranching::Normalize(app.chats);
+		for (const ChatSession& chat : app.chats)
+		{
+			if (!tombstones_saved) break;
+			const std::unordered_map<std::string, BranchMetadata>::const_iterator original = original_branch_metadata.find(chat.id);
+			if (original != original_branch_metadata.end() && chat.parent_chat_id == original->second.parent_chat_id &&
+			    chat.branch_root_chat_id == original->second.branch_root_chat_id &&
+			    chat.branch_from_message_index == original->second.branch_from_message_index) continue;
+			if (!ChatRepository::SaveChat(app.data_root, chat)) saved = false;
 		}
 
-		return true;
+		next_folders = app.folders;
+		if (!intent.folder_ids.empty())
+		{
+			const std::unordered_set<std::string> folder_ids(intent.folder_ids.begin(), intent.folder_ids.end());
+			std::erase_if(next_folders, [&folder_ids](const ChatFolder& folder) { return folder_ids.contains(uam::strings::Trim(folder.id)); });
+			if (!ChatFolderStore::Save(app.data_root, next_folders)) saved = false;
+			app.folders = next_folders;
+		}
+		if (tombstones_saved && saved)
+			for (const ChatSession& chat : deleted_chats)
+				saved = uam::StageCliProviderContextCleanup(app, chat) && saved;
+		return saved;
 	}
 
 	bool CleanupDeletionTransaction(uam::AppState& app, const DeletionIntent& intent, const std::vector<ChatSession>& deleted_chats, bool& native_cleanup_failed)
@@ -1398,112 +1429,18 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 
 bool RemoveChatsByIds(uam::AppState& app, const std::vector<std::string>& chat_ids)
 {
-	std::vector<std::string> target_chat_ids;
-	std::unordered_set<std::string> deleted_chat_ids;
-	for (const std::string& requested_id : chat_ids)
+	uam::WorkspaceDeletionTask task;
+	if (!uam::PrepareChatDeletion(app, chat_ids, task)) return false;
+	if (!uam::StageWorkspaceDeletion(task))
 	{
-		const std::string id = uam::strings::Trim(requested_id);
-		if (!id.empty() && deleted_chat_ids.insert(id).second)
-		{
-			target_chat_ids.push_back(id);
-		}
-	}
-	ExpandDependentChatIds(app, target_chat_ids, deleted_chat_ids);
-	if (target_chat_ids.empty())
-	{
-		app.status_line = "Chat id is required.";
+		app.status_line = task.snapshot.status_line.empty()
+		    ? "Failed to create a durable chat deletion transaction."
+		    : task.snapshot.status_line;
 		return false;
 	}
-	if (HasActiveDependentAgentRun(app, deleted_chat_ids))
-	{
-		app.status_line = "Wait for the selected managed agent run to finish or cancel it first.";
-		return false;
-	}
-
-	for (const std::string& id : target_chat_ids)
-	{
-		if (ChatDomainService().FindChatIndexById(app, id) < 0)
-		{
-			app.status_line = "A selected chat no longer exists.";
-			return false;
-		}
-		if (app.worktree_operation_chat_ids.contains(id))
-		{
-			app.status_line = "Wait for the chat worktree operation to finish.";
-			return false;
-		}
-		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, id);
-		if (session != nullptr && session->remote_stop_unconfirmed)
-		{
-			app.status_line = uam::strings::NonEmptyOrFallback(
-			    session->last_error, "Remote stop could not be confirmed.");
-			return false;
-		}
-		if (BeginIdleRemoteStopForDeletion(app, id))
-		{
-			app.status_line = "The remote runtime is stopping. Retry deletion after it finishes.";
-			return false;
-		}
-		if (ChatHasDeletionBlockingRuntime(app, id))
-		{
-			app.status_line = "Cannot delete chats while a selected runtime is still running.";
-			return false;
-		}
-	}
-
-	std::vector<ChatSession> original_chats = app.chats;
-	if (!HydrateDeletedChatsForRollback(app.data_root, original_chats, deleted_chat_ids))
-	{
-		app.status_line = "Failed to prepare chat history for safe deletion.";
-		return false;
-	}
-	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
-	const int previous_selected_chat_index = app.selected_chat_index;
-
-	std::vector<ChatSession> deleted_chats;
-	deleted_chats.reserve(target_chat_ids.size());
-	for (const ChatSession& chat : original_chats)
-	{
-		if (deleted_chat_ids.contains(chat.id))
-		{
-			deleted_chats.push_back(chat);
-		}
-	}
-
-	if (!BeginDeletionTransaction(app, deleted_chats, {}))
-	{
-		app.status_line = "Failed to create a durable chat deletion transaction.";
-		return false;
-	}
-	if (!StopChatRuntimes(app, deleted_chats))
-	{
-		app.status_line = "Deletion is waiting for its runtime to stop. Recovery information was kept.";
-		return false;
-	}
-	DeletionIntent intent{target_chat_ids, {}};
-	std::vector<ChatSession> next_chats;
-	std::vector<ChatFolder> next_folders;
-	bool native_cleanup_failed = false;
-	if (!CompleteDeletionTransaction(app, intent, next_chats, next_folders, deleted_chats, native_cleanup_failed))
-	{
-		app.chats = std::move(next_chats);
-		ApplyDeletedChatsToUiState(app, deleted_chat_ids, selected_chat_id,
-		                          previous_selected_chat_index, true);
-		(void)PersistenceCoordinator().SaveSettings(app);
-		app.status_line = "Chat deletion is committed and hidden. Disk cleanup will finish safely on restart.";
-		return true;
-	}
-
-	app.chats = std::move(next_chats);
-	ApplyDeletedChatsToUiState(app, deleted_chat_ids, selected_chat_id, previous_selected_chat_index, true);
-
-	const bool settings_saved = PersistenceCoordinator().SaveSettings(app);
-	const std::string count = std::to_string(deleted_chats.size());
-	app.status_line = settings_saved ? count + " chat(s) deleted." : count + " chat(s) deleted, but failed to persist settings.";
-	if (native_cleanup_failed)
-	{
-		app.status_line += " Some provider-native history could not be removed.";
-	}
+	uam::CommitWorkspaceDeletion(app, task);
+	(void)uam::CleanupWorkspaceDeletion(task);
+	app.status_line = task.snapshot.status_line;
 	return true;
 }
 
@@ -1593,6 +1530,11 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 			app.status_line = "Wait for the chat worktree operation to finish.";
 			return false;
 		}
+		if (app.pending_chat_save_at_by_chat_id.contains(id))
+		{
+			app.status_line = "Wait for chat history to finish saving.";
+			return false;
+		}
 	}
 	if (HasActiveDependentAgentRun(app, deleted.ids))
 	{
@@ -1611,7 +1553,16 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	}
 	bool remote_stop_started = false;
 	for (const ChatSession& chat : deleted.chats)
+	{
+		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.execution_host_id), "local");
+		const std::unordered_map<std::string, std::weak_ptr<void>>::const_iterator lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		{
+			app.status_line = "Wait for the workspace operation to finish.";
+			return false;
+		}
 		remote_stop_started = BeginIdleRemoteStopForDeletion(app, chat.id, &chat) || remote_stop_started;
+	}
 	if (remote_stop_started)
 	{
 		app.status_line = "Remote runtimes in this folder are stopping. Retry deletion after they finish.";
@@ -1634,11 +1585,103 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	return true;
 }
 
+bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& chat_ids, WorkspaceDeletionTask& task)
+{
+	std::vector<std::string> target_chat_ids;
+	std::unordered_set<std::string> deleted_chat_ids;
+	for (const std::string& requested_id : chat_ids)
+	{
+		const std::string id = uam::strings::Trim(requested_id);
+		if (!id.empty() && deleted_chat_ids.insert(id).second) target_chat_ids.push_back(id);
+	}
+	ExpandDependentChatIds(app, target_chat_ids, deleted_chat_ids);
+	if (target_chat_ids.empty())
+	{
+		app.status_line = "Chat id is required.";
+		return false;
+	}
+	if (HasActiveDependentAgentRun(app, deleted_chat_ids))
+	{
+		app.status_line = "Wait for the selected managed agent run to finish or cancel it first.";
+		return false;
+	}
+	for (const std::string& id : target_chat_ids)
+	{
+		const ChatSession* chat = ChatDomainService().FindChatById(app, id);
+		if (chat == nullptr)
+		{
+			app.status_line = "A selected chat no longer exists.";
+			return false;
+		}
+		if (app.worktree_operation_chat_ids.contains(id))
+		{
+			app.status_line = "Wait for the chat worktree operation to finish.";
+			return false;
+		}
+		if (app.pending_chat_save_at_by_chat_id.contains(id))
+		{
+			app.status_line = "Wait for chat history to finish saving.";
+			return false;
+		}
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, id);
+		if (session != nullptr && session->remote_stop_unconfirmed)
+		{
+			app.status_line = uam::strings::NonEmptyOrFallback(session->last_error, "Remote stop could not be confirmed.");
+			return false;
+		}
+		if (BeginIdleRemoteStopForDeletion(app, id, chat))
+		{
+			app.status_line = "The remote runtime is stopping. Retry deletion after it finishes.";
+			return false;
+		}
+		if (ChatHasDeletionBlockingRuntime(app, id, chat))
+		{
+			app.status_line = "Cannot delete chats while a selected runtime is still running.";
+			return false;
+		}
+		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat->execution_host_id), "local");
+		const std::unordered_map<std::string, std::weak_ptr<void>>::const_iterator lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		{
+			app.status_line = "Wait for the workspace operation to finish.";
+			return false;
+		}
+	}
+
+	std::vector<ChatSession> targets;
+	targets.reserve(deleted_chat_ids.size());
+	for (const ChatSession& chat : app.chats)
+	{
+		if (!deleted_chat_ids.contains(chat.id)) continue;
+		ChatSession snapshot = chat;
+		if (!chat.messages_loaded)
+		{
+			snapshot.messages.clear();
+			snapshot.messages_loaded = false;
+		}
+		targets.push_back(std::move(snapshot));
+	}
+	if (!StopChatRuntimes(app, targets))
+	{
+		app.status_line = "Deletion is waiting for its runtime to stop. Retry after it finishes.";
+		return false;
+	}
+	task.deleting_chats = true;
+	task.deleted_ids = std::move(deleted_chat_ids);
+	task.snapshot.data_root = app.data_root;
+	task.snapshot.settings = app.settings;
+	task.snapshot.provider_profiles = app.provider_profiles;
+	task.snapshot.chats = std::move(targets);
+	return true;
+}
+
 bool uam::StageWorkspaceDeletion(WorkspaceDeletionTask& task)
 {
 	if (!BeginDeletionTransaction(task.snapshot, task.snapshot.chats, task.folder_ids))
 	{
-		task.snapshot.status_line = "Failed to create a durable workspace deletion transaction.";
+		task.snapshot.status_line = task.deleting_chats
+		    ? "Failed to create a durable chat deletion transaction."
+		    : "Failed to create a durable workspace deletion transaction.";
 		return false;
 	}
 	return true;
@@ -1651,14 +1694,21 @@ void uam::CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task)
 	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
 	std::vector<ChatSession> next_chats;
 	std::vector<ChatFolder> next_folders;
-	task.metadata_saved = CommitDeletionMetadata(app, intent, next_chats, next_folders, task.snapshot.chats);
-	app.chats = std::move(next_chats);
-	app.folders = std::move(next_folders);
+	if (task.deleting_chats)
+	{
+		task.metadata_saved = CommitDeletionMetadataInPlace(app, intent, next_folders, task.snapshot.chats);
+	}
+	else
+	{
+		task.metadata_saved = CommitDeletionMetadata(app, intent, next_chats, next_folders, task.snapshot.chats);
+		app.chats = std::move(next_chats);
+		app.folders = std::move(next_folders);
+	}
 	ApplyDeletedChatsToUiState(app, task.deleted_ids, selected_chat_id, previous_selected_chat_index, !task.deleted_ids.empty());
 	if (std::ranges::find(task.folder_ids, uam::strings::Trim(app.new_chat_folder_id)) != task.folder_ids.end())
 		app.new_chat_folder_id.clear();
 	task.settings_saved = PersistenceCoordinator().SaveSettings(app);
-	app.status_line = "Workspaces deleted. Cleaning up history.";
+	app.status_line = task.deleting_chats ? "Chats deleted. Cleaning up history." : "Workspaces deleted. Cleaning up history.";
 }
 
 bool uam::CleanupWorkspaceDeletion(WorkspaceDeletionTask& task)
@@ -1667,8 +1717,14 @@ bool uam::CleanupWorkspaceDeletion(WorkspaceDeletionTask& task)
 	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
 	const bool completed = task.metadata_saved && CleanupDeletionTransaction(task.snapshot, intent, task.snapshot.chats, native_cleanup_failed);
 	task.snapshot.status_line = completed
-	    ? StatusAfterFolderDelete(task.deleted_ids.size(), task.settings_saved, native_cleanup_failed)
-	    : "Workspace deletion is committed and hidden. Disk cleanup will finish safely on restart.";
+	    ? (task.deleting_chats
+	        ? std::to_string(task.deleted_ids.size()) + " chat(s) deleted." +
+	            (task.settings_saved ? std::string() : " Settings persistence also failed.") +
+	            (native_cleanup_failed ? " Some provider-native history could not be removed." : std::string())
+	        : StatusAfterFolderDelete(task.deleted_ids.size(), task.settings_saved, native_cleanup_failed))
+	    : (task.deleting_chats
+	        ? "Chat deletion is committed and hidden. Disk cleanup will finish safely on restart."
+	        : "Workspace deletion is committed and hidden. Disk cleanup will finish safely on restart.");
 	return completed;
 }
 

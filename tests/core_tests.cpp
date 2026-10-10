@@ -18260,6 +18260,142 @@ UAM_TEST(WorkspaceDeletionStagesUnloadedTranscriptsWithoutRetainingTheirBodies)
 	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
 }
 
+UAM_TEST(ChatDeletionStagesColdHistoryAsynchronouslyAndExpandsDependents)
+{
+	TempDir temp("uam-chat-delete-cold-staged");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession owner;
+	owner.id = "cold-owner";
+	owner.provider_id = uam::provider_ids::kCodexCli;
+	for (int index = 0; index < 1000; ++index)
+		owner.messages.push_back({MessageRole::User, "message-" + std::to_string(index) + std::string(1024, 'x')});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+	ChatSession dependent;
+	dependent.id = "dependent-transcript";
+	dependent.goal_owner_chat_id = owner.id;
+	dependent.provider_id = uam::provider_ids::kCodexCli;
+	dependent.messages.push_back({MessageRole::Assistant, "managed transcript"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, dependent));
+	ChatSession survivor;
+	survivor.id = "survivor";
+	survivor.provider_id = uam::provider_ids::kCodexCli;
+	survivor.messages.push_back({MessageRole::User, "unrelated"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, survivor));
+	std::optional<ChatSession> cold_owner = ChatRepository::LoadLocalChat(temp.root, owner.id, false);
+	std::optional<ChatSession> cold_dependent = ChatRepository::LoadLocalChat(temp.root, dependent.id, false);
+	UAM_ASSERT(cold_owner.has_value());
+	UAM_ASSERT(cold_dependent.has_value());
+	app.chats = {std::move(*cold_owner), std::move(*cold_dependent), survivor};
+	app.selected_chat_index = 0;
+
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {owner.id}, task));
+	UAM_ASSERT(task.deleting_chats);
+	UAM_ASSERT_EQ(task.deleted_ids.size(), std::size_t{2});
+	UAM_ASSERT_EQ(task.snapshot.chats.size(), std::size_t{2});
+	for (const ChatSession& chat : task.snapshot.chats)
+	{
+		UAM_ASSERT(!chat.messages_loaded);
+		UAM_ASSERT(chat.messages.empty());
+	}
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{3});
+	UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+	const std::optional<ChatSession> staged_owner = ChatRepository::LoadLocalChat(temp.root / ".deletion-transaction", owner.id, true);
+	UAM_ASSERT(staged_owner.has_value());
+	UAM_ASSERT_EQ(staged_owner->messages.size(), std::size_t{1000});
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{3});
+	ChatDomainService().SelectChatById(app, survivor.id);
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), survivor.id);
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+	const std::vector<ChatSession> remaining = ChatRepository::LoadLocalChats(temp.root);
+	UAM_ASSERT_EQ(remaining.size(), std::size_t{1});
+	UAM_ASSERT_EQ(remaining.front().id, survivor.id);
+}
+
+UAM_TEST(ChatDeletionPreparationRejectsPendingSaveWithoutStaging)
+{
+	TempDir temp("uam-chat-delete-pending-save");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "pending-save-chat";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	app.pending_chat_save_at_by_chat_id[chat.id] = 1.0;
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(!uam::PrepareChatDeletion(app, {chat.id}, task));
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT(!fs::exists(temp.root / "deletion-transaction.json"));
+	app.pending_chat_save_at_by_chat_id.erase(chat.id);
+	uam::WorkspaceDeletionTask staged_task;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {chat.id}, staged_task));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "deletion-transaction.json", "existing transaction"));
+	UAM_ASSERT(!uam::StageWorkspaceDeletion(staged_task));
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT(fs::exists(temp.root / "deletion-transaction.json"));
+}
+
+UAM_TEST(ChatDeletionStagesAuthoritativeWarmTranscriptSnapshot)
+{
+	TempDir temp("uam-chat-delete-warm-snapshot");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "warm-chat";
+	chat.messages.push_back({MessageRole::User, "persisted before current live update"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.messages.back().content = "authoritative in-memory transcript";
+	chat.messages_loaded = true;
+	app.chats.push_back(chat);
+
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {chat.id}, task));
+	UAM_ASSERT(task.snapshot.chats.front().messages_loaded);
+	UAM_ASSERT_EQ(task.snapshot.chats.front().messages.back().content, std::string("authoritative in-memory transcript"));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+	const std::optional<ChatSession> staged = ChatRepository::LoadLocalChat(temp.root / ".deletion-transaction", chat.id, true);
+	UAM_ASSERT(staged.has_value());
+	UAM_ASSERT_EQ(staged->messages.back().content, std::string("authoritative in-memory transcript"));
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+}
+
+UAM_TEST(ChatDeletionPersistsRootNormalizationForSurvivingBranch)
+{
+	TempDir temp("uam-chat-delete-normalized-survivor");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root;
+	root.id = "deleted-root";
+	ChatSession survivor;
+	survivor.id = "surviving-branch";
+	survivor.parent_chat_id = root.id;
+	survivor.branch_root_chat_id = root.id;
+	survivor.branch_from_message_index = 4;
+	app.chats = {root, survivor};
+	ChatBranching::Normalize(app.chats);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, app.chats[0]));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, app.chats[1]));
+
+	uam::WorkspaceDeletionTask task;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {root.id}, task));
+	UAM_ASSERT(uam::StageWorkspaceDeletion(task));
+	uam::CommitWorkspaceDeletion(app, task);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.chats.front().parent_chat_id, std::string());
+	UAM_ASSERT_EQ(app.chats.front().branch_root_chat_id, survivor.id);
+	UAM_ASSERT_EQ(app.chats.front().branch_from_message_index, -1);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(temp.root, survivor.id, false);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT_EQ(persisted->branch_root_chat_id, survivor.id);
+	UAM_ASSERT_EQ(persisted->branch_from_message_index, -1);
+	UAM_ASSERT(uam::CleanupWorkspaceDeletion(task));
+}
+
 UAM_TEST(WorkspaceDeletionLargeBatchStagesAndCleansOutsideTheUiPhases)
 {
 	TempDir temp("uam-workspace-background-large");
