@@ -74,8 +74,13 @@ describe('ChatView', () => {
       const composer = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
       act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(composer, 'Unsent next prompt'); composer.dispatchEvent(new Event('input', { bubbles: true })) })
       openComposerGoals(host)
-      const popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
+      let popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
       expect(popup).toBeTruthy()
+      act(() => { composer.focus(); composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })) })
+      expect(document.querySelector('[aria-label="Chat goals"]')).toBeNull()
+      expect(composer.value).toBe('Unsent next prompt')
+      openComposerGoals(host)
+      popup = document.querySelector<HTMLElement>('[aria-label="Chat goals"]')!
       act(() => popup.querySelector<HTMLButtonElement>('[aria-label="Goal actions"]')!.click())
       act(() => document.querySelector<HTMLButtonElement>('button[aria-label="Edit goal"]')!.click())
       const input = document.querySelector<HTMLTextAreaElement>('[aria-label="Edit goal"] textarea')!

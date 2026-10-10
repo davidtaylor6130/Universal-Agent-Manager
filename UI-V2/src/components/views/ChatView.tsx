@@ -976,6 +976,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       if (event.key !== 'Escape' || event.defaultPrevented || getTopmostModal()) return
       setModelOpen(false)
       setWorkspaceMenuOpen(false)
+      setGoalsPopupOwner(null)
       setSelectedToolCallRef(null)
     }
 
