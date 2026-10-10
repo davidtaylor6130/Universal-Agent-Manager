@@ -1017,6 +1017,10 @@ describe('ChatView', () => {
       ...state.acpBindingBySessionId,
       'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', backgroundTaskCount: 0 },
     } })))
+    const providerGoal = { id: 'provider-review-goal', chatId: 'chat-1', objective: 'Finish implementation', status: 'active' as const, executionOwner: 'provider' as const, createdAt: new Date(), updatedAt: new Date() }
+    await act(async () => useAppStore.setState({ goalsByChatId: { 'chat-1': [providerGoal] }, activeGoalIdByChatId: { 'chat-1': providerGoal.id } }))
+    expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
+    await act(async () => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...providerGoal, status: 'complete' }] } }))
     const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
     expect(summary.textContent).toContain('Review changes')
     expect(summary.textContent).toContain('src/exact.ts')
@@ -1037,6 +1041,14 @@ describe('ChatView', () => {
     const dialog = document.body.querySelector('[aria-label="Changes in src/exact.ts"]') as HTMLElement
     expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('saved comparison commit is unavailable')
     expect(dialog.querySelector('.uam-diff-line')).toBeNull()
+
+    getVcsCommitStatus.mockResolvedValueOnce({ ...rangeStatus, available: false, changedFiles: [] })
+    await act(async () => useAppStore.setState(state => ({ acpBindingBySessionId: {
+      ...state.acpBindingBySessionId,
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], turnSerial: 3 },
+    } })))
+    expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']).toBeUndefined()
+    expect(host.querySelector('[aria-label="Review changes to src/exact.ts"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()

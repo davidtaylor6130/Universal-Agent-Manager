@@ -1302,8 +1302,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       requestId: `chat-summary:${session.id}:${completedTurnKey}`,
       comparisonRef: repositoryComparisonRef,
     }).then((status) => {
-      if (cancelled || !status?.available) return
-      setRepositoryReview(session.id, status.changedFiles.length > 0 ? status : null)
+      if (cancelled) return
+      setRepositoryReview(session.id, status?.available && status.changedFiles.length > 0 ? status : null)
     })
     return () => { cancelled = true }
   }, [completedTurnKey, getVcsCommitStatus, remoteComputerUseDisabled, repositoryComparisonRef, session.id, workspaceDirectory])

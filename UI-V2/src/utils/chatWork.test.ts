@@ -21,11 +21,13 @@ describe('finished-chat review gating', () => {
     }
     expect(chatHasUnfinishedWork(acp, { lifecycleState: 'idle', running: true, turnState: 'idle' } as CliBinding)).toBe(false)
   })
-  it('covers automatic goal continuation without mistaking provider goals for a running turn', () => {
+  it('keeps every active goal unfinished until it is paused, blocked or complete', () => {
     const goal = { status: 'active', executionOwner: 'provider' } as Goal
-    expect(chatHasUnfinishedWork(acp, undefined, goal)).toBe(false)
+    expect(chatHasUnfinishedWork(acp, undefined, goal)).toBe(true)
     expect(chatHasUnfinishedWork(acp, undefined, { ...goal, pendingContinuation: true })).toBe(true)
     expect(chatHasUnfinishedWork(acp, undefined, { ...goal, executionOwner: 'uam' })).toBe(true)
-    expect(chatHasUnfinishedWork(acp, undefined, { ...goal, status: 'paused', pendingContinuation: true })).toBe(false)
+    for (const status of ['paused', 'blocked', 'complete'] as const) {
+      expect(chatHasUnfinishedWork(acp, undefined, { ...goal, status, pendingContinuation: true })).toBe(false)
+    }
   })
 })

@@ -10,6 +10,6 @@ export function chatHasUnfinishedWork(acp?: AcpBinding, cli?: CliBinding, goal?:
     ((acp?.queuedPrompts?.length ?? 0) > 0 && !acp?.queueHeld) ||
     cli?.processing || cli?.turnState === 'busy' ||
     (cli && ['starting', 'busy', 'shuttingDown'].includes(cli.lifecycleState)) ||
-    (goal?.status === 'active' && (goal.pendingContinuation || goal.executionOwner === 'uam'))
+    goal?.status === 'active'
   )
 }
