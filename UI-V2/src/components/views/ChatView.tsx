@@ -1,5 +1,6 @@
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
+import { SubagentWaitStatus } from '../chat/SubagentWaitStatus'
 import { InlinePromptQueue } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
@@ -2638,6 +2639,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               </div>
               </SubAgentDisclosureProvider>
+              <SubagentWaitStatus binding={acp} />
             </div>
             {/* Follow the padded end so the latest output clears the floating composer. */}
             <div ref={bottomRef} />
