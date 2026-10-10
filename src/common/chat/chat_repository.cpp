@@ -21,6 +21,7 @@
 #include "core/chat_import_utils.h"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -1637,11 +1638,34 @@ namespace
 
 } // namespace
 
+namespace
+{
+	std::mutex& ChatSaveMutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
+	std::optional<std::string> StorageRevision(const fs::path& path)
+	{
+		std::error_code error;
+		const fs::file_status status = fs::symlink_status(path, error);
+		if (status.type() == fs::file_type::not_found) return std::string("missing");
+		if (error || !fs::is_regular_file(status)) return std::nullopt;
+		const std::uintmax_t size = fs::file_size(path, error);
+		if (error) return std::nullopt;
+		const fs::file_time_type modified = fs::last_write_time(path, error);
+		if (error) return std::nullopt;
+		const std::chrono::seconds seconds = std::chrono::duration_cast<std::chrono::seconds>(modified.time_since_epoch());
+		const std::chrono::nanoseconds fraction = std::chrono::duration_cast<std::chrono::nanoseconds>(modified.time_since_epoch() - seconds);
+		return std::to_string(size) + ":" + std::to_string(seconds.count()) + ":" + std::to_string(fraction.count());
+	}
+}
+
 bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint)
 try
 {
-	static std::mutex save_mutex;
-	std::unique_lock<std::mutex> lock(save_mutex, std::defer_lock);
+	std::unique_lock<std::mutex> lock(ChatSaveMutex(), std::defer_lock);
 	if (prepared == nullptr && fingerprint == nullptr) lock.lock();
 
 	if (!uam::chat_ids::IsSafeStorageChatId(chat.id))
@@ -2004,15 +2028,27 @@ PreparedChatSave::~PreparedChatSave()
 	uam::io::RemoveAtomicTempNoThrow(summary_temp);
 }
 
-std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path& data_root, const ChatSession& chat)
+std::optional<std::string> ChatRepository::ChatStorageRevision(const fs::path& data_root, std::string_view chat_id)
 {
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id)) return std::nullopt;
+	return StorageRevision(AppPaths::UamChatFilePath(data_root, chat_id));
+}
+
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision)
+{
+	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return nullptr;
 	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
-	return SaveChatImpl(data_root, chat, false, false, prepared.get()) ? prepared : nullptr;
+	prepared->expected_storage_revision = expected_storage_revision;
+	if (!SaveChatImpl(data_root, chat, false, false, prepared.get())) return nullptr;
+	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return nullptr;
+	return prepared;
 }
 
 bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory)
 {
 	if (!prepared) return false;
+	std::lock_guard<std::mutex> lock(ChatSaveMutex());
+	if (!prepared->expected_storage_revision.empty() && StorageRevision(prepared->primary_path) != prepared->expected_storage_revision) return false;
 	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);
 	if (!primary.success) return false;
 	(void)uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory);

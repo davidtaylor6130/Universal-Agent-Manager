@@ -18,7 +18,7 @@ std::string ProviderInteractiveTerminalUnavailableReason(const ProviderProfile& 
 std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSession& chat, const ProviderProfile& provider);
 bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr);
 /// <summary>Snapshots recent saved conversation text and compaction summaries within a 32 KiB history budget; current prompts are separate.</summary>
-std::string BuildProviderHandoffContext(const ChatSession& chat);
+std::string BuildProviderHandoffContext(const ChatSession& chat, std::stop_token stop_token = {});
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat);
 /// <summary>Stages prior conversation as provider-native context without synthetic user turns.</summary>
 bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,

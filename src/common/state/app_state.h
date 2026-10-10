@@ -23,6 +23,8 @@
 #include <unordered_set>
 #include <vector>
 
+struct PreparedChatSave;
+
 namespace uam
 {
 
@@ -62,6 +64,11 @@ namespace uam
 		std::vector<std::pair<std::string, std::string>> environment;
 		std::filesystem::path provider_configuration_directory;
 		std::string channel;
+		bool history_preparation = false;
+		std::string prepared_context;
+		std::string storage_revision;
+		std::vector<Message> baseline_messages;
+		std::shared_ptr<PreparedChatSave> prepared_chat_save;
 		std::string error;
 		bool succeeded = false;
 	};

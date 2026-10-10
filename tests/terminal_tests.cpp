@@ -3205,8 +3205,7 @@ UAM_TEST(CodexUnboundExistingChatImportsHydratedConversationAndCompactionSummary
 	assistant.blocks.push_back({"context_compaction", "Saved conversation summary.", "", "compact-1"});
 	chat.messages.push_back(assistant);
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
-	chat.messages.clear();
-	chat.messages_loaded = false;
+	chat = *ChatRepository::LoadLocalChat(app.data_root, chat.id, false);
 	ExecutionHost host;
 	host.id = "local";
 	uam::CliTerminalState terminal;
@@ -3217,7 +3216,19 @@ UAM_TEST(CodexUnboundExistingChatImportsHydratedConversationAndCompactionSummary
 	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
 	UAM_ASSERT(error.empty());
 	app.cli_context_preparation_tasks.front().worker->join();
+	UAM_ASSERT(!chat.messages_loaded);
+	UAM_ASSERT(chat.provider_handoff_context.empty());
+	UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(!chat.messages_loaded);
+	UAM_ASSERT_EQ(chat.provider_handoff_cli_contexts.size(), std::size_t{1});
+	const std::optional<ChatSession> admitted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(admitted.has_value());
+	UAM_ASSERT_EQ(admitted->provider_handoff_cli_contexts, chat.provider_handoff_cli_contexts);
+	UAM_ASSERT_EQ(admitted->messages.size(), std::size_t{2});
+	app.cli_context_preparation_tasks.back().worker->join();
 	UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(!chat.messages_loaded);
 	UAM_ASSERT(chat.provider_handoff_context.find("User: The actual saved fruit is kumquat.") != std::string::npos);
 	UAM_ASSERT(chat.provider_handoff_context.find("Assistant: Recorded the saved fruit.") != std::string::npos);
 	UAM_ASSERT(chat.provider_handoff_context.find("Conversation summary: Saved conversation summary.") != std::string::npos);
@@ -3252,4 +3263,329 @@ UAM_TEST(CliIdleGraceActivityAndBusyGuards)
 	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "owned", 760));
 	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Unknown;
 	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "owned", 9999));
+}
+
+UAM_TEST(CodexColdHandoffAdmissionAndUnreadableHistoryStayOffCaller)
+{
+	TempDir temp("uam-cold-handoff-admission");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "missing-cold-history";
+	chat.provider_id = "codex-cli";
+	chat.messages_loaded = false;
+	chat.persisted_message_count = 1;
+	chat.persisted_messages_digest = "saved:1";
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{(temp.root / "must-not-start").string()};
+	const std::vector<std::string> original = argv;
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel, error;
+	const std::shared_ptr<uam::CliContextPreparation> previous = std::make_shared<uam::CliContextPreparation>();
+	previous->chat_id = chat.id;
+	uam::CliContextPreparationTask task;
+	task.state = previous;
+	app.cli_context_preparation_tasks.push_back(std::move(task));
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.find("stopping") != std::string::npos);
+	UAM_ASSERT(terminal.context_preparation == nullptr);
+	chat.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	error.clear();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.find("stopping") != std::string::npos);
+	chat.native_session_id.clear();
+	previous->finished.store(true);
+	error.clear();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(terminal.context_preparation != nullptr);
+	app.cli_context_preparation_tasks.back().worker->join();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(error.find("complete Codex conversation") != std::string::npos);
+	UAM_ASSERT_EQ(argv, original);
+	UAM_ASSERT(chat.provider_handoff_context.empty());
+	UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	UAM_ASSERT(!fs::exists(temp.root / "runtime-context"));
+}
+
+UAM_TEST(CodexColdHandoffCancelledOrStaleCompletionNeverPublishes)
+{
+	for (int change = 0; change < 5; ++change)
+	{
+		TempDir temp("uam-cold-handoff-stale");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "cold-stale";
+		chat.provider_id = "codex-cli";
+		Message message;
+		message.role = MessageRole::User;
+		message.content = "Saved original context.";
+		chat.messages.push_back(message);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		chat = *ChatRepository::LoadLocalChat(app.data_root, chat.id, false);
+		ExecutionHost host;
+		host.id = "local";
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{(temp.root / "must-not-start").string()};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel, error;
+		UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		const std::shared_ptr<uam::CliContextPreparation> state = terminal.context_preparation;
+		app.cli_context_preparation_tasks.back().worker->join();
+		UAM_ASSERT(state->succeeded);
+		UAM_ASSERT(state->prepared_chat_save != nullptr);
+		if (change == 0) state->cancellation.request_stop();
+		if (change == 1) chat.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+		if (change == 2) ++chat.persisted_message_count;
+		if (change == 3) chat.persisted_messages_digest += "changed";
+		if (change == 4) chat.title = "Renamed during preparation";
+		UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(state->cancellation.stop_requested());
+		UAM_ASSERT(terminal.context_preparation == nullptr);
+		UAM_ASSERT(chat.provider_handoff_context.empty());
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+		UAM_ASSERT_EQ(app.cli_context_preparation_tasks.size(), std::size_t{1});
+		const ChatSession persisted = *ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(persisted.native_session_id.empty());
+		UAM_ASSERT(persisted.provider_handoff_context.empty());
+		UAM_ASSERT(persisted.provider_handoff_cli_contexts.empty());
+		UAM_ASSERT_EQ(persisted.messages.front().content, message.content);
+		UAM_ASSERT(!fs::exists(temp.root / "runtime-context"));
+	}
+}
+
+UAM_TEST(CodexHandoffRejectsSameLengthWarmEditAndChangedColdStorage)
+{
+	for (int change = 0; change < 3; ++change)
+	{
+		const bool cold = change == 2;
+		TempDir temp("uam-handoff-history-identity");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "history-identity";
+		chat.provider_id = "codex-cli";
+		chat.updated_at = "original";
+		Message message;
+		message.role = MessageRole::User;
+		message.content = "fruit: apple";
+		chat.messages.push_back(message);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		if (cold)
+		{
+			ChatSession replacement = chat;
+			chat = *ChatRepository::LoadLocalChat(app.data_root, chat.id, false);
+			replacement.updated_at = "changed";
+			replacement.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+			replacement.messages.front().content = "fruit: guava";
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, replacement));
+		}
+		ExecutionHost host;
+		host.id = "local";
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{(temp.root / "must-not-start").string()};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel, error;
+		UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		app.cli_context_preparation_tasks.back().worker->join();
+		if (change == 0) chat.messages.front().content = "fruit: guava";
+		if (change == 1) chat.messages.front().blocks.push_back({"tool_call", "Changed tool result", "", "tool-1"});
+		UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(chat.provider_handoff_context.empty());
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	}
+}
+
+UAM_TEST(CodexColdHandoffStopDiscardsHistoryAndImportedIdentityCompletion)
+{
+	TempDir temp("uam-cold-handoff-stop");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "cold-stop";
+	chat.provider_id = "codex-cli";
+	Message message;
+	message.role = MessageRole::User;
+	message.content = "Owned saved context.";
+	chat.messages.push_back(message);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	chat = *ChatRepository::LoadLocalChat(app.data_root, chat.id, false);
+	ExecutionHost host;
+	host.id = "local";
+	uam::CliTerminalState terminal;
+	std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config"};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel, error;
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	const std::shared_ptr<uam::CliContextPreparation> cancelled = terminal.context_preparation;
+	StopCliTerminal(terminal);
+	UAM_ASSERT(cancelled->cancellation.stop_requested());
+	UAM_ASSERT(terminal.context_preparation == nullptr);
+	app.cli_context_preparation_tasks.back().worker->join();
+	UAM_ASSERT(chat.provider_handoff_context.empty());
+	UAM_ASSERT(ChatRepository::LoadLocalChat(app.data_root, chat.id)->provider_handoff_cli_contexts.empty());
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	app.cli_context_preparation_tasks.back().worker->join();
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	const std::shared_ptr<uam::CliContextPreparation> importing = terminal.context_preparation;
+	UAM_ASSERT(importing != nullptr);
+	app.cli_context_preparation_tasks.back().worker->join();
+	UAM_ASSERT(importing->succeeded);
+	// A newly resolved native session must win over an older successful import.
+	chat.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+	UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+	UAM_ASSERT(importing->cancellation.stop_requested());
+	UAM_ASSERT_EQ(chat.native_session_id, std::string("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"));
+	UAM_ASSERT(chat.provider_handoff_session_id.empty());
+	UAM_ASSERT(terminal.attached_session_id.empty());
+	UAM_ASSERT(channel.empty());
+	const ChatSession persisted = *ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(persisted.native_session_id.empty());
+	UAM_ASSERT_EQ(persisted.messages.front().content, message.content);
+	UAM_ASSERT_EQ(persisted.provider_handoff_cli_contexts, chat.provider_handoff_cli_contexts);
+	UAM_ASSERT_EQ(persisted.provider_handoff_cli_contexts.size(), std::size_t{1});
+}
+
+UAM_TEST(CodexColdHandoffBlankHistoryPreservesFastPathAndConfiguration)
+{
+	for (int variant = 0; variant < 4; ++variant)
+	{
+		const bool configured = (variant % 2) != 0;
+		TempDir temp("uam-cold-handoff-blank");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.settings.central_provider_configuration.enabled = configured;
+		ChatSession chat;
+		chat.id = "cold-blank";
+		chat.provider_id = "codex-cli";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		chat = *ChatRepository::LoadLocalChat(app.data_root, chat.id, false);
+		ExecutionHost host;
+		host.id = "local";
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{(temp.root / "must-not-start").string()};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel, error;
+		UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		app.cli_context_preparation_tasks.back().worker->join();
+		if (variant >= 2)
+		{
+			ChatSession replacement = *ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			Message message;
+			message.role = MessageRole::User;
+			message.content = "A newer saved conversation must not be discarded.";
+			replacement.messages.push_back(message);
+			replacement.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, replacement));
+			UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+			UAM_ASSERT(error.find("changed") != std::string::npos);
+			UAM_ASSERT_EQ(app.cli_context_preparation_tasks.size(), std::size_t{1});
+			UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(app.data_root, chat.id)->messages.front().content, message.content);
+			continue;
+		}
+		if (configured)
+		{
+			UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+			UAM_ASSERT(error.empty());
+			app.cli_context_preparation_tasks.back().worker->join();
+		}
+		UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(error.empty());
+		UAM_ASSERT(chat.provider_handoff_context.empty());
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+		UAM_ASSERT(!chat.messages_loaded);
+	}
+}
+
+UAM_TEST(CodexColdHandoffRejectsStorageReplacementAfterWorkerCompletion)
+{
+	for (const bool imported : {false, true})
+	{
+		TempDir temp("uam-cold-handoff-storage-race");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "storage-race";
+		chat.provider_id = "codex-cli";
+		Message message;
+		message.role = MessageRole::User;
+		message.content = "fruit: apple";
+		chat.messages.push_back(message);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		chat = *ChatRepository::LoadLocalChat(app.data_root, chat.id, false);
+		ExecutionHost host;
+		host.id = "local";
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string(), "--uam-test-codex-context-config"};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel, error;
+		UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		app.cli_context_preparation_tasks.back().worker->join();
+		if (imported)
+		{
+			UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+			app.cli_context_preparation_tasks.back().worker->join();
+		}
+		const std::shared_ptr<uam::CliContextPreparation> state = terminal.context_preparation;
+		UAM_ASSERT(state->succeeded);
+		ChatSession replacement = *ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		replacement.messages.front().content = "fruit: guava";
+		replacement.native_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, replacement));
+		UAM_ASSERT(ChatRepository::ChatStorageRevision(app.data_root, chat.id) != state->storage_revision);
+		UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(terminal.attached_session_id.empty());
+		const ChatSession persisted = *ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT_EQ(persisted.messages.front().content, replacement.messages.front().content);
+		UAM_ASSERT_EQ(persisted.native_session_id, replacement.native_session_id);
+		UAM_ASSERT_EQ(persisted.provider_handoff_cli_contexts, replacement.provider_handoff_cli_contexts);
+		UAM_ASSERT_EQ(persisted.provider_handoff_context, replacement.provider_handoff_context);
+		if (!imported) UAM_ASSERT(!fs::exists(temp.root / "runtime-context"));
+	}
+}
+
+UAM_TEST(CodexHandoffWarmEditRacingCompletionNeverPublishes)
+{
+	for (int attempt = 0; attempt < 16; ++attempt)
+	{
+		TempDir temp("uam-handoff-completion-race");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "warm-race";
+		chat.provider_id = "codex-cli";
+		Message message;
+		message.role = MessageRole::User;
+		message.content = std::string(65536, 'a');
+		chat.messages.push_back(message);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		ExecutionHost host;
+		host.id = "local";
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{(temp.root / "must-not-start").string()};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel, error;
+		UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		// Edit omitted text without changing count, timestamp or handoff-budget text.
+		chat.messages.front().content.front() = 'b';
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (error.empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			UAM_ASSERT(!PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(error.find("changed") != std::string::npos);
+		app.cli_context_preparation_tasks.back().worker->join();
+		UAM_ASSERT(chat.provider_handoff_context.empty());
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+		const ChatSession saved = *ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT_EQ(saved.messages.front().content, message.content);
+		UAM_ASSERT(saved.provider_handoff_context.empty());
+		UAM_ASSERT(!fs::exists(temp.root / "runtime-context"));
+	}
 }

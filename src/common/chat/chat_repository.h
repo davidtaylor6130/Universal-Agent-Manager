@@ -16,6 +16,7 @@ struct PreparedChatSave
 	std::filesystem::path summary_path;
 	std::filesystem::path summary_temp;
 	bool preserve_backup = true;
+	std::string expected_storage_revision;
 	~PreparedChatSave();
 };
 
@@ -44,7 +45,9 @@ class ChatRepository
 {
   public:
 	/// <summary>Serializes and syncs temporary files on a worker without changing saved chat files.</summary>
-	static std::shared_ptr<PreparedChatSave> PrepareChatSave(const std::filesystem::path& data_root, const ChatSession& chat);
+	static std::shared_ptr<PreparedChatSave> PrepareChatSave(const std::filesystem::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision = {});
+	/// <summary>Captures primary-file metadata without reading transcript bodies; missing files have a stable revision.</summary>
+	static std::optional<std::string> ChatStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	/// <summary>Publishes prepared files after the caller validates current chat and deletion state.</summary>
 	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true);
 	static std::string ChatMetadataFingerprint(const std::filesystem::path& data_root, const ChatSession& chat);
