@@ -53,7 +53,7 @@ namespace uam
 		const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(data_root, identity.id);
 		const std::optional<std::string> summary_revision = ChatRepository::ChatSummaryStorageRevision(data_root, identity.id);
 		std::optional<ChatSession> chat = ChatRepository::LoadLocalChat(data_root, identity.id, true, nullptr, false);
-		if (!revision || !summary_revision || !chat || !identity.Matches(*chat, false) || chat->imported_read_only)
+		if (!revision || !summary_revision || !chat || !identity.Matches(*chat, false))
 		{ update.error = "The chat changed. Try regenerating its title again."; return update; }
 		update.identity = ChatTitleIdentity::Capture(*chat);
 		update.title = validated.title;

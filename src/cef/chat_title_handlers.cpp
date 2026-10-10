@@ -11,7 +11,6 @@ void UamQueryHandler::HandleRegenerateChatTitle(CefRefPtr<CefBrowser> browser, c
 	const std::string chat_id = payload.value("chatId", "");
 	const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
 	if (chat == nullptr) { cb->Failure(404, "Chat not found."); return; }
-	if (chat->imported_read_only) { cb->Failure(409, "Import this chat before changing its title."); return; }
 	if (m_titleRequests.contains(chat_id)) { cb->Failure(409, "A title is already being generated for this chat."); return; }
 	if (m_titleRequests.size() >= 8) { cb->Failure(429, "Wait for another title request to finish."); return; }
 	if (m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.pending_chat_save_tasks.contains(chat_id))
@@ -50,7 +49,7 @@ void UamQueryHandler::HandleRegenerateChatTitle(CefRefPtr<CefBrowser> browser, c
 		    if (cancellation->stop_requested()) { result = AsyncFailure(409, "Title generation was cancelled."); return; }
 		    if (!result.ok) return;
 		    ChatSession* current = ChatDomainService().FindChatById(m_app, identity.id);
-		    if (m_app.data_root != snapshot->data_root || current == nullptr || !update->identity.Matches(*current) || current->imported_read_only ||
+		    if (m_app.data_root != snapshot->data_root || current == nullptr || !update->identity.Matches(*current) ||
 		        m_workspaceDeletionPending || m_app.worktree_operation_chat_ids.contains(identity.id) ||
 		        m_app.pending_chat_save_at_by_chat_id.contains(identity.id) || m_app.pending_chat_save_tasks.contains(identity.id))
 		    { result = AsyncFailure(409, "The chat changed. Its current name was kept. Try again."); return; }

@@ -99,7 +99,7 @@ UAM_TEST(ChatTitlePreparedUpdatePreservesLatestTranscriptAndRejectsNewerChanges)
 	manually_renamed = *renamed; manually_renamed.last_opened_at = "new-open-time"; UAM_ASSERT(!latest.Matches(manually_renamed));
 }
 
-UAM_TEST(ChatTitlePreparedUpdateRejectsCancellationReadOnlyAndSummaryChanges)
+UAM_TEST(ChatTitlePreparedUpdateRejectsCancellationAndSummaryChangesAndPreservesImports)
 {
 	TempDir temp("uam-title-guards");
 	ChatSession chat; chat.id = "title-guards"; chat.title = "Original"; chat.provider_id = "codex-cli";
@@ -116,7 +116,11 @@ UAM_TEST(ChatTitlePreparedUpdateRejectsCancellationReadOnlyAndSummaryChanges)
 	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(update.save));
 	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, chat.id)->title, "Original");
 	chat.imported_read_only = true; UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
-	UAM_ASSERT(!uam::ChatTitleService::PrepareUpdate(temp.root, identity, "Generated").save);
+	update = uam::ChatTitleService::PrepareUpdate(temp.root, identity, "Imported title");
+	UAM_ASSERT(update.save != nullptr); UAM_ASSERT(ChatRepository::PublishPreparedChatSave(update.save));
+	const std::optional<ChatSession> imported = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(imported.has_value()); UAM_ASSERT(imported->imported_read_only);
+	UAM_ASSERT_EQ(imported->title, "Imported title"); UAM_ASSERT_EQ(imported->messages[0].content, "First message");
 	UAM_ASSERT(!uam::ChatTitleService::PrepareUpdate(temp.root, uam::ChatTitleIdentity{"missing"}, "Generated").save);
 }
 
