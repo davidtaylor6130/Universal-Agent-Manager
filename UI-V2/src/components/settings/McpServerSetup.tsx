@@ -170,7 +170,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
       setImportSources(response.data.sources)
       setImportWarnings(response.data.warnings)
       setImportText(response.data.servers.length ? toJsonText(response.data.servers, uamEnabled) : '')
-      setMessage(response.data.servers.length ? `Loaded ${response.data.servers.length} servers. Review the configuration below before importing.` : 'No external MCP servers found in the configuration.')
+      setMessage(response.data.servers.length ? `Loaded ${response.data.servers.length} server${response.data.servers.length === 1 ? '' : 's'}. Review the configuration below before importing.` : 'No external MCP servers found in the configuration.')
     } catch { if (generation === importGeneration.current) setMessage('Could not read OpenCode configuration. Try again.') }
     finally { if (generation === importGeneration.current) { setBusy(false); onBusyChange(false) } }
   }
@@ -227,7 +227,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
         <p className="text-sm">Read OpenCode's global configuration, or paste its MCP section. Existing servers stay unchanged.</p>
         {text('OpenCode configuration file or directory (optional)', importPath, setImportPath, 'Empty: read global OpenCode configuration')}
         <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read this computer's OpenCode configuration</Button>
-        <textarea aria-label="Import MCP configuration" className="uam-field w-full font-mono text-xs" rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
+        <textarea aria-label="Import MCP configuration" className="uam-field w-full resize-y font-mono text-xs" style={{ height: 'auto', padding: '8px 9px' }} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
         {importSources.length > 0 && <div className="text-xs break-all">{importSources.map(source => <div key={source}>{source}</div>)}</div>}
         {message && <p role="status" className="text-sm">{message}</p>}
         {warningNotice}

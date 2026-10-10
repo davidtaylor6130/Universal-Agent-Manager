@@ -171,7 +171,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
           <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{session.name}</span>
           <span
             data-testid={`chat-workspace-${session.id}`}
-            className="uam-chat-pane__workspace flex min-w-0 text-[10px] font-normal"
+            className="uam-chat-pane__workspace flex min-w-0 gap-1 text-[10px] font-normal"
             style={{ color: 'var(--text-3)' }}
             title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
           >

@@ -229,7 +229,7 @@ it('shows native source paths and warnings beside import controls and accepts a 
   expect(sendToCEF).toHaveBeenCalledWith({ action: 'previewOpenCodeMcpImport', payload: { executionHostId: 'local', sourcePath: '/config/opencode' } })
   expect(section.textContent).toContain('/config/opencode/opencode.jsonc')
   expect(section.textContent).toContain('OAuth settings need manual configuration')
-  expect(section.querySelector('[role="status"]')?.textContent).toContain('Loaded 1 servers')
+  expect(section.querySelector('[role="status"]')?.textContent).toContain('Loaded 1 server.')
   expect(button('Review import').disabled).toBe(false)
 })
 
