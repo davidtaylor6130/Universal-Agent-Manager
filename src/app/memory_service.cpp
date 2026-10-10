@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <optional>
@@ -438,7 +439,7 @@ namespace
 
 	std::string ReadFirstTitle(const fs::path& path)
 	{
-		std::istringstream in(uam::io::ReadTextFile(path));
+		std::ifstream in(path, std::ios::binary);
 		std::string line;
 		while (std::getline(in, line))
 		{
@@ -1543,6 +1544,7 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
 	}
 
 	MemoryFileIndex indexes;
+	std::set<fs::path> prepared_roots;
 	int wrote_count = 0;
 	const std::string extraction_key = processed_message_count < 0 ? "" : chat.id + ":" + std::to_string(std::min(processed_message_count, MessageCount(chat)));
 	for (const nlohmann::json& entry : (*parsed)["memories"])
@@ -1563,7 +1565,7 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
 		{
 			continue;
 		}
-		if (!EnsureMemoryLayout(root))
+		if (prepared_roots.insert(root).second && !EnsureMemoryLayout(root))
 		{
 			SetError(error_out, "Failed to create memory layout.");
 			return false;

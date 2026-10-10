@@ -128,7 +128,7 @@ UAM_TEST(MemoryEntryIndexPreservesBatchDeduplicationScopesAndFreshFiles)
 	const fs::path global = MemoryService::CategoryPath(MemoryService::GlobalMemoryRoot(app.data_root), "Lessons/User_Lessons");
 	fs::create_directories(local);
 	const fs::path legacy = local / "legacy-name.md";
-	UAM_ASSERT(uam::io::WriteTextFile(legacy, "# Existing convention\n\nOccurrence count: 3\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(legacy, "\x1a legacy preface\n\n# Existing convention\n\nOccurrence count: 3\n"));
 	nlohmann::json memories = nlohmann::json::array();
 	for (const std::string& title : {std::string("Existing convention"), std::string("EXISTING CONVENTION"), std::string(72, 'a') + " first", std::string(72, 'a') + " second", std::string("New convention"), std::string("NEW CONVENTION")})
 		memories.push_back({{"scope", "local"}, {"category", "Lessons/User_Lessons"}, {"title", title}, {"memory", "Use the recorded convention."}, {"evidence", "The user requested this convention."}, {"confidence", "high"}});
