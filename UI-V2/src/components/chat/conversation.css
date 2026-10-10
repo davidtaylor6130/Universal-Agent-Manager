@@ -92,30 +92,7 @@
 [data-processing-step="true"] .conversation-work__thought-label,
 .uam-thinking-block[data-active="true"] .uam-thinking-row__kind,
 .uam-thinking-block[data-active="true"] .uam-thinking-row__preview {
-  background: linear-gradient(90deg, currentColor 0%, currentColor 36%, var(--accent) 50%, currentColor 64%, currentColor 100%);
-  background-size: 280% 100%;
-  background-position: 100% 0;
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: inherit;
-  -webkit-text-fill-color: transparent;
-  animation: conversation-processing-sweep 1.8s ease-in-out infinite;
-  will-change: background-position;
-}
-@keyframes conversation-processing-sweep {
-  0%, 18% { background-position: 100% 0; }
-  72%, 100% { background-position: 0 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-processing-step="true"] .conversation-work__tool-title,
-  [data-processing-step="true"] .conversation-work__thought-label,
-  .uam-thinking-block[data-active="true"] .uam-thinking-row__kind,
-  .uam-thinking-block[data-active="true"] .uam-thinking-row__preview {
-    animation: none;
-    background: none;
-    color: inherit;
-    -webkit-text-fill-color: currentColor;
-  }
+  color: var(--accent);
 }
 
 .conversation-work__inline { font-size: 12px; line-height: 1.55; color: var(--text-3); }

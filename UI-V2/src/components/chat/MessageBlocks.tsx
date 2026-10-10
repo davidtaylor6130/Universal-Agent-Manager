@@ -4,7 +4,7 @@
 
 import { ImageAttachmentPreview } from './ImageAttachmentPreview'
 import { MarkdownContent } from '../markdown/Markdown'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import type {
   AcpPendingPermission,
@@ -842,7 +842,7 @@ export function stoppedResponseLabel(reason: string | undefined, interrupted?: b
   return interrupted ? 'Response interrupted' : ''
 }
 
-export function TurnTimelineContent({
+export const TurnTimelineContent = memo(function TurnTimelineContent({
   disclosureState,
   interrupted = false,
   stopReason,
@@ -1041,4 +1041,4 @@ export function TurnTimelineContent({
       {stoppedResponseLabel(stopReason, interrupted) && <div className="conversation-interrupted">{stoppedResponseLabel(stopReason, interrupted)}</div>}
     </div>
   )
-}
+})

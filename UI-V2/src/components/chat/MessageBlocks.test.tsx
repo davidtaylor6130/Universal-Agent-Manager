@@ -958,3 +958,21 @@ it('renders adjacent streamed and saved text as one markdown run without empty r
     expect(events).toHaveLength(8)
   } finally { act(() => root.unmount()); host.remove() }
 })
+
+it('does not rescan a live timeline for a composer-only render and still accepts streamed updates', () => {
+  const host = document.createElement('div')
+  const root = createRoot(host)
+  let reads = 0
+  const events = [{ type: 'assistant_text' as const, get text() { reads++; return 'Before stream' } }]
+  const props = { events, tools: [], active: true, pendingPermission: null, pendingUserInput: null,
+    onSelectTool: vi.fn(), onResolvePermission: vi.fn(), onCancelTurn: vi.fn(), onStopRuntime: vi.fn() }
+  try {
+    act(() => root.render(<TurnTimelineContent {...props} />))
+    expect(reads).toBeGreaterThan(0)
+    reads = 0
+    act(() => root.render(<TurnTimelineContent {...props} />))
+    expect(reads).toBe(0)
+    act(() => root.render(<TurnTimelineContent {...props} events={[{ type: 'assistant_text', text: 'After stream' }]} />))
+    expect(host.textContent).toContain('After stream')
+  } finally { act(() => root.unmount()); host.remove() }
+})
