@@ -56,10 +56,11 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
   const message = messages[indices[index] - startIndex]
   const label = `${!userMessageIndices && startIndex > 0 ? 'Loaded user' : 'User'} message ${index + 1} of ${count}`
   const preview = message ? message.content.slice(0, 160) : 'Open this message'
-  return <div className="absolute left-0 top-4 z-10 w-5" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
+  return <div className="absolute left-0 top-4 z-10 flex w-5 items-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
     <div role="slider" tabIndex={busy ? -1 : 0} aria-label="Navigate user messages" aria-orientation="vertical"
       aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={label} aria-disabled={busy}
-      className="relative h-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+      className="relative w-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+      style={{ height: Math.max(1, count - 1) * 4, maxHeight: '100%' }}
       title={`${label}\n${preview}`}
       onMouseMove={(event) => {
         const rect = event.currentTarget.getBoundingClientRect()

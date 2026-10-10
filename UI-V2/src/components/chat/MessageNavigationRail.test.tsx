@@ -40,6 +40,8 @@ describe('Message navigation rail', () => {
     try {
       act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 5, 10, 15, 20, 25, 30]} startIndex={0} messages={[]} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={onNavigate} />))
       const slider = host.querySelector<HTMLElement>('[role="slider"]')!
+      expect(slider.style.height).toBe('24px')
+      expect(slider.style.maxHeight).toBe('100%')
       vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({ top: 20, height: 300 } as DOMRect)
       act(() => slider.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: 170 })))
       expect(slider.getAttribute('aria-valuenow')).toBe('4')
@@ -69,6 +71,7 @@ describe('Message navigation rail', () => {
       act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true })))
       expect(onNavigate).toHaveBeenLastCalledWith(99999)
       expect(slider.getAttribute('aria-valuenow')).toBe('3')
+      expect((slider as HTMLElement).style.height).toBe('8px')
       expect(host.querySelectorAll('span').length).toBeLessThan(5)
       act(() => render(true))
       onNavigate.mockClear()
