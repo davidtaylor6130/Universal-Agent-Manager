@@ -1,5 +1,7 @@
 #include "app/execution_routing_integration.h"
 #include "application.h"
+#include <thread>
+#include "common/utils/diagnostic_log.h"
 
 #include "agent_run_ledger.h"
 #include "agent_run_scheduler.h"
@@ -91,24 +93,6 @@ namespace uam_cef_globals
 
 namespace
 {
-	std::string WorkspaceFolderAvailabilityFingerprint(const std::vector<ChatFolder>& folders)
-	{
-		std::string result;
-		for (const ChatFolder& folder : folders)
-		{
-			result += folder.id;
-			result.push_back('\0');
-			if (!uam::paths::IsControllerLocalWorkspace(folder))
-			{
-				result.push_back('1');
-				continue;
-			}
-			const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
-			const bool can_probe = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory);
-			result.push_back(folder.directory.empty() || !can_probe || uam::paths::IsDirectoryNoThrow(directory) ? '1' : '0');
-		}
-		return result;
-	}
 
 	void ResetRuntimeCliVersionState(uam::AppState& app)
 	{
@@ -397,6 +381,47 @@ bool Application::PollHistoryDiscovery()
 	return m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->Poll(m_app);
 }
 
+bool Application::PollWorkspaceAvailability()
+{
+	bool changed = false;
+	if (m_workspaceAvailabilityScan.valid() && m_workspaceAvailabilityScan.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+	{
+		try
+		{
+			for (const ChatFolder& result : m_workspaceAvailabilityScan.get())
+			{
+				const std::vector<ChatFolder>::iterator current = std::ranges::find(m_app.folders, result.id, &ChatFolder::id);
+				if (current == m_app.folders.end() || current->directory != result.directory || current->execution_host_id != result.execution_host_id) continue;
+				changed = changed || current->directory_missing != result.directory_missing;
+				current->directory_missing = result.directory_missing;
+				current->availability_directory = result.directory;
+				current->availability_host_id = result.execution_host_id;
+			}
+		}
+		catch (const std::exception& error) { uam::diagnostics::Write(std::string("Workspace availability scan failed: ") + error.what()); m_nextWorkspaceAvailabilityScan = uam::GetAppTimeSeconds() + 2.0; }
+	}
+	if (!m_workspaceAvailabilityScan.valid() && uam::GetAppTimeSeconds() >= m_nextWorkspaceAvailabilityScan)
+	{
+		std::packaged_task<std::vector<ChatFolder>()> task([folders = m_app.folders]() mutable
+		{
+			for (ChatFolder& folder : folders)
+			{
+				folder.directory_missing = false;
+				if (!folder.directory.empty() && uam::paths::IsControllerLocalWorkspace(folder))
+				{
+					const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
+					folder.directory_missing = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory) && !uam::paths::IsDirectoryNoThrow(directory);
+				}
+			}
+			return folders;
+		});
+		m_workspaceAvailabilityScan = task.get_future();
+		std::thread(std::move(task)).detach();
+		m_nextWorkspaceAvailabilityScan = uam::GetAppTimeSeconds() + 2.0;
+	}
+	return changed;
+}
+
 void Application::PollTick()
 {
 	CEF_REQUIRE_UI_THREAD();
@@ -416,11 +441,9 @@ void Application::PollTick()
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app, TerminalUiVisible(m_browser));
 	const bool routing_changed = uam::PollExecutionRouting(m_app);
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
-	const bool computer_use_changed = uam::ComputerUseService::Poll(m_app);
+	const bool computer_use_changed = m_computerUseService.PollInBackground(m_app);
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
-	const std::string folder_availability = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
-	const bool folder_availability_changed = folder_availability != m_workspaceFolderAvailabilityFingerprint;
-	m_workspaceFolderAvailabilityFingerprint = folder_availability;
+	const bool folder_availability_changed = PollWorkspaceAvailability();
 	if (shell_actions_changed && m_browser && m_browser->GetHost())
 	{
 		m_browser->GetHost()->SetFocus(true);
@@ -653,7 +676,7 @@ bool Application::InitializeState()
 		if (!chat.temporary_parent_chat_id.empty())
 			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
-	m_workspaceFolderAvailabilityFingerprint = WorkspaceFolderAvailabilityFingerprint(m_app.folders);
+
 	(void)uam::RestoreExecutionRoutingReservations(m_app);
 	if (const std::size_t reconnecting = uam::RestoreRemoteAcpSessionsAfterRestart(m_app);
 	    reconnecting > 0)

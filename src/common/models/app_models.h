@@ -481,6 +481,10 @@ struct ChatFolder
 	bool collapsed = false;
 	std::string execution_host_id;
 	CustomIcon custom_icon;
+	// Transient worker probe; never persisted with workspace metadata.
+	std::string availability_directory;
+	std::string availability_host_id;
+	bool directory_missing = false;
 };
 
 struct ResourceReference

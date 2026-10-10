@@ -17,11 +17,15 @@
 #include "app/uam_control_service.h"
 #include "app/memory_service.h"
 #include "app/native_session_link_service.h"
+#include "app/transcript_retention_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/native_chat_identity.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include <cstring>
+#include <future>
+#include <thread>
+#include "common/utils/diagnostic_log.h"
 #include <iterator>
 #include <limits>
 #include <unordered_set>
@@ -4729,34 +4733,138 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return acp_detail::ResumeStalledGoalLoopIfNeeded(app, session, chat, nullptr, now_seconds);
 	}
 
+	struct PendingChatSaveTask
+	{
+		std::filesystem::path data_root;
+		std::string metadata;
+		std::vector<std::shared_ptr<const Message>> messages;
+		std::future<std::shared_ptr<PreparedChatSave>> prepared;
+		std::future<std::vector<std::shared_ptr<const Message>>> baseline;
+		double due_at = 0.0;
+	};
+
+	/// <summary>Copies metadata without temporarily duplicating any transcript bodies.</summary>
+	static ChatSession PendingSaveMetadata(ChatSession& chat)
+	{
+		std::vector<Message> messages = std::move(chat.messages);
+		try
+		{
+			ChatSession result = chat;
+			chat.messages = std::move(messages);
+			return result;
+		}
+		catch (...)
+		{
+			chat.messages = std::move(messages);
+			throw;
+		}
+	}
+
 	void FlushPendingChatSaves(AppState& app, bool force)
 	{
 		const double now = GetAppTimeSeconds();
 		std::vector<std::string> due_chat_ids;
 		for (const auto& entry : app.pending_chat_save_at_by_chat_id)
-		{
-			if (force || entry.second <= now)
-			{
-				due_chat_ids.push_back(entry.first);
-			}
-		}
+			if (force || entry.second <= now || app.pending_chat_save_tasks.contains(entry.first)) due_chat_ids.push_back(entry.first);
 		for (const std::string& chat_id : due_chat_ids)
 		{
-			const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+			ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 			if (chat == nullptr)
 			{
 				app.pending_chat_save_at_by_chat_id.erase(chat_id);
+				app.pending_chat_save_tasks.erase(chat_id);
 				continue;
 			}
-			if (ChatRepository::SaveChat(app.data_root, *chat))
+			std::shared_ptr<PendingChatSaveTask>& task = app.pending_chat_save_tasks[chat_id];
+			if (force)
 			{
-				app.pending_chat_save_at_by_chat_id.erase(chat_id);
+				// Shutdown/durable command barriers wait for owned preparation, then save the latest state.
+				if (task && task->baseline.valid())
+				{
+					try { (void)task->baseline.get(); }
+					catch (const std::exception& error) { diagnostics::Write(std::string("Background chat baseline failed: ") + error.what()); }
+				}
+				if (task && task->prepared.valid())
+				{
+					try { (void)task->prepared.get(); }
+					catch (const std::exception& error) { diagnostics::Write(std::string("Background chat preparation failed at durable barrier: ") + error.what()); }
+				}
+				app.pending_chat_save_tasks.erase(chat_id);
+				if (ChatRepository::SaveChat(app.data_root, *chat)) app.pending_chat_save_at_by_chat_id.erase(chat_id);
+				else app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0;
+				continue;
 			}
-			else
+			if (task && task->baseline.valid())
 			{
-				app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0;
+				if (task->baseline.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
+				try { task->messages = task->baseline.get(); }
+				catch (const std::exception& error) { diagnostics::Write(std::string("Background chat baseline failed: ") + error.what()); }
 			}
+
+			if (task && task->prepared.valid())
+			{
+				if (task->prepared.wait_for(std::chrono::seconds(0)) != std::future_status::ready) continue;
+				std::shared_ptr<PreparedChatSave> prepared;
+				try { prepared = task->prepared.get(); }
+				catch (const std::exception& error) { diagnostics::Write(std::string("Background chat save failed: ") + error.what()); }
+				const bool bodies_match = !chat->messages_loaded ||
+				    (chat->messages.size() == task->messages.size() && std::equal(chat->messages.begin(), chat->messages.end(), task->messages.begin(),
+				        [](const Message& live, const std::shared_ptr<const Message>& saved) { return live == *saved; }));
+				if (prepared && app.data_root == task->data_root && bodies_match &&
+				    !app.worktree_operation_chat_ids.contains(chat_id) && ChatRepository::ChatMetadataFingerprint(app.data_root, *chat) == task->metadata &&
+				    ChatRepository::PublishPreparedChatSave(prepared))
+				{
+					if (app.pending_chat_save_at_by_chat_id[chat_id] == task->due_at) app.pending_chat_save_at_by_chat_id.erase(chat_id);
+				}
+				else app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0;
+			}
+			if (!app.pending_chat_save_at_by_chat_id.contains(chat_id))
+			{
+				app.pending_chat_save_tasks.erase(chat_id);
+				continue;
+			}
+			if (app.pending_chat_save_at_by_chat_id[chat_id] > now || app.worktree_operation_chat_ids.contains(chat_id)) continue;
+			// Bound serialization and disk pressure to one pending transcript preparation.
+			if (std::ranges::any_of(app.pending_chat_save_tasks, [](const auto& entry)
+			    { return entry.second && (entry.second->prepared.valid() || entry.second->baseline.valid()); })) continue;
+			if (!task)
+			{
+				task = std::make_shared<PendingChatSaveTask>();
+				task->data_root = app.data_root;
+				// Build the durable immutable prefix on the worker, without copying archived bodies on UI.
+				std::packaged_task<std::vector<std::shared_ptr<const Message>>()> baseline([root = app.data_root, chat_id]()
+				{
+					std::vector<std::shared_ptr<const Message>> messages;
+					std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(root, chat_id, true, nullptr, false);
+					if (saved)
+						for (Message& message : saved->messages) messages.push_back(std::make_shared<const Message>(std::move(message)));
+					return messages;
+				});
+				task->baseline = baseline.get_future();
+				std::thread(std::move(baseline)).detach();
+				continue;
+			}
+			task->data_root = app.data_root;
+			task->metadata = ChatRepository::ChatMetadataFingerprint(app.data_root, *chat);
+			task->due_at = app.pending_chat_save_at_by_chat_id[chat_id];
+			task->messages.resize(chat->messages.size());
+			for (std::size_t index = 0; index < chat->messages.size(); ++index)
+				if (!task->messages[index] || *task->messages[index] != chat->messages[index]) task->messages[index] = std::make_shared<const Message>(chat->messages[index]);
+			ChatSession snapshot = PendingSaveMetadata(*chat);
+			const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(app.data_root, chat_id);
+			if (!revision) { app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0; continue; }
+			std::packaged_task<std::shared_ptr<PreparedChatSave>()> worker([root = app.data_root, snapshot = std::move(snapshot), messages = task->messages, revision = *revision]() mutable
+			{
+				for (const std::shared_ptr<const Message>& message : messages) snapshot.messages.push_back(*message);
+				std::shared_ptr<PreparedChatSave> result = ChatRepository::PrepareChatSave(root, snapshot, revision);
+				(void)MessageTailCache::Attach(root, snapshot, result);
+				return result;
+			});
+			task->prepared = worker.get_future();
+			std::thread(std::move(worker)).detach();
 		}
+		std::erase_if(app.pending_chat_save_tasks, [&](const auto& entry) { return !app.pending_chat_save_at_by_chat_id.contains(entry.first); });
 	}
+
 
 } // namespace uam

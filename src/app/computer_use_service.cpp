@@ -6,12 +6,16 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/runtime/app_time.h"
+#include "common/utils/diagnostic_log.h"
 
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <optional>
 #include <sstream>
+#include <thread>
+#include <tuple>
 #include <unordered_set>
 
 #if defined(_WIN32)
@@ -161,6 +165,101 @@ namespace uam
 		}
 	} // namespace
 
+	struct ComputerUseService::Scan
+	{
+		AppState state;
+		std::vector<ChatSession> baseline;
+		std::unordered_map<std::string, std::string> signatures;
+	};
+
+	namespace
+	{
+		ChatSession ControlSnapshot(const ChatSession& chat)
+		{
+			ChatSession result;
+			result.id = chat.id;
+			result.provider_id = chat.provider_id;
+			result.execution_host_id = chat.execution_host_id;
+			result.computer_use_backend = chat.computer_use_backend;
+			result.computer_use_enabled = chat.computer_use_enabled;
+			result.computer_use_target_kind = chat.computer_use_target_kind;
+			result.computer_use_target_id = chat.computer_use_target_id;
+			result.computer_use_target_process_id = chat.computer_use_target_process_id;
+			result.computer_use_target_title = chat.computer_use_target_title;
+			result.computer_use_target_input_mode = chat.computer_use_target_input_mode;
+			return result;
+		}
+
+		bool SameControlIdentity(const ChatSession& left, const ChatSession& right)
+		{
+			return std::tie(left.id, left.provider_id, left.execution_host_id, left.computer_use_backend,
+			    left.computer_use_enabled, left.computer_use_target_kind, left.computer_use_target_id,
+			    left.computer_use_target_process_id, left.computer_use_target_title, left.computer_use_target_input_mode) ==
+			    std::tie(right.id, right.provider_id, right.execution_host_id, right.computer_use_backend,
+			    right.computer_use_enabled, right.computer_use_target_kind, right.computer_use_target_id,
+			    right.computer_use_target_process_id, right.computer_use_target_title, right.computer_use_target_input_mode);
+		}
+	}
+
+	bool ComputerUseService::PollInBackground(AppState& app)
+	{
+		bool changed = false;
+		if (m_scan.valid() && m_scan.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+		{
+			std::shared_ptr<Scan> scan;
+			try { scan = m_scan.get(); }
+			catch (const std::exception& error) { diagnostics::Write(std::string("Computer-use background scan failed: ") + error.what()); m_nextScanTime = GetAppTimeSeconds() + 1.0; }
+			if (scan && scan->state.data_root == app.data_root)
+			{
+				for (std::size_t index = 0; index < scan->baseline.size(); ++index)
+				{
+					const ChatSession& baseline = scan->baseline[index];
+					const std::vector<ChatSession>::iterator current = std::ranges::find(app.chats, baseline.id, &ChatSession::id);
+					if (current == app.chats.end() || !SameControlIdentity(*current, baseline)) continue;
+					const auto prior = app.computer_use_by_chat_id.find(baseline.id);
+					const std::string signature = prior == app.computer_use_by_chat_id.end() ? "" : prior->second.source_signature;
+					if (signature != scan->signatures[baseline.id]) continue;
+					const ChatSession& next = scan->state.chats[index];
+					if (!SameControlIdentity(*current, next))
+					{
+						current->computer_use_enabled = next.computer_use_enabled;
+						current->computer_use_target_kind = next.computer_use_target_kind;
+						current->computer_use_target_id = next.computer_use_target_id;
+						current->computer_use_target_process_id = next.computer_use_target_process_id;
+						current->computer_use_target_title = next.computer_use_target_title;
+						current->computer_use_target_input_mode = next.computer_use_target_input_mode;
+						changed = true;
+					}
+					const auto result = scan->state.computer_use_by_chat_id.find(baseline.id);
+					if (result == scan->state.computer_use_by_chat_id.end()) changed = app.computer_use_by_chat_id.erase(baseline.id) > 0 || changed;
+					else
+					{
+						changed = prior == app.computer_use_by_chat_id.end() || prior->second.fingerprint != result->second.fingerprint || changed;
+						app.computer_use_by_chat_id[baseline.id] = result->second;
+					}
+				}
+			}
+		}
+		if (!m_scan.valid() && GetAppTimeSeconds() >= m_nextScanTime)
+		{
+			std::shared_ptr<Scan> scan = std::make_shared<Scan>();
+			scan->state.data_root = app.data_root;
+			scan->state.computer_use_by_chat_id = app.computer_use_by_chat_id;
+			for (const ChatSession& chat : app.chats)
+			{
+				scan->baseline.push_back(ControlSnapshot(chat));
+				const auto prior = app.computer_use_by_chat_id.find(chat.id);
+				scan->signatures[chat.id] = prior == app.computer_use_by_chat_id.end() ? "" : prior->second.source_signature;
+			}
+			scan->state.chats = scan->baseline;
+			std::packaged_task<std::shared_ptr<Scan>()> task([scan]() { (void)Poll(scan->state); return scan; });
+			m_scan = task.get_future();
+			std::thread(std::move(task)).detach();
+			m_nextScanTime = GetAppTimeSeconds() + 0.25;
+		}
+		return changed;
+	}
+
 	bool ComputerUseService::ResetControlsForStartup(AppState& app)
 	{
 		bool reset = true;
@@ -181,13 +280,14 @@ namespace uam
 		return reset;
 	}
 
-	bool ComputerUseService::Poll(AppState& app)
+	bool ComputerUseService::Poll(AppState& app, std::string_view chat_id)
 	{
 		bool changed = false;
 		const std::optional<std::unordered_set<std::string>> existing_session_ids =
-		    ExistingSessionIds(app);
+		    chat_id.empty() ? ExistingSessionIds(app) : std::optional<std::unordered_set<std::string>>{{std::string(chat_id)}};
 		for (ChatSession& chat : app.chats)
 		{
+			if (!chat_id.empty() && chat.id != chat_id) continue;
 			if (!uam::computer_use::AvailableForChat(chat))
 			{
 				chat.computer_use_enabled = false;
@@ -286,7 +386,7 @@ namespace uam
 			if (error != nullptr) *error = "Failed to update computer-use controls.";
 			return false;
 		}
-		(void)Poll(app);
+		(void)Poll(app, chat_id);
 		return true;
 	}
 

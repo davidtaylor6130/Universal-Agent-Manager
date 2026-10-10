@@ -724,7 +724,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     [acp?.toolCalls, messages, selectedToolCallRef]
   )
 
-  const turnEvents = acp?.turnEvents ?? []
+  const turnEvents = useMemo(() => acp?.turnEvents ?? [], [acp?.turnEvents])
+  const liveTools = useMemo(() => acp?.toolCalls ?? [], [acp?.toolCalls])
+  const livePlanEntries = useMemo(() => acp?.planEntries ?? [], [acp?.planEntries])
+  const selectLiveTool = useCallback((toolId: string) => setSelectedToolCallRef({ id: toolId }), [])
+  const resolveLivePermission = useCallback((requestId: string, optionId: string) => resolveAcpPermission(session.id, requestId, optionId), [resolveAcpPermission, session.id])
+  const cancelLiveTurn = useCallback(() => { void cancelAcpTurn(session.id) }, [cancelAcpTurn, session.id])
+  const stopLiveRuntime = useCallback(() => { void stopAcpSession(session.id) }, [stopAcpSession, session.id])
   const firstTurnEvent = turnEvents.find((event) => event.type === 'assistant_text' ? event.text.length > 0 : true)
   const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex === undefined || acp.turnAssistantMessageIndex < 0
     ? -1 : acp.turnAssistantMessageIndex - historyStartIndex
@@ -2410,7 +2416,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
                   sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
                   duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
-                  onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                  onSelectTool={selectLiveTool}
                 /></div> : null
                 return (
                   <WorkSectionContext.Provider key={message.id} value={sectionControl}>
@@ -2436,19 +2442,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
                           stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
-                            tools={acp?.toolCalls ?? []}
+                            tools={liveTools}
                             planSummary={acp?.planSummary ?? ''}
-                            planEntries={acp?.planEntries ?? []}
+                            planEntries={livePlanEntries}
                             planActions={activePlanActions}
                             pendingPermission={pendingPermission ?? null}
                             pendingUserInput={pendingUserInput ?? null}
                             waitIsStale={acp?.waitIsStale}
                             waitStaleReason={acp?.waitStaleReason}
                             waitSeconds={acp?.waitSeconds}
-                            onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-                            onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                          onCancelTurn={() => void cancelAcpTurn(session.id)}
-                          onStopRuntime={() => void stopAcpSession(session.id)}
+                            onSelectTool={selectLiveTool}
+                            onResolvePermission={resolveLivePermission}
+                          onCancelTurn={cancelLiveTurn}
+                          onStopRuntime={stopLiveRuntime}
                           sourceChatId={session.id}
                           active={Boolean(acp?.processing)}
                           workingMode={workingDisplayMode}
@@ -2500,19 +2506,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
                           stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
-                            tools={acp?.toolCalls ?? []}
+                            tools={liveTools}
                             planSummary={acp?.planSummary ?? ''}
-                            planEntries={acp?.planEntries ?? []}
+                            planEntries={livePlanEntries}
                             planActions={activePlanActions}
                             pendingPermission={pendingPermission ?? null}
                             pendingUserInput={pendingUserInput ?? null}
                             waitIsStale={acp?.waitIsStale}
                             waitStaleReason={acp?.waitStaleReason}
                             waitSeconds={acp?.waitSeconds}
-                            onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-                            onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                          onCancelTurn={() => void cancelAcpTurn(session.id)}
-                          onStopRuntime={() => void stopAcpSession(session.id)}
+                            onSelectTool={selectLiveTool}
+                            onResolvePermission={resolveLivePermission}
+                          onCancelTurn={cancelLiveTurn}
+                          onStopRuntime={stopLiveRuntime}
                           sourceChatId={session.id}
                           active={Boolean(acp?.processing)}
                           workingMode={workingDisplayMode}
@@ -2535,7 +2541,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   <ConversationWork
                     headerOnly active startedAt={turnClockStart} duration="0s"
                     disclosureState={liveWorkDisclosure} events={[]} tools={[]}
-                    onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
+                    onSelectTool={selectLiveTool}
                   />
                 </div>
               )}
@@ -2556,19 +2562,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           interrupted={Boolean(messages[turnAssistantMessageIndex]?.interrupted)}
                           stopReason={messages[turnAssistantMessageIndex]?.stopReason}
                           events={turnEvents}
-                      tools={acp?.toolCalls ?? []}
+                      tools={liveTools}
                       planSummary={acp?.planSummary ?? ''}
-                      planEntries={acp?.planEntries ?? []}
+                      planEntries={livePlanEntries}
                       planActions={activePlanActions}
                       pendingPermission={pendingPermission ?? null}
                       pendingUserInput={pendingUserInput ?? null}
                       waitIsStale={acp?.waitIsStale}
                       waitStaleReason={acp?.waitStaleReason}
                       waitSeconds={acp?.waitSeconds}
-                      onSelectTool={(toolId) => setSelectedToolCallRef({ id: toolId })}
-                      onResolvePermission={(requestId, optionId) => resolveAcpPermission(session.id, requestId, optionId)}
-                    onCancelTurn={() => void cancelAcpTurn(session.id)}
-                    onStopRuntime={() => void stopAcpSession(session.id)}
+                      onSelectTool={selectLiveTool}
+                      onResolvePermission={resolveLivePermission}
+                    onCancelTurn={cancelLiveTurn}
+                    onStopRuntime={stopLiveRuntime}
                     sourceChatId={session.id}
                     active={Boolean(acp?.processing)}
                     workingMode={workingDisplayMode}
@@ -2941,8 +2947,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 waitIsStale={acp?.waitIsStale}
                 waitStaleReason={acp?.waitStaleReason}
                 waitSeconds={acp?.waitSeconds}
-                onCancelTurn={() => void cancelAcpTurn(session.id)}
-                onStopRuntime={() => void stopAcpSession(session.id)}
+                onCancelTurn={cancelLiveTurn}
+                onStopRuntime={stopLiveRuntime}
               />
             )}
             <div
@@ -3238,7 +3244,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               defaultGoalTokenBudget={defaultGoalTokenBudget}
               onToggleGoal={handleToggleGoal}
               onSetDefaultGoalTokenBudget={(value) => setDefaultGoalTokenBudget(session.id, value)}
-              onCancelTurn={() => void cancelAcpTurn(session.id)}
+              onCancelTurn={cancelLiveTurn}
               onAttachFile={() => fileInputRef.current?.click()}
               onOpenMarkdownStore={() => void openMarkdownStore()}
               dictationState={dictationState}

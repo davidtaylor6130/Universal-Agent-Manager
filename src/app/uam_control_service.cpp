@@ -923,6 +923,12 @@ namespace uam
 		return std::ranges::find(arguments, kServerFlag) != arguments.end();
 	}
 
+	bool UamControlService::EnabledForChat(const AppSettings& settings, const ChatSession& chat)
+	{
+		return !chat.uam_control_explicitly_disabled && central_configuration::McpEnabled(
+		    settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", chat.uam_control_enabled);
+	}
+
 	bool UamControlService::RequiresSessionStopForEnable(const AcpSessionState* session, bool apply_on_next_launch)
 	{
 		return !apply_on_next_launch && session != nullptr && session->running && session->uam_control_capability_id.empty();
@@ -1078,7 +1084,7 @@ namespace uam
 	                                               const ChatSession& chat, std::string_view setup_method,
 	                                               nlohmann::json& request, std::string* error_out)
 	{
-		if (chat.uam_control_explicitly_disabled || !central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", chat.uam_control_enabled) || session.model_discovery_only) return true;
+		if (!EnabledForChat(app.settings, chat) || session.model_discovery_only) return true;
 		if (setup_method != uam::acp_methods::kSessionNew && setup_method != uam::acp_methods::kSessionLoad && setup_method != uam::acp_methods::kSessionResume)
 		{
 			if (error_out != nullptr) *error_out = "UAM control is available only during structured session creation, load, or resume.";
@@ -1101,7 +1107,7 @@ namespace uam
 		const AgentRun* run = chat.agent_run_id.empty() ? nullptr : FindRun(app, chat.agent_run_id);
 		const std::string root_chat_id = run == nullptr ? chat.id : run->root_chat_id;
 		const ChatSession* root_chat = ChatDomainService().FindChatById(app, root_chat_id);
-		if (root_chat == nullptr || root_chat->uam_control_explicitly_disabled || !central_configuration::McpEnabled(app.settings.central_provider_configuration, root_chat->provider_id, root_chat->execution_host_id, "uam-mcp", root_chat->uam_control_enabled))
+		if (root_chat == nullptr || !EnabledForChat(app.settings, *root_chat))
 		{
 			if (error_out != nullptr) *error_out = "The owning root chat no longer permits UAM control.";
 			return false;
@@ -1159,7 +1165,7 @@ namespace uam
 		if (terminal.uam_control_session != nullptr) RevokeForSession(app, *terminal.uam_control_session);
 		terminal.uam_control_session.reset();
 		terminal.uam_control_relay.reset();
-		if (chat.uam_control_explicitly_disabled || !central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", chat.uam_control_enabled)) return true;
+		if (!EnabledForChat(app.settings, chat)) return true;
 		const AgentDefinitionCatalog catalog = AgentCatalog(app, chat);
 		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
 		if (selected == catalog.definitions.end()) { error = "The selected UAM agent is unavailable."; return false; }

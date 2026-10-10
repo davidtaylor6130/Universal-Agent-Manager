@@ -58,7 +58,7 @@ class StateSerializer
 	                                                     std::size_t offset);
 
 	/// Serialise a single folder.
-	static nlohmann::json SerializeFolder(const ChatFolder& folder);
+	static nlohmann::json SerializeFolder(const ChatFolder& folder, bool probe_directory = true);
 
 	/// Serialise a resource collection and its ordered references.
 	static nlohmann::json SerializeResourceCollection(const ResourceCollection& collection);

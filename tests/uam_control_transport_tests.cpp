@@ -97,3 +97,23 @@ UAM_TEST(FullFrontendStatePushDoesNotReloadAnEntireLongTranscript)
 	UAM_ASSERT(push.dump().find("historical sentinel") == std::string::npos);
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1000});
 }
+
+UAM_TEST(UamControlLaunchIntentHonorsProviderHostOverridesAndChatOptOut)
+{
+	AppSettings settings;
+	for (const std::string provider : {"codex-cli", "claude-cli", "antigravity-cli", "opencode-cli", "gemini-cli", "copilot-cli"})
+	{
+		ChatSession chat; chat.provider_id = provider; chat.execution_host_id = "local";
+		settings.central_provider_configuration.mcp_overrides = {{provider, "local", "uam-mcp", true}};
+		UAM_ASSERT(uam::UamControlService::EnabledForChat(settings, chat));
+		chat.execution_host_id = "lab";
+		UAM_ASSERT(!uam::UamControlService::EnabledForChat(settings, chat));
+		chat.execution_host_id = "local"; chat.uam_control_explicitly_disabled = true;
+		UAM_ASSERT(!uam::UamControlService::EnabledForChat(settings, chat));
+		chat.uam_control_explicitly_disabled = false; chat.uam_control_enabled = true;
+		settings.central_provider_configuration.mcp_overrides.front().enabled = false;
+		UAM_ASSERT(!uam::UamControlService::EnabledForChat(settings, chat));
+		settings.central_provider_configuration.mcp_overrides.clear();
+		UAM_ASSERT(uam::UamControlService::EnabledForChat(settings, chat));
+	}
+}

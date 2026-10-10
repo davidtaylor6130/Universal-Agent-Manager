@@ -3113,6 +3113,39 @@ sys.stdout.buffer.write(base64.b64decode(value) if '-d' in sys.argv else base64.
 	}
 }
 
+UAM_TEST(RemoteBootstrapGuardDoesNotLeakInstallLockIntoChildCommands)
+{
+	TempDir temp("uam-bootstrap-no-inherited-lock");
+	WriteBootstrapLockTransport(temp.root);
+	ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+	ScopedEnvVar home("HOME", (temp.root / "home").string());
+	ScopedEnvVar pid("UAM_TEST_LOCK_PID", (temp.root / "pid").string());
+	uam::remote::BootstrapPlan plan;
+	plan.ssh_alias = "fixture"; plan.version = "4.11.0"; plan.nonce = "noinherit"; plan.runner_directory = "tools/uam";
+	const std::vector<std::string> argv = uam::remote::BuildBootstrapLockArgv(plan, "linux");
+	std::string error;
+	uam::platform::StdioProcessPlatformFields process;
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const std::unique_ptr<uam::platform::StdioProcessPlatformFields, std::function<void(uam::platform::StdioProcessPlatformFields*)>> cleanup(&process, [&](uam::platform::StdioProcessPlatformFields* fields) { service.StopStdioProcess(*fields, true); service.CloseStdioProcessHandles(*fields); });
+	UAM_ASSERT(service.StartStdioProcess(process, temp.root, argv, &error));
+	std::string output;
+	const auto read_until = [&](std::string_view marker)
+	{
+		return WaitForLockFixture([&]()
+		{
+			std::array<char, 4096> bytes{};
+			const std::ptrdiff_t count = service.ReadStdioProcessStdout(process, bytes.data(), bytes.size(), &error);
+			if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
+			return output.find(marker) != std::string::npos;
+		});
+	};
+	UAM_ASSERT(read_until("UAM_INSTALL_LOCK_READY:noinherit"));
+	const std::string command = uam::base64::Encode("test ! -e /dev/fd/9") + "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(process, command.data(), command.size(), &error));
+	UAM_ASSERT(read_until("UAM_INSTALL_RESULT:"));
+	UAM_ASSERT(output.find("UAM_INSTALL_RESULT:0:") != std::string::npos);
+}
+
 UAM_TEST(RemoteBootstrapLockCompetingAliasesShareTargetRootAndRecoverAfterRelease)
 {
 	TempDir temp("uam-bootstrap-lock");

@@ -561,6 +561,6 @@ void UamQueryHandler::HandleRuntimeActivity(CefRefPtr<CefBrowser> browser, const
 		session->idle_interaction_started_time_s = now;
 	if (uam::CliTerminalState* terminal = uam::FindCliTerminalForChat(m_app, *chat); terminal != nullptr && terminal->running && terminal->lifecycle_state == uam::CliTerminalLifecycleState::Idle)
 		terminal->idle_interaction_started_time_s = now;
-	uam::PushStateUpdateIfChanged(browser, m_app);
+	// The originating pane already updates its idle deadline locally; typing must not serialize the catalogue.
 	cb->Success("{}");
 }

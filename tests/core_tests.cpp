@@ -12633,6 +12633,17 @@ UAM_TEST(ProviderRuntimeCompatibilityBlocksPendingAndKnownBadVersions)
 	}
 }
 
+UAM_TEST(RemoteCliUpdateReportsBlockingPidsWithoutTrustingRemoteText)
+{
+	const std::string probe = "[UAM CLI PATH] /usr/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 1\n";
+	std::string error;
+	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(probe, probe + "[UAM CLI PIDS] 123,456\n", "linux", &error));
+	UAM_ASSERT(error.find("Blocking PIDs: 123,456") != std::string::npos);
+	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(probe, probe + "[UAM CLI PIDS] untrusted text\n", "linux", &error));
+	UAM_ASSERT(error.find("untrusted text") == std::string::npos);
+	UAM_ASSERT(error.find("idle background session") != std::string::npos);
+}
+
 UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 {
 	const std::string npm = "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 0\ncodex-cli 0.148.0\n";
@@ -24731,3 +24742,169 @@ UAM_TEST(AntigravityTerminalFixtureReceivesSavedResumeAndWorkspace)
 	UAM_ASSERT(output.find("--conversation\nfixture-conversation-id\n") != std::string::npos);
 }
 #endif
+
+UAM_TEST(StateSerializerUsesWorkerWorkspaceAvailabilityOnlyForMatchingIdentity)
+{
+	TempDir temp("uam-cached-folder-availability");
+	ChatFolder folder;
+	folder.id = "cached-folder";
+	folder.directory = (temp.root / "nonexistent").string();
+	UAM_ASSERT(!uam::StateSerializer::SerializeFolder(folder, false)["missing"].get<bool>());
+	folder.availability_directory = folder.directory;
+	folder.availability_host_id = folder.execution_host_id;
+	folder.directory_missing = true;
+	UAM_ASSERT(uam::StateSerializer::SerializeFolder(folder, false)["missing"].get<bool>());
+	folder.execution_host_id = "ssh-other";
+	UAM_ASSERT(!uam::StateSerializer::SerializeFolder(folder, false)["missing"].get<bool>());
+	folder.execution_host_id.clear();
+	folder.directory = temp.root.string();
+	UAM_ASSERT(!uam::StateSerializer::SerializeFolder(folder, false)["missing"].get<bool>());
+}
+
+UAM_TEST(PreparedSelectionMetadataPreservesBodiesAndRejectsNewerStorage)
+{
+	TempDir temp("uam-prepared-selection");
+	ChatSession chat;
+	chat.id = "selection-cache";
+	chat.provider_id = "opencode-cli";
+	chat.created_at = "2026-10-10T17:00:00Z";
+	chat.updated_at = chat.created_at;
+	chat.last_opened_at = chat.created_at;
+	chat.title = "Original";
+	Message message;
+	message.role = MessageRole::Assistant;
+	message.content = std::string(8 * 1024 * 1024, 'x');
+	chat.messages.push_back(message);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const std::string original = uam::io::ReadTextFile(primary);
+	ChatSession metadata;
+	metadata.id = chat.id;
+	metadata.last_opened_at = "2026-10-10T18:00:00Z";
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareLastOpenedAt(temp.root, metadata);
+	UAM_ASSERT(prepared != nullptr);
+	UAM_ASSERT(prepared->primary_temp.empty());
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(prepared));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), original);
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, chat.id, false)->last_opened_at, metadata.last_opened_at);
+	const std::shared_ptr<PreparedChatSave> stale = ChatRepository::PrepareLastOpenedAt(temp.root, metadata);
+	chat.messages[0].content.back() = 'y';
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(stale));
+	const fs::path summary = AppPaths::UamChatSummaryFilePath(temp.root, chat.id);
+	fs::remove(summary);
+	const std::shared_ptr<PreparedChatSave> repaired = ChatRepository::PrepareLastOpenedAt(temp.root, metadata);
+	UAM_ASSERT(repaired != nullptr);
+	UAM_ASSERT(!fs::exists(summary));
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(repaired));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->messages[0].content, chat.messages[0].content);
+}
+
+UAM_TEST(BackgroundChatSaveRejectsSameSizeLiveEditsAndPersistsNewestSnapshot)
+{
+	TempDir temp("uam-background-save");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "background-save";
+	chat.title = "Before";
+	Message message;
+	message.role = MessageRole::Assistant;
+	message.content = std::string(8 * 1024 * 1024, 'x');
+	chat.messages.push_back(std::move(message));
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	app.pending_chat_save_at_by_chat_id["background-save"] = 0.0;
+	uam::FlushPendingChatSaves(app);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains("background-save"));
+	app.chats.front().messages[0].content.back() = 'y';
+	app.chats.front().title = "After";
+	const double deadline = uam::GetAppTimeSeconds() + 10.0;
+	while (app.pending_chat_save_at_by_chat_id.contains("background-save") && uam::GetAppTimeSeconds() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, "background-save", true);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->title, std::string("After"));
+	UAM_ASSERT_EQ(loaded->messages[0].content, app.chats.front().messages[0].content);
+}
+
+UAM_TEST(BoundedMessageTailPreservesPagingAndRejectsSameSizeStorageReplacement)
+{
+	TempDir temp("uam-message-tail");
+	ChatSession chat;
+	chat.id = "bounded-tail";
+	chat.updated_at = "2026-10-10T18:00:00Z";
+	for (int index = 0; index < 204; ++index)
+	{
+		Message message;
+		message.role = MessageRole::Assistant;
+		message.content = "Message " + std::to_string(index);
+		chat.messages.push_back(std::move(message));
+	}
+	chat.messages.front().content = std::string(82 * 1024 * 1024, 'x');
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(loaded.has_value());
+	const std::shared_ptr<PreparedChatSave> prepared = uam::MessageTailCache::Prepare(temp.root, *loaded);
+	UAM_ASSERT(prepared != nullptr);
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(prepared));
+	const ChatSession summary = ChatRepository::LoadLocalChatSummaries(temp.root).front();
+	const std::optional<nlohmann::json> tail = uam::MessageTailCache::Read(temp.root, chat.id, summary.persisted_message_count, summary.persisted_messages_digest, 50);
+	UAM_ASSERT(tail.has_value());
+	UAM_ASSERT_EQ((*tail)["messages"].size(), std::size_t(50));
+	UAM_ASSERT_EQ((*tail)["startIndex"].get<std::size_t>(), std::size_t(154));
+	UAM_ASSERT_EQ((*tail)["messages"].back()["content"].get<std::string>(), std::string("Message 203"));
+	const std::optional<nlohmann::json> smaller = uam::MessageTailCache::Read(temp.root, chat.id, summary.persisted_message_count, summary.persisted_messages_digest, 10);
+	UAM_ASSERT(smaller.has_value());
+	UAM_ASSERT_EQ((*smaller)["startIndex"].get<std::size_t>(), std::size_t(194));
+	UAM_ASSERT(!uam::MessageTailCache::Read(temp.root, chat.id, summary.persisted_message_count, summary.persisted_messages_digest, 100));
+
+	const std::shared_ptr<PreparedChatSave> stale_tail = uam::MessageTailCache::Prepare(temp.root, *loaded);
+	UAM_ASSERT(stale_tail != nullptr);
+	ChatSession metadata;
+	metadata.id = chat.id;
+	metadata.last_opened_at = "2026-10-10T19:00:00Z";
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(ChatRepository::PrepareLastOpenedAt(temp.root, metadata)));
+	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(stale_tail));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, chat.id, false)->last_opened_at, metadata.last_opened_at);
+	if (std::getenv("UAM_PERF_MEASURE") != nullptr)
+	{
+		std::vector<double> full_times;
+		std::vector<double> tail_times;
+		for (int index = 0; index < 10; ++index)
+		{
+			const auto started = std::chrono::steady_clock::now();
+			UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, chat.id, true, nullptr, false).has_value());
+			full_times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		}
+		for (int index = 0; index < 100; ++index)
+		{
+			const auto started = std::chrono::steady_clock::now();
+			UAM_ASSERT(uam::MessageTailCache::Read(temp.root, chat.id, summary.persisted_message_count, summary.persisted_messages_digest, 50).has_value());
+			tail_times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		}
+		for (std::pair<const char*, std::vector<double>*> sample : {std::pair{"full", &full_times}, std::pair{"tail", &tail_times}})
+		{
+			std::sort(sample.second->begin(), sample.second->end());
+			std::cout << "[PERF] " << sample.first << " count=" << sample.second->size()
+			    << " p50_ms=" << (*sample.second)[sample.second->size() / 2]
+			    << " p95_ms=" << (*sample.second)[(sample.second->size() - 1) * 95 / 100]
+			    << " p99_ms=" << (*sample.second)[(sample.second->size() - 1) * 99 / 100]
+			    << " max_ms=" << sample.second->back() << '\n';
+		}
+	}
+	chat.messages.front().content.back() = 'y';
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(!uam::MessageTailCache::Read(temp.root, chat.id, summary.persisted_message_count, summary.persisted_messages_digest, 50));
+	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(prepared));
+	const std::optional<ChatSession> newest = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(newest.has_value());
+	UAM_ASSERT_EQ(newest->messages.size(), std::size_t(204));
+	UAM_ASSERT_EQ(newest->messages.front().content.back(), 'y');
+}

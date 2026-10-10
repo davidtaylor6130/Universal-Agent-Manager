@@ -18,6 +18,8 @@ namespace uam
 	  public:
 		static bool IsStdioServerInvocation(const std::vector<std::string>& arguments);
 		static bool SupportsStructuredProtocol(std::string_view protocol);
+		/// Resolve launch intent consistently with provider/host settings and explicit chat opt-out.
+		static bool EnabledForChat(const AppSettings& settings, const ChatSession& chat);
 		/// Enabling for the next launch changes saved intent without attaching to an active process.
 		static bool RequiresSessionStopForEnable(const AcpSessionState* session, bool apply_on_next_launch);
 		static int RunStdioServerFromEnvironment();

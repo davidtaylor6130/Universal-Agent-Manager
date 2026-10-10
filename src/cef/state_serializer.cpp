@@ -1436,7 +1436,7 @@ namespace uam
 			nlohmann::json folders_json = JsonArrayWithCapacity(folders.size());
 			for (const ChatFolder& folder : folders)
 			{
-				nlohmann::json object = StateSerializer::SerializeFolder(folder);
+				nlohmann::json object = StateSerializer::SerializeFolder(folder, false);
 				uam::icons::AddFrontendAsset(object, data_root, folder.custom_icon);
 				folders_json.push_back(std::move(object));
 			}
@@ -1826,7 +1826,7 @@ namespace uam
 		};
 	}
 
-	nlohmann::json StateSerializer::SerializeFolder(const ChatFolder& folder)
+	nlohmann::json StateSerializer::SerializeFolder(const ChatFolder& folder, bool probe_directory)
 	{
 		nlohmann::json j;
 		j["id"] = folder.id;
@@ -1836,12 +1836,21 @@ namespace uam
 		j["customIcon"] = uam::icons::Serialize(folder.custom_icon);
 		j["executionHostId"] = uam::strings::NonEmptyOrFallback(
 		    uam::strings::Trim(folder.execution_host_id), "local");
+		if (!probe_directory)
+		{
+			j["missing"] = folder.availability_directory == folder.directory &&
+			    folder.availability_host_id == folder.execution_host_id && folder.directory_missing;
+		}
+		else
+		{
 		const std::filesystem::path directory = uam::paths::PathFromUtf8(folder.directory);
 		const bool can_probe = folder.execution_host_id.empty() ||
 		                       folder.execution_host_id == uam::execution_hosts::kLocalHostId
 		    ? PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory)
 		    : false;
 		j["missing"] = !folder.directory.empty() && can_probe && !uam::paths::IsDirectoryNoThrow(directory);
+		}
+
 		return j;
 	}
 
