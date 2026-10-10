@@ -79,6 +79,48 @@ UAM_TEST(UsageHistoryServiceRefreshesAppendsAndFlagsPendingAndUnavailableSources
 	UAM_ASSERT(service.Refresh("invalid", start, start + 91LL * 86400000).contains("error"));
 }
 
+UAM_TEST(UsageHistoryServiceRemovesDeletedFilesWithoutDroppingUnreadableOrCancelledSources)
+{
+	TempDir temp("uam-usage-history-removals");
+	const fs::path root = temp.root / "projects";
+	fs::create_directories(root);
+	const fs::path first = root / "first.jsonl", second = root / "second.jsonl";
+	UAM_ASSERT(uam::io::WriteTextFile(first, HistoryLine("first")));
+	UAM_ASSERT(uam::io::WriteTextFile(second, HistoryLine("second")));
+	uam::usage::HistoryService service({{uam::provider_ids::kClaudeCli, {root}}});
+	const std::int64_t start = *uam::usage::TimestampMilliseconds("2026-10-10T00:00:00Z");
+	UAM_ASSERT_EQ(service.Refresh("initial", start, start + 86400000)["totals"]["totalTokens"].get<int>(), 30);
+	UAM_ASSERT(fs::remove(first));
+	nlohmann::json result = service.Refresh("removed", start, start + 86400000);
+	UAM_ASSERT_EQ(result["totals"]["totalTokens"].get<int>(), 15);
+	UAM_ASSERT_EQ(result["totals"]["records"].get<int>(), 1);
+	UAM_ASSERT_EQ(result["filesTotal"].get<int>(), 1);
+	UAM_ASSERT_EQ(result["bytesRead"].get<int>(), 0);
+	UAM_ASSERT_EQ(result["models"][0]["totalTokens"].get<int>(), 15);
+	UAM_ASSERT(fs::remove(second));
+	UAM_ASSERT(service.Refresh("cancelled", start, start + 86400000, {}, []() { return true; })["cancelled"].get<bool>());
+	UAM_ASSERT(fs::remove(root));
+	UAM_ASSERT(uam::io::WriteTextFile(root, "not a directory"));
+	result = service.Refresh("unreadable", start, start + 86400000);
+	UAM_ASSERT_EQ(result["totals"]["totalTokens"].get<int>(), 15);
+	bool found_error = false;
+	for (const nlohmann::json& provider : result["providers"])
+		if (provider["providerId"] == uam::provider_ids::kClaudeCli)
+		{
+			found_error = true;
+			UAM_ASSERT(provider["errors"].get<int>() > 0);
+			UAM_ASSERT_EQ(provider["files"].get<int>(), 1);
+		}
+	UAM_ASSERT(found_error);
+	UAM_ASSERT(fs::remove(root));
+	fs::create_directories(root);
+	result = service.Refresh("recovered", start, start + 86400000);
+	UAM_ASSERT_EQ(result["totals"]["totalTokens"].get<int>(), 0);
+	UAM_ASSERT_EQ(result["totals"]["sessions"].get<int>(), 0);
+	UAM_ASSERT(result["models"].empty());
+	UAM_ASSERT(result["days"].empty());
+}
+
 UAM_TEST(UsageHistoryRequestsValidateScopeWindowAndPricesWithoutMutatingRejectedState)
 {
 	uam::usage::HistoryRequest request;

@@ -110,6 +110,7 @@ namespace uam::usage
 
 	bool HistoryService::Enumerate(const std::function<bool()>& cancelled)
 	{
+		if (cancelled && cancelled()) return false;
 		std::set<std::pair<std::string, std::filesystem::path>> seen;
 		m_files.clear();
 		m_databases.clear();
@@ -172,6 +173,12 @@ namespace uam::usage
 		std::sort(m_databases.begin(), m_databases.end());
 		m_databases.erase(std::unique(m_databases.begin(), m_databases.end()), m_databases.end());
 		std::sort(m_files.begin(), m_files.end());
+		// Only a successful, complete listing proves that a previously cached file was removed.
+		if (!m_listingLimited)
+			std::erase_if(m_cache, [&](const std::pair<const std::pair<std::string, std::filesystem::path>, TranscriptScan>& entry)
+			{
+				return !m_sourceErrors.contains(entry.first.first) && !seen.contains(entry.first);
+			});
 		m_nextFile = 0;
 		return true;
 	}
