@@ -781,6 +781,7 @@ namespace uam
 	struct AsyncMemoryExtractionTask
 	{
 		bool running = false;
+		std::filesystem::path data_root;
 		std::string chat_id;
 		std::string command_preview;
 		int message_count = 0;

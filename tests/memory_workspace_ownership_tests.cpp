@@ -30,6 +30,7 @@ UAM_TEST(MemoryWorkerCompletionRetainsWorkspaceOwnershipAcrossMovesAndWorktreeCh
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 		app.chats.push_back(chat);
 		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
 		task.message_count = 1;
@@ -85,6 +86,7 @@ UAM_TEST(ColdMemoryPreparationCannotMarkANewWorkspaceProcessedFromAnOldLowSignal
 	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
 	UAM_ASSERT(!app.chats.front().messages_loaded);
 	uam::AsyncMemoryExtractionTask task;
+	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = chat.id;
 	task.prepared_from_cold = true;
@@ -126,6 +128,7 @@ UAM_TEST(ColdMemoryPreparationCannotMarkANewWorkspaceProcessedFromAnOldLowSignal
 		UAM_ASSERT(ChatRepository::SaveChat(remote_app.data_root, remote_chat));
 		remote_app.chats = ChatRepository::LoadLocalChatSummaries(remote_app.data_root);
 		uam::AsyncMemoryExtractionTask remote_task;
+		remote_task.data_root = remote_app.data_root;
 		remote_task.running = true;
 		remote_task.chat_id = remote_chat.id;
 		remote_task.prepared_from_cold = true;

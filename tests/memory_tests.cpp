@@ -1193,6 +1193,7 @@ namespace
 		uam::AppState app;
 		app.data_root = temp.root / "data";
 		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
 		task.chat_id = "memory-source";
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		task.state->completed.store(true);
@@ -1228,6 +1229,7 @@ UAM_TEST(MemoryServiceShutdownPreservesUnownedProjectHistory)
 
 	uam::AppState app;
 	uam::AsyncMemoryExtractionTask stopped;
+	stopped.data_root = app.data_root;
 	stopped.state = std::make_shared<AsyncProcessTaskState>();
 	app.memory_extraction_tasks.push_back(std::move(stopped));
 	MemoryService::StopMemoryTasks(app);
@@ -1288,6 +1290,8 @@ UAM_TEST(MemoryServiceAutomaticScanGateUsesConfiguredSelectivity)
 	}
 
 	uam::AsyncMemoryExtractionTask running_task;
+
+	running_task.data_root = app.data_root;
 	running_task.running = true;
 	running_task.chat_id = "other-chat";
 	running_task.state = std::make_shared<AsyncProcessTaskState>();
@@ -1356,6 +1360,8 @@ UAM_TEST(MemoryServiceAutomaticGateKeepsWrongCodeAreaFailureSignal)
 	app.chats.push_back(chat);
 
 	uam::AsyncMemoryExtractionTask running_task;
+
+	running_task.data_root = app.data_root;
 	running_task.running = true;
 	running_task.chat_id = "other-chat";
 	running_task.message_count = 1;
@@ -1395,6 +1401,8 @@ UAM_TEST(MemoryServiceAutomaticGateQueuesExplicitCriticalPreference)
 	app.chats.push_back(chat);
 
 	uam::AsyncMemoryExtractionTask running_task;
+
+	running_task.data_root = app.data_root;
 	running_task.running = true;
 	running_task.chat_id = "other-chat";
 	running_task.message_count = 1;
@@ -1438,6 +1446,7 @@ UAM_TEST(MemoryServiceSchedulerDoesNotStartBeyondSingleWorkerCap)
 
 	app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
 	uam::AsyncMemoryExtractionTask running_task;
+	running_task.data_root = app.data_root;
 	running_task.running = true;
 	running_task.chat_id = "chat-0";
 	running_task.message_count = 1;
@@ -1478,6 +1487,8 @@ UAM_TEST(MemoryServiceFailedWorkerRecordsBackoffAndStatus)
 	app.chats.push_back(chat);
 
 	uam::AsyncMemoryExtractionTask task;
+
+	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = chat.id;
 	task.message_count = 1;
@@ -1523,6 +1534,8 @@ UAM_TEST(MemoryServiceFailedWorkerKeepsCachedEntryCountsWithoutRescanningRoots)
 	fs::remove_all(chat.workspace_directory);
 
 	uam::AsyncMemoryExtractionTask task;
+
+	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = chat.id;
 	task.workspace_root = chat.workspace_directory;
@@ -1566,6 +1579,8 @@ UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 	app.chats = {failed, queued, queued_again};
 
 	uam::AsyncMemoryExtractionTask task;
+
+	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = failed.id;
 	task.message_count = 1;
@@ -1585,6 +1600,7 @@ UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 	app.memory_extraction_queue.clear();
 	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 30.0;
 	uam::AsyncMemoryExtractionTask success;
+	success.data_root = app.data_root;
 	success.running = true;
 	success.chat_id = failed.id;
 	success.message_count = 1;
@@ -1643,6 +1659,8 @@ UAM_TEST(MemoryServiceFailedWorkerReportsCommandNotFound)
 	app.chats.push_back(chat);
 
 	uam::AsyncMemoryExtractionTask task;
+
+	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = chat.id;
 	task.message_count = 1;
@@ -1807,6 +1825,7 @@ UAM_TEST(MemoryServiceManualRescansRetainRetryIntentAfterFailures)
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 		app.chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
 		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
 		task.message_count = 1;
@@ -1822,6 +1841,7 @@ UAM_TEST(MemoryServiceManualRescansRetainRetryIntentAfterFailures)
 		{
 			app.data_root = temp.root / "blocked";
 			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+			app.memory_extraction_tasks.front().data_root = app.data_root;
 		}
 		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 		UAM_ASSERT(app.memory_extraction_tasks.empty());
@@ -1889,6 +1909,8 @@ UAM_TEST(MemoryServiceRejectsIneligibleScansBeforeReadingOrWritingHistory)
 		UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, chat.id)));
 
 		uam::AsyncMemoryExtractionTask completed;
+
+		completed.data_root = app.data_root;
 		completed.running = true;
 		completed.chat_id = chat.id;
 		completed.message_count = 1;
@@ -1992,6 +2014,7 @@ UAM_TEST(CodexMemoryCompletionCannotPersistReasoningWhenAssistantRefuses)
 		if (scenario == "error") output += R"({"type":"error","message":"failed"})";
 		if (scenario == "single-reasoning" || scenario == "single-tool") output = nlohmann::json({{"type", "item.completed"}, {"item", {{"type", scenario == "single-tool" ? "command_execution" : "reasoning"}, {"text", draft}}}}).dump();
 		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
 		task.workspace_root = workspace;
@@ -2086,4 +2109,44 @@ UAM_TEST(MemoryProgressJournalPreservesTranscriptAndFreshReload)
 	UAM_ASSERT_EQ(dirty_saved->messages, app.chats.front().messages);
 	UAM_ASSERT_EQ(dirty_saved->memory_last_processed_message_count, 2);
 	UAM_ASSERT_EQ(app.pending_chat_save_at_by_chat_id[chat.id], 99.0);
+}
+
+UAM_TEST(MemoryCompletionCannotPublishIntoReplacedDataRoot)
+{
+	for (const bool low_signal : {false, true})
+	{
+		TempDir temp("uam-memory-replaced-root");
+		uam::AppState app;
+		app.data_root = temp.root / "old";
+		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 9999.0;
+		ChatSession chat;
+		chat.id = "same-chat";
+		chat.workspace_directory = temp.root.string();
+		chat.memory_enabled = true;
+		chat.messages.push_back({MessageRole::User, "Remember the original root's preference."});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.chats.push_back(chat);
+		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
+		task.chat_id = chat.id;
+		task.running = true;
+		task.message_count = 1;
+		task.workspace_root = temp.root;
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->result.ok = true;
+		task.state->result.output = R"({"memories":[{"scope":"global","category":"Lessons/User_Lessons","title":"Old preference","memory":"Use the original root","confidence":"high","evidence":"Original user request"}]})";
+		task.state->completed.store(true);
+		task.extraction_state = std::make_shared<uam::AsyncMemoryExtractionState>();
+		task.extraction_state->low_signal_skip = low_signal;
+		app.memory_extraction_tasks.push_back(std::move(task));
+		app.data_root = temp.root / "new";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(app.data_root, chat.id);
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT(app.memory_extraction_queue.empty());
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
+		UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(app.data_root, chat.id), revision);
+		UAM_ASSERT(!fs::exists(MemoryService::GlobalMemoryRoot(app.data_root)));
+	}
 }
