@@ -61,8 +61,21 @@ describe('startup native history chooser', () => {
     expect(dialog.textContent).toContain('Import chats')
     expect(dialog.textContent).toContain('Codex CLI')
     expect(dialog.textContent).not.toContain('local ·')
+    const providerMetadata = dialog.querySelector('label > span > span:nth-child(2)')
+    expect(providerMetadata?.getAttribute('style')).toContain('var(--text-3)')
     expect(button('Import selected').className).toContain('uam-btn--primary')
     expect(button('Close import chats').className).toContain('uam-iconbtn--ghost')
+  })
+
+  it('distinguishes history loading from decision saving', async () => {
+    mount()
+    expect(document.body.querySelector('[role="status"]')?.textContent).toBe('Loading history…')
+    expect(document.body.querySelector('[role="status"]')?.getAttribute('style')).toContain('var(--text-3)')
+    await answer(0, page())
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.click())
+    await click('Import selected')
+    expect(document.body.querySelector('[role="status"]')?.textContent).toBe('Saving…')
+    await act(async () => requests[1].failure(409, 'Disk full'))
   })
 
   it('shows remote host identity with provider display name', async () => {
@@ -81,7 +94,12 @@ describe('startup native history chooser', () => {
     expect(requests).toHaveLength(2)
     await act(async () => requests[1].failure(409, 'Disk full'))
     expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Disk full')
+    expect(document.body.querySelector('[role="alert"]')?.getAttribute('style')).toContain('var(--red)')
     expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.checked).toBe(true)
+    act(() => useAppStore.setState({ startupNativeImports: { ...page(), phase: 'importing' } }))
+    act(() => useAppStore.setState({ startupNativeImports: page() }))
+    expect(requests).toHaveLength(2)
+    expect(button('Import selected').disabled).toBe(false)
     await click('Import selected'); await answer(2, { ...page('scan-1', ['two']), phase: 'importing' })
     act(() => useAppStore.setState({ startupNativeImports: { ...page('scan-1', ['two']), phase: 'importing' } }))
     act(() => useAppStore.setState({ startupNativeImports: { ...page('scan-1', ['two']), importedCount: 1 } }))
@@ -164,13 +182,32 @@ describe('startup native history chooser', () => {
     expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('Invalid history response')
     if (operation === 'resolve') {
       expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.checked).toBe(true)
+      expect(button('Import selected').disabled).toBe(true)
+      await click('Reload')
+      await answer(2, page('scan-1', ['one']))
+      expect(document.body.querySelector('[aria-label="Select one"]')).not.toBeNull()
+      act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.click())
       await click('Import selected')
-      expect(requests[2].payload.selectedIds).toEqual(['one'])
-      await answer(2, page('scan-1', ['two']))
+      expect(requests[3].payload.selectedIds).toEqual(['one'])
     } else {
       await click('Reload'); await answer(1, page())
+      expect(document.body.querySelector('[aria-label="Select two"]')).not.toBeNull()
     }
-    expect(document.body.querySelector('[aria-label="Select two"]')).not.toBeNull()
+  })
+
+  it('requires a refresh before retrying an import with an uncertain transport result', async () => {
+    mount(); await answer(0, page())
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.click())
+    await click('Import selected')
+    await act(async () => requests[1].failure(0, 'Connection lost. Check the chat before retrying; the action may have reached UAM.'))
+    expect(button('Import selected').disabled).toBe(true)
+    expect(requests).toHaveLength(2)
+    await click('Reload')
+    expect(requests[2].action).toBe('getStartupNativeImports')
+    await answer(2, page())
+    expect(button('Import selected').disabled).toBe(true)
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.click())
+    expect(button('Import selected').disabled).toBe(false)
   })
 
   it('keeps accepted imports open through publication and refreshes requeued failures without scanning', async () => {
