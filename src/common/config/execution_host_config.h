@@ -24,6 +24,17 @@ namespace uam::execution_hosts
 		return {};
 	}
 
+	/// <summary>Applies startup confirmation after the host's local options were saved.</summary>
+	inline void ApplyStartupConfigurationResult(ExecutionHost& current, const ExecutionHost& previous, bool succeeded)
+	{
+		if (succeeded) current.startup_status = current.startup_enabled ? "enabled" : "disabled";
+		else
+		{
+			current.startup_enabled = previous.startup_enabled;
+			current.startup_status = "error";
+		}
+	}
+
 	/// Records a completed probe only while its host configuration and health snapshot remain current.
 	inline bool ApplyHealthObservation(ExecutionHost& current, const ExecutionHost& observed,
 	                                   bool connected, std::string_view timestamp)

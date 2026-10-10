@@ -520,8 +520,7 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 		    const auto current = FindMutableHost(m_app.settings.execution_hosts, updated.id);
 		    if (current == m_app.settings.execution_hosts.end() || *current != updated)
 		        { response = uam::query_handler_async::AsyncFailure(409, "The SSH host changed while its options were being saved. Save its options again to confirm startup."); return; }
-		    if (response.ok) current->startup_status = updated.startup_enabled ? "enabled" : "disabled";
-		    else { *current = observed; current->startup_status = "error"; }
+		    uam::execution_hosts::ApplyStartupConfigurationResult(*current, observed, response.ok);
 		    if (!PersistenceCoordinator().SaveSettings(m_app))
 		    {
 			    current->startup_status = "pending";

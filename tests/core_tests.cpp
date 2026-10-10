@@ -12595,6 +12595,33 @@ UAM_TEST(RemoteCliElevationRefusalNeverFallsBackAndKeepsNpmPrefix)
 }
 #endif
 
+UAM_TEST(RemoteStartupFailurePreservesSavedCliElevationAndInstructions)
+{
+	for (const bool previous_enabled : {false, true})
+	for (const bool succeeded : {false, true})
+	{
+		ExecutionHost previous;
+		previous.id = "ssh-options";
+		previous.transport = "ssh";
+		previous.platform = "linux";
+		previous.ssh_alias = "homelab";
+		previous.startup_enabled = previous_enabled;
+		ExecutionHost current = previous;
+		current.startup_enabled = !previous_enabled;
+		current.cli_updates_as_admin = true;
+		current.instruction_file = "/home/david/AGENTS.md";
+		uam::execution_hosts::ApplyStartupConfigurationResult(current, previous, succeeded);
+		UAM_ASSERT(current.cli_updates_as_admin);
+		UAM_ASSERT_EQ(current.instruction_file, "/home/david/AGENTS.md");
+		UAM_ASSERT_EQ(current.startup_enabled, succeeded ? !previous_enabled : previous_enabled);
+		UAM_ASSERT_EQ(current.startup_status, succeeded ? (!previous_enabled ? "enabled" : "disabled") : "error");
+		const std::vector<ExecutionHost> restored = uam::execution_hosts::Parse(uam::execution_hosts::Serialize({uam::execution_hosts::LocalHost(), current}));
+		UAM_ASSERT_EQ(restored.size(), 2u);
+		UAM_ASSERT(restored[1].cli_updates_as_admin);
+		UAM_ASSERT_EQ(restored[1].instruction_file, current.instruction_file);
+	}
+}
+
 UAM_TEST(RemoteCliElevationSettingSurvivesSerializationAndDefaultsOff)
 {
 	ExecutionHost host;
