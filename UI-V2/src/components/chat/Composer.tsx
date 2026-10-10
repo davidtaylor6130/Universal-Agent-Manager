@@ -763,11 +763,12 @@ export function ComposerToolbar({
                       type="button"
                       role="menuitemradio"
                       aria-checked={selected}
-                      disabled={modelDisabled}
+                      disabled={modelDisabled || option.disabled}
                       tabIndex={index === modelFocusIndex ? 0 : -1}
                       onFocus={() => setModelFocusIndex(index)}
                       onMouseEnter={() => setModelFocusIndex(index)}
                       onClick={() => {
+                        if (modelDisabled || option.disabled) return
                         onSelectModel(option.id)
                         modelTriggerRef.current?.focus()
                       }}
@@ -777,7 +778,7 @@ export function ComposerToolbar({
                         borderRadius: 6,
                         color: selected ? 'var(--text)' : 'var(--text-2)',
                         boxShadow: index === modelFocusIndex ? 'inset 0 0 0 1px var(--accent)' : 'none',
-                        opacity: modelDisabled ? 0.5 : 1,
+                        opacity: modelDisabled || option.disabled ? 0.5 : 1,
                       }}
                     >
                       <span className="flex items-center gap-2">

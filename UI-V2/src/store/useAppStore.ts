@@ -860,6 +860,7 @@ export const useAppStore = create<AppState>((set, get) => {
             if (sessionId) {
               const currentBinding = get().cliBindingBySessionId[sessionId]
               const terminalId = msg.terminalId ?? currentBinding?.terminalId ?? ''
+              if (currentBinding?.terminalId && terminalId && terminalId !== currentBinding.terminalId) break
               const boundChatId = msg.sourceChatId ?? currentBinding?.boundChatId ?? sessionId
               const existingPending = pendingCliTranscriptChunksBySessionId.get(sessionId)
               if (existingPending && existingPending.terminalId === terminalId) {
@@ -871,23 +872,6 @@ export const useAppStore = create<AppState>((set, get) => {
                 })
               }
               scheduleCliTranscriptFlush()
-
-              if (
-                currentBinding &&
-                (currentBinding.terminalId !== terminalId ||
-                  currentBinding.boundChatId !== boundChatId)
-              ) {
-                set((state) => ({
-                  cliBindingBySessionId: {
-                    ...state.cliBindingBySessionId,
-                    [sessionId]: {
-                      ...currentBinding,
-                      terminalId,
-                      boundChatId,
-                    },
-                  },
-                }))
-              }
             }
 
             window.dispatchEvent(

@@ -287,6 +287,7 @@ export function CLIView({ session }: CLIViewProps) {
             data: string
           }>).detail
           const binding = useAppStore.getState().cliBindingBySessionId[session.id]
+          if (binding?.terminalId && terminalId && binding.terminalId !== terminalId) return
           const sessionMatch = sessionId === session.id
           const sourceChatMatch = sourceChatId === session.id
           const terminalMatch = Boolean(binding?.terminalId) && Boolean(terminalId) && binding?.terminalId === terminalId
