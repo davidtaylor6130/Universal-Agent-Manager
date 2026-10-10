@@ -22,6 +22,7 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();
+	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 #if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) m_companion->Stop();
 #endif
@@ -55,7 +56,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		return true;
 	}
 	const std::string chat_id = payload.value("chatId", "");
-	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession";
+	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession" || action == "cancelChatTitle";
 	const bool is_cached_history_read = action == "getChatMessages" || action == "getToolCallContent" || action == "getAttachmentImagePreview";
 	if (m_workspaceDeletionPending && is_cached_history_read && !chat_id.empty() &&
 	    m_app.worktree_operation_chat_ids.contains(chat_id))
@@ -110,6 +111,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"retryFailedMessage", &UamQueryHandler::HandleRetryFailedMessage},
 		{"openNativeSessionChat", &UamQueryHandler::HandleOpenNativeSessionChat},
 		{"renameSession", &UamQueryHandler::HandleRenameSession},
+		{"regenerateChatTitle", &UamQueryHandler::HandleRegenerateChatTitle},
+		{"cancelChatTitle", &UamQueryHandler::HandleCancelChatTitle},
 		{"setChatPinned", &UamQueryHandler::HandleSetChatPinned},
 		{"setChatProvider", &UamQueryHandler::HandleSetChatProvider},
 		{"setChatModel", &UamQueryHandler::HandleSetChatModel},

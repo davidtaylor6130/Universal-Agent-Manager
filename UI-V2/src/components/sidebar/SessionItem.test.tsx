@@ -154,6 +154,78 @@ describe('SessionItem status icons', () => {
     } finally { delete window.cefQuery; act(() => root.unmount()) }
   })
 
+  it.each([false, true])('regenerates titles without duplicate requests or an optimistic rename (activity=%s)', async (activityLayout) => {
+    let finish: ((response: string) => void) | undefined
+    const requests: unknown[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const message = JSON.parse(request)
+      if (message.action === 'regenerateChatTitle') { requests.push(message.payload); finish = onSuccess }
+      else onSuccess('{}')
+    }
+    const { host, root } = renderSessionItem(activityLayout)
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const button = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Regenerate title')!
+      await act(async () => button.click())
+      expect(button.disabled).toBe(true)
+      expect(button.textContent).toBe('Generating title…')
+      await act(async () => button.click())
+      expect(requests).toEqual([{ chatId: 'chat-1' }])
+      expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
+      // Simulate the authoritative state push before the request completion.
+      await act(async () => {
+        useAppStore.setState({ sessions: [{ ...makeSession(), name: 'Generated title' }] })
+        finish!(JSON.stringify({ chatId: 'chat-1', title: 'Generated title' }))
+      })
+      expect(menu.querySelector('[role="status"]')?.textContent).toBe('Chat title updated.')
+      expect(useAppStore.getState().sessions[0].name).toBe('Generated title')
+    } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
+  })
+
+  it('cancels a pending title request and keeps the existing name on failure', async () => {
+    let fail: ((code: number, message: string) => void) | undefined
+    const requests: string[] = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const message = JSON.parse(request)
+      requests.push(message.action)
+      if (message.action === 'regenerateChatTitle') fail = onFailure
+      else onSuccess('{}')
+    }
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const button = (name: string) => Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === name)!
+      await act(async () => button('Regenerate title').click())
+      await act(async () => button('Cancel title generation').click())
+      expect(button('Cancelling…').disabled).toBe(true)
+      expect(requests.filter(action => action === 'cancelChatTitle')).toHaveLength(1)
+      await act(async () => fail!(409, 'Title generation was cancelled.'))
+      expect(menu.querySelector('[role="alert"]')?.textContent).toBe('Title generation was cancelled.')
+      expect(button('Regenerate title').disabled).toBe(false)
+      expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
+      await act(async () => button('Regenerate title').click())
+      await act(async () => fail!(409, 'The chat changed. Its current name was kept.'))
+      expect(menu.querySelector('[role="alert"]')?.textContent).toContain('current name was kept')
+    } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
+  })
+
+  it('rejects invalid title responses and explains preview availability', async () => {
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const button = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Regenerate title')!
+      await act(async () => button.click())
+      expect(menu.querySelector('[role="alert"]')?.textContent).toContain('desktop app')
+      window.cefQuery = ({ request, onSuccess }) => onSuccess(JSON.parse(request).action === 'regenerateChatTitle' ? JSON.stringify({ chatId: 'another-chat', title: 'Wrong title' }) : '{}')
+      await act(async () => button.click())
+      expect(menu.querySelector('[role="alert"]')?.textContent).toContain('invalid response')
+      expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
+    } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
+  })
+
   it.each([false, true])('copies the exact chat name and ID from the context menu (activity=%s)', async (activityLayout) => {
     const copied: string[] = []
     window.cefQuery = ({ request, onSuccess }) => {

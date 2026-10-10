@@ -448,6 +448,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/execution_routing_integration.cpp
   src/app/resource_collection_service.cpp
     src/app/provider_worker_command.cpp
+    src/app/chat_title_service.cpp
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
   src/app/runtime_orchestration_services.cpp
@@ -464,6 +465,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/uam_query_handler.cpp
   src/cef/state_serializer.cpp
   src/cef/cef_push.cpp
+  src/cef/chat_title_handlers.cpp
   src/cef/chat_handlers.cpp
   src/cef/organization_handlers.cpp
   src/cef/chat_receipt_handlers.cpp
@@ -1225,6 +1227,7 @@ if(UAM_BUILD_TESTS)
     tests/usage_ledger_tests.cpp
     tests/usage_store_tests.cpp
     tests/usage_collector_tests.cpp
+    tests/chat_title_tests.cpp
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
     tests/provider_mcp_settings_tests.cpp
@@ -1271,6 +1274,7 @@ if(UAM_BUILD_TESTS)
     src/app/execution_routing_integration.cpp
     src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
+    src/app/chat_title_service.cpp
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
     src/app/runtime_orchestration_services.cpp

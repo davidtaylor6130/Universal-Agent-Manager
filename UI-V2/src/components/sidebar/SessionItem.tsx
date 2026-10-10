@@ -1,11 +1,11 @@
-import { isCompanionContext } from '../../ipc/cefBridge'
+import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion, Copy,
+  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -291,6 +291,41 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     try { setCopyState(await copyTextToClipboard(kind === 'id' ? sessionId : sessionName, document) ? kind : 'failed') }
     catch { setCopyState('failed') }
     finally { setCopying(false) }
+  }
+  const [generatingTitle, setGeneratingTitle] = useState(false)
+  const [cancellingTitle, setCancellingTitle] = useState(false)
+  const [titleFeedback, setTitleFeedback] = useState<{ error: boolean; text: string } | null>(null)
+  const titleRequestPending = useRef(false)
+  const regenerateTitle = async () => {
+    if (titleRequestPending.current) return
+    if (!isCefContext()) { setTitleFeedback({ error: true, text: 'Title generation is available in the desktop app.' }); return }
+    titleRequestPending.current = true
+    setGeneratingTitle(true)
+    setTitleFeedback(null)
+    try {
+      const response = await sendToCEF<{ chatId: string; title: string }>({ action: 'regenerateChatTitle', payload: { chatId: sessionId } }, false)
+      if (!response.ok) throw new Error(response.error || 'Could not generate a title. Try again.')
+      if (response.data?.chatId !== sessionId || typeof response.data.title !== 'string' || !response.data.title.trim() || new TextEncoder().encode(response.data.title).length > 240 || /[\x00-\x1f\x7f]/.test(response.data.title)) throw new Error('The title worker returned an invalid response.')
+      // The native state push owns the rename, including concurrent-change checks.
+      setTitleFeedback({ error: false, text: 'Chat title updated.' })
+    } catch (error) {
+      setTitleFeedback({ error: true, text: error instanceof Error ? error.message : 'Could not generate a title. Try again.' })
+    } finally {
+      titleRequestPending.current = false
+      setGeneratingTitle(false)
+      setCancellingTitle(false)
+    }
+  }
+  const cancelTitle = async () => {
+    if (cancellingTitle) return
+    setCancellingTitle(true)
+    try {
+      const response = await sendToCEF({ action: 'cancelChatTitle', payload: { chatId: sessionId } }, false)
+      if (!response.ok) throw new Error(response.error || 'Could not cancel title generation.')
+    } catch (error) {
+      setCancellingTitle(false)
+      setTitleFeedback({ error: true, text: error instanceof Error ? error.message : 'Could not cancel title generation.' })
+    }
   }
   const showMenu = menuPos !== null
   useEffect(() => { setCopyState(null) }, [showMenu])
@@ -707,6 +742,17 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             Rename
             <kbd className="uam-menu-kbd">F2</kbd>
           </button>
+          <button type="button" role="menuitem" disabled={generatingTitle}
+            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
+            style={{ background: 'transparent', color: 'var(--text-2)', cursor: generatingTitle ? 'wait' : 'pointer', border: 'none', fontFamily: 'inherit' }}
+            onClick={() => { void regenerateTitle() }}>
+            <RefreshCw size={13} aria-hidden />{generatingTitle ? 'Generating title…' : 'Regenerate title'}
+          </button>
+          {generatingTitle && <button type="button" role="menuitem" disabled={cancellingTitle}
+            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm"
+            style={{ background: 'transparent', color: 'var(--text-2)', border: 'none', fontFamily: 'inherit' }}
+            onClick={() => { void cancelTitle() }}>{cancellingTitle ? 'Cancelling…' : 'Cancel title generation'}</button>}
+          {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--red)' : 'var(--text-2)' }}>{titleFeedback.text}</p>}
           {(['name', 'id'] as const).map(kind => <button key={kind} type="button" role="menuitem" disabled={copying}
             className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: copying ? 'wait' : 'pointer', border: 'none', fontFamily: 'inherit' }}

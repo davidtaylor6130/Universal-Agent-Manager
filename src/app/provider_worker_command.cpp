@@ -9,6 +9,7 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/state/app_state.h"
 #include "common/utils/io_utils.h"
+#include "remote/runner_client.h"
 
 #include <array>
 #include <chrono>
@@ -282,6 +283,37 @@ namespace uam
 			result = process_service.ExecuteCommand(shell_command, timeout_ms, stop_token);
 		}
 
+		return result;
+	}
+
+	ProcessExecutionResult ExecuteIsolatedProviderTextWorker(const ProviderWorkerInvocation& invocation, std::string_view provider_id, const ExecutionHost* remote_host, int timeout_ms, std::stop_token stop_token)
+	{
+		if (remote_host == nullptr) return ExecuteProviderWorkerInvocation(invocation, {}, timeout_ms, stop_token);
+		ProcessExecutionResult result;
+		if (stop_token.stop_requested()) { result.canceled = true; return result; }
+		if (remote_host->runner_status != "ready") { result.error = "The selected remote runner is not ready. Recheck it in Settings."; return result; }
+		if (!invocation.direct_process || invocation.argv.empty()) { result.error = "This provider cannot run an isolated remote text worker."; return result; }
+		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+		uam::remote::RunnerClient client(service, uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version, remote_host->runner_directory, remote_host->runner_protocol_version), remote_host->runner_version, remote_host->runner_protocol_version);
+		const std::string id = service.GenerateUuid();
+		std::filesystem::path directory;
+		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;
+		std::vector<std::string> argv = invocation.argv;
+		const std::string original = invocation.isolated_working_directory ? paths::Utf8PathString(*invocation.isolated_working_directory) : std::string{};
+		for (std::string& argument : argv)
+		{
+			if (!original.empty() && argument.size() > original.size() && argument.starts_with(original) && (argument[original.size()] == '/' || argument[original.size()] == '\\'))
+			{
+				std::string relative = argument.substr(original.size() + 1);
+				const char separator = remote_host->platform == "windows" ? '\\' : '/';
+				std::replace(relative.begin(), relative.end(), separator == '/' ? '\\' : '/', separator);
+				argument = paths::Utf8PathString(directory) + separator + relative;
+			}
+		}
+		try { result = client.ExecuteCommand(id, directory, argv, timeout_ms, stop_token, invocation.standard_input); }
+		catch (...) { (void)client.RemoveTextWorker(id); throw; }
+		std::string cleanup_error;
+		if (!client.RemoveTextWorker(id, &cleanup_error) && result.ok) { result.ok = false; result.error = cleanup_error; }
 		return result;
 	}
 } // namespace uam

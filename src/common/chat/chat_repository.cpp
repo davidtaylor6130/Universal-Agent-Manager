@@ -2339,7 +2339,7 @@ bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatS
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
 	if (!prepared->queue_path.empty() && QueueJournalRevision(prepared->queue_path) != prepared->expected_queue_revision) return false;
 	if (!prepared->expected_storage_revision.empty() && StorageRevision(prepared->primary_path) != prepared->expected_storage_revision) return false;
-	if (prepared->primary_temp.empty() && !prepared->expected_summary_revision.empty() && StorageRevision(prepared->summary_path) != prepared->expected_summary_revision) return false;
+	if (!prepared->expected_summary_revision.empty() && StorageRevision(prepared->summary_path) != prepared->expected_summary_revision) return false;
 	if (prepared->primary_temp.empty())
 		return uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory).success;
 	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);

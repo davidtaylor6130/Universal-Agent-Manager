@@ -45,6 +45,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	uam::TranscriptRetentionService m_transcriptRetention;
 	std::shared_ptr<uam::usage::Collector> m_usageHistory;
 	CefRefPtr<CefThread> m_usageQueries;
+	CefRefPtr<CefThread> m_titleQueries;
+	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
 #if UAM_ENABLE_MOBILE_COMPANION
 	CefRefPtr<UamCompanionServer> m_companion;
 #endif
@@ -81,6 +83,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	uam::query_handler_async::AsyncCefResult FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot = nullptr, bool native_snapshot_prepared = false, const std::string& expected_storage_revision = {});
+	void HandleRegenerateChatTitle(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleCancelChatTitle(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRenameSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
