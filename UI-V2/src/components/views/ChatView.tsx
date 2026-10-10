@@ -741,10 +741,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       return controls.get(id)!
     }
   }, [session.id, sectionChoices, expandWorkTraces])
-  const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
-  const retryInPlaceMessageIndex = canRetryMessageInPlace(messages, latestUserMessageIndex)
-    ? latestUserMessageIndex : -1
-  const latestAssistantMessageIndex = lastMessageIndexWithRole(messages, 'assistant')
+  const { latestUserMessageIndex, retryInPlaceMessageIndex, latestAssistantMessageIndex } = useMemo(() => {
+    const latestUserMessageIndex = lastMessageIndexWithRole(messages, 'user')
+    return {
+      latestUserMessageIndex,
+      retryInPlaceMessageIndex: canRetryMessageInPlace(messages, latestUserMessageIndex) ? latestUserMessageIndex : -1,
+      latestAssistantMessageIndex: lastMessageIndexWithRole(messages, 'assistant'),
+    }
+  }, [messages])
   const activeWorkMessageIndex = turnUserMessageIndex >= 0 ? turnUserMessageIndex : latestUserMessageIndex
   const activeWorkSectionFirstIndex = activeWorkMessageIndex >= 0 && activeWorkMessageIndex < messages.length
     ? workSections.get(activeWorkMessageIndex)?.firstIndex ?? findWorkSectionStartIndex(messages, activeWorkMessageIndex)

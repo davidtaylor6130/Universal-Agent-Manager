@@ -2041,6 +2041,41 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('does not rescan hidden retry output while typing and refreshes eligibility on history replacement', () => {
+    const hiddenWhitespace = ' \t'.repeat(4096)
+    const user = { ...useAppStore.getState().messages['chat-1'][0], interrupted: true }
+    const assistant: Message = { id: 'hidden-output', sessionId: 'chat-1', role: 'assistant', content: hiddenWhitespace, createdAt: new Date() }
+    const history = [user, assistant, ...Array.from({ length: 512 }, (_, index) => ({ ...assistant, id: `empty-${index}`, content: '' }))]
+    useAppStore.setState((state) => ({ messages: { ...state.messages, 'chat-1': history } }))
+    const originalTrim = String.prototype.trim
+    let hiddenOutputChecks = 0
+    const trim = vi.spyOn(String.prototype, 'trim').mockImplementation(function (this: string) {
+      if (String(this) === hiddenWhitespace) hiddenOutputChecks += 1
+      return originalTrim.call(this)
+    })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelector('[data-message-index="1"]')).toBeNull()
+      expect(hiddenOutputChecks).toBeGreaterThan(0)
+      const initialChecks = hiddenOutputChecks
+      const composer = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+      for (const text of ['a', 'ab', 'abc']) {
+        act(() => {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(composer, text)
+          composer.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        expect(composer.value).toBe(text)
+      }
+      expect(hiddenOutputChecks).toBe(initialChecks)
+      act(() => useAppStore.setState((state) => ({ messages: { ...state.messages, 'chat-1': [user, { ...assistant, content: '' }] } })))
+      expect(host.querySelector('button[aria-label="Retry message"]')).toBeTruthy()
+      act(() => useAppStore.setState((state) => ({ messages: { ...state.messages, 'chat-1': [user, { ...assistant, content: 'Completed output' }] } })))
+      expect(host.querySelector('button[aria-label="Retry message"]')).toBeNull()
+      expect(host.querySelector('button[aria-label="Revert to message in new branch"]')).toBeTruthy()
+    } finally { trim.mockRestore(); act(() => root.unmount()); host.remove() }
+  })
+
   it('branches an edited message even when its response is empty', async () => {
     const branchFromMessage = vi.fn(async () => 'branch-1')
     const retryFailedMessage = vi.fn(async () => ({ ok: true }))
