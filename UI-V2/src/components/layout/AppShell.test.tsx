@@ -272,6 +272,36 @@ describe('AppShell', () => {
     host.remove()
   })
 
+  it('retains unsaved Settings and chat drafts when visiting Usage', async () => {
+    useAppStore.setState({ setSettingsOpen: vi.fn(open => useAppStore.setState({ isSettingsOpen: open })), refreshCustomThemes: vi.fn(async () => true), mcpServers: [] })
+    const host = document.createElement('div'), root = createRoot(host)
+    document.body.appendChild(host)
+    try {
+      await act(async () => root.render(<AppShell />))
+      const draft = host.querySelector<HTMLInputElement>('[aria-label="Chat draft"]')!
+      draft.value = 'Unsent chat'
+      const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
+      await act(async () => { settings.click(); await import('../settings/SettingsModal') })
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="MCP Servers"]')!.click())
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'JSON')!.click())
+      const editor = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, '[{"name":"draft"}]')
+        editor.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Usage"]')!.click(); await import('../usage/UsagePage') })
+      expect(host.querySelector<HTMLElement>('[aria-label="Settings workspace"]')!.hidden).toBe(true)
+      expect(host.querySelector('[aria-label="Usage workspace"]')).toBeTruthy()
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!.getAttribute('aria-pressed')).not.toBe('true')
+      act(() => settings.click())
+      expect(host.querySelector('[aria-label="Usage workspace"]')).toBeNull()
+      expect(editor.value).toBe('[{"name":"draft"}]')
+      expect(draft.value).toBe('Unsent chat')
+      act(() => settings.click())
+      expect(host.querySelector('[aria-label="Discard unsaved MCP changes"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('guards the Settings rail toggle and Back with the same unsaved draft confirmation', async () => {
     const setSettingsOpen = vi.fn((open: boolean) => useAppStore.setState({isSettingsOpen:open}))
     useAppStore.setState({setSettingsOpen, refreshCustomThemes:vi.fn(async () => true), mcpServers:[]})

@@ -1,0 +1,97 @@
+import { act } from 'react'
+import { createRoot } from 'react-dom/client'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { USAGE_PROVIDERS, type UsageTotals } from '../../services/usageHistory'
+import { useAppStore } from '../../store/useAppStore'
+import { UsagePage, parseUsagePrices } from './UsagePage'
+import { UsageLimits } from './UsageLimits'
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+const values = new Map<string, string>()
+const total: UsageTotals = { inputTokens: 10, cachedInputTokens: 5, cacheWriteTokens: 0, outputTokens: 2, reasoningTokens: 1, totalTokens: 17,
+  reportedCostUsd: 0, estimatedCostUsd: 0, estimatedCacheSavingsUsd: 0, reportedCostTokens: 0, estimatedCostTokens: 0, unpricedTokens: 17, records: 1, sessions: 1 }
+const blank = { ...total, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, unpricedTokens: 0, records: 0, sessions: 0 }
+afterEach(() => { delete window.cefQuery; vi.restoreAllMocks(); values.clear() })
+function storage() {
+  vi.spyOn(window, 'localStorage', 'get').mockReturnValue({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) }, removeItem: key => { values.delete(key) }, clear: () => values.clear(), length: 0, key: () => null })
+}
+
+describe('UsagePage', () => {
+  it('shows unknown costs, request diagnostics, token subsets and editable zero/blank rates', async () => {
+    storage()
+    const requests: Record<string, unknown>[] = []
+    let modelCount = 1
+    window.cefQuery = request => {
+      const { payload } = JSON.parse(request.request)
+      requests.push(payload)
+      request.onSuccess(JSON.stringify({ version: 1, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, totals: total, complete: true, listingLimited: true,
+        filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 1, unidentifiedRecords: 0,
+        providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? total : blank), providerId, available: providerId === 'codex-cli', files: providerId === 'codex-cli' ? 1 : 0, errors: 0, invalidLines: providerId === 'codex-cli' ? 1 : 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
+        models: Array.from({ length: modelCount }, (_, index) => ({ ...total, providerId: 'codex-cli', modelId: index === 0 ? 'test-model' : `model-${index}`, speed: 'standard' })), days: [], hours: [] }))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    document.body.appendChild(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      expect(host.textContent).toContain('Unknown')
+      expect(host.textContent).toContain('totals are incomplete')
+      expect(host.textContent).toContain('1 invalid records')
+      expect(host.textContent).toContain('Reasoning, included in output')
+      const button = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text)!
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Inspect Codex test-model standard"]')!.click())
+      act(() => button('Model prices').click())
+      const form = host.querySelector<HTMLFormElement>('[aria-label="Prices for test-model"]')!
+      const input = form.querySelector<HTMLInputElement>('input')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '0')
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+      expect(JSON.parse(values.get('uam-usage-prices-v1')!)[0]).toMatchObject({ inputPerMillion: 0, cachedInputPerMillion: null, outputPerMillion: null })
+      expect(requests.at(-1)?.priceOverrides).toMatchObject([{ inputPerMillion: 0 }])
+      modelCount = 201
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh usage"]')!.click())
+      expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(100)
+      act(() => button('Show more models (101 remaining)').click())
+      expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(200)
+      const count = requests.length
+      await act(async () => button('Limits').click())
+      expect(requests).toHaveLength(count)
+      expect(host.textContent).toContain('No limits received')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+  it('rejects malformed saved prices without treating missing fields as zero', () => {
+    const price = { providerId: 'codex-cli', modelId: 'test-model', speed: 'standard', inputPerMillion: 0, cachedInputPerMillion: null, cacheWritePerMillion: null, outputPerMillion: 1 }
+    expect(parseUsagePrices([price])).toEqual([price])
+    for (const value of [{}, [price, price], [{ ...price, inputPerMillion: -1 }], [{ ...price, outputPerMillion: Infinity }], [{ ...price, cachedInputPerMillion: undefined }], [{ ...price, modelId: '' }], [{ ...price, providerId: 'unknown' }]]) expect(parseUsagePrices(value)).toEqual([])
+  })
+  it('keeps native host errors visible and offers a retry instead of displaying zero usage', async () => {
+    storage()
+    window.cefQuery = request => request.onFailure(400, 'Usage history is not available on remote hosts yet.')
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('remote hosts')
+      expect(host.textContent).toContain('Retry')
+      expect(host.textContent).not.toContain('$0.00')
+    } finally { act(() => root.unmount()) }
+  })
+})
+
+describe('UsageLimits', () => {
+  it('uses the newest matching provider/host snapshot and labels passed resets', () => {
+    const previous = useAppStore.getState()
+    const limits = (percent: number, time: number) => ({ updatedAt: time, limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: Date.now() / 1000 - 60, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
+    useAppStore.setState({ sessions: [{ id: 'older', providerId: 'codex-cli' }, { id: 'newer', providerId: 'codex-cli' }, { id: 'remote', providerId: 'codex-cli', executionHostId: 'ssh' }, { id: 'mismatch', providerId: 'claude-cli' }] as typeof previous.sessions,
+      acpBindingBySessionId: { older: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(90, 1) } }, newer: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(25, 2) } }, remote: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(10, 3) } }, mismatch: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(5, 4) } } } as typeof previous.acpBindingBySessionId })
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      act(() => root.render(<UsageLimits executionHostId="local" />))
+      expect(host.textContent).toContain('75% remaining')
+      expect(host.textContent).not.toContain('90% remaining')
+      expect(host.textContent).not.toContain('95% remaining')
+      expect(host.textContent).toContain('reset passed, awaiting update')
+      expect(host.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('25')
+    } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
+  })
+})

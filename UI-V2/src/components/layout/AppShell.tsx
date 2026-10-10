@@ -5,7 +5,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, Undo2, X } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, Undo2, X, ChartNoAxesCombined } from 'lucide-react'
 
 /** GitHub mark (lucide dropped brand icons). */
 function GithubLogo({ size = 17 }: { size?: number }) {
@@ -44,6 +44,7 @@ import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/sho
 import { focusActiveInput } from '../../utils/activeInputFocus'
 
 const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
+const UsagePage = lazy(() => import('../usage/UsagePage').then(({ UsagePage }) => ({ default: UsagePage })))
 const VcsCommitPanel = lazy(() => import('./VcsCommitPanel').then(({ VcsCommitPanel }) => ({ default: VcsCommitPanel })))
 const NewChatModal = lazy(() => import('../sidebar/NewChatModal').then(({ NewChatModal }) => ({ default: NewChatModal })))
 const MemoryLibraryModal = lazy(() => import('../settings/MemoryLibraryModal').then(({ MemoryLibraryModal }) => ({ default: MemoryLibraryModal })))
@@ -200,8 +201,10 @@ function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
   })}`
 }
 
-function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
+function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSettings, onOpenMemory }: {
   settingsOpen: boolean
+  usageOpen: boolean
+  onToggleUsage: () => void
   onToggleSettings: () => void
   onOpenMemory: () => void
 }) {
@@ -218,14 +221,15 @@ function LeftActivityRail({ settingsOpen, onToggleSettings, onOpenMemory }: {
       <IconButton
         icon={sidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
         label={sidebarCollapsed ? 'Expand chat selector' : 'Collapse chat selector'}
-        disabled={settingsOpen}
-        style={settingsOpen ? {opacity:0.35, color:'var(--text-3)'} : undefined}
+        disabled={settingsOpen || usageOpen}
+        style={settingsOpen || usageOpen ? {opacity:0.35, color:'var(--text-3)'} : undefined}
         tooltipSide="right"
         shortcut={shortcutLabel('sidebar')}
         onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
       <div className="uam-side-rail__spacer" />
       <ThemeToggle />
+      <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} />
       <span className="relative inline-flex">
         <IconButton
           icon={<Brain size={17} />}
@@ -522,6 +526,7 @@ export function AppShell() {
   const refreshCustomThemes = useAppStore((state) => state.refreshCustomThemes)
   const isNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
   const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
+  const [usageOpen, setUsageOpen] = useState(false)
   const memoryLibraryScope = useAppStore((s) => s.memoryLibraryScope)
   const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
@@ -704,12 +709,13 @@ export function AppShell() {
   const updatesPresence = usePresence(updatesOpen)
 
   const toggleSettings = () => {
+    if (usageOpen) { setUsageOpen(false); if (!isSettingsOpen) setSettingsOpen(true); return }
     if (isSettingsOpen && settingsRef.current) settingsRef.current.requestClose()
     else setSettingsOpen(!isSettingsOpen)
   }
 
-  const shortcutStateRef = useRef({ isSettingsOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings })
-  shortcutStateRef.current = { isSettingsOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings }
+  const shortcutStateRef = useRef({ isSettingsOpen, usageOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings })
+  shortcutStateRef.current = { isSettingsOpen, usageOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings }
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -719,21 +725,22 @@ export function AppShell() {
       if (document.querySelector('[aria-modal="true"]')) return
       const state = shortcutStateRef.current
       if (shortcut === 'focusActiveInput') {
-        if (!state.isSettingsOpen && focusActiveInput()) event.preventDefault()
+        if (!state.isSettingsOpen && !state.usageOpen && focusActiveInput()) event.preventDefault()
         return
       }
       if (shortcut === 'undoOrganization') {
         const target = event.target instanceof Element ? event.target : document.activeElement
-        if (state.isSettingsOpen || target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]') || !useAppStore.getState().organizationUndo) return
+        if (state.isSettingsOpen || state.usageOpen || target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]') || !useAppStore.getState().organizationUndo) return
       }
       event.preventDefault()
       const store = useAppStore.getState()
       if (shortcut === 'newChat') {
+        setUsageOpen(false)
         store.setNewChatModalOpen(true)
       } else if (shortcut === 'settings') {
         state.toggleSettings()
       } else if (shortcut === 'sidebar') {
-        if (!state.isSettingsOpen) store.setSidebarCollapsed(!state.sidebarCollapsed)
+        if (!state.isSettingsOpen && !state.usageOpen) store.setSidebarCollapsed(!state.sidebarCollapsed)
       } else if (shortcut === 'undoOrganization') {
         void store.undoOrganization()
       } else if (shortcut === 'nextAttention') {
@@ -743,6 +750,7 @@ export function AppShell() {
         const next = nextAttentionSession(store.sessions, store.acpBindingBySessionId, store.activeSessionId, rows)
         if (next) store.setActiveSession(next)
       } else if (shortcut === 'search') {
+        setUsageOpen(false)
         if (state.isSettingsOpen) setSettingsOpen(false)
         if (state.sidebarCollapsed) store.setSidebarCollapsed(false)
         if (state.sidebarWouldStarveChat) {
@@ -768,9 +776,12 @@ export function AppShell() {
       style={{ color: 'var(--text)' }}
     >
       <LeftActivityRail
-        settingsOpen={isSettingsOpen}
+        settingsOpen={isSettingsOpen && !usageOpen}
+        usageOpen={usageOpen}
+        onToggleUsage={() => setUsageOpen(value => !value)}
         onToggleSettings={toggleSettings}
         onOpenMemory={() => {
+          setUsageOpen(false)
           if (isSettingsOpen && settingsRef.current) settingsRef.current.showMemory()
           else {
             if (isSettingsOpen) setSettingsOpen(false)
@@ -780,7 +791,7 @@ export function AppShell() {
       />
 
       {/* Keep chat components mounted while Settings occupies the middle region. */}
-      <div data-testid="chat-region" hidden={isSettingsOpen} className="min-w-0 flex-1 h-full" style={{display: isSettingsOpen ? 'none' : 'flex'}}>
+      <div data-testid="chat-region" hidden={isSettingsOpen || usageOpen} className="min-w-0 flex-1 h-full" style={{display: isSettingsOpen || usageOpen ? 'none' : 'flex'}}>
 
       {sidebarPresence.mounted && (
         <>
@@ -812,7 +823,8 @@ export function AppShell() {
         <div className="min-h-0 flex-1"><MainPanel /></div>
       </main>
       </div>
-      {isSettingsOpen && <main className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
+      {isSettingsOpen && <main hidden={usageOpen} style={usageOpen ? { display: 'none' } : undefined} className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
+      {usageOpen && <InterfaceErrorBoundary panel onDismiss={() => setUsageOpen(false)}><Suspense fallback={<div role="status" className="min-w-0 flex-1 p-4 text-xs">Loading usage…</div>}><UsagePage onClose={() => { setUsageOpen(false); window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[aria-label="Usage"]')?.focus()) }} /></Suspense></InterfaceErrorBoundary>}
 
       {commitPresence.mounted && (
         <>

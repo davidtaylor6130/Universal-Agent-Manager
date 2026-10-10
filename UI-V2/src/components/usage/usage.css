@@ -1,0 +1,19 @@
+.uam-usage-model-row.uam-btn {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  text-align: left;
+}
+.uam-usage-price-input {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+.uam-usage-price-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
