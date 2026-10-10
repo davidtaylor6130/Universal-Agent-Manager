@@ -263,6 +263,56 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('keeps the overview host selection when opening a provider page', () => {
+    const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
+    useAppStore.setState(state => ({
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
+      cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: 'Lab', installedVersion: '8.0' }] },
+    }))
+    const { host, root } = renderModal()
+    act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Overview"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Provider connection overview"] button')).find(button => button.textContent === 'Codex')!.click())
+    expect(host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(host.textContent).toContain('CLI installation on Lab')
+    expect(host.textContent).toContain('8.0')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('uses the remote host label for an install confirmation without a manager host name', () => {
+    const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
+    useAppStore.setState(state => ({
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
+      cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: '', installedVersion: '8.0' }] },
+    }))
+    const { host, root } = renderModal()
+    openProviderSection(host, 'Codex')
+    act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
+    act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent === 'Download latest')!.click())
+    expect(host.querySelector('[aria-label="Confirm CLI installation"]')?.textContent).toContain('Install Codex latest on Lab using npm?')
+    expect(host.querySelector('[aria-label="Confirm CLI installation"]')?.textContent).not.toContain('this computer')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps CLI action errors scoped to the host where they occurred', async () => {
+    const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
+    useAppStore.setState(state => ({
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
+      cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: 'Lab', installedVersion: '8.0' }] },
+      refreshCliProviderVersion: vi.fn(async () => false),
+    }))
+    const { host, root } = renderModal()
+    openProviderSection(host, 'Codex')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!.click())
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
+    expect(host.textContent).toContain('Version check could not start.')
+    act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
+    expect(host.textContent).not.toContain('Version check could not start.')
+    act(() => root.unmount()); host.remove()
+  })
+
   function openCliVersionSection(host: HTMLElement) {
     act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Codex"]')?.click())
   }

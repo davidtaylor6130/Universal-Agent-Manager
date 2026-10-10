@@ -80,6 +80,10 @@ function latestLocalProviderSession(sessions: Session[], providerId: string, exe
   }, undefined)
 }
 
+function cliActionErrorKey(providerId: string, executionHostId: string) {
+  return `${executionHostId || 'local'}:${providerId}`
+}
+
 function workspaceKey(value: string | undefined) {
   return (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
@@ -1379,12 +1383,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const selectedSettingsSection = selectedSection
+  const handleProviderSettingsHostChange = (hostId: string) => {
+    setPendingCliInstall(null)
+    setOpenCliVersionMenu(null)
+    setProviderSettingsHostId(hostId)
+  }
   const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
     const selectedSection = sectionOverride ?? selectedSettingsSection
-    if (selectedSection === 'provider-summary') return <ProviderConnections onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />
+    if (selectedSection === 'provider-summary') return <ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onHostChange={handleProviderSettingsHostChange} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
-      return <div className="space-y-6"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onHostChange={hostId => { setPendingCliInstall(null); setOpenCliVersionMenu(null); setProviderSettingsHostId(hostId) }} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}</div>
+      return <div className="space-y-6"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onHostChange={handleProviderSettingsHostChange} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}</div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
@@ -2041,8 +2050,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               {(effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).filter(manager => !scopedProviderId || manager.providerId === scopedProviderId).map((manager) => {
                 const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
                 const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
+                const actionErrorKey = cliActionErrorKey(manager.providerId, manager.executionHostId || effectiveProviderSettingsHostId)
+                const installHostName = manager.executionHostId && manager.executionHostId !== 'local'
+                  ? manager.executionHostName || executionHosts.find((host) => host.id === manager.executionHostId)?.label || manager.executionHostId
+                  : 'this computer'
                 const expanded = expandedCliVersionProviders[manager.providerId] ?? false
-                const issues = [...cliVersionIssues(manager), ...(cliActionError[manager.providerId] ? [cliActionError[manager.providerId]] : [])]
+                const issues = [...cliVersionIssues(manager), ...(cliActionError[actionErrorKey] ? [cliActionError[actionErrorKey]] : [])]
                 const requestInstall = (version: string) => {
                   setOpenCliVersionMenu(null)
                   setExpandedCliVersionProviders(current => ({...current,[manager.providerId]:true}))
@@ -2064,9 +2077,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     <div className="grid gap-1 text-xs" style={{color:'var(--yellow)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
                       <div className="flex items-center gap-1">
                       <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
-                        setCliActionError(current => ({...current,[manager.providerId]:''}))
-                        try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
-                        catch { setCliActionError(current => ({...current,[manager.providerId]:'Version check could not start.'})) }
+                        setCliActionError(current => ({...current,[actionErrorKey]:''}))
+                        try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
+                        catch { setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
                       }}/>
                       {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
                       {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
@@ -2080,14 +2093,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       <div><div className="text-xs" style={{color:'var(--text-3)'}}>Recommended</div>{manager.preferredVersion || 'Unavailable'}</div>
                     </div>
                     {pendingCliInstall?.providerId === manager.providerId && <div className="flex flex-wrap items-center gap-3 mt-3 text-xs" role="group" aria-label="Confirm CLI installation">
-                      <span>Install {pendingCliInstall.providerName} {pendingCliInstall.version} on {manager.executionHostName || 'this computer'} using {manager.installMethod || 'npm'}?</span>
+                      <span>Install {pendingCliInstall.providerName} {pendingCliInstall.version} on {installHostName} using {manager.installMethod || 'npm'}?</span>
                       <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
                       <Button size="sm" disabled={manager.running} onClick={async () => {
                         const pending = pendingCliInstall
                         setPendingCliInstall(null)
-                        setCliActionError(current => ({...current,[manager.providerId]:''}))
-                        try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) setCliActionError(current => ({...current,[manager.providerId]:'Installation could not start. Check provider output.'})) }
-                        catch { setCliActionError(current => ({...current,[manager.providerId]:'Installation could not start. Check provider output.'})) }
+                        setCliActionError(current => ({...current,[actionErrorKey]:''}))
+                        try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
+                        catch { setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
                       }}>Install version</Button>
                     </div>}
 
