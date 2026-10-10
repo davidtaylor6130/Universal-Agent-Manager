@@ -1706,7 +1706,8 @@ describe('ChatView', () => {
 
     const queue = host.querySelector('[aria-label="Queued prompt"]') as HTMLElement
     expect(queue.textContent?.indexOf('First queued prompt')).toBeLessThan(queue.textContent?.indexOf('Second queued prompt') ?? 0)
-    expect(queue.textContent).toContain('1 attachment')
+    expect(queue.textContent).toContain('review.uam')
+    expect(queue.querySelector('[title="/tmp/review.uam"]')).not.toBeNull()
     expect(queue.querySelectorAll('button[aria-label="Steer with this prompt now"]')).toHaveLength(1)
     expect(queue.querySelectorAll('button[aria-label="Remove queued prompt"]')).toHaveLength(1)
 
