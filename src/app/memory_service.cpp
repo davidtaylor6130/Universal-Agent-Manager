@@ -439,7 +439,8 @@ namespace
 
 	std::string ReadFirstTitle(const fs::path& path)
 	{
-		std::ifstream in(path, std::ios::binary);
+		std::ifstream in;
+		if (!uam::io::OpenReadFile(path, in)) return "";
 		std::string line;
 		while (std::getline(in, line))
 		{
@@ -1378,7 +1379,8 @@ namespace
 
 	std::string ReadLastObserved(const fs::path& path)
 	{
-		std::istringstream in(uam::io::ReadTextFile(path));
+		std::ifstream in;
+		if (!uam::io::OpenReadFile(path, in)) return "";
 		std::string line;
 		while (std::getline(in, line))
 		{
