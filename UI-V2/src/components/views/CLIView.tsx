@@ -1,3 +1,4 @@
+import { MONO_FONTS, useTypographyStore } from '../../store/typographyStore'
 import { useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Terminal } from '@xterm/xterm'
@@ -71,6 +72,8 @@ function terminalTheme(isDark: boolean) {
 }
 
 export function CLIView({ session }: CLIViewProps) {
+  const terminalFont = useTypographyStore((state) => state.preferences.terminalFont)
+  const terminalSize = useTypographyStore((state) => state.preferences.terminalSize)
   const companion = isCompanionContext()
   const terminalRef = useRef<HTMLDivElement>(null)
   const termInstanceRef = useRef<Terminal | null>(null)
@@ -144,9 +147,10 @@ export function CLIView({ session }: CLIViewProps) {
     const effectiveTerminalId = state.cliBindingBySessionId[session.id]?.terminalId || cliTranscript?.terminalId || ''
     const isDark = resolveDocumentTheme(state.theme, state.customThemes) === 'dark'
 
+    const typography = useTypographyStore.getState().preferences
     const term = new Terminal({
-      fontFamily: '"JetBrains Mono", monospace',
-      fontSize: 13,
+      fontFamily: MONO_FONTS[typography.terminalFont].family,
+      fontSize: typography.terminalSize,
       lineHeight: 1,
       cursorBlink: !companion,
       cursorStyle: 'block',
@@ -441,6 +445,16 @@ export function CLIView({ session }: CLIViewProps) {
       term.dispose()
     }
   }, [currentProviderId, providerSupported, session.id, terminalStartAttempt]) // Re-init per session, provider, support, and explicit retry
+
+  // Update the attached terminal in place; changing typography must not restart its provider.
+  useEffect(() => {
+    const term = termInstanceRef.current
+    if (!term) return
+    term.options.fontFamily = MONO_FONTS[terminalFont].family
+    term.options.fontSize = terminalSize
+    const frame = requestAnimationFrame(() => fitAddonRef.current?.fit())
+    return () => cancelAnimationFrame(frame)
+  }, [terminalFont, terminalSize])
 
   // Refit and recolor the live terminal on theme change.
   useEffect(() => {

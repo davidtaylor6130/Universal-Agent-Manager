@@ -406,6 +406,13 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       persistSelection()
     },
 
+    // Reuse the digest-checked, bounded history jump for the message rail.
+    jumpToSessionMessage: async (chatId: string, messageIndex: number) => {
+      const session = get().sessions.find((candidate) => candidate.id === chatId)
+      if (!session?.messagesDigest || !Number.isSafeInteger(messageIndex) || messageIndex < 0 || messageIndex >= (session.messageCount ?? 0)) return false
+      return get().jumpToChatSearchHit({ chatId, messageIndex, messagesDigest: session.messagesDigest, field: 'content', excerpt: '' }, `message-rail:${chatId}`)
+    },
+
     jumpToChatSearchHit: async (input: ChatSearchHit, queryRequestId: string) => {
       if (!isCefContext() || !queryRequestId) return false
       const hit = sanitizeChatSearchHits([input], new Set(get().sessions.map((session) => session.id)))[0]
@@ -434,7 +441,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           data.startIndex + data.messages.length > data.totalCount || data.messages.length > 50 ||
           hit.messageIndex < data.startIndex || hit.messageIndex >= data.startIndex + data.messages.length) {
         set((state) => ({ chatSearchNavigation: null, chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
-          [hit.chatId]: response.error || 'Search result changed. Search again to open the message.' } }))
+          [hit.chatId]: response.error || 'Chat history changed. Try opening the message again.' } }))
         return false
       }
       const page = data.messages.map((message, index) => buildMessageFromCpp(hit.chatId, message, data.startIndex! + index))

@@ -67,6 +67,7 @@ export interface AppState {
   messages: Record<string, Message[]>
   historyStartIndexBySessionId: Record<string, number>
   chatSearchNavigation: ChatSearchNavigation | null
+  jumpToSessionMessage: (chatId: string, messageIndex: number) => Promise<boolean>
   jumpToChatSearchHit: (hit: ChatSearchHit, queryRequestId: string) => Promise<boolean>
   consumeChatSearchJump: (chatId: string, generation: number) => boolean
   clearChatSearchNavigation: (queryRequestId?: string) => Promise<void>

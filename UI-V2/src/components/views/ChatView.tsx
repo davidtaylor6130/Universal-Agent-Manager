@@ -1,4 +1,5 @@
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
+import { MessageNavigationRail } from '../chat/MessageNavigationRail'
 import { InlinePromptQueue } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
@@ -2641,6 +2642,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             {/* Follow the padded end so the latest output clears the floating composer. */}
             <div ref={bottomRef} />
           </div>
+          {session.messagesDigest && <MessageNavigationRail key={session.id}
+            count={Math.max(session.messageCount ?? 0, historyStartIndex + messages.length)} startIndex={historyStartIndex} messages={messages}
+            currentIndex={searchNavigation?.messageIndex ?? Math.max(0, historyStartIndex + messages.length - 1)}
+            viewportRef={scrollRef} busy={searchNavigation?.phase === 'loading'}
+            onNavigate={(index) => { isNearBottomRef.current = false; void useAppStore.getState().jumpToSessionMessage(session.id, index) }} />}
           {showScrollToBottom && (
             <div className="pointer-events-none absolute inset-x-0 z-10 flex justify-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 12px)' }}>
               <IconButton

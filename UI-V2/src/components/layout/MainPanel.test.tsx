@@ -6,6 +6,8 @@ vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     rows = 24
     cols = 80
+    options: { fontFamily?: string; fontSize?: number }
+    constructor(options: { fontFamily?: string; fontSize?: number }) { this.options = options }
     loadAddon() {}
     open() {}
     write() {}

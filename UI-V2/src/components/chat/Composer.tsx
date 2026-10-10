@@ -18,6 +18,7 @@ import {
   CODEX_SPEED_INHERIT_ID,
   buildModelOptions,
   modelOptionFor,
+  searchModelOptions,
   reasoningEffortForModel,
   selectedRuntimeModel,
 } from './modelOptions'
@@ -320,6 +321,9 @@ export function ComposerToolbar({
   // consolidated behind one "Options" popover to keep the toolbar quiet.
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [modelFocusIndex, setModelFocusIndex] = useState(0)
+  const [modelSearch, setModelSearch] = useState('')
+  const modelSearchRef = useRef<HTMLInputElement>(null)
+  const visibleModelOptions = searchModelOptions(modelOptions, modelSearch)
   const optionsRef = useRef<HTMLDivElement>(null)
   const optionsTriggerRef = useRef<HTMLButtonElement>(null)
   const optionsMenuRef = useRef<HTMLDivElement>(null)
@@ -330,23 +334,21 @@ export function ComposerToolbar({
   const modelListId = useId()
 
   useEffect(() => {
-    if (!modelOpen) return
-    const selectedIndex = Math.max(0, modelOptions.findIndex((option) => option.id === currentModel.id))
-    const focusIsOutsideMenu = !modelOptionRefs.current.includes(document.activeElement as HTMLButtonElement)
-    if (focusIsOutsideMenu && modelFocusIndex !== selectedIndex) {
-      setModelFocusIndex(selectedIndex)
-      return
+    if (modelOpen) {
+      setModelSearch('')
+      setModelFocusIndex(0)
+      modelSearchRef.current?.focus()
+    } else if (modelWasOpenRef.current) {
+      modelTriggerRef.current?.focus()
     }
-    const option = modelOptionRefs.current[modelFocusIndex]
-    option?.focus()
-    option?.scrollIntoView?.({ block: 'nearest' })
-  }, [currentModel.id, modelFocusIndex, modelOpen])
-
-  useEffect(() => {
-    const wasOpen = modelWasOpenRef.current
     modelWasOpenRef.current = modelOpen
-    if (wasOpen && !modelOpen) modelTriggerRef.current?.focus()
-  }, [modelOpen])
+  }, [modelOpen, providerId])
+
+  const focusModel = (index: number) => {
+    setModelFocusIndex(index)
+    modelOptionRefs.current[index]?.focus()
+    modelOptionRefs.current[index]?.scrollIntoView?.({ block: 'nearest' })
+  }
 
   const onModelKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Escape') {
@@ -355,19 +357,31 @@ export function ComposerToolbar({
       modelTriggerRef.current?.focus()
       return
     }
+    const inSearch = event.target === modelSearchRef.current
+    const inOptions = modelOptionRefs.current.includes(event.target as HTMLButtonElement)
+    if (!inSearch && !inOptions) return
+    const selectable = visibleModelOptions.map((option, index) => option.disabled ? -1 : index).filter((index) => index >= 0)
     if (event.key === 'Enter') {
-      if (!modelOptionRefs.current.includes(document.activeElement as HTMLButtonElement)) return
-      if (modelDisabled || modelOptions[modelFocusIndex]?.disabled) return
+      if (event.nativeEvent.isComposing) return
       event.preventDefault()
-      onSelectModel(modelOptions[modelFocusIndex]?.id ?? currentModel.id)
-      modelTriggerRef.current?.focus()
+      const option = visibleModelOptions[inSearch ? selectable[0] : modelFocusIndex]
+      if (!modelDisabled && option && !option.disabled) {
+        event.preventDefault()
+        onSelectModel(option.id)
+        modelTriggerRef.current?.focus()
+      }
       return
     }
-    if (modelOptions.length === 0 || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End')) return
+    if (modelDisabled || selectable.length === 0) return
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+    if (inSearch && (event.key === 'Home' || event.key === 'End')) return
     event.preventDefault()
-    if (event.key === 'Home') setModelFocusIndex(0)
-    else if (event.key === 'End') setModelFocusIndex(modelOptions.length - 1)
-    else setModelFocusIndex((index) => (index + (event.key === 'ArrowDown' ? 1 : -1) + modelOptions.length) % modelOptions.length)
+    const position = selectable.indexOf(modelFocusIndex)
+    const index = event.key === 'Home' ? selectable[0]
+      : event.key === 'End' ? selectable[selectable.length - 1]
+      : inSearch ? (event.key === 'ArrowDown' ? selectable[0] : selectable[selectable.length - 1])
+      : selectable[(position + (event.key === 'ArrowDown' ? 1 : -1) + selectable.length) % selectable.length]
+    focusModel(index)
   }
   const onModelTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
@@ -716,7 +730,7 @@ export function ComposerToolbar({
               onKeyDown={onModelKeyDown}
               className="animate-fade-in"
               style={{
-                width: 280,
+                width: 340,
                 border: '1px solid var(--border-bright)',
                 borderRadius: 8,
                 background: 'var(--surface)',
@@ -724,6 +738,16 @@ export function ComposerToolbar({
                 padding: 6,
               }}
             >
+              <input
+                ref={modelSearchRef}
+                type="search"
+                aria-label="Search models"
+                placeholder="Search models…"
+                value={modelSearch}
+                onChange={(event) => { setModelSearch(event.target.value); setModelFocusIndex(0) }}
+                className="uam-model-search w-full px-2 py-2"
+                style={{ background: 'transparent', color: 'var(--text)', border: 'none', borderBottom: '1px solid var(--border)', marginBottom: 4 }}
+              />
               {providers.length > 1 && (
                 <div role="group" aria-label="Provider">
                   <div className="px-2 py-1 text-xs" style={{ color: 'var(--text-3)' }}>Provider</div>
@@ -752,8 +776,9 @@ export function ComposerToolbar({
               )}
               <div className="px-2 py-1 text-xs" style={{ color: 'var(--text-3)' }}>{featurePreference === 'uam' && smallModelMode ? 'Worker model' : 'Model'}</div>
               {acp?.modelsLoading && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
-              <div data-testid="model-options" style={{ maxHeight: 520, overflowY: 'auto' }}>
-                {modelOptions.map((option, index) => {
+              <div data-testid="model-options" style={{ maxHeight: 360, overflowY: 'auto' }}>
+                {visibleModelOptions.length === 0 && <div role="status" className="px-2 py-3 text-sm">No matching models</div>}
+                {visibleModelOptions.map((option, index) => {
                   const selected = option.id === currentModel.id
                   const hideRepeatedCopilotDetail = providerId === COPILOT_CLI_PROVIDER_ID && option.detail.trim().toLowerCase() === option.label.trim().toLowerCase()
                   return (

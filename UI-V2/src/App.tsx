@@ -1,3 +1,4 @@
+import { applyTypography, useTypographyStore } from './store/typographyStore'
 import { MOBILE_COMPANION_ENABLED } from './config/buildFeatures'
 import { lazy, Suspense, useEffect } from 'react'
 import { isCompanionContext } from './ipc/cefBridge'
@@ -11,6 +12,8 @@ const CompanionShell = MOBILE_COMPANION_ENABLED ? lazy(() => import('./component
 const AppShell = lazy(() => import('./components/layout/AppShell').then(({ AppShell }) => ({ default: AppShell })))
 
 export default function App() {
+  const typography = useTypographyStore((state) => state.preferences)
+  useEffect(() => applyTypography(typography), [typography])
   const theme = useAppStore((s) => s.theme)
   const customThemes = useAppStore((s) => s.customThemes)
 

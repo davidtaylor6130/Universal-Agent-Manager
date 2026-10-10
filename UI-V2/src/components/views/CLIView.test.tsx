@@ -1,3 +1,4 @@
+import { MONO_FONTS, useTypographyStore } from '../../store/typographyStore'
 import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -13,7 +14,7 @@ const xtermState = vi.hoisted(() => ({
   disposeCount: 0,
   inputByInstance: [] as Array<(data: string) => void>,
   writesByInstance: [] as Array<Array<string | Uint8Array>>,
-  optionsByInstance: [] as Array<{ theme?: { background?: string } }>,
+  optionsByInstance: [] as Array<{ theme?: { background?: string }; fontSize?: number; fontFamily?: string }>,
 }))
 
 vi.mock('@xterm/xterm', () => ({
@@ -21,8 +22,8 @@ vi.mock('@xterm/xterm', () => ({
     rows = 24
     cols = 80
     index: number
-    options: { theme?: { background?: string } }
-    constructor(options: { theme?: { background?: string } }) {
+    options: { theme?: { background?: string }; fontSize?: number; fontFamily?: string }
+    constructor(options: { theme?: { background?: string }; fontSize?: number; fontFamily?: string }) {
       this.index = xtermState.constructCount++
       xtermState.writesByInstance[this.index] = []
       this.options = options
@@ -445,6 +446,29 @@ describe('CLIView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('changes live terminal typography without restarting or discarding output', async () => {
+    ;(window as TestWindow).cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      onSuccess(parsed.action === 'startCliTerminal' ? JSON.stringify({ terminalId: 'term-1', sourceChatId: 'chat-1', running: true, lifecycleState: 'idle' }) : '{}')
+    }
+    useAppStore.setState({ providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#8ab4ff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'gemini-acp' }] })
+    const session = { id: 'chat-1', name: 'Gemini', providerId: 'gemini-cli', viewMode: 'cli' as const, folderId: null, createdAt: new Date(), updatedAt: new Date() }
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<CLIView session={session} />); await Promise.resolve() })
+      const count = xtermState.constructCount
+      const index = count - 1
+      act(() => window.dispatchEvent(new CustomEvent('uam-cli-output', { detail: { sessionId: 'chat-1', terminalId: 'term-1', data: 'kept output' } })))
+      const writes = [...xtermState.writesByInstance[index]]
+      act(() => useTypographyStore.getState().update({ terminalFont: 'consolas', terminalSize: 18 }))
+      expect(xtermState.constructCount).toBe(count)
+      expect(xtermState.optionsByInstance[index]).toMatchObject({ fontFamily: MONO_FONTS.consolas.family, fontSize: 18 })
+      expect(xtermState.writesByInstance[index]).toEqual(writes)
+    } finally {
+      act(() => root.unmount()); host.remove(); useTypographyStore.getState().reset()
+    }
   })
 
   it.each(['light', 'paper'] as const)('updates the live terminal palette for %s', async (theme) => {
