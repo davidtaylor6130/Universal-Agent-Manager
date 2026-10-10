@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include <future>
 
 using namespace uam_test;
 
@@ -2325,4 +2326,233 @@ UAM_TEST(MemoryCompletionCannotPublishIntoReplacedDataRoot)
 		UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(app.data_root, chat.id), revision);
 		UAM_ASSERT(!fs::exists(MemoryService::GlobalMemoryRoot(app.data_root)));
 	}
+}
+
+namespace
+{
+	void InitializePreparedMemoryFixture(uam::AppState& app, const fs::path& root)
+	{
+		app.data_root = root / "data";
+		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 9999.0;
+		ChatSession chat;
+		chat.id = "prepared-memory";
+		chat.memory_enabled = true;
+		chat.memory_level = "open";
+		chat.workspace_directory = (root / "project").string();
+		chat.messages.push_back({MessageRole::User, "Remember Allman braces."});
+		fs::create_directories(chat.workspace_directory);
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	}
+
+	const std::string kPreparedMemoryOutput = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"One","memory":"Use Allman braces.","evidence":"User requested this.","confidence":"high"},{"scope":"local","category":"Lessons/User_Lessons","title":"One","memory":"Do not duplicate this observation.","evidence":"Same accepted observation.","confidence":"high"},{"scope":"global","category":"Lessons/User_Lessons","title":"One","memory":"Use Allman braces everywhere.","evidence":"User requested this.","confidence":"high"}]})";
+
+	std::size_t PreparedMemoryFinalCount(const fs::path& root)
+	{
+		std::size_t count = 0;
+		if (fs::exists(root))
+			for (const fs::directory_entry& entry : fs::recursive_directory_iterator(root))
+				if (entry.is_regular_file() && entry.path().extension() == ".md") ++count;
+		return count;
+	}
+}
+
+UAM_TEST(MemoryPreparedOutputPublishesOnceWithoutExposingUnacceptedEntries)
+{
+	TempDir temp("uam-memory-prepared-publish");
+	uam::AppState app;
+	InitializePreparedMemoryFixture(app, temp.root);
+	ChatSession& chat = app.chats.front();
+	const fs::path workspace = chat.workspace_directory;
+	const fs::path local = MemoryService::LocalMemoryRoot(workspace);
+	const fs::path global = MemoryService::GlobalMemoryRoot(app.data_root);
+	std::string error;
+	const std::shared_ptr<PreparedMemoryOutput> prepared = MemoryService::PrepareWorkerOutput(app.data_root, chat, workspace, kPreparedMemoryOutput, 1, &error);
+	if (!prepared) throw std::runtime_error(error);
+	UAM_ASSERT_EQ(PreparedMemoryFinalCount(local), 0u);
+	UAM_ASSERT_EQ(PreparedMemoryFinalCount(global), 0u);
+	UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 0);
+	UAM_ASSERT(MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error));
+	UAM_ASSERT_EQ(PreparedMemoryFinalCount(local), 1u);
+	UAM_ASSERT_EQ(PreparedMemoryFinalCount(global), 1u);
+	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 2);
+	UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 1);
+	const fs::path file = local / "Lessons/User_Lessons/one.md";
+	const std::string saved = ReadFile(file);
+	UAM_ASSERT(saved.find("Use Allman braces.") != std::string::npos);
+	UAM_ASSERT(saved.find("Occurrence count: 1") != std::string::npos);
+	UAM_ASSERT(!MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error));
+	UAM_ASSERT_EQ(ReadFile(file), saved);
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, chat, workspace, kPreparedMemoryOutput, 1, &error));
+	UAM_ASSERT_EQ(ReadFile(file), saved);
+	UAM_ASSERT_EQ(app.memory_activity.last_created_count, 0);
+}
+
+UAM_TEST(MemoryPreparedOutputRejectsChangedOwnersAndCancellationWithoutSavingProgress)
+{
+	for (const std::string scenario : {"root", "chat", "folder", "host", "workspace", "resolved-workspace", "policy", "history", "cancel"})
+	{
+		TempDir temp("uam-memory-prepared-owner");
+		uam::AppState app;
+		InitializePreparedMemoryFixture(app, temp.root);
+		ChatSession& chat = app.chats.front();
+		const fs::path data_root = app.data_root;
+		fs::path workspace = chat.workspace_directory;
+		const fs::path original_workspace = workspace;
+		const std::string saved_chat = ReadFile(AppPaths::UamChatFilePath(data_root, chat.id));
+		std::stop_source stop;
+		std::string error;
+		std::shared_ptr<PreparedMemoryOutput> prepared = MemoryService::PrepareWorkerOutput(data_root, chat, workspace, kPreparedMemoryOutput, 1, &error, stop.get_token());
+		if (!prepared) throw std::runtime_error(error);
+		if (scenario == "root") app.data_root = temp.root / "other-data";
+		if (scenario == "chat") chat.id = "other-chat";
+		if (scenario == "folder") chat.folder_id = "other-folder";
+		if (scenario == "host") chat.execution_host_id = "other-host";
+		if (scenario == "workspace") chat.workspace_directory = (temp.root / "other-project").string();
+		if (scenario == "resolved-workspace") workspace = temp.root / "other-project";
+		if (scenario == "policy") chat.memory_level = "off";
+		if (scenario == "history") chat.messages.clear();
+		if (scenario == "cancel") stop.request_stop();
+		if (MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error)) throw std::runtime_error("Unexpected publication: " + scenario);
+		UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 0);
+		UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(data_root, "prepared-memory")), saved_chat);
+		UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::LocalMemoryRoot(original_workspace)), 0u);
+		UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::GlobalMemoryRoot(data_root)), 0u);
+		prepared.reset();
+		for (const fs::directory_entry& entry : fs::recursive_directory_iterator(temp.root))
+			UAM_ASSERT(entry.path().filename().string().find(".md.tmp.") == std::string::npos);
+	}
+	TempDir canceled("uam-memory-prepare-already-canceled");
+	uam::AppState app;
+	InitializePreparedMemoryFixture(app, canceled.root);
+	std::stop_source stop;
+	stop.request_stop();
+	UAM_ASSERT(!MemoryService::PrepareWorkerOutput(app.data_root, app.chats.front(), app.chats.front().workspace_directory,
+	    kPreparedMemoryOutput, 1, nullptr, stop.get_token()));
+	UAM_ASSERT(!fs::exists(MemoryService::LocalMemoryRoot(app.chats.front().workspace_directory)));
+}
+
+UAM_TEST(MemoryPreparedOutputRejectsStorageEditsAndCatalogueChanges)
+{
+	for (const std::string scenario : {"in-place", "replace", "add", "rename", "delete", "directory-collision"})
+	{
+		TempDir temp("uam-memory-prepared-storage");
+		uam::AppState app;
+		InitializePreparedMemoryFixture(app, temp.root);
+		ChatSession& chat = app.chats.front();
+		const fs::path category = MemoryService::CategoryPath(MemoryService::LocalMemoryRoot(chat.workspace_directory), "Lessons/User_Lessons");
+		fs::create_directories(category);
+		const fs::path existing = category / "untouched.md";
+		UAM_ASSERT(uam::io::WriteTextFile(existing, "# Untouched\n## Memory\nOld body\n"));
+		std::string error;
+		const std::shared_ptr<PreparedMemoryOutput> prepared = MemoryService::PrepareWorkerOutput(app.data_root, chat, chat.workspace_directory, kPreparedMemoryOutput, 1, &error);
+		if (!prepared) throw std::runtime_error(error);
+		const fs::file_time_type modified = fs::last_write_time(existing);
+		if (scenario == "in-place")
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			std::ofstream stream(existing, std::ios::binary | std::ios::trunc);
+			stream << "# Untouched\n## Memory\nNew body\n";
+			stream.close();
+			fs::last_write_time(existing, modified);
+		}
+		if (scenario == "replace")
+		{
+			UAM_ASSERT(uam::io::WriteTextFile(existing, "# Untouched\n## Memory\nNew body\n"));
+			fs::last_write_time(existing, modified);
+		}
+		if (scenario == "add") UAM_ASSERT(uam::io::WriteTextFile(category / "new.md", "# New\n"));
+		if (scenario == "rename") fs::rename(existing, category / "renamed.md");
+		if (scenario == "delete") fs::remove(existing);
+		if (scenario == "directory-collision") fs::create_directory(category / "one.md");
+		const std::string changed = fs::exists(existing) ? ReadFile(existing) : "";
+		if (MemoryService::PublishPreparedWorkerOutput(app, chat, chat.workspace_directory, prepared, &error)) throw std::runtime_error("Unexpected publication: " + scenario);
+		UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 0);
+		if (fs::exists(existing)) UAM_ASSERT_EQ(ReadFile(existing), changed);
+		UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::GlobalMemoryRoot(app.data_root)), 0u);
+		UAM_ASSERT(!fs::is_regular_file(category / "one.md"));
+	}
+}
+
+UAM_TEST(MemoryCompletedWorkerPublishesPreparedEntriesWithoutCancellingItsOwner)
+{
+	TempDir temp("uam-memory-prepared-completion");
+	uam::AppState app;
+	InitializePreparedMemoryFixture(app, temp.root);
+	const ChatSession source = app.chats.front();
+	uam::AsyncMemoryExtractionTask task;
+	task.data_root = app.data_root;
+	task.chat_id = source.id;
+	task.workspace_root = source.workspace_directory;
+	task.message_count = 1;
+	task.running = true;
+	task.state = std::make_shared<AsyncProcessTaskState>();
+	task.extraction_state = std::make_shared<uam::AsyncMemoryExtractionState>();
+	const std::shared_ptr<AsyncProcessTaskState> state = task.state;
+	const std::shared_ptr<uam::AsyncMemoryExtractionState> extraction = task.extraction_state;
+	std::promise<void> ready;
+	std::future<void> completion = ready.get_future();
+	task.worker = std::make_unique<std::jthread>([state, extraction, source, root = app.data_root, &ready](std::stop_token stop)
+	{
+		extraction->prepared_output = MemoryService::PrepareWorkerOutput(root, source, source.workspace_directory,
+		    kPreparedMemoryOutput, 1, &extraction->output_error, stop);
+		extraction->output_prepared = true;
+		state->result.ok = true;
+		state->result.output = "Raw provider output must not be reparsed during prepared publication.";
+		state->completed.store(true, std::memory_order_release);
+		ready.set_value();
+	});
+	app.memory_extraction_tasks.push_back(std::move(task));
+	UAM_ASSERT(completion.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+	completion.get();
+	UAM_ASSERT(state->completed.load(std::memory_order_acquire));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 1);
+	UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::LocalMemoryRoot(source.workspace_directory)), 1u);
+	UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::GlobalMemoryRoot(app.data_root)), 1u);
+}
+
+UAM_TEST(MemoryPreparedOutputRetainsRetryReceiptsAfterInterruptedPublication)
+{
+	TempDir temp("uam-memory-prepared-retry");
+	uam::AppState app;
+	InitializePreparedMemoryFixture(app, temp.root);
+	ChatSession& chat = app.chats.front();
+	const fs::path workspace = chat.workspace_directory;
+	const fs::path category = MemoryService::CategoryPath(MemoryService::LocalMemoryRoot(workspace), "Lessons/User_Lessons");
+	const std::string output = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"A first","memory":"First observation","evidence":"User requested this.","confidence":"high"},{"scope":"local","category":"Lessons/User_Lessons","title":"Z second","memory":"Second observation","evidence":"User requested this.","confidence":"high"}]})";
+	std::string error;
+	std::shared_ptr<PreparedMemoryOutput> prepared = MemoryService::PrepareWorkerOutput(app.data_root, chat, workspace, output, 1, &error);
+	if (!prepared) throw std::runtime_error(error);
+	bool removed = false;
+	for (const fs::directory_entry& entry : fs::directory_iterator(category))
+	{
+		if (entry.path().filename().string().starts_with("z-second.md.tmp."))
+		{
+			fs::remove(entry.path());
+			removed = true;
+		}
+	}
+	UAM_ASSERT(removed);
+	UAM_ASSERT(!MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error));
+	UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 0);
+	const std::string first = ReadFile(category / "a-first.md");
+	UAM_ASSERT(first.find("Extraction key: prepared-memory:1") != std::string::npos);
+	UAM_ASSERT(!fs::exists(category / "z-second.md"));
+	UAM_ASSERT(!MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error));
+	prepared.reset();
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, chat, workspace, output, 1, &error));
+	UAM_ASSERT_EQ(ReadFile(category / "a-first.md"), first);
+	UAM_ASSERT(ReadFile(category / "z-second.md").find("Occurrence count: 1") != std::string::npos);
+	UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 1);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->memory_last_processed_message_count, 1);
+	UAM_ASSERT_EQ(saved->messages, chat.messages);
+
+	prepared = MemoryService::PrepareWorkerOutput(app.data_root, chat, workspace, R"({"memories":[]})", 1, &error);
+	UAM_ASSERT(prepared != nullptr);
+	UAM_ASSERT(MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error));
+	UAM_ASSERT(!MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error));
 }

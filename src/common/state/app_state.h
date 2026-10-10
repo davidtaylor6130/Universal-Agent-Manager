@@ -24,6 +24,7 @@
 #include <vector>
 
 struct PreparedChatSave;
+struct PreparedMemoryOutput;
 
 namespace uam
 {
@@ -772,7 +773,7 @@ namespace uam
 		bool low_signal_skip = false;
 		bool hydration_failed = false;
 		bool output_prepared = false;
-		std::optional<std::string> completed_text;
+		std::shared_ptr<PreparedMemoryOutput> prepared_output;
 		std::string output_error;
 		bool remote_applied = false;
 		int remote_entry_count = 0;
