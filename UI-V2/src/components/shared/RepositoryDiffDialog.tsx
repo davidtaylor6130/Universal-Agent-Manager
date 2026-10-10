@@ -1,3 +1,4 @@
+import { FilePreviewDialog } from './FilePreviewDialog'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Columns2, FileText, Rows3, X } from 'lucide-react'
@@ -14,6 +15,10 @@ export function RepositoryDiffDialog({
   comparisonRef,
   getDiff,
   onClose,
+  sourcePath,
+  comparisonLabel,
+  zIndex = 1000,
+  showFileStats = true,
 }: {
   chatId: string
   file: VcsChangedFile
@@ -21,10 +26,15 @@ export function RepositoryDiffDialog({
   comparisonRef?: string
   getDiff: (chatId: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   onClose: () => void
+  sourcePath?: string
+  comparisonLabel?: string
+  zIndex?: number
+  showFileStats?: boolean
 }) {
   const dialogRef = useRef<HTMLElement>(null)
   const [diff, setDiff] = useState<string | null>(file.binary ? '' : null)
   const [error, setError] = useState('')
+  const [inspection, setInspection] = useState<{ chatId: string; path: string } | null>(null)
   const [layout, setLayout] = useState<'unified' | 'split'>(() => {
     try { return localStorage.getItem('uam-diff-layout') === 'unified' ? 'unified' : 'split' } catch { return 'split' }
   })
@@ -72,10 +82,10 @@ export function RepositoryDiffDialog({
   }, [chatId, comparisonRef, file.binary, file.path, getDiff, vcsType])
 
 
-  return createPortal(
+  return <>{createPortal(
     <div
       className="fixed inset-0 z-[1000] flex items-center justify-center p-2 sm:p-4"
-      style={{ background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
+      style={{ zIndex, background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
       onMouseDown={onClose}
     >
       <section
@@ -92,11 +102,13 @@ export function RepositoryDiffDialog({
           <FileText size={17} aria-hidden className="shrink-0" style={{ color: 'var(--accent)' }} />
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold" title={file.path} style={{ color: 'var(--text)' }}>{file.path}</div>
-            <div className="flex gap-3 font-mono text-[11px]">
+            {(comparisonLabel || comparisonRef) && <div className="truncate text-xs" style={{ color: 'var(--text-2)' }}>{comparisonLabel || `Against ${comparisonRef}`}</div>}
+            {showFileStats && <div className="flex gap-3 font-mono text-[11px]">
               <span style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
               {!file.binary && <><span style={{ color: 'var(--green)' }}>+{file.additions}</span><span style={{ color: 'var(--red)' }}>-{file.deletions}</span></>}
-            </div>
+            </div>}
           </div>
+          <button type="button" className="shrink-0 text-xs" style={{ color: 'var(--accent)', background: 'transparent', border: 'none' }} onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</button>
           {!file.binary && <div role="group" aria-label="Diff layout" className="flex items-center gap-1">
             <button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} title="Unified diff view" className="p-1.5" style={{ color: layout === 'unified' ? 'var(--accent)' : 'var(--text-2)', background: 'transparent', border: 'none' }} onClick={() => chooseLayout('unified')}><Rows3 size={16} aria-hidden /></button>
             <button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} title="Split diff view" className="p-1.5" style={{ color: layout === 'split' ? 'var(--accent)' : 'var(--text-2)', background: 'transparent', border: 'none' }} onClick={() => chooseLayout('split')}><Columns2 size={16} aria-hidden /></button>
@@ -120,5 +132,5 @@ export function RepositoryDiffDialog({
       </section>
     </div>,
     document.body
-  )
+  )}{inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path) && <FilePreviewDialog zIndex={zIndex + 100} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} />}</>
 }

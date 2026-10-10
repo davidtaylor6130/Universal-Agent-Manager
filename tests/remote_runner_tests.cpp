@@ -1,6 +1,7 @@
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
 #include "test_harness.h"
+#include "common/utils/base64.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_native_context.h"
@@ -4136,4 +4137,88 @@ UAM_TEST(MacStdioExitStatusFollowsOwnershipUntilHandlesCloseOrProcessRestarts)
 	UAM_ASSERT(exited);
 	UAM_ASSERT_EQ(exit_code, 0);
 #endif
+}
+
+
+UAM_TEST(RemoteWorkspaceFilePreviewRequiresScopedPathsAndAdvertisesItsCapability)
+{
+	TempDir temp("uam-remote-file-preview");
+	uam::remote::RunnerState state;
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directory(workspace);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "file.txt", "remote source"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "outside.txt", "outside"));
+	const nlohmann::json hello = uam::remote::HandleRunnerRequest({{"id", "hello"}, {"type", "hello"},
+	    {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "file-preview"}}, "4.11.0", &state);
+	UAM_ASSERT(hello["capabilities"].value("workspaceFileRead", false));
+	const std::function<nlohmann::json(const std::string&)> read = [&state, &workspace](const std::string& path)
+	{
+		return uam::remote::HandleRunnerRequest({{"id", "preview"}, {"type", "workspace.file.read"},
+		    {"workspace", uam::paths::Utf8PathString(workspace)}, {"path", path}}, "4.11.0", &state);
+	};
+	const nlohmann::json source = read("file.txt")["result"];
+	std::string decoded;
+	UAM_ASSERT(uam::base64::Decode(source.value("dataBase64", ""), decoded));
+	UAM_ASSERT_EQ(decoded, "remote source");
+	UAM_ASSERT(!read("../outside.txt").value("ok", true));
+	UAM_ASSERT(!read("missing.txt").value("ok", true));
+	UAM_ASSERT(!uam::remote::HandleRunnerRequest({{"id", "bad"}, {"type", "workspace.file.read"},
+	    {"workspace", 5}, {"path", "file.txt"}}, "4.11.0", &state).value("ok", true));
+}
+
+UAM_TEST(RemoteWorkspaceFilePreviewChunksFitFramesAndRejectChangedSnapshots)
+{
+	TempDir temp("uam-remote-file-preview-chunks");
+	uam::remote::RunnerState state;
+	const std::string content(1024 * 1024, '\t');
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "large.txt", content));
+	const nlohmann::json request = {{"id", "chunk"}, {"type", "workspace.file.read"},
+	    {"workspace", uam::paths::Utf8PathString(temp.root)}, {"path", "large.txt"}};
+	const nlohmann::json first = state.HandleProcessRequest(request);
+	UAM_ASSERT(first.value("ok", false));
+	UAM_ASSERT(first.dump().size() < uam::remote::kMaxRunnerFrameBytes);
+	std::string decoded;
+	UAM_ASSERT(uam::base64::Decode(first["result"].value("dataBase64", ""), decoded));
+	UAM_ASSERT_EQ(decoded.size(), std::size_t{512 * 1024});
+	nlohmann::json next = request;
+	next["offset"] = decoded.size();
+	next["fingerprint"] = first["result"]["fingerprint"];
+	const nlohmann::json second = state.HandleProcessRequest(next);
+	UAM_ASSERT(second.value("ok", false));
+	UAM_ASSERT(second.dump().size() < uam::remote::kMaxRunnerFrameBytes);
+	UAM_ASSERT(uam::base64::Decode(second["result"].value("dataBase64", ""), decoded));
+	UAM_ASSERT_EQ(decoded, content.substr(512 * 1024));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "large.txt", std::string(1024 * 1024, 'x')));
+	UAM_ASSERT(!state.HandleProcessRequest(next).value("ok", true));
+	next.erase("fingerprint");
+	next["offset"] = -1;
+	UAM_ASSERT(!state.HandleProcessRequest(next).value("ok", true));
+}
+
+UAM_TEST(RemoteWorkspaceFilePreviewClientReassemblesLargeUnicodeSources)
+{
+	TempDir temp("uam-file-preview-client");
+	ScopedEnvVar data_root("UAM_DATA_DIR", (temp.root / "data").string());
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	    "uam-runner.exe";
+#else
+	    "uam-runner";
+#endif
+	uam::remote::RunnerClient client(service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+	std::string content(1024 * 1024, '\t');
+	content.replace(512 * 1024 - 1, 3, "\xe2\x82\xac");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "source.txt", content));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "empty.txt", ""));
+	std::string error;
+	nlohmann::json file;
+	UAM_ASSERT(client.ReadWorkspaceFile(uam::paths::Utf8PathString(temp.root), "source.txt", file, &error));
+	UAM_ASSERT_EQ(file.value("text", ""), content);
+	UAM_ASSERT_EQ(file.value("path", ""), "source.txt");
+	UAM_ASSERT(client.ReadWorkspaceFile(uam::paths::Utf8PathString(temp.root), "empty.txt", file, &error));
+	UAM_ASSERT_EQ(file.value("text", "nonempty"), "");
+	UAM_ASSERT(!client.ReadWorkspaceFile(uam::paths::Utf8PathString(temp.root), "missing.txt", file, &error));
+	UAM_ASSERT(file.is_null());
+	UAM_ASSERT(!error.empty());
 }

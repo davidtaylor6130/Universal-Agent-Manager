@@ -11,6 +11,8 @@
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
+#include "common/paths/workspace_file_reader.h"
+#include "remote/runner_client.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -107,6 +109,14 @@ namespace
 	nlohmann::json SerializeTurnCheckpointResult(const uam::GitTurnCheckpointResult& result)
 	{
 		return {{"message", result.message}, {"diff", result.diff}, {"checkpointSha", result.checkpoint_sha}, {"parentSha", result.parent_sha}};
+	}
+
+	std::string FilePreviewWorkspace(const uam::AppState& app, const ChatSession& chat)
+	{
+		if (chat.imported_read_only) return {};
+		if (!uam::paths::IsControllerLocalWorkspace(chat) && uam::paths::HasGitWorktreeDirectory(chat))
+			return chat.workspace_worktree_directory;
+		return uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
 	}
 
 	using WorktreeOperation = uam::GitWorktreeOperationResult (uam::GitWorktreeService::*)(uam::AppState&, ChatSession&) const;
@@ -509,6 +519,63 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 		                     uam::paths::ResolveWorkspaceRootPath(*live_app, *current) != expected_workspace)
 		                     result = AsyncFailure(409, "The chat workspace changed while its repository context was loading.");
 	                 });
+}
+
+void UamQueryHandler::HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.contains("chatId") || !payload["chatId"].is_string() || !payload.contains("path") || !payload["path"].is_string())
+	{ cb->Failure(400, "Choose a chat and file path."); return; }
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	if (m_pendingFilePreviews >= 8)
+	{ cb->Failure(429, "File previews are busy. Try again shortly."); return; }
+	if (m_workspaceDeletionPending || m_app.worktree_operation_chat_ids.contains(chat->id))
+	{ cb->Failure(409, "The workspace is changing. Try again shortly."); return; }
+	const std::string path = payload["path"].get<std::string>();
+	const std::string workspace = FilePreviewWorkspace(m_app, *chat);
+	if (workspace.empty() || path.empty() || path.size() > 16384 || path.find('\0') != std::string::npos)
+	{ cb->Failure(400, "Choose a file in this chat's workspace."); return; }
+	const std::string host_id = uam::strings::NonEmptyOrFallback(chat->execution_host_id, "local");
+	const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_id);
+	const std::optional<ExecutionHost> expected_host = host == nullptr ? std::nullopt : std::optional<ExecutionHost>(*host);
+	if (host_id != "local" && (!expected_host || expected_host->transport != "ssh" || expected_host->runner_status != "ready"))
+	{ cb->Failure(503, "The chat's remote runner is unavailable. Recheck it in Settings."); return; }
+	const std::filesystem::path data_root = m_app.data_root;
+	++m_pendingFilePreviews;
+	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [workspace, path, host_id, expected_host]()
+	    {
+		    nlohmann::json preview;
+		    if (host_id == "local")
+		    {
+			    const uam::workspace_files::TextFile file = uam::workspace_files::Read(uam::paths::PathFromUtf8(workspace), path);
+			    if (!file.ok) return AsyncFailure(400, file.error);
+			    preview = {{"text", file.text}, {"path", file.path}};
+		    }
+		    else
+		    {
+			    uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+			        uam::remote::SshBridgeArgv(expected_host->ssh_alias, expected_host->platform, expected_host->runner_version,
+			            expected_host->runner_directory, expected_host->runner_protocol_version), expected_host->runner_version, expected_host->runner_protocol_version);
+			    std::string error;
+			    if (!client.ReadWorkspaceFile(workspace, path, preview, &error)) return AsyncFailure(503, error);
+		    }
+		    preview["workspace"] = workspace;
+		    preview["executionHostId"] = host_id;
+		    return AsyncSuccess(std::move(preview));
+	    },
+	    [this, chat_id = chat->id, workspace, host_id, expected_host, data_root](AsyncCefResult& result)
+	    {
+		    --m_pendingFilePreviews;
+		    if (!result.ok) return;
+		    const ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+		    const ExecutionHost* current_host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_id);
+		    if (current == nullptr || m_app.data_root != data_root || m_workspaceDeletionPending ||
+		        m_app.worktree_operation_chat_ids.contains(chat_id) ||
+		        uam::strings::NonEmptyOrFallback(current->execution_host_id, "local") != host_id || FilePreviewWorkspace(m_app, *current) != workspace ||
+		        (host_id != "local" && (!current_host || !expected_host || !uam::execution_hosts::SameConnection(*current_host, *expected_host))))
+		        result = AsyncFailure(409, "The chat workspace or host changed while loading. Try again.");
+	    }, TID_FILE_USER_BLOCKING)) --m_pendingFilePreviews;
 }
 
 void UamQueryHandler::HandleGetVcsFileDiff(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

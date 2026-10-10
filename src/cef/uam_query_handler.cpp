@@ -225,6 +225,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"rollbackChatTurn", &UamQueryHandler::HandleRollbackChatTurn},
 		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
 		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
+		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
 		{"generateVcsCommitMessage", &UamQueryHandler::HandleGenerateVcsCommitMessage},
 		{"listMemoryScanCandidates", &UamQueryHandler::HandleListMemoryScanCandidates},

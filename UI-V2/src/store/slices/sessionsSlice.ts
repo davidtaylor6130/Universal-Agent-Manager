@@ -1,3 +1,4 @@
+import { filePreviewResponse } from '../../types/filePreview'
 import { canRouteAutomatically } from '../../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch'
 import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
@@ -1011,6 +1012,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         warning: '',
         error: '',
       }
+    },
+
+    getWorkspaceFilePreview: async (id: string, path: string) => {
+      if (!isCefContext()) throw new Error('File inspection requires the desktop app or its connected companion.')
+      const response = await sendToCEF({ action: 'getWorkspaceFilePreview', payload: { chatId: id, path } }, false)
+      if (!response.ok) throw new Error(response.error || 'Could not load this file.')
+      const file = filePreviewResponse(response.data)
+      if (!file) throw new Error('The runner returned an invalid file preview.')
+      return file
     },
 
     getVcsFileDiff: async (id: string, path: string, vcsType: VcsType, comparisonRef?: string): Promise<string> => {

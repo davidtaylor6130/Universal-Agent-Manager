@@ -168,6 +168,7 @@ namespace uam::remote
 		        {"capabilities", {{"computerUse", false},
 			                          {"directoryBrowsing", state != nullptr},
 			                          {"contextRead", state != nullptr},
+			                          {"workspaceFileRead", state != nullptr},
 		                          {"projectMemory", state != nullptr},
 		                          {"isolatedTextWorkers", state != nullptr},
 			                          {"runnerStartup", state != nullptr},

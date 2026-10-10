@@ -1,3 +1,4 @@
+import type { WorkspaceFilePreview } from '../types/filePreview'
 import type { StartupNativeImportStatus } from '../types/startupNativeImports'
 import type { ExecutionRoutingSettings, RoutingReservation } from '../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../types/chatSearch'
@@ -235,6 +236,7 @@ export interface AppState {
   rollbackChatTurn: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   getChatFileChangeReceipts: (id: string) => Promise<ChatFileChangeReceiptsResponse>
   getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
+  getWorkspaceFilePreview: (id: string, path: string) => Promise<WorkspaceFilePreview>
   getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>
   generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>

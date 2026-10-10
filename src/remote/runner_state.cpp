@@ -5,6 +5,7 @@
 #include "common/platform/observed_process_stop.h"
 
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_file_reader.h"
 #include "common/provider/provider_native_context.h"
 #include "remote/runner_startup.h"
 
@@ -18,6 +19,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cctype>
@@ -763,6 +765,29 @@ namespace uam::remote
 				if (!preview.empty()) text += "- " + preview + "\n";
 			}
 			return ProcessSuccess(request, {{"text", text}});
+		}
+		if (type == "workspace.file.read")
+		{
+			state_lock.unlock();
+			if (!request.contains("workspace") || !request["workspace"].is_string() ||
+			    !request.contains("path") || !request["path"].is_string() ||
+			    !IsBoundedText(request["workspace"].get_ref<const std::string&>(), kMaxWorkingDirectoryBytes) ||
+			    !IsBoundedText(request["path"].get_ref<const std::string&>(), 16384))
+				return ProcessError(request, "invalid_request", "Choose a bounded workspace file path.");
+			const uam::workspace_files::TextFile file = uam::workspace_files::Read(
+			    uam::paths::PathFromUtf8(request["workspace"].get_ref<const std::string&>()), request["path"].get_ref<const std::string&>());
+			if (!file.ok) return ProcessError(request, "file_preview_failed", file.error);
+			if (request.contains("offset") && (!request["offset"].is_number_integer() ||
+			    request["offset"].get<std::int64_t>() < 0 || request["offset"].get<std::int64_t>() > static_cast<std::int64_t>(file.text.size())))
+				return ProcessError(request, "invalid_request", "The file preview offset is invalid.");
+			const std::size_t offset = request.value("offset", std::size_t{0});
+			const std::string fingerprint = uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(file.text));
+			if (request.contains("fingerprint") && (!request["fingerprint"].is_string() || request["fingerprint"] != fingerprint))
+				return ProcessError(request, "file_preview_changed", "The file changed while loading. Try again.");
+			// Base64 chunks stay inside the existing frame limit, even for JSON-escaped source text.
+			const std::string_view chunk(file.text.data() + offset, std::min<std::size_t>(512 * 1024, file.text.size() - offset));
+			return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(chunk)}, {"path", file.path},
+			    {"offset", offset}, {"totalBytes", file.text.size()}, {"fingerprint", fingerprint}});
 		}
 		if (type == "context.read")
 		{

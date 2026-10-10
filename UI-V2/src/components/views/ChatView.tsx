@@ -1,3 +1,4 @@
+import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
 import { SubagentWaitStatus } from '../chat/SubagentWaitStatus'
@@ -2298,6 +2299,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }
 
   return (
+    <FileInspectionProvider chatId={session.id}>
     <div className="relative h-full flex overflow-hidden"
       onPointerDownCapture={() => {
         const revision = session.attentionRevision
@@ -3288,5 +3290,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
         </div>
       </div>
     </div>
+    </FileInspectionProvider>
   )
 })

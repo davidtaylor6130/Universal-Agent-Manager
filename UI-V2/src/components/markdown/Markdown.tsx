@@ -1,8 +1,10 @@
-import { memo, ReactNode } from 'react'
+import { FileInspectionContext } from '../shared/fileInspectionContext'
+import { inlineFileReference, parseFileReference, type FileReference } from '../../utils/fileReferences'
+import { memo, ReactNode, useContext } from 'react'
 import { CopyTextButton } from '../chat/StatusHelpers'
 import { isPotentialTableRow, parseTableSeparator, safeHref, splitTableRow } from './markdownParsing'
 
-function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((reference: FileReference) => void) | null): ReactNode[] {
   const nodes: ReactNode[] = []
   let pattern = /(`[^`]+`|\*\*[^*]+?\*\*|\[[^\[\]]+\]\()/g
   let lastIndex = 0
@@ -31,17 +33,22 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 
     const key = `${keyPrefix}-${match.index}`
     if (token.startsWith('`')) {
-      nodes.push(<code key={key}>{token.slice(1, -1)}</code>)
+      const value = token.slice(1, -1)
+      const reference = inspect ? inlineFileReference(value) : null
+      nodes.push(<code key={key}>{reference ? <button type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(reference)} title="Inspect file">{value}</button> : value}</code>)
     } else if (token.startsWith('**')) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>)
     } else {
       const link = token.match(/^\[([^\[\]]+)\]\(([^)]+)\)$/)
       const href = link ? safeHref(link[2]) : undefined
+      const file = !href && inspect && link ? parseFileReference(link[2]) : null
       nodes.push(
         href ? (
           <a key={key} href={href} target="_blank" rel="noreferrer">
             {link?.[1]}
           </a>
+        ) : file ? (
+          <button key={key} type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(file)} title="Inspect file">{link?.[1]}</button>
         ) : (
           <span key={key}>{link?.[1] ?? token}</span>
         )
@@ -59,6 +66,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 }
 
 function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string }) {
+  const inspect = useContext(FileInspectionContext)
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   const nodes: ReactNode[] = []
   let paragraph: string[] = []
@@ -67,7 +75,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
   const flushParagraph = () => {
     if (paragraph.length === 0) return
     const content = paragraph.join(' ')
-    nodes.push(<p key={`${blockKey}-p-${nodes.length}`}>{renderInlineMarkdown(content, `${blockKey}-p-${nodes.length}`)}</p>)
+    nodes.push(<p key={`${blockKey}-p-${nodes.length}`}>{renderInlineMarkdown(content, `${blockKey}-p-${nodes.length}`, inspect)}</p>)
     paragraph = []
   }
 
@@ -102,7 +110,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
                 <tr>
                   {headerCells.map((cell, cellIndex) => (
                     <th key={`${blockKey}-th-${index}-${cellIndex}`} style={{ textAlign: alignments[cellIndex] }}>
-                      {renderInlineMarkdown(cell, `${blockKey}-th-${index}-${cellIndex}`)}
+                      {renderInlineMarkdown(cell, `${blockKey}-th-${index}-${cellIndex}`, inspect)}
                     </th>
                   ))}
                 </tr>
@@ -115,7 +123,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
                         key={`${blockKey}-td-${index}-${rowIndex}-${cellIndex}`}
                         style={{ textAlign: alignments[cellIndex] }}
                       >
-                        {renderInlineMarkdown(cell, `${blockKey}-td-${index}-${rowIndex}-${cellIndex}`)}
+                        {renderInlineMarkdown(cell, `${blockKey}-td-${index}-${rowIndex}-${cellIndex}`, inspect)}
                       </td>
                     ))}
                   </tr>
@@ -132,7 +140,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
     if (heading) {
       flushParagraph()
       const level = heading[1].length
-      const content = renderInlineMarkdown(heading[2], `${blockKey}-h-${index}`)
+      const content = renderInlineMarkdown(heading[2], `${blockKey}-h-${index}`, inspect)
       if (level === 1) nodes.push(<h1 key={`${blockKey}-h-${index}`}>{content}</h1>)
       else if (level === 2) nodes.push(<h2 key={`${blockKey}-h-${index}`}>{content}</h2>)
       else nodes.push(<h3 key={`${blockKey}-h-${index}`}>{content}</h3>)
@@ -151,7 +159,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
         <ul key={`${blockKey}-ul-${index}`}>
           {items.map((item, itemIndex) => (
             <li key={`${blockKey}-ul-${index}-${itemIndex}`}>
-              {renderInlineMarkdown(item, `${blockKey}-ul-${index}-${itemIndex}`)}
+              {renderInlineMarkdown(item, `${blockKey}-ul-${index}-${itemIndex}`, inspect)}
             </li>
           ))}
         </ul>
@@ -170,7 +178,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
         <ol key={`${blockKey}-ol-${index}`}>
           {items.map((item, itemIndex) => (
             <li key={`${blockKey}-ol-${index}-${itemIndex}`}>
-              {renderInlineMarkdown(item, `${blockKey}-ol-${index}-${itemIndex}`)}
+              {renderInlineMarkdown(item, `${blockKey}-ol-${index}-${itemIndex}`, inspect)}
             </li>
           ))}
         </ol>
@@ -187,7 +195,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
       }
       nodes.push(
         <blockquote key={`${blockKey}-quote-${index}`}>
-          {renderInlineMarkdown(quoteLines.join(' '), `${blockKey}-quote-${index}`)}
+          {renderInlineMarkdown(quoteLines.join(' '), `${blockKey}-quote-${index}`, inspect)}
         </blockquote>
       )
       continue

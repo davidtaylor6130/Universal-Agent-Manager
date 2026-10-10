@@ -85,7 +85,7 @@ export function RecordedChatEdits({ chatId, workspaceDirectory, workspaceWorktre
         <span style={{ color: 'var(--text-3)' }}>Message {receipt.messageIndex + 1}{receipt.messageCreatedAt ? <> · <time dateTime={receipt.messageCreatedAt} title={receipt.messageCreatedAt}>{readableReceiptTime(receipt.messageCreatedAt)}</time></> : ''}</span>
       </button>)}</div>
     </>}
-    {selected && <RepositoryDiffDialog chatId={chatId} vcsType="git" file={{ path: `Recorded edit: ${selected.path}`, status: receiptStatus(selected), staged: false, binary: false,
+    {selected && <RepositoryDiffDialog chatId={chatId} vcsType="git" sourcePath={selected.destinationPath || selected.path} comparisonLabel="Recorded agent edit" file={{ path: `Recorded edit: ${selected.path}`, status: receiptStatus(selected), staged: false, binary: false,
       additions: selected.patch.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).length,
       deletions: selected.patch.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length,
     }} getDiff={recordedDiff} onClose={() => setSelected(null)} />}
