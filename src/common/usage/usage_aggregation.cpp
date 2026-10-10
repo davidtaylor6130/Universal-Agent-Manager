@@ -49,7 +49,16 @@ namespace uam::usage
 
 	std::optional<Summary> Aggregate(const std::vector<Record>& records, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices)
 	{
+		std::vector<const Record*> references;
+		references.reserve(records.size());
+		for (const Record& record : records) references.push_back(&record);
+		return AggregateReferences(references, start_ms, end_ms, prices);
+	}
+
+	std::optional<Summary> AggregateReferences(const std::vector<const Record*>& records, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices)
+	{
 		if (start_ms < 0 || end_ms <= start_ms) return std::nullopt;
+		for (const Record* record : records) if (!record) return std::nullopt;
 		for (const std::pair<const ModelKey, ModelPrices>& price : prices)
 			if (!ValidPrices(price.second)) return std::nullopt;
 		Summary summary;
@@ -57,12 +66,12 @@ namespace uam::usage
 		// Choose the earliest event before filtering; a copied fork can re-stamp old usage inside the requested window.
 		for (std::size_t index = 0; index < records.size(); ++index)
 		{
-			const Record& record = records[index];
+			const Record& record = *records[index];
 			if (record.dedupe_key.empty()) continue;
 			const std::pair<std::string, std::string> identity{record.provider_id, record.dedupe_key};
 			const std::map<std::pair<std::string, std::string>, std::size_t>::iterator original = originals.find(identity);
 			if (original == originals.end()) originals.emplace(identity, index);
-			else if (record.timestamp_ms < records[original->second].timestamp_ms) original->second = index;
+			else if (record.timestamp_ms < records[original->second]->timestamp_ms) original->second = index;
 		}
 		std::set<std::pair<std::string, std::string>> sessions;
 		std::map<std::string, std::set<std::string>> provider_sessions;
@@ -70,7 +79,7 @@ namespace uam::usage
 		std::map<std::int64_t, std::set<std::pair<std::string, std::string>>> day_sessions, hour_sessions;
 		for (std::size_t index = 0; index < records.size(); ++index)
 		{
-			const Record& record = records[index];
+			const Record& record = *records[index];
 			if (!record.dedupe_key.empty() && originals.at({record.provider_id, record.dedupe_key}) != index)
 			{
 				++summary.duplicates;

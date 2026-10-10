@@ -34,6 +34,7 @@ namespace uam::usage
 		std::size_t InvalidLines() const { return m_invalidLines; }
 		std::size_t OversizedLines() const { return m_oversizedLines; }
 		std::size_t SuppressedForkRecords() const { return m_codexState.suppressed_fork_records; }
+		bool PendingTail() const { return !m_pendingLine.empty() || m_pendingOversized; }
 
 	private:
 		void Reset();

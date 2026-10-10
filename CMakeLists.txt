@@ -483,6 +483,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/terminal_handlers.cpp
   src/cef/dictation_handlers.cpp
   src/cef/attachment_preview_handlers.cpp
+  src/cef/usage_handlers.cpp
   src/cef/acp_handlers.cpp
   src/cef/goal_handlers.cpp
   src/common/models/app_models.cpp
@@ -494,6 +495,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/usage/transcript_usage.cpp
   src/common/usage/usage_aggregation.cpp
   src/common/usage/transcript_scan.cpp
+  src/common/usage/usage_history_service.cpp
   src/core/chat_import_utils.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
@@ -1201,6 +1203,7 @@ if(UAM_BUILD_TESTS)
     tests/provider_configuration_tests.cpp
     tests/transcript_usage_tests.cpp
     tests/transcript_scan_tests.cpp
+    tests/usage_history_service_tests.cpp
     tests/provider_mcp_settings_tests.cpp
     tests/uam_control_transport_tests.cpp
     src/common/utils/diagnostic_log.cpp
@@ -1268,6 +1271,7 @@ if(UAM_BUILD_TESTS)
     src/common/usage/transcript_usage.cpp
     src/common/usage/usage_aggregation.cpp
     src/common/usage/transcript_scan.cpp
+    src/common/usage/usage_history_service.cpp
     src/common/provider/provider_profile.cpp
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp

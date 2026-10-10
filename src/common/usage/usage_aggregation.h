@@ -46,4 +46,7 @@ namespace uam::usage
 	/// <summary>Aggregate a half-open time window with provider-scoped cross-file deduplication and explicit price provenance.</summary>
 	std::optional<Summary> Aggregate(const std::vector<Record>& records, std::int64_t start_ms, std::int64_t end_ms,
 	                                 const std::map<ModelKey, ModelPrices>& prices = {});
+	/// <summary>Aggregate worker-owned cached records without copying their strings and token data.</summary>
+	std::optional<Summary> AggregateReferences(const std::vector<const Record*>& records, std::int64_t start_ms, std::int64_t end_ms,
+	                                           const std::map<ModelKey, ModelPrices>& prices = {});
 }

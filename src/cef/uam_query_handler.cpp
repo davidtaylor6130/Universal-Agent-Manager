@@ -83,6 +83,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 	};
 
 	static constexpr Route kRoutes[] = {
+		{"getUsageHistory", &UamQueryHandler::HandleGetUsageHistory},
 		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
 		{"getStartupNativeImports", &UamQueryHandler::HandleGetStartupNativeImports},
 		{"resolveStartupNativeImports", &UamQueryHandler::HandleResolveStartupNativeImports},

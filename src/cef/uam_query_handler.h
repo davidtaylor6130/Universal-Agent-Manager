@@ -18,6 +18,7 @@
 
 namespace uam::query_handler_async { struct AsyncCefResult; }
 namespace uam { struct WorkspaceDeletionTask; }
+namespace uam::usage { class HistoryService; }
 
 /// <summary>
 /// Handles all window.cefQuery() requests from the React frontend.
@@ -41,6 +42,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
   private:
 	uam::AppState& m_app;
 	uam::TranscriptRetentionService m_transcriptRetention;
+	std::shared_ptr<uam::usage::HistoryService> m_usageHistory;
 #if UAM_ENABLE_MOBILE_COMPANION
 	CefRefPtr<UamCompanionServer> m_companion;
 #endif
@@ -56,6 +58,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	bool HasActiveDeletionHistoryLoad() const;
 
 	// ---- action handlers -------------------------------------------------
+	void HandleGetUsageHistory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetStartupNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleResolveStartupNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetInitialState(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
