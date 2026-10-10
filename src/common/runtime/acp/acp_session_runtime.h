@@ -7,6 +7,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace uam
 {
@@ -19,6 +20,10 @@ bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string&
 bool SteerAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files = {}, const std::vector<MessageAttachment>& attachments = {}, bool goal_mode = false, std::string* error_out = nullptr, const std::string& goal_id = {}, bool computer_use_mode = false);
 bool RemoveQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr);
 bool SteerQueuedAcpPrompt(AppState& app, const std::string& chat_id, std::size_t index, std::string* error_out = nullptr);
+/// <summary>Updates only an undispatched prompt's text when its saved revision still matches.</summary>
+bool EditQueuedAcpPrompt(AppState& app, const std::string& chat_id, const std::string& prompt_id, int expected_revision, const std::string& text, std::string* error_out = nullptr);
+/// <summary>Reorders the exact observed queue; stale identities or revisions reject the operation.</summary>
+bool ReorderQueuedAcpPrompts(AppState& app, const std::string& chat_id, const std::vector<std::pair<std::string, int>>& expected, const std::vector<std::string>& ordered_ids, std::string* error_out = nullptr);
 bool StartAcpModelDiscovery(AppState& app, const std::string& chat_id, std::string* error_out = nullptr, bool stop_when_complete = false);
 bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id = "local", std::string* error_out = nullptr);
 bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id, const std::string& blocked_reason);

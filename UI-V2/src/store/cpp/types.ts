@@ -299,6 +299,8 @@ export interface AcpAgentInfo {
 }
 
 export interface AcpQueuedPrompt {
+  id?: string
+  revision?: number
   text: string
   uamAgentId: string
   markdownStoreFiles: string[]
@@ -864,4 +866,24 @@ export interface CentralProviderConfiguration {
 
 export const DEFAULT_CENTRAL_PROVIDER_CONFIGURATION: CentralProviderConfiguration = {
   enabled: false, instructions: '', instructionFiles: [], skillDirectories: [], defaultSkills: [], defaultAgentId: 'build', uamControlEnabled: true,
+}
+
+/** Immutable provider edit evidence, separate from current workspace changes. */
+export interface ChatFileChangeReceipt {
+  chatId: string
+  messageIndex: number
+  messageCreatedAt: string
+  providerId: string
+  toolCallId: string
+  reportedPath: string
+  path: string
+  destinationPath: string
+  kind: string | Record<string, unknown>
+  patch: string
+}
+export interface ChatFileChangeReceiptsResponse {
+  chatId: string
+  scope: 'recorded-provider-edits'
+  receipts: ChatFileChangeReceipt[]
+  omittedCount: number
 }

@@ -9,6 +9,7 @@
 
 #include "cef/cef_includes.h"
 #include "common/state/app_state.h"
+#include "app/transcript_retention_service.h"
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -38,6 +39,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 
   private:
 	uam::AppState& m_app;
+	uam::TranscriptRetentionService m_transcriptRetention;
 #if UAM_ENABLE_MOBILE_COMPANION
 	CefRefPtr<UamCompanionServer> m_companion;
 #endif
@@ -51,11 +53,15 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	bool DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 
 	// ---- action handlers -------------------------------------------------
+	void HandleOrganizationAction(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetInitialState(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleAcknowledgeChatAttention(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetChatSettled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSelectSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetVisibleChatIds(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleReleaseChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetChatFileChangeReceipts(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetToolCallContent(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCreateSideChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleDismissSideChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

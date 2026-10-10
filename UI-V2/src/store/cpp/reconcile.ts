@@ -914,7 +914,8 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
   if (previous.length !== incoming.length) return false
   return previous.every((prompt, index) => {
     const other = incoming[index]
-    return prompt.text === other.text &&
+    return prompt.id === other.id && prompt.revision === other.revision &&
+      prompt.uamAgentId === other.uamAgentId && prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&
       Boolean(prompt.computerUseMode) === Boolean(other.computerUseMode) &&

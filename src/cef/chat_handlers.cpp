@@ -196,9 +196,43 @@ void UamQueryHandler::HandleSelectSession(CefRefPtr<CefBrowser> browser, const n
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetVisibleChatIds(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.contains("chatIds") || !payload["chatIds"].is_array() || payload["chatIds"].size() > 64)
+	{ cb->Failure(400, "A bounded list of visible chat IDs is required."); return; }
+	std::vector<std::string> ids;
+	for (const nlohmann::json& id : payload["chatIds"])
+	{
+		if (!id.is_string() || id.get_ref<const std::string&>().size() > 256) { cb->Failure(400, "Visible chat IDs must be bounded strings."); return; }
+		ids.push_back(id.get<std::string>());
+	}
+	m_transcriptRetention.SetVisibleChatIds(ids);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleReleaseChatMessages(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string id = payload.value("chatId", "");
+	const std::optional<std::uint64_t> generation = m_transcriptRetention.BeginRelease(m_app, id);
+	if (!generation) { cb->Success("{}"); return; }
+	const auto data_root = m_app.data_root;
+	auto persisted = std::make_shared<std::optional<ChatSession>>();
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [data_root, id, persisted]()
+	    {
+		    *persisted = ChatRepository::LoadLocalChat(data_root, id, true);
+		    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
+	    },
+	    [this, id, generation, persisted](uam::query_handler_async::AsyncCefResult&)
+	    {
+		    if (persisted->has_value()) m_transcriptRetention.CompleteRelease(m_app, id, *generation, **persisted);
+	    });
+}
+
 void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
+	m_transcriptRetention.Invalidate(chat_id);
 	const std::string known_digest = payload.value("messagesDigest", "");
 	const bool defer_tool_call_content = payload.value("deferToolCallContent", false);
 	const bool refresh_native = payload.value("refreshNative", false);
@@ -749,6 +783,12 @@ void UamQueryHandler::HandleSetChatPinned(CefRefPtr<CefBrowser> browser, const n
 	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{
+		return;
+	}
+
+	if (payload.contains("expectedPinned") && (!payload["expectedPinned"].is_boolean() || chat->pinned != payload["expectedPinned"].get<bool>()))
+	{
+		cb->Failure(409, "Chat pin changed. Refresh before undoing.");
 		return;
 	}
 

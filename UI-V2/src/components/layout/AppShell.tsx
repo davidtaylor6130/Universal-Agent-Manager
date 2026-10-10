@@ -1,3 +1,4 @@
+import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
 import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -682,6 +683,10 @@ export function AppShell() {
       // Modals own the keyboard while open.
       if (document.querySelector('[aria-modal="true"]')) return
       const state = shortcutStateRef.current
+      if (shortcut === 'undoOrganization') {
+        const target = event.target instanceof Element ? event.target : document.activeElement
+        if (state.isSettingsOpen || target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]') || !useAppStore.getState().organizationUndo) return
+      }
       event.preventDefault()
       const store = useAppStore.getState()
       if (shortcut === 'newChat') {
@@ -690,6 +695,14 @@ export function AppShell() {
         state.toggleSettings()
       } else if (shortcut === 'sidebar') {
         if (!state.isSettingsOpen) store.setSidebarCollapsed(!state.sidebarCollapsed)
+      } else if (shortcut === 'undoOrganization') {
+        void store.undoOrganization()
+      } else if (shortcut === 'nextAttention') {
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-session-id]'))
+          .filter((row) => !row.closest('[hidden], [inert], [aria-hidden="true"]'))
+          .map((row) => row.dataset.sessionId ?? '')
+        const next = nextAttentionSession(store.sessions, store.acpBindingBySessionId, store.activeSessionId, rows)
+        if (next) store.setActiveSession(next)
       } else if (shortcut === 'search') {
         if (state.isSettingsOpen) setSettingsOpen(false)
         if (state.sidebarCollapsed) store.setSidebarCollapsed(false)

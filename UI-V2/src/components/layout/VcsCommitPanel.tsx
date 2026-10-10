@@ -31,7 +31,7 @@ export function VcsCommitPanel() {
   const generateVcsCommitMessage = useAppStore((s) => s.generateVcsCommitMessage)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
-  const [diffFile, setDiffFile] = useState<VcsChangedFile | null>(null)
+  const [diffSelection, setDiffSelection] = useState<{ file: VcsChangedFile; chatId: string; workspaceDirectory: string | undefined } | null>(null)
   const [status, setStatus] = useState<VcsCommitStatus>(() => emptyStatus(session?.workspaceDirectory ?? ''))
   const [selectedVcsType, setSelectedVcsType] = useState<VcsType>('git')
   const [selectedFiles, setSelectedFiles] = useState<string[]>([])
@@ -51,6 +51,7 @@ export function VcsCommitPanel() {
     latestGenerateRequestRef.current += 1
     latestCommitRequestRef.current += 1
     setStatus(emptyStatus(session?.workspaceDirectory ?? ''))
+    setDiffSelection(null)
     setSelectedFiles([])
     setTitle('')
     setDescription('')
@@ -232,7 +233,7 @@ export function VcsCommitPanel() {
                 <button
                   type="button"
                   aria-label={`Review changes to ${file.path}`}
-                  onClick={() => setDiffFile(file)}
+                  onClick={() => { if (activeSessionId) setDiffSelection({ file, chatId: activeSessionId, workspaceDirectory: session?.workspaceDirectory }) }}
                   className="uam-choice-button flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-2 text-left"
                   style={{ background: 'transparent', color: 'inherit' }}
                 >
@@ -285,14 +286,14 @@ export function VcsCommitPanel() {
           </Button>
         </div>
       </div>
-      {diffFile && activeSessionId && (
+      {diffSelection && diffSelection.chatId === activeSessionId && diffSelection.workspaceDirectory === session?.workspaceDirectory && (
         <RepositoryDiffDialog
-          chatId={activeSessionId}
-          file={diffFile}
+          chatId={diffSelection.chatId}
+          file={diffSelection.file}
           vcsType={selectedVcsType}
           comparisonRef={session?.workspaceIsolationKind === 'gitWorktree' ? session.workspaceBaseRef?.trim() || undefined : undefined}
           getDiff={getVcsFileDiff}
-          onClose={() => setDiffFile(null)}
+          onClose={() => setDiffSelection(null)}
         />
       )}
     </aside>

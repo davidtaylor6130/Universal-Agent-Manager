@@ -450,6 +450,11 @@ namespace uam
 		std::string session_id;
 		std::string codex_thread_id;
 		std::string codex_turn_id;
+        /// Antigravity reports per-step usage separately from cumulative conversation results.
+        int64_t antigravity_input_tokens = 0;
+        int64_t antigravity_output_tokens = 0;
+        int64_t antigravity_completed_turns = 0;
+        std::unordered_set<int64_t> antigravity_completed_steps;
 		std::string lifecycle_state = "stopped";
 		bool running = false;
 		bool initialized = false;

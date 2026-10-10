@@ -356,6 +356,8 @@ export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
   const text = stringOr(value.text).trim()
   if (!text) return null
   return {
+    ...(isString(value.id) && value.id.trim() ? { id: value.id } : {}),
+    ...(Number.isSafeInteger(value.revision) && Number(value.revision) > 0 ? { revision: Number(value.revision) } : {}),
     text,
     uamAgentId: stringOr(value.uamAgentId).trim() || 'build',
     markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
