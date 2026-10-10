@@ -93,6 +93,59 @@ UAM_TEST(ExecutionRoutingConcurrentAdmissionsReserveOneSlotAtomically)
 	UAM_ASSERT_EQ(admitted, 1);
 }
 
+UAM_TEST(ExecutionRoutingConcurrentTwoHostOwnersStayPinnedThroughRestartAndRelease)
+{
+	uam::ExecutionRoutingService service;
+	const std::vector<uam::ExecutionRoutingCandidate> hosts{RoutingHost("linux"), RoutingHost("windows")};
+	std::barrier gate(4);
+	std::vector<uam::ExecutionRoutingDecision> decisions(3);
+	std::vector<std::jthread> threads;
+	for (std::size_t index = 0; index < decisions.size(); ++index)
+	{
+		threads.emplace_back([&, index]
+		{
+			gate.arrive_and_wait();
+			decisions[index] = service.Admit(RoutingRequest("chat-" + std::to_string(index)), hosts, {});
+		});
+	}
+	gate.arrive_and_wait();
+	for (std::jthread& thread : threads) thread.join();
+	std::vector<uam::ExecutionRoutingAssignment> owners;
+	std::string waiting_id;
+	for (std::size_t index = 0; index < decisions.size(); ++index)
+	{
+		if (decisions[index].status == uam::ExecutionRoutingStatus::Assigned)
+			owners.push_back(decisions[index].assignment);
+		else
+		{
+			UAM_ASSERT_EQ(decisions[index].status, uam::ExecutionRoutingStatus::Waiting);
+			UAM_ASSERT(decisions[index].assignment.host_id.empty());
+			waiting_id = "chat-" + std::to_string(index);
+		}
+	}
+	UAM_ASSERT_EQ(owners.size(), std::size_t(2));
+	UAM_ASSERT(owners[0].host_id != owners[1].host_id);
+	UAM_ASSERT(!waiting_id.empty());
+	uam::ExecutionRoutingService restored;
+	UAM_ASSERT(restored.RestoreReservations(owners));
+	UAM_ASSERT_EQ(restored.Admit(RoutingRequest(waiting_id), hosts, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT(!restored.Release(owners[0].chat_id, false));
+	UAM_ASSERT(restored.Release(owners[1].chat_id, true));
+	std::vector<uam::ExecutionRoutingCandidate> unavailable = hosts;
+	for (uam::ExecutionRoutingCandidate& host : unavailable)
+	{
+		if (host.host_id == owners[0].host_id) host.runner_ready = false;
+	}
+	const uam::ExecutionRoutingDecision pinned = restored.Admit(RoutingRequest(owners[0].chat_id), unavailable, {});
+	UAM_ASSERT_EQ(pinned.reason, uam::ExecutionRoutingReason::HostUnavailable);
+	UAM_ASSERT_EQ(pinned.assignment, owners[0]);
+	const uam::ExecutionRoutingDecision released = restored.Admit(RoutingRequest(waiting_id), unavailable, {});
+	UAM_ASSERT_EQ(released.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(released.assignment.host_id, owners[1].host_id);
+	UAM_ASSERT_EQ(restored.Admit(RoutingRequest(owners[0].chat_id), hosts, {}).assignment, owners[0]);
+	UAM_ASSERT_EQ(restored.Admit(RoutingRequest("still-full"), hosts, {}).status, uam::ExecutionRoutingStatus::Waiting);
+}
+
 UAM_TEST(ExecutionRoutingExplicitOverrideBypassesAutoSlotsButConsumesOccupancy)
 {
 	uam::ExecutionRoutingService service;
