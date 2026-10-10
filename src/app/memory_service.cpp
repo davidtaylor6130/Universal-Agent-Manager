@@ -34,6 +34,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -1294,13 +1295,46 @@ namespace
 
 	std::string MemoryFilePreview(const fs::path& path)
 	{
-		std::string text = uam::io::ReadTextFile(path);
-		const std::size_t memory_at = text.find("## Memory");
-		if (memory_at != std::string::npos)
+		std::ifstream file;
+		if (!uam::io::OpenReadFile(path, file)) return {};
+		constexpr std::string_view marker = "## Memory";
+		std::array<char, 8192> buffer{};
+		std::string overlap;
+		std::streamoff offset = 0;
+		std::streamoff body_offset = 0;
+		while (file)
 		{
-			text = text.substr(memory_at + 9);
+			file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+			const std::size_t count = static_cast<std::size_t>(file.gcount());
+			const std::string chunk = overlap + std::string(buffer.data(), count);
+			const std::size_t found = chunk.find(marker);
+			if (found != std::string::npos)
+			{
+				body_offset = offset - static_cast<std::streamoff>(overlap.size()) + static_cast<std::streamoff>(found + marker.size());
+				break;
+			}
+			offset += static_cast<std::streamoff>(count);
+			overlap = chunk.substr(chunk.size() - std::min(chunk.size(), marker.size() - 1));
 		}
-		return uam::strings::SafeLine(text, 320);
+		if (file.bad()) return {};
+		file.clear();
+		file.seekg(body_offset);
+		std::string preview;
+		char ch = 0;
+		while (file.get(ch))
+		{
+			if (preview.empty() && uam::strings::IsAsciiSpace(static_cast<unsigned char>(ch))) continue;
+			if (preview.size() == 321)
+			{
+				// Preserve a whitespace suffix if later content makes it internal rather than trailing.
+				if (uam::strings::IsAsciiSpace(static_cast<unsigned char>(ch))) continue;
+				preview += 'x';
+				break;
+			}
+			preview += ch;
+			if (preview.size() == 321 && !uam::strings::IsAsciiSpace(static_cast<unsigned char>(ch))) break;
+		}
+		return file.bad() ? std::string{} : uam::strings::SafeLine(preview, 320);
 	}
 
 	template <typename Visit> void ForEachMemoryFileInRoot(const fs::path& root, Visit&& visit)
