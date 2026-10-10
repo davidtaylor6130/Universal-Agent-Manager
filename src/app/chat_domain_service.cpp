@@ -689,6 +689,40 @@ std::optional<ChatSession> ChatDomainService::LoadBranchHistoryDetached(const st
 	return loaded;
 }
 
+std::shared_ptr<uam::BranchPreparationOwnership> ChatDomainService::BeginBranchPreparation(uam::AppState& app, const std::string& source_id, const std::string& existing_branch_id) const
+{
+	if (FindChatById(app, source_id) == nullptr || !app.branch_preparations[source_id].expired()) return nullptr;
+	const std::shared_ptr<uam::BranchPreparationOwnership> ownership = std::make_shared<uam::BranchPreparationOwnership>();
+	ownership->existing_branch_id = existing_branch_id;
+	app.branch_preparations[source_id] = ownership;
+	return ownership;
+}
+
+bool ChatDomainService::ConsumeBranchPreparation(uam::AppState& app, const std::string& source_id, const std::shared_ptr<uam::BranchPreparationOwnership>& ownership) const
+{
+	const std::unordered_map<std::string, std::weak_ptr<uam::BranchPreparationOwnership>>::iterator pending = app.branch_preparations.find(source_id);
+	if (ownership == nullptr || pending == app.branch_preparations.end() || pending->second.lock() != ownership) return false;
+	app.branch_preparations.erase(pending);
+	return true;
+}
+
+void ChatDomainService::CancelBranchPreparations(uam::AppState& app, const std::string& chat_id) const
+{
+	std::erase_if(app.branch_preparations, [&chat_id](const std::pair<const std::string, std::weak_ptr<uam::BranchPreparationOwnership>>& pending)
+	{
+		const std::shared_ptr<uam::BranchPreparationOwnership> ownership = pending.second.lock();
+		return ownership == nullptr || pending.first == chat_id || ownership->existing_branch_id == chat_id;
+	});
+}
+
+bool ChatDomainService::MatchesPreparedBranchHistory(const ChatSession& current, const BranchHistoryIdentity& identity, bool was_loaded, const ChatSession* loaded) const
+{
+	return MatchesBranchHistoryIdentity(current, identity) &&
+	       (!was_loaded || current.messages_loaded) &&
+	       (was_loaded || (loaded != nullptr && loaded->messages_loaded && MatchesBranchHistoryIdentity(*loaded, identity) &&
+	                       (!current.messages_loaded || current.messages == loaded->messages)));
+}
+
 bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, const std::optional<std::string>& operation_id, bool* reused_existing_branch, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch) const
 {
 	if (reused_existing_branch != nullptr) *reused_existing_branch = false;

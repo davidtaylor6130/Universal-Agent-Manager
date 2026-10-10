@@ -74,6 +74,12 @@ class ChatDomainService
 	bool MatchesBranchHistoryIdentity(const ChatSession& chat, const BranchHistoryIdentity& identity) const;
 	std::optional<ChatSession> LoadBranchHistoryDetached(const std::filesystem::path& data_root,
 	                                                     const BranchHistoryIdentity& identity) const;
+	/// <summary>Reserve the source before a cold read; an outstanding request cannot be replaced.</summary>
+	std::shared_ptr<uam::BranchPreparationOwnership> BeginBranchPreparation(uam::AppState& app, const std::string& source_id, const std::string& existing_branch_id) const;
+	/// <summary>Consume only this request's reservation before any completion side effects.</summary>
+	bool ConsumeBranchPreparation(uam::AppState& app, const std::string& source_id, const std::shared_ptr<uam::BranchPreparationOwnership>& ownership) const;
+	void CancelBranchPreparations(uam::AppState& app, const std::string& chat_id) const;
+	bool MatchesPreparedBranchHistory(const ChatSession& current, const BranchHistoryIdentity& identity, bool was_loaded, const ChatSession* loaded) const;
 	ChatSession CreateNewChat(const std::string& folder_id, const std::string& provider_id) const;
 	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content = std::nullopt, const std::optional<std::string>& operation_id = std::nullopt, bool* reused_existing_branch = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt, const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr) const;
 	void AddMessage(ChatSession& chat, MessageRole role, const std::string& text) const;

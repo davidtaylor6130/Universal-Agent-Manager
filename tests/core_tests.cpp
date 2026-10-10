@@ -7946,6 +7946,118 @@ UAM_TEST(ChatDomainServiceBranchOperationIdIsIdempotentAndRejectsCollisions)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
 }
 
+UAM_TEST(ColdBranchPreparationStopOwnsSourceBeforeAnyBranchExists)
+{
+	uam::AppState app;
+	const ChatDomainService domain;
+	app.chats.push_back(domain.CreateNewChat("", "codex-cli"));
+	const std::string source_id = app.chats.front().id;
+	const std::shared_ptr<uam::BranchPreparationOwnership> stopped = domain.BeginBranchPreparation(app, source_id, "");
+	UAM_ASSERT(stopped != nullptr);
+	UAM_ASSERT(domain.BeginBranchPreparation(app, source_id, "") == nullptr);
+	UAM_ASSERT(uam::CancelAcpTurn(app, source_id));
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, source_id, stopped));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.acp_sessions.empty());
+
+	const std::shared_ptr<uam::BranchPreparationOwnership> retry = domain.BeginBranchPreparation(app, source_id, "");
+	UAM_ASSERT(retry != nullptr);
+	// An old completion must neither create a branch nor release a newer reservation.
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, source_id, stopped));
+	UAM_ASSERT(domain.BeginBranchPreparation(app, source_id, "") == nullptr);
+	UAM_ASSERT(uam::StopAcpSession(app, source_id));
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, source_id, retry));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+
+	const std::shared_ptr<uam::BranchPreparationOwnership> abandoned = domain.BeginBranchPreparation(app, source_id, "");
+	UAM_ASSERT(domain.ConsumeBranchPreparation(app, source_id, abandoned));
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, source_id, abandoned));
+	{ const std::shared_ptr<uam::BranchPreparationOwnership> unposted = domain.BeginBranchPreparation(app, source_id, ""); }
+	UAM_ASSERT(domain.BeginBranchPreparation(app, source_id, "") != nullptr);
+}
+
+UAM_TEST(ColdBranchPreparationDeletionAndExistingBranchStopInvalidateOnlyOwners)
+{
+	TempDir temp("uam-cold-branch-deletion");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const ChatDomainService domain;
+	ChatSession source = domain.CreateNewChat("", "codex-cli");
+	source.id = "cold-delete-source";
+	source.messages.push_back(Message{MessageRole::User, "Keep source history"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, source));
+	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+	app.chats.push_back(domain.CreateNewChat("", "codex-cli"));
+	const std::string unrelated_id = app.chats.back().id;
+	const std::shared_ptr<uam::BranchPreparationOwnership> unrelated = domain.BeginBranchPreparation(app, unrelated_id, "");
+	const std::shared_ptr<uam::BranchPreparationOwnership> replay = domain.BeginBranchPreparation(app, source.id, "existing-branch");
+	UAM_ASSERT(uam::StopAcpSession(app, "existing-branch"));
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, source.id, replay));
+	const std::shared_ptr<uam::BranchPreparationOwnership> deleting = domain.BeginBranchPreparation(app, source.id, "");
+	uam::WorkspaceDeletionTask deletion;
+	UAM_ASSERT(uam::PrepareChatDeletion(app, {source.id}, deletion));
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, source.id, deleting));
+	UAM_ASSERT(domain.ConsumeBranchPreparation(app, unrelated_id, unrelated));
+	// Preparation preflight must not hydrate or remove the user's persisted transcript.
+	UAM_ASSERT(!domain.FindChatById(app, source.id)->messages_loaded);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(temp.root, source.id, true);
+	UAM_ASSERT(persisted.has_value());
+	UAM_ASSERT(persisted->messages == source.messages);
+}
+
+UAM_TEST(ColdBranchPreparationRejectsChangedIdentityAndUnreadableHistory)
+{
+	TempDir temp("uam-cold-branch-identity");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const ChatDomainService domain;
+	ChatSession source = domain.CreateNewChat("", "codex-cli");
+	source.id = "cold-identity-source";
+	source.messages.push_back(Message{MessageRole::User, "Original history"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, source));
+	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+	const ChatSession summary = app.chats.front();
+	const ChatDomainService::BranchHistoryIdentity identity = domain.CaptureBranchHistoryIdentity(summary);
+	const std::optional<ChatSession> loaded = domain.LoadBranchHistoryDetached(temp.root, identity);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(domain.MatchesPreparedBranchHistory(summary, identity, false, &*loaded));
+	for (const std::function<void(ChatSession&)>& change : std::vector<std::function<void(ChatSession&)>>{
+	    [](ChatSession& chat) { chat.provider_id = "gemini-cli"; },
+	    [](ChatSession& chat) { chat.execution_host_id = "other-host"; },
+	    [](ChatSession& chat) { chat.native_session_id = "other-session"; },
+	    [](ChatSession& chat) { chat.workspace_directory = "other-workspace"; },
+	    [](ChatSession& chat) { chat.workspace_worktree_directory = "other-worktree"; },
+	    [](ChatSession& chat) { chat.updated_at = "other-revision"; },
+	    [](ChatSession& chat) { ++chat.persisted_message_count; },
+	    [](ChatSession& chat) { chat.persisted_messages_digest = "other-digest"; }})
+	{
+		ChatSession changed = summary;
+		change(changed);
+		UAM_ASSERT(!domain.MatchesPreparedBranchHistory(changed, identity, false, &*loaded));
+	}
+	ChatSession warmed = *loaded;
+	UAM_ASSERT(domain.MatchesPreparedBranchHistory(warmed, identity, false, &*loaded));
+	warmed.messages.front().content = "Unsaved change";
+	UAM_ASSERT(!domain.MatchesPreparedBranchHistory(warmed, identity, false, &*loaded));
+	UAM_ASSERT(!domain.MatchesPreparedBranchHistory(summary, identity, true, nullptr));
+	UAM_ASSERT(!domain.MatchesPreparedBranchHistory(summary, identity, false, nullptr));
+
+	const std::shared_ptr<uam::BranchPreparationOwnership> failed = domain.BeginBranchPreparation(app, source.id, "");
+	const fs::path history = temp.root / "chats" / (source.id + ".json");
+	const std::string original_bytes = ReadFile(history);
+	UAM_ASSERT(uam::io::WriteTextFile(history, "{broken history"));
+	UAM_ASSERT(!domain.LoadBranchHistoryDetached(temp.root, identity).has_value());
+	UAM_ASSERT(domain.ConsumeBranchPreparation(app, source.id, failed));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(!app.chats.front().messages_loaded);
+	UAM_ASSERT(uam::io::WriteTextFile(history, original_bytes));
+	const std::shared_ptr<uam::BranchPreparationOwnership> retry = domain.BeginBranchPreparation(app, source.id, "");
+	UAM_ASSERT(retry != nullptr);
+	UAM_ASSERT(domain.LoadBranchHistoryDetached(temp.root, identity).has_value());
+	UAM_ASSERT(domain.ConsumeBranchPreparation(app, source.id, retry));
+	UAM_ASSERT_EQ(ReadFile(history), original_bytes);
+}
+
 UAM_TEST(ChatBranchIdempotentReplayUsesDetachedColdHistoriesWithoutWarmingChats)
 {
 	TempDir temp("uam-message-branch-cold-idempotent");
@@ -8208,7 +8320,16 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	const std::string changed_skill_sentinel = "UAM_CHANGED_RETRY_SKILL";
 	UAM_ASSERT(uam::io::WriteTextFile(skill, "---\ntitle: Retry Skill\n---\n# Retry Skill\n\n" + changed_skill_sentinel + "\n"));
 
-	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, "chat-source", 0));
+	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+	const ChatDomainService domain;
+	const ChatDomainService::BranchHistoryIdentity identity = domain.CaptureBranchHistoryIdentity(app.chats.front());
+	const std::shared_ptr<uam::BranchPreparationOwnership> ownership = domain.BeginBranchPreparation(app, "chat-source", "");
+	const std::optional<ChatSession> prepared_source = domain.LoadBranchHistoryDetached(temp.root, identity);
+	UAM_ASSERT(prepared_source.has_value());
+	UAM_ASSERT(domain.ConsumeBranchPreparation(app, "chat-source", ownership));
+	UAM_ASSERT(domain.MatchesPreparedBranchHistory(app.chats.front(), identity, false, &*prepared_source));
+	UAM_ASSERT(domain.CreateBranchFromMessage(app, "chat-source", 0, std::nullopt, std::string("retry-delivery"), nullptr, std::nullopt, &*prepared_source));
+	UAM_ASSERT(!domain.FindChatById(app, "chat-source")->messages_loaded);
 	ChatSession* branch = ChatDomainService().SelectedChat(app);
 	UAM_ASSERT(branch != nullptr);
 	const std::string branch_id = branch->id;
@@ -8255,6 +8376,18 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	UAM_ASSERT(raw_session->prompt_request_id != 0);
 	UAM_ASSERT(!raw_session->diagnostics.empty());
 	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("sent"));
+
+	const int delivered_request_id = raw_session->prompt_request_id;
+	const std::size_t diagnostics_count = raw_session->diagnostics.size();
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, "chat-source", ownership));
+	std::string replay_id;
+	UAM_ASSERT(uam::BranchFromMessageAndRetry(app, "chat-source", 0, std::nullopt, &replay_id, &retry_error,
+	    std::string("retry-delivery"), nullptr, std::nullopt, &*prepared_source));
+	UAM_ASSERT_EQ(replay_id, branch_id);
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, delivered_request_id);
+	UAM_ASSERT_EQ(raw_session->diagnostics.size(), diagnostics_count);
+	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
 
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);

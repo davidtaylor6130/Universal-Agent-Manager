@@ -2738,6 +2738,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	                   std::string* error_out, bool update_goal_state,
 	                   bool preserve_queued_prompts)
 	{
+		ChatDomainService().CancelBranchPreparations(app, chat_id);
 		acp_detail::CancelTurnCheckpointTasksForChat(app, chat_id);
 		acp_detail::StopPermissionReviewTasks(app, chat_id);
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
@@ -3272,6 +3273,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool StopAcpSession(AppState& app, const std::string& chat_id, AcpStopPurpose purpose, bool preserve_held_queue)
 	{
+		ChatDomainService().CancelBranchPreparations(app, chat_id);
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		if (session == nullptr)
 		{

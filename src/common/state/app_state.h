@@ -911,13 +911,19 @@ namespace uam
 		std::string source_signature;
 	};
 
-	/// <summary>
-	/// Shared application state for the CEF/React provider CLI release slice.
-	/// </summary>
+	/// <summary>Identity of one cold branch preparation, owned until its UI completion.</summary>
+	struct BranchPreparationOwnership
+	{
+		std::string existing_branch_id;
+	};
+
+	/// <summary>Shared application state for the CEF/React provider CLI release slice.</summary>
 	struct AppState
 	{
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::shared_ptr<StartupNativeImportService> startup_native_import_service;
+		// Weak reservations expire if the async callback is discarded during bridge shutdown.
+		std::unordered_map<std::string, std::weak_ptr<BranchPreparationOwnership>> branch_preparations;
 		std::unordered_map<std::string, std::string> execution_routing_waits;
 		std::unordered_map<std::string, double> execution_routing_retry_at_by_chat_id;
 		std::unordered_set<std::string> execution_routing_reserved_chat_ids;

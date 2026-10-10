@@ -906,17 +906,14 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 			}
 		}
 	}
-	// Only detached-load an idempotent replay. A cold new-branch request still follows the
-	// established path because creating or retrying a branch needs a separate cancellation guard.
-	if (existing_branch_id.empty())
+	const std::unordered_map<std::string, std::weak_ptr<uam::BranchPreparationOwnership>>::const_iterator pending = m_app.branch_preparations.find(chat_id);
+	if (pending != m_app.branch_preparations.end() && !pending->second.expired())
 	{
-		const uam::query_handler_async::AsyncCefResult result = ExecuteBranchFromMessageRequest(m_app, browser, request);
-		if (result.ok) cb->Success(result.body);
-		else cb->Failure(result.status, result.error);
+		cb->Failure(409, "Branch preparation is already loading. Wait or stop it before retrying.");
 		return;
 	}
 	const bool load_source = !source_was_loaded;
-	const bool load_existing_branch = !existing_branch_was_loaded;
+	const bool load_existing_branch = !existing_branch_id.empty() && !existing_branch_was_loaded;
 	if (!load_source && !load_existing_branch)
 	{
 		const uam::query_handler_async::AsyncCefResult result = ExecuteBranchFromMessageRequest(m_app, browser, request);
@@ -947,6 +944,12 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 		cb->Failure(409, "The source chat or existing branch is still being saved. Retry after it settles.");
 		return;
 	}
+	const std::shared_ptr<uam::BranchPreparationOwnership> ownership = domain_service.BeginBranchPreparation(m_app, chat_id, existing_branch_id);
+	if (ownership == nullptr)
+	{
+		cb->Failure(409, "Branch preparation is already loading.");
+		return;
+	}
 	const std::shared_ptr<std::optional<ChatSession>> loaded_source = std::make_shared<std::optional<ChatSession>>();
 	const std::shared_ptr<std::optional<ChatSession>> loaded_existing_branch = std::make_shared<std::optional<ChatSession>>();
 	const bool queued = uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
@@ -971,9 +974,14 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 	    },
 	    [this, browser, request, domain_service, source_identity, source_was_loaded,
 	     existing_branch_id, existing_branch_identity, existing_branch_was_loaded,
-	     data_root, deletion_pending, history_save_pending,
+	     data_root, deletion_pending, history_save_pending, ownership,
 	     loaded_source, loaded_existing_branch](uam::query_handler_async::AsyncCefResult& response)
 	    {
+		    if (!domain_service.ConsumeBranchPreparation(m_app, request.chat_id, ownership))
+		    {
+			    response = uam::query_handler_async::AsyncFailure(409, "Branch preparation was stopped or replaced.");
+			    return;
+		    }
 		    if (!response.ok) return;
 		    if (m_app.data_root != data_root)
 		    {
@@ -994,10 +1002,8 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 			    return;
 		    }
 		    ChatSession* current_source = domain_service.FindChatById(m_app, request.chat_id);
-		    if (current_source == nullptr || !domain_service.MatchesBranchHistoryIdentity(*current_source, source_identity) ||
-		        (source_was_loaded && !current_source->messages_loaded) ||
-		        (!source_was_loaded && current_source->messages_loaded &&
-		         (!loaded_source->has_value() || current_source->messages != (*loaded_source)->messages)))
+		    if (current_source == nullptr || !domain_service.MatchesPreparedBranchHistory(*current_source, source_identity,
+		        source_was_loaded, loaded_source->has_value() ? &**loaded_source : nullptr))
 		    {
 			    response = uam::query_handler_async::AsyncFailure(409,
 			        "Branch source history changed while loading. Retry the branch.");
@@ -1007,11 +1013,9 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 		    {
 			    ChatSession* current_branch = domain_service.FindChatById(m_app, existing_branch_id);
 			    if (current_branch == nullptr || !existing_branch_identity.has_value() ||
-			        !domain_service.MatchesBranchHistoryIdentity(*current_branch, *existing_branch_identity) ||
-			        current_branch->branch_operation_id != uam::strings::Trim(request.operation_id.value_or("")) ||
-			        (existing_branch_was_loaded && !current_branch->messages_loaded) ||
-			        (!existing_branch_was_loaded && current_branch->messages_loaded &&
-			         (!loaded_existing_branch->has_value() || current_branch->messages != (*loaded_existing_branch)->messages)))
+			        !domain_service.MatchesPreparedBranchHistory(*current_branch, *existing_branch_identity,
+			            existing_branch_was_loaded, loaded_existing_branch->has_value() ? &**loaded_existing_branch : nullptr) ||
+			        current_branch->branch_operation_id != uam::strings::Trim(request.operation_id.value_or("")))
 			    {
 				    response = uam::query_handler_async::AsyncFailure(409,
 				        "The existing branch changed while loading. Retry the branch.");
@@ -1022,7 +1026,7 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 		        loaded_source->has_value() ? &**loaded_source : nullptr,
 		        loaded_existing_branch->has_value() ? &**loaded_existing_branch : nullptr);
 	    });
-	if (!queued) return;
+	if (!queued) (void)domain_service.ConsumeBranchPreparation(m_app, chat_id, ownership);
 }
 
 void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
