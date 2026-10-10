@@ -8,7 +8,8 @@
   display: block;
   min-width: 0;
   text-indent: var(--agent-prefix-width, 0px);
-  font-size: var(--fs-base);
+  font-size: var(--fs-prompt, var(--fs-base));
+  font-family: var(--font-prompt, var(--font-sans));
   line-height: 1.55;
 }
 

@@ -1,3 +1,4 @@
+import { TypographySettings } from './TypographySettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings } from './CentralProviderSettings'
@@ -133,7 +134,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
+type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -157,6 +158,7 @@ interface SettingsSection {
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'permissions', label: 'Permissions', icon: Check },
   { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'typography', label: 'Typography', icon: Pencil },
   { id: 'defaults', label: 'Chat Defaults', icon: MessageSquare },
   { id: 'agents', label: 'Agents', icon: ClipboardList },
   { id: 'provider-summary', label: 'Overview', icon: TerminalSquare },
@@ -178,7 +180,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
 ].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED) && (section.id !== 'phone' || MOBILE_COMPANION_ENABLED)) as SettingsSection[]
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
-  { label: 'General', sections: ['appearance', 'defaults', 'phone', 'voice-input'] },
+  { label: 'General', sections: ['appearance', 'typography', 'defaults', 'phone', 'voice-input'] },
   { label: 'Providers', sections: ['provider-summary', ...SUPPORTED_CLI_PROVIDER_IDS.map(id => `provider:${id}` as SettingsSectionId)] },
   { label: 'Connections', sections: ['remote-hosts', 'mcp-servers'] },
   { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
@@ -211,6 +213,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
 // Terms name controls inside each page so searches work beyond sidebar titles.
 const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   permissions: 'privacy local network microphone speech recording accessibility authorization',
+  typography: 'font fonts size text code monospace terminal message input',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity',
   defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
   agents: 'agents instructions import providers codex gemini claude copilot opencode',
@@ -1483,6 +1486,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         </div>
       )
     }
+
+    if (selectedSection === 'typography') return <TypographySettings />
 
     if (selectedSection === 'defaults') {
       const reviewerProvider = providers.find((provider) => provider.id === permissionReviewerProviderId)

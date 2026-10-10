@@ -1,3 +1,4 @@
+import { applyTypography, useTypographyStore } from './store/typographyStore'
 import { StrictMode } from 'react'
 import { InterfaceErrorBoundary } from './components/shared/InterfaceErrorBoundary'
 import { createRoot } from 'react-dom/client'
@@ -7,6 +8,7 @@ import { applyDocumentTheme, readStoredTheme } from './utils/themeStorage'
 
 // Apply persisted theme before first render to prevent flash
 applyDocumentTheme(readStoredTheme() ?? 'focus')
+applyTypography(useTypographyStore.getState().preferences)
 
 const root = createRoot(document.getElementById('root')!)
 

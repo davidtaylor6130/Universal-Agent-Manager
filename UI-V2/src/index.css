@@ -1198,7 +1198,7 @@ summary,
   padding: 10px 12px;
   overflow-x: auto;
   margin: 0.5em 0;
-  font-size: 0.88em;
+  font-size: var(--fs-code, 0.88em);
 }
 .prose-msg pre code {
   background: transparent;
