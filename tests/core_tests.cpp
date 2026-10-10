@@ -11533,22 +11533,34 @@ UAM_TEST(StatePushIgnoresVolatileAcpWaitSecondsButKeepsRealChanges)
 	uam::AppState app;
 	ChatSession chat;
 	chat.id = "chat-waiting";
+	chat.messages.push_back({MessageRole::User, "first version"});
 	app.chats.push_back(std::move(chat));
 	app.selected_chat_index = 0;
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = "chat-waiting";
 	session->wait_started_time_s = uam::GetAppTimeSeconds() - 10.0;
 	app.acp_sessions.push_back(std::move(session));
+	const std::string original_digest = uam::StateSerializer::MessageDigest(app.chats.front());
 	uam::PushStateUpdate(nullptr, app);
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 
 	const auto revision_before_timer = app.state_revision;
 	app.acp_sessions.front()->wait_started_time_s -= 20.0;
 	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT_EQ(app.state_revision, revision_before_timer);
 
-	app.chats.front().title = "Waiting chat renamed";
+	app.chats.front().messages.front().content = "other version";
+	UAM_ASSERT(uam::StateSerializer::MessageDigest(app.chats.front()) != original_digest);
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT_EQ(app.state_revision, revision_before_timer + 1);
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+
+	uam::PushStateUpdate(nullptr, app);
+	const auto revision_before_rename = app.state_revision;
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	app.chats.front().title = "Waiting chat renamed";
+	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT_EQ(app.state_revision, revision_before_rename + 1);
 }
 
 UAM_TEST(StateSerializerMessageDigestTracksEarlierMessageChanges)

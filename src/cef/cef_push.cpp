@@ -88,9 +88,8 @@ namespace
 	void StripVolatileAcpWaitTelemetry(nlohmann::json& state);
 	nlohmann::json ChatOrderForPatch(const uam::AppState& app);
 
-	void ResetPatchBaselines(const uam::AppState& app)
+	void ResetPatchBaselines(const uam::AppState& app, nlohmann::json fingerprint_state)
 	{
-		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
 		StripVolatileAcpWaitTelemetry(fingerprint_state);
 		g_last_pushed_folders_fingerprint = DumpFrontendJson(fingerprint_state.at("folders"));
 		g_last_pushed_resource_collections_fingerprint = DumpFrontendJson(fingerprint_state.at("resourceCollections"));
@@ -128,11 +127,11 @@ namespace
 		}
 	}
 
-	std::string BuildFullStateUpdateMessage(const uam::AppState& app)
+	nlohmann::json BuildFullStateUpdateMessage(const uam::AppState& app)
 	{
 		nlohmann::json msg = PushMessage(kPushTypeStateUpdate);
 		msg["data"] = uam::StateSerializer::Serialize(app, true);
-		return DumpFrontendJson(msg);
+		return msg;
 	}
 
 	void MaybeLogLargePatch(const std::string& message, int changed_chat_count, std::chrono::steady_clock::duration elapsed)
@@ -370,7 +369,7 @@ namespace uam
 
 	std::string StateUpdateForTests(const AppState& app)
 	{
-		return BuildFullStateUpdateMessage(app);
+		return DumpFrontendJson(BuildFullStateUpdateMessage(app));
 	}
 
 	std::string SettingsPatchForTests(const AppState& app)
@@ -380,7 +379,7 @@ namespace uam
 
 	std::string StatePatchForTests(const AppState& before, const AppState& after)
 	{
-		ResetPatchBaselines(before);
+		ResetPatchBaselines(before, StateSerializer::SerializeFingerprint(before));
 		nlohmann::json fingerprint_state = StateSerializer::SerializeFingerprint(after);
 		StripVolatileAcpWaitTelemetry(fingerprint_state);
 		return BuildStatePatchMessage(after, fingerprint_state);
@@ -421,9 +420,11 @@ namespace uam
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
 		BumpStateRevision(app);
-		const std::string message = BuildFullStateUpdateMessage(app);
-		ResetPatchBaselines(app);
-		PostPush(browser, message);
+		nlohmann::json message = BuildFullStateUpdateMessage(app);
+		const std::string serialized_message = DumpFrontendJson(message);
+		// Reuse this push snapshot; strip baseline telemetry only after serializing its wire payload.
+		ResetPatchBaselines(app, std::move(message["data"]));
+		PostPush(browser, serialized_message);
 	}
 
 	void PushStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, int message_index, const std::string& token)
