@@ -2796,7 +2796,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               </Notice>
             )}
             <InlinePromptQueue key={session.id} held={acp?.queueHeld ?? false} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
-              onEdit={(id, revision, text) => editQueuedAcpPrompt(session.id, id, revision, text)}
+              onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}
               onReorder={(expected, orderedIds) => reorderQueuedAcpPrompts(session.id, expected, orderedIds)}
               onRemove={(index, expected) => expected ? removeQueuedAcpPrompt(session.id, index, expected) : removeQueuedAcpPrompt(session.id, index)}
               onSteer={async (index, expected) => {

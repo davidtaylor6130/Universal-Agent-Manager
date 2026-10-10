@@ -24,7 +24,8 @@ describe('AttachmentList', () => {
     const files = host.querySelector('[aria-label="File attachments"]')
     expect(markdownContext?.textContent).toContain('Skillsreview.uam')
     expect(markdownContext?.textContent).not.toContain('/tmp/review.uam')
-    expect(files?.textContent).toContain('/tmp/diagram.pngimage')
+    expect(files?.textContent).toContain('diagram.pngimage')
+    expect(files?.querySelector('[title="/tmp/diagram.png"]')).not.toBeNull()
 
     act(() => root.unmount())
     host.remove()

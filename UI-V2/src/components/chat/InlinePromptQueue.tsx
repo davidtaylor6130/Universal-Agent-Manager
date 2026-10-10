@@ -8,7 +8,7 @@ interface InlinePromptQueueProps {
   held?: boolean
   onResume?: (expected: { id: string; revision: number }[]) => Promise<boolean>
   disabled?: boolean
-  onEdit: (id: string, revision: number, text: string) => Promise<boolean>
+  onEdit: (id: string, revision: number, text: string, retainedAttachmentIds?: string[]) => Promise<boolean>
   onReorder: (expected: { id: string; revision: number }[], orderedIds: string[]) => Promise<boolean>
   onSteer: (index: number, expected?: { id: string; revision: number }) => Promise<boolean>
   onRemove: (index: number, expected?: { id: string; revision: number }) => Promise<boolean>
@@ -16,7 +16,7 @@ interface InlinePromptQueueProps {
 
 /** Edits queue snapshots separately from the composer; native ID/revision guards own admission. */
 export function InlinePromptQueue({ prompts, held = false, onResume, disabled = false, onEdit, onReorder, onSteer, onRemove }: InlinePromptQueueProps) {
-  const [editing, setEditing] = useState<{ id: string; revision: number; text: string } | null>(null)
+  const [editing, setEditing] = useState<{ id: string; revision: number; text: string; retainedAttachmentIds?: string[] } | null>(null)
   const [pending, setPending] = useState(false)
   const pendingRef = useRef(false)
   const [error, setError] = useState('')
@@ -50,10 +50,21 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
 
   if (prompts.length === 0 && !editing) return null
   const editedPrompt = editing ? prompts.find((prompt) => prompt.id === editing.id) : undefined
+  const editedPromptIndex = editedPrompt ? prompts.indexOf(editedPrompt) : -1
   const staleEdit = Boolean(editing && (!editedPrompt || editedPrompt.revision !== editing.revision))
+  const markdownStoreFiles = editedPrompt?.markdownStoreFiles ?? []
+  const retainedAttachments = editing && editedPrompt
+    ? editedPrompt.attachments.filter((attachment) => editing.retainedAttachmentIds === undefined || editing.retainedAttachmentIds.includes(attachment.id))
+    : []
+  const hasPromptContent = Boolean(editing?.text.trim() || retainedAttachments.length || editedPrompt?.markdownStoreFiles.length)
+  const saveEdit = () => {
+    if (!editing || !editedPrompt) return
+    const retainedAttachmentIds = editing.retainedAttachmentIds
+    void run(() => onEdit(editing.id, editing.revision, editing.text, retainedAttachmentIds), 'Queued prompt changed or could not be saved. Your edit is kept.', () => setEditing(null))
+  }
   return <div className="mb-1.5" role="group" aria-label="Queued prompt">
     <span className="sr-only" role="status">{prompts.length} queued prompt{prompts.length === 1 ? '' : 's'}</span>
-    {held && <div className="flex items-center gap-2 py-1"><span>Restored queue is paused.</span><Button type="button" size="sm" variant="ghost" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'Queue changed or could not be resumed. Your queued prompts are kept.')}>Resume queue</Button></div>}
+    {held && <div className="flex items-center gap-2 py-1 text-[11px]" style={{ color: 'var(--text-2)' }}><span>Restored queue is paused.</span><Button type="button" size="sm" variant="ghost" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'Queue changed or could not be resumed. Your queued prompts are kept.')}>Resume queue</Button></div>}
     <div className="max-h-40 overflow-y-auto">{prompts.map((prompt, index) => <div key={prompt.id ?? `legacy-${index}`} className="uam-queued-prompt border-b border-[var(--border)] py-1.5 text-[11px]">
       <div className="flex items-center gap-1">
         <span className="shrink-0 font-medium mr-1">Queued {prompts.length > 1 ? index + 1 : ''}</span>
@@ -66,7 +77,30 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
       </div>
       {(prompt.attachments.length > 0 || prompt.markdownStoreFiles.length > 0) && <span style={{ color: 'var(--text-3)' }}>{prompt.attachments.length + prompt.markdownStoreFiles.length} attachment{prompt.attachments.length + prompt.markdownStoreFiles.length === 1 ? '' : 's'}</span>}
     </div>)}</div>
-    {editing && <div className="pt-1.5">
+    {editing && <div className="pt-1.5 text-[11px]" style={{ color: 'var(--text-2)' }}>
+      <div className="pb-1">{editedPromptIndex >= 0 ? `Editing queued ${editedPromptIndex + 1}` : 'Editing queued prompt'}</div>
+      {retainedAttachments.length > 0 && <div className="flex flex-wrap gap-2 pb-1" aria-label="Queued prompt attachments">
+        {retainedAttachments.map((attachment) => <span key={attachment.id} className="inline-flex items-center gap-2 max-w-full text-[11px]" title={attachment.path || attachment.name}
+          style={{ border: '1px solid var(--border)', borderRadius: 999, background: 'var(--surface-up)', color: 'var(--text-2)', padding: '3px 7px' }}>
+          <span className="truncate max-w-[260px]">{attachment.name}</span>
+          <span style={{ color: 'var(--text-3)' }}>{attachment.type === 'directory' ? 'dir' : attachment.type}</span>
+          <button type="button" disabled={blocked || staleEdit || editedPrompt?.prepared} onClick={() => {
+            if (blocked || staleEdit || editedPrompt?.prepared || pendingRef.current) return
+            setEditing((current) => current ? {
+              ...current,
+              retainedAttachmentIds: (current.retainedAttachmentIds ?? editedPrompt?.attachments.map((item) => item.id) ?? []).filter((id) => id !== attachment.id),
+            } : current)
+          }} title="Remove attachment" aria-label={`Remove ${attachment.name} attachment`} className="uam-attachment-remove" style={{ color: 'var(--text-3)' }}>
+            <X size={12} aria-hidden />
+          </button>
+        </span>)}
+      </div>}
+      {markdownStoreFiles.length > 0 && <div className="flex flex-wrap gap-2 pb-1" aria-label="Queued Skills context">
+        {markdownStoreFiles.map((filePath) => <span key={filePath} className="inline-flex items-center max-w-full text-[11px]" title={filePath}
+          style={{ border: '1px solid var(--border)', borderRadius: 999, background: 'var(--surface-up)', color: 'var(--text-2)', padding: '3px 7px' }}>
+          <span className="truncate max-w-[260px]">{filePath.split(/[\\/]/).pop() || filePath}</span>
+        </span>)}
+      </div>}
       <textarea aria-label="Edit queued prompt text" className="w-full bg-black text-white border border-[var(--border)] px-2 py-1 text-xs resize-y" rows={3} value={editing.text} disabled={pending} onChange={(event) => setEditing({ ...editing, text: event.target.value })} onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault()
@@ -75,15 +109,15 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
         } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
           event.preventDefault()
           event.stopPropagation()
-          if (!staleEdit && !editedPrompt?.prepared && editing.text.trim()) void run(() => onEdit(editing.id, editing.revision, editing.text), 'Queued prompt changed or could not be saved. Your edit is kept.', () => setEditing(null))
+          if (!staleEdit && !editedPrompt?.prepared && hasPromptContent) saveEdit()
         }
       }} />
       <div className="flex items-center gap-2">
-        <Button type="button" size="sm" variant="ghost" disabled={blocked || staleEdit || editedPrompt?.prepared || !editing.text.trim()} onClick={() => void run(() => onEdit(editing.id, editing.revision, editing.text), 'Queued prompt changed or could not be saved. Your edit is kept.', () => setEditing(null))}>{pending ? 'Saving…' : 'Save'}</Button>
+        <Button type="button" size="sm" variant="ghost" disabled={blocked || staleEdit || editedPrompt?.prepared || !hasPromptContent} onClick={saveEdit}>{pending ? 'Saving…' : 'Save'}</Button>
         <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={() => { setEditing(null); setError('') }}>Cancel</Button>
       </div>
-      {staleEdit && <div role="alert" className="text-xs py-1">Queued prompt changed. Cancel to reload it. Your edit is kept.</div>}
+      {staleEdit && <div role="alert" className="text-xs py-1" style={{ color: 'var(--red)' }}>Queued prompt changed. Cancel to reload it. Your edit is kept.</div>}
     </div>}
-    {error && <div role="alert" className="text-xs py-1">{error}</div>}
+    {error && <div role="alert" className="text-xs py-1" style={{ color: 'var(--red)' }}>{error}</div>}
   </div>
 }

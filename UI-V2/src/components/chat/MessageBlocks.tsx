@@ -823,7 +823,7 @@ export function AttachmentList({ attachments, chatId, nativeMessageIndex }: { at
                 padding: '3px 7px',
               }}
             >
-              <span className="truncate max-w-[320px]">{attachment.path || attachment.name}</span>
+              <span className="truncate max-w-[320px]">{attachment.name}</span>
               <span style={{ color: 'var(--text-3)' }}>{attachment.type}</span>
             </span>
             } />

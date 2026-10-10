@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InlinePromptQueue } from './InlinePromptQueue'
 import type { AcpQueuedPrompt } from '../../store/cpp/types'
 
-const prompt = (id: string, text = id): AcpQueuedPrompt => ({ id, revision: 1, text, uamAgentId: 'agent', markdownStoreFiles: ['/skill.md'], attachments: [], goalMode: false, goalId: '' })
+const prompt = (id: string, text = id, attachments: AcpQueuedPrompt['attachments'] = []): AcpQueuedPrompt => ({ id, revision: 1, text, uamAgentId: 'agent', markdownStoreFiles: ['/skill.md'], attachments, goalMode: false, goalId: '' })
 let host: HTMLDivElement
 let root: Root
 let props: Parameters<typeof InlinePromptQueue>[0]
@@ -31,7 +31,7 @@ describe('inline queued prompts', () => {
     await click(button('Edit queued prompt'))
     editText('Changed queued text')
     await click(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === 'Save')!)
-    expect(props.onEdit).toHaveBeenCalledWith('a', 1, 'Changed queued text')
+    expect(props.onEdit).toHaveBeenCalledWith('a', 1, 'Changed queued text', undefined)
     expect(host.querySelector('textarea')).toBeNull()
     expect(props.prompts[0]).toEqual(prompt('a'))
   })
@@ -44,10 +44,99 @@ describe('inline queued prompts', () => {
     const save = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === 'Save')!
     act(() => { save.click(); save.click() })
     expect(props.onEdit).toHaveBeenCalledTimes(1)
+    expect(save.disabled).toBe(true)
     expect(button('Remove queued prompt').disabled).toBe(true)
     await act(async () => finish(false))
     expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Keep my edit')
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be saved')
+  })
+  it('removes only the selected queued attachment and saves the remaining IDs', async () => {
+    const attachments = [
+      { id: 'keep', name: 'keep.png', type: 'image', size: 1 },
+      { id: 'remove', name: 'remove.txt', type: 'file', size: 1 },
+    ]
+    props.prompts = [prompt('a', 'queued text', attachments)]
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    await click(button('Edit queued prompt'))
+    expect(host.textContent).toContain('Editing queued 1')
+    expect(host.textContent).toContain('keep.png')
+    await click(button('Remove remove.txt attachment'))
+    expect(host.textContent).toContain('keep.png')
+    expect(host.textContent).not.toContain('remove.txt')
+    await click(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === 'Save')!)
+    expect(props.onEdit).toHaveBeenCalledWith('a', 1, 'queued text', ['keep'])
+  })
+  it.each(['button', 'keyboard'] as const)('saves an attachment-only prompt from the %s', async (submit) => {
+    props.prompts = [{ ...prompt('a', '', [
+      { id: 'keep', name: 'keep.png', type: 'image', size: 1 },
+      { id: 'remove', name: 'remove.txt', type: 'file', size: 1 },
+    ]), markdownStoreFiles: [] }]
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    await click(button('Edit queued prompt'))
+    await click(button('Remove remove.txt attachment'))
+    const save = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === 'Save')!
+    expect(save.disabled).toBe(false)
+    if (submit === 'button') await click(save)
+    else await act(async () => host.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true })))
+    expect(props.onEdit).toHaveBeenCalledWith('a', 1, '', ['keep'])
+    expect(host.querySelector('textarea')).toBeNull()
+  })
+  it('disables blank save after every attachment is removed and preserves the draft on failure', async () => {
+    props.prompts = [{ ...prompt('a', 'queued text', [{ id: 'only', name: 'only.png', type: 'image', size: 1 }]), markdownStoreFiles: [] }]
+    props.onEdit = vi.fn(async () => false)
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    await click(button('Edit queued prompt'))
+    await click(button('Remove only.png attachment'))
+    editText('')
+    const save = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === 'Save')!
+    expect(save.disabled).toBe(true)
+    editText('keep this text')
+    await click(save)
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('keep this text')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be saved')
+  })
+  it.each(['stale', 'prepared'] as const)('blocks attachment removal from a %s queue row', async (change) => {
+    const attachments = [{ id: 'keep', name: 'keep.png', type: 'image' as const, size: 1 }]
+    props.prompts = [prompt('a', 'queued text', attachments)]
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    await click(button('Edit queued prompt'))
+    const updated = prompt('a', 'queued text', attachments)
+    props.prompts = [change === 'stale' ? { ...updated, revision: 2 } : { ...updated, prepared: true }]
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    const remove = button('Remove keep.png attachment')
+    expect(remove.disabled).toBe(true)
+    await click(remove)
+    expect(host.textContent).toContain('keep.png')
+    expect(props.onEdit).not.toHaveBeenCalled()
+  })
+  it('blocks attachment removal while a save is pending', async () => {
+    let finish!: (ok: boolean) => void
+    props.prompts = [prompt('a', 'queued text', [
+      { id: 'keep', name: 'keep.png', type: 'image', size: 1 },
+      { id: 'remove', name: 'remove.txt', type: 'file', size: 1 },
+    ])]
+    props.onEdit = vi.fn(() => new Promise((resolve) => { finish = resolve }))
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    await click(button('Edit queued prompt'))
+    const save = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === 'Save')!
+    const remove = button('Remove remove.txt attachment')
+    act(() => { save.click(); remove.click() })
+    expect(remove.disabled).toBe(true)
+    await click(remove)
+    expect(host.textContent).toContain('remove.txt')
+    expect(props.onEdit).toHaveBeenCalledTimes(1)
+    await act(async () => finish(true))
+  })
+  it('keeps markdown-store files readonly and permits a blank markdown-only prompt save', async () => {
+    props.prompts = [{ ...prompt('a', ''), markdownStoreFiles: ['/skills/workflow.md'] }]
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    await click(button('Edit queued prompt'))
+    expect(host.querySelector('[aria-label="Queued Skills context"]')?.textContent).toBe('workflow.md')
+    const save = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((entry) => entry.textContent === 'Save')!
+    expect(save.disabled).toBe(false)
+    expect(host.querySelector('[aria-label="Remove workflow.md attachment"]')).toBeNull()
+    await click(save)
+    expect(props.onEdit).toHaveBeenCalledWith('a', 1, '', undefined)
   })
   it('reorders a complete expected queue snapshot and shows rejection', async () => {
     props.onReorder = vi.fn(async () => false)
@@ -127,7 +216,7 @@ it('handles queued edit shortcuts without escaping into chat cancellation', asyn
   await click(button('Edit queued prompt'))
   editText('Saved with shortcut')
   await act(async () => host.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })))
-  expect(props.onEdit).toHaveBeenCalledWith('a', 1, 'Saved with shortcut')
+  expect(props.onEdit).toHaveBeenCalledWith('a', 1, 'Saved with shortcut', undefined)
   expect(escaped).not.toHaveBeenCalled()
   await click(button('Edit queued prompt'))
   await act(async () => host.querySelector('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
