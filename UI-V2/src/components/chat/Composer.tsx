@@ -3,7 +3,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
-import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Check, Paperclip, ChevronRight } from 'lucide-react'
+import { Folder, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight } from 'lucide-react'
 import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
@@ -18,7 +18,6 @@ import {
   CODEX_SPEED_INHERIT_ID,
   buildModelOptions,
   modelOptionFor,
-  searchModelOptions,
   reasoningEffortForModel,
   selectedRuntimeModel,
 } from './modelOptions'
@@ -26,6 +25,7 @@ import { MenuSelect, ViewportMenu } from '../ui'
 import { ProviderAllowanceIndicator } from './ProviderAllowanceIndicator'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { ModelPickerContent } from './ModelPickerContent'
 import './composer.css'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
@@ -176,7 +176,9 @@ export function ComposerToolbar({
   modelOpen,
   modelMenuRef,
   onToggleModel,
-  onSelectProvider,
+  onSelectProviderModel,
+  workspaceDirectory,
+  executionHostId,
   onSelectModel,
   onSelectReviewerModel,
   onSelectReasoning,
@@ -236,7 +238,9 @@ export function ComposerToolbar({
   modelOpen: boolean
   modelMenuRef: RefObject<HTMLDivElement>
   onToggleModel: () => void
-  onSelectProvider: (providerId: string) => void
+  onSelectProviderModel: (providerId: string, modelId: string) => void
+  workspaceDirectory: string
+  executionHostId: string
   onSelectModel: (modelId: string) => void
   onSelectReviewerModel: (modelId: string) => void
   onSelectReasoning: (reasoningEffort: string) => void
@@ -320,69 +324,19 @@ export function ComposerToolbar({
   // Secondary mode controls (plan / accept-edits / auto / memory / markdown) are
   // consolidated behind one "Options" popover to keep the toolbar quiet.
   const [optionsOpen, setOptionsOpen] = useState(false)
-  const [modelFocusIndex, setModelFocusIndex] = useState(0)
-  const [modelSearch, setModelSearch] = useState('')
-  const modelSearchRef = useRef<HTMLInputElement>(null)
-  const visibleModelOptions = searchModelOptions(modelOptions, modelSearch)
   const optionsRef = useRef<HTMLDivElement>(null)
   const optionsTriggerRef = useRef<HTMLButtonElement>(null)
   const optionsMenuRef = useRef<HTMLDivElement>(null)
   const optionsMenuId = useId()
   const modelTriggerRef = useRef<HTMLButtonElement>(null)
   const modelWasOpenRef = useRef(false)
-  const modelOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const modelListId = useId()
 
   useEffect(() => {
-    if (modelOpen) {
-      setModelSearch('')
-      setModelFocusIndex(0)
-      modelSearchRef.current?.focus()
-    } else if (modelWasOpenRef.current) {
-      modelTriggerRef.current?.focus()
-    }
+    if (!modelOpen && modelWasOpenRef.current) modelTriggerRef.current?.focus()
     modelWasOpenRef.current = modelOpen
-  }, [modelOpen, providerId])
+  }, [modelOpen])
 
-  const focusModel = (index: number) => {
-    setModelFocusIndex(index)
-    modelOptionRefs.current[index]?.focus()
-    modelOptionRefs.current[index]?.scrollIntoView?.({ block: 'nearest' })
-  }
-
-  const onModelKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      onToggleModel()
-      modelTriggerRef.current?.focus()
-      return
-    }
-    const inSearch = event.target === modelSearchRef.current
-    const inOptions = modelOptionRefs.current.includes(event.target as HTMLButtonElement)
-    if (!inSearch && !inOptions) return
-    const selectable = visibleModelOptions.map((option, index) => option.disabled ? -1 : index).filter((index) => index >= 0)
-    if (event.key === 'Enter') {
-      if (event.nativeEvent.isComposing) return
-      event.preventDefault()
-      const option = visibleModelOptions[inSearch ? selectable[0] : modelFocusIndex]
-      if (!modelDisabled && option && !option.disabled) {
-        event.preventDefault()
-        onSelectModel(option.id)
-        modelTriggerRef.current?.focus()
-      }
-      return
-    }
-    if (modelDisabled || selectable.length === 0) return
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-    if (inSearch && (event.key === 'Home' || event.key === 'End')) return
-    event.preventDefault()
-    const position = selectable.indexOf(modelFocusIndex)
-    const index = event.key === 'Home' ? selectable[0]
-      : event.key === 'End' ? selectable[selectable.length - 1]
-      : inSearch ? (event.key === 'ArrowDown' ? selectable[0] : selectable[selectable.length - 1])
-      : selectable[(position + (event.key === 'ArrowDown' ? 1 : -1) + selectable.length) % selectable.length]
-    focusModel(index)
-  }
   const onModelTriggerKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
     event.preventDefault()
@@ -727,95 +681,29 @@ export function ComposerToolbar({
               role="menu"
               aria-label="Provider and model"
               manageFocus={false}
-              onKeyDown={onModelKeyDown}
               className="animate-fade-in"
               style={{
-                width: 340,
+                width: 360,
                 border: '1px solid var(--border-bright)',
                 borderRadius: 8,
                 background: 'var(--surface)',
                 boxShadow: 'var(--elev-3)',
-                padding: 6,
+                padding: 0,
               }}
             >
-              <input
-                ref={modelSearchRef}
-                type="search"
-                aria-label="Search models"
-                placeholder="Search models…"
-                value={modelSearch}
-                onChange={(event) => { setModelSearch(event.target.value); setModelFocusIndex(0) }}
-                className="uam-model-search w-full px-2 py-2"
-                style={{ background: 'transparent', color: 'var(--text)', border: 'none', borderBottom: '1px solid var(--border)', marginBottom: 4 }}
+              <ModelPickerContent
+                providers={providers.some((candidate) => candidate.id === providerId) ? providers : [...providers, provider]} providerId={providerId} currentModelId={currentModel.id}
+                activeOptions={modelOptions} activeLoading={acp?.modelsLoading} activeError={acp?.modelRefreshError}
+                modelDisabled={modelDisabled} canChangeProvider={canChangeProvider}
+                workspaceDirectory={workspaceDirectory} executionHostId={executionHostId}
+                onClose={() => { onToggleModel(); modelTriggerRef.current?.focus() }}
+                onSelect={(selectedProviderId, selectedModelId) => {
+                  if (selectedProviderId === providerId) onSelectModel(selectedModelId)
+                  else onSelectProviderModel(selectedProviderId, selectedModelId)
+                  modelTriggerRef.current?.focus()
+                }}
               />
-              {providers.length > 1 && (
-                <div role="group" aria-label="Provider">
-                  <div className="px-2 py-1 text-xs" style={{ color: 'var(--text-3)' }}>Provider</div>
-                  {providers.map((candidate) => {
-                    const selected = candidate.id === providerId
-                    const disabled = !selected && !canChangeProvider
-                    return (
-                      <button
-                        key={candidate.id}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={selected}
-                        disabled={disabled}
-                        onClick={() => onSelectProvider(candidate.id)}
-                        className={`uam-menu-select__option flex w-full items-center gap-2 rounded-md px-2 py-2 text-left${selected ? ' is-selected' : ''}`}
-                        style={{ color: selected ? 'var(--text)' : 'var(--text-2)', opacity: disabled ? 0.5 : 1 }}
-                      >
-                        <ProviderLogo providerId={candidate.id} />
-                        <span className="flex-1">{providerShortName(candidate, candidate.id)}</span>
-                        {selected && <Check size={13} aria-hidden style={{ color: 'var(--accent)' }} />}
-                      </button>
-                    )
-                  })}
-                  <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
-                </div>
-              )}
-              <div className="px-2 py-1 text-xs" style={{ color: 'var(--text-3)' }}>{featurePreference === 'uam' && smallModelMode ? 'Worker model' : 'Model'}</div>
-              {acp?.modelsLoading && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
-              <div data-testid="model-options" style={{ maxHeight: 360, overflowY: 'auto' }}>
-                {visibleModelOptions.length === 0 && <div role="status" className="px-2 py-3 text-sm">No matching models</div>}
-                {visibleModelOptions.map((option, index) => {
-                  const selected = option.id === currentModel.id
-                  const hideRepeatedCopilotDetail = providerId === COPILOT_CLI_PROVIDER_ID && option.detail.trim().toLowerCase() === option.label.trim().toLowerCase()
-                  return (
-                    <button
-                      key={option.id || 'default'}
-                      ref={(element) => { modelOptionRefs.current[index] = element }}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={selected}
-                      disabled={modelDisabled || option.disabled}
-                      tabIndex={index === modelFocusIndex ? 0 : -1}
-                      onFocus={() => setModelFocusIndex(index)}
-                      onMouseEnter={() => setModelFocusIndex(index)}
-                      onClick={() => {
-                        if (modelDisabled || option.disabled) return
-                        onSelectModel(option.id)
-                        modelTriggerRef.current?.focus()
-                      }}
-                      className={`uam-menu-select__option w-full grid gap-0.5 text-left px-2 py-2${selected ? ' is-selected' : ''}`}
-                      style={{
-                        minHeight: 52,
-                        borderRadius: 6,
-                        color: selected ? 'var(--text)' : 'var(--text-2)',
-                        boxShadow: index === modelFocusIndex ? 'inset 0 0 0 1px var(--accent)' : 'none',
-                        opacity: modelDisabled || option.disabled ? 0.5 : 1,
-                      }}
-                    >
-                      <span className="flex items-center gap-2">
-                        <span className="flex-1">{option.label}</span>
-                        {selected && <span style={{ color: 'var(--green)', fontSize: 10 }}>●</span>}
-                      </span>
-                      {!hideRepeatedCopilotDetail && <span className="text-xs" style={{ color: 'var(--text-3)' }}>{option.detail}</span>}
-                    </button>
-                  )
-                })}
-              </div>
-              <div className="mt-1 flex items-center gap-2 border-t px-2 pt-2 text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-3)' }}>
+              <div className="flex items-center gap-2 border-t px-2 py-2 text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-3)' }}>
                 <span aria-hidden className="h-1.5 w-1.5 rounded-full" style={{ background: runtimeStatusColor }} />
                 <span>{runtimeStatusLabel}</span>
                 {acp?.agentInfo?.title && <span className="ml-auto truncate">{acp.agentInfo.title}</span>}

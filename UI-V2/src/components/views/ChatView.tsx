@@ -234,7 +234,7 @@ function ProviderHandoffDialog({
     setError('')
     if (await onConfirm()) return
     setSwitching(false)
-    setError('The provider could not be changed. Finish any active work and try again.')
+    setError('The provider or model could not be changed. Finish any active work and try again.')
   }
 
   return createPortal(
@@ -513,6 +513,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [selectedRepositoryFile, setSelectedRepositoryFile] = useState<VcsChangedFile | null>(null)
   const [providerHandoffTargetId, setProviderHandoffTargetId] = useState('')
+  const [providerHandoffModelId, setProviderHandoffModelId] = useState<string | null>(null)
   const goalMutationInFlightRef = useRef(false)
   const appModalOpen = useAppStore((s) =>
     providerHandoffTargetId !== '' ||
@@ -2311,8 +2312,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           onCancel={() => setProviderHandoffTargetId('')}
           onConfirm={async () => {
             const changed = await setSessionProvider(session.id, providerHandoffTarget.id)
-            if (changed) setProviderHandoffTargetId('')
-            return changed
+            if (!changed) return false
+            if (currentSessionIdRef.current !== session.id) return false
+            if (providerHandoffModelId !== null && !await setSessionModel(session.id, providerHandoffModelId)) return false
+            setProviderHandoffTargetId('')
+            setProviderHandoffModelId(null)
+            return true
           }}
         />
       )}
@@ -3218,9 +3223,14 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 setModelOpen((value) => !value)
                 setWorkspaceMenuOpen(false)
               }}
-              onSelectProvider={(providerId) => {
+              workspaceDirectory={workspaceDirectory}
+              executionHostId={session.executionHostId || 'local'}
+              onSelectProviderModel={(providerId, modelId) => {
                 setModelOpen(false)
-                if (providerId !== currentProviderId) setProviderHandoffTargetId(providerId)
+                if (providerId !== currentProviderId) {
+                  setProviderHandoffModelId(modelId)
+                  setProviderHandoffTargetId(providerId)
+                }
               }}
               onSelectModel={(modelId) => {
                 setModelOpen(false)

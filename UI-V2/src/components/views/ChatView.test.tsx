@@ -757,10 +757,13 @@ describe('ChatView', () => {
   })
 
   it('confirms provider handoff before changing anything', async () => {
+    const originalSetSessionModel = useAppStore.getState().setSessionModel
+    const setSessionModel = vi.fn().mockResolvedValue(true)
     const originalSetSessionProvider = useAppStore.getState().setSessionProvider
     const setSessionProvider = vi.fn(() => Promise.resolve(true))
     useAppStore.setState((state) => ({
       setSessionProvider,
+      setSessionModel,
       acpBindingBySessionId: {
         ...state.acpBindingBySessionId,
         'chat-1': {
@@ -781,16 +784,17 @@ describe('ChatView', () => {
     const openProviderMenu = () => act(() => {
       (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click()
     })
-    const providerButton = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
-      .find((button) => button.textContent?.includes(label))
+    const providerButton = (label: string) => document.body.querySelector<HTMLButtonElement>(`[data-model-picker-sidebar] button[aria-label="${label}"]`)
+    const selectProviderModel = () => act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
 
     openProviderMenu()
     act(() => providerButton('Gemini')?.click())
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
     expect(setSessionProvider).not.toHaveBeenCalled()
 
-    openProviderMenu()
-    act(() => providerButton('Codex')?.click())
+    act(() => providerButton('Codex')!.click())
+    expect(setSessionProvider).not.toHaveBeenCalled()
+    selectProviderModel()
     let dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')
     expect(dialog?.textContent).toContain('Chat messages and recorded tool results')
     expect(dialog?.textContent).toContain('Selected UAM agent and goals')
@@ -804,7 +808,8 @@ describe('ChatView', () => {
     expect(setSessionProvider).not.toHaveBeenCalled()
 
     openProviderMenu()
-    act(() => providerButton('Codex')?.click())
+    act(() => providerButton('Codex')!.click())
+    selectProviderModel()
     dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')
     await act(async () => {
       (Array.from(dialog?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Switch to Codex') as HTMLButtonElement).click()
@@ -812,11 +817,12 @@ describe('ChatView', () => {
     })
     expect(setSessionProvider).toHaveBeenCalledOnce()
     expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli')
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '')
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
-    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider, setSessionModel: originalSetSessionModel })
   })
 
   it('blocks handoff to a provider that cannot start structured chats', async () => {
@@ -837,7 +843,8 @@ describe('ChatView', () => {
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
     act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
-    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find((button) => button.textContent?.includes('Codex'))?.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
     const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
 
@@ -1600,9 +1607,9 @@ describe('ChatView', () => {
 
     const menu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]') as HTMLElement
     expect(menu).toBeTruthy()
-    expect(menu.textContent).toContain('Provider')
-    expect(menu.textContent).toContain('Model')
-    expect(menu.textContent).toContain('Gemini')
+    expect(menu.querySelector('[role="toolbar"][aria-label="Providers"]')).toBeTruthy()
+    expect(menu.querySelector('input[aria-label="Search models"]')).toBeTruthy()
+    expect(menu.querySelector('button[aria-label="Gemini"]')).toBeTruthy()
     expect(menu.textContent).toContain('Auto 3')
 
     act(() => root.unmount())
@@ -4004,7 +4011,7 @@ describe('ChatView', () => {
     enterSearch('MODEL-11')
     expect(document.activeElement).toBe(reopened)
     const results = document.body.querySelector('[data-testid="model-options"]')!
-    expect(results.querySelectorAll('button')).toHaveLength(1)
+    expect(results.querySelectorAll('[role="menuitemradio"]')).toHaveLength(1)
     expect(results.textContent).toContain('Model 11')
     act(() => reopened.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(setSessionModel).toHaveBeenLastCalledWith('chat-1', 'model-11')
