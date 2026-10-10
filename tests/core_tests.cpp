@@ -12633,6 +12633,17 @@ UAM_TEST(ProviderRuntimeCompatibilityBlocksPendingAndKnownBadVersions)
 	}
 }
 
+UAM_TEST(RemoteCliUpdateReportsBlockingPidsWithoutTrustingRemoteText)
+{
+	const std::string probe = "[UAM CLI PATH] /usr/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 1\n";
+	std::string error;
+	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(probe, probe + "[UAM CLI PIDS] 123,456\n", "linux", &error));
+	UAM_ASSERT(error.find("Blocking PIDs: 123,456") != std::string::npos);
+	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(probe, probe + "[UAM CLI PIDS] untrusted text\n", "linux", &error));
+	UAM_ASSERT(error.find("untrusted text") == std::string::npos);
+	UAM_ASSERT(error.find("idle background session") != std::string::npos);
+}
+
 UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 {
 	const std::string npm = "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 0\ncodex-cli 0.148.0\n";
