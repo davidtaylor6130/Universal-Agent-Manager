@@ -32,6 +32,27 @@ describe('Message navigation rail', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
+  it('expands nearby hover marks while only the click target is orange', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const onNavigate = vi.fn()
+    try {
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 5, 10, 15, 20, 25, 30]} startIndex={0} messages={[]} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={onNavigate} />))
+      const slider = host.querySelector<HTMLElement>('[role="slider"]')!
+      vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({ top: 20, height: 300 } as DOMRect)
+      act(() => slider.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: 170 })))
+      expect(slider.getAttribute('aria-valuenow')).toBe('4')
+      expect(host.querySelectorAll('[data-rail-neighbor]')).toHaveLength(4)
+      expect(host.querySelector<HTMLElement>('[data-rail-target]')!.style.transform).toBe('scaleX(1)')
+      expect(Array.from(host.querySelectorAll<HTMLElement>('span')).filter(mark => mark.style.background === 'var(--accent)')).toHaveLength(1)
+      act(() => slider.dispatchEvent(new MouseEvent('click', { bubbles: true, clientY: 170 })))
+      expect(onNavigate).toHaveBeenLastCalledWith(15)
+      act(() => slider.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
+      expect(host.querySelectorAll('[data-rail-neighbor]')).toHaveLength(0)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('supports keyboard message jumps and blocks another jump during loading', () => {
     const host = document.createElement('div')
     document.body.append(host)

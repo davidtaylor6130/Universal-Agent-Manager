@@ -86,7 +86,12 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         background: count === 1 ? 'var(--text-3)' : undefined,
         backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--text-3) 1px, transparent 1px)' : undefined,
         backgroundSize: count > 1 ? `100% ${100 / (count - 1)}%` : undefined }} />
-      <span aria-hidden style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 4, width: 11, height: 3, background: 'var(--accent)' }} />
+      {previewIndex !== null && [-2, -1, 1, 2].map(distance => {
+        const neighbor = index + distance
+        if (neighbor < 0 || neighbor >= count) return null
+        return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none transition-transform duration-150 motion-reduce:transition-none" style={{ position: 'absolute', top: `${neighbor / (count - 1) * 100}%`, left: 6, width: 24, height: 1, background: 'var(--text-3)', transformOrigin: 'left', transform: `scaleX(${Math.abs(distance) === 1 ? 2 / 3 : 5 / 12})` }} />
+      })}
+      <span aria-hidden data-rail-target={index} className="pointer-events-none transition-transform duration-150 motion-reduce:transition-none" style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 6, width: 24, height: 3, background: 'var(--accent)', transformOrigin: 'left', transform: `scaleX(${previewIndex === null ? 11 / 24 : 1})` }} />
     </div>
   </div>
 }
