@@ -2566,6 +2566,83 @@ UAM_TEST(AgentRunSchedulerResumesInterruptedRunsAsNewDurableContinuations)
 	UAM_ASSERT_EQ(persisted->resumed_from_run_id, old.id);
 }
 
+UAM_TEST(AgentRunSchedulerResumesCachedTranscriptsWithoutLosingColdOrUnsavedHistory)
+{
+	for (const int mode : {0, 1, 2})
+	{
+		const bool cold = mode != 1;
+		TempDir temp("uam-agent-resume-cached-history");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession root;
+		root.id = "resume-root";
+		root.provider_id = app.provider_profiles.front().id;
+		root.created_at = uam::time::TimestampNow();
+		root.updated_at = root.created_at;
+		app.chats.push_back(root);
+		AgentRun interrupted;
+		interrupted.id = uam::AgentRunLedger::NewRunId();
+		interrupted.root_chat_id = root.id;
+		interrupted.transcript_chat_id = "cached-transcript";
+		interrupted.provider_id = root.provider_id;
+		interrupted.agent_id = "reviewer";
+		interrupted.definition_snapshot = "Review the remaining work.";
+		interrupted.task = "Original task.";
+		interrupted.effective_workspace_access = "read";
+		interrupted.created_at = root.created_at;
+		interrupted.updated_at = root.updated_at;
+		interrupted.status = "interrupted";
+		UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, interrupted));
+		app.agent_runs.push_back(interrupted);
+		ChatSession transcript;
+		transcript.id = interrupted.transcript_chat_id;
+		transcript.provider_id = root.provider_id;
+		transcript.agent_run_id = interrupted.id;
+		transcript.created_at = root.created_at;
+		transcript.updated_at = root.updated_at;
+		Message partial;
+		partial.role = MessageRole::Assistant;
+		partial.content = "Already completed work.";
+		transcript.messages.push_back(partial);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, transcript));
+		if (cold)
+		{
+			transcript.messages.clear();
+			transcript.messages_loaded = false;
+			transcript.persisted_message_count = 1;
+		}
+		else
+		{
+			transcript.messages.front().content = "Authoritative unsaved progress.";
+		}
+		app.chats.push_back(transcript);
+		std::string resumed_id;
+		std::string error;
+		if (mode == 2)
+		{
+			UAM_ASSERT(fs::remove(AppPaths::UamChatFilePath(app.data_root, transcript.id)));
+			UAM_ASSERT(!uam::AgentRunScheduler::ResumeInterrupted(app, interrupted.id, &resumed_id, &error));
+			UAM_ASSERT(!error.empty());
+			UAM_ASSERT(resumed_id.empty());
+			UAM_ASSERT_EQ(app.agent_runs.size(), static_cast<std::size_t>(1));
+			UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+			UAM_ASSERT(app.queued_agent_run_ids.empty());
+			continue;
+		}
+		UAM_ASSERT(uam::AgentRunScheduler::ResumeInterrupted(app, interrupted.id, &resumed_id, &error));
+		UAM_ASSERT_EQ(app.chats[1].messages_loaded, !cold);
+		UAM_ASSERT_EQ(app.chats.back().messages.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(app.chats.back().messages.front().content,
+		    cold ? std::string("Already completed work.") : std::string("Authoritative unsaved progress."));
+		std::string load_warning;
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.back().id, true, &load_warning);
+		if (!saved) throw std::runtime_error("Fresh continuation reload failed: " + load_warning);
+		UAM_ASSERT_EQ(saved->messages.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(saved->messages.front().content, app.chats.back().messages.front().content);
+	}
+}
+
 UAM_TEST(CodexAndClaudeGenericAgentRunsCancelAndReturnDurableResults)
 {
 	TempDir temp("uam-generic-agent-cancel-result");

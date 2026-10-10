@@ -549,9 +549,16 @@ namespace uam
 			return false;
 		}
 
-		const ChatSession fresh_identity = ChatDomainService().CreateNewChat(
-		    old_transcript->folder_id, interrupted->provider_id);
 		ChatSession transcript = *old_transcript;
+		std::string hydrate_error;
+		if (!ChatRepository::HydrateChatMessages(app.data_root, transcript, &hydrate_error))
+		{
+			if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(
+			    hydrate_error, "The interrupted run's durable transcript is unavailable.");
+			return false;
+		}
+		const ChatSession fresh_identity = ChatDomainService().CreateNewChat(
+		    transcript.folder_id, interrupted->provider_id);
 		transcript.id = fresh_identity.id;
 		transcript.folder_id = root_chat->folder_id;
 		transcript.execution_host_id = root_chat->execution_host_id;
