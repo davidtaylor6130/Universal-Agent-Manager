@@ -7869,6 +7869,72 @@ UAM_TEST(ChatDomainServiceBranchOperationIdIsIdempotentAndRejectsCollisions)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
 }
 
+UAM_TEST(ChatBranchIdempotentReplayUsesDetachedColdHistoriesWithoutWarmingChats)
+{
+	TempDir temp("uam-message-branch-cold-idempotent");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession source = ChatDomainService().CreateNewChat("", "codex-cli");
+	source.id = "cold-operation-source";
+	source.branch_root_chat_id = source.id;
+	source.native_session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
+	Message prompt{MessageRole::User, "Original prompt"};
+	prompt.attachments.push_back(MessageAttachment{.id = "cold-image", .name = "cold.png", .kind = "image", .path = "cold.png"});
+	source.messages.push_back(prompt);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, source));
+	app.chats.push_back(source);
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(app, source.id, 0, std::nullopt, std::string("cold-operation-1")));
+	const std::string branch_id = ChatDomainService().SelectedChatId(app);
+	UAM_ASSERT(!branch_id.empty());
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+
+	std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), static_cast<std::size_t>(2));
+	for (ChatSession& summary : summaries)
+	{
+		ChatSession* current = ChatDomainService().FindChatById(app, summary.id);
+		UAM_ASSERT(current != nullptr);
+		*current = std::move(summary);
+	}
+	ChatSession* cold_source = ChatDomainService().FindChatById(app, source.id);
+	ChatSession* cold_branch = ChatDomainService().FindChatById(app, branch_id);
+	UAM_ASSERT(cold_source != nullptr && !cold_source->messages_loaded);
+	UAM_ASSERT(cold_branch != nullptr && !cold_branch->messages_loaded);
+
+	const ChatDomainService domain_service;
+	const ChatDomainService::BranchHistoryIdentity source_identity = domain_service.CaptureBranchHistoryIdentity(*cold_source);
+	const ChatDomainService::BranchHistoryIdentity branch_identity = domain_service.CaptureBranchHistoryIdentity(*cold_branch);
+	const std::optional<ChatSession> detached_source = domain_service.LoadBranchHistoryDetached(temp.root, source_identity);
+	const std::optional<ChatSession> detached_branch = domain_service.LoadBranchHistoryDetached(temp.root, branch_identity);
+	UAM_ASSERT(detached_source.has_value() && detached_source->messages_loaded);
+	UAM_ASSERT(detached_branch.has_value() && detached_branch->messages_loaded);
+
+	app.worktree_operation_chat_ids.insert(source.id);
+	app.worktree_operation_chat_ids.insert(branch_id);
+	ChatDomainService().SelectChatById(app, source.id);
+	std::string reused_branch_id;
+	std::string error;
+	UAM_ASSERT(uam::BranchFromMessageAndRetry(app, source.id, 0, std::nullopt, &reused_branch_id, &error,
+	                                         std::string("cold-operation-1"), nullptr, std::nullopt,
+	                                         &*detached_source, &*detached_branch));
+	UAM_ASSERT_EQ(reused_branch_id, branch_id);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), branch_id);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT(!ChatDomainService().FindChatById(app, source.id)->messages_loaded);
+	UAM_ASSERT(!ChatDomainService().FindChatById(app, branch_id)->messages_loaded);
+
+	ChatDomainService::BranchHistoryIdentity stale_source_identity = source_identity;
+	stale_source_identity.updated_at = "stale-snapshot";
+	UAM_ASSERT(!domain_service.LoadBranchHistoryDetached(temp.root, stale_source_identity).has_value());
+	const std::string selected_before_collision = ChatDomainService().SelectedChatId(app);
+	UAM_ASSERT(!uam::BranchFromMessageAndRetry(app, source.id, 0, std::string("Different prompt"), nullptr, &error,
+	                                          std::string("cold-operation-1"), nullptr, std::nullopt,
+	                                          &*detached_source, &*detached_branch));
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), selected_before_collision);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+}
+
 UAM_TEST(MessageBranchAttachmentSelectionPreservesSourceAndRejectsOperationCollisions)
 {
 	TempDir temp("uam-message-branch-attachments");

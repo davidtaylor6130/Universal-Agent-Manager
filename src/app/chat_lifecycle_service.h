@@ -81,7 +81,7 @@ namespace uam
 	bool PollTemporarySideChatCleanup(AppState& app);
 	bool MigrateWorkspaceFolderOwnership(AppState& app);
 	bool RecoverPendingDeletionTransaction(AppState& app);
-	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out = nullptr, std::string* error_out = nullptr, const std::optional<std::string>& operation_id = std::nullopt, std::string* warning_out = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt);
+	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out = nullptr, std::string* error_out = nullptr, const std::optional<std::string>& operation_id = std::nullopt, std::string* warning_out = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt, const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr);
 	WorkspaceFolderRecoveryPreview PreviewUnsortedWorkspaceFolders(const AppState& app);
 	bool RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecoveryResult* result_out = nullptr);
 }

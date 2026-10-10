@@ -31,6 +31,8 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -51,6 +53,44 @@ namespace
 		std::vector<Message> messages;
 		std::string error;
 	};
+
+	struct BranchFromMessageRequest
+	{
+		std::string chat_id;
+		int message_index = -1;
+		std::optional<std::string> replacement_content;
+		std::optional<std::string> operation_id;
+		std::optional<std::vector<std::string>> retained_attachment_ids;
+	};
+
+	uam::query_handler_async::AsyncCefResult ExecuteBranchFromMessageRequest(
+	    uam::AppState& app, CefRefPtr<CefBrowser> browser, const BranchFromMessageRequest& request,
+	    const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr)
+	{
+		std::string branch_id;
+		std::string branch_error;
+		std::string branch_warning;
+		if (!uam::BranchFromMessageAndRetry(app, request.chat_id, request.message_index,
+		                                    request.replacement_content, &branch_id, &branch_error,
+		                                    request.operation_id, &branch_warning, request.retained_attachment_ids,
+		                                    prepared_source, prepared_existing_branch))
+		{
+			const bool branch_was_created = !branch_id.empty();
+			if (branch_was_created && ChatDomainService().FindChatById(app, branch_id) != nullptr)
+			{
+				uam::PushStateUpdateIfChanged(browser, app);
+			}
+			if (branch_was_created && !branch_warning.empty())
+				return uam::query_handler_async::AsyncSuccess(nlohmann::json{{"chatId", branch_id}, {"warning", branch_warning}});
+			return uam::query_handler_async::AsyncFailure(branch_was_created ? 500 : 409,
+			    uam::query_handler_internal::FailureDetailOrFallback(
+			        branch_error,
+			        branch_was_created ? "Branch regeneration could not start." : "Failed to create message branch."));
+		}
+
+		uam::PushStateUpdateIfChanged(browser, app);
+		return uam::query_handler_async::AsyncSuccess(nlohmann::json{{"chatId", branch_id}});
+	}
 
 	std::string WorkspaceTitle(std::string_view directory)
 	{
@@ -833,33 +873,156 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 			retained_attachment_ids->push_back(attachment_id.get<std::string>());
 		}
 	}
-	std::string branch_id;
-	std::string branch_error;
-	std::string branch_warning;
-	if (!uam::BranchFromMessageAndRetry(m_app, chat_id, *message_index, replacement_content, &branch_id, &branch_error, operation_id, &branch_warning, retained_attachment_ids))
+	const BranchFromMessageRequest request{
+	    .chat_id = chat_id,
+	    .message_index = *message_index,
+	    .replacement_content = replacement_content,
+	    .operation_id = operation_id,
+	    .retained_attachment_ids = retained_attachment_ids,
+	};
+	const ChatDomainService domain_service;
+	ChatSession* source = domain_service.FindChatById(m_app, chat_id);
+	if (source == nullptr)
 	{
-		const bool branch_was_created = !branch_id.empty();
-		if (branch_was_created && ChatDomainService().FindChatById(m_app, branch_id) != nullptr)
+		cb->Failure(404, "Branch source chat no longer exists.");
+		return;
+	}
+	const ChatDomainService::BranchHistoryIdentity source_identity = domain_service.CaptureBranchHistoryIdentity(*source);
+	const bool source_was_loaded = source->messages_loaded;
+	std::string existing_branch_id;
+	std::optional<ChatDomainService::BranchHistoryIdentity> existing_branch_identity;
+	bool existing_branch_was_loaded = false;
+	if (operation_id.has_value())
+	{
+		const std::string normalized_operation_id = uam::strings::Trim(*operation_id);
+		if (!normalized_operation_id.empty())
 		{
-			uam::PushStateUpdateIfChanged(browser, m_app);
+			std::vector<ChatSession>::iterator existing = std::ranges::find(m_app.chats, normalized_operation_id, &ChatSession::branch_operation_id);
+			if (existing != m_app.chats.end())
+			{
+				existing_branch_id = existing->id;
+				existing_branch_identity = domain_service.CaptureBranchHistoryIdentity(*existing);
+				existing_branch_was_loaded = existing->messages_loaded;
+			}
 		}
-		if (branch_was_created && !branch_warning.empty())
-		{
-			nlohmann::json result{{"chatId", branch_id}, {"warning", branch_warning}};
-			cb->Success(result.dump());
-			return;
-		}
-		cb->Failure(branch_was_created ? 500 : 409,
-		            uam::query_handler_internal::FailureDetailOrFallback(
-		                branch_error,
-		                branch_was_created ? "Branch regeneration could not start." : "Failed to create message branch."));
+	}
+	// Only detached-load an idempotent replay. A cold new-branch request still follows the
+	// established path because creating or retrying a branch needs a separate cancellation guard.
+	if (existing_branch_id.empty())
+	{
+		const uam::query_handler_async::AsyncCefResult result = ExecuteBranchFromMessageRequest(m_app, browser, request);
+		if (result.ok) cb->Success(result.body);
+		else cb->Failure(result.status, result.error);
+		return;
+	}
+	const bool load_source = !source_was_loaded;
+	const bool load_existing_branch = !existing_branch_was_loaded;
+	if (!load_source && !load_existing_branch)
+	{
+		const uam::query_handler_async::AsyncCefResult result = ExecuteBranchFromMessageRequest(m_app, browser, request);
+		if (result.ok) cb->Success(result.body);
+		else cb->Failure(result.status, result.error);
 		return;
 	}
 
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	nlohmann::json result;
-	result["chatId"] = branch_id;
-	cb->Success(result.dump());
+	const std::filesystem::path data_root = m_app.data_root;
+	const std::function<bool()> deletion_pending = [this, source_chat_id = request.chat_id, branch_chat_id = existing_branch_id]()
+	{
+		return m_workspaceDeletionPending &&
+		       (m_app.worktree_operation_chat_ids.contains(source_chat_id) ||
+		        m_app.worktree_operation_chat_ids.contains(branch_chat_id));
+	};
+	const std::function<bool()> history_save_pending = [this, source_chat_id = request.chat_id, branch_chat_id = existing_branch_id]()
+	{
+		return m_app.pending_chat_save_at_by_chat_id.contains(source_chat_id) ||
+		       m_app.pending_chat_save_at_by_chat_id.contains(branch_chat_id);
+	};
+	if (deletion_pending())
+	{
+		cb->Failure(409, "The source chat or existing branch is being deleted. Retry after it settles.");
+		return;
+	}
+	if (history_save_pending())
+	{
+		cb->Failure(409, "The source chat or existing branch is still being saved. Retry after it settles.");
+		return;
+	}
+	const std::shared_ptr<std::optional<ChatSession>> loaded_source = std::make_shared<std::optional<ChatSession>>();
+	const std::shared_ptr<std::optional<ChatSession>> loaded_existing_branch = std::make_shared<std::optional<ChatSession>>();
+	const bool queued = uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [data_root, domain_service, source_identity, existing_branch_identity, load_source,
+	     load_existing_branch, loaded_source, loaded_existing_branch]()
+	    {
+		    if (load_source)
+		    {
+			    *loaded_source = domain_service.LoadBranchHistoryDetached(data_root, source_identity);
+			    if (!loaded_source->has_value())
+				    return uam::query_handler_async::AsyncFailure(409,
+				        "Branch source history changed or could not be loaded. Retry the branch.");
+		    }
+		    if (load_existing_branch && existing_branch_identity.has_value())
+		    {
+			    *loaded_existing_branch = domain_service.LoadBranchHistoryDetached(data_root, *existing_branch_identity);
+			    if (!loaded_existing_branch->has_value())
+				    return uam::query_handler_async::AsyncFailure(409,
+				        "The existing branch history changed or could not be loaded. Retry the branch.");
+		    }
+		    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
+	    },
+	    [this, browser, request, domain_service, source_identity, source_was_loaded,
+	     existing_branch_id, existing_branch_identity, existing_branch_was_loaded,
+	     data_root, deletion_pending, history_save_pending,
+	     loaded_source, loaded_existing_branch](uam::query_handler_async::AsyncCefResult& response)
+	    {
+		    if (!response.ok) return;
+		    if (m_app.data_root != data_root)
+		    {
+			    response = uam::query_handler_async::AsyncFailure(409,
+			        "The data folder changed while branch history was loading. Retry the request.");
+			    return;
+		    }
+		    if (deletion_pending())
+		    {
+			    response = uam::query_handler_async::AsyncFailure(409,
+			        "The source chat or existing branch is being deleted. Retry after it settles.");
+			    return;
+		    }
+		    if (history_save_pending())
+		    {
+			    response = uam::query_handler_async::AsyncFailure(409,
+			        "The source chat or existing branch is still being saved. Retry after it settles.");
+			    return;
+		    }
+		    ChatSession* current_source = domain_service.FindChatById(m_app, request.chat_id);
+		    if (current_source == nullptr || !domain_service.MatchesBranchHistoryIdentity(*current_source, source_identity) ||
+		        (source_was_loaded && !current_source->messages_loaded) ||
+		        (!source_was_loaded && current_source->messages_loaded &&
+		         (!loaded_source->has_value() || current_source->messages != (*loaded_source)->messages)))
+		    {
+			    response = uam::query_handler_async::AsyncFailure(409,
+			        "Branch source history changed while loading. Retry the branch.");
+			    return;
+		    }
+		    if (!existing_branch_id.empty())
+		    {
+			    ChatSession* current_branch = domain_service.FindChatById(m_app, existing_branch_id);
+			    if (current_branch == nullptr || !existing_branch_identity.has_value() ||
+			        !domain_service.MatchesBranchHistoryIdentity(*current_branch, *existing_branch_identity) ||
+			        current_branch->branch_operation_id != uam::strings::Trim(request.operation_id.value_or("")) ||
+			        (existing_branch_was_loaded && !current_branch->messages_loaded) ||
+			        (!existing_branch_was_loaded && current_branch->messages_loaded &&
+			         (!loaded_existing_branch->has_value() || current_branch->messages != (*loaded_existing_branch)->messages)))
+			    {
+				    response = uam::query_handler_async::AsyncFailure(409,
+				        "The existing branch changed while loading. Retry the branch.");
+				    return;
+			    }
+		    }
+		    response = ExecuteBranchFromMessageRequest(m_app, browser, request,
+		        loaded_source->has_value() ? &**loaded_source : nullptr,
+		        loaded_existing_branch->has_value() ? &**loaded_existing_branch : nullptr);
+	    });
+	if (!queued) return;
 }
 
 void UamQueryHandler::HandleRenameSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

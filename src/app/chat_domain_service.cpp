@@ -647,7 +647,49 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	return chat;
 }
 
-bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, const std::optional<std::string>& operation_id, bool* reused_existing_branch, const std::optional<std::vector<std::string>>& retained_attachment_ids) const
+ChatDomainService::BranchHistoryIdentity ChatDomainService::CaptureBranchHistoryIdentity(const ChatSession& chat) const
+{
+	return {
+	    .chat_id = chat.id,
+	    .updated_at = chat.updated_at,
+	    .provider_id = chat.provider_id,
+	    .execution_host_id = chat.execution_host_id,
+	    .native_identity_key = uam::chat_identity::NativeIdentityKeyForHistoryImport(chat),
+	    .workspace_directory = chat.workspace_directory,
+	    .workspace_isolation_kind = chat.workspace_isolation_kind,
+	    .workspace_source_directory = chat.workspace_source_directory,
+	    .workspace_base_ref = chat.workspace_base_ref,
+	    .workspace_branch_name = chat.workspace_branch_name,
+	    .workspace_worktree_directory = chat.workspace_worktree_directory,
+	    .message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count,
+	    .messages_digest = chat.persisted_messages_digest,
+	};
+}
+
+bool ChatDomainService::MatchesBranchHistoryIdentity(const ChatSession& chat, const BranchHistoryIdentity& identity) const
+{
+	const std::size_t message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+	return chat.id == identity.chat_id && chat.updated_at == identity.updated_at &&
+	       chat.provider_id == identity.provider_id && chat.execution_host_id == identity.execution_host_id &&
+	       uam::chat_identity::NativeIdentityKeyForHistoryImport(chat) == identity.native_identity_key &&
+	       chat.workspace_directory == identity.workspace_directory &&
+	       chat.workspace_isolation_kind == identity.workspace_isolation_kind &&
+	       chat.workspace_source_directory == identity.workspace_source_directory &&
+	       chat.workspace_base_ref == identity.workspace_base_ref && chat.workspace_branch_name == identity.workspace_branch_name &&
+	       chat.workspace_worktree_directory == identity.workspace_worktree_directory &&
+	       message_count == identity.message_count && chat.persisted_messages_digest == identity.messages_digest;
+}
+
+std::optional<ChatSession> ChatDomainService::LoadBranchHistoryDetached(const std::filesystem::path& data_root,
+	                                                                     const BranchHistoryIdentity& identity) const
+{
+	if (identity.chat_id.empty() || identity.messages_digest.empty()) return std::nullopt;
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(data_root, identity.chat_id, true);
+	if (!loaded || !loaded->messages_loaded || !MatchesBranchHistoryIdentity(*loaded, identity)) return std::nullopt;
+	return loaded;
+}
+
+bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, const std::optional<std::string>& operation_id, bool* reused_existing_branch, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch) const
 {
 	if (reused_existing_branch != nullptr) *reused_existing_branch = false;
 	const std::string normalized_operation_id = operation_id.has_value() ? uam::strings::Trim(*operation_id) : std::string();
@@ -664,34 +706,49 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		return false;
 	}
 
-	std::string hydrate_warning;
-	if (!ChatRepository::HydrateChatMessages(app.data_root, app.chats[source_index], &hydrate_warning))
+	const ChatSession& source = app.chats[source_index];
+	const std::vector<Message>* source_messages = source.messages_loaded ? &source.messages : nullptr;
+	if (source_messages == nullptr && prepared_source != nullptr)
 	{
-		app.status_line = uam::strings::NonEmptyOrFallback(hydrate_warning, "Failed to load branch source messages.");
-		return false;
+		const BranchHistoryIdentity expected = CaptureBranchHistoryIdentity(source);
+		if (prepared_source->messages_loaded && MatchesBranchHistoryIdentity(*prepared_source, expected))
+			source_messages = &prepared_source->messages;
+		else
+		{
+			app.status_line = "Branch source history changed while loading. Retry the branch.";
+			return false;
+		}
+	}
+	if (source_messages == nullptr)
+	{
+		std::string hydrate_warning;
+		if (!ChatRepository::HydrateChatMessages(app.data_root, app.chats[source_index], &hydrate_warning))
+		{
+			app.status_line = uam::strings::NonEmptyOrFallback(hydrate_warning, "Failed to load branch source messages.");
+			return false;
+		}
+		source_messages = &app.chats[source_index].messages;
 	}
 
-	const ChatSession& source = app.chats[source_index];
-
-	if (message_index < 0 || message_index >= static_cast<int>(source.messages.size()))
+	if (message_index < 0 || message_index >= static_cast<int>(source_messages->size()))
 	{
 		app.status_line = "Branch source message is no longer valid.";
 		return false;
 	}
 
-	if (source.messages[message_index].role != MessageRole::User)
+	if ((*source_messages)[message_index].role != MessageRole::User)
 	{
 		app.status_line = "Branching is currently supported for user messages only.";
 		return false;
 	}
 
-	std::vector<MessageAttachment> selected_attachments = source.messages[message_index].attachments;
+	std::vector<MessageAttachment> selected_attachments = (*source_messages)[message_index].attachments;
 	if (retained_attachment_ids.has_value())
 	{
 		std::set<std::string> retained;
 		for (const std::string& attachment_id : *retained_attachment_ids)
 		{
-			const std::size_t matches = std::ranges::count(source.messages[message_index].attachments, attachment_id, &MessageAttachment::id);
+			const std::size_t matches = std::ranges::count((*source_messages)[message_index].attachments, attachment_id, &MessageAttachment::id);
 			if (attachment_id.empty() || !retained.insert(attachment_id).second || matches != 1)
 			{
 				app.status_line = "Attachment selection must contain unique IDs from the source message.";
@@ -708,19 +765,37 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 			{
 				ChatSession* existing = FindChatById(app, existing_summary.id);
 				if (existing == nullptr) continue;
-				if (!existing->messages_loaded && !ChatRepository::HydrateChatMessages(app.data_root, *existing, nullptr))
+				const ChatSession* existing_history = existing->messages_loaded ? existing : nullptr;
+				if (existing_history == nullptr && prepared_existing_branch != nullptr)
 				{
-					app.status_line = "The existing branch history could not be loaded.";
-					return false;
+					const BranchHistoryIdentity expected = CaptureBranchHistoryIdentity(*existing);
+					if (prepared_existing_branch->messages_loaded && MatchesBranchHistoryIdentity(*prepared_existing_branch, expected))
+						existing_history = prepared_existing_branch;
+					else
+					{
+						app.status_line = "The existing branch history changed while loading. Retry the branch.";
+						return false;
+					}
+				}
+				ChatSession hydrated_existing;
+				if (existing_history == nullptr)
+				{
+					hydrated_existing = *existing;
+					if (!ChatRepository::HydrateChatMessages(app.data_root, hydrated_existing, nullptr))
+					{
+						app.status_line = "The existing branch history could not be loaded.";
+						return false;
+					}
+					existing_history = &hydrated_existing;
 				}
 				const bool same_request = existing->parent_chat_id == source_chat_id &&
 					existing->branch_from_message_index == message_index &&
 					existing->branch_message_edited == replacement_content.has_value() &&
 					(!replacement_content.has_value() ||
-					 (message_index < static_cast<int>(existing->messages.size()) &&
-					  existing->messages[message_index].content == *replacement_content)) &&
-					message_index < static_cast<int>(existing->messages.size()) &&
-					existing->messages[message_index].attachments == selected_attachments;
+					 (message_index < static_cast<int>(existing_history->messages.size()) &&
+					  existing_history->messages[message_index].content == *replacement_content)) &&
+					message_index < static_cast<int>(existing_history->messages.size()) &&
+					existing_history->messages[message_index].attachments == selected_attachments;
 				if (!same_request)
 				{
 					app.status_line = "Branch operation ID was already used for a different branch request.";
@@ -808,7 +883,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	const bool branch_from_git_worktree = uam::paths::IsGitWorktreeIsolated(source);
 	if (!branch_from_git_worktree) branch.workspace_isolation_kind = source.workspace_isolation_kind;
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, source));
-	branch.messages.assign(source.messages.begin(), source.messages.begin() + message_index + 1);
+	branch.messages.assign(source_messages->begin(), source_messages->begin() + message_index + 1);
 	branch.messages.back().attachments = std::move(selected_attachments);
 	if (replacement_content.has_value())
 	{
@@ -823,10 +898,10 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		std::string checkpoint_sha = source.workspace_base_ref;
 		for (int previous = message_index - 1; previous >= 0; --previous)
 		{
-			if (source.messages[previous].role == MessageRole::Assistant &&
-			    !source.messages[previous].checkpoint_sha.empty())
+			if ((*source_messages)[previous].role == MessageRole::Assistant &&
+			    !(*source_messages)[previous].checkpoint_sha.empty())
 			{
-				checkpoint_sha = source.messages[previous].checkpoint_sha;
+				checkpoint_sha = (*source_messages)[previous].checkpoint_sha;
 				break;
 			}
 		}

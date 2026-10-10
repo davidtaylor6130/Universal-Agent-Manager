@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -11,6 +12,23 @@
 class ChatDomainService
 {
   public:
+	struct BranchHistoryIdentity
+	{
+		std::string chat_id;
+		std::string updated_at;
+		std::string provider_id;
+		std::string execution_host_id;
+		std::string native_identity_key;
+		std::string workspace_directory;
+		std::string workspace_isolation_kind;
+		std::string workspace_source_directory;
+		std::string workspace_base_ref;
+		std::string workspace_branch_name;
+		std::string workspace_worktree_directory;
+		std::size_t message_count = 0;
+		std::string messages_digest;
+	};
+
 	struct MessageAnalytics
 	{
 		std::string provider;
@@ -52,8 +70,12 @@ class ChatDomainService
 	std::vector<ChatSession> DeduplicateChatsById(std::vector<ChatSession> chats) const;
 	void RefreshRememberedSelection(uam::AppState& app) const;
 	void SelectChatById(uam::AppState& app, const std::string& chat_id) const;
+	BranchHistoryIdentity CaptureBranchHistoryIdentity(const ChatSession& chat) const;
+	bool MatchesBranchHistoryIdentity(const ChatSession& chat, const BranchHistoryIdentity& identity) const;
+	std::optional<ChatSession> LoadBranchHistoryDetached(const std::filesystem::path& data_root,
+	                                                     const BranchHistoryIdentity& identity) const;
 	ChatSession CreateNewChat(const std::string& folder_id, const std::string& provider_id) const;
-	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content = std::nullopt, const std::optional<std::string>& operation_id = std::nullopt, bool* reused_existing_branch = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt) const;
+	bool CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content = std::nullopt, const std::optional<std::string>& operation_id = std::nullopt, bool* reused_existing_branch = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt, const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr) const;
 	void AddMessage(ChatSession& chat, MessageRole role, const std::string& text) const;
 	void AddMessageWithAnalytics(ChatSession& chat, MessageRole role, const std::string& text, const MessageAnalytics& analytics) const;
 };
