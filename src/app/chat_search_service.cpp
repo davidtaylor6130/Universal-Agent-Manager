@@ -68,8 +68,8 @@ namespace uam
 		return result;
 	}
 
-	bool ChatSearchTargetMatches(const ChatSession& chat, const std::string& digest, std::size_t message_index)
+	bool ChatSearchTargetMatches(const ChatSession& chat, const std::string& digest, std::size_t message_index, bool reuse_selected_history)
 	{
-		return !digest.empty() && chat.messages_loaded && message_index < chat.messages.size() && StateSerializer::MessageDigest(chat) == digest;
+		return !digest.empty() && chat.messages_loaded && message_index < chat.messages.size() && StateSerializer::MessageDigest(chat, reuse_selected_history) == digest;
 	}
 }

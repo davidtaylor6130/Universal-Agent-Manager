@@ -139,10 +139,17 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	ChatSession* source = ChatDomainService().FindChatById(m_app, source_id);
 	const ProviderProfile* provider = source == nullptr ? nullptr : &ProviderResolutionService().ProviderForChatOrDefault(m_app, *source);
 	const std::string provider_id = provider == nullptr ? std::string{} : uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider->id);
-	const bool needs_export = source != nullptr && provider != nullptr && !native_id.empty() &&
-	    (provider_id == uam::provider_ids::kOpenCodeCli || provider_id == uam::provider_ids::kCodexCli) &&
-	    (payload.value("refreshHistory", !payload.value("selectChat", true)) || ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *source, *provider, native_id, false) == nullptr);
-	if (!needs_export)
+	ChatSession* target = source == nullptr || provider == nullptr ? nullptr
+	    : ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *source, *provider, native_id, false);
+	const bool supports_history = provider != nullptr &&
+	    (ProviderRuntime::UsesNativeOverlayHistory(*provider) || ProviderRuntime::UsesLocalHistory(*provider));
+	const bool supported_host = source != nullptr && (uam::paths::IsControllerLocalWorkspace(*source) ||
+	    provider_id == uam::provider_ids::kOpenCodeCli || provider_id == uam::provider_ids::kCodexCli);
+	const bool needs_export = source != nullptr && supports_history && supported_host && !native_id.empty() &&
+	    (payload.value("refreshHistory", !payload.value("selectChat", true)) || target == nullptr);
+	const bool needs_preparation = needs_export || (supports_history && supported_host && target != nullptr && !target->messages_loaded);
+
+	if (!needs_preparation)
 	{
 		const AsyncCefResult result = FinishOpenNativeSessionChat(browser, payload);
 		if (result.ok) cb->Success(result.body);
@@ -162,19 +169,42 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		remote_host = *host;
 	}
 
-	ChatSession* target = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *source, *provider, native_id, false);
-	std::string hydrate_error;
-	if (target != nullptr && !ChatRepository::HydrateChatMessages(m_app.data_root, *target, &hydrate_error))
+	const std::string target_id = target == nullptr ? std::string{} : target->id;
+	const std::filesystem::path data_root = m_app.data_root;
+	const ChatDomainService domain;
+	const ChatDomainService::BranchHistoryIdentity source_identity = domain.CaptureBranchHistoryIdentity(*source);
+	const std::optional<ChatDomainService::BranchHistoryIdentity> target_identity = target == nullptr
+	    ? std::nullopt : std::optional(domain.CaptureBranchHistoryIdentity(*target));
+	const std::shared_ptr<std::optional<ChatSession>> baseline = std::make_shared<std::optional<ChatSession>>(target == nullptr ? std::nullopt : std::optional(*target));
+	const std::optional<std::string> target_storage = target == nullptr
+	    ? std::optional<std::string>("") : ChatRepository::ChatStorageRevision(data_root, target_id);
+	if (!target_storage || m_app.worktree_operation_chat_ids.contains(source_id) || m_app.worktree_operation_chat_ids.contains(target_id) ||
+	    m_app.pending_chat_save_at_by_chat_id.contains(source_id) || m_app.pending_chat_save_at_by_chat_id.contains(target_id))
 	{
-		cb->Failure(500, uam::strings::NonEmptyOrFallback(hydrate_error, "Failed to load the current child history."));
+		cb->Failure(409, "Chat history is changing. Retry after it settles.");
 		return;
 	}
-	const std::string target_id = target == nullptr ? std::string{} : target->id;
-	const std::string target_digest = target == nullptr ? std::string{} : uam::StateSerializer::MessageDigest(*target);
+
 	const std::string request_key = target_id.empty() ? source_id + "/" + native_id : target_id;
-	const auto previous_request = m_nativeHistoryRequests.find(request_key);
-	if (previous_request != m_nativeHistoryRequests.end()) previous_request->second->request_stop();
-	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
+	const std::unordered_map<std::string, std::shared_ptr<std::stop_source>>::const_iterator previous_request = m_nativeHistoryRequests.find(request_key);
+	if (previous_request != m_nativeHistoryRequests.end())
+	{
+		previous_request->second->request_stop();
+		const std::unordered_map<std::string, std::weak_ptr<uam::BranchPreparationOwnership>>::const_iterator previous_owner = m_app.branch_preparations.find(source_id);
+		if (previous_owner != m_app.branch_preparations.end())
+		{
+			const std::shared_ptr<uam::BranchPreparationOwnership> owner = previous_owner->second.lock();
+			if (owner && owner->cancellation.get_token() == previous_request->second->get_token())
+				(void)domain.ConsumeBranchPreparation(m_app, source_id, owner);
+		}
+	}
+	const std::shared_ptr<uam::BranchPreparationOwnership> ownership = domain.BeginBranchPreparation(m_app, source_id, target_id);
+	if (!ownership)
+	{
+		cb->Failure(409, "Chat preparation is still running. Retry after it settles.");
+		return;
+	}
+	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>(ownership->cancellation);
 	m_nativeHistoryRequests[request_key] = request;
 
 	ChatSession identity;
@@ -184,6 +214,13 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	identity.workspace_directory = source->workspace_directory;
 	identity.execution_host_id = source->execution_host_id;
 	identity.folder_id = source->folder_id;
+	identity.workspace_isolation_kind = source->workspace_isolation_kind;
+	identity.workspace_source_directory = source->workspace_source_directory;
+	identity.workspace_base_ref = source->workspace_base_ref;
+	identity.workspace_branch_name = source->workspace_branch_name;
+	identity.workspace_worktree_directory = source->workspace_worktree_directory;
+
+	const auto prepared_revision = std::make_shared<std::string>();
 	auto snapshot = std::make_shared<ChatSession>();
 	snapshot->id = native_id;
 	snapshot->native_session_id = native_id;
@@ -195,24 +232,40 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	snapshot->created_at = target == nullptr ? uam::time::TimestampNow() : target->created_at;
 	snapshot->updated_at = target == nullptr ? snapshot->created_at : target->updated_at;
 	if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(m_asyncLifetime, cb,
-	    [snapshot, remote_host, request, profile_snapshot = *provider]()
+	    [snapshot, prepared_revision, remote_host, request, profile_snapshot = *provider, baseline, data_root, identity, target_storage, target_identity,
+	     settings = m_app.settings, folders = m_app.folders, resolved = m_app.resolved_native_sessions_by_chat_id,
+	     native_history_directory = m_app.native_history_chats_dir, needs_export, payload_native_id = native_id]()
 	    {
 		    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
-		    if (!remote_host && snapshot->provider_id == uam::provider_ids::kCodexCli)
+		    if (*baseline)
+		    {
+			    std::string error;
+			    if (ChatRepository::ChatStorageRevision(data_root, (*baseline)->id) != target_storage ||
+			        !ChatRepository::HydrateChatMessages(data_root, **baseline, &error) ||
+			        !ChatDomainService().MatchesBranchHistoryIdentity(**baseline, *target_identity))
+				    return AsyncFailure(409, uam::strings::NonEmptyOrFallback(error, "Child history changed while loading."));
+		    }
+
+		    if (!needs_export)
+		    {
+			    *snapshot = **baseline;
+			    snapshot->native_session_id = uam::strings::Trim(payload_native_id);
+			    snapshot->provider_id = profile_snapshot.id;
+		    }
+		    else if (!remote_host && snapshot->provider_id == uam::provider_ids::kCodexCli)
 		    {
 			    std::string error;
 			    std::optional<ChatSession> loaded = ChatHistorySyncService().LoadLocalCodexChildChat(*snapshot, &error);
 			    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(error, "Codex child history is unavailable."));
 			    *snapshot = std::move(*loaded);
-			    return AsyncSuccess({});
 		    }
-		    if (remote_host && snapshot->provider_id == uam::provider_ids::kCodexCli)
+		    else if (remote_host && snapshot->provider_id == uam::provider_ids::kCodexCli)
 		    {
 			    auto transcript = ChatHistorySyncService().LoadRemoteCodexTranscript(*remote_host, *snapshot, request->get_token());
 			    if (!transcript.success) return AsyncFailure(502, transcript.error);
 			    snapshot->messages = std::move(transcript.messages);
 		    }
-		    else
+		    else if (snapshot->provider_id == uam::provider_ids::kOpenCodeCli)
 		    {
 			    auto transcript = remote_host
 			        ? ChatHistorySyncService().LoadRemoteOpenCodeTranscript(*remote_host, *snapshot, profile_snapshot, request->get_token())
@@ -223,9 +276,48 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		    snapshot->messages_loaded = true;
 		    snapshot->created_at = uam::strings::NonEmptyOrFallback(snapshot->messages.empty() ? std::string{} : snapshot->messages.front().created_at, snapshot->created_at);
 		    snapshot->updated_at = uam::strings::NonEmptyOrFallback(snapshot->messages.empty() ? std::string{} : snapshot->messages.back().created_at, snapshot->updated_at);
+		    if (request->stop_requested()) return AsyncFailure(409, "Child history preparation was stopped.");
+		    std::vector<ChatSession> local_summaries = ChatRepository::LoadLocalChatSummariesReadOnly(data_root, request->get_token());
+		    std::unordered_map<std::string, std::string> revisions;
+		    for (ChatSession& local : local_summaries)
+		    {
+			    if (request->stop_requested()) return AsyncFailure(409, "Child history preparation was stopped.");
+			    const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(data_root, local.id);
+			    if (!revision) return AsyncFailure(409, "Saved child history is unavailable.");
+			    const std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(data_root, local.id, false, nullptr, false);
+			    if (!summary || ChatRepository::ChatStorageRevision(data_root, local.id) != revision)
+				    return AsyncFailure(409, "Saved child history changed while loading.");
+			    revisions.emplace(local.id, *revision);
+			    local = *summary;
+		    }
+		    uam::AppState isolated;
+		    isolated.data_root = data_root;
+		    isolated.native_history_chats_dir = native_history_directory;
+		    isolated.settings = settings;
+		    isolated.provider_profiles = {profile_snapshot};
+		    isolated.folders = folders;
+		    isolated.resolved_native_sessions_by_chat_id = resolved;
+		    isolated.chats.push_back(identity);
+		    if (*baseline && (*baseline)->id != identity.id) isolated.chats.push_back(**baseline);
+		    ChatSession* prepared = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(
+		        isolated, identity, profile_snapshot, snapshot->native_session_id, false,
+		        !needs_export || snapshot->provider_id == uam::provider_ids::kCodexCli || snapshot->provider_id == uam::provider_ids::kOpenCodeCli ? snapshot.get() : nullptr, false, request->get_token(), &local_summaries);
+		    if (prepared == nullptr) return AsyncFailure(409, "Child history could not be prepared.");
+		    *snapshot = *prepared;
+		    snapshot->provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(profile_snapshot.id);
+		    const auto saved_revision = revisions.find(snapshot->id);
+		    *prepared_revision = saved_revision == revisions.end() ? "missing" : saved_revision->second;
+		    if (ChatRepository::ChatStorageRevision(data_root, snapshot->id) != *prepared_revision)
+			    return AsyncFailure(409, "Saved child history changed while loading.");
+		    if (*baseline) ChatHistorySyncService().OverlayPreparedLocalHistory(**baseline, *snapshot);
+		    if (request->stop_requested() || (*baseline && ChatRepository::ChatStorageRevision(data_root, (*baseline)->id) != target_storage))
+			    return AsyncFailure(409, "Child history changed or preparation was stopped.");
+
 		    return AsyncSuccess({});
 	    },
-	    [this, browser, payload, identity, snapshot, remote_host, target_id, target_digest, request_key, request](AsyncCefResult& result)
+	    [this, browser, payload, identity, snapshot, prepared_revision, remote_host, target_id, baseline, target_identity, target_storage,
+	     source_identity, data_root, request_key, request, ownership, profile_id = provider->id,
+	     resolved_workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *source), native_history_directory = m_app.native_history_chats_dir](AsyncCefResult& result)
 	    {
 		    const auto pending = m_nativeHistoryRequests.find(request_key);
 		    if (pending == m_nativeHistoryRequests.end() || pending->second != request)
@@ -234,9 +326,19 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    return;
 		    }
 		    m_nativeHistoryRequests.erase(pending);
+		    if (!ChatDomainService().ConsumeBranchPreparation(m_app, identity.id, ownership) || request->stop_requested())
+		    {
+			    result = AsyncFailure(409, "Child history preparation was stopped or replaced.");
+			    return;
+		    }
+
 		    if (!result.ok) return;
 		    const ChatSession* current = ChatDomainService().FindChatById(m_app, identity.id);
-		    if (current == nullptr || current->provider_id != identity.provider_id ||
+		    if (m_app.data_root != data_root || m_app.worktree_operation_chat_ids.contains(identity.id) ||
+		        m_app.worktree_operation_chat_ids.contains(target_id) || m_app.pending_chat_save_at_by_chat_id.contains(identity.id) ||
+		        m_app.pending_chat_save_at_by_chat_id.contains(target_id) || current == nullptr ||
+		        !ChatDomainService().MatchesBranchHistoryIdentity(*current, source_identity) ||
+		        uam::paths::ResolveWorkspaceRootPath(m_app, *current) != resolved_workspace || m_app.native_history_chats_dir != native_history_directory || current->provider_id != identity.provider_id ||
 		        current->native_session_id != identity.native_session_id ||
 		        current->workspace_directory != identity.workspace_directory ||
 		        current->execution_host_id != identity.execution_host_id || current->folder_id != identity.folder_id)
@@ -258,35 +360,41 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    }
 		    }
 		    const ProviderProfile& current_provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *current);
+		    if (current_provider.id != profile_id)
+		    {
+			    result = AsyncFailure(409, "Provider changed while child history was loading.");
+			    return;
+		    }
 		    ChatSession* current_target = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *current, current_provider, snapshot->native_session_id, false);
 		    if ((current_target == nullptr ? std::string{} : current_target->id) != target_id)
 		    {
 			    result = AsyncFailure(409, "Child chat changed while its history was loading. Try again.");
 			    return;
 		    }
-		    if (current_target != nullptr)
+		    if (current_target != nullptr && (!target_identity || !*baseline ||
+		        !ChatDomainService().MatchesPreparedBranchHistory(*current_target, *target_identity, false, &**baseline) ||
+		        ChatRepository::ChatStorageRevision(data_root, target_id) != target_storage))
 		    {
-			    std::string error;
-			    if (!ChatRepository::HydrateChatMessages(m_app.data_root, *current_target, &error))
-			    {
-				    result = AsyncFailure(500, uam::strings::NonEmptyOrFallback(error, "Failed to reload the current child history."));
-				    return;
-			    }
-			    if (uam::StateSerializer::MessageDigest(*current_target) != target_digest)
-			    {
-				    result = AsyncFailure(409, "Child chat changed while its history was loading. Try again.");
-				    return;
-			    }
+			    result = AsyncFailure(409, "Child chat changed while its history was loading. Try again.");
+			    return;
 		    }
-		    result = FinishOpenNativeSessionChat(browser, payload, snapshot.get());
+		    if (ChatRepository::ChatStorageRevision(data_root, snapshot->id) != *prepared_revision ||
+		        m_app.pending_chat_save_at_by_chat_id.contains(snapshot->id) || m_app.worktree_operation_chat_ids.contains(snapshot->id))
+		    {
+			    result = AsyncFailure(409, "Saved child history changed while loading.");
+			    return;
+		    }
+		    result = FinishOpenNativeSessionChat(browser, payload, snapshot.get(), true, *prepared_revision);
+
 	    })))
 	{
 		m_nativeHistoryRequests.erase(request_key);
+		(void)domain.ConsumeBranchPreparation(m_app, source_id, ownership);
 		cb->Failure(503, "The background task queue is unavailable.");
 	}
 }
 
-uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot)
+uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, const ChatSession* native_snapshot, bool native_snapshot_prepared, const std::string& expected_storage_revision)
 {
 	using namespace uam::query_handler_async;
 	const std::string source_chat_id = payload.value("chatId", "");
@@ -328,7 +436,7 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 	std::string previous_target_resolved_native_session_id;
 	if (target_chat == nullptr)
 	{
-		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false, native_snapshot);
+		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false, native_snapshot, native_snapshot_prepared);
 		if (target_chat == nullptr)
 		{
 			return AsyncFailure(404, "Sub-agent chat not found in native history.");
@@ -346,7 +454,7 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 
 	if (!inserted_chat && (payload.value("refreshHistory", !select_chat) || native_snapshot != nullptr))
 	{
-		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false, native_snapshot);
+		target_chat = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(m_app, *source_chat, provider, native_session_id, false, native_snapshot, native_snapshot_prepared);
 		if (target_chat == nullptr)
 		{
 			return AsyncFailure(404, "Sub-agent chat history is unavailable.");
@@ -408,7 +516,10 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 		return AsyncFailure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist selected chat."));
 	}
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *selected_chat, "", ""))
+	const bool chat_saved = expected_storage_revision.empty()
+	    ? ChatHistorySyncService().SaveChatWithStatus(m_app, *selected_chat, "", "")
+	    : ChatRepository::PublishPreparedChatSave(ChatRepository::PrepareChatSave(m_app.data_root, *selected_chat, expected_storage_revision));
+	if (!chat_saved)
 	{
 		if (select_chat)
 		{

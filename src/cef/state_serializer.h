@@ -34,17 +34,20 @@ class StateSerializer
 	static nlohmann::json SerializeStartupNativeImports(const StartupNativeImportSnapshot& snapshot);
 
 	/// Serialise a single chat session (messages included).
-	static nlohmann::json SerializeSession(const ChatSession& session);
+	static nlohmann::json SerializeSession(const ChatSession& session, bool reuse_selected_history = false);
 
 	/// Return the message digest used in serialized chat state.
-	static std::string MessageDigest(const ChatSession& session);
+	static std::string MessageDigest(const ChatSession& session, bool reuse_selected_history = false);
+
+	/// <summary>Number of messages hashed by the latest selected-history summary, for performance diagnostics.</summary>
+	static std::size_t SelectedHistoryRehashedMessageCount();
 
 	/// Serialise one bounded message page without serialising the rest of the session.
 	static nlohmann::json SerializeMessagePage(const ChatSession& session,
 	                                           std::size_t limit,
 	                                           std::optional<std::size_t> before,
 	                                           bool defer_tool_call_content = false,
-	                                           std::string_view known_digest = {});
+	                                           std::string_view known_digest = {}, bool reuse_selected_history = false);
 
 	/// Build the full persisted tool-call detail returned on demand.
 	static std::string ToolCallContentForFrontend(const ToolCall& tool_call);

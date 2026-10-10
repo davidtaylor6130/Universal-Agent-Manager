@@ -190,13 +190,17 @@ class ChatHistorySyncService
 	    const ProviderProfile& provider,
 	    const std::string& native_session_id,
 	    bool persist_provider_normalization = true,
-	    const ChatSession* native_snapshot = nullptr) const;
+	    const ChatSession* native_snapshot = nullptr,
+	    bool native_snapshot_prepared = false, std::stop_token stop_token = {}, const std::vector<ChatSession>* prepared_local_summaries = nullptr) const;
 	bool PersistLocalDraftNativeSessionLink(const uam::AppState& app, ChatSession& local_chat, const std::string& native_session_id) const;
 	void ApplyLocalOverrides(uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links = true) const;
 	bool TruncateNativeSessionFromDisplayedMessage(const uam::AppState& app, const ChatSession& chat, int displayed_message_index, std::string* error_out) const;
 	bool MoveChatToFolder(uam::AppState& app, ChatSession& chat, const std::string& new_folder_id) const;
 	bool ExportChatToNative(const uam::AppState& app, const ChatSession& chat) const;
 
+	/// <summary>Apply a hydrated baseline to a detached native snapshot without reading storage.</summary>
+	void OverlayPreparedLocalHistory(const ChatSession& local_chat, ChatSession& native_chat) const;
+
 	/// Applies persisted metadata to candidates without replacing live chats or session mappings.
-	std::vector<ChatSession> OverlayLocalHistory(const uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links) const;
+	std::vector<ChatSession> OverlayLocalHistory(const uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links, const std::vector<ChatSession>* prepared_local_summaries = nullptr) const;
 };

@@ -4,6 +4,7 @@
 #include "common/config/custom_icon.h"
 #include "common/config/companion_network.h"
 #include "app/chat_lifecycle_service.h"
+#include "app/chat_search_service.h"
 #include "app/local_chat_bundle_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/transcript_retention_service.h"
@@ -12013,6 +12014,244 @@ UAM_TEST(StatePushIgnoresVolatileAcpWaitSecondsButKeepsRealChanges)
 	app.chats.front().title = "Waiting chat renamed";
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT_EQ(app.state_revision, revision_before_rename + 1);
+}
+
+
+UAM_TEST(SelectedHistoryFingerprintReusesOnlyExactlyEqualPrefixes)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "selected-prefix-fingerprint";
+	for (int index = 0; index < 128; ++index)
+	{
+		Message message{MessageRole::Assistant, std::string(4096, 'a')};
+		message.tool_calls.push_back(ToolCall{"tool-" + std::to_string(index), "read", "{}", std::string(65537, 'b'), "completed"});
+		message.blocks.push_back(MessageBlock{"tool_call", "", message.tool_calls.front().id, "{\"id\":1}"});
+		chat.messages.push_back(std::move(message));
+	}
+	app.chats.push_back(std::move(chat));
+	ChatDomainService().SelectChatById(app, app.chats.front().id);
+	const std::string initial = uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["messagesDigest"];
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(128));
+	UAM_ASSERT_EQ(initial, uam::StateSerializer::MessageDigest(app.chats.front()));
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["messagesDigest"], initial);
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(0));
+	const nlohmann::json unchanged_page = uam::StateSerializer::SerializeMessagePage(app.chats.front(), 20, std::nullopt, true, initial, true);
+	UAM_ASSERT(unchanged_page.value("unchanged", false));
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(0));
+	UAM_ASSERT(uam::ChatSearchTargetMatches(app.chats.front(), initial, 0, true));
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(0));
+
+	for (int variation = 0; variation < 5; ++variation)
+	{
+		Message& tail = app.chats.front().messages.back();
+		switch (variation)
+		{
+		case 0: tail.tool_calls.front().result_text[32000] = 'c'; break;
+		case 1: tail.blocks.front().request_id_json = "{\"id\":2}"; break;
+		case 2: tail.continues_turn = true; break;
+		case 3: tail.content[2048] = 'c'; break;
+		case 4: tail.tool_calls.front().args_json = "[]"; break;
+		}
+		const std::string previous = uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["messagesDigest"];
+		UAM_ASSERT(previous != initial);
+		UAM_ASSERT_EQ(previous, uam::StateSerializer::MessageDigest(app.chats.front()));
+		UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["messagesDigest"], previous);
+		UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(0));
+	}
+	app.chats.front().messages.front().thoughts = "changed earlier history";
+	const std::string earlier = uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["messagesDigest"];
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(128));
+	UAM_ASSERT_EQ(earlier, uam::StateSerializer::MessageDigest(app.chats.front()));
+	app.chats.front().messages.pop_back();
+	const std::string shorter = uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["messagesDigest"];
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(127));
+	UAM_ASSERT_EQ(shorter, uam::StateSerializer::MessageDigest(app.chats.front()));
+}
+
+UAM_TEST(SelectedHistoryFingerprintSwitchColdReleaseAndReopenInvalidateCache)
+{
+	uam::AppState app;
+	ChatSession first;
+	first.id = "selected-cache-first";
+	first.messages = {Message{MessageRole::Assistant, "first history"}};
+	ChatSession second = first;
+	second.id = "selected-cache-second";
+	app.chats = {first, second};
+	ChatDomainService().SelectChatById(app, first.id);
+	(void)uam::StateSerializer::SerializeFingerprint(app);
+	(void)uam::StateSerializer::SerializeFingerprint(app);
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(0));
+	ChatDomainService().SelectChatById(app, second.id);
+	(void)uam::StateSerializer::Serialize(app, true);
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(1));
+	ChatSession& current = app.chats[1];
+	current.persisted_message_count = 1;
+	current.persisted_messages_digest = "durable-cold-digest";
+	current.messages.clear();
+	current.messages_loaded = false;
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(app)["chats"][1]["messagesDigest"], std::string("durable-cold-digest"));
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(0));
+	current.messages_loaded = true;
+	current.messages = first.messages;
+	current.messages.front().content = "other history";
+	const std::string reopened = uam::StateSerializer::SerializeFingerprint(app)["chats"][1]["messagesDigest"];
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(reopened, uam::StateSerializer::MessageDigest(current));
+}
+
+UAM_TEST(NativeChildPreparedPublicationKeepsColdHistoryDetailsWithoutUiReads)
+{
+	TempDir temp("uam-native-child-prepared");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, "opencode-cli");
+	UAM_ASSERT(profile != nullptr);
+	ChatSession parent;
+	parent.id = "parent-prepared";
+	parent.provider_id = profile->id;
+	parent.native_session_id = "ses_parent";
+	parent.workspace_directory = temp.root.string();
+	ChatSession local = parent;
+	local.id = "uam-child-prepared";
+	local.native_session_id = "ses_child";
+	local.messages = {Message{MessageRole::Assistant, "native answer", "2026-10-10T01:00:00Z"}};
+	local.updated_at = local.messages.front().created_at;
+	local.messages.front().markdown_store_files = {"retained-context.uam"};
+	local.messages.front().tool_calls = {ToolCall{"tool", "read", "{}", "local tool details", "completed"}};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, local));
+	app.chats = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT(!app.chats.front().messages_loaded);
+	app.chats.push_back(parent);
+	ChatSession native = local;
+	native.id = "ses_child";
+	native.messages.front().markdown_store_files.clear();
+	native.messages.front().tool_calls.clear();
+	const ChatHistorySyncService service;
+	service.OverlayPreparedLocalHistory(local, native);
+	UAM_ASSERT_EQ(native.messages, local.messages);
+	// A prepared publication must not parse transcript files on its UI caller.
+	UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(temp.root, local.id), "unreadable body"));
+	ChatSession* published = service.FindOrImportNativeSessionChatForOpen(app, parent, *profile, "ses_child", false, &native, true);
+	UAM_ASSERT(published != nullptr);
+	UAM_ASSERT_EQ(published->id, local.id);
+	UAM_ASSERT(published->messages_loaded);
+	UAM_ASSERT_EQ(published->messages, local.messages);
+	UAM_ASSERT_EQ(published->native_session_id, local.native_session_id);
+	ChatSession wrong = native;
+	wrong.workspace_directory = (temp.root / "another-workspace").string();
+	UAM_ASSERT(service.FindOrImportNativeSessionChatForOpen(app, parent, *profile, "ses_child", false, &wrong, true) == nullptr);
+	wrong = native;
+	wrong.native_session_id = "ses_foreign";
+	UAM_ASSERT(service.FindOrImportNativeSessionChatForOpen(app, parent, *profile, "ses_child", false, &wrong, true) == nullptr);
+}
+
+UAM_TEST(NativeChildReadOnlyPreparationNeverRepairsAndRejectsChangedOverlaySave)
+{
+	TempDir temp("uam-native-child-readonly");
+	ChatSession local;
+	local.id = "chat-readonly-child";
+	local.provider_id = "opencode-cli";
+	local.native_session_id = "ses_readonly_child";
+	local.messages = {Message{MessageRole::Assistant, "saved annotation", "2026-10-10T00:00:00Z"}};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, local));
+	const fs::path summary = AppPaths::UamChatSummaryFilePath(temp.root, local.id);
+	UAM_ASSERT(fs::remove(summary));
+	const std::string primary_revision = *ChatRepository::ChatStorageRevision(temp.root, local.id);
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChatSummariesReadOnly(temp.root).size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(!fs::exists(summary));
+	UAM_ASSERT_EQ(*ChatRepository::ChatStorageRevision(temp.root, local.id), primary_revision);
+	UAM_ASSERT(uam::io::WriteTextFile(summary, "stale summary cache"));
+	std::string unchanged_cache;
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChatSummariesReadOnly(temp.root).size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, local.id, false, nullptr, false).has_value());
+	UAM_ASSERT(uam::io::TryReadTextFile(summary, unchanged_cache));
+	UAM_ASSERT_EQ(unchanged_cache, std::string("stale summary cache"));
+	UAM_ASSERT_EQ(*ChatRepository::ChatStorageRevision(temp.root, local.id), primary_revision);
+	const std::string revision = primary_revision;
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(temp.root, local, revision);
+	UAM_ASSERT(prepared != nullptr);
+	local.messages.front().content = "newer saved annotation";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, local));
+	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(prepared));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, local.id)->messages.front().content, local.messages.front().content);
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, local.id);
+	UAM_ASSERT(uam::io::WriteTextFile(primary, "broken primary"));
+	const std::string broken_revision = *ChatRepository::ChatStorageRevision(temp.root, local.id);
+	(void)ChatRepository::LoadLocalChatSummariesReadOnly(temp.root);
+	UAM_ASSERT_EQ(*ChatRepository::ChatStorageRevision(temp.root, local.id), broken_revision);
+	std::stop_source cancelled;
+	cancelled.request_stop();
+	UAM_ASSERT(ChatRepository::LoadLocalChatSummariesReadOnly(temp.root, cancelled.get_token()).empty());
+}
+
+UAM_TEST(NativeChildDetachedGeminiPreparationKeepsProviderResolution)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	TempDir temp("uam-native-child-gemini-detached");
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path gemini_home = temp.root / "gemini";
+	const fs::path project = gemini_home / "tmp" / "project";
+	fs::create_directories(workspace);
+	fs::create_directories(project / "chats");
+	UAM_ASSERT(uam::io::WriteTextFile(project / ".project_root", workspace.string()));
+	ScopedEnvVar home("GEMINI_CLI_HOME", gemini_home.string());
+	const ProviderProfile profile = ProviderProfileStore::DefaultGeminiProfile();
+	ChatSession source;
+	source.id = "chat-detached-gemini-parent";
+	source.provider_id = profile.id;
+	source.workspace_directory = workspace.string();
+	const std::string native_id = "11111111-1111-4111-8111-111111111111";
+	const nlohmann::json history = {{"sessionId", native_id}, {"startTime", "2026-10-10T00:00:00Z"},
+	    {"lastUpdated", "2026-10-10T00:00:01Z"}, {"messages", nlohmann::json::array({{{"type", "user"}, {"content", "Gemini child request"}}})}};
+	UAM_ASSERT(uam::io::WriteTextFile(project / "chats" / "session.json", history.dump()));
+	uam::AppState isolated;
+	isolated.data_root = temp.root / "data";
+	isolated.provider_profiles = {profile};
+	isolated.chats.push_back(source);
+	const std::vector<ChatSession> local_summaries = ChatRepository::LoadLocalChatSummariesReadOnly(isolated.data_root);
+	ChatSession* prepared = ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(
+	    isolated, source, profile, native_id, false, nullptr, false, {}, &local_summaries);
+	UAM_ASSERT(prepared != nullptr);
+	UAM_ASSERT_EQ(prepared->native_session_id, native_id);
+	UAM_ASSERT(fs::equivalent(uam::paths::PathFromUtf8(prepared->workspace_directory), workspace));
+	UAM_ASSERT_EQ(prepared->messages.front().content, std::string("Gemini child request"));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatsRootPath(isolated.data_root)));
+	fs::remove_all(project / "chats");
+	isolated.chats = {source};
+	isolated.resolved_native_sessions_by_chat_id.clear();
+	UAM_ASSERT(ChatHistorySyncService().FindOrImportNativeSessionChatForOpen(
+	    isolated, source, profile, native_id, false, nullptr, false, {}, &local_summaries) == nullptr);
+	UAM_ASSERT(!fs::exists(project / "chats"));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatsRootPath(isolated.data_root)));
+#endif
+}
+
+UAM_TEST(NativeChildPreparationStopOwnsBothSourceAndTarget)
+{
+	uam::AppState app;
+	const ChatDomainService domain;
+	ChatSession parent;
+	parent.id = "native-preparation-source";
+	ChatSession child;
+	child.id = "native-preparation-child";
+	child.messages_loaded = false;
+	app.chats = {parent, child};
+	const std::shared_ptr<uam::BranchPreparationOwnership> first = domain.BeginBranchPreparation(app, parent.id, child.id);
+	UAM_ASSERT(first != nullptr);
+	std::stop_source worker_cancel(first->cancellation);
+	UAM_ASSERT(uam::StopAcpSession(app, child.id));
+	UAM_ASSERT(worker_cancel.stop_requested());
+	const std::shared_ptr<uam::BranchPreparationOwnership> next = domain.BeginBranchPreparation(app, parent.id, child.id);
+	UAM_ASSERT(next != nullptr);
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, parent.id, first));
+	UAM_ASSERT(!app.chats[1].messages_loaded);
+	UAM_ASSERT(uam::CancelAcpTurn(app, parent.id));
+	UAM_ASSERT(next->cancellation.stop_requested());
+	UAM_ASSERT(!domain.ConsumeBranchPreparation(app, parent.id, next));
+	UAM_ASSERT(app.acp_sessions.empty());
 }
 
 UAM_TEST(StateSerializerMessageDigestTracksEarlierMessageChanges)

@@ -215,7 +215,25 @@ namespace uam
 			return catalogs;
 		}
 
-		std::string MessageDigestForFingerprint(const ChatSession& session);
+		struct SelectedHistoryDigestCache
+		{
+			std::string chat_id;
+			std::vector<Message> messages;
+			std::vector<std::uint64_t> prefix_hashes;
+			std::size_t rehashed_message_count = 0;
+		};
+
+		// Retain only the selected transcript on this serialization thread; workers never share mutable cache state.
+		thread_local SelectedHistoryDigestCache g_selected_history_digest;
+
+		void SelectHistoryDigestCache(const std::string& chat_id)
+		{
+			if (g_selected_history_digest.chat_id == chat_id) return;
+			g_selected_history_digest = {};
+			g_selected_history_digest.chat_id = chat_id;
+		}
+
+		std::string MessageDigestForFingerprint(const ChatSession& session, bool cache_selected = false);
 		std::size_t MessageCountForFrontend(const ChatSession& session);
 
 		void AddWorkspaceIsolationFields(nlohmann::json& chat_json, const ChatSession& chat)
@@ -227,7 +245,7 @@ namespace uam
 			chat_json["workspaceWorktreeDirectory"] = chat.workspace_worktree_directory;
 		}
 
-		void AddSessionSummaryFields(nlohmann::json& session_json, const ChatSession& session, std::string_view workspace_directory)
+		void AddSessionSummaryFields(nlohmann::json& session_json, const ChatSession& session, std::string_view workspace_directory, bool cache_selected = false)
 		{
 			session_json["id"] = session.id;
 			session_json["executionHostId"] = uam::strings::NonEmptyOrFallback(session.execution_host_id, "local");
@@ -281,7 +299,7 @@ namespace uam
 			session_json["settledAt"] = session.settled_at;
 			session_json["lastOpenedAt"] = uam::strings::NonEmptyOrFallback(session.last_opened_at, session.updated_at);
 			session_json["messageCount"] = MessageCountForFrontend(session);
-			session_json["messagesDigest"] = MessageDigestForFingerprint(session);
+			session_json["messagesDigest"] = MessageDigestForFingerprint(session, cache_selected);
 			session_json["activeGoalId"] = session.active_goal_id.empty() ? nullptr : nlohmann::json(session.active_goal_id);
 		}
 
@@ -505,7 +523,7 @@ namespace uam
 		void FingerprintHashString(std::uint64_t& hash, const std::string& value)
 		{
 			// Process-local change tokens allow platform-native string hashing.
-			// ponytail: full strings are still scanned; mutation revisions would avoid large-history rehashing.
+			// Uncached suffixes still scan full strings; exact baseline equality protects in-place edits.
 			const std::uint64_t value_hash = std::hash<std::string>{}(value);
 			FingerprintHashBytes(hash, reinterpret_cast<const unsigned char*>(&value_hash), sizeof(value_hash));
 		}
@@ -521,8 +539,20 @@ namespace uam
 			return uam::hashing::Hex64Padded(hash);
 		}
 
-		std::string MessageDigestForFingerprint(const ChatSession& session)
+		std::string MessageDigestForFingerprint(const ChatSession& session, bool cache_selected)
 		{
+			SelectedHistoryDigestCache* cache = cache_selected ? &g_selected_history_digest : nullptr;
+			if (cache != nullptr)
+			{
+				SelectHistoryDigestCache(session.id);
+				cache->rehashed_message_count = 0;
+				if (!session.messages_loaded || cache->messages.size() != session.messages.size())
+				{
+					cache->messages.clear();
+					cache->prefix_hashes.clear();
+				}
+			}
+
 			if (!session.messages_loaded)
 			{
 				if (!session.persisted_messages_digest.empty())
@@ -537,8 +567,18 @@ namespace uam
 
 			FingerprintHashString(hash, std::to_string(session.messages.size()));
 
-			for (const Message& message : session.messages)
+			std::size_t prefix = 0;
+			if (cache != nullptr)
 			{
+				while (prefix < cache->messages.size() && cache->messages[prefix] == session.messages[prefix]) ++prefix;
+				if (prefix != 0) hash = cache->prefix_hashes[prefix - 1];
+				cache->messages.resize(prefix);
+				cache->prefix_hashes.resize(prefix);
+				cache->rehashed_message_count = session.messages.size() - prefix;
+			}
+			for (std::size_t index = prefix; index < session.messages.size(); ++index)
+			{
+				const Message& message = session.messages[index];
 				FingerprintHashString(hash, RoleStr(message.role));
 				FingerprintHashString(hash, message.created_at);
 				FingerprintHashString(hash, message.provider);
@@ -608,6 +648,13 @@ namespace uam
 				FingerprintHashString(hash, message.stop_reason);
 				FingerprintHashBool(hash, message.acp_prompt_not_sent);
 				FingerprintHashBool(hash, message.priority_steer);
+				FingerprintHashBool(hash, message.continues_turn);
+				if (cache != nullptr)
+				{
+					cache->messages.push_back(message);
+					cache->prefix_hashes.push_back(hash);
+				}
+
 			}
 
 			const auto finished = std::chrono::steady_clock::now();
@@ -1111,10 +1158,10 @@ namespace uam
 		}
 
 		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat,
-		                                           CatalogSnapshotCache& cache)
+		                                           CatalogSnapshotCache& cache, bool cache_selected = false)
 		{
 			nlohmann::json chat_json;
-			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)));
+			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), cache_selected);
 			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 			chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
@@ -1504,6 +1551,7 @@ namespace uam
 		// Chat sessions
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
 		const std::string selected_chat_id = SelectedVisibleChatId(app);
+		SelectHistoryDigestCache(selected_chat_id);
 		const bool has_selected_chat = !selected_chat_id.empty();
 		for (const auto& chat : app.chats)
 		{
@@ -1512,7 +1560,7 @@ namespace uam
 			nlohmann::json chat_json;
 			if (selected_chat && chat.messages_loaded && !summary_only)
 			{
-				chat_json = SerializeSession(chat);
+				chat_json = SerializeSession(chat, chat.id == selected_chat_id);
 				const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 				chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
@@ -1523,7 +1571,7 @@ namespace uam
 			}
 			else
 			{
-				chat_json = SerializeFingerprintSession(app, chat, catalog_cache);
+				chat_json = SerializeFingerprintSession(app, chat, catalog_cache, chat.id == selected_chat_id);
 			}
 			chat_json["attentionRevision"] = ChatDomainService().AttentionRevision(app, chat);
 			chats_arr.push_back(std::move(chat_json));
@@ -1568,6 +1616,7 @@ namespace uam
 
 		nlohmann::json chats_arr = JsonArrayWithCapacity(app.chats.size());
 		const std::string selected_chat_id = SelectedVisibleChatId(app);
+		SelectHistoryDigestCache(selected_chat_id);
 		const auto chats_started = std::chrono::steady_clock::now();
 		std::chrono::microseconds slowest_chat{0};
 		std::size_t loaded_chats = 0;
@@ -1575,7 +1624,7 @@ namespace uam
 		{
 			if (IsInternalChat(chat)) continue;
 			const auto chat_started = std::chrono::steady_clock::now();
-			chats_arr.push_back(SerializeFingerprintSession(app, chat, catalog_cache));
+			chats_arr.push_back(SerializeFingerprintSession(app, chat, catalog_cache, chat.id == selected_chat_id));
 			slowest_chat = std::max(slowest_chat, std::chrono::duration_cast<std::chrono::microseconds>(
 				std::chrono::steady_clock::now() - chat_started));
 			loaded_chats += chat.messages_loaded ? 1 : 0;
@@ -1616,10 +1665,10 @@ namespace uam
 		return j;
 	}
 
-	nlohmann::json StateSerializer::SerializeSession(const ChatSession& session)
+	nlohmann::json StateSerializer::SerializeSession(const ChatSession& session, bool reuse_selected_history)
 	{
 		nlohmann::json j;
-		AddSessionSummaryFields(j, session, session.workspace_directory);
+		AddSessionSummaryFields(j, session, session.workspace_directory, reuse_selected_history);
 
 		nlohmann::json msgs = JsonArrayWithCapacity(session.messages.size());
 		for (const Message& message : session.messages)
@@ -1670,21 +1719,26 @@ namespace uam
 		return j;
 	}
 
-	std::string StateSerializer::MessageDigest(const ChatSession& session)
+	std::string StateSerializer::MessageDigest(const ChatSession& session, bool reuse_selected_history)
 	{
-		return MessageDigestForFingerprint(session);
+		return MessageDigestForFingerprint(session, reuse_selected_history);
+	}
+
+	std::size_t StateSerializer::SelectedHistoryRehashedMessageCount()
+	{
+		return g_selected_history_digest.rehashed_message_count;
 	}
 
 	nlohmann::json StateSerializer::SerializeMessagePage(const ChatSession& session,
 	                                                     std::size_t limit,
 	                                                     std::optional<std::size_t> before,
 	                                                     bool defer_tool_call_content,
-	                                                     std::string_view known_digest)
+	                                                     std::string_view known_digest, bool reuse_selected_history)
 	{
 		const std::size_t total_count = session.messages.size();
 		const std::size_t end = std::min(before.value_or(total_count), total_count);
 		const std::size_t start = end > limit ? end - limit : 0;
-		const std::string digest = MessageDigestForFingerprint(session);
+		const std::string digest = MessageDigestForFingerprint(session, reuse_selected_history);
 		if (!before.has_value() && !known_digest.empty() && known_digest == digest)
 		{
 			return {{"startIndex", start}, {"totalCount", total_count},

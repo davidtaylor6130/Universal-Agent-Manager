@@ -111,24 +111,24 @@ namespace
 	nlohmann::json SerializeChatMessagesResult(
 	    const ChatSession& chat, std::string_view known_digest,
 	    const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
-	    bool defer_tool_call_content)
+	    bool defer_tool_call_content, bool reuse_selected_history = false)
 	{
 		if (page.has_value())
 		{
 			nlohmann::json result = uam::StateSerializer::SerializeMessagePage(
-			    chat, page->first, page->second, defer_tool_call_content, known_digest);
+			    chat, page->first, page->second, defer_tool_call_content, known_digest, reuse_selected_history);
 			result["chatId"] = chat.id;
 			if (!result.contains("unchanged")) result["unchanged"] = false;
 			return result;
 		}
 		if (!known_digest.empty() &&
-		    known_digest == uam::StateSerializer::MessageDigest(chat))
+		    known_digest == uam::StateSerializer::MessageDigest(chat, reuse_selected_history))
 		{
 			return {{"chatId", chat.id}, {"messagesDigest", known_digest},
 			        {"unchanged", true}};
 		}
 
-		const nlohmann::json serialized = uam::StateSerializer::SerializeSession(chat);
+		const nlohmann::json serialized = uam::StateSerializer::SerializeSession(chat, reuse_selected_history);
 		nlohmann::json result{{"chatId", chat.id},
 		                      {"messagesDigest", serialized.value("messagesDigest", "")},
 		                      {"unchanged", false}};
@@ -142,9 +142,9 @@ namespace
 	    const ChatSession& chat, std::string_view known_digest,
 	    const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
 	    bool defer_tool_call_content,
-	    const std::optional<std::pair<std::string, std::size_t>>& search_target)
+	    const std::optional<std::pair<std::string, std::size_t>>& search_target, bool reuse_selected_history = false)
 	{
-		if (search_target && !uam::ChatSearchTargetMatches(chat, search_target->first, search_target->second))
+		if (search_target && !uam::ChatSearchTargetMatches(chat, search_target->first, search_target->second, reuse_selected_history))
 			return uam::query_handler_async::AsyncFailure(409, "Chat history changed. Search again to select this message.");
 		if (search_target && page)
 		{
@@ -153,7 +153,7 @@ namespace
 			if (search_target->second < begin || search_target->second >= end)
 				return uam::query_handler_async::AsyncFailure(400, "The requested page does not contain the selected search message.");
 		}
-		return uam::query_handler_async::AsyncSuccess(SerializeChatMessagesResult(chat, known_digest, page, defer_tool_call_content));
+		return uam::query_handler_async::AsyncSuccess(SerializeChatMessagesResult(chat, known_digest, page, defer_tool_call_content, reuse_selected_history));
 	}
 
 	bool ReadMessageIndex(const nlohmann::json& value, std::size_t& result)
@@ -370,7 +370,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    }
 			    if (current->messages_loaded)
 			    {
-				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target);
+				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == current->id);
 				    return;
 			    }
 			    if (!uam::TranscriptRetentionService::CompleteHistoryLoad(
@@ -401,7 +401,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	     provider_id == uam::provider_ids::kCodexCli);
 	if (!hydrate_native_chat)
 	{
-		const uam::query_handler_async::AsyncCefResult result = SerializeGuardedChatMessagesResult(*chat, known_digest, page, defer_tool_call_content, search_target);
+		const uam::query_handler_async::AsyncCefResult result = SerializeGuardedChatMessagesResult(*chat, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == chat->id);
 		if (result.ok) cb->Success(result.body);
 		else cb->Failure(result.status, result.error);
 		return;
@@ -428,7 +428,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	chat_snapshot.workspace_directory = chat->workspace_directory;
 	chat_snapshot.execution_host_id = chat->execution_host_id;
 	chat_snapshot.folder_id = chat->folder_id;
-	const std::string original_digest = uam::StateSerializer::MessageDigest(*chat);
+	const std::string original_digest = uam::StateSerializer::MessageDigest(*chat, ChatDomainService().SelectedChatId(m_app) == chat->id);
 	const auto previous_request = m_nativeHistoryRequests.find(chat_id);
 	if (previous_request != m_nativeHistoryRequests.end()) previous_request->second->request_stop();
 	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
@@ -514,7 +514,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		    // Runtime ownership may have started while the native export was running.
 		    if (uam::runtime_orch_impl::ChatNeedsTranscriptPreserved(m_app, *current))
 		    {
-			    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target);
+			    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == current->id);
 			    return;
 		    }
 		    if (!response.ok) return;
@@ -526,7 +526,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    return;
 		    }
 		    // A prompt or another import may have completed while the native export was running.
-		    if (uam::StateSerializer::MessageDigest(*current) == original_digest)
+		    if (uam::StateSerializer::MessageDigest(*current, ChatDomainService().SelectedChatId(m_app) == current->id) == original_digest)
 		    {
 			    if (!ChatHistorySyncService().SaveNativeTranscript(m_app, *current, std::move(transcript->messages)))
 			    {
@@ -535,7 +535,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    }
 			    uam::PushStateUpdateIfChanged(browser, m_app);
 		    }
-		    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target);
+		    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == current->id);
 	    })))
 	{
 		m_nativeHistoryRequests.erase(chat_id);

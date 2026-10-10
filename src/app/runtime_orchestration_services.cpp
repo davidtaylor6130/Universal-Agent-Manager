@@ -409,7 +409,7 @@ namespace
 	bool MessagesEquivalent(const std::vector<Message>& lhs, const std::vector<Message>& rhs);
 	void OverlayLocalChatState(const ChatSession& local, ChatSession& native);
 
-	NativeImportIndex LoadNativeImportIndex(const uam::AppState& app, const std::vector<ChatSession>* sidebar = nullptr)
+	NativeImportIndex LoadNativeImportIndex(const uam::AppState& app, const std::vector<ChatSession>* sidebar = nullptr, bool retain_summaries = false)
 	{
 		const fs::path& data_root = app.data_root;
 		const std::vector<ChatSession> loaded = sidebar == nullptr ? ChatRepository::LoadLocalChatSummaries(data_root) : std::vector<ChatSession>{};
@@ -440,7 +440,7 @@ namespace
 				{
 					import_index.existing_id_by_native_key[native_key] = chat.id;
 					selected_chats[native_key] = &chat;
-					if (sidebar != nullptr) import_index.existing_summary_by_native_key[native_key].id = chat.id;
+					if (sidebar != nullptr && !retain_summaries) import_index.existing_summary_by_native_key[native_key].id = chat.id;
 					else import_index.existing_summary_by_native_key[native_key] = chat;
 				}
 
@@ -4071,8 +4071,10 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
                                                                          const ProviderProfile& provider,
                                                                          const std::string& native_session_id,
                                                                          bool persist_provider_normalization,
-                                                                         const ChatSession* native_snapshot) const
+                                                                         const ChatSession* native_snapshot,
+                                                                         bool native_snapshot_prepared, std::stop_token stop_token, const std::vector<ChatSession>* prepared_local_summaries) const
 {
+	if (stop_token.stop_requested()) return nullptr;
 	if (!uam::paths::IsControllerLocalWorkspace(source_chat_reference) && native_snapshot == nullptr)
 	{
 		return nullptr;
@@ -4104,13 +4106,20 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 	}
 	else if (ProviderRuntime::UsesNativeOverlayHistory(provider))
 	{
-		const fs::path chats_dir = ResolveNativeHistoryChatsDirForChat(app, source_chat);
+		const fs::path chats_dir = prepared_local_summaries == nullptr
+		    ? ResolveNativeHistoryChatsDirForChat(app, source_chat)
+		    : ProviderRuntimeRegistry::Resolve(provider).GetNativeSessionDirectory(uam::paths::ResolveControllerWorkspaceRootPath(app, source_chat));
 		if (chats_dir.empty())
 		{
 			return nullptr;
 		}
 
-		candidate_chats = LoadNativeSessionChats(chats_dir, provider);
+		candidate_chats = LoadNativeSessionChats(chats_dir, provider, stop_token);
+		// Gemini records omit workspace metadata; bind them to the captured directory lookup before identity checks.
+		for (ChatSession& candidate : candidate_chats)
+		{
+			if (candidate.workspace_directory.empty()) candidate.workspace_directory = chat_identity::NativeWorkspaceForHistoryImport(source_chat);
+		}
 	}
 	else if (ProviderRuntime::UsesLocalHistory(provider))
 	{
@@ -4130,7 +4139,10 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 				candidate_chats.push_back(std::move(*native_chat));
 			}
 		}
-		if (candidate_chats.empty()) candidate_chats = ChatRepository::LoadLocalChats(app.data_root);
+		if (candidate_chats.empty()) candidate_chats = prepared_local_summaries == nullptr ? ChatRepository::LoadLocalChats(app.data_root) : *prepared_local_summaries;
+		if (prepared_local_summaries != nullptr)
+			for (ChatSession& candidate : candidate_chats)
+				if (!ChatRepository::HydrateChatMessages(app.data_root, candidate)) return nullptr;
 	}
 	else
 	{
@@ -4145,24 +4157,28 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 		});
 	}
 
-	if (uam::paths::IsControllerLocalWorkspace(source_chat))
-		OverlayLocalHistory(app, candidate_chats, false);
-	else
+	if (native_snapshot == nullptr || !native_snapshot_prepared)
 	{
-		const NativeImportIndex index = LoadNativeImportIndex(app);
-		if (!index.tombstones_available) return nullptr;
-		for (ChatSession& candidate : candidate_chats)
+		if (uam::paths::IsControllerLocalWorkspace(source_chat))
+			OverlayLocalHistory(app, candidate_chats, false, prepared_local_summaries);
+		else
 		{
-			const auto saved = index.existing_summary_by_native_key.find(chat_identity::NativeIdentityKeyForHistoryImport(candidate));
-			if (saved == index.existing_summary_by_native_key.end()) continue;
-			const std::optional<ChatSession> local = ChatRepository::LoadLocalChat(app.data_root, saved->second.id, true);
-			if (!local) return nullptr;
-			candidate.id = local->id;
-			OverlayLocalChatState(*local, candidate);
-			PreserveEquivalentLocalMessageDetails(*local, candidate);
+			const NativeImportIndex index = LoadNativeImportIndex(app, prepared_local_summaries, true);
+			if (!index.tombstones_available) return nullptr;
+			for (ChatSession& candidate : candidate_chats)
+			{
+				const auto saved = index.existing_summary_by_native_key.find(chat_identity::NativeIdentityKeyForHistoryImport(candidate));
+				if (saved == index.existing_summary_by_native_key.end()) continue;
+				const std::optional<ChatSession> local = ChatRepository::LoadLocalChat(app.data_root, saved->second.id, true);
+				if (!local) return nullptr;
+				candidate.id = local->id;
+				OverlayLocalChatState(*local, candidate);
+				PreserveEquivalentLocalMessageDetails(*local, candidate);
+			}
 		}
-	}
 
+	}
+	if (stop_token.stop_requested()) return nullptr;
 	const auto matched = std::ranges::find_if(candidate_chats, [&](const ChatSession& chat) {
 		if (uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id) != source_provider_id && !uam::strings::IsBlank(chat.provider_id))
 		{
@@ -4326,10 +4342,41 @@ ChatSession* ChatHistorySyncService::FindOrImportNativeSessionChatForOpen(uam::A
 	}
 }
 
-std::vector<ChatSession> ChatHistorySyncService::OverlayLocalHistory(const uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links) const
+void ChatHistorySyncService::OverlayPreparedLocalHistory(const ChatSession& local_chat, ChatSession& native_chat) const
+{
+	OverlayLocalChatState(local_chat, native_chat);
+	const bool should_copy_local_messages = LocalMessagesShouldOverrideNative(local_chat, native_chat);
+
+	const bool local_update_is_newer = !local_chat.updated_at.empty() && (native_chat.updated_at.empty() || local_chat.updated_at > native_chat.updated_at);
+
+	if (should_copy_local_messages)
+	{
+		native_chat.messages = local_chat.messages;
+
+		if (!local_chat.updated_at.empty())
+		{
+			native_chat.updated_at = local_chat.updated_at;
+		}
+
+		if (native_chat.created_at.empty() && !local_chat.created_at.empty())
+		{
+			native_chat.created_at = local_chat.created_at;
+		}
+	}
+	else if (local_chat.messages_loaded && native_chat.messages_loaded)
+	{
+		PreserveEquivalentLocalMessageDetails(local_chat, native_chat);
+		if (local_update_is_newer)
+		{
+			native_chat.updated_at = local_chat.updated_at;
+		}
+	}
+}
+
+std::vector<ChatSession> ChatHistorySyncService::OverlayLocalHistory(const uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links, const std::vector<ChatSession>* prepared_local_summaries) const
 {
 	native_chats = ChatDomainService().DeduplicateChatsById(std::move(native_chats));
-	std::vector<ChatSession> local_chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
+	std::vector<ChatSession> local_chats = prepared_local_summaries == nullptr ? ChatRepository::LoadLocalChatSummaries(app.data_root) : *prepared_local_summaries;
 
 	for (ChatSession& local_chat : local_chats)
 	{
@@ -4367,33 +4414,14 @@ std::vector<ChatSession> ChatHistorySyncService::OverlayLocalHistory(const uam::
 		    EffectiveMessageCount(local_chat) > 0;
 		if ((should_copy_local_messages || has_local_message_details) && !local_chat.messages_loaded)
 		{
-			ChatRepository::HydrateChatMessages(app.data_root, local_chat);
+			if (!ChatRepository::HydrateChatMessages(app.data_root, local_chat) && prepared_local_summaries != nullptr)
+			{
+				native_chats.clear();
+				return {};
+			}
 			should_copy_local_messages = LocalMessagesShouldOverrideNative(local_chat, native_chat);
 		}
-		const bool local_update_is_newer = !local_chat.updated_at.empty() && (native_chat.updated_at.empty() || local_chat.updated_at > native_chat.updated_at);
-
-		if (should_copy_local_messages)
-		{
-			native_chat.messages = local_chat.messages;
-
-			if (!local_chat.updated_at.empty())
-			{
-				native_chat.updated_at = local_chat.updated_at;
-			}
-
-			if (native_chat.created_at.empty() && !local_chat.created_at.empty())
-			{
-				native_chat.created_at = local_chat.created_at;
-			}
-		}
-		else if (local_chat.messages_loaded && native_chat.messages_loaded)
-		{
-			PreserveEquivalentLocalMessageDetails(local_chat, native_chat);
-			if (local_update_is_newer)
-			{
-				native_chat.updated_at = local_chat.updated_at;
-			}
-		}
+		OverlayPreparedLocalHistory(local_chat, native_chat);
 	}
 
 	return local_chats;

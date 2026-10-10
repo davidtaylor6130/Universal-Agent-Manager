@@ -1059,7 +1059,7 @@ namespace
 		return !ec && summary_time >= chat_time;
 	}
 
-	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0)
+	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0, bool publish_summary_cache = true)
 	{
 		const std::string file_text = uam::io::ReadTextFile(path);
 		if (file_text.empty())
@@ -1489,7 +1489,7 @@ namespace
 			return {std::nullopt, "contains a stale message digest"};
 		}
 
-		if (!include_messages && expected_source_size == 0 && path.extension() == ".json")
+		if (publish_summary_cache && !include_messages && expected_source_size == 0 && path.extension() == ".json")
 		{
 			root.object_value.erase(std::string(kChatMessagesField));
 			uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(chat.persisted_message_count));
@@ -2556,7 +2556,7 @@ std::vector<ChatSession> ChatRepository::LoadLocalChatSummaries(const std::files
 	return LoadLocalChatsImpl(data_root, false, warning_out);
 }
 
-std::optional<ChatSession> ChatRepository::LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages, std::string* warning_out)
+std::optional<ChatSession> ChatRepository::LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages, std::string* warning_out, bool publish_summary_cache)
 {
 	SetWarning(warning_out, "");
 	if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
@@ -2579,7 +2579,7 @@ std::optional<ChatSession> ChatRepository::LoadLocalChat(const std::filesystem::
 	}
 	if (!loaded.chat)
 	{
-		loaded = ParseLocalChatFile(chat_path, include_messages);
+		loaded = ParseLocalChatFile(chat_path, include_messages, 0, publish_summary_cache);
 		if (include_messages && loaded.chat)
 			ApplySummaryOpenedAtToFullChat(chat_path, *loaded.chat);
 	}
@@ -2632,4 +2632,18 @@ bool ChatRepository::AdoptHydratedMessagesIfUnchanged(ChatSession& current, Chat
 	current.messages = std::move(loaded.messages);
 	current.messages_loaded = true;
 	return true;
+}
+
+std::vector<ChatSession> ChatRepository::LoadLocalChatSummariesReadOnly(const fs::path& data_root, std::stop_token stop_token)
+{
+	std::vector<ChatSession> chats;
+	std::error_code error;
+	const fs::path root = AppPaths::UamChatsRootPath(data_root);
+	for (fs::directory_iterator it(root, error), end; !error && it != end && !stop_token.stop_requested(); it.increment(error))
+	{
+		if (!uam::paths::IsRegularFileWithExtensionNoThrow(*it, ".json")) continue;
+		std::optional<ChatSession> chat = LoadLocalChat(data_root, it->path().stem().string(), false, nullptr, false);
+		if (chat) chats.push_back(std::move(*chat));
+	}
+	return chats;
 }
