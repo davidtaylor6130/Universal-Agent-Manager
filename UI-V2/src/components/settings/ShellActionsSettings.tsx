@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { createPortal } from 'react-dom'
 import { BookOpen, Save, X, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
+import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -120,13 +121,10 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   return (
     <div className="space-y-4">
       {toolbarTarget ? createPortal(toolbar, toolbarTarget) : toolbar}
-      {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50" onClick={event => { if (event.target === event.currentTarget && !applying) setPendingExit(null) }}>
-        <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}} onKeyDown={event => { if(event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if(!applying) setPendingExit(null) } }}>
-          <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
-          {error && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{error}</p>}
-          <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if(await apply()) { const next=pendingExit; setPendingExit(null); next() } }}>Save and leave</Button></div>
-        </div>
-      </div>}
+      {pendingExit && <UnsavedChangesDialog title="Save shell actions before leaving?" busy={applying} error={error || undefined}
+        onStay={() => setPendingExit(null)}
+        onDiscard={() => { setActions(appliedActions); setError(''); const next = pendingExit; setPendingExit(null); next() }}
+        onSave={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next() } }} />}
       {newGroupActionId && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
         <form role="dialog" aria-modal="true" aria-label="New shell action group" className="rounded-xl p-5 space-y-4 w-80" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}} onKeyDown={event => { if(event.key==='Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if(!parseGroupPath(newGroupName).length) return; update(newGroupActionId,{groupPath:parseGroupPath(newGroupName)}); setNewGroupActionId('') }}>
           <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New group</h3><IconButton icon={<X size={16}/>} label="Close new group" onClick={() => setNewGroupActionId('')} /></div>
@@ -181,24 +179,26 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           {expanded && <div className="grid gap-3 p-4 sm:grid-cols-2">
           <div className="flex gap-3 items-center">
             <label className="grid gap-1 flex-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              Name
               <input
+                autoFocus={!appliedActions.some(item => item.id === action.id) && !action.label.trim()}
                 aria-label={`Label for ${action.label}`}
                 placeholder="Action name"
                 value={action.label}
                 onChange={(event) => update(action.id, { label: event.target.value })}
-                className="rounded-md px-3 py-2 text-sm"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+                className="uam-field w-full text-sm" style={{ height: 34 }}
               />
             </label>
           </div>
 
-          <MenuSelect label={`Group for ${action.label}`} value={groupPathText(action)} onChange={value => {
+          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>Group<MenuSelect label={`Group for ${action.label}`} value={groupPathText(action)} onChange={value => {
             if(value==='__new__') { setNewGroupActionId(action.id); setNewGroupName('') }
             else update(action.id,{groupPath:parseGroupPath(value)})
-          }} options={[{value:'',label:'No group',icon:<FolderTree size={15}/>},...groupOptions.map(group => ({value:group,label:group,icon:<FolderTree size={15}/> })),{value:'__new__',label:'New group…',icon:<Plus size={15}/> }]} />
+          }} options={[{value:'',label:'No group',icon:<FolderTree size={15}/>},...groupOptions.map(group => ({value:group,label:group,icon:<FolderTree size={15}/> })),{value:'__new__',label:'New group…',icon:<Plus size={15}/> }]} /></div>
 
           <div className="grid sm:grid-cols-2 gap-3 sm:col-span-2">
             <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Provider</span>
               <MenuSelect
                 label={`Provider for ${action.label}`}
                 value={action.providerId}
@@ -215,6 +215,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
               />
             </div>
             <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Model</span>
               <MenuSelect
                 label={`Model for ${action.label}`}
                 value={action.modelId}
@@ -233,6 +234,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
 
           <div className="grid sm:grid-cols-2 gap-3 sm:col-span-2">
             <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>When clicked</span>
               <MenuSelect
                 value={action.openWorkspace ? 'workspace' : 'skill'}
                 label={`Action for ${action.label}`}
@@ -244,6 +246,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
               />
             </div>
             <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Input type</span>
               <MenuSelect
                 label={`Input type for ${action.label}`}
                 value={action.acceptsFiles && action.acceptsFolders ? 'both' : action.acceptsFolders ? 'folders' : 'files'}
@@ -262,6 +265,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
 
           {!action.openWorkspace && (
             <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+              <span>Skill</span>
               <MenuSelect
                 label={`Skill for ${action.label}`}
                 value={action.skillPath}

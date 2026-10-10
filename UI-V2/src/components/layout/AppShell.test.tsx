@@ -244,7 +244,7 @@ describe('AppShell', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
     expect(setSettingsOpen).not.toHaveBeenCalled()
     expect(editor.value).toBe('[{"name":"draft"}]')
-    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard changes')!.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard')!.click())
     expect(setSettingsOpen).toHaveBeenCalledExactlyOnceWith(false)
     expect(host.querySelector('[aria-label="Settings workspace"]')).toBeNull()
     act(() => root.unmount())

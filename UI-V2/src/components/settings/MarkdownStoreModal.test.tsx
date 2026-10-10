@@ -157,14 +157,17 @@ describe('MarkdownStoreModal', () => {
   it('filters by favorites and provider and updates favorites inline', async () => {
     const { host } = mountSkills()
 
-    const filter = host.querySelector('select[aria-label="Filter Skills"]') as HTMLSelectElement
-    act(() => { filter.value = 'favorites'; filter.dispatchEvent(new Event('change', { bubbles: true })) })
+    const pick = (label: string) => {
+      act(() => { (host.querySelector('[role="combobox"][aria-label="Filter Skills"]') as HTMLButtonElement).click() })
+      act(() => { [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((option) => option.textContent === label)!.click() })
+    }
+    pick('Pinned')
     expect(host.textContent).toContain('Release notes')
     expect(host.textContent).not.toContain('Review code')
-    act(() => { filter.value = 'source:codex'; filter.dispatchEvent(new Event('change', { bubbles: true })) })
+    pick('Source: codex')
     expect(host.textContent).toContain('Review code')
     expect(host.textContent).not.toContain('Release notes')
-    act(() => { filter.value = 'group:Coding'; filter.dispatchEvent(new Event('change', { bubbles: true })) })
+    pick('Group: Coding')
     expect(host.textContent).toContain('Review code')
     expect(host.textContent).not.toContain('Release notes')
 
