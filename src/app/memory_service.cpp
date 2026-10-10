@@ -1085,6 +1085,7 @@ namespace
 	bool StartColdMemoryPreparationTask(uam::AppState& app, const ChatSession& chat, int start_message_index, std::string preflight_error)
 	{
 		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
 		task.message_count = MessageCount(chat);
@@ -1213,6 +1214,7 @@ namespace
 		}
 
 		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
 		task.message_count = MessageCount(chat);
@@ -1825,6 +1827,13 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		}
 
 		uam::StopAsyncMemoryExtractionWorker(task);
+		if (task.data_root != app.data_root)
+		{
+			app.memory_last_status = "Memory scan discarded because its data directory changed.";
+			it = app.memory_extraction_tasks.erase(it);
+			changed = true;
+			continue;
+		}
 		auto requeue_completed_task = [&app, &task]
 		{
 			uam::QueuedMemoryExtractionTask queued;
