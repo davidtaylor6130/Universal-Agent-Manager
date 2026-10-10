@@ -32,6 +32,44 @@ function openWorkspaceActions(host: HTMLElement) {
 }
 
 describe('ChatView', () => {
+  it('shows loading for missing history, preserves the draft and distinguishes empty history from failure', async () => {
+    const previousLoad = useAppStore.getState().loadSessionMessages
+    const loadSessionMessages = vi.fn().mockResolvedValue(false)
+    useAppStore.setState((state) => ({ messages: {}, chatHistoryErrorBySessionId: {}, loadSessionMessages,
+      sessions: state.sessions.map((session) => ({ ...session, messageCount: 50 })) }))
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    const render = () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+    try {
+      act(render)
+      expect(host.textContent).toContain('Loading chat history…')
+      expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('true')
+      const input = host.querySelector<HTMLTextAreaElement>('textarea')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Draft while history loads')
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      act(() => useAppStore.setState({ messages: { 'chat-1': [{ id: 'loaded', role: 'user', content: 'Loaded history', createdAt: new Date() }] } }))
+      expect(host.textContent).toContain('Loaded history')
+      expect(host.textContent).not.toContain('Loading chat history…')
+      expect(input.value).toBe('Draft while history loads')
+      act(() => {
+        useAppStore.setState((state) => ({ messages: { 'chat-1': [] }, sessions: state.sessions.map((session) => ({ ...session, messageCount: 0 })) }))
+        render()
+      })
+      expect(host.textContent).toContain('No messages yet')
+      expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('false')
+      act(() => useAppStore.setState({ chatHistoryErrorBySessionId: { 'chat-1': 'Could not read the saved transcript.' } }))
+      expect(host.textContent).toContain('Chat history unavailable')
+      expect(host.textContent).not.toContain('No messages yet')
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')!.click())
+      expect(loadSessionMessages).toHaveBeenCalledWith('chat-1', true)
+    } finally {
+      act(() => root.unmount()); host.remove()
+      useAppStore.setState({ loadSessionMessages: previousLoad, chatHistoryErrorBySessionId: {} })
+    }
+  })
+
   it('settles goal creation and permits the next submission after StrictMode effect replay', async () => {
     const session = { ...useAppStore.getState().sessions[0], providerId: 'gemini-cli' }
     const originalCreate = useAppStore.getState().setGoal

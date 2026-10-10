@@ -557,6 +557,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const searchNavigationRef = useRef(searchNavigation)
   searchNavigationRef.current = searchNavigation
   const chatHistoryError = useAppStore((s) => s.chatHistoryErrorBySessionId[session.id] ?? '')
+  const historyPageMissing = useAppStore((s) => s.messages[session.id] === undefined)
+  const historyLoading = messages.length === 0 && !chatHistoryError && (
+    (historyPageMissing && (session.messageCount ?? 0) > 0) || chatHistoryRetryingIds.has(session.id)
+  )
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
   const loadOlderSessionMessages = useAppStore((s) => s.loadOlderSessionMessages)
   const retryChatHistory = useCallback(async (chatId: string) => {
@@ -2361,7 +2365,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 </Notice>
               )}
               <SubAgentDisclosureProvider key={session.id}>
-              <div className="uam-message-list space-y-1.5">
+              <div className="uam-message-list space-y-1.5" aria-busy={historyLoading}>
+              {messages.length === 0 && !chatHistoryError && <div role="status" className="flex min-h-[30vh] items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>
+                {historyLoading ? 'Loading chat history…' : 'No messages yet'}
+              </div>}
               {(earliestRenderedMessageIndex > 0 || historyStartIndex > 0) && (
                 <div className="flex justify-center">
                   <Button
