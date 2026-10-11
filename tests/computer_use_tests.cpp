@@ -767,24 +767,31 @@ UAM_TEST(ComputerUseBackgroundPollPreservesTranscriptAndHonorsStopAndDeletion)
 	message.content = std::string(8 * 1024 * 1024, 'x');
 	chat.messages.push_back(std::move(message));
 	app.chats.push_back(std::move(chat));
+	ChatSession other;
+	other.id = "other-chat";
+	other.provider_id = "claude-cli";
+	other.computer_use_backend = "uam";
+	app.chats.push_back(std::move(other));
 	const Message* body = app.chats.front().messages.data();
 	const fs::path directory = temp.root / "computer-use/background-chat";
 	UAM_ASSERT(fs::create_directories(directory));
 	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", "{\"state\":\"armed\"}\n"));
 	uam::ComputerUseService service;
 	UAM_ASSERT(!service.PollInBackground(app));
+	std::swap(app.chats.front(), app.chats.back());
 	const double deadline = uam::GetAppTimeSeconds() + 5.0;
-	while (!app.chats.front().computer_use_enabled && uam::GetAppTimeSeconds() < deadline)
+	while (!app.chats.back().computer_use_enabled && uam::GetAppTimeSeconds() < deadline)
 	{
 		(void)service.PollInBackground(app);
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	}
-	UAM_ASSERT(app.chats.front().computer_use_enabled);
-	UAM_ASSERT_EQ(app.chats.front().messages.data(), body);
+	UAM_ASSERT(app.chats.back().computer_use_enabled);
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	UAM_ASSERT_EQ(app.chats.back().messages.data(), body);
 	std::string error;
 	UAM_ASSERT(uam::ComputerUseService::SetControlState(app, "background-chat", "stopped", &error));
 	(void)service.PollInBackground(app);
-	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	UAM_ASSERT(!app.chats.back().computer_use_enabled);
 	app.chats.clear();
 	const double finish = uam::GetAppTimeSeconds() + 0.3;
 	while (uam::GetAppTimeSeconds() < finish)

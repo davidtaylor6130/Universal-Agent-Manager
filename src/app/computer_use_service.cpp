@@ -16,6 +16,7 @@
 #include <sstream>
 #include <thread>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 
 #if defined(_WIN32)
@@ -211,11 +212,16 @@ namespace uam
 			catch (const std::exception& error) { diagnostics::Write(std::string("Computer-use background scan failed: ") + error.what()); m_nextScanTime = GetAppTimeSeconds() + 1.0; }
 			if (scan && scan->state.data_root == app.data_root)
 			{
+				std::unordered_map<std::string, ChatSession*> current_by_id;
+				current_by_id.reserve(app.chats.size());
+				for (ChatSession& chat : app.chats) current_by_id.emplace(chat.id, &chat);
 				for (std::size_t index = 0; index < scan->baseline.size(); ++index)
 				{
 					const ChatSession& baseline = scan->baseline[index];
-					const std::vector<ChatSession>::iterator current = std::ranges::find(app.chats, baseline.id, &ChatSession::id);
-					if (current == app.chats.end() || !SameControlIdentity(*current, baseline)) continue;
+					const std::unordered_map<std::string, ChatSession*>::const_iterator found = current_by_id.find(baseline.id);
+					if (found == current_by_id.end()) continue;
+					ChatSession* const current = found->second;
+					if (!SameControlIdentity(*current, baseline)) continue;
 					const auto prior = app.computer_use_by_chat_id.find(baseline.id);
 					const std::string signature = prior == app.computer_use_by_chat_id.end() ? "" : prior->second.source_signature;
 					if (signature != scan->signatures[baseline.id]) continue;
