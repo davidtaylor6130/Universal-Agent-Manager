@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stop_token>
+#include "common/provider/copilot/cli/copilot_session_paths.h"
 
 #include "common/provider/provider_runtime.h"
 
@@ -31,7 +32,6 @@ class CopilotCliProviderRuntime final : public IProviderRuntime
 };
 
 const IProviderRuntime& GetCopilotCliProviderRuntime();
-std::filesystem::path CopilotSessionStatePath();
 std::vector<ChatSession> LoadCopilotSessionStateChats(
     const std::filesystem::path& session_state_root,
     const std::filesystem::path& workspace_filter = {},

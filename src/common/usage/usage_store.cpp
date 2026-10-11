@@ -106,7 +106,55 @@ namespace uam::usage
 		return true;
 	}
 
-	std::optional<Ledger> Store::Read(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled) const
+	nlohmann::json EncodeAccountingRecord(const AccountingRecord& entry)
+	{
+		const Record& record = entry.record;
+		return nlohmann::json::array({entry.identity, record.timestamp_ms, nlohmann::json::array({record.provider_id, record.model_id, record.session_id, record.speed, record.dedupe_key.empty(),
+		    record.tokens.input, record.tokens.cached_input, record.tokens.cache_write, record.tokens.output, record.tokens.reasoning,
+		    record.reported_cost_usd ? nlohmann::json(*record.reported_cost_usd) : nlohmann::json(nullptr),
+		    record.estimated_cost_usd ? nlohmann::json(*record.estimated_cost_usd) : nlohmann::json(nullptr)})});
+	}
+
+	std::optional<AccountingRecord> DecodeAccountingRecord(const nlohmann::json& wire)
+	{
+		if (!wire.is_array() || wire.size() != 3 || !wire[0].is_string() || !wire[1].is_number_integer() || wire[1] < 0 || wire[1] >= kMaxExactTokenCount) return std::nullopt;
+		const std::string& identity_text = wire[0].get_ref<const std::string&>();
+		if (identity_text.empty() || identity_text.size() > 64 * 1024) return std::nullopt;
+		const nlohmann::json identity = nlohmann::json::parse(identity_text, nullptr, false);
+		const nlohmann::json& row = wire[2];
+		if (!row.is_array() || row.size() != 12 || !row[4].is_boolean()) return std::nullopt;
+		Record record;
+		try
+		{
+			record.provider_id = row[0].get<std::string>(); record.model_id = row[1].get<std::string>(); record.session_id = row[2].get<std::string>(); record.speed = row[3].get<std::string>();
+			record.timestamp_ms = wire[1].get<std::int64_t>();
+			const bool unidentified = row[4].get<bool>();
+			if (!identity.is_array() || identity.size() != (unidentified ? 5 : 3) || identity[0] != (unidentified ? "source" : "native") || identity[1] != record.provider_id)
+			{ return std::nullopt; }
+			if (unidentified)
+			{
+				if (!identity[2].is_string() || identity[2].get_ref<const std::string&>().empty() || identity[2].get_ref<const std::string&>().size() > 8192 ||
+				    !identity[3].is_number_unsigned() || identity[4] != record.timestamp_ms) { return std::nullopt; }
+			}
+			else
+			{
+				record.dedupe_key = identity[2].get<std::string>();
+				if (record.dedupe_key.empty()) return std::nullopt;
+			}
+			for (const std::pair<int, std::int64_t*> field : {std::pair<int, std::int64_t*>{5, &record.tokens.input}, {6, &record.tokens.cached_input}, {7, &record.tokens.cache_write}, {8, &record.tokens.output}, {9, &record.tokens.reasoning}})
+			{
+				if (!row[field.first].is_number_integer() || (row[field.first].is_number_unsigned() && row[field.first].get<std::uint64_t>() > static_cast<std::uint64_t>(kMaxExactTokenCount))) { return std::nullopt; }
+				*field.second = row[field.first].get<std::int64_t>();
+			}
+			if (!row[10].is_null()) record.reported_cost_usd = row[10].get<double>();
+			if (!row[11].is_null()) record.estimated_cost_usd = row[11].get<double>();
+		}
+		catch (const nlohmann::json::exception&) { return std::nullopt; }
+		if (!Valid(record) || identity.dump() != identity_text) return std::nullopt;
+		return AccountingRecord{identity_text, std::move(record)};
+	}
+
+	std::optional<std::vector<AccountingRecord>> Store::ReadRecords(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled) const
 	{
 		error.clear();
 		if (generated_ms <= 0 || generated_ms > kMaxExactTokenCount) { error = "Usage collection time is invalid."; return std::nullopt; }
@@ -120,7 +168,8 @@ namespace uam::usage
 		{ error = "Could not read usage accounting."; return std::nullopt; }
 		Statement statement(raw, sqlite3_finalize);
 		sqlite3_bind_int64(statement.get(), 1, start); sqlite3_bind_int64(statement.get(), 2, generated_ms);
-		std::vector<Record> records;
+		std::vector<AccountingRecord> records;
+		std::size_t accounting_bytes = 0;
 		int status = SQLITE_OK;
 		while ((status = sqlite3_step(statement.get())) == SQLITE_ROW)
 		{
@@ -131,35 +180,14 @@ namespace uam::usage
 			if (!text || length <= 0 || length > 64 * 1024) { error = "Usage accounting record is corrupt."; return std::nullopt; }
 			const nlohmann::json row = nlohmann::json::parse(text, text + length, nullptr, false);
 			if (!row.is_array() || row.size() != 12 || !row[4].is_boolean()) { error = "Usage accounting record is corrupt."; return std::nullopt; }
-			Record record;
-			try
-			{
-				record.provider_id = row[0].get<std::string>(); record.model_id = row[1].get<std::string>(); record.session_id = row[2].get<std::string>(); record.speed = row[3].get<std::string>();
-				record.timestamp_ms = sqlite3_column_int64(statement.get(), 1);
-				const char* identity_text = reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 0));
-				const int identity_size = sqlite3_column_bytes(statement.get(), 0);
-				if (!identity_text || identity_size <= 0 || identity_size > 64 * 1024) { error = "Usage accounting identity is corrupt."; return std::nullopt; }
-				const nlohmann::json identity = nlohmann::json::parse(identity_text, identity_text + identity_size, nullptr, false);
-				const bool unidentified = row[4].get<bool>();
-				if (!identity.is_array() || identity.size() != (unidentified ? 5 : 3) || identity[0] != (unidentified ? "source" : "native") || identity[1] != record.provider_id)
-				{ error = "Usage accounting identity is corrupt."; return std::nullopt; }
-				if (unidentified)
-				{
-					if (!identity[2].is_string() || identity[2].get_ref<const std::string&>().empty() || identity[2].get_ref<const std::string&>().size() > 8192 ||
-					    !identity[3].is_number_unsigned() || identity[4] != record.timestamp_ms) { error = "Usage accounting identity is corrupt."; return std::nullopt; }
-				}
-				else record.dedupe_key = identity[2].get<std::string>();
-				for (const std::pair<int, std::int64_t*> field : {std::pair<int, std::int64_t*>{5, &record.tokens.input}, {6, &record.tokens.cached_input}, {7, &record.tokens.cache_write}, {8, &record.tokens.output}, {9, &record.tokens.reasoning}})
-				{
-					if (!row[field.first].is_number_integer() || (row[field.first].is_number_unsigned() && row[field.first].get<std::uint64_t>() > static_cast<std::uint64_t>(kMaxExactTokenCount))) { error = "Usage accounting count is corrupt."; return std::nullopt; }
-					*field.second = row[field.first].get<std::int64_t>();
-				}
-				if (!row[10].is_null()) record.reported_cost_usd = row[10].get<double>();
-				if (!row[11].is_null()) record.estimated_cost_usd = row[11].get<double>();
-			}
-			catch (const nlohmann::json::exception&) { error = "Usage accounting record is corrupt."; return std::nullopt; }
-			if (!Valid(record)) { error = "Usage accounting record is invalid."; return std::nullopt; }
-			records.push_back(std::move(record));
+			const char* identity_text = reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 0));
+			const int identity_size = sqlite3_column_bytes(statement.get(), 0);
+			if (!identity_text || identity_size <= 0 || identity_size > 64 * 1024) { error = "Usage accounting identity is corrupt."; return std::nullopt; }
+			accounting_bytes += static_cast<std::size_t>(identity_size + length);
+			if (accounting_bytes > 64 * 1024 * 1024) { error = "Usage accounting exceeds its byte limit."; return std::nullopt; }
+			std::optional<AccountingRecord> record = DecodeAccountingRecord(nlohmann::json::array({std::string(identity_text, identity_size), sqlite3_column_int64(statement.get(), 1), row}));
+			if (!record) { error = "Usage accounting record is corrupt or invalid."; return std::nullopt; }
+			records.push_back(std::move(*record));
 		}
 		if (status != SQLITE_DONE) { error = "Could not complete usage accounting read."; return std::nullopt; }
 		statement.reset();
@@ -167,9 +195,16 @@ namespace uam::usage
 		if (sqlite3_prepare_v2(database.get(), "DELETE FROM facts WHERE created<?1", -1, &prune_raw, nullptr) != SQLITE_OK) { error = "Could not maintain usage retention."; return std::nullopt; }
 		Statement prune(prune_raw, sqlite3_finalize); sqlite3_bind_int64(prune.get(), 1, start);
 		if (sqlite3_step(prune.get()) != SQLITE_DONE) { error = "Could not maintain usage retention."; return std::nullopt; }
+		return records;
+	}
+
+	std::optional<Ledger> Store::Read(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled) const
+	{
+		const std::optional<std::vector<AccountingRecord>> records = ReadRecords(generated_ms, error, cancelled);
+		if (!records) return std::nullopt;
 		std::vector<const Record*> references;
-		references.reserve(records.size());
-		for (const Record& record : records) references.push_back(&record);
+		references.reserve(records->size());
+		for (const AccountingRecord& entry : *records) references.push_back(&entry.record);
 		std::optional<Ledger> ledger = Ledger::Create(references, generated_ms);
 		if (!ledger) error = "Usage accounting totals exceed supported limits.";
 		return ledger;

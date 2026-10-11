@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "common/usage/usage_store.h"
 #include <sqlite3.h>
+#include <unordered_set>
 
 using namespace uam_test;
 
@@ -155,4 +156,45 @@ UAM_TEST(UsageStoreMeasuresPersistentIndexAndCompactLedgerForThirtyDays)
 	std::cout << "[usage-store-size] events=" << records.size() << " indexBytes=" << index_bytes << " ledgerBytes=" << ledger_bytes << '\n';
 	UAM_ASSERT(index_bytes < 8 * 1024 * 1024);
 	UAM_ASSERT(ledger_bytes < 128 * 1024);
+}
+
+UAM_TEST(UsageStoreAccountingExportPreservesNativeAndUnidentifiedIdentityAcrossRestart)
+{
+	TempDir temp("uam-usage-accounting-records");
+	uam::usage::Store store(temp.root);
+	std::string error;
+	uam::usage::Record native = StoreEvent("native-receipt"), unidentified = native;
+	unidentified.dedupe_key.clear();
+	UAM_ASSERT(store.Import({{&native, "provider-file", 0}, {&unidentified, "provider-file", 1}, {&unidentified, "provider-file", 2}}, error));
+	const std::optional<std::vector<uam::usage::AccountingRecord>> records = uam::usage::Store(temp.root).ReadRecords(kStoreAsOf, error);
+	UAM_ASSERT(records); UAM_ASSERT_EQ(records->size(), std::size_t{3});
+	std::unordered_set<std::string> identities;
+	for (const uam::usage::AccountingRecord& fact : *records)
+	{
+		const nlohmann::json wire = uam::usage::EncodeAccountingRecord(fact);
+		const std::optional<uam::usage::AccountingRecord> decoded = uam::usage::DecodeAccountingRecord(wire);
+		UAM_ASSERT(decoded); UAM_ASSERT_EQ(decoded->identity, fact.identity);
+		UAM_ASSERT_EQ(decoded->record.tokens.Total(), 35LL);
+		UAM_ASSERT_EQ(decoded->record.dedupe_key, fact.record.dedupe_key);
+		UAM_ASSERT(identities.insert(decoded->identity).second);
+	}
+}
+
+UAM_TEST(UsageAccountingCodecRejectsMalformedIdentitiesCountsAndCosts)
+{
+	const uam::usage::Record original = StoreEvent("native");
+	const nlohmann::json valid = uam::usage::EncodeAccountingRecord({nlohmann::json::array({"native", original.provider_id, original.dedupe_key}).dump(), original});
+	UAM_ASSERT(uam::usage::DecodeAccountingRecord(valid));
+	for (int mutation = 0; mutation < 7; ++mutation)
+	{
+		nlohmann::json row = valid;
+		if (mutation == 0) row[0] = "[1,2]";
+		if (mutation == 1) row[1] = -1;
+		if (mutation == 2) row[2][0] = "unknown-provider";
+		if (mutation == 3) row[2][5] = -1;
+		if (mutation == 4) row[2][9] = 999;
+		if (mutation == 5) row[2][10] = "unpriced";
+		if (mutation == 6) row[0] = nlohmann::json::array({"native", original.provider_id, ""}).dump();
+		UAM_ASSERT(!uam::usage::DecodeAccountingRecord(row));
+	}
 }

@@ -5,6 +5,7 @@
 #include "common/platform/observed_process_stop.h"
 
 #include "common/paths/path_utils.h"
+#include "common/usage/usage_collector.h"
 #include "common/paths/workspace_file_reader.h"
 #include "common/provider/provider_native_context.h"
 #include "remote/runner_startup.h"
@@ -469,8 +470,8 @@ namespace uam::remote
 		}
 	}
 
-	RunnerState::RunnerState(std::uintmax_t max_spool_bytes_per_stream)
-	    : m_maxSpoolBytesPerStream(max_spool_bytes_per_stream)
+	RunnerState::RunnerState(std::uintmax_t max_spool_bytes_per_stream, std::shared_ptr<uam::usage::Collector> usage_history)
+	    : m_usageHistory(std::move(usage_history)), m_maxSpoolBytesPerStream(max_spool_bytes_per_stream)
 	{
 		std::error_code error;
 		std::filesystem::path spool_root;
@@ -601,6 +602,24 @@ namespace uam::remote
 		SweepExpiredTransientProcesses();
 		std::unique_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
+		if (type == "usage.accounting")
+		{
+			if ((request.contains("offset") && (!request["offset"].is_number_integer() || request["offset"] < 0 || request["offset"] > 64 * 1024 * 1024)) ||
+			    (request.contains("fingerprint") && (!request["fingerprint"].is_string() || request["fingerprint"].get_ref<const std::string&>().size() != 16)))
+				return ProcessError(request, "invalid_request", "Choose a valid usage accounting offset and snapshot.");
+			if (!m_usageHistory)
+			{
+				const std::optional<std::filesystem::path> home = env::GetUserHomePath();
+				if (!home || !home->is_absolute()) return ProcessError(request, "usage_unavailable", "The runner user data directory is unavailable.");
+				// Resolve history on its worker; remote clients cannot supply provider or cache paths.
+				m_usageHistory = std::make_shared<uam::usage::Collector>(*home / ".uam" / "runner-usage", true);
+			}
+			const std::shared_ptr<uam::usage::Collector> history = m_usageHistory;
+			state_lock.unlock();
+			nlohmann::json result = history->ExportAccounting(request.value("offset", std::size_t{0}), request.value("fingerprint", std::string{}));
+			if (result.contains("error")) return ProcessError(request, "usage_snapshot_changed", result["error"].get<std::string>());
+			return ProcessSuccess(request, std::move(result));
+		}
 		if (type == "worker.prepare" || type == "worker.remove")
 		{
 			if (!request.contains("workerId") || !request["workerId"].is_string()) return ProcessError(request, "invalid_request", "A text worker identity is required.");

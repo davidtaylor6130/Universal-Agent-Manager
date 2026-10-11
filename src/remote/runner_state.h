@@ -18,12 +18,14 @@
 #include <utility>
 #include <vector>
 
+namespace uam::usage { class Collector; }
+
 namespace uam::remote
 {
 	class RunnerState
 	{
 	  public:
-		explicit RunnerState(std::uintmax_t max_spool_bytes_per_stream = 1024ull * 1024ull * 1024ull);
+		explicit RunnerState(std::uintmax_t max_spool_bytes_per_stream = 1024ull * 1024ull * 1024ull, std::shared_ptr<uam::usage::Collector> usage_history = {});
 		~RunnerState();
 		RunnerState(const RunnerState&) = delete;
 		RunnerState& operator=(const RunnerState&) = delete;
@@ -108,6 +110,7 @@ namespace uam::remote
 	  private:
 		void SweepExpiredTransientProcesses();
 		std::mutex m_stateMutex;
+		std::shared_ptr<uam::usage::Collector> m_usageHistory;
 		std::mutex m_memoryMutex;
 		struct TextWorker
 		{

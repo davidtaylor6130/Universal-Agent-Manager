@@ -322,6 +322,16 @@ endif()
 
 add_executable(uam_runner
   src/common/memory/memory_library_store.cpp
+  src/common/usage/transcript_usage.cpp
+  src/common/usage/usage_aggregation.cpp
+  src/common/usage/transcript_scan.cpp
+  src/common/usage/opencode_history_scan.cpp
+  src/common/usage/usage_history_service.cpp
+  src/common/usage/usage_ledger.cpp
+  src/common/usage/usage_store.cpp
+  src/common/usage/usage_collector.cpp
+  src/common/usage/usage_pricing.cpp
+  src/common/usage/usage_pricing_cache.cpp
   src/remote/runner_main.cpp
   src/remote/runner_client.cpp
   src/remote/runner_protocol.cpp
@@ -593,6 +603,7 @@ add_library(uam_sqlite STATIC "${uam_sqlite_SOURCE_DIR}/sqlite3.c")
 target_include_directories(uam_sqlite PUBLIC "${uam_sqlite_SOURCE_DIR}")
 target_compile_definitions(uam_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
 target_link_libraries(universal_agent_manager PRIVATE uam_sqlite)
+target_link_libraries(uam_runner PRIVATE uam_sqlite)
 
 # CEF link targets depend on platform.
 # The CEF distribution's own CMakeLists.txt exposes 'libcef_dll_wrapper'.

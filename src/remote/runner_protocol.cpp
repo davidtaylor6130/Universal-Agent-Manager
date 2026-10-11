@@ -169,6 +169,7 @@ namespace uam::remote
 			                          {"directoryBrowsing", state != nullptr},
 			                          {"contextRead", state != nullptr},
 			                          {"workspaceFileRead", state != nullptr},
+			                          {"usageAccounting", state != nullptr},
 		                          {"projectMemory", state != nullptr},
 		                          {"isolatedTextWorkers", state != nullptr},
 			                          {"runnerStartup", state != nullptr},

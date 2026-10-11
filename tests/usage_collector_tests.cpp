@@ -2,6 +2,7 @@
 #include "common/usage/usage_collector.h"
 #include <thread>
 #include <sqlite3.h>
+#include "common/utils/base64.h"
 
 using namespace uam_test;
 
@@ -142,4 +143,33 @@ UAM_TEST(UsageCollectorPricesDiscoveredModelsWithoutChangingStoredReceiptsAndHon
 	UAM_ASSERT_EQ(manual["totals"]["estimatedCostUsd"].get<double>(), 0.0);
 	UAM_ASSERT_EQ(manual["models"][0]["priceReference"]["kind"].get<std::string>(), std::string("manual"));
 	UAM_ASSERT_EQ(collector.Query(7)["totals"]["estimatedCostUsd"], result["totals"]["estimatedCostUsd"]);
+}
+
+UAM_TEST(UsageCollectorExportsCachedAccountingWithoutProviderIoAndRejectsOtherSnapshots)
+{
+	TempDir temp("uam-usage-accounting-export");
+	const fs::path provider = temp.root / "provider";
+	fs::create_directories(provider);
+	const fs::path transcript = provider / "session.jsonl";
+	const std::string timestamp = uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(std::time(nullptr) - 2), uam::time::kIsoUtcTimestampFormat);
+	UAM_ASSERT(uam::io::WriteTextFile(transcript, nlohmann::json({{"type", "assistant"}, {"timestamp", timestamp}, {"sessionId", "session"}, {"requestId", "receipt"}, {"message", {{"id", "receipt"}, {"model", "claude-sonnet"}, {"usage", {{"input_tokens", 12}, {"output_tokens", 3}}}}}}).dump() + "\n"));
+	uam::usage::Collector collector(temp.root / "data", {{uam::provider_ids::kClaudeCli, {provider}}}, {}, true);
+	UAM_ASSERT(WaitForAccounting(collector).contains("asOfMs"));
+	const nlohmann::json first = collector.ExportAccounting();
+	UAM_ASSERT(first.contains("dataBase64"));
+	const fs::path index = temp.root / "data" / "usage" / "history-index-v1.sqlite";
+	const fs::file_time_type modified = fs::last_write_time(index);
+	UAM_ASSERT(fs::remove(transcript));
+	UAM_ASSERT_EQ(collector.ExportAccounting(), first);
+	UAM_ASSERT_EQ(fs::last_write_time(index), modified);
+	UAM_ASSERT(collector.ExportAccounting(0, "0000000000000000").contains("error"));
+	UAM_ASSERT(collector.ExportAccounting(first["totalBytes"].get<std::size_t>() + 1).contains("error"));
+	std::string bytes;
+	UAM_ASSERT(uam::base64::Decode(first["dataBase64"].get<std::string>(), bytes));
+	const nlohmann::json document = nlohmann::json::parse(bytes);
+	UAM_ASSERT_EQ(document["version"], nlohmann::json(1));
+	UAM_ASSERT_EQ(document["facts"].size(), std::size_t{1});
+	const std::optional<uam::usage::AccountingRecord> fact = uam::usage::DecodeAccountingRecord(document["facts"][0]);
+	UAM_ASSERT(fact); UAM_ASSERT(!fact->record.dedupe_key.empty());
+	UAM_ASSERT_EQ(fact->record.tokens.Total(), 15LL);
 }

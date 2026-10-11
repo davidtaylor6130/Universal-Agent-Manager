@@ -397,18 +397,6 @@ const IProviderRuntime& GetCopilotCliProviderRuntime()
 	return runtime;
 }
 
-std::filesystem::path CopilotSessionStatePath()
-{
-	if (const std::optional<std::filesystem::path> copilot_home = uam::env::GetTrimmedPath("COPILOT_HOME"))
-	{
-		return *copilot_home / "session-state";
-	}
-	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
-	{
-		return *home / ".copilot" / "session-state";
-	}
-	return uam::paths::CurrentPathOrDot() / ".copilot" / "session-state";
-}
 
 std::vector<ChatSession> LoadCopilotSessionStateChats(
     const std::filesystem::path& session_state_root,

@@ -1,7 +1,7 @@
 #include "common/usage/usage_history_service.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/utils/env_utils.h"
-#include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
+#include "common/provider/copilot/cli/copilot_session_paths.h"
 
 #include <algorithm>
 #include <cmath>

@@ -9,6 +9,8 @@
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
 #include "remote/runner_protocol.h"
+#include "common/usage/usage_store.h"
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
@@ -189,6 +191,7 @@ namespace uam::remote
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
 		m_contextRead = response["capabilities"].value("contextRead", false);
 		m_workspaceFileRead = response["capabilities"].value("workspaceFileRead", false);
+		m_usageAccounting = response["capabilities"].value("usageAccounting", false);
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
 		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
 		m_runnerStartup = response["capabilities"].value("runnerStartup", false);
@@ -886,6 +889,80 @@ namespace uam::remote
 		return true;
 	}
 
+	bool RunnerClient::ReadUsageAccounting(nlohmann::json& snapshot,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		snapshot = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_usageAccounting)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to collect usage accounting.";
+			return false;
+		}
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		const std::function<bool()> interrupted = [stop_token, deadline]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline; };
+		std::string text;
+		std::string fingerprint;
+		std::size_t total = 0;
+		do
+		{
+			nlohmann::json request = {{"type", "usage.accounting"}, {"offset", text.size()}};
+			if (!fingerprint.empty()) request["fingerprint"] = fingerprint;
+			nlohmann::json response;
+			if (!Request(request, response, error_out, interrupted)) return false;
+			const nlohmann::json result = response.value("result", nlohmann::json{});
+			if (result.is_object() && result.contains("pending"))
+			{
+				if (!text.empty() || !result["pending"].is_boolean() || result["pending"] != true ||
+				    !result.contains("collectionError") || !result["collectionError"].is_string() || result["collectionError"].get_ref<const std::string&>().size() > 1024)
+				{ if (error_out) *error_out = "The runner returned invalid usage progress."; return false; }
+				snapshot = result; return true;
+			}
+			std::string chunk;
+			if (!result.is_object() || !result.contains("totalBytes") || !result["totalBytes"].is_number_integer() ||
+			    result["totalBytes"].get<std::int64_t>() < 0 || result["totalBytes"].get<std::int64_t>() > 64 * 1024 * 1024 ||
+			    !result.contains("offset") || !result["offset"].is_number_integer() || result["offset"] != text.size() ||
+			    !result.contains("fingerprint") || !result["fingerprint"].is_string() || result["fingerprint"].get_ref<const std::string&>().size() != 16 ||
+			    !result.contains("dataBase64") || !result["dataBase64"].is_string() ||
+			    result["dataBase64"].get_ref<const std::string&>().size() > 699052 ||
+			    !uam::base64::Decode(result["dataBase64"].get_ref<const std::string&>(), chunk))
+			{
+				if (error_out != nullptr) *error_out = "The runner returned an invalid usage accounting.";
+				return false;
+			}
+			const std::size_t next_total = result["totalBytes"].get<std::size_t>();
+			if (text.size() > next_total || chunk.size() != std::min<std::size_t>(512 * 1024, next_total - text.size()) ||
+			    (!fingerprint.empty() && (result["fingerprint"] != fingerprint || next_total != total)))
+			{
+				if (error_out != nullptr) *error_out = "Usage accounting changed while loading. Try again.";
+				return false;
+			}
+			total = next_total;
+			fingerprint = result["fingerprint"].get<std::string>();
+			text += chunk;
+		} while (text.size() < total);
+		if (uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(text)) != fingerprint || text.find('\0') != std::string::npos)
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid usage accounting.";
+			return false;
+		}
+		snapshot = nlohmann::json::parse(text, nullptr, false);
+		if (!snapshot.is_object() || !snapshot.contains("version") || snapshot["version"] != 1 || !snapshot.contains("asOfMs") || !snapshot["asOfMs"].is_number_integer() || snapshot["asOfMs"] <= 0 || snapshot["asOfMs"] >= uam::usage::kMaxExactTokenCount ||
+		    !snapshot.contains("metadata") || !snapshot["metadata"].is_object() || !snapshot.contains("facts") || !snapshot["facts"].is_array() || snapshot["facts"].size() > 500000)
+		{ if (error_out) *error_out = "The runner returned incompatible usage accounting."; snapshot = {}; return false; }
+		const std::int64_t as_of = snapshot["asOfMs"].get<std::int64_t>();
+		const std::int64_t start = std::max<std::int64_t>(0, as_of / 86400000 * 86400000 - 89LL * 86400000);
+		std::unordered_set<std::string> identities;
+		for (const nlohmann::json& row : snapshot["facts"])
+		{
+			if (interrupted()) { if (error_out) *error_out = "Usage accounting loading was cancelled or timed out."; snapshot = {}; return false; }
+			const std::optional<uam::usage::AccountingRecord> fact = uam::usage::DecodeAccountingRecord(row);
+			if (!fact || fact->record.timestamp_ms < start || fact->record.timestamp_ms >= as_of || !identities.insert(fact->identity).second)
+			{ if (error_out) *error_out = "The runner returned invalid accounting identities."; snapshot = {}; return false; }
+		}
+		return true;
+	}
+
 	bool RunnerClient::ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
 	    std::string* error_out, std::stop_token stop_token)
 	{
@@ -1095,6 +1172,7 @@ namespace uam::remote
 		m_directoryBrowsing = false;
 		m_contextRead = false;
 		m_workspaceFileRead = false;
+		m_usageAccounting = false;
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
 		m_runnerStartup = false;

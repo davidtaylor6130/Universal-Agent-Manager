@@ -1,5 +1,7 @@
 #include "common/usage/usage_collector.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/base64.h"
+#include "common/utils/hash_utils.h"
 
 namespace uam::usage
 {
@@ -21,11 +23,11 @@ namespace uam::usage
 		}
 	}
 
-	Collector::Collector(std::filesystem::path data_root)
-	    : m_dataRoot(std::move(data_root)), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	Collector::Collector(std::filesystem::path data_root, bool export_accounting)
+	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
-	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates)
-	    : m_dataRoot(std::move(data_root)), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates, bool export_accounting)
+	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
 	Collector::~Collector()
 	{
@@ -36,15 +38,36 @@ namespace uam::usage
 
 	bool Collector::Publish(std::int64_t generated_ms, const nlohmann::json& metadata, std::string& error, const std::function<bool()>& cancelled)
 	{
-		std::optional<Ledger> ledger = m_store.Read(generated_ms, error, cancelled);
-		if (!ledger) return false;
+		std::optional<Ledger> ledger;
+		std::shared_ptr<const std::string> accounting;
+		std::string fingerprint;
+		if (m_exportAccounting)
+		{
+			const std::optional<std::vector<AccountingRecord>> records = m_store.ReadRecords(generated_ms, error, cancelled);
+			if (!records) return false;
+			std::vector<const Record*> references;
+			nlohmann::json rows = nlohmann::json::array();
+			for (const AccountingRecord& entry : *records)
+			{
+				if (cancelled()) return false;
+				references.push_back(&entry.record);
+				rows.push_back(EncodeAccountingRecord(entry));
+			}
+			ledger = Ledger::Create(references, generated_ms);
+			std::string bytes = nlohmann::json({{"version", 1}, {"asOfMs", generated_ms}, {"metadata", metadata}, {"facts", std::move(rows)}}).dump();
+			if (bytes.size() > 64 * 1024 * 1024) { error = "Usage accounting exceeds its transfer limit."; return false; }
+			fingerprint = hashing::Hex64Padded(hashing::Fnv1a64(bytes));
+			accounting = std::make_shared<const std::string>(std::move(bytes));
+		}
+		else ledger = m_store.Read(generated_ms, error, cancelled);
+		if (!ledger) { if (error.empty()) error = "Usage accounting totals exceed supported limits."; return false; }
 		const std::shared_ptr<const Ledger> published = std::make_shared<const Ledger>(std::move(*ledger));
 		const std::string encoded = published->Encode().dump();
 		if (encoded.size() > 64 * 1024 * 1024) { error = "Usage snapshot exceeds its storage limit."; return false; }
 		if (cancelled()) return false;
 		if (!io::AtomicWriteFile(m_dataRoot / "usage" / "snapshot-v1.json", encoded)) { error = "Could not save the usage snapshot."; return false; }
 		std::lock_guard<std::mutex> lock(m_mutex);
-		m_ledger = published; m_metadata = metadata; m_metadata["version"] = 3; m_error.clear();
+		m_ledger = published; m_accountingBytes = std::move(accounting); m_accountingFingerprint = std::move(fingerprint); m_metadata = metadata; m_metadata["version"] = 3; m_error.clear();
 		return true;
 	}
 
@@ -121,6 +144,21 @@ namespace uam::usage
 			}
 		}
 		catch (const std::exception&) { std::lock_guard<std::mutex> lock(m_mutex); m_error = "Usage collection failed. Background collection will restart with UAM."; m_collecting = false; }
+	}
+
+	nlohmann::json Collector::ExportAccounting(std::size_t offset, std::string_view fingerprint) const
+	{
+		std::shared_ptr<const std::string> bytes;
+		std::string current_fingerprint;
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			if (!m_exportAccounting) return {{"error", "Accounting export is unavailable for this collector."}};
+			if (!m_accountingBytes) return {{"pending", true}, {"collectionError", m_error}};
+			bytes = m_accountingBytes; current_fingerprint = m_accountingFingerprint;
+		}
+		if ((!fingerprint.empty() && fingerprint != current_fingerprint) || offset > bytes->size()) return {{"error", "Usage accounting changed while loading. Try again."}};
+		const std::string_view chunk(bytes->data() + offset, std::min<std::size_t>(512 * 1024, bytes->size() - offset));
+		return {{"dataBase64", base64::Encode(chunk)}, {"offset", offset}, {"totalBytes", bytes->size()}, {"fingerprint", current_fingerprint}};
 	}
 
 	nlohmann::json Collector::Query(int days, const std::map<ModelKey, ModelPrices>& prices) const

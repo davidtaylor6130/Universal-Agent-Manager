@@ -2,6 +2,7 @@
 #include "remote/runner_startup.h"
 #include "test_harness.h"
 #include "common/utils/base64.h"
+#include "common/usage/usage_collector.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_native_context.h"
@@ -4308,4 +4309,69 @@ UAM_TEST(RemoteRunnerPreservesEmptyOptionValuesButRejectsAnEmptyExecutable)
 	UAM_ASSERT_EQ(nlohmann::json::parse(output), nlohmann::json::array({"--tools", "", "--setting-sources", "", "after"}));
 	UAM_ASSERT(uam::remote::HandleRunnerRequest(
 	    {{"id", "remove-empty"}, {"type", "process.remove"}, {"sessionId", "empty-option-values"}, {"controlToken", kProcessControlToken}}, "test-version", &state).value("ok", false));
+}
+
+UAM_TEST(RemoteUsageAccountingRunnerClientReassemblesDurableFactsInsideBoundedFrames)
+{
+	TempDir temp("uam-remote-usage-accounting");
+	ScopedEnvVar home("HOME", temp.root.string());
+	ScopedEnvVar user_profile("USERPROFILE", temp.root.string());
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", temp.root.string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar xdg_data("XDG_DATA_HOME", (temp.root / "xdg").string());
+	ScopedEnvVar opencode_db("OPENCODE_DB", (temp.root / "missing.db").string());
+	uam::usage::Store store(temp.root / ".uam" / "runner-usage");
+	std::vector<uam::usage::Record> records;
+	for (int index = 0; index < 100; ++index)
+	{
+		uam::usage::Record record;
+		record.provider_id = uam::provider_ids::kClaudeCli; record.model_id = "claude-sonnet";
+		record.session_id = std::string(8000, 's'); record.dedupe_key = std::string(8000, 'r') + std::to_string(index);
+		record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 3000;
+		record.tokens.input = 12; record.tokens.output = 3;
+		records.push_back(std::move(record));
+	}
+	std::vector<uam::usage::SourceRecord> references;
+	for (std::size_t index = 0; index < records.size(); ++index) references.push_back({&records[index], "fixture", index});
+	std::string error;
+	UAM_ASSERT(store.Import(references, error));
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	    "uam-runner.exe";
+#else
+	    "uam-runner";
+#endif
+	uam::remote::RunnerClient client(service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+	nlohmann::json snapshot;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	do
+	{
+		UAM_ASSERT(client.ReadUsageAccounting(snapshot, &error));
+		if (snapshot.contains("facts")) break;
+		UAM_ASSERT(snapshot.value("pending", false));
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	} while (std::chrono::steady_clock::now() < deadline);
+	UAM_ASSERT(snapshot.contains("facts"));
+	UAM_ASSERT_EQ(snapshot["facts"].size(), std::size_t{100});
+	UAM_ASSERT(snapshot.dump().size() > 1024 * 1024);
+	UAM_ASSERT(uam::usage::DecodeAccountingRecord(snapshot["facts"][0]));
+	const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+	std::stop_source cancellation; cancellation.request_stop();
+	UAM_ASSERT(!client.ReadUsageAccounting(snapshot, &error, cancellation.get_token()));
+	UAM_ASSERT(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+}
+
+UAM_TEST(RemoteUsageAccountingRequestRejectsInvalidOffsetsAndSnapshotFingerprints)
+{
+	TempDir temp("uam-usage-runner-validation");
+	const std::shared_ptr<uam::usage::Collector> collector = std::make_shared<uam::usage::Collector>(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true);
+	uam::remote::RunnerState state(1024 * 1024, collector);
+	const nlohmann::json hello = uam::remote::HandleRunnerRequest({{"id", "hello"}, {"type", "hello"}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "usage"}}, "test", &state);
+	UAM_ASSERT(hello["capabilities"].value("usageAccounting", false));
+	for (const nlohmann::json& value : {nlohmann::json(-1), nlohmann::json("0"), nlohmann::json(64 * 1024 * 1024 + 1)})
+		UAM_ASSERT(!state.HandleProcessRequest({{"id", "offset"}, {"type", "usage.accounting"}, {"offset", value}}).value("ok", true));
+	UAM_ASSERT(!state.HandleProcessRequest({{"id", "snapshot"}, {"type", "usage.accounting"}, {"fingerprint", 42}}).value("ok", true));
 }

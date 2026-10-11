@@ -14,16 +14,19 @@ namespace uam::usage
 	class Collector
 	{
 	public:
-		explicit Collector(std::filesystem::path data_root);
-		Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates = {});
+		explicit Collector(std::filesystem::path data_root, bool export_accounting = false);
+		Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates = {}, bool export_accounting = false);
 		~Collector();
 		nlohmann::json Query(int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
+		/// <summary>Returns immutable bounded wire chunks; never reads provider files or accounting storage.</summary>
+		nlohmann::json ExportAccounting(std::size_t offset = 0, std::string_view fingerprint = {}) const;
 		const std::filesystem::path& DataRoot() const { return m_dataRoot; }
 
 	private:
 		void Run(std::stop_token stop);
 		bool Publish(std::int64_t generated_ms, const nlohmann::json& metadata, std::string& error, const std::function<bool()>& cancelled);
 		const std::filesystem::path m_dataRoot;
+		const bool m_exportAccounting;
 		Store m_store;
 		HistoryService m_history;
 		PricingCache m_pricing;
@@ -32,6 +35,8 @@ namespace uam::usage
 		nlohmann::json m_pricingMetadata;
 		mutable std::mutex m_mutex;
 		std::shared_ptr<const Ledger> m_ledger;
+		std::shared_ptr<const std::string> m_accountingBytes;
+		std::string m_accountingFingerprint;
 		nlohmann::json m_metadata;
 		std::string m_error;
 		bool m_collecting = true;

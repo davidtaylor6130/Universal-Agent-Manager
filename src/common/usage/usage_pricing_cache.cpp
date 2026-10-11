@@ -18,6 +18,9 @@ namespace uam::usage
 
 	RateFetcher PricingCache::PublicCatalogFetcher()
 	{
+#if defined(UAM_HEADLESS_RUNNER)
+		return {};
+#else
 		return [](std::stop_token stop) -> std::optional<std::string>
 		{
 			if (stop.stop_requested()) return std::nullopt;
@@ -27,6 +30,7 @@ namespace uam::usage
 			if (!result.ok || result.timed_out || result.canceled || result.output_truncated || result.exit_code != 0 || result.output.empty() || result.output.size() > kDocumentLimit) return std::nullopt;
 			return result.output;
 		};
+#endif
 	}
 
 	void PricingCache::Refresh(std::int64_t now_ms, std::stop_token stop, bool allow_fetch)
