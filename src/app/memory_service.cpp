@@ -1006,7 +1006,8 @@ namespace
 	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now)
 	{
 		return !MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat) ||
-		       !HasUnprocessedMessages(chat) || MemoryScanHasActiveWork(app, chat.id) ||
+		       !HasUnprocessedMessages(chat) || app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
+		       MemoryScanHasActiveWork(app, chat.id) ||
 		       !MemoryRetryDue(app, chat.id, now);
 	}
 

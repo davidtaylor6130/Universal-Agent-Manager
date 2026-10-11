@@ -2669,3 +2669,45 @@ UAM_TEST(MemoryAutomaticGateDefersRepeatedClassificationButRechecksDueText)
 		UAM_ASSERT(app.memory_extraction_queue.empty());
 	}
 }
+
+UAM_TEST(MemoryAutomaticScanWaitsForPendingTranscriptPublication)
+{
+	TempDir temp("uam-memory-pending-publication");
+	for (const std::string level : {"strict", "balanced"})
+	{
+		uam::AppState app;
+		app.data_root = temp.root / level;
+		ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli");
+		chat.workspace_directory = temp.root.string();
+		chat.memory_level = level;
+		chat.messages.push_back({MessageRole::User, "Neutral text."});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const fs::path file = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const std::string baseline = ReadFile(file);
+		chat.messages.push_back({MessageRole::User, "Unfinished task: remaining work."});
+		const std::string id = chat.id;
+		app.chats.push_back(std::move(chat));
+		const double save_at = uam::GetAppTimeSeconds() + 3600.0;
+		app.pending_chat_save_at_by_chat_id[id] = save_at;
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT_EQ(ReadFile(file), baseline);
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
+		UAM_ASSERT_EQ(app.pending_chat_save_at_by_chat_id.at(id), save_at);
+		app.memory_idle_started_at_by_chat_id[id] = 0.001;
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT_EQ(ReadFile(file), baseline);
+		UAM_ASSERT(!app.memory_idle_started_at_by_chat_id.contains(id));
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT(app.memory_extraction_queue.empty());
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		app.pending_chat_save_at_by_chat_id.clear();
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 2);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->messages, app.chats.front().messages);
+		UAM_ASSERT_EQ(saved->memory_last_processed_message_count, 2);
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT(app.memory_extraction_queue.empty());
+	}
+}
