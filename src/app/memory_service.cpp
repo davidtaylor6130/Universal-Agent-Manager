@@ -44,6 +44,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -115,167 +116,199 @@ namespace
 		return uam::memory_levels::IsEnabled(MemoryLevel(chat));
 	}
 
-	bool ContainsExplicitMemoryInstruction(const std::string& lowered)
+	constexpr std::string_view kExplicitMemoryInstructionPhrases[] =
 	{
-		return uam::strings::ContainsAny(lowered, {
-		                                              "remember that",
-		                                              "remember this",
-		                                              "save this",
-		                                              "save that",
-		                                              "note this",
-		                                              "do not forget",
-		                                              "don't forget",
-		                                              "for future reference",
-		                                              "durable preference",
-		                                              "my preference",
-		                                              "i prefer",
-		                                              "i always want",
-		                                              "always use",
-		                                              "never use",
-		                                              "keep in memory",
-		                                              "store this",
-		                                          });
+		"remember that",
+		"remember this",
+		"save this",
+		"save that",
+		"note this",
+		"do not forget",
+		"don't forget",
+		"for future reference",
+		"durable preference",
+		"my preference",
+		"i prefer",
+		"i always want",
+		"always use",
+		"never use",
+		"keep in memory",
+		"store this",
+	};
+
+	bool ContainsExplicitMemoryInstruction(std::string_view lowered)
+	{
+		return std::ranges::any_of(kExplicitMemoryInstructionPhrases, [lowered](std::string_view phrase)
+		{
+			return lowered.find(phrase) != std::string_view::npos;
+		});
 	}
 
-	bool ContainsPreferenceSignal(const std::string& lowered)
+	constexpr std::string_view kPreferenceSignalPhrases[] =
 	{
-		return uam::strings::ContainsAny(lowered, {
-		                                              "durable preference",
-		                                              "my preference",
-		                                              "i prefer",
-		                                              "i always want",
-		                                              "always use",
-		                                              "never use",
-		                                              "coding standard",
-		                                              "code style",
-		                                              "output tone",
-		                                              "tone preference",
-		                                          });
+		"durable preference",
+		"my preference",
+		"i prefer",
+		"i always want",
+		"always use",
+		"never use",
+		"coding standard",
+		"code style",
+		"output tone",
+		"tone preference",
+	};
+
+	bool ContainsPreferenceSignal(std::string_view lowered)
+	{
+		return std::ranges::any_of(kPreferenceSignalPhrases, [lowered](std::string_view phrase)
+		{
+			return lowered.find(phrase) != std::string_view::npos;
+		});
 	}
 
-	bool ContainsUserDistressSignal(const std::string& lowered)
+	constexpr std::string_view kUserDistressSignalPhrases[] =
 	{
-		return uam::strings::ContainsAny(lowered, {
-		                                              "angry",
-		                                              "furious",
-		                                              "frustrated",
-		                                              "annoyed",
-		                                              "pissed",
-		                                              "unacceptable",
-		                                              "ridiculous",
-		                                              "wtf",
-		                                              "you keep",
-		                                              "again",
-		                                              "still broken",
-		                                              "still failing",
-		                                              "not solved",
-		                                              "not fixed",
-		                                              "doesn't work",
-		                                              "does not work",
-		                                              "wasted",
-		                                          });
+		"angry",
+		"furious",
+		"frustrated",
+		"annoyed",
+		"pissed",
+		"unacceptable",
+		"ridiculous",
+		"wtf",
+		"you keep",
+		"again",
+		"still broken",
+		"still failing",
+		"not solved",
+		"not fixed",
+		"doesn't work",
+		"does not work",
+		"wasted",
+	};
+
+	bool ContainsUserDistressSignal(std::string_view lowered)
+	{
+		return std::ranges::any_of(kUserDistressSignalPhrases, [lowered](std::string_view phrase)
+		{
+			return lowered.find(phrase) != std::string_view::npos;
+		});
 	}
 
-	bool ContainsFailureSignal(const std::string& lowered)
+	constexpr std::string_view kFailureSignalPhrases[] =
 	{
-		return uam::strings::ContainsAny(lowered, {
-		                                              "blocked",
-		                                              "crash",
-		                                              "crashed",
-		                                              "build failed",
-		                                              "test failed",
-		                                              "tests failed",
-		                                              "compile error",
-		                                              "compiler error",
-		                                              "runtime error",
-		                                              "regression",
-		                                              "failed to",
-		                                              "failure",
-		                                              "permission denied",
-		                                              "timed out",
-		                                              "root cause",
-		                                              "actual blocker",
-		                                          });
+		"blocked",
+		"crash",
+		"crashed",
+		"build failed",
+		"test failed",
+		"tests failed",
+		"compile error",
+		"compiler error",
+		"runtime error",
+		"regression",
+		"failed to",
+		"failure",
+		"permission denied",
+		"timed out",
+		"root cause",
+		"actual blocker",
+	};
+
+	bool ContainsFailureSignal(std::string_view lowered)
+	{
+		return std::ranges::any_of(kFailureSignalPhrases, [lowered](std::string_view phrase)
+		{
+			return lowered.find(phrase) != std::string_view::npos;
+		});
 	}
 
-	bool ContainsCriticalLessonSignal(const std::string& lowered)
+	constexpr std::string_view kCriticalLessonSignalPhrases[] =
 	{
-		return uam::strings::ContainsAny(lowered, {
-		                                              // clang-format off
-		                                "critical",
-		                                "cannot be missed",
-		                                "must not",
-		                                "must always",
-		                                "safety-first",
-		                                "do not infer",
-		                                "do not guess",
-		                                "hallucinated",
-		                                "hallucination",
-		                                "lied",
-		                                "lying",
-		                                "false claim",
-		                                "claimed a function",
-		                                "wrong function",
-		                                "wrong code",
-		                                "wrong file",
-		                                "wrong area of code",
-		                                "not looking at the right area",
-		                                "not look at the right area",
-		                                "only include",
-		                                "directly verified",
-		                                "verify state",
-		                                "caused a build failure",
-		                                "caused a native build failure",
-		                                "caused a crash",
-		                                "avoid repeating",
-		                                "lesson",
-		                                              // clang-format on
-		                                          });
+		"critical",
+		"cannot be missed",
+		"must not",
+		"must always",
+		"safety-first",
+		"do not infer",
+		"do not guess",
+		"hallucinated",
+		"hallucination",
+		"lied",
+		"lying",
+		"false claim",
+		"claimed a function",
+		"wrong function",
+		"wrong code",
+		"wrong file",
+		"wrong area of code",
+		"not looking at the right area",
+		"not look at the right area",
+		"only include",
+		"directly verified",
+		"verify state",
+		"caused a build failure",
+		"caused a native build failure",
+		"caused a crash",
+		"avoid repeating",
+		"lesson",
+	};
+
+	bool ContainsCriticalLessonSignal(std::string_view lowered)
+	{
+		return std::ranges::any_of(kCriticalLessonSignalPhrases, [lowered](std::string_view phrase)
+		{
+			return lowered.find(phrase) != std::string_view::npos;
+		});
 	}
 
-	bool ContainsProgressOnlySignal(const std::string& lowered)
+	constexpr std::string_view kProgressOnlySignalPhrases[] =
 	{
-		return uam::strings::ContainsAny(lowered, {
-		                                              // clang-format off
-		                                "unfinished",
-		                                "not finished",
-		                                "partially done",
-		                                "partial work",
-		                                "half finished",
-		                                "half-finished",
-		                                "needs follow-up",
-		                                "follow up",
-		                                "follow-up",
-		                                "next steps",
-		                                "continue later",
-		                                "continued later",
-		                                "continue this",
-		                                "pick this back up",
-		                                "still need to",
-		                                "still needs",
-		                                "todo",
-		                                "to-do",
-		                                "handoff",
-		                                "work remains",
-		                                "remaining work",
-		                                "not completed",
-		                                "not complete",
-		                                "in progress",
-		                                "pending work",
-		                                "left off",
-		                                "moved to another chat",
-		                                "moved elsewhere",
-		                                "another app",
-		                                              // clang-format on
-		                                          });
+		"unfinished",
+		"not finished",
+		"partially done",
+		"partial work",
+		"half finished",
+		"half-finished",
+		"needs follow-up",
+		"follow up",
+		"follow-up",
+		"next steps",
+		"continue later",
+		"continued later",
+		"continue this",
+		"pick this back up",
+		"still need to",
+		"still needs",
+		"todo",
+		"to-do",
+		"handoff",
+		"work remains",
+		"remaining work",
+		"not completed",
+		"not complete",
+		"in progress",
+		"pending work",
+		"left off",
+		"moved to another chat",
+		"moved elsewhere",
+		"another app",
+	};
+
+	bool ContainsProgressOnlySignal(std::string_view lowered)
+	{
+		return std::ranges::any_of(kProgressOnlySignalPhrases, [lowered](std::string_view phrase)
+		{
+			return lowered.find(phrase) != std::string_view::npos;
+		});
 	}
 
-	bool HasDurableMemorySignal(const std::string& lowered)
+	bool HasDurableMemorySignal(std::string_view lowered)
 	{
 		return ContainsExplicitMemoryInstruction(lowered) || ContainsPreferenceSignal(lowered) || ContainsUserDistressSignal(lowered) || ContainsFailureSignal(lowered) || ContainsCriticalLessonSignal(lowered);
 	}
 
-	bool HasDurableNonProgressSignal(const std::string& lowered)
+	bool HasDurableNonProgressSignal(std::string_view lowered)
 	{
 		return ContainsPreferenceSignal(lowered) || ContainsUserDistressSignal(lowered) || ContainsFailureSignal(lowered) || ContainsCriticalLessonSignal(lowered);
 	}
@@ -330,39 +363,85 @@ namespace
 		return true;
 	}
 
-	std::string TranscriptDeltaText(const ChatSession& chat)
+	/// Scan canonical delta text with bounded scratch storage and complete boundary matches.
+	template <typename Predicate>
+	bool TranscriptDeltaMatches(const ChatSession& chat, Predicate predicate, std::size_t byte_limit = std::numeric_limits<std::size_t>::max())
 	{
-		const int start = std::max(0, chat.memory_last_processed_message_count);
-		std::string transcript;
-		for (std::size_t i = static_cast<std::size_t>(start); i < chat.messages.size(); ++i)
+		static const std::size_t overlap = []()
 		{
-			const Message& message = chat.messages[i];
-			transcript += RoleToString(message.role);
-			transcript += ": ";
-			transcript += uam::strings::Trim(message.content);
-			transcript += '\n';
+			std::size_t longest = 1;
+			for (const std::span<const std::string_view> phrases : {
+			         std::span<const std::string_view>(kExplicitMemoryInstructionPhrases),
+			         std::span<const std::string_view>(kPreferenceSignalPhrases),
+			         std::span<const std::string_view>(kUserDistressSignalPhrases),
+			         std::span<const std::string_view>(kFailureSignalPhrases),
+			         std::span<const std::string_view>(kCriticalLessonSignalPhrases),
+			         std::span<const std::string_view>(kProgressOnlySignalPhrases)})
+			{
+				for (const std::string_view phrase : phrases)
+				{
+					longest = std::max(longest, phrase.size());
+				}
+			}
+			return longest - 1;
+		}();
+		constexpr std::size_t chunk_bytes = 64 * 1024;
+		std::string chunk;
+		chunk.reserve(chunk_bytes + overlap);
+		bool matched = false;
+		const auto feed = [&](std::string_view text)
+		{
+			while (!text.empty() && !matched && byte_limit > 0)
+			{
+				const std::size_t count = std::min({text.size(), chunk_bytes + overlap - chunk.size(), byte_limit});
+				const std::size_t previous_size = chunk.size();
+				chunk.resize(previous_size + count);
+				std::transform(text.begin(), text.begin() + count, chunk.begin() + previous_size, [](unsigned char ch)
+				{
+					return uam::strings::ToLowerAsciiChar(ch);
+				});
+				text.remove_prefix(count);
+				byte_limit -= count;
+				if (chunk.size() == chunk_bytes + overlap)
+				{
+					matched = predicate(chunk);
+					chunk.erase(0, chunk.size() - overlap);
+				}
+			}
+		};
+		const std::size_t start = static_cast<std::size_t>(std::max(0, chat.memory_last_processed_message_count));
+		for (std::size_t index = start; index < chat.messages.size() && !matched && byte_limit > 0; ++index)
+		{
+			const Message& message = chat.messages[index];
+			feed(RoleToString(message.role));
+			feed(": ");
+			feed(uam::strings::TrimAsciiView(message.content));
+			feed("\n");
 		}
-		return transcript;
+		return matched || predicate(chunk);
 	}
 
 	bool ShouldQueueAutomaticMemoryScan(const ChatSession& chat)
 	{
+		if (static_cast<std::size_t>(std::max(0, chat.memory_last_processed_message_count)) >= chat.messages.size())
+		{
+			return false;
+		}
 		const std::string level = MemoryLevel(chat);
 		if (level == uam::memory_levels::kOpen)
 		{
-			return static_cast<std::size_t>(std::max(0, chat.memory_last_processed_message_count)) < chat.messages.size();
+			return true;
 		}
-		const std::string lowered = uam::strings::ToLowerAscii(TranscriptDeltaText(chat));
-		if (lowered.empty())
+		// A durable preference/failure wins even if later text describes unfinished work.
+		if (TranscriptDeltaMatches(chat, HasDurableNonProgressSignal, 64 * 1024))
 		{
-			return false;
+			return true;
 		}
-		const bool has_progress_signal = ContainsProgressOnlySignal(lowered);
-		if (has_progress_signal && !HasDurableNonProgressSignal(lowered))
+		if (TranscriptDeltaMatches(chat, ContainsProgressOnlySignal))
 		{
-			return false;
+			return TranscriptDeltaMatches(chat, HasDurableNonProgressSignal);
 		}
-		return level == uam::memory_levels::kBalanced || HasDurableMemorySignal(lowered);
+		return level == uam::memory_levels::kBalanced || TranscriptDeltaMatches(chat, HasDurableMemorySignal);
 	}
 
 	std::string MemoryEntryCategory(const nlohmann::json& entry)

@@ -21,6 +21,15 @@ namespace
 	constexpr std::string_view kProcessControlToken = "test-process-control-token";
 }
 
+std::optional<int> RunRemoteEmptyArgumentsFixture(int argc, char** argv)
+{
+	if (argc < 2 || std::string_view(argv[1]) != "--uam-test-empty-arguments") return std::nullopt;
+	nlohmann::json arguments = nlohmann::json::array();
+	for (int index = 2; index < argc; ++index) arguments.push_back(argv[index]);
+	std::cout << arguments.dump();
+	return 0;
+}
+
 std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 {
 	if (argc != 2 || std::string_view(argv[1]) != "--uam-test-remote-opencode-create") return std::nullopt;
@@ -4252,4 +4261,43 @@ UAM_TEST(RemoteWorkspaceFilePreviewClientReassemblesLargeUnicodeSources)
 	UAM_ASSERT(!client.ReadWorkspaceFile(uam::paths::Utf8PathString(temp.root), "missing.txt", file, &error));
 	UAM_ASSERT(file.is_null());
 	UAM_ASSERT(!error.empty());
+}
+
+UAM_TEST(RemoteRunnerPreservesEmptyOptionValuesButRejectsAnEmptyExecutable)
+{
+	TempDir temp("uam-runner-empty-argv");
+	uam::remote::RunnerState state;
+	const std::string executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string();
+	nlohmann::json start = {{"id", "start-empty"}, {"type", "process.start"}, {"sessionId", "empty-option-values"},
+	                        {"controlToken", kProcessControlToken}, {"cwd", temp.root.string()},
+	                        {"argv", nlohmann::json::array({executable, "--uam-test-empty-arguments", "--tools", "", "--setting-sources", "", "after"})}};
+	for (const std::string invalid : {std::string{}, std::string("bad\0executable", 14), std::string(32769, 'x')})
+	{
+		nlohmann::json malformed = start;
+		malformed["argv"][0] = invalid;
+		UAM_ASSERT(!uam::remote::HandleRunnerRequest(malformed, "test-version", &state).value("ok", true));
+	}
+	nlohmann::json nul_argument = start;
+	nul_argument["argv"][3] = std::string("bad\0argument", 12);
+	UAM_ASSERT(!uam::remote::HandleRunnerRequest(nul_argument, "test-version", &state).value("ok", true));
+	const nlohmann::json started = uam::remote::HandleRunnerRequest(start, "test-version", &state);
+	UAM_ASSERT(started.value("ok", false));
+	std::string output;
+	bool exited = false;
+	for (int attempt = 0; attempt < 300 && !exited; ++attempt)
+	{
+		const nlohmann::json polled = uam::remote::HandleRunnerRequest(
+		    {{"id", "poll-empty"}, {"type", "process.poll"}, {"sessionId", "empty-option-values"}, {"controlToken", kProcessControlToken}}, "test-version", &state);
+		UAM_ASSERT(polled.value("ok", false));
+		std::string chunk;
+		UAM_ASSERT(uam::base64::Decode(polled["result"].value("stdoutBase64", ""), chunk));
+		output += chunk;
+		exited = !polled["result"].value("running", true);
+		if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		else UAM_ASSERT_EQ(polled["result"].value("exitCode", -1), 0);
+	}
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(nlohmann::json::parse(output), nlohmann::json::array({"--tools", "", "--setting-sources", "", "after"}));
+	UAM_ASSERT(uam::remote::HandleRunnerRequest(
+	    {{"id", "remove-empty"}, {"type", "process.remove"}, {"sessionId", "empty-option-values"}, {"controlToken", kProcessControlToken}}, "test-version", &state).value("ok", false));
 }
