@@ -112,7 +112,7 @@ it('retains the global UAM warning and preserves instructions during its repair'
   const setter = vi.fn(async () => ({ ok: false, error: 'Cannot write provider configuration.' }))
   useAppStore.setState(state => ({ centralProviderConfiguration: { ...state.centralProviderConfiguration, uamControlEnabled: false, instructions: 'Keep instructions' }, setCentralProviderConfiguration: setter }))
   await render()
-  expect(host.querySelector('[role="alert"]')?.textContent).toContain('WARNING: UAM MCP is disabled')
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('UAM MCP is off')
   await act(async () => [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Enable UAM MCP')!.click())
   expect(setter).toHaveBeenCalledWith(expect.objectContaining({ uamControlEnabled: true, instructions: 'Keep instructions' }))
   expect(host.textContent).toContain('Cannot write provider configuration.')
@@ -140,9 +140,9 @@ it.each(['loading', 'failed lookup'])('shows unknown controls instead of disable
     const control = host.querySelector<HTMLButtonElement>(`[aria-label="Codex ${label} (unknown)"]`)
     expect(control).not.toBeNull()
     expect(control?.getAttribute('aria-checked')).toBe('mixed')
-    expect(control?.style.color).toBe('var(--text-3)')
+    expect(control?.classList.contains(label === 'Computer Use' ? 'uam-prov-avail' : 'uam-prov-switch')).toBe(true)
     expect(control?.disabled).toBe(true)
-    expect(control?.querySelector('.lucide-x')).toBeNull()
+    expect(control?.title).not.toContain('Off')
   }
 })
 
@@ -153,7 +153,7 @@ it('retains disabled red controls when their false value is verified', async () 
   await render('codex-cli')
   const control = host.querySelector<HTMLButtonElement>('[aria-label="Codex UAM MCP"]')!
   expect(control.getAttribute('aria-checked')).toBe('false')
-  expect(control.querySelector('.lucide-x')).not.toBeNull()
+  expect(control.title).toBe('Off. Click to turn on.')
   expect(control.disabled).toBe(false)
 })
 

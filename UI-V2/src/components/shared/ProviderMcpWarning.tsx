@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui'
+import '../settings/provider-settings.css'
 
 type Connection = { providerId: string; status: string; detail: string }
 
@@ -57,11 +58,11 @@ export function ProviderMcpWarning() {
   }, [notice, key, session?.viewMode, runtime?.running, isDismissed])
 
   if (!notice || notice.key !== key || isDismissed) return null
-  return <div role="alert" className="shrink-0 px-4 py-3 text-sm" style={{ borderBottom: '2px solid #ef4444', background: 'var(--bg)', color: 'var(--text)' }}>
-    <strong style={{ color: '#ff5555' }}>WARNING: UAM MCP tools are unavailable.</strong>
-    <p className="mt-1">{result?.key === key ? result.text : notice.connection.detail}</p>
+  return <div role="alert" className="uam-prov-warning shrink-0 px-4 py-3 text-sm">
+    <strong className="uam-prov-warning__title">UAM tools are unavailable in this chat</strong>
+    <p className="mt-1 uam-prov-sub">{result?.key === key ? result.text : notice.connection.detail}</p>
     <div className="mt-2 flex flex-wrap gap-2">
-      <Button size="sm" disabled={busy} onClick={() => {
+      <Button size="sm" variant="primary" disabled={busy} onClick={() => {
         if (!session) return
         const selected = session; const submittedKey = key
         setBusy(true)
@@ -79,7 +80,7 @@ export function ProviderMcpWarning() {
         })()
       }}>Enable UAM connection</Button>
       <Button size="sm" onClick={() => useAppStore.getState().setSettingsOpen(true)}>View settings</Button>
-      <Button size="sm" disabled={busy} onClick={() => { if (session) setDismissed(previous => new Map(previous).set(scopeKey, { chatId: session.id, runtimeId })) }}>Continue without it</Button>
+      <Button size="sm" variant="ghost" disabled={busy} onClick={() => { if (session) setDismissed(previous => new Map(previous).set(scopeKey, { chatId: session.id, runtimeId })) }}>Continue without it</Button>
     </div>
   </div>
 }

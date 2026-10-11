@@ -44,7 +44,7 @@ it('shows built-ins without delete buttons and deletes a user server only after 
   expect(host.textContent).toContain('UAM MCP service')
   expect(host.textContent).toContain('UAM Computer Use')
   expect(host.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
-  await click('Delete')
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Delete playwright"]')!.click())
   expect(saveServers).not.toHaveBeenCalled()
   await click('Save')
   expect(saveServers).toHaveBeenCalledWith([])

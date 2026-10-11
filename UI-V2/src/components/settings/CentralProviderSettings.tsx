@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Button } from '../ui'
+import './provider-settings.css'
 
 type Agent = { id: string; description: string; mode: string; workspaceAccess: string; skills: string[]; delegates: string[]; instructions: string; builtIn: boolean }
 const blankAgent = (): Agent => ({ id: '', description: '', mode: 'primary', workspaceAccess: 'write', skills: [], delegates: [], instructions: '', builtIn: false })
@@ -78,7 +79,7 @@ export function CentralProviderSettings() {
 
   return <div className="space-y-6" style={{ color: 'var(--text)' }}>
     <section className="grid gap-2">
-      <strong>Shared instructions (AGENTS.md)</strong>
+      <strong className="uam-prov-heading">Shared instructions (AGENTS.md)</strong>
       <p className="text-xs" style={{ color: 'var(--text-3)' }}>Pick AGENTS.md files on this computer. Their contents go to every agent on every provider, not into your messages.</p>
       {instructionFiles.map(path => <div key={path} className="flex items-center gap-2 rounded-md px-2 py-1 text-xs" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
         <span className="flex-1 min-w-0 break-all font-mono">{path}</span>
@@ -89,7 +90,7 @@ export function CentralProviderSettings() {
     </section>
 
     <section className="grid gap-2">
-      <strong>Default agent for new chats</strong>
+      <strong className="uam-prov-heading">Default agent for new chats</strong>
       <select aria-label="Default agent for new chats" className={field} value={defaultAgentId} disabled={busy} onChange={event => setDefaultAgentId(event.currentTarget.value)}>
         {primaryAgents.map(agent => <option key={agent.id} value={agent.id}>{agent.id} — {agent.description}</option>)}
         {!primaryAgents.some(agent => agent.id === defaultAgentId) && <option value={defaultAgentId}>{defaultAgentId} (not found)</option>}
@@ -97,13 +98,13 @@ export function CentralProviderSettings() {
     </section>
 
     <section className="grid gap-2">
-      <strong>Default skills</strong>
+      <strong className="uam-prov-heading">Default skills</strong>
       <p className="text-xs" style={{ color: 'var(--text-3)' }}>Skills every agent always has. Pick from the Skills store. Agents also get any skills listed on the agent itself.</p>
       {skills.length === 0 ? <p className="text-sm">The Skills store is empty. Add skills there first.</p> : <ChipPicker label="skill" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} />}
     </section>
 
     <section className="grid gap-2">
-      <strong>Default agents</strong>
+      <strong className="uam-prov-heading">Default agents</strong>
       <p className="text-xs" style={{ color: 'var(--text-3)' }}>Agents from the UAM agent store every provider gets. Build, Plan and the chat's own agent are always included.</p>
       <ChipPicker label="agent" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} />
     </section>
@@ -111,9 +112,9 @@ export function CentralProviderSettings() {
     <div className="flex items-center gap-2"><Button size="sm" variant="primary" loading={busy} onClick={() => void saveDefaults()}>Save</Button></div>
 
     <section className="grid gap-2">
-      <div className="flex items-center justify-between"><strong>Agent store</strong><Button size="sm" disabled={busy || Boolean(editing)} onClick={() => setEditing({ draft: blankAgent(), isNew: true })}>+ Add agent</Button></div>
+      <div className="flex items-center justify-between"><strong className="uam-prov-heading">Agent store</strong><Button size="sm" disabled={busy || Boolean(editing)} onClick={() => setEditing({ draft: blankAgent(), isNew: true })}>+ Add agent</Button></div>
       <p className="text-xs" style={{ color: 'var(--text-3)' }}>Saved to the UAM agent store and installed natively for every provider. Click an agent to edit it.</p>
-      {agentErrors.map(error => <p key={error} role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{error}</p>)}
+      {agentErrors.map(error => <p key={error} role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>)}
       {[...agents, ...(editing?.isNew ? [editing.draft] : [])].map((agent, index) => {
         const isOpen = editing ? (editing.isNew ? index === agents.length : editing.draft.id === agent.id) : false
         const draft = isOpen && editing ? editing.draft : agent
@@ -125,7 +126,7 @@ export function CentralProviderSettings() {
             </button>
             {!agent.builtIn && !(isOpen && editing?.isNew) && <Button size="sm" variant="danger" disabled={busy} aria-label={`Delete agent ${agent.id}`} onClick={() => void deleteAgent(agent.id)}>Delete</Button>}
           </div>
-          {isOpen && <div className="grid gap-3 px-3 pb-3 text-sm">
+          {isOpen && <div className="uam-prov-enter grid gap-3 px-3 pb-3 text-sm">
             <label className="grid gap-1"><span>Name</span><input className={field} value={draft.id} placeholder="reviewer" disabled={busy || agent.builtIn || !editing?.isNew} onChange={event => set({ id: event.currentTarget.value })} /><span className="text-xs" style={{ color: 'var(--text-3)' }}>Lowercase letters, numbers, - or _. Cannot be changed after saving.</span></label>
             <label className="grid gap-1"><span>Description</span><input className={field} value={draft.description} placeholder="Reviews diffs for bugs" disabled={busy || agent.builtIn} onChange={event => set({ description: event.currentTarget.value })} /></label>
             <div className="grid grid-cols-2 gap-3">

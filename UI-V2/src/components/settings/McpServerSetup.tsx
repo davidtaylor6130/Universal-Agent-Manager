@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { ChevronRight, Trash2 } from 'lucide-react'
 import { useAppStore, type McpServerConfiguration } from '../../store/useAppStore'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button } from '../ui'
+import { Button, IconButton, Notice, Switch } from '../ui'
+import './provider-settings.css'
 
 type Reference = McpServerConfiguration['environment'][number]
 type JsonEntry = { type: 'builtin' | 'local' | 'remote'; name?: string; uamId?: string; enabled?: boolean; command?: string[]; environment?: Record<string, string>; url?: string; headers?: Record<string, string>; sse?: boolean; workspace?: string; host?: string }
@@ -207,15 +209,15 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
     <input className="uam-field w-full" value={value} placeholder={placeholder} disabled={busy} onChange={event => onChange(event.currentTarget.value)} />
     {help && <span className="text-xs" style={{ color: 'var(--text-3)' }}>{help}</span>}
   </label>
-  const toggle = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false) => <label className="flex items-center gap-2 text-xs"><input type="checkbox" aria-label={label} checked={checked} disabled={busy || disabled} onChange={event => onChange(event.currentTarget.checked)} />{checked ? 'On' : 'Off'}</label>
-  const builtinRow = (name: string, detail: string, control: ReactNode) => <div className="uam-settings-row flex items-center gap-3 text-sm">
-    <div className="flex-1 min-w-0"><strong>{name}</strong> <span className="text-xs" style={{ color: 'var(--text-3)' }}>Built in · cannot be deleted</span><p className="text-xs" style={{ color: 'var(--text-3)' }}>{detail}</p></div>{control}
+  const toggle = (label: string, checked: boolean, onChange: (checked: boolean) => void, disabled = false) => <span className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-2)' }}><Switch label={label} hideLabel checked={checked} disabled={busy || disabled} onChange={event => onChange(event.currentTarget.checked)} />{checked ? 'On' : 'Off'}</span>
+  const builtinRow = (name: string, detail: string, control: ReactNode) => <div className="uam-prov-row uam-settings-row text-sm">
+    <div className="flex-1 min-w-0"><strong>{name}</strong> <span className="text-xs" style={{ color: 'var(--text-3)' }}>Built in · cannot be deleted</span><p className="uam-prov-sub">{detail}</p></div>{control}
   </div>
 
-  const warningNotice = importWarnings.length > 0 ? <p role="status" aria-label="Import warnings" className="text-sm">{importWarnings.join(' ')}</p> : null
+  const warningNotice = importWarnings.length > 0 ? <div aria-label="Import warnings"><Notice tone="warning" title="Some settings need attention" dismissLabel="Dismiss import notes">{importWarnings.map(warning => <p key={warning}>{warning}</p>)}</Notice></div> : null
 
   return <div className="space-y-4" style={{ color: 'var(--text)' }}>
-    {setup && <section aria-label="MCP setup" className="grid gap-3 border-b pb-4" style={{ borderColor: 'var(--border)' }}>
+    {setup && <section aria-label="MCP setup" className="uam-prov-enter grid gap-3 border-b pb-4" style={{ borderColor: 'var(--border)' }}>
       <div className="flex items-center justify-between"><strong>{setup === 'choose' ? 'How would you like to set up this server?' : setup === 'import' ? 'Import MCP configuration' : 'Step 1 of 2: name and connection'}</strong><Button size="sm" disabled={busy} onClick={() => { setSetup(null); setMessage(''); setImportWarnings([]) }}>Cancel setup</Button></div>
       {setup === 'choose' && <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={() => { setSetup('import'); setImportText(''); setImportSources([]); setMessage('') }}>Import configuration</Button>
@@ -227,7 +229,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
         <p className="text-sm">Read OpenCode's global configuration, or paste its MCP section. Existing servers stay unchanged.</p>
         {text('OpenCode configuration file or directory (optional)', importPath, setImportPath, 'Empty: read global OpenCode configuration')}
         <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read this computer's OpenCode configuration</Button>
-        <textarea aria-label="Import MCP configuration" className="uam-field w-full resize-y font-mono text-xs" style={{ height: 'auto', padding: '8px 9px' }} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
+        <textarea aria-label="Import MCP configuration" className="uam-prov-json uam-prov-json--compact" spellCheck={false} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
         {importSources.length > 0 && <div className="text-xs break-all">{importSources.map(source => <div key={source}>{source}</div>)}</div>}
         {message && <p role="status" className="text-sm">{message}</p>}
         {warningNotice}
@@ -248,8 +250,8 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
     </div>
 
     {view === 'json' ? <div className="grid gap-2">
-      <textarea aria-label="MCP JSON" className="w-full resize-y rounded-lg px-3 py-2 font-mono text-xs" rows={20} spellCheck={false} value={jsonText} disabled={busy} onChange={event => { setJsonText(event.currentTarget.value); setMessage('') }} style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }} />
-      <p className="text-xs" style={{ color: 'var(--text-3)' }}>Same layout as OpenCode. <code>local</code> runs a program: <code>command</code> is the program path followed by its arguments. <code>remote</code> connects to a <code>url</code>. Values are plain text, or <code>{'"{env:VARIABLE}"'}</code> to read from the machine's environment. Optional <code>workspace</code> and <code>host</code> limit where a server is used. <code>uam-mcp</code> is built in: only <code>enabled</code> can change.</p>
+      <textarea aria-label="MCP JSON" className="uam-prov-json" rows={20} spellCheck={false} value={jsonText} disabled={busy} onChange={event => { setJsonText(event.currentTarget.value); setMessage('') }} />
+      <p className="uam-prov-sub">Same layout as OpenCode. <code>local</code> runs a program: <code>command</code> is the program path followed by its arguments. <code>remote</code> connects to a <code>url</code>. Values are plain text, or <code>{'"{env:VARIABLE}"'}</code> to read from the machine's environment. Optional <code>workspace</code> and <code>host</code> limit where a server is used. <code>uam-mcp</code> is built in: only <code>enabled</code> can change.</p>
     </div> : <div className="grid gap-2">
       {builtinRow('UAM MCP service', 'Lets agents ask you questions, manage goals and use UAM skills. Applies to new chats.', toggle('UAM MCP service enabled', uamEnabled, value => { setUamEnabled(value); setMessage('') }))}
       {builtinRow('UAM Computer Use', 'Built-in MCP server. Control chat permissions in the chat composer.',
@@ -259,16 +261,20 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
         const expanded = open === server.id
         const refs = server.transport === 'stdio' ? server.environment : server.headers
         const setRefs = (values: Reference[]) => update(server.id, server.transport === 'stdio' ? { environment: values } : { headers: values })
-        return <div key={server.id} className="rounded-lg" style={{ border: '1px solid var(--border)' }}>
-          <div className="flex items-center gap-3 px-3 py-2 text-sm">
-            <button type="button" className="flex-1 min-w-0 text-left" aria-expanded={expanded} onClick={() => setOpen(expanded ? null : server.id)}>
-              <strong>{expanded ? '▾' : '▸'} {server.name || 'New server'}</strong>
-              <span className="ml-2 text-xs break-all" style={{ color: 'var(--text-3)' }}>{server.transport === 'stdio' ? [server.command, ...server.args].join(' ') || 'Program not set' : server.url || 'URL not set'}</span>
+        const serverName = server.name || 'server'
+        const launch = server.transport === 'stdio' ? [server.command, ...server.args].join(' ') || 'Program not set' : server.url || 'URL not set'
+        const scope = [server.workspaceDirectory || 'All workspaces', server.executionHostId ? (hosts.find(host => host.id === server.executionHostId)?.label ?? server.executionHostId) : 'All machines'].join(' · ')
+        return <div key={server.id} className="uam-prov-card" style={{ borderRadius: 'var(--r-md)' }}>
+          <div className="uam-prov-row text-sm">
+            <button type="button" className="uam-prov-row-main" aria-expanded={expanded} onClick={() => setOpen(expanded ? null : server.id)}>
+              <span className="flex items-center gap-1.5"><ChevronRight size={13} aria-hidden className="shrink-0 transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none', color: 'var(--text-3)' }}/><strong>{server.name || 'New server'}</strong></span>
+              <span className="uam-prov-detail truncate">{launch}</span>
+              <span className="uam-prov-sub">{scope}</span>
             </button>
-            {toggle(`${server.name || 'Server'} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
-            <Button size="sm" variant="danger" disabled={busy} aria-label={`Delete ${server.name || 'server'}`} onClick={() => { setServers(list => list.filter(item => item.id !== server.id)); setMessage('') }}>Delete</Button>
+            {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
+            <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete ${serverName}`} disabled={busy} onClick={() => { setServers(list => list.filter(item => item.id !== server.id)); setMessage('') }} />
           </div>
-          {expanded && <div className="grid gap-3 px-3 pb-3">
+          {expanded && <div className="uam-prov-enter grid gap-3 px-3 pb-3 pt-1">
             {text('Name', server.name, name => update(server.id, { name }), 'playwright', 'Short name shown to the agent.')}
             <label className="grid gap-1 text-sm"><span>Connection type</span>
               <select className="uam-field w-full" value={server.transport} disabled={busy} onChange={event => update(server.id, { transport: event.currentTarget.value as McpServerConfiguration['transport'] })}>

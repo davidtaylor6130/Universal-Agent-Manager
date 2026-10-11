@@ -1,0 +1,211 @@
+/* Provider & MCP settings. Scoped to .uam-prov-*; colours are tokens only. */
+
+.uam-prov-heading {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.uam-prov-sub {
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+.uam-prov-label {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.uam-prov-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.uam-prov-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  transition: background var(--dur-fast) var(--ease-out-soft);
+}
+
+.uam-prov-row + .uam-prov-row {
+  border-top: 1px solid var(--border);
+}
+
+.uam-prov-row:hover {
+  background: var(--surface-up);
+}
+
+.uam-prov-card tbody tr {
+  transition: background var(--dur-fast) var(--ease-out-soft);
+}
+
+.uam-prov-card tbody tr:hover {
+  background: var(--surface-up);
+}
+
+.uam-prov-row-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  border-radius: var(--r-sm);
+}
+
+.uam-prov-detail {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+/* Connection status: a dot plus a word. Never a switch. */
+.uam-prov-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.uam-prov-status[data-tone='success'] { color: var(--success); }
+.uam-prov-status[data-tone='warning'] { color: var(--warning); }
+.uam-prov-status[data-tone='error'] { color: var(--error); }
+
+/* Configuration switch: on/off is what you set, not what is happening. */
+.uam-prov-switch {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border-bright);
+  background: var(--surface-high);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft), border-color var(--dur-fast) var(--ease-out-soft);
+}
+
+.uam-prov-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transition: transform var(--dur-fast) var(--ease-out-soft), background var(--dur-fast) var(--ease-out-soft);
+}
+
+.uam-prov-switch[aria-checked='true'] {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.uam-prov-switch[aria-checked='true']::after {
+  background: var(--accent);
+  transform: translateX(12px);
+}
+
+.uam-prov-switch[aria-checked='mixed'] {
+  border-style: dashed;
+  opacity: 0.6;
+}
+
+.uam-prov-switch:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.uam-prov-switch:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Shared warning tint for session banners. */
+.uam-prov-warning {
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 9%, var(--bg));
+  color: var(--text);
+}
+
+.uam-prov-warning__title {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+/* Multiline MCP JSON / import editor. */
+.uam-prov-json {
+  width: 100%;
+  min-height: 320px;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+}
+
+.uam-prov-json--compact {
+  min-height: 160px;
+}
+
+.uam-prov-json:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Smooth disclosure: content eases in; collapsing unmounts instantly so nothing lingers. */
+.uam-prov-enter {
+  animation: uam-prov-enter var(--dur-base) var(--ease-out-soft) both;
+}
+
+@keyframes uam-prov-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-prov-enter,
+  .uam-prov-row,
+  .uam-prov-switch,
+  .uam-prov-switch::after {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Overview matrix: host segmented control, sticky provider column, availability glyphs. */
+.uam-prov-seg { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.uam-prov-seg__item { height: 24px; padding: 0 var(--sp-3); border-radius: var(--r-sm); font-size: var(--fs-sm); color: var(--text-2); transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.uam-prov-seg__item:hover { color: var(--text); background: var(--sidebar-item-hover); }
+.uam-prov-seg__item[aria-selected='true'] { color: var(--text); background: var(--surface-high); box-shadow: var(--elev-1); }
+.uam-prov-seg__item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-prov-provider { display: flex; align-items: center; gap: var(--sp-2); text-align: left; min-width: 0; border-radius: var(--r-sm); }
+.uam-prov-provider:not(:disabled):hover .uam-prov-provider__name { color: var(--accent); }
+.uam-prov-provider__name { font-size: var(--fs-base); font-weight: 500; color: var(--text); transition: color var(--dur-fast) var(--ease); }
+.uam-prov-sticky { position: sticky; left: 0; z-index: 1; background: var(--surface); }
+.uam-prov-card tbody tr:hover .uam-prov-sticky { background: var(--surface-up); }
+.uam-prov-detail--clip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.uam-prov-avail { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: var(--text-3); cursor: default; }
+.uam-prov-avail[data-state='on'] { color: var(--success); background: var(--success-dim); }
+.uam-prov-avail[data-state='unknown'] { opacity: .5; }
+.uam-prov-spin { animation: uam-prov-spin 900ms linear infinite; }
+@keyframes uam-prov-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .uam-prov-spin { animation: none; } }
