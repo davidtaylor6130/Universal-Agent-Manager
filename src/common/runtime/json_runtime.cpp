@@ -314,12 +314,22 @@ class JsonParser
 		return ParseStringBody();
 	}
 
+	/// <summary>Copies ordinary bytes in spans while validating escapes and string boundaries.</summary>
 	std::string ParseStringBody()
 	{
 		std::string out;
 
 		while (pos_ < input_.size())
 		{
+			const std::size_t span_start = pos_;
+			while (pos_ < input_.size())
+			{
+				const unsigned char byte = static_cast<unsigned char>(input_[pos_]);
+				if (byte < 0x20 || byte == '"' || byte == '\\') break;
+				++pos_;
+			}
+			if (pos_ != span_start) out.append(input_.substr(span_start, pos_ - span_start));
+			if (pos_ == input_.size()) break;
 			const char ch = input_[pos_++];
 
 			if (ch == '"')
@@ -402,20 +412,16 @@ class JsonParser
 					return {};
 				}
 			}
-				else
-				{
-					if (static_cast<unsigned char>(ch) < 0x20)
-					{
-						error_ = true;
-						return {};
-					}
-					out.push_back(ch);
-				}
+			else
+			{
+				error_ = true;
+				return {};
 			}
-
-			error_ = true;
-			return {};
 		}
+
+		error_ = true;
+		return {};
+	}
 
 		bool ParseHexCodeUnit(uint32_t& value)
 		{

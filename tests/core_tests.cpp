@@ -513,6 +513,28 @@ UAM_TEST(JsonSerializationPreservesMixedSpansAndExactByteLimit)
 	UAM_ASSERT_EQ(SerializeJson(uam::json::String(""), 3), std::string("\"\"\n"));
 }
 
+UAM_TEST(JsonParserPreservesLongSpansAndRejectsMalformedBoundaries)
+{
+	const std::string plain(1024U * 1024U, 'x');
+	const std::string escaped = R"(\u0000\/\\\"\b\f\n\r\t\u00e9\uD83D\uDE00)";
+	const std::string encoded = "\"" + plain + escaped + plain + "\"";
+	const std::string decoded = plain + std::string("\0/\\\"\b\f\n\r\t", 9) + "é😀" + plain;
+	const std::optional<JsonValue> value = ParseJson(encoded);
+	UAM_ASSERT(value.has_value());
+	UAM_ASSERT_EQ(value->string_value, decoded);
+	const std::optional<JsonValue> object = ParseJson("{\"" + plain + "\":" + encoded + "}");
+	UAM_ASSERT(object.has_value());
+	UAM_ASSERT(object->Find(plain) != nullptr);
+	UAM_ASSERT_EQ(object->Find(plain)->string_value, decoded);
+	UAM_ASSERT(!ParseJson(encoded.substr(0, encoded.size() - 1)).has_value());
+	UAM_ASSERT(!ParseJson(encoded + "trailing").has_value());
+	for (int control = 0; control < 32; ++control)
+		UAM_ASSERT(!ParseJson("\"" + plain + static_cast<char>(control) + "\"").has_value());
+	for (const std::string suffix : {std::string("\\"), std::string("\\u"), std::string("\\u00"),
+	     std::string("\\uD83D"), std::string("\\uD83D\\u"), std::string("\\q\""), std::string("\\uD83D\\u0000\"")})
+		UAM_ASSERT(!ParseJson("\"" + plain + suffix).has_value());
+}
+
 UAM_TEST(OversizedChatSavePreservesExistingTranscript)
 {
 	TempDir temp("oversized-chat-save");
