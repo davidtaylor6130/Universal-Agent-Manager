@@ -47,21 +47,26 @@ function WorkingDuration({ startedAtMs }: { startedAtMs: number }) {
 
 const branchCache = new Map<string, string>()
 
-/** Live git branch for an activity card; refetched only when the chat changes. */
-function useActivityBranch(sessionId: string | null, isolatedBranch: string | undefined, updatedAt: Date | undefined): string {
-  const key = sessionId ? `${sessionId}:${updatedAt?.getTime() ?? 0}` : ''
-  const [branch, setBranch] = useState(() => (sessionId && branchCache.get(sessionId)) || '')
+/** Cache branches by workspace scope; discard replies from a prior scope or refresh. */
+function useActivityBranch(session: Session | null | undefined): string {
+  const sessionId = session?.id
+  const isolatedBranch = session?.workspaceBranchName
+  const importedReadOnly = session?.importedReadOnly === true
+  const scope = sessionId ? JSON.stringify([sessionId, session?.executionHostId ?? 'local', session?.workspaceDirectory ?? '', session?.workspaceWorktreeDirectory ?? '', session?.folderId ?? '']) : ''
+  const refresh = (session?.interactionAt ?? session?.updatedAt)?.getTime() ?? 0
+  const [branch, setBranch] = useState(() => ({ scope, name: branchCache.get(scope) || '' }))
   useEffect(() => {
-    if (!sessionId || isolatedBranch || isCompanionContext()) return
+    if (!sessionId || isolatedBranch || importedReadOnly || isCompanionContext()) return
     let cancelled = false
-    void useAppStore.getState().getVcsCommitStatus(sessionId, 'git', { includeLineStats: false, contextOnly: true, requestId: `sidebar-branch:${key}` }).then((status) => {
+    void useAppStore.getState().getVcsCommitStatus(sessionId, 'git', { includeLineStats: false, contextOnly: true, requestId: `sidebar-branch:${scope}:${refresh}` }).then((status) => {
+      if (cancelled) return
       const next = status?.available && status.activeVcsType !== 'svn' ? status.branchOrRevision || '' : ''
-      branchCache.set(sessionId, next)
-      if (!cancelled) setBranch(next)
+      branchCache.set(scope, next)
+      setBranch({ scope, name: next })
     })
     return () => { cancelled = true }
-  }, [key, sessionId, isolatedBranch])
-  return isolatedBranch || branch
+  }, [scope, refresh, sessionId, isolatedBranch, importedReadOnly])
+  return importedReadOnly ? '' : isolatedBranch || (branch.scope === scope ? branch.name : '')
 }
 
 type ActivityStatus = { label: string; color: string; Icon: typeof CircleCheck }
@@ -339,7 +344,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const menuReturnFocusRef = useRef<HTMLElement | null>(null)
   const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
   const lastOpenedLabel = formatSidebarTime(activityDate)
-  const activityBranch = useActivityBranch(activityLayout ? sessionId : null, session?.workspaceBranchName, session?.interactionAt ?? session?.updatedAt)
+  const activityBranch = useActivityBranch(activityLayout ? session : null)
   const activityWorktree = activityLayout ? sessionSummary.worktreeDirectory.trim() : ''
   const activityStatus = activityLayout ? activityStatusLabel(lifecycleStatus) : null
   const lastOpenedTitle = formatSidebarTimeTitle(activityDate)

@@ -98,6 +98,60 @@ describe('SessionItem status icons', () => {
     })
   })
 
+  it('refreshes activity branches when workspace scope changes and ignores late replies', async () => {
+    const original = useAppStore.getState().getVcsCommitStatus
+    type Status = Awaited<ReturnType<typeof original>>
+    const finish: Array<(status: Status) => void> = []
+    const getVcsCommitStatus = vi.fn(() => new Promise<Status>(resolve => finish.push(resolve)))
+    const status = (branchOrRevision: string): Status => ({ available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp', branchOrRevision, changedFiles: [], lineStatsReady: false, warning: '', error: '' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    let session = { ...makeSession(), id: 'branch-scope-test', workspaceDirectory: '/tmp/first', executionHostId: 'local' }
+    useAppStore.setState({ sessions: [session], getVcsCommitStatus })
+    const render = () => act(() => root.render(<SessionItem sessionId={session.id} session={session} activityLayout />))
+    try {
+      render()
+      await act(async () => finish[0](status('old-branch')))
+      expect(host.textContent).toContain('old-branch')
+      session = { ...session, workspaceDirectory: '/tmp/second' }
+      render()
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(2)
+      expect(host.textContent).not.toContain('old-branch')
+      session = { ...session, executionHostId: 'remote' }
+      render()
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(3)
+      await act(async () => finish[2](status('remote-branch')))
+      await act(async () => finish[1](status('late-local-branch')))
+      expect(host.textContent).toContain('remote-branch')
+      expect(host.textContent).not.toContain('late-local-branch')
+      act(() => root.unmount())
+      const remounted = createRoot(host)
+      await act(async () => remounted.render(<SessionItem sessionId={session.id} session={session} activityLayout />))
+      expect(host.textContent).toContain('remote-branch')
+      act(() => remounted.unmount())
+    } finally {
+      useAppStore.setState({ getVcsCommitStatus: original })
+      host.remove()
+    }
+  })
+
+  it('does not request an activity branch for imported read-only chats', async () => {
+    const original = useAppStore.getState().getVcsCommitStatus
+    const getVcsCommitStatus = vi.fn(async () => null)
+    useAppStore.setState({ sessions: [{ ...makeSession(), importedReadOnly: true, workspaceBranchName: 'saved-branch' }], getVcsCommitStatus })
+    const { host, root } = renderSessionItem(true)
+    try {
+      await act(async () => {})
+      expect(getVcsCommitStatus).not.toHaveBeenCalled()
+      expect(host.textContent).not.toContain('saved-branch')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ getVcsCommitStatus: original })
+    }
+  })
+
   it('uses a precomputed branch family without rescanning the full session list', () => {
     const sessions = new Proxy([makeSession()], {
       get(target, property, receiver) {
