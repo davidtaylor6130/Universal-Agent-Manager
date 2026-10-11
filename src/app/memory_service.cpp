@@ -1426,15 +1426,16 @@ namespace
 		return file.bad() ? std::string{} : uam::strings::SafeLine(preview, 320);
 	}
 
-	template <typename Visit> void ForEachMemoryFileInRoot(const fs::path& root, Visit&& visit)
+	template <typename Visit> void ForEachMemoryFileInRoot(const fs::path& root, Visit&& visit, std::stop_token stop_token = {})
 	{
-		if (root.empty() || !uam::paths::IsDirectoryNoThrow(root))
+		if (stop_token.stop_requested() || root.empty() || !uam::paths::IsDirectoryNoThrow(root))
 		{
 			return;
 		}
 
 		for (const std::string& category : uam::memory::SupportedCategories())
 		{
+			if (stop_token.stop_requested()) return;
 			const fs::path path = MemoryService::CategoryPath(root, category);
 			if (!uam::paths::IsDirectoryNoThrow(path))
 			{
@@ -1443,6 +1444,7 @@ namespace
 			std::error_code ec;
 			for (fs::directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec))
 			{
+				if (stop_token.stop_requested()) return;
 				const fs::directory_entry& item = *it;
 				if (uam::paths::IsRegularFileWithExtensionNoThrow(item, ".md"))
 				{
@@ -1452,7 +1454,7 @@ namespace
 		}
 	}
 
-	bool CollectMemoryPreviews(const fs::path& root, std::vector<std::string>& previews, std::size_t* remaining_bytes)
+	bool CollectMemoryPreviews(const fs::path& root, std::vector<std::string>& previews, std::size_t* remaining_bytes, std::stop_token stop_token)
 	{
 		bool fits = true;
 		ForEachMemoryFileInRoot(root,
@@ -1470,7 +1472,7 @@ namespace
 				                        previews.push_back(row);
 			                        }
 			                        return true;
-		                        });
+		                        }, stop_token);
 		return fits;
 	}
 
@@ -1625,9 +1627,9 @@ bool MemoryService::EnsureMemoryLayout(const fs::path& root)
 	return true;
 }
 
-std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt)
+std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt, std::stop_token stop_token)
 {
-	if (chat.execution_host_id != uam::execution_hosts::kLocalHostId || !MemoryEnabled(chat) || app.settings.memory_recall_budget_bytes <= 0)
+	if (stop_token.stop_requested() || chat.execution_host_id != uam::execution_hosts::kLocalHostId || !MemoryEnabled(chat) || app.settings.memory_recall_budget_bytes <= 0)
 	{
 		return "";
 	}
@@ -1638,14 +1640,14 @@ std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const Ch
 	// Ranked recall needs every candidate; ordinary recall stops at its first overflowing row.
 	std::size_t* preview_budget = chat.small_model_mode ? nullptr : &remaining_bytes;
 	std::vector<std::string> previews;
-	const bool global_fits = CollectMemoryPreviews(GlobalMemoryRoot(app.data_root), previews, preview_budget);
+	const bool global_fits = CollectMemoryPreviews(GlobalMemoryRoot(app.data_root), previews, preview_budget, stop_token);
 	const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
 	if (global_fits && !workspace_root.empty())
 	{
-		CollectMemoryPreviews(LocalMemoryRoot(workspace_root), previews, preview_budget);
+		CollectMemoryPreviews(LocalMemoryRoot(workspace_root), previews, preview_budget, stop_token);
 	}
 
-	if (previews.empty())
+	if (stop_token.stop_requested() || previews.empty())
 	{
 		return "";
 	}
@@ -1658,6 +1660,7 @@ std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const Ch
 		});
 	}
 
+	if (stop_token.stop_requested()) return {};
 	for (const std::string& preview : previews)
 	{
 		if (preface.size() + preview.size() + 1 > budget)

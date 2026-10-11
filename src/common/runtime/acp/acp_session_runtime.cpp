@@ -16,6 +16,7 @@
 #include "app/goal_service.h"
 #include "app/uam_control_service.h"
 #include "app/memory_service.h"
+#include "common/memory/memory_levels.h"
 #include "app/native_session_link_service.h"
 #include "app/transcript_retention_service.h"
 #include "app/provider_resolution_service.h"
@@ -1108,8 +1109,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return true;
 		}
 
-		bool BuildAcpBatchPrompt(AppState& app, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string& effective_prompt, std::string* error_out)
+		bool BuildAcpBatchPrompt(AppState& app, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string& effective_prompt, std::string* error_out, std::optional<std::size_t>* recall_position = nullptr)
 		{
+			if (recall_position != nullptr) recall_position->reset();
 			const AcpQueuedUserPromptState& first = batch.front();
 			if (first.uam_agent_execution_capability == "uam-prompt-injected" &&
 			    !first.uam_agent_instructions.empty() &&
@@ -1144,7 +1146,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (index == 0 && std::ranges::none_of(chat.messages,
 				    [](const Message& message) { return message.role == MessageRole::User; }))
 				{
-					prompt_body = MemoryService::BuildRecallPreface(app, chat, first.text) + prompt_body;
+					if (recall_position != nullptr && paths::IsControllerLocalWorkspace(chat))
+					{
+						// Two directory probes preserve the empty-memory fast path; bodies are worker-only.
+						if (memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) && app.settings.memory_recall_budget_bytes > 0 &&
+						    (paths::IsDirectoryNoThrow(MemoryService::GlobalMemoryRoot(app.data_root)) ||
+						     paths::IsDirectoryNoThrow(MemoryService::LocalMemoryRoot(paths::ResolveControllerWorkspaceRootPath(app, chat)))))
+							*recall_position = effective_prompt.size();
+					}
+					else
+						prompt_body = MemoryService::BuildRecallPreface(app, chat, first.text) + prompt_body;
 				}
 				effective_prompt += prompt_body;
 			}
@@ -1157,6 +1168,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const std::string goal_prompt = GoalService::BuildContinuationPrompt(*goal, goal->tokens_used, goal->token_budget, chat.small_model_mode);
 				if (!goal_prompt.empty())
 				{
+					if (recall_position != nullptr && recall_position->has_value()) **recall_position += goal_prompt.size() + 2;
 					effective_prompt = goal_prompt + "\n\n" + effective_prompt;
 				}
 			}
@@ -1166,7 +1178,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (terminal_goal != nullptr)
 				{
 					const std::string terminal_prompt = GoalService::BuildReadOnlyTerminalPrompt(*terminal_goal);
-					if (!terminal_prompt.empty()) effective_prompt = terminal_prompt + "\n\n" + effective_prompt;
+					if (!terminal_prompt.empty())
+					{
+						if (recall_position != nullptr && recall_position->has_value()) **recall_position += terminal_prompt.size() + 2;
+						effective_prompt = terminal_prompt + "\n\n" + effective_prompt;
+					}
 				}
 			}
 			return true;
@@ -1367,7 +1383,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.active_uam_agent_instructions = first.uam_agent_instructions;
 			session.active_uam_agent_execution_capability = first.uam_agent_execution_capability;
 			std::string effective_prompt;
-			if (!BuildAcpBatchPrompt(app, chat, batch, effective_prompt, error_out) ||
+			std::optional<std::size_t> recall_position;
+			if (!BuildAcpBatchPrompt(app, chat, batch, effective_prompt, error_out, &recall_position) ||
 			    !PersistTrustedComputerUseTask(app, chat, batch, error_out) ||
 			    !StartAcpProcessForChat(app, session, chat, error_out))
 			{
@@ -1399,6 +1416,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 
+			session.memory_recall_preparation.reset();
+			session.memory_recall_position = recall_position;
+			session.memory_recall_query = recall_position ? first.text : std::string{};
 			session.queued_prompt = std::move(effective_prompt);
 			session.turn_checkpoint_eligible = false;
 			session.crash_restart_attempts = 0;
@@ -2981,6 +3001,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		session->queued_prompt.clear();
+		session->memory_recall_position.reset();
+		session->memory_recall_query.clear();
+		session->memory_recall_preparation.reset();
 		session->claude_input_preparation.reset();
 		session->processing = false;
 		session->turn_checkpoint_eligible = false;
@@ -3332,6 +3355,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.last_error.clear();
 		}
 		session.queued_prompt.clear();
+		session.memory_recall_position.reset();
+		session.memory_recall_query.clear();
+		session.memory_recall_preparation.reset();
 		session.claude_input_preparation.reset();
 		if (!preserve_held_queue) session.queued_user_prompts.clear();
 		session.goal_turn_kind.clear();
@@ -3960,6 +3986,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		bool changed = acp_detail::PollClaudeQuotaContinuations(app, uam::time::TimestampNowSec());
 		changed = RetryPendingRemoteAcpSessionHydration(app) > 0 || changed;
 		changed = PollCompletedAcpProcessStops(app, browser) || changed;
+		std::erase_if(app.memory_recall_tasks, [](const MemoryRecallTask& task)
+		{ return task.state != nullptr && task.state->finished.load(std::memory_order_acquire); });
 		std::erase_if(app.remote_context_tasks, [](const RemoteContextTask& task)
 		{ return task.state != nullptr && task.state->finished.load(std::memory_order_acquire); });
 		std::erase_if(app.claude_input_tasks, [](const ClaudeInputPreparationTask& task)

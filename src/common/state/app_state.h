@@ -448,11 +448,48 @@ namespace uam
 		Timeout
 	};
 
+	struct MemoryRecallIdentity
+	{
+		std::filesystem::path data_root;
+		std::string workspace;
+		std::string chat_id;
+		std::string provider_id;
+		std::string session_id;
+		std::string prompt;
+		std::string query;
+		std::size_t position = 0;
+		int turn_serial = 0;
+		int budget = 0;
+		std::string memory_level;
+		bool small_model_mode = false;
+		bool operator==(const MemoryRecallIdentity&) const = default;
+	};
+	struct MemoryRecallPreparation
+	{
+		MemoryRecallIdentity identity;
+		std::string context;
+		std::string error;
+		std::stop_source cancel;
+		std::atomic<bool> finished{false};
+	};
+	struct MemoryRecallPreparationLease
+	{
+		std::shared_ptr<MemoryRecallPreparation> state;
+		explicit MemoryRecallPreparationLease(std::shared_ptr<MemoryRecallPreparation> value) : state(std::move(value)) {}
+		~MemoryRecallPreparationLease() { if (state != nullptr) state->cancel.request_stop(); }
+	};
+	struct MemoryRecallTask
+	{
+		std::shared_ptr<MemoryRecallPreparation> state;
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct RemoteContextPreparation
 	{
 		ExecutionHost host;
 		std::string workspace;
 		std::string prompt;
+		int memory_budget = 0;
 		std::string context;
 		std::string error;
 		std::stop_source cancel;
@@ -602,6 +639,9 @@ namespace uam
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
 		bool queue_held = false;
 		std::shared_ptr<RemoteContextPreparation> remote_context_preparation;
+		std::optional<std::size_t> memory_recall_position;
+		std::string memory_recall_query;
+		std::unique_ptr<MemoryRecallPreparationLease> memory_recall_preparation;
 		std::unique_ptr<ClaudeInputPreparationLease> claude_input_preparation;
 		// Counts automatic relaunches after the process died before the queued
 		// prompt was delivered. Deliberately survives ResetAcpRuntimeState so a
@@ -1011,6 +1051,7 @@ namespace uam
 		std::shared_ptr<std::atomic<bool>> provider_context_cleanup_finished;
 		double provider_context_cleanup_not_before_s = 0.0;
 		std::vector<RemoteContextTask> remote_context_tasks;
+		std::vector<MemoryRecallTask> memory_recall_tasks;
 		std::vector<ClaudeInputPreparationTask> claude_input_tasks;
 		// Runtime-only discovery contexts; never serialized or persisted as user chats.
 		std::vector<ChatSession> model_discovery_chats;
