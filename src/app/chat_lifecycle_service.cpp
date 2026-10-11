@@ -34,6 +34,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <map>
+#include <functional>
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
@@ -484,6 +486,17 @@ namespace
 		native_keys.clear();
 		workspace_keys.clear();
 		if (native_owners != nullptr) native_owners->clear();
+		// Resolve repeated workspace paths once per collection, never across operations.
+		std::map<std::pair<std::string, std::string>, std::string> workspace_cache;
+		const std::function<void(const std::string&, const std::string&)> retain_workspace =
+		    [&app, &workspace_keys, &workspace_cache](const std::string& host, const std::string& directory)
+		{
+			const std::pair<std::string, std::string> location(host, directory);
+			std::map<std::pair<std::string, std::string>, std::string>::iterator found = workspace_cache.find(location);
+			if (found == workspace_cache.end())
+				found = workspace_cache.emplace(location, uam::paths::WorkspaceOwnershipKey(app, host, directory)).first;
+			workspace_keys.insert(found->second);
+		};
 		const std::unordered_set<std::string> deleted_ids(intent.chat_ids.begin(), intent.chat_ids.end());
 		const std::unordered_set<std::string> deleted_folders(intent.folder_ids.begin(), intent.folder_ids.end());
 		for (const ChatSession& chat : app.chats)
@@ -511,7 +524,7 @@ namespace
 			const std::string& directory = uam::strings::IsBlank(chat.workspace_worktree_directory)
 			    ? chat.workspace_directory : chat.workspace_worktree_directory;
 			if (!uam::strings::IsBlank(directory))
-				workspace_keys.insert(uam::paths::WorkspaceOwnershipKey(app, chat.execution_host_id, directory));
+				retain_workspace(chat.execution_host_id, directory);
 			if (native_owners != nullptr && uam::paths::IsControllerLocalWorkspace(chat))
 			{
 				uam::NativeDeletionOwner owner;
@@ -530,7 +543,7 @@ namespace
 		for (const ChatFolder& folder : app.folders)
 			if (!deleted_folders.contains(uam::strings::Trim(folder.id)) && !uam::strings::IsBlank(folder.directory))
 			{
-				workspace_keys.insert(uam::paths::WorkspaceOwnershipKey(app, folder.execution_host_id, folder.directory));
+				retain_workspace(folder.execution_host_id, folder.directory);
 				if (native_owners != nullptr && uam::paths::IsControllerLocalWorkspace(folder))
 				{
 					uam::NativeDeletionOwner owner;
