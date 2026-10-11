@@ -121,16 +121,39 @@ namespace uam::usage
 		if (size > 32 * 1024 * 1024) { m_oversizedLines = 1; result.error = "Gemini history exceeds the 32 MiB snapshot limit; totals are incomplete."; return result; }
 		if (m_recordLimitReached) { result.error = "Gemini history exceeds the cached-record limit; totals are incomplete."; return result; }
 		if (m_readOffset == size && m_pendingLine.empty() && !result.reset) { result.complete = true; return result; }
+#if defined(_WIN32)
+		// A provider may atomically replace this snapshot while its usage is being scanned.
+		// Keep the old handle readable without preventing replacement; the revision check
+		// below rejects a mixed or superseded snapshot before accounting is published.
+		struct SnapshotHandle
+		{
+			HANDLE value;
+			~SnapshotHandle() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+		} input{CreateFileW(native_path.c_str(), GENERIC_READ,
+		    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+		    FILE_FLAG_SEQUENTIAL_SCAN, nullptr)};
+		LARGE_INTEGER offset{}; offset.QuadPart = static_cast<LONGLONG>(m_readOffset);
+		if (input.value == INVALID_HANDLE_VALUE || !SetFilePointerEx(input.value, offset, nullptr, FILE_BEGIN))
+		{ result.error = "Could not open Gemini history."; return result; }
+#else
 		std::ifstream input;
 		if (!io::OpenReadFile(path, input)) { result.error = "Could not open Gemini history."; return result; }
 		input.seekg(static_cast<std::streamoff>(m_readOffset));
+#endif
 		std::array<char, 32768> buffer{};
 		while (m_readOffset < size && result.bytes_read < options.byte_budget)
 		{
 			if (cancelled && cancelled()) { result.cancelled = true; return result; }
 			const std::size_t requested = static_cast<std::size_t>(std::min<std::uintmax_t>({buffer.size(), size - m_readOffset, options.byte_budget - result.bytes_read}));
+#if defined(_WIN32)
+			DWORD count = 0;
+			if (!ReadFile(input.value, buffer.data(), static_cast<DWORD>(requested), &count, nullptr))
+			{ result.error = "Gemini history could not be read during scanning."; return result; }
+			const std::size_t received = count;
+#else
 			input.read(buffer.data(), static_cast<std::streamsize>(requested));
 			const std::size_t received = static_cast<std::size_t>(input.gcount());
+#endif
 			if (!received) { result.error = "Gemini history changed or could not be read during scanning."; return result; }
 			m_pendingLine.append(buffer.data(), received); m_readOffset += received; result.bytes_read += received;
 		}

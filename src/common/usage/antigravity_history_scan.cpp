@@ -56,7 +56,11 @@ namespace uam::usage
 			std::error_code error;
 			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, error);
 			if (error) return fail("Could not inspect Antigravity history time.");
+#if defined(_WIN32)
+			m_state->fallback_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::clock_cast<std::chrono::system_clock>(modified).time_since_epoch()).count();
+#else
 			m_state->fallback_ms = std::chrono::duration_cast<std::chrono::milliseconds>(decltype(modified)::clock::to_sys(modified).time_since_epoch()).count();
+#endif
 			std::filesystem::path native; std::string path_error;
 			if (!io::NativeFilePath(path, native, path_error)) return fail("Could not resolve Antigravity history path.");
 			const std::u8string utf8 = native.u8string(); const std::string filename(reinterpret_cast<const char*>(utf8.data()), utf8.size());
