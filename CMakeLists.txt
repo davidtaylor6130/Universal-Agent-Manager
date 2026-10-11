@@ -1215,6 +1215,7 @@ if(UAM_BUILD_TESTS)
     tests/agent_provider_inheritance_tests.cpp
     tests/workspace_import_policy_tests.cpp
     tests/workspace_migration_alias_tests.cpp
+    tests/deletion_workspace_ownership_tests.cpp
     tests/native_chat_identity_tests.cpp
     tests/chat_file_change_receipt_tests.cpp
     tests/organization_tests.cpp
