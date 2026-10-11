@@ -196,7 +196,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
   const batch = publication.current
   const batchDone = Math.max(0, Math.min(batch.expectedCount, status.importedCount - batch.importedCount))
   const partial = outcome !== null && outcome.failed < outcome.total
-  return <Overlay open zIndex={50} onBackdropMouseDown={() => { if (!busyRef.current) onClose() }}>
+  return <Overlay open onBackdropMouseDown={() => { if (!busyRef.current) onClose() }}>
     <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Import chats" aria-busy={busy} className="uam-rv-dialog w-full max-w-2xl max-h-[85vh] text-xs">
       <header className="uam-rv-dialog__header">
         <div className="min-w-0 flex-1">
@@ -248,15 +248,15 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
           </p>}
         </div>
         <div className="uam-rv-actions">
-          <Button type="button" size="sm" variant="primary" leadingIcon={<Download size={14} />} aria-label="Import selected" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>Import</Button>
           <IconButton size="sm" icon={<EyeOff size={14} />} label="Ignore selected" disabled={busy || importing || selected.length === 0} onClick={() => void decide(false)} />
-          <span className="uam-rv-actions__spacer" />
           {error && <IconButton size="sm" icon={<RefreshCw size={14} />} label="Reload" disabled={busy} onClick={() => void load(offset, awaitingPublication)} />}
           {page && pageCount > 1 && <>
             <Button type="button" size="sm" variant="ghost" disabled={busy || importing || offset === 0} onClick={() => void load(Math.max(0, offset - 100))}>Previous</Button>
             <span className="uam-rv-muted">Page {pageNumber} of {pageCount}</span>
             <Button type="button" size="sm" variant="ghost" disabled={busy || importing || page.nextOffset >= page.totalCount} onClick={() => void load(page.nextOffset)}>Next</Button>
           </>}
+          <span className="uam-rv-actions__spacer" />
+          <Button type="button" size="sm" variant="primary" leadingIcon={<Download size={14} />} aria-label="Import selected" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>{selected.length > 0 ? `Import ${selected.length}` : 'Import'}</Button>
         </div>
       </div>
     </div>
