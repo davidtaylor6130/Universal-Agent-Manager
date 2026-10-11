@@ -1706,6 +1706,7 @@ describe('ChatView', () => {
       const submitted = send.mock.calls[0] as unknown as [string, string]
       expect(submitted[1]).toContain('My draft')
       expect(textarea.value).toBe('My draft')
+      expect(textarea.disabled).toBe(false)
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'New unsent draft')
         textarea.dispatchEvent(new Event('input', { bubbles: true }))
