@@ -2295,6 +2295,14 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			continue;
 		}
 
+		// Recheck current text when the accepted idle window expires, not on every UI tick.
+		const std::unordered_map<std::string, double>::const_iterator idle = app.memory_idle_started_at_by_chat_id.find(chat.id);
+		if (idle != app.memory_idle_started_at_by_chat_id.end() && idle->second > 0.0 &&
+		    now - idle->second < static_cast<double>(app.settings.memory_idle_delay_seconds))
+		{
+			continue;
+		}
+
 		if (chat.messages_loaded && !ShouldQueueAutomaticMemoryScan(chat))
 		{
 			if (MarkLowSignalMemoryDeltaSkipped(app, chat))

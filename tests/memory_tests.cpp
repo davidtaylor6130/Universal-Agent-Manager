@@ -2636,3 +2636,36 @@ UAM_TEST(MemoryAutomaticGateCombinesSignalsAcrossMessagesWithoutReplayingProcess
 		}
 	}
 }
+
+UAM_TEST(MemoryAutomaticGateDefersRepeatedClassificationButRechecksDueText)
+{
+	TempDir temp("uam-memory-idle-classification");
+	for (const std::string level : {"strict", "balanced"})
+	{
+		uam::AppState app;
+		app.data_root = temp.root / level;
+		app.settings.memory_idle_delay_seconds = 3600;
+		ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+		chat.workspace_directory = temp.root.string();
+		chat.memory_level = level;
+		chat.messages.push_back({MessageRole::User, "Remember this neutral preference."});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.chats.push_back(std::move(chat));
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		const std::string id = app.chats.front().id;
+		UAM_ASSERT(app.memory_idle_started_at_by_chat_id.contains(id));
+		const double started = app.memory_idle_started_at_by_chat_id.at(id);
+		app.chats.front().messages.front().content = "Unfinished task: remaining work.";
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
+		UAM_ASSERT_EQ(app.memory_idle_started_at_by_chat_id.at(id), started);
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT(app.memory_extraction_queue.empty());
+		app.settings.memory_idle_delay_seconds = 0;
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 1);
+		UAM_ASSERT(!app.memory_idle_started_at_by_chat_id.contains(id));
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT(app.memory_extraction_queue.empty());
+	}
+}
