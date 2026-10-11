@@ -9,286 +9,295 @@ Packaged source: `3ed93c813b66611e72167dae505362234b7dccf6`.
 This tracked root document is the V5 master change log. Every agent making a V5 feature, graphical, performance, code-quality or bug-fix change must update this log in the same commit as its implementation.
 
 - Read the existing rows first and update a matching entry when extending or correcting the same change; append a new row for distinct work.
-- Keep the columns **Group | Type | Change | Summary** and reuse an existing group where appropriate.
+- Keep the columns **Group | Type | Change | Summary | Status** and reuse an existing group where appropriate.
 - Use only **Performance**, **Graphical**, **Code Only**, **Bugfix** or **Misc** as the Type.
 - Limit Change names to five words and write Summary as one factual sentence describing the resulting behavior.
-- Record only completed implementation as completed work, and explicitly label blocked, partial or unverified work under the remaining-work groups.
+- Describe actual implementation separately from acceptance, and explicitly label blocked, partial or unverified work under the remaining-work groups.
 - Preserve existing history and verification limits, resolve overlapping agent edits without dropping rows, and do not replace this document with a log in ignored working notes.
 - Keep detailed test receipts in `.UAM/AINotes/` and avoid claiming live or platform acceptance from source checks alone.
 
+- Status flags are cumulative: use **Un-Reviewed** for work without documented review and **Not User Tested** until David has explicitly confirmed testing the specific change.
+- Mark every React/frontend UI or UX code change **Claude Review**, regardless of Type or which agent implemented it; this also applies to affected UI workflows awaiting Claude validation.
+- Remove **Claude Review** only after recording a completed Claude review and resolving its findings; completed automation or a different agent's review does not satisfy that flag.
+- Set **Complete** only when David explicitly approves that specific change as all good, all required review is satisfied, and the approval reference is recorded with the entry or linked evidence.
+- Never infer user approval from passed tests, successful builds, installation, a restart, silence or a general request to continue.
+
 ## Changes
 
+Initial statuses are deliberately unsigned: no entry has been marked Complete based on build or automated test results, and earlier user comments are not treated as blanket approval of these cumulative changes.
 
-| Group | Type | Change | Summary |
-|---|---|---|---|
-| Core correctness | Bugfix | Recovery State Reconciliation | Recovery-only changes now reach the frontend without requiring another chat field to change. |
-| Core correctness | Bugfix | Memory Request Ownership | Older memory requests can no longer overwrite the currently selected scope or its errors. |
-| Core correctness | Bugfix | Pending Attachment Preservation | Send completion preserves skills added or reattached while the request was pending. |
-| Core correctness | Bugfix | Cancellation Persistence | Failed cancellation saves retain cancellation intent and prevent queued runs from relaunching. |
-| Core correctness | Code Only | Shared Provider Catalogue | Provider choices use shared metadata instead of duplicated provider lists. |
-| Core correctness | Code Only | Tooltip Ownership Cleanup | Redundant tooltip timing ownership was removed. |
-| Composer and queue | Graphical | Composer Message Editing | Editing a sent message now uses the existing composer instead of a separate editing textarea. |
-| Composer and queue | Bugfix | Edit Draft Restoration | Cancelling an edit restores the unsent draft and preserves its attachments. |
-| Composer and queue | Bugfix | Editable Pending Composer | The composer remains editable while prompt admission is pending without allowing duplicate submissions. |
-| Composer and queue | Bugfix | Separate FIFO Turns | Queued prompts dispatch as separate durable turns instead of being concatenated into one prompt. |
-| Composer and queue | Graphical | Queue Management Controls | Guarded controls expose queue editing, reordering, removal and explicit resume. |
-| Composer and queue | Bugfix | Queue Revision Guards | Stale queue edits and reorders are rejected without losing captured attachments or execution options. |
-| Composer and queue | Bugfix | Restart Queue Holding | Restored queued intent remains held until explicitly resumed. |
-| Composer and queue | Performance | Queue Persistence Journal | Ordinary queue changes use a bounded durable journal instead of rewriting the entire transcript. |
-| Composer and queue | Bugfix | Queue Crash Recovery | Journal generations and consumption markers prevent stale saves or crashes from resurrecting dispatched input. |
-| Composer and queue | Bugfix | Queue Attachment Editing | Queued prompts support attachment removal and attachment-only edits while preserving retained attachments. |
-| Composer and queue | Graphical | Queued Attachment Names | Queued messages display their captured file names. |
-| Composer and queue | Bugfix | Secondary Control Submission | Secondary composer buttons no longer accidentally submit the draft. |
-| Composer and queue | Bugfix | Editor Keyboard Ownership | Queue-editor shortcuts remain inside the editor rather than triggering composer actions. |
-| Composer and queue | Bugfix | Goal Request Ownership | Goal composer requests retain correct ownership through React effect replay. |
-| Composer and queue | Graphical | Composer Goal Controls | Goal actions were moved into the composer controls with guarded asynchronous ownership. |
-| Composer and queue | Bugfix | Goal Popup Escape | Escape closes the goals popup from the composer. |
-| Composer and queue | Bugfix | Checkpoint Queue Preservation | Checkpoint finalization cannot overwrite newer queued intent or a replacement turn. |
-| Composer and queue | Performance | Prompt Settings Capture | Provider prompt construction captures required settings without copying the complete loaded transcript. |
-| Composer and queue | Performance | Redundant Delivery Saves | Unchanged local delivery state is no longer rewritten after its durable delivery-intent save. |
-| History and performance | Performance | Retry Selector Caching | Composer typing avoids repeated retry-history scans. |
-| History and performance | Performance | Timeline Render Reuse | Unchanged transcript rendering is reused while the composer updates. |
-| History and performance | Performance | Timestamp Render Reuse | Unchanged turn timestamps are no longer repeatedly formatted during typing and streaming. |
-| History and performance | Performance | Incremental History Digests | Exact unchanged message prefixes reuse their hashes when history appends or shrinks. |
-| History and performance | Bugfix | Earlier History Corrections | Digest checks still detect earlier content, thought and tool-result changes. |
-| History and performance | Performance | Bounded Frontend Summaries | Catalogue updates avoid transporting complete transcript bodies unnecessarily. |
-| History and performance | Performance | Cold Startup Histories | Startup leaves chat histories unloaded until a bounded page is requested. |
-| History and performance | Graphical | Desktop History Paging | Large transcripts load in pages while retaining absolute message positions. |
-| History and performance | Bugfix | Detached History Pages | Paging an unloaded chat no longer unnecessarily hydrates its complete native state. |
-| History and performance | Bugfix | Paged Native Tokens | Native history identity tokens survive paged loading. |
-| History and performance | Performance | Recent History Cache | Validated recent-message caches avoid repeated complete reads of large saved histories. |
-| History and performance | Performance | Bounded Complete Tails | Oversized recent pages cache fewer complete messages rather than abandoning caching or truncating messages. |
-| History and performance | Performance | Priority History Loading | Opening chat history no longer waits behind background VCS subprocess checks. |
-| History and performance | Performance | Priority Cold Sending | Cold send preparation runs outside the background VCS queue. |
-| History and performance | Performance | Background Buffer Disposal | Large detached history buffers are released away from the GUI thread. |
-| History and performance | Performance | Background Cache Publication | Revision-guarded history cache publication runs on the background worker. |
-| History and performance | Performance | Durable Transcript Retention | Only saved inactive histories are released while visible, active and unsaved work stays protected. |
-| History and performance | Performance | Paused History Release | Durable hidden histories can be released for paused and blocked goals. |
-| History and performance | Bugfix | Reselected History Preservation | Idle transitions cannot discard history that the user has reselected. |
-| History and performance | Bugfix | Worktree History Preservation | Worktree operations preserve valid cached chat history. |
-| History and performance | Bugfix | Missing Timestamp Hydration | Saved chats with missing timestamps hydrate correctly. |
-| History and performance | Performance | Deferred Tool Loading | Deferred tool output loads on background workers. |
-| History and performance | Performance | Bounded Tool Pages | Tool-output paging materializes only the requested bounded UTF-8 range. |
-| History and performance | Performance | JSON Serialization Spans | Bulk string copying reduced the private large-save benchmark median from 835.7 to 498.5 milliseconds. |
-| History and performance | Performance | JSON Parsing Spans | Bulk string parsing reduced the private large-parse benchmark median from 277.3 to 151.9 milliseconds. |
-| History and performance | Performance | Workspace Resolution Reuse | State serialization reuses workspace resolution within each serialization pass. |
-| History and performance | Performance | Background Workspace Probes | Workspace availability is probed on workers and published only to matching owners. |
-| History and performance | Performance | Background Pending Saves | Ordinary pending saves prepare durable files on workers before guarded publication. |
-| History and performance | Performance | Faster Selection Acknowledgement | Chat selection acknowledges before the heavier full-state publication. |
-| History and performance | Performance | State Baseline Reuse | Patch-baseline resets reuse existing complete state summaries. |
-| History and performance | Performance | Idle Terminal Scan Avoidance | Idle terminal polling skips unnecessary catalogue scans. |
-| History and performance | Misc | Polling Stage Diagnostics | Slow Computer Use, shell, workspace and UI polling stages now have scoped diagnostic timing. |
-| Memory processing | Performance | Minimal Extraction Snapshots | Memory extraction captures required roles and text without copying unused tools, thoughts or attachments. |
-| Memory processing | Performance | Requested Range Capture | Memory workers capture only the requested unprocessed transcript range. |
-| Memory processing | Performance | Durable Progress Journal | Memory progress updates avoid rewriting otherwise unchanged transcripts. |
-| Memory processing | Performance | Background Entry Preparation | Memory entries are prepared on workers before guarded publication. |
-| Memory processing | Performance | Background First Recall | First-send memory recall runs under cancellable worker ownership. |
-| Memory processing | Performance | Bounded Recall Previews | Recall previews read bounded content instead of complete memory bodies. |
-| Memory processing | Performance | Recall Budget Cutoff | Ordinary recall scanning stops when its prompt budget is filled. |
-| Memory processing | Performance | Lightweight Memory Counts | Memory counts and timestamps avoid loading complete entry bodies. |
-| Memory processing | Performance | Memory Title Index | Memory titles are indexed once per completed extraction. |
-| Memory processing | Performance | Redundant Layout Checks | Repeated memory layout checks and title-body reads were removed. |
-| Memory processing | Performance | Bounded Signal Scanning | Automatic admission scans avoid transcript-sized scratch allocations while retaining the existing policy. |
-| Memory processing | Performance | Permissive Admission Shortcut | Permissive memory admission avoids unnecessary transcript folding. |
-| Memory processing | Performance | Idle Classification Deferral | Accepted idle waits no longer repeatedly classify the same memory input. |
-| Memory processing | Bugfix | Pending Save Coordination | Memory scans and progress publication wait for pending transcript publication to finish. |
-| Memory processing | Bugfix | Data Root Ownership | Memory completion is rejected after its original data root changes. |
-| Memory processing | Bugfix | Workspace Ownership Guards | Memory results cannot publish after their workspace ownership changes. |
-| Memory processing | Bugfix | Remote Memory Cancellation | Stale remote memory preparation is cancelled before startup waits or publication. |
-| Memory processing | Bugfix | Gemini History Protection | Worker cleanup preserves Gemini history that it does not own. |
-| Memory processing | Bugfix | Gemini Worker Policies | Generated deny-all Gemini policies now match the installed policy schema. |
-| Memory processing | Bugfix | OpenCode Worker Isolation | OpenCode text workers use isolated agent settings rather than inheriting unsuitable workspace agents. |
-| Memory processing | Bugfix | Remote Path Remapping | Shared path remapping handles roots, descendants and platform separators without prefix collisions. |
-| Providers and MCP | Bugfix | Scoped MCP Configuration | Provider and host MCP overrides are honoured during session launch. |
-| Providers and MCP | Graphical | Consolidated Provider Settings | Provider settings expose scoped switches and distinguish configured setup from verified connection status. |
-| Providers and MCP | Bugfix | MCP Opt Out | Explicit opt-out suppresses warnings and prevents launch overrides from falsely reporting a connection. |
-| Providers and MCP | Bugfix | MCP Warning Ownership | Warning dismissals reset across foreground and background runtime restarts. |
-| Providers and MCP | Bugfix | Unknown Connection States | Unknown provider connections and startup failures remain distinguishable from successful connections. |
-| Providers and MCP | Bugfix | MCP Import Preservation | MCP import preserves existing settings and reports actionable source errors. |
-| Providers and MCP | Bugfix | MCP Editor Identity | MCP editing retains identity and rejects reserved external definitions. |
-| Providers and MCP | Graphical | Multiline MCP Editing | Imported MCP configuration remains editable in a multiline editor. |
-| Providers and MCP | Bugfix | OpenCode Import Warnings | OpenCode import warnings remain visible through review and save. |
-| Providers and MCP | Misc | Native MCP Answer Verification | Question-answer delivery was exercised through the native runner relay. |
-| Providers and MCP | Bugfix | Late Permission Cancellation | Permission requests arriving during cancellation receive a cancelled response. |
-| Providers and MCP | Bugfix | Model Catalogue Ownership | Model catalogues are bound to the provider connection that produced them. |
-| Providers and MCP | Bugfix | Disabled Model Enforcement | Disabled models are rejected in chat, worker and reviewer selectors. |
-| Providers and MCP | Performance | Cached Model Discovery | Cached model discovery avoids interrupting existing conversations. |
-| Providers and MCP | Bugfix | Startup Model Isolation | Startup model discovery does not take over user conversations. |
-| Providers and MCP | Bugfix | Codex Instruction Transport | Complete Codex instructions travel through native session setup instead of exceeding OS command-line limits. |
-| Providers and MCP | Bugfix | Duplicate Workspace Instructions | Codex startup avoids duplicating workspace instructions and preserves setup errors. |
-| Providers and MCP | Bugfix | Completed Codex Decisions | Suggestions, memory extraction and permission reviews use completed Codex output. |
-| Providers and MCP | Bugfix | Empty Remote Arguments | Remote launch transport preserves intentionally empty provider option values. |
-| Providers and MCP | Bugfix | POSIX Argument Preservation | Quoted backslashes and line continuations retain their intended values. |
-| Providers and MCP | Bugfix | Remote Workspace Backslashes | Literal backslashes in POSIX workspace paths survive model and provider operations. |
-| Providers and MCP | Misc | Antigravity Terminal Support | Antigravity terminal launch, saved-ID resume, installation and authentication were added and verified. |
-| Providers and MCP | Misc | Antigravity Structured Support | Antigravity native streaming uses isolated configuration with conversation identity and resume handling. |
-| Providers and MCP | Bugfix | Antigravity Replay Filtering | Resumed Antigravity answers are preserved when they repeat earlier text. |
-| Claude and orchestration | Bugfix | Claude Tool History | Claude tool history and native task ownership remain attached to the correct conversation. |
-| Claude and orchestration | Bugfix | Native Child Settlement | Child status settles after confirmed exits while unconfirmed remote exits retain ownership. |
-| Claude and orchestration | Bugfix | Stop Output Preservation | Stop drains final output before settling children or closing process handles. |
-| Claude and orchestration | Bugfix | Shutdown Queue Preservation | Application shutdown preserves held future prompts. |
-| Claude and orchestration | Bugfix | Replacement Launch Protection | Replacement launches cannot erase pending child ownership before termination settles. |
-| Claude and orchestration | Bugfix | Idle Proxy Child Recovery | Live Claude background tasks remain owned during idle proxy recovery. |
-| Claude and orchestration | Performance | Deferred Claude Activity Saves | Streaming child updates defer routine saves while retaining terminal durability barriers. |
-| Claude and orchestration | Performance | Deferred Codex Activity Saves | Codex streaming activity uses guarded background persistence. |
-| Claude and orchestration | Bugfix | Durable Quota Continuation | Structured five-hour quota failures persist a continuation owner with a trustworthy reset time. |
-| Claude and orchestration | Bugfix | Safe Native Continuation | Quota recovery sends one new instruction in the same native session without replaying acknowledged prompts or tools. |
-| Claude and orchestration | Bugfix | Ambiguous Recovery Holding | Uncertain deliveries, repeated quota failures and unresolved tool work remain held rather than automatically replayed. |
-| Claude and orchestration | Bugfix | Continuation Context Binding | Quota continuation retains its accepted agent definition, execution context and future queue. |
-| Claude and orchestration | Performance | Cancellable Cold Startup | Cold prompt history preparation runs after cancellable admission. |
-| Claude and orchestration | Performance | Cancellable Provider Handoff | Cold provider handoff history is prepared on workers with identity and storage validation. |
-| Claude and orchestration | Performance | Cancellable Child Preparation | Native-child history preparation avoids synchronous cold reads and repair writes. |
-| Claude and orchestration | Performance | Cancellable Branch Preparation | Cold branch and edit preparation retains ownership through Stop and stale completions. |
-| Claude and orchestration | Bugfix | Managed Resume History | Managed-run resume preserves cold history and native identity. |
-| Claude and orchestration | Performance | Managed Transcript Reads | Settled managed transcripts are read outside the GUI thread. |
-| Claude and orchestration | Bugfix | Delegated Agent Definitions | Delegated worktrees retain the parent workspace’s agent definitions. |
-| Claude and orchestration | Bugfix | Child Model Inheritance | Model options inherit only when parent and child use the same provider. |
-| Claude and orchestration | Graphical | Eligible Subagent Providers | Managed subagent choices expose only scoped eligible providers. |
-| Review and checkpoints | Bugfix | Unfinished Review Gating | Review changes stays hidden while parent, child, goal or history-loading work remains unfinished. |
-| Review and checkpoints | Bugfix | Stale Diff Ownership | Old diff metadata cannot be paired with a newly selected chat. |
-| Review and checkpoints | Misc | Recorded Edit Receipts | Immutable provider-reported edit receipts support chat-specific review without attributing unrelated workspace changes. |
-| Review and checkpoints | Graphical | Recorded Patch Review | Recorded chat edits have review controls that preserve newer commit drafts. |
-| Review and checkpoints | Bugfix | User Staging Protection | Automatic checkpoints preserve user staging instead of consuming files staged during agent work. |
-| Review and checkpoints | Bugfix | Cold Checkpoint Rollback | Checkpointed turns can be rolled back from cold saved chats. |
-| Review and checkpoints | Graphical | Bounded Diff Rendering | Large diffs render within bounds with source line gutters. |
-| Review and checkpoints | Graphical | Virtualized Split Diffs | The feature agent added a virtualized split layout with a remembered view preference. |
-| Review and checkpoints | Graphical | Scoped File Inspection | The feature agent added bounded source and diff navigation scoped to the selected workspace. |
-| Review and checkpoints | Misc | Git SVN Switches | Git and SVN integration can be enabled or disabled persistently. |
-| Workspaces and deletion | Misc | Automatic Worktree Isolation | Readable isolated worktrees are prepared before first provider dispatch. |
-| Workspaces and deletion | Bugfix | Worktree Collision Detection | Collision checks work across Windows shell formatting and existing branch names. |
-| Workspaces and deletion | Bugfix | UTF8 Worktree Paths | Readable worktree paths preserve UTF-8 names. |
-| Workspaces and deletion | Bugfix | Canonical Workspace Ownership | Duplicate canonical directory owners are rejected. |
-| Workspaces and deletion | Graphical | Original Workspace Labels | Worktree rows identify their original workspace. |
-| Workspaces and deletion | Performance | Branch Snapshot Reduction | Branch creation avoids copying unnecessary full source transcripts. |
-| Workspaces and deletion | Performance | Background Cold Deletion | Cold deletion preparation and staging run outside the GUI thread. |
-| Workspaces and deletion | Bugfix | Shared Native Ownership | Deletion preserves native history still owned by surviving chat aliases. |
-| Workspaces and deletion | Bugfix | Durable Deletion Recovery | Shared ownership protection survives interrupted staging and commit recovery. |
-| Workspaces and deletion | Bugfix | Deletion Failure Guards | Backup collisions, identity collisions and pending imports cannot silently weaken deletion ownership. |
-| Workspaces and deletion | Bugfix | Selected Workspace Deletion | Context-menu deletion respects the selected workspace scope. |
-| Workspaces and deletion | Performance | Deletion Path Caching | Canonical ownership normalization is reused within deletion preparation. |
-| Workspaces and deletion | Performance | Survivor Buffer Preservation | Folder commits avoid copying unrelated surviving transcript bodies. |
-| Workspaces and deletion | Graphical | Deletion Progress Feedback | Workspace deletion exposes progress and useful native failure details. |
-| Workspaces and deletion | Misc | Orphan Worktree Inspection | Old owned worktrees are inspected before retention cleanup. |
-| Workspaces and deletion | Bugfix | Leased Worktree Cleanup | Orphan worktree cleanup respects workspace leases and stored agent references. |
-| Import and attachments | Graphical | Native Import Review | Cached startup histories can be reviewed and selectively imported. |
-| Import and attachments | Graphical | Scoped Import Selection | Shift selection and importing all native-history pages remain scoped to their workspace. |
-| Import and attachments | Bugfix | Cross Workspace Import Guards | Import decisions cannot publish into a different workspace. |
-| Import and attachments | Bugfix | Native Duplicate Prevention | Legacy remote folder aliases cannot create duplicate native imports. |
-| Import and attachments | Bugfix | Side Chat Retention | Import retains side-chat transcripts without assuming source-cleanup authority. |
-| Import and attachments | Bugfix | Discarded Import Reporting | Selected histories discarded before publication are reported rather than silently lost. |
-| Import and attachments | Bugfix | Import Request Recovery | Stale request guards are released through effect replay and completed review ownership. |
-| Import and attachments | Graphical | Lazy Image Previews | Saved image previews load lazily using persisted attachment identity. |
-| Import and attachments | Performance | Bounded Image Cache | Native saved-image previews use bounded caching. |
-| Import and attachments | Performance | Cold Attachment Previews | Saved attachments can be previewed without hydrating the complete chat. |
-| Import and attachments | Performance | Background Claude Images | Claude image delivery is prepared asynchronously within transport limits. |
-| Import and attachments | Graphical | Image Collection Display | Image collections and attachment-retention choices are displayed in chat editing. |
-| Import and attachments | Bugfix | Attachment Path Labels | Image fallback names and full-path tooltips retain correct attachment identity. |
-| Navigation and interface | Graphical | Active Chat Pinning | Running chats support context-menu pinning without changing the selection. |
-| Navigation and interface | Graphical | Next Attention Navigation | Navigation can select the next chat needing an answer, approval or failure response. |
-| Navigation and interface | Graphical | Organization Undo | Guarded reversible collection changes are exposed through undo controls. |
-| Navigation and interface | Bugfix | Delayed Rename Preservation | Delayed collection rename replies cannot overwrite newer names. |
-| Navigation and interface | Graphical | Bounded Conversation Search | Search returns bounded content hits with guarded transcript provenance and message navigation. |
-| Navigation and interface | Performance | Background Search Loading | Search workers load one transcript at a time rather than copying the entire catalogue. |
-| Navigation and interface | Graphical | Workspace Picker Search | The new-chat picker searches grouped workspaces. |
-| Navigation and interface | Graphical | Composer Focus Shortcut | A scoped shortcut focuses the active composer or terminal. |
-| Navigation and interface | Bugfix | Modal Focus Ownership | Only the top visible modal owns keyboard handling and focus restoration. |
-| Navigation and interface | Bugfix | Hidden Modal Exclusion | Hidden or closed dialogs no longer steal chat-input focus. |
-| Navigation and interface | Bugfix | Branch Family Selection | Branch families restore their last successfully selected chat. |
-| Navigation and interface | Graphical | Persistent Chat Snooze | The feature agent added persisted snoozing with guarded background metadata saves. |
-| Navigation and interface | Graphical | Chat Title Regeneration | Chat titles can be regenerated on guarded workers, including imported transcripts. |
-| Navigation and interface | Graphical | Chat Copy Actions | Sidebar menus expose chat-name and chat-ID copying. |
-| Navigation and interface | Graphical | Message Position Navigation | The feature agent added navigation through large histories by absolute message position. |
-| Navigation and interface | Graphical | User Message Rail | The message rail targets user messages with corrected spacing, hover areas and final-marker alignment. |
-| Navigation and interface | Graphical | Searchable Model Picker | The feature agent added keyboard-accessible model search, a provider sidebar and favourites. |
-| Navigation and interface | Graphical | Typography Settings | The feature agent added persisted typography controls and live terminal-font updates. |
-| Navigation and interface | Graphical | Parent Waiting Feedback | Chat activity distinguishes a parent waiting for subagents. |
-| Navigation and interface | Graphical | Native Compaction Feedback | Native compaction displays its in-progress state and available metrics. |
-| Navigation and interface | Graphical | Working Indicator Motion | The blue working indicator has reduced-motion support without implying that overall animation smoothness is accepted. |
-| Navigation and interface | Graphical | Provider Branding | Official provider marks and unknown-provider fallbacks were aligned across the interface. |
-| Navigation and interface | Graphical | Main Application Icon | The selected full-tile app icon and accepted CEF title-bar icon are packaged. |
-| Navigation and interface | Graphical | Active Host Labels | Active chat rows display their owning host. |
-| Navigation and interface | Graphical | Scoped Branch Labels | Activity branch labels remain bound to the correct workspace and load near the viewport. |
-| Navigation and interface | Performance | Collapsed Row Unmounting | Collapsed sidebar sections stop mounting hidden chat rows and their background hooks. |
-| Navigation and interface | Bugfix | Loading Draft Preservation | History-loading and empty states preserve the composer draft. |
-| Navigation and interface | Bugfix | Startup Recovery Visibility | Startup recovery remains hidden while the armed interface is loading. |
-| Navigation and interface | Bugfix | Empty Assistant Rows | Contiguous assistant text no longer produces empty message-action rows. |
-| Navigation and interface | Graphical | Actionable Workspace Errors | Workspace creation and missing-initial-commit failures use clearer scoped feedback. |
-| Usage and accounting | Misc | Persistent Usage Ledger | The feature agent added cached background usage accounting in a persistent ledger. |
-| Usage and accounting | Misc | Historical Usage Normalization | Historical usage is normalized and scanned incrementally. |
-| Usage and accounting | Misc | Usage Dashboard | The feature agent added a usage workspace with explicit cost coverage and model prices. |
-| Usage and accounting | Misc | Provider Period Filters | Usage totals and chart periods can be filtered by provider. |
-| Usage and accounting | Misc | Cached Price Estimates | Cost estimates use cached reference model prices rather than pretending all costs are known. |
-| Usage and accounting | Bugfix | Deleted Usage Entries | Removed transcript files are dropped from the usage-history cache. |
-| Usage and accounting | Misc | Remote Usage Export | SSH runners export cached usage accounting. |
-| Usage and accounting | Bugfix | Machine Total Deduplication | Remote machine totals avoid duplicate accounting across copied histories. |
-| Usage and accounting | Misc | Claude Live Usage | Scoped Claude snapshots expose live consumed-token accounting. |
-| Usage and accounting | Misc | Gemini Saved Usage | Gemini saved-session usage is read through bounded snapshot scans. |
-| Usage and accounting | Misc | Gemini Prompt Usage | Gemini prompt replies contribute validated observed input, cache and reasoning counts. |
-| Usage and accounting | Misc | OpenCode SQLite Usage | OpenCode SQLite histories provide token accounting without counting copied fork usage twice. |
-| Usage and accounting | Misc | OpenCode Prompt Usage | OpenCode prompt accounting includes cache and reasoning across tool steps. |
-| Usage and accounting | Misc | Copilot Durable Usage | Copilot durable accounting avoids counting repeated snapshots. |
-| Usage and accounting | Misc | Antigravity Usage Accounting | Antigravity usage participates in cached background accounting. |
-| Usage and accounting | Misc | Provider Context Usage | Provider-neutral ACP context-usage updates are handled. |
-| Usage and accounting | Bugfix | Fresh Login Allowances | Session account allowances clear appropriately after a fresh Codex login. |
-| Remote execution | Bugfix | Installer Lock Inheritance | Helper descendants no longer inherit the Linux installer transaction lock. |
-| Remote execution | Bugfix | Provider Blocking Diagnostics | Remote CLI update refusals identify validated blocking provider PIDs. |
-| Remote execution | Bugfix | Update Activity Rechecks | CLI updates recheck current activity and respect the identified package-manager target. |
-| Remote execution | Misc | Opt In Linux Elevation | Linux npm updates can use persisted per-host sudo selection instead of automatic elevation. |
-| Remote execution | Bugfix | Host Option Preservation | Failed startup configuration no longer resets unrelated saved host options. |
-| Remote execution | Bugfix | Selected Host Actions | Provider settings and updates stay scoped to the selected host. |
-| Remote execution | Bugfix | Repeated Update Admission | Repeated clicks cannot launch overlapping manual provider updates. |
-| Remote execution | Bugfix | Startup Error Preservation | Remote configuration and rejected-input errors remain visible before turn creation. |
-| Remote execution | Bugfix | Accepted Input Acknowledgement | Accepted remote input remains acknowledged even when the provider subsequently exits. |
-| Remote execution | Bugfix | Exit Interaction Settlement | Authenticated provider exits settle their remote interactions consistently. |
-| Remote execution | Bugfix | Consistent Runner Snapshots | Completion and output snapshots remain consistent. |
-| Remote execution | Bugfix | Final Output Draining | Remote Stop and shutdown retain final provider lines without artificial drain delays. |
-| Remote execution | Bugfix | Stop Confirmation Timing | Remote Stop has time to confirm termination before timeout. |
-| Remote execution | Bugfix | Missing Process Settlement | Confirmed missing remote processes settle through the shutdown path. |
-| Remote execution | Bugfix | Replacement Output Isolation | Pending Stop output cannot contaminate a replacement session. |
-| Remote execution | Bugfix | Reconnect Coalescing | Pending terminal reads coalesce duplicate reconnect requests. |
-| Remote execution | Bugfix | Terminal Launch Identity | Reused terminal IDs reject output from older launches. |
-| Remote execution | Bugfix | Remote Path Traversal | Rooted remote context and memory paths reject traversal outside their owner. |
-| Remote execution | Misc | Atomic Host Admission | Explicit SSH pools use atomic admission and durable assignment ownership. |
-| Remote execution | Misc | Routing Ownership Controls | Routing controls cover owner pinning, capacity waits, token refusal and authorized release. |
-| Remote execution | Misc | Helper Source Manifests | Locally built helper artifacts include source fingerprints, protocol versions and checksums. |
-| Remote execution | Misc | Forced Helper Repair | An earlier authorized repair replaced verified Linux and Windows helper trees and confirmed production handshakes. |
-| Remote execution | Misc | Obsolete Helper Retirement | Later guarded cleanup retired 20 obsolete Linux services while preserving refusals and current ownership. |
-| Remote execution | Misc | Two Host Provider Acceptance | Isolated Claude, Codex and OpenCode delivery checks passed on both Linux and Windows hosts. |
-| Platform and diagnostics | Bugfix | Windows Long Path Writes | Windows atomic file operations and cleanup handle paths beyond legacy limits. |
-| Platform and diagnostics | Bugfix | Windows Worktree Lengths | Windows worktree paths are bounded without changing branch names. |
-| Platform and diagnostics | Bugfix | Windows History Paths | Long Claude history directories and runner output spools are supported. |
-| Platform and diagnostics | Bugfix | Windows Runner Framing | Direct Windows runner binary framing preserves transport bytes. |
-| Platform and diagnostics | Bugfix | Windows SSH State Cleanup | Replacing Windows stdio discards inherited OpenSSH state. |
-| Platform and diagnostics | Bugfix | Windows Usage Reads | Windows usage reads and native acceptance fixtures were corrected for platform behavior. |
-| Platform and diagnostics | Code Only | SQLite Helper Integration | SQLite is included in headless SSH helper builds. |
-| Platform and diagnostics | Bugfix | MSVC SQLite Compatibility | SQLite integration builds correctly with MSVC. |
-| Platform and diagnostics | Bugfix | ES2020 Sidebar Compatibility | Sidebar code remains compatible with the configured JavaScript target. |
-| Platform and diagnostics | Bugfix | Fresh Ninja Builds | Fresh Ninja UI builds preserve the expected output layout. |
-| Platform and diagnostics | Bugfix | macOS Quit Routing | Application Quit runs through CEF shutdown and handles picker cancellation and repeated requests. |
-| Platform and diagnostics | Bugfix | Caps Lock Quit | Command-Q works with Caps Lock enabled. |
-| Platform and diagnostics | Bugfix | Reaped Exit Status | macOS retains process exit status while remaining output is drained. |
-| Platform and diagnostics | Performance | Background Diagnostic Logging | Diagnostic logging uses a bounded background worker. |
-| Platform and diagnostics | Bugfix | Oversized Log Recovery | Startup safely recovers oversized diagnostic logs. |
-| Platform and diagnostics | Bugfix | Special Log Path Rejection | Startup rejects special diagnostic paths before opening them. |
-| Platform and diagnostics | Code Only | CEF Task Ownership | Metadata work remains on CEF-owned background tasks. |
-| Platform and diagnostics | Performance | Background Computer Scans | Computer Use scan copies and cleanup run away from the GUI thread. |
-| Platform and diagnostics | Performance | Indexed Scan Publication | Computer Use publication indexes chat identities instead of repeatedly searching the catalogue. |
-| Platform and diagnostics | Performance | Changed Scan Entries | Unchanged Computer Use scans avoid unnecessary GUI-thread state publication. |
-| Build and evidence | Misc | Exact Test Inventories | Native compiled registrations and frontend inventories are checked against reported passing tests. |
-| Build and evidence | Misc | Windows Native Verification | Earlier pinned source passed full MSVC builds, 1,481 native tests and all 18 Windows gates. |
-| Build and evidence | Misc | Alpha82 Combined Verification | Alpha82 passed 1,540 native tests, 1,450 frontend tests and all 19 CTest gates. |
-| Build and evidence | Misc | Matching Helper Packaging | Alpha82 includes four checksum-verified helpers sharing the packaged source fingerprint. |
-| Build and evidence | Misc | Signed Package Verification | Alpha82 passed signing, asset, version, runner-validation and isolated macOS application checks. |
-| Build and evidence | Misc | Main Application Replacement | Alpha82 replaced the main user Applications app after normal exit and preserved alpha80 for rollback. |
-| Build and evidence | Misc | Audit Evidence Reconciliation | Historical audit claims were checked against current code rather than treated as current defects automatically. |
-| Build and evidence | Misc | Copied Data Rehearsal | Duplicate histories and folder aliases were reviewed on copies without consolidating live user data. |
-| Build and evidence | Misc | Performance Benchmark Evidence | Queue, memory, history, parsing and serialization measurements retain native-fixture limits rather than claiming live UI acceptance. |
-| Remaining acceptance | Misc | Live Performance Acceptance | The reported opening target, periodic typing stalls and overall animation smoothness still need current live acceptance. |
-| Remaining acceptance | Misc | Remote Ownership Refusals | Some remote services still refuse guarded Stop because they report owned processes. |
-| Remaining acceptance | Misc | Full Provider Acceptance | Remaining provider-policy, account, reviewer, physical-device and startup-session gates remain documented. |
-| Remaining performance | Performance | Asynchronous Send Durability | Moving the complete pre-dispatch durable save off the GUI thread remains unfinished despite faster serialization. |
+
+| Group | Type | Change | Summary | Status |
+|---|---|---|---|---|
+| Core correctness | Bugfix | Recovery State Reconciliation | Recovery-only changes now reach the frontend without requiring another chat field to change. | Claude Review; Not User Tested |
+| Core correctness | Bugfix | Memory Request Ownership | Older memory requests can no longer overwrite the currently selected scope or its errors. | Claude Review; Not User Tested |
+| Core correctness | Bugfix | Pending Attachment Preservation | Send completion preserves skills added or reattached while the request was pending. | Claude Review; Not User Tested |
+| Core correctness | Bugfix | Cancellation Persistence | Failed cancellation saves retain cancellation intent and prevent queued runs from relaunching. | Un-Reviewed; Not User Tested |
+| Core correctness | Code Only | Shared Provider Catalogue | Provider choices use shared metadata instead of duplicated provider lists. | Claude Review; Not User Tested |
+| Core correctness | Code Only | Tooltip Ownership Cleanup | Redundant tooltip timing ownership was removed. | Claude Review; Not User Tested |
+| Composer and queue | Graphical | Composer Message Editing | Editing a sent message now uses the existing composer instead of a separate editing textarea. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Edit Draft Restoration | Cancelling an edit restores the unsent draft and preserves its attachments. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Editable Pending Composer | The composer remains editable while prompt admission is pending without allowing duplicate submissions. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Separate FIFO Turns | Queued prompts dispatch as separate durable turns instead of being concatenated into one prompt. | Un-Reviewed; Not User Tested |
+| Composer and queue | Graphical | Queue Management Controls | Guarded controls expose queue editing, reordering, removal and explicit resume. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Queue Revision Guards | Stale queue edits and reorders are rejected without losing captured attachments or execution options. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Restart Queue Holding | Restored queued intent remains held until explicitly resumed. | Claude Review; Not User Tested |
+| Composer and queue | Performance | Queue Persistence Journal | Ordinary queue changes use a bounded durable journal instead of rewriting the entire transcript. | Un-Reviewed; Not User Tested |
+| Composer and queue | Bugfix | Queue Crash Recovery | Journal generations and consumption markers prevent stale saves or crashes from resurrecting dispatched input. | Un-Reviewed; Not User Tested |
+| Composer and queue | Bugfix | Queue Attachment Editing | Queued prompts support attachment removal and attachment-only edits while preserving retained attachments. | Claude Review; Not User Tested |
+| Composer and queue | Graphical | Queued Attachment Names | Queued messages display their captured file names. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Secondary Control Submission | Secondary composer buttons no longer accidentally submit the draft. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Editor Keyboard Ownership | Queue-editor shortcuts remain inside the editor rather than triggering composer actions. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Goal Request Ownership | Goal composer requests retain correct ownership through React effect replay. | Claude Review; Not User Tested |
+| Composer and queue | Graphical | Composer Goal Controls | Goal actions were moved into the composer controls with guarded asynchronous ownership. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Goal Popup Escape | Escape closes the goals popup from the composer. | Claude Review; Not User Tested |
+| Composer and queue | Bugfix | Checkpoint Queue Preservation | Checkpoint finalization cannot overwrite newer queued intent or a replacement turn. | Un-Reviewed; Not User Tested |
+| Composer and queue | Performance | Prompt Settings Capture | Provider prompt construction captures required settings without copying the complete loaded transcript. | Un-Reviewed; Not User Tested |
+| Composer and queue | Performance | Redundant Delivery Saves | Unchanged local delivery state is no longer rewritten after its durable delivery-intent save. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Retry Selector Caching | Composer typing avoids repeated retry-history scans. | Claude Review; Not User Tested |
+| History and performance | Performance | Timeline Render Reuse | Unchanged transcript rendering is reused while the composer updates. | Claude Review; Not User Tested |
+| History and performance | Performance | Timestamp Render Reuse | Unchanged turn timestamps are no longer repeatedly formatted during typing and streaming. | Claude Review; Not User Tested |
+| History and performance | Performance | Incremental History Digests | Exact unchanged message prefixes reuse their hashes when history appends or shrinks. | Un-Reviewed; Not User Tested |
+| History and performance | Bugfix | Earlier History Corrections | Digest checks still detect earlier content, thought and tool-result changes. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Bounded Frontend Summaries | Catalogue updates avoid transporting complete transcript bodies unnecessarily. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Cold Startup Histories | Startup leaves chat histories unloaded until a bounded page is requested. | Un-Reviewed; Not User Tested |
+| History and performance | Graphical | Desktop History Paging | Large transcripts load in pages while retaining absolute message positions. | Claude Review; Not User Tested |
+| History and performance | Bugfix | Detached History Pages | Paging an unloaded chat no longer unnecessarily hydrates its complete native state. | Un-Reviewed; Not User Tested |
+| History and performance | Bugfix | Paged Native Tokens | Native history identity tokens survive paged loading. | Claude Review; Not User Tested |
+| History and performance | Performance | Recent History Cache | Validated recent-message caches avoid repeated complete reads of large saved histories. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Bounded Complete Tails | Oversized recent pages cache fewer complete messages rather than abandoning caching or truncating messages. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Priority History Loading | Opening chat history no longer waits behind background VCS subprocess checks. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Priority Cold Sending | Cold send preparation runs outside the background VCS queue. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Background Buffer Disposal | Large detached history buffers are released away from the GUI thread. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Background Cache Publication | Revision-guarded history cache publication runs on the background worker. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Durable Transcript Retention | Only saved inactive histories are released while visible, active and unsaved work stays protected. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Paused History Release | Durable hidden histories can be released for paused and blocked goals. | Un-Reviewed; Not User Tested |
+| History and performance | Bugfix | Reselected History Preservation | Idle transitions cannot discard history that the user has reselected. | Claude Review; Not User Tested |
+| History and performance | Bugfix | Worktree History Preservation | Worktree operations preserve valid cached chat history. | Un-Reviewed; Not User Tested |
+| History and performance | Bugfix | Missing Timestamp Hydration | Saved chats with missing timestamps hydrate correctly. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Deferred Tool Loading | Deferred tool output loads on background workers. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Bounded Tool Pages | Tool-output paging materializes only the requested bounded UTF-8 range. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | JSON Serialization Spans | Bulk string copying reduced the private large-save benchmark median from 835.7 to 498.5 milliseconds. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | JSON Parsing Spans | Bulk string parsing reduced the private large-parse benchmark median from 277.3 to 151.9 milliseconds. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Workspace Resolution Reuse | State serialization reuses workspace resolution within each serialization pass. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Background Workspace Probes | Workspace availability is probed on workers and published only to matching owners. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Background Pending Saves | Ordinary pending saves prepare durable files on workers before guarded publication. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Faster Selection Acknowledgement | Chat selection acknowledges before the heavier full-state publication. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | State Baseline Reuse | Patch-baseline resets reuse existing complete state summaries. | Un-Reviewed; Not User Tested |
+| History and performance | Performance | Idle Terminal Scan Avoidance | Idle terminal polling skips unnecessary catalogue scans. | Un-Reviewed; Not User Tested |
+| History and performance | Misc | Polling Stage Diagnostics | Slow Computer Use, shell, workspace and UI polling stages now have scoped diagnostic timing. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Minimal Extraction Snapshots | Memory extraction captures required roles and text without copying unused tools, thoughts or attachments. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Requested Range Capture | Memory workers capture only the requested unprocessed transcript range. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Durable Progress Journal | Memory progress updates avoid rewriting otherwise unchanged transcripts. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Background Entry Preparation | Memory entries are prepared on workers before guarded publication. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Background First Recall | First-send memory recall runs under cancellable worker ownership. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Bounded Recall Previews | Recall previews read bounded content instead of complete memory bodies. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Recall Budget Cutoff | Ordinary recall scanning stops when its prompt budget is filled. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Lightweight Memory Counts | Memory counts and timestamps avoid loading complete entry bodies. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Memory Title Index | Memory titles are indexed once per completed extraction. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Redundant Layout Checks | Repeated memory layout checks and title-body reads were removed. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Bounded Signal Scanning | Automatic admission scans avoid transcript-sized scratch allocations while retaining the existing policy. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Permissive Admission Shortcut | Permissive memory admission avoids unnecessary transcript folding. | Un-Reviewed; Not User Tested |
+| Memory processing | Performance | Idle Classification Deferral | Accepted idle waits no longer repeatedly classify the same memory input. | Un-Reviewed; Not User Tested |
+| Memory processing | Bugfix | Pending Save Coordination | Memory scans and progress publication wait for pending transcript publication to finish. | Un-Reviewed; Not User Tested |
+| Memory processing | Bugfix | Data Root Ownership | Memory completion is rejected after its original data root changes. | Un-Reviewed; Not User Tested |
+| Memory processing | Bugfix | Workspace Ownership Guards | Memory results cannot publish after their workspace ownership changes. | Un-Reviewed; Not User Tested |
+| Memory processing | Bugfix | Remote Memory Cancellation | Stale remote memory preparation is cancelled before startup waits or publication. | Un-Reviewed; Not User Tested |
+| Memory processing | Bugfix | Gemini History Protection | Worker cleanup preserves Gemini history that it does not own. | Un-Reviewed; Not User Tested |
+| Memory processing | Bugfix | Gemini Worker Policies | Generated deny-all Gemini policies now match the installed policy schema. | Un-Reviewed; Not User Tested |
+| Memory processing | Bugfix | OpenCode Worker Isolation | OpenCode text workers use isolated agent settings rather than inheriting unsuitable workspace agents. | Un-Reviewed; Not User Tested |
+| Memory processing | Bugfix | Remote Path Remapping | Shared path remapping handles roots, descendants and platform separators without prefix collisions. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Scoped MCP Configuration | Provider and host MCP overrides are honoured during session launch. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Graphical | Consolidated Provider Settings | Provider settings expose scoped switches and distinguish configured setup from verified connection status. | Claude Review; Not User Tested |
+| Providers and MCP | Bugfix | MCP Opt Out | Explicit opt-out suppresses warnings and prevents launch overrides from falsely reporting a connection. | Claude Review; Not User Tested |
+| Providers and MCP | Bugfix | MCP Warning Ownership | Warning dismissals reset across foreground and background runtime restarts. | Claude Review; Not User Tested |
+| Providers and MCP | Bugfix | Unknown Connection States | Unknown provider connections and startup failures remain distinguishable from successful connections. | Claude Review; Not User Tested |
+| Providers and MCP | Bugfix | MCP Import Preservation | MCP import preserves existing settings and reports actionable source errors. | Claude Review; Not User Tested |
+| Providers and MCP | Bugfix | MCP Editor Identity | MCP editing retains identity and rejects reserved external definitions. | Claude Review; Not User Tested |
+| Providers and MCP | Graphical | Multiline MCP Editing | Imported MCP configuration remains editable in a multiline editor. | Claude Review; Not User Tested |
+| Providers and MCP | Bugfix | OpenCode Import Warnings | OpenCode import warnings remain visible through review and save. | Claude Review; Not User Tested |
+| Providers and MCP | Misc | Native MCP Answer Verification | Question-answer delivery was exercised through the native runner relay. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Late Permission Cancellation | Permission requests arriving during cancellation receive a cancelled response. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Model Catalogue Ownership | Model catalogues are bound to the provider connection that produced them. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Disabled Model Enforcement | Disabled models are rejected in chat, worker and reviewer selectors. | Claude Review; Not User Tested |
+| Providers and MCP | Performance | Cached Model Discovery | Cached model discovery avoids interrupting existing conversations. | Claude Review; Not User Tested |
+| Providers and MCP | Bugfix | Startup Model Isolation | Startup model discovery does not take over user conversations. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Codex Instruction Transport | Complete Codex instructions travel through native session setup instead of exceeding OS command-line limits. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Duplicate Workspace Instructions | Codex startup avoids duplicating workspace instructions and preserves setup errors. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Completed Codex Decisions | Suggestions, memory extraction and permission reviews use completed Codex output. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Empty Remote Arguments | Remote launch transport preserves intentionally empty provider option values. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | POSIX Argument Preservation | Quoted backslashes and line continuations retain their intended values. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Bugfix | Remote Workspace Backslashes | Literal backslashes in POSIX workspace paths survive model and provider operations. | Un-Reviewed; Not User Tested |
+| Providers and MCP | Misc | Antigravity Terminal Support | Antigravity terminal launch, saved-ID resume, installation and authentication were added and verified. | Claude Review; Not User Tested |
+| Providers and MCP | Misc | Antigravity Structured Support | Antigravity native streaming uses isolated configuration with conversation identity and resume handling. | Claude Review; Not User Tested |
+| Providers and MCP | Bugfix | Antigravity Replay Filtering | Resumed Antigravity answers are preserved when they repeat earlier text. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Claude Tool History | Claude tool history and native task ownership remain attached to the correct conversation. | Claude Review; Not User Tested |
+| Claude and orchestration | Bugfix | Native Child Settlement | Child status settles after confirmed exits while unconfirmed remote exits retain ownership. | Claude Review; Not User Tested |
+| Claude and orchestration | Bugfix | Stop Output Preservation | Stop drains final output before settling children or closing process handles. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Shutdown Queue Preservation | Application shutdown preserves held future prompts. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Replacement Launch Protection | Replacement launches cannot erase pending child ownership before termination settles. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Idle Proxy Child Recovery | Live Claude background tasks remain owned during idle proxy recovery. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Performance | Deferred Claude Activity Saves | Streaming child updates defer routine saves while retaining terminal durability barriers. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Performance | Deferred Codex Activity Saves | Codex streaming activity uses guarded background persistence. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Durable Quota Continuation | Structured five-hour quota failures persist a continuation owner with a trustworthy reset time. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Safe Native Continuation | Quota recovery sends one new instruction in the same native session without replaying acknowledged prompts or tools. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Ambiguous Recovery Holding | Uncertain deliveries, repeated quota failures and unresolved tool work remain held rather than automatically replayed. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Continuation Context Binding | Quota continuation retains its accepted agent definition, execution context and future queue. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Performance | Cancellable Cold Startup | Cold prompt history preparation runs after cancellable admission. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Performance | Cancellable Provider Handoff | Cold provider handoff history is prepared on workers with identity and storage validation. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Performance | Cancellable Child Preparation | Native-child history preparation avoids synchronous cold reads and repair writes. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Performance | Cancellable Branch Preparation | Cold branch and edit preparation retains ownership through Stop and stale completions. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Managed Resume History | Managed-run resume preserves cold history and native identity. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Performance | Managed Transcript Reads | Settled managed transcripts are read outside the GUI thread. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Delegated Agent Definitions | Delegated worktrees retain the parent workspace’s agent definitions. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Bugfix | Child Model Inheritance | Model options inherit only when parent and child use the same provider. | Un-Reviewed; Not User Tested |
+| Claude and orchestration | Graphical | Eligible Subagent Providers | Managed subagent choices expose only scoped eligible providers. | Claude Review; Not User Tested |
+| Review and checkpoints | Bugfix | Unfinished Review Gating | Review changes stays hidden while parent, child, goal or history-loading work remains unfinished. | Claude Review; Not User Tested |
+| Review and checkpoints | Bugfix | Stale Diff Ownership | Old diff metadata cannot be paired with a newly selected chat. | Claude Review; Not User Tested |
+| Review and checkpoints | Misc | Recorded Edit Receipts | Immutable provider-reported edit receipts support chat-specific review without attributing unrelated workspace changes. | Un-Reviewed; Not User Tested |
+| Review and checkpoints | Graphical | Recorded Patch Review | Recorded chat edits have review controls that preserve newer commit drafts. | Claude Review; Not User Tested |
+| Review and checkpoints | Bugfix | User Staging Protection | Automatic checkpoints preserve user staging instead of consuming files staged during agent work. | Un-Reviewed; Not User Tested |
+| Review and checkpoints | Bugfix | Cold Checkpoint Rollback | Checkpointed turns can be rolled back from cold saved chats. | Un-Reviewed; Not User Tested |
+| Review and checkpoints | Graphical | Bounded Diff Rendering | Large diffs render within bounds with source line gutters. | Claude Review; Not User Tested |
+| Review and checkpoints | Graphical | Virtualized Split Diffs | The feature agent added a virtualized split layout with a remembered view preference. | Claude Review; Not User Tested |
+| Review and checkpoints | Graphical | Scoped File Inspection | The feature agent added bounded source and diff navigation scoped to the selected workspace. | Claude Review; Not User Tested |
+| Review and checkpoints | Misc | Git SVN Switches | Git and SVN integration can be enabled or disabled persistently. | Claude Review; Not User Tested |
+| Workspaces and deletion | Misc | Automatic Worktree Isolation | Readable isolated worktrees are prepared before first provider dispatch. | Claude Review; Not User Tested |
+| Workspaces and deletion | Bugfix | Worktree Collision Detection | Collision checks work across Windows shell formatting and existing branch names. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Bugfix | UTF8 Worktree Paths | Readable worktree paths preserve UTF-8 names. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Bugfix | Canonical Workspace Ownership | Duplicate canonical directory owners are rejected. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Graphical | Original Workspace Labels | Worktree rows identify their original workspace. | Claude Review; Not User Tested |
+| Workspaces and deletion | Performance | Branch Snapshot Reduction | Branch creation avoids copying unnecessary full source transcripts. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Performance | Background Cold Deletion | Cold deletion preparation and staging run outside the GUI thread. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Bugfix | Shared Native Ownership | Deletion preserves native history still owned by surviving chat aliases. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Bugfix | Durable Deletion Recovery | Shared ownership protection survives interrupted staging and commit recovery. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Bugfix | Deletion Failure Guards | Backup collisions, identity collisions and pending imports cannot silently weaken deletion ownership. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Bugfix | Selected Workspace Deletion | Context-menu deletion respects the selected workspace scope. | Claude Review; Not User Tested |
+| Workspaces and deletion | Performance | Deletion Path Caching | Canonical ownership normalization is reused within deletion preparation. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Performance | Survivor Buffer Preservation | Folder commits avoid copying unrelated surviving transcript bodies. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Graphical | Deletion Progress Feedback | Workspace deletion exposes progress and useful native failure details. | Claude Review; Not User Tested |
+| Workspaces and deletion | Misc | Orphan Worktree Inspection | Old owned worktrees are inspected before retention cleanup. | Un-Reviewed; Not User Tested |
+| Workspaces and deletion | Bugfix | Leased Worktree Cleanup | Orphan worktree cleanup respects workspace leases and stored agent references. | Un-Reviewed; Not User Tested |
+| Import and attachments | Graphical | Native Import Review | Cached startup histories can be reviewed and selectively imported. | Claude Review; Not User Tested |
+| Import and attachments | Graphical | Scoped Import Selection | Shift selection and importing all native-history pages remain scoped to their workspace. | Claude Review; Not User Tested |
+| Import and attachments | Bugfix | Cross Workspace Import Guards | Import decisions cannot publish into a different workspace. | Claude Review; Not User Tested |
+| Import and attachments | Bugfix | Native Duplicate Prevention | Legacy remote folder aliases cannot create duplicate native imports. | Un-Reviewed; Not User Tested |
+| Import and attachments | Bugfix | Side Chat Retention | Import retains side-chat transcripts without assuming source-cleanup authority. | Un-Reviewed; Not User Tested |
+| Import and attachments | Bugfix | Discarded Import Reporting | Selected histories discarded before publication are reported rather than silently lost. | Claude Review; Not User Tested |
+| Import and attachments | Bugfix | Import Request Recovery | Stale request guards are released through effect replay and completed review ownership. | Claude Review; Not User Tested |
+| Import and attachments | Graphical | Lazy Image Previews | Saved image previews load lazily using persisted attachment identity. | Claude Review; Not User Tested |
+| Import and attachments | Performance | Bounded Image Cache | Native saved-image previews use bounded caching. | Un-Reviewed; Not User Tested |
+| Import and attachments | Performance | Cold Attachment Previews | Saved attachments can be previewed without hydrating the complete chat. | Un-Reviewed; Not User Tested |
+| Import and attachments | Performance | Background Claude Images | Claude image delivery is prepared asynchronously within transport limits. | Un-Reviewed; Not User Tested |
+| Import and attachments | Graphical | Image Collection Display | Image collections and attachment-retention choices are displayed in chat editing. | Claude Review; Not User Tested |
+| Import and attachments | Bugfix | Attachment Path Labels | Image fallback names and full-path tooltips retain correct attachment identity. | Un-Reviewed; Not User Tested |
+| Navigation and interface | Graphical | Active Chat Pinning | Running chats support context-menu pinning without changing the selection. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Next Attention Navigation | Navigation can select the next chat needing an answer, approval or failure response. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Organization Undo | Guarded reversible collection changes are exposed through undo controls. | Claude Review; Not User Tested |
+| Navigation and interface | Bugfix | Delayed Rename Preservation | Delayed collection rename replies cannot overwrite newer names. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Bounded Conversation Search | Search returns bounded content hits with guarded transcript provenance and message navigation. | Claude Review; Not User Tested |
+| Navigation and interface | Performance | Background Search Loading | Search workers load one transcript at a time rather than copying the entire catalogue. | Un-Reviewed; Not User Tested |
+| Navigation and interface | Graphical | Workspace Picker Search | The new-chat picker searches grouped workspaces. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Composer Focus Shortcut | A scoped shortcut focuses the active composer or terminal. | Claude Review; Not User Tested |
+| Navigation and interface | Bugfix | Modal Focus Ownership | Only the top visible modal owns keyboard handling and focus restoration. | Claude Review; Not User Tested |
+| Navigation and interface | Bugfix | Hidden Modal Exclusion | Hidden or closed dialogs no longer steal chat-input focus. | Claude Review; Not User Tested |
+| Navigation and interface | Bugfix | Branch Family Selection | Branch families restore their last successfully selected chat. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Persistent Chat Snooze | The feature agent added persisted snoozing with guarded background metadata saves. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Chat Title Regeneration | Chat titles can be regenerated on guarded workers, including imported transcripts. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Chat Copy Actions | Sidebar menus expose chat-name and chat-ID copying. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Message Position Navigation | The feature agent added navigation through large histories by absolute message position. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | User Message Rail | The message rail targets user messages with corrected spacing, hover areas and final-marker alignment. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Searchable Model Picker | The feature agent added keyboard-accessible model search, a provider sidebar and favourites. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Typography Settings | The feature agent added persisted typography controls and live terminal-font updates. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Parent Waiting Feedback | Chat activity distinguishes a parent waiting for subagents. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Native Compaction Feedback | Native compaction displays its in-progress state and available metrics. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Working Indicator Motion | The blue working indicator has reduced-motion support without implying that overall animation smoothness is accepted. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Provider Branding | Official provider marks and unknown-provider fallbacks were aligned across the interface. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Main Application Icon | The selected full-tile app icon and accepted CEF title-bar icon are packaged. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Active Host Labels | Active chat rows display their owning host. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Scoped Branch Labels | Activity branch labels remain bound to the correct workspace and load near the viewport. | Claude Review; Not User Tested |
+| Navigation and interface | Performance | Collapsed Row Unmounting | Collapsed sidebar sections stop mounting hidden chat rows and their background hooks. | Un-Reviewed; Not User Tested |
+| Navigation and interface | Bugfix | Loading Draft Preservation | History-loading and empty states preserve the composer draft. | Claude Review; Not User Tested |
+| Navigation and interface | Bugfix | Startup Recovery Visibility | Startup recovery remains hidden while the armed interface is loading. | Claude Review; Not User Tested |
+| Navigation and interface | Bugfix | Empty Assistant Rows | Contiguous assistant text no longer produces empty message-action rows. | Claude Review; Not User Tested |
+| Navigation and interface | Graphical | Actionable Workspace Errors | Workspace creation and missing-initial-commit failures use clearer scoped feedback. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | Persistent Usage Ledger | The feature agent added cached background usage accounting in a persistent ledger. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | Historical Usage Normalization | Historical usage is normalized and scanned incrementally. | Un-Reviewed; Not User Tested |
+| Usage and accounting | Misc | Usage Dashboard | The feature agent added a usage workspace with explicit cost coverage and model prices. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | Provider Period Filters | Usage totals and chart periods can be filtered by provider. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | Cached Price Estimates | Cost estimates use cached reference model prices rather than pretending all costs are known. | Claude Review; Not User Tested |
+| Usage and accounting | Bugfix | Deleted Usage Entries | Removed transcript files are dropped from the usage-history cache. | Un-Reviewed; Not User Tested |
+| Usage and accounting | Misc | Remote Usage Export | SSH runners export cached usage accounting. | Un-Reviewed; Not User Tested |
+| Usage and accounting | Bugfix | Machine Total Deduplication | Remote machine totals avoid duplicate accounting across copied histories. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | Claude Live Usage | Scoped Claude snapshots expose live consumed-token accounting. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | Gemini Saved Usage | Gemini saved-session usage is read through bounded snapshot scans. | Un-Reviewed; Not User Tested |
+| Usage and accounting | Misc | Gemini Prompt Usage | Gemini prompt replies contribute validated observed input, cache and reasoning counts. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | OpenCode SQLite Usage | OpenCode SQLite histories provide token accounting without counting copied fork usage twice. | Un-Reviewed; Not User Tested |
+| Usage and accounting | Misc | OpenCode Prompt Usage | OpenCode prompt accounting includes cache and reasoning across tool steps. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | Copilot Durable Usage | Copilot durable accounting avoids counting repeated snapshots. | Claude Review; Not User Tested |
+| Usage and accounting | Misc | Antigravity Usage Accounting | Antigravity usage participates in cached background accounting. | Un-Reviewed; Not User Tested |
+| Usage and accounting | Misc | Provider Context Usage | Provider-neutral ACP context-usage updates are handled. | Claude Review; Not User Tested |
+| Usage and accounting | Bugfix | Fresh Login Allowances | Session account allowances clear appropriately after a fresh Codex login. | Claude Review; Not User Tested |
+| Remote execution | Bugfix | Installer Lock Inheritance | Helper descendants no longer inherit the Linux installer transaction lock. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Provider Blocking Diagnostics | Remote CLI update refusals identify validated blocking provider PIDs. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Update Activity Rechecks | CLI updates recheck current activity and respect the identified package-manager target. | Claude Review; Not User Tested |
+| Remote execution | Misc | Opt In Linux Elevation | Linux npm updates can use persisted per-host sudo selection instead of automatic elevation. | Claude Review; Not User Tested |
+| Remote execution | Bugfix | Host Option Preservation | Failed startup configuration no longer resets unrelated saved host options. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Selected Host Actions | Provider settings and updates stay scoped to the selected host. | Claude Review; Not User Tested |
+| Remote execution | Bugfix | Repeated Update Admission | Repeated clicks cannot launch overlapping manual provider updates. | Claude Review; Not User Tested |
+| Remote execution | Bugfix | Startup Error Preservation | Remote configuration and rejected-input errors remain visible before turn creation. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Accepted Input Acknowledgement | Accepted remote input remains acknowledged even when the provider subsequently exits. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Exit Interaction Settlement | Authenticated provider exits settle their remote interactions consistently. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Consistent Runner Snapshots | Completion and output snapshots remain consistent. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Final Output Draining | Remote Stop and shutdown retain final provider lines without artificial drain delays. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Stop Confirmation Timing | Remote Stop has time to confirm termination before timeout. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Missing Process Settlement | Confirmed missing remote processes settle through the shutdown path. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Replacement Output Isolation | Pending Stop output cannot contaminate a replacement session. | Un-Reviewed; Not User Tested |
+| Remote execution | Bugfix | Reconnect Coalescing | Pending terminal reads coalesce duplicate reconnect requests. | Claude Review; Not User Tested |
+| Remote execution | Bugfix | Terminal Launch Identity | Reused terminal IDs reject output from older launches. | Claude Review; Not User Tested |
+| Remote execution | Bugfix | Remote Path Traversal | Rooted remote context and memory paths reject traversal outside their owner. | Un-Reviewed; Not User Tested |
+| Remote execution | Misc | Atomic Host Admission | Explicit SSH pools use atomic admission and durable assignment ownership. | Un-Reviewed; Not User Tested |
+| Remote execution | Misc | Routing Ownership Controls | Routing controls cover owner pinning, capacity waits, token refusal and authorized release. | Un-Reviewed; Not User Tested |
+| Remote execution | Misc | Helper Source Manifests | Locally built helper artifacts include source fingerprints, protocol versions and checksums. | Un-Reviewed; Not User Tested |
+| Remote execution | Misc | Forced Helper Repair | An earlier authorized repair replaced verified Linux and Windows helper trees and confirmed production handshakes. | Un-Reviewed; Not User Tested |
+| Remote execution | Misc | Obsolete Helper Retirement | Later guarded cleanup retired 20 obsolete Linux services while preserving refusals and current ownership. | Un-Reviewed; Not User Tested |
+| Remote execution | Misc | Two Host Provider Acceptance | Isolated Claude, Codex and OpenCode delivery checks passed on both Linux and Windows hosts. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Windows Long Path Writes | Windows atomic file operations and cleanup handle paths beyond legacy limits. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Windows Worktree Lengths | Windows worktree paths are bounded without changing branch names. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Windows History Paths | Long Claude history directories and runner output spools are supported. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Windows Runner Framing | Direct Windows runner binary framing preserves transport bytes. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Windows SSH State Cleanup | Replacing Windows stdio discards inherited OpenSSH state. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Windows Usage Reads | Windows usage reads and native acceptance fixtures were corrected for platform behavior. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Code Only | SQLite Helper Integration | SQLite is included in headless SSH helper builds. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | MSVC SQLite Compatibility | SQLite integration builds correctly with MSVC. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | ES2020 Sidebar Compatibility | Sidebar code remains compatible with the configured JavaScript target. | Claude Review; Not User Tested |
+| Platform and diagnostics | Bugfix | Fresh Ninja Builds | Fresh Ninja UI builds preserve the expected output layout. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | macOS Quit Routing | Application Quit runs through CEF shutdown and handles picker cancellation and repeated requests. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Caps Lock Quit | Command-Q works with Caps Lock enabled. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Reaped Exit Status | macOS retains process exit status while remaining output is drained. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Performance | Background Diagnostic Logging | Diagnostic logging uses a bounded background worker. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Oversized Log Recovery | Startup safely recovers oversized diagnostic logs. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | Special Log Path Rejection | Startup rejects special diagnostic paths before opening them. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Code Only | CEF Task Ownership | Metadata work remains on CEF-owned background tasks. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Performance | Background Computer Scans | Computer Use scan copies and cleanup run away from the GUI thread. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Performance | Indexed Scan Publication | Computer Use publication indexes chat identities instead of repeatedly searching the catalogue. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Performance | Changed Scan Entries | Unchanged Computer Use scans avoid unnecessary GUI-thread state publication. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Exact Test Inventories | Native compiled registrations and frontend inventories are checked against reported passing tests. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Windows Native Verification | Earlier pinned source passed full MSVC builds, 1,481 native tests and all 18 Windows gates. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Alpha82 Combined Verification | Alpha82 passed 1,540 native tests, 1,450 frontend tests and all 19 CTest gates. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Matching Helper Packaging | Alpha82 includes four checksum-verified helpers sharing the packaged source fingerprint. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Signed Package Verification | Alpha82 passed signing, asset, version, runner-validation and isolated macOS application checks. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Main Application Replacement | Alpha82 replaced the main user Applications app after normal exit and preserved alpha80 for rollback. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Audit Evidence Reconciliation | Historical audit claims were checked against current code rather than treated as current defects automatically. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Copied Data Rehearsal | Duplicate histories and folder aliases were reviewed on copies without consolidating live user data. | Un-Reviewed; Not User Tested |
+| Build and evidence | Misc | Performance Benchmark Evidence | Queue, memory, history, parsing and serialization measurements retain native-fixture limits rather than claiming live UI acceptance. | Un-Reviewed; Not User Tested |
+| Remaining acceptance | Misc | Live Performance Acceptance | The reported opening target, periodic typing stalls and overall animation smoothness still need current live acceptance. | Claude Review; Not User Tested |
+| Remaining acceptance | Misc | Remote Ownership Refusals | Some remote services still refuse guarded Stop because they report owned processes. | Un-Reviewed; Not User Tested |
+| Remaining acceptance | Misc | Full Provider Acceptance | Remaining provider-policy, account, reviewer, physical-device and startup-session gates remain documented. | Un-Reviewed; Not User Tested |
+| Remaining performance | Performance | Asynchronous Send Durability | Moving the complete pre-dispatch durable save off the GUI thread remains unfinished despite faster serialization. | Un-Reviewed; Not User Tested |
 
 The historical commit inventory below preserves the source/test/build entries, including follow-up corrections and checkpoints.
+
 
 
 ## Historical alpha82 commit inventory

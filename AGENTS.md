@@ -5,11 +5,20 @@
 Every agent implementing a V5 change must read and update the tracked root document
 [`V5 Improvement Change log.md`](<V5 Improvement Change log.md>) in the same commit as
 the implementation. Update an existing matching row or append distinct work using
-**Group | Type | Change | Summary**. Types are **Performance**, **Graphical**,
+**Group | Type | Change | Summary | Status**. Types are **Performance**, **Graphical**,
 **Code Only**, **Bugfix** or **Misc**; Change names have at most five words and Summary
 is one factual sentence. Preserve other agents' entries and explicitly distinguish
 completed work from partial implementation or unverified acceptance. Keep detailed
 working evidence in `.UAM/AINotes/`, but do not substitute ignored notes for this log.
+
+Status flags must reflect acceptance, not just implementation: use **Un-Reviewed**
+and **Not User Tested** where those checks are outstanding. Every React/frontend
+UI or UX code change, including another agent's work and changes classified as
+Bugfix or Performance, requires **Claude Review** until Claude's review is recorded
+and its findings resolved. Only David's explicit approval of the specific change
+can authorize **Complete**; record the approval reference and satisfy its required
+review first. Automated tests, builds, installation, restarts and requests to
+continue are not user sign-off. Preserve pending flags when adding follow-up fixes.
 
 ## Release Slice
 
