@@ -168,22 +168,22 @@ describe('UsagePage', () => {
 })
 
 describe('UsageLimits', () => {
-  it('labels Gemini attachment totals separately from complete native-session totals', () => {
+  it.each(['gemini-cli', 'opencode-cli'])('labels %s attachment totals separately from complete native-session totals', providerId => {
     const previous = useAppStore.getState()
     const counts = { inputTokens: 100, cachedInputTokens: 70, cacheWriteInputTokens: 0, outputTokens: 25, reasoningOutputTokens: 5, totalTokens: 125 }
     useAppStore.setState({
-      sessions: [{ id: 'gemini', name: 'Resumed Gemini', providerId: 'gemini-cli' }] as typeof previous.sessions,
-      acpBindingBySessionId: { gemini: { providerId: 'gemini-cli', providerUsage: { tokenUsage: { updatedAt: Date.now(), total: counts, last: counts, modelContextWindow: null }, rateLimits: null } } } as typeof previous.acpBindingBySessionId,
+      sessions: [{ id: 'gemini', name: 'Resumed chat', providerId }] as typeof previous.sessions,
+      acpBindingBySessionId: { gemini: { providerId, providerUsage: { tokenUsage: { updatedAt: Date.now(), total: counts, last: counts, modelContextWindow: null }, rateLimits: null } } } as typeof previous.acpBindingBySessionId,
     })
     const host = document.createElement('div'), root = createRoot(host)
     try {
       act(() => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.textContent).toContain('Tokens observed while attached to Resumed Gemini: 125')
+      expect(host.textContent).toContain('Tokens observed while attached to Resumed chat: 125')
       expect(host.textContent).toContain('Input 100 · Output 25')
       expect(host.textContent).toContain('Of input: cache read 70 · cache write 0')
       expect(host.textContent).toContain('Of output: reasoning 5')
       expect(host.textContent).toContain('Last turn: 125 tokens')
-      expect(host.textContent).not.toContain('Tokens consumed in Resumed Gemini')
+      expect(host.textContent).not.toContain('Tokens consumed in Resumed chat')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 

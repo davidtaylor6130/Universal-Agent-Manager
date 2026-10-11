@@ -12,9 +12,67 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
+#include <functional>
+#include <optional>
+#include "common/runtime/acp/acp_protocol_methods.h"
+#include "common/usage/transcript_usage.h"
+#include "common/utils/time_utils.h"
 #include <thread>
 #include "remote/runner_client.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+
+/// <summary>Count observed OpenCode prompts; its cache and reasoning counts are separate token buckets.</summary>
+bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
+    const std::string& method, const std::string&, const nlohmann::json& result) const
+{
+	if (method != uam::acp_methods::kSessionPrompt) return false;
+	uam::AcpTokenUsageState& usage = session.provider_usage.token_usage;
+	if (usage.session_id != session.session_id) usage = {};
+	if (session.session_id.empty() || session.session_id.size() > 512) return false;
+	usage.last_available = false;
+	const nlohmann::json* tokens = uam::nlohmann_json::FindObjectField(result, "usage");
+	if (!tokens) return false;
+	const std::function<std::optional<std::int64_t>(const char*, bool)> count = [&](const char* key, bool required) -> std::optional<std::int64_t>
+	{
+		const nlohmann::json* field = uam::nlohmann_json::FindField(*tokens, key);
+		if (!field || field->is_null()) return required ? std::nullopt : std::optional<std::int64_t>{0};
+		if (!field->is_number_integer()) return std::nullopt;
+		if (field->is_number_unsigned() && field->get<std::uint64_t>() > static_cast<std::uint64_t>(uam::usage::kMaxExactTokenCount)) return std::nullopt;
+		const std::int64_t parsed = field->get<std::int64_t>();
+		return parsed >= 0 && parsed <= uam::usage::kMaxExactTokenCount ? std::optional<std::int64_t>{parsed} : std::nullopt;
+	};
+	const std::optional<std::int64_t> input = count("inputTokens", true), output = count("outputTokens", true);
+	const std::optional<std::int64_t> cached = count("cachedReadTokens", false), written = count("cachedWriteTokens", false);
+	const std::optional<std::int64_t> thought = count("thoughtTokens", false), reported = count("totalTokens", true);
+	if (!input || !output || !cached || !written || !thought || !reported) return false;
+	uam::AcpTokenUsageBreakdownState last;
+	// Validate each addition before computing it, including counts outside signed-integer range.
+	std::int64_t total = 0;
+	for (const std::int64_t bucket : {*input, *cached, *written, *output, *thought})
+	{
+		if (bucket > uam::usage::kMaxExactTokenCount - total) return false;
+		total += bucket;
+	}
+	if (*reported != total || total > uam::usage::kMaxExactTokenCount - usage.total.total_tokens) return false;
+	last.input_tokens = *input + *cached + *written;
+	last.cached_input_tokens = *cached;
+	last.cache_write_input_tokens = *written;
+	last.output_tokens = *output + *thought;
+	last.reasoning_output_tokens = *thought;
+	last.total_tokens = total;
+	usage.session_id = session.session_id;
+	usage.available = true;
+	usage.last_available = true;
+	usage.last = last;
+	usage.total.input_tokens += last.input_tokens;
+	usage.total.cached_input_tokens += last.cached_input_tokens;
+	usage.total.cache_write_input_tokens += last.cache_write_input_tokens;
+	usage.total.output_tokens += last.output_tokens;
+	usage.total.reasoning_output_tokens += last.reasoning_output_tokens;
+	usage.total.total_tokens += last.total_tokens;
+	usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	return false;
+}
 
 bool OpenCodeCliProviderRuntime::AcpPermissionRequiresUserDecision(const uam::AcpPendingPermissionState& pending) const
 {

@@ -27,6 +27,8 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	std::vector<std::pair<std::string, std::string>> BuildStructuredLaunchEnvironment(const ProviderProfile& profile, const ChatSession& chat) const override;
 	bool OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
 	    const uam::acp_detail::AcpResponseFailureDetails& details) const override;
+	bool OnAcpHandleResult(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
+	    const std::string& method, const std::string& request_id, const nlohmann::json& result) const override;
 	const char* AcpProtocolKind() const override { return "opencode-acp"; }
 	const char* GetAcpDisplayName() const override { return "OpenCode ACP"; }
 	bool IsGenericAcpSession() const override { return true; }
