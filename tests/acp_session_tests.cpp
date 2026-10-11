@@ -12839,3 +12839,124 @@ UAM_TEST(CodexLocalSetupDeliversCompleteCentralInstructionsForStartAndResume)
 		UAM_ASSERT(session.provider_protocol_instructions.empty());
 	}
 }
+
+
+UAM_TEST(AcpPromptDispatchPreservesSettingsOverridesAndLoadedHistoryAcrossProviders)
+{
+	const bool measure = std::getenv("UAM_PERF_MEASURE") != nullptr;
+	std::size_t tested_providers = 0;
+	for (const std::string provider : {"codex-cli", "gemini-cli", "opencode-cli", "claude-cli", "copilot-cli", "antigravity-cli"})
+	{
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider);
+		if (!runtime.IsEnabled()) continue;
+		++tested_providers;
+		TempDir temp("uam-prompt-settings");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "prompt-settings";
+		chat.provider_id = provider;
+		chat.workspace_directory = temp.root.string();
+		chat.model_id = "saved-model";
+		chat.reasoning_effort = "high";
+		chat.service_tier = "fast";
+		chat.service_tier_explicit = true;
+		chat.approval_mode = "plan";
+		Message history;
+		history.role = MessageRole::Assistant;
+		history.content = std::string((measure && provider == "codex-cli" ? 82 : 8) * 1024 * 1024, 'x');
+		chat.messages.push_back(std::move(history));
+		Message user;
+		user.role = MessageRole::User;
+		user.content = "Current request";
+		chat.messages.push_back(std::move(user));
+		const char* const history_body = chat.messages.front().content.data();
+		const std::size_t history_bytes = chat.messages.front().content.size();
+		// Isolate prompt construction/transport; this temporary discovery owner skips durable saves.
+		ChatSession discovery;
+		discovery.id = chat.id;
+		app.model_discovery_chats.push_back(std::move(discovery));
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = provider;
+		session.protocol_kind = runtime.AcpProtocolKind();
+		session.session_id = "owned-session";
+		session.current_mode_id = "plan";
+		session.current_model_id = "goal-model";
+		session.goal_turn_model_id = "goal-model";
+		session.running = true;
+		session.processing = true;
+		session.session_ready = true;
+		session.turn_first_user_message_index = 1;
+		session.turn_user_message_index = 1;
+		uam::AcpModelState model;
+		model.id = "goal-model";
+		model.supported_reasoning_efforts = {"high"};
+		session.available_models.push_back(std::move(model));
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		std::string error;
+#if defined(_WIN32)
+		const std::vector<std::string> sink = {"cmd.exe", "/C", "more"};
+#else
+		const std::vector<std::string> sink = {"/bin/cat"};
+#endif
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, sink, &error));
+		struct ProcessGuard
+		{
+			IPlatformProcessService& process;
+			uam::AcpSessionState& session;
+			~ProcessGuard() { process.StopStdioProcess(session, true); process.CloseStdioProcessHandles(session); }
+		} guard{process, session};
+		std::vector<double> dispatch_times;
+		const int iterations = measure && provider == "codex-cli" ? 25 : 1;
+		for (int iteration = 0; iteration < iterations; ++iteration)
+		{
+			session.prompt_request_id = 0;
+			session.pending_request_methods.clear();
+			session.queued_prompt = "Current request";
+			const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+			UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+			dispatch_times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+			std::string wire;
+			char buffer[4096];
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (wire.find('\n') == std::string::npos && std::chrono::steady_clock::now() < deadline)
+			{
+				const std::ptrdiff_t count = process.ReadStdioProcessStdout(session, buffer, sizeof(buffer), &error);
+				if (count > 0) wire.append(buffer, static_cast<std::size_t>(count));
+				else std::this_thread::yield();
+			}
+			UAM_ASSERT(wire.find('\n') != std::string::npos);
+			const nlohmann::json request = nlohmann::json::parse(wire);
+			if (provider == "codex-cli")
+			{
+				UAM_ASSERT_EQ(request["method"], nlohmann::json("turn/start"));
+				UAM_ASSERT_EQ(request["params"]["model"], nlohmann::json("goal-model"));
+				UAM_ASSERT_EQ(request["params"]["effort"], nlohmann::json("high"));
+				UAM_ASSERT_EQ(request["params"]["serviceTier"], nlohmann::json("fast"));
+				UAM_ASSERT_EQ(request["params"]["collaborationMode"]["mode"], nlohmann::json("plan"));
+				UAM_ASSERT_EQ(request["params"]["input"][0]["text"], nlohmann::json("Current request"));
+			}
+			else if (provider == "claude-cli") UAM_ASSERT_EQ(request["message"]["content"][0]["text"], nlohmann::json("Current request"));
+			else if (provider == "antigravity-cli") UAM_ASSERT_EQ(request["message"]["content"], nlohmann::json("Current request"));
+			else
+			{
+				UAM_ASSERT_EQ(request["method"], nlohmann::json("session/prompt"));
+				UAM_ASSERT_EQ(request["params"]["reasoningEffort"], nlohmann::json("high"));
+				UAM_ASSERT_EQ(request["params"]["prompt"][0]["text"], nlohmann::json("Current request"));
+			}
+			UAM_ASSERT_EQ(chat.model_id, std::string("saved-model"));
+			UAM_ASSERT_EQ(chat.workspace_directory, temp.root.string());
+			UAM_ASSERT_EQ(chat.messages.front().content.data(), history_body);
+			UAM_ASSERT_EQ(chat.messages.front().content.size(), history_bytes);
+		}
+		if (measure && provider == "codex-cli")
+		{
+			std::sort(dispatch_times.begin(), dispatch_times.end());
+			std::cout << "[PERF] isolated_dispatch bytes=" << history_bytes << " count=" << dispatch_times.size()
+			    << " p50_ms=" << dispatch_times[12] << " p95_ms=" << dispatch_times[23] << " max_ms=" << dispatch_times.back() << '\n';
+		}
+	}
+	UAM_ASSERT(tested_providers > 0);
+	std::cout << "[COVERAGE] prompt_dispatch_providers=" << tested_providers << '\n';
+}

@@ -1455,9 +1455,6 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		return true;
 	}
 	std::string method;
-	ChatSession prompt_chat = chat;
-	prompt_chat.workspace_directory = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
-	if (!session.goal_turn_model_id.empty()) prompt_chat.model_id = session.goal_turn_model_id;
 	nlohmann::json msg;
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
@@ -1514,6 +1511,15 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 #endif
 	{
 		session.claude_input_preparation.reset();
+		// Prompt hooks need settings only; current-turn Claude images are prepared above.
+		ChatSession prompt_chat;
+		prompt_chat.workspace_directory = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
+		prompt_chat.execution_host_id = chat.execution_host_id;
+		prompt_chat.model_id = session.goal_turn_model_id.empty() ? chat.model_id : session.goal_turn_model_id;
+		prompt_chat.reasoning_effort = chat.reasoning_effort;
+		prompt_chat.service_tier = chat.service_tier;
+		prompt_chat.service_tier_explicit = chat.service_tier_explicit;
+		prompt_chat.approval_mode = chat.approval_mode;
 		msg = runtime.OnAcpBuildPrompt(session, session.next_request_id, context + prompt, prompt_chat, method);
 	}
 	const int id = session.next_request_id++;
