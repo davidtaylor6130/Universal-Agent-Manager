@@ -581,7 +581,7 @@ namespace uam
 			{
 				SelectHistoryDigestCache(session.id);
 				cache->rehashed_message_count = 0;
-				if (!session.messages_loaded || cache->messages.size() != session.messages.size())
+				if (!session.messages_loaded)
 				{
 					cache->messages.clear();
 					cache->prefix_hashes.clear();
@@ -600,12 +600,11 @@ namespace uam
 			const auto started = std::chrono::steady_clock::now();
 			std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
 
-			FingerprintHashString(hash, std::to_string(session.messages.size()));
-
 			std::size_t prefix = 0;
 			if (cache != nullptr)
 			{
-				while (prefix < cache->messages.size() && cache->messages[prefix] == session.messages[prefix]) ++prefix;
+				while (prefix < cache->messages.size() && prefix < session.messages.size() &&
+				       cache->messages[prefix] == session.messages[prefix]) ++prefix;
 				if (prefix != 0) hash = cache->prefix_hashes[prefix - 1];
 				cache->messages.resize(prefix);
 				cache->prefix_hashes.resize(prefix);
@@ -694,6 +693,8 @@ namespace uam
 
 			}
 
+			// Count belongs after the cached body prefixes so appends do not invalidate settled history.
+			FingerprintHashString(hash, std::to_string(session.messages.size()));
 			const auto finished = std::chrono::steady_clock::now();
 			const auto elapsed = finished - started;
 			static auto last_slow_digest_report = std::chrono::steady_clock::time_point::min();

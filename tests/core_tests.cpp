@@ -12548,8 +12548,19 @@ UAM_TEST(SelectedHistoryFingerprintReusesOnlyExactlyEqualPrefixes)
 	UAM_ASSERT_EQ(earlier, uam::StateSerializer::MessageDigest(app.chats.front()));
 	app.chats.front().messages.pop_back();
 	const std::string shorter = uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["messagesDigest"];
-	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(127));
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(0));
 	UAM_ASSERT_EQ(shorter, uam::StateSerializer::MessageDigest(app.chats.front()));
+	app.chats.front().messages.push_back(Message{MessageRole::User, "new prompt"});
+	app.chats.front().messages.push_back(Message{MessageRole::Assistant, "new answer"});
+	const std::string appended = uam::StateSerializer::MessageDigest(app.chats.front(), true);
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), std::size_t{2});
+	UAM_ASSERT_EQ(appended, uam::StateSerializer::MessageDigest(app.chats.front()));
+	UAM_ASSERT(appended != shorter);
+	app.chats.front().messages.clear();
+	const std::string empty = uam::StateSerializer::MessageDigest(app.chats.front(), true);
+	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), std::size_t{0});
+	UAM_ASSERT_EQ(empty, uam::StateSerializer::MessageDigest(app.chats.front()));
+
 }
 
 UAM_TEST(SelectedHistoryFingerprintSwitchColdReleaseAndReopenInvalidateCache)
