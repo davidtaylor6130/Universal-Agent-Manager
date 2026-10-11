@@ -453,6 +453,7 @@ namespace uam
 		ExecutionHost host;
 		std::string workspace;
 		std::string prompt;
+		int memory_budget = 0;
 		std::string context;
 		std::string error;
 		std::stop_source cancel;

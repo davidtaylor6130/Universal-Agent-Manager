@@ -1236,6 +1236,22 @@ static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSes
 
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	// Cancel obsolete context even while startup responses prevent prompt delivery.
+	if (session.remote_context_preparation != nullptr)
+	{
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		const int memory_budget = session.turn_first_user_message_index <= 0 && memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled)
+		    ? app.settings.memory_recall_budget_bytes : 0;
+		const std::shared_ptr<RemoteContextPreparation>& preparation = session.remote_context_preparation;
+		if (chat.execution_host_id == execution_hosts::kLocalHostId || host == nullptr ||
+		    !execution_hosts::SameConnection(preparation->host, *host) ||
+		    preparation->workspace != paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)) ||
+		    preparation->prompt != session.queued_prompt || preparation->memory_budget != memory_budget)
+		{
+			preparation->cancel.request_stop();
+			session.remote_context_preparation.reset();
+		}
+	}
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	if (session.claude_input_preparation != nullptr)
 	{
@@ -1321,6 +1337,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			{
 				preparation = std::make_shared<RemoteContextPreparation>();
 				preparation->host = *host; preparation->workspace = workspace; preparation->prompt = prompt;
+				preparation->memory_budget = memory_budget;
 				RemoteContextTask task;
 				task.state = preparation;
 				task.worker = std::make_unique<std::jthread>([state = preparation, memory_budget](std::stop_token shutdown)
