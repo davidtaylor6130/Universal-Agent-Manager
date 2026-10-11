@@ -41,6 +41,18 @@ describe('desktop bounded history', () => {
     expect(get().messages.chat).toHaveLength(50)
     expect(get().historyStartIndexBySessionId.chat).toBe(9951)
   })
+  it('accepts a smaller complete cached tail and pages immediately before it without gaps', async () => {
+    const { get, requests } = fixture()
+    const load = get().loadSessionMessages('chat')
+    requests[0].reply(page(9992)); await load
+    expect(get().messages.chat).toHaveLength(8)
+    expect(get().historyStartIndexBySessionId.chat).toBe(9992)
+    const older = get().loadOlderSessionMessages('chat')
+    expect(requests[1].payload.before).toBe(9992)
+    requests[1].reply(page(9892, 9992)); expect(await older).toBe(true)
+    expect(get().messages.chat).toHaveLength(108)
+    expect(get().messages.chat.map(message => message.nativeMessageIndex)).toEqual(Array.from({ length: 108 }, (_, index) => 9892 + index))
+  })
   it('keeps a longer streaming tail when an earlier bounded refresh resolves', async () => {
     const { get, set, requests } = fixture()
     const load = get().loadSessionMessages('chat')

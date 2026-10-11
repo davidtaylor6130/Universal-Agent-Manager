@@ -25556,6 +25556,61 @@ UAM_TEST(BoundedMessageTailPreservesPagingAndRejectsSameSizeStorageReplacement)
 	UAM_ASSERT_EQ(newest->messages.front().content.back(), 'y');
 }
 
+UAM_TEST(BoundedMessageTailCachesCompleteSuffixWhenRecentMessagesExceedBudget)
+{
+	TempDir temp("uam-message-tail-budget");
+	ChatSession chat;
+	chat.id = "large-tail";
+	chat.updated_at = "2026-10-11T16:00:00Z";
+	for (int index = 0; index < 100; ++index)
+	{
+		Message message;
+		message.role = MessageRole::Assistant;
+		message.content = std::string(8192, static_cast<char>('a' + index % 26));
+		chat.messages.push_back(std::move(message));
+	}
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(loaded.has_value());
+	const std::shared_ptr<PreparedChatSave> prepared = uam::MessageTailCache::Prepare(temp.root, *loaded);
+	UAM_ASSERT(prepared != nullptr);
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(prepared));
+	const ChatSession summary = ChatRepository::LoadLocalChatSummaries(temp.root).front();
+	const std::optional<nlohmann::json> tail = uam::MessageTailCache::Read(temp.root, chat.id, summary.persisted_message_count, summary.persisted_messages_digest, 50);
+	UAM_ASSERT(tail.has_value());
+	const std::size_t count = (*tail)["messages"].size();
+	UAM_ASSERT(count > 0 && count < 50);
+	UAM_ASSERT_EQ((*tail)["startIndex"].get<std::size_t>() + count, chat.messages.size());
+	UAM_ASSERT_EQ((*tail)["messages"], uam::StateSerializer::SerializeMessagePage(*loaded, count, std::nullopt, true)["messages"]);
+	const std::optional<nlohmann::json> smaller = uam::MessageTailCache::Read(temp.root, chat.id, summary.persisted_message_count, summary.persisted_messages_digest, 10);
+	UAM_ASSERT(smaller.has_value());
+	UAM_ASSERT_EQ((*smaller)["messages"].size(), std::size_t(10));
+	UAM_ASSERT_EQ((*smaller)["startIndex"].get<std::size_t>(), std::size_t(90));
+	const nlohmann::json earlier = uam::StateSerializer::SerializeMessagePage(*loaded, 50, (*tail)["startIndex"].get<std::size_t>(), true);
+	UAM_ASSERT_EQ(earlier["startIndex"].get<std::size_t>() + earlier["messages"].size(), (*tail)["startIndex"].get<std::size_t>());
+
+	chat.messages[98].thoughts = std::string(600 * 1024, 't');
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> with_metadata = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(with_metadata.has_value());
+	const std::shared_ptr<PreparedChatSave> metadata_tail = uam::MessageTailCache::Prepare(temp.root, *with_metadata);
+	UAM_ASSERT(metadata_tail != nullptr);
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(metadata_tail));
+	const ChatSession metadata_summary = ChatRepository::LoadLocalChatSummaries(temp.root).front();
+	const std::optional<nlohmann::json> metadata_page = uam::MessageTailCache::Read(temp.root, chat.id, metadata_summary.persisted_message_count, metadata_summary.persisted_messages_digest, 50);
+	UAM_ASSERT(metadata_page.has_value());
+	UAM_ASSERT_EQ((*metadata_page)["messages"].size(), std::size_t(1));
+	UAM_ASSERT_EQ((*metadata_page)["messages"], uam::StateSerializer::SerializeMessagePage(*with_metadata, 1, std::nullopt, true)["messages"]);
+
+	chat.messages.back().content = std::string(300 * 1024, 'z');
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> oversized = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(oversized.has_value());
+	UAM_ASSERT(uam::MessageTailCache::Prepare(temp.root, *oversized) == nullptr);
+	UAM_ASSERT(!uam::MessageTailCache::Read(temp.root, chat.id, summary.persisted_message_count, summary.persisted_messages_digest, 50));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(temp.root, chat.id, true)->messages.back().content, chat.messages.back().content);
+}
+
 UAM_TEST(VcsContextSnapshotPreservesWorkspaceWithoutTranscriptCopies)
 {
 	uam::AppState app;

@@ -19,21 +19,42 @@ namespace uam
 	try
 	{
 		if (!prepared || !chat.messages_loaded || prepared->primary_revision.empty()) return false;
+		constexpr std::size_t text_budget = 256 * 1024;
 		std::size_t text_bytes = 0;
-		for (std::size_t index = chat.messages.size() > 50 ? chat.messages.size() - 50 : 0; index < chat.messages.size(); ++index)
+		std::size_t count = 0;
+		for (std::size_t index = chat.messages.size(); index > 0 && count < 50; --index)
 		{
-			text_bytes += chat.messages[index].content.size();
-			for (const MessageBlock& block : chat.messages[index].blocks) text_bytes += block.text.size();
-			if (text_bytes > 256 * 1024) return false;
+			const Message& message = chat.messages[index - 1];
+			if (message.content.size() > text_budget || message.thoughts.size() > text_budget - message.content.size()) break;
+			std::size_t message_bytes = message.content.size() + message.thoughts.size();
+			for (const MessageBlock& block : message.blocks)
+			{
+				if (block.text.size() > text_budget - message_bytes)
+				{
+					message_bytes = text_budget + 1;
+					break;
+				}
+				message_bytes += block.text.size();
+			}
+			if (message_bytes > text_budget - text_bytes) break;
+			text_bytes += message_bytes;
+			++count;
 		}
+		if (count == 0 && !chat.messages.empty()) return false;
 		std::string text;
 		if (!io::TryReadTextFile(prepared->summary_temp, text, 4 * 1024 * 1024)) return false;
 		nlohmann::json summary = nlohmann::json::parse(text, nullptr, false);
 		if (!summary.is_object() || summary.value("id", "") != chat.id) return false;
-		summary["frontendMessageTail"] = {{"version", 2}, {"sourceRevision", prepared->primary_revision},
-		    {"page", StateSerializer::SerializeMessagePage(chat, 50, std::nullopt, true)}};
-		text = summary.dump();
-		if (text.size() > 512 * 1024) return false;
+		for (;;)
+		{
+			summary["frontendMessageTail"] = {{"version", 2}, {"sourceRevision", prepared->primary_revision},
+			    {"page", StateSerializer::SerializeMessagePage(chat, count, std::nullopt, true)}};
+			text = summary.dump();
+			if (text.size() <= 512 * 1024) break;
+			if (count <= 1) return false;
+			// Keep complete messages; metadata can exceed the text-only budget too.
+			count /= 2;
+		}
 		const std::filesystem::path replacement = io::MakeTempWritePath(prepared->summary_path);
 		io::AtomicWriteResult result;
 		if (!io::WriteAndSyncAtomicTemp(replacement, text, {}, result)) { io::RemoveAtomicTempNoThrow(replacement); return false; }
@@ -86,13 +107,14 @@ namespace uam
 		if (!tail.is_object() || tail.value("version", 0) != 2 || tail.value("sourceRevision", "") != *revision || !tail.contains("page")) return std::nullopt;
 		nlohmann::json page = tail["page"];
 		if (!page.is_object() || !page.contains("messages") || !page["messages"].is_array() ||
-		    page.value("totalCount", std::size_t(0)) != expected_count || page["messages"].size() != std::min(expected_count, std::size_t(50)) ||
-		    page.value("startIndex", std::size_t(0)) + page["messages"].size() != expected_count || !page.contains("messagesDigest") || !page["messagesDigest"].is_string()) return std::nullopt;
+		    page.value("totalCount", std::size_t(0)) != expected_count || page["messages"].size() > std::min(expected_count, std::size_t(50)) ||
+		    (expected_count > 0 && page["messages"].empty()) ||
+		    page.value("startIndex", std::size_t(0)) != expected_count - page["messages"].size() || !page.contains("messagesDigest") || !page["messagesDigest"].is_string()) return std::nullopt;
 		for (const nlohmann::json& message : page["messages"])
 			if (!message.is_object() || !message.contains("role") || !message["role"].is_string() ||
 			    !message.contains("content") || !message["content"].is_string()) return std::nullopt;
 		if (ChatRepository::ChatStorageRevision(data_root, chat_id) != revision) return std::nullopt;
-		const std::size_t size = std::min(limit, expected_count);
+		const std::size_t size = std::min(limit, page["messages"].size());
 		page["messages"].erase(page["messages"].begin(), page["messages"].end() - static_cast<std::ptrdiff_t>(size));
 		page["startIndex"] = expected_count - size;
 		page["chatId"] = chat_id;
