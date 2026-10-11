@@ -125,7 +125,8 @@ function formatSidebarTimeTitle(date: Date | null): string {
 }
 
 function sidebarPathName(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).at(-1) ?? ''
+  const segments = path.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean)
+  return segments[segments.length - 1] ?? ''
 }
 
 function workspacePathIdentity(path: string): string {

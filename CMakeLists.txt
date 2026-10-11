@@ -357,6 +357,11 @@ FetchContent_MakeAvailable(uam_sqlite)
 add_library(uam_sqlite STATIC "${uam_sqlite_SOURCE_DIR}/sqlite3.c")
 target_include_directories(uam_sqlite PUBLIC "${uam_sqlite_SOURCE_DIR}")
 target_compile_definitions(uam_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
+if(MSVC)
+  set_property(TARGET uam_sqlite PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+endif()
 target_link_libraries(uam_runner PRIVATE uam_sqlite)
 
 target_link_libraries(uam_runner PRIVATE nlohmann_json::nlohmann_json)
