@@ -347,15 +347,15 @@ namespace
 
 	bool ShouldQueueAutomaticMemoryScan(const ChatSession& chat)
 	{
+		const std::string level = MemoryLevel(chat);
+		if (level == uam::memory_levels::kOpen)
+		{
+			return static_cast<std::size_t>(std::max(0, chat.memory_last_processed_message_count)) < chat.messages.size();
+		}
 		const std::string lowered = uam::strings::ToLowerAscii(TranscriptDeltaText(chat));
 		if (lowered.empty())
 		{
 			return false;
-		}
-		const std::string level = MemoryLevel(chat);
-		if (level == uam::memory_levels::kOpen)
-		{
-			return true;
 		}
 		const bool has_progress_signal = ContainsProgressOnlySignal(lowered);
 		if (has_progress_signal && !HasDurableNonProgressSignal(lowered))
