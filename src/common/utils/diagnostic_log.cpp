@@ -1,6 +1,7 @@
 #include "diagnostic_log.h"
 
 #include "common/utils/time_utils.h"
+#include "common/paths/path_utils.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -32,6 +33,12 @@ namespace
 
 	bool Open(std::ios_base::openmode mode)
 	{
+		// Special paths can redirect diagnostics or block desktop startup before the worker exists.
+		std::error_code status_error;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(g_path, status_error);
+		if ((status_error && status_error != std::errc::no_such_file_or_directory) ||
+		    (std::filesystem::exists(status) && !std::filesystem::is_regular_file(status)) ||
+		    uam::paths::IsLinkOrReparsePointNoThrow(g_path)) return false;
 		g_file.clear();
 		g_file.open(g_path, std::ios::binary | mode);
 		if (!g_file.is_open()) return false;

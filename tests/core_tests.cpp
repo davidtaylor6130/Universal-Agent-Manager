@@ -682,6 +682,41 @@ UAM_TEST(DesktopDiagnosticsRecoverOversizedLogsWithoutRemovingSpecialBackups)
 #endif
 }
 
+UAM_TEST(DesktopDiagnosticsRejectSpecialCurrentPathsWithoutOpeningThem)
+{
+	TempDir temp("uam-log-current-special");
+	const fs::path log = temp.root / "uam.log";
+	std::string error;
+	fs::create_directory(log);
+	UAM_ASSERT(!uam::diagnostics::StartFileLog(log, error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(fs::is_directory(log));
+	fs::remove(log);
+#if !defined(_WIN32)
+	const fs::path target = temp.root / "keep";
+	UAM_ASSERT(uam::io::WriteTextFile(target, "keep"));
+	const fs::perms permissions = fs::status(target).permissions();
+	fs::create_symlink(target, log);
+	UAM_ASSERT(!uam::diagnostics::StartFileLog(log, error));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), std::string("keep"));
+	UAM_ASSERT_EQ(fs::status(target).permissions(), permissions);
+	UAM_ASSERT(fs::is_symlink(fs::symlink_status(log)));
+	fs::remove(log);
+	fs::create_symlink(temp.root / "missing", log);
+	UAM_ASSERT(!uam::diagnostics::StartFileLog(log, error));
+	UAM_ASSERT(!fs::exists(temp.root / "missing"));
+	fs::remove(log);
+	UAM_ASSERT_EQ(::mkfifo(log.c_str(), 0600), 0);
+	UAM_ASSERT(!uam::diagnostics::StartFileLog(log, error));
+	UAM_ASSERT(fs::symlink_status(log).type() == fs::file_type::fifo);
+	fs::remove(log);
+#endif
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error));
+	uam::diagnostics::Write("regular logging survives");
+	uam::diagnostics::StopFileLog();
+	UAM_ASSERT(uam::strings::Contains(uam::io::ReadTextFile(log), "regular logging survives"));
+}
+
 UAM_TEST(DesktopDiagnosticRetentionExpiresOnlyOldRegularBackupFiles)
 {
 	TempDir temp("uam-log-retention");
