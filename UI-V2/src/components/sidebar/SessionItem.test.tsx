@@ -136,6 +136,47 @@ describe('SessionItem status icons', () => {
     }
   })
 
+  it('requests activity branches only while their row intersects the viewport', async () => {
+    const original = useAppStore.getState().getVcsCommitStatus
+    type Status = Awaited<ReturnType<typeof original>>
+    let intersect!: (entries: Pick<IntersectionObserverEntry, 'isIntersecting'>[]) => void
+    const disconnect = vi.fn()
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: typeof intersect) { intersect = callback }
+      observe() {}
+      disconnect = disconnect
+    })
+    const finish: Array<(status: Status) => void> = []
+    const getVcsCommitStatus = vi.fn(() => new Promise<Status>(resolve => finish.push(resolve)))
+    let session = { ...makeSession(), id: 'branch-visible-test', workspaceDirectory: '/tmp/visible' }
+    useAppStore.setState({ sessions: [session], getVcsCommitStatus })
+    const host = document.createElement('div'), root = createRoot(host)
+    document.body.appendChild(host)
+    const render = () => act(() => root.render(<SessionItem sessionId={session.id} session={session} activityLayout />))
+    try {
+      render()
+      expect(getVcsCommitStatus).not.toHaveBeenCalled()
+      act(() => intersect([{ isIntersecting: true }]))
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(1)
+      act(() => intersect([{ isIntersecting: false }]))
+      await act(async () => finish[0]({ available: true, activeVcsType: 'git', branchOrRevision: 'late-hidden-branch' } as Status))
+      expect(host.textContent).not.toContain('late-hidden-branch')
+      session = { ...session, updatedAt: new Date(now.getTime() + 1000) }
+      render()
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(1)
+      act(() => intersect([{ isIntersecting: true }]))
+      expect(getVcsCommitStatus).toHaveBeenCalledTimes(2)
+      await act(async () => finish[1]({ available: true, activeVcsType: 'git', branchOrRevision: 'visible-branch' } as Status))
+      expect(host.textContent).toContain('visible-branch')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+      useAppStore.setState({ getVcsCommitStatus: original })
+    }
+    expect(disconnect).toHaveBeenCalled()
+  })
+
   it('does not request an activity branch for imported read-only chats', async () => {
     const original = useAppStore.getState().getVcsCommitStatus
     const getVcsCommitStatus = vi.fn(async () => null)

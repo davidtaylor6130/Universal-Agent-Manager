@@ -1,7 +1,7 @@
 import { SnoozeMenu } from './SnoozeMenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, memo } from 'react'
-import type { MouseEvent as ReactMouseEvent } from 'react'
+import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
@@ -48,15 +48,25 @@ function WorkingDuration({ startedAtMs }: { startedAtMs: number }) {
 const branchCache = new Map<string, string>()
 
 /** Cache branches by workspace scope; discard replies from a prior scope or refresh. */
-function useActivityBranch(session: Session | null | undefined): string {
+function useActivityBranch(session: Session | null | undefined, row: RefObject<HTMLDivElement>): string {
   const sessionId = session?.id
   const isolatedBranch = session?.workspaceBranchName
   const importedReadOnly = session?.importedReadOnly === true
   const scope = sessionId ? JSON.stringify([sessionId, session?.executionHostId ?? 'local', session?.workspaceDirectory ?? '', session?.workspaceWorktreeDirectory ?? '', session?.folderId ?? '']) : ''
   const refresh = (session?.interactionAt ?? session?.updatedAt)?.getTime() ?? 0
   const [branch, setBranch] = useState(() => ({ scope, name: branchCache.get(scope) || '' }))
+  const [visible, setVisible] = useState(() => typeof IntersectionObserver === 'undefined')
   useEffect(() => {
-    if (!sessionId || isolatedBranch || importedReadOnly || isCompanionContext()) return
+    if (!sessionId || isolatedBranch || importedReadOnly || isCompanionContext() || typeof IntersectionObserver === 'undefined' || !row.current) return
+    // Offscreen activity cards must not fill the serial VCS queue at startup.
+    const observer = new IntersectionObserver((entries) => {
+      setVisible(entries.some((entry) => entry.isIntersecting))
+    }, { rootMargin: '100px' })
+    observer.observe(row.current)
+    return () => observer.disconnect()
+  }, [sessionId, isolatedBranch, importedReadOnly, row])
+  useEffect(() => {
+    if (!visible || !sessionId || isolatedBranch || importedReadOnly || isCompanionContext()) return
     let cancelled = false
     void useAppStore.getState().getVcsCommitStatus(sessionId, 'git', { includeLineStats: false, contextOnly: true, requestId: `sidebar-branch:${scope}:${refresh}` }).then((status) => {
       if (cancelled) return
@@ -65,7 +75,7 @@ function useActivityBranch(session: Session | null | undefined): string {
       setBranch({ scope, name: next })
     })
     return () => { cancelled = true }
-  }, [scope, refresh, sessionId, isolatedBranch, importedReadOnly])
+  }, [scope, refresh, sessionId, isolatedBranch, importedReadOnly, visible])
   return importedReadOnly ? '' : isolatedBranch || (branch.scope === scope ? branch.name : '')
 }
 
@@ -344,7 +354,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const menuReturnFocusRef = useRef<HTMLElement | null>(null)
   const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
   const lastOpenedLabel = formatSidebarTime(activityDate)
-  const activityBranch = useActivityBranch(activityLayout ? session : null)
+  const activityBranch = useActivityBranch(activityLayout ? session : null, rowRef)
   const activityWorktree = activityLayout ? sessionSummary.worktreeDirectory.trim() : ''
   const activityStatus = activityLayout ? activityStatusLabel(lifecycleStatus) : null
   const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
