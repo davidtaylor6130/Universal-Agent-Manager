@@ -145,6 +145,33 @@ UAM_TEST(ClaudeToolTitlesUseArgumentsAndKeepUnknownToolsReadable)
 #endif
 }
 
+UAM_TEST(ClaudeParentEnvelopeReplayDoesNotDuplicateNarration)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-parent-replay");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "claude-parent-replay";
+	chat.provider_id = "claude-cli";
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.running = true;
+	session.processing = true;
+	nlohmann::json frame = {{"type", "assistant"}, {"uuid", "parent-frame"}, {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", "Parent answer"}}})}}}};
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Parent answer"));
+	// Identical text with a distinct native identity remains legitimate output.
+	frame["uuid"] = "another-parent-frame";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Parent answerParent answer"));
+#endif
+}
+
 UAM_TEST(ClaudeBackgroundAndChildEventsStayWithTheirOriginalTool)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI

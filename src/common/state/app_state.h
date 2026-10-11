@@ -710,6 +710,8 @@ namespace uam
 		std::unordered_map<std::string, int> tool_call_message_indices;
 		std::vector<AcpToolCallState> tool_calls;
 		std::unordered_set<std::string> claude_seen_child_messages;
+		/// <summary>Native parent envelope identities prevent repeated delivery from appending twice.</summary>
+		std::unordered_set<std::string> claude_seen_parent_messages;
 		/// <summary>Observed tasks owned by this native process, retained across parent turns but never persisted.</summary>
 		std::unordered_set<std::string> claude_live_background_task_ids;
 		std::vector<AcpPlanEntryState> plan_entries;

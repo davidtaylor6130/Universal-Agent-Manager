@@ -313,6 +313,9 @@ namespace uam::acp_detail
 
 void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
+	const std::string identity = JsonDiagnosticStringValue(message, "uuid");
+	if (JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && !identity.empty() &&
+	    !session.claude_seen_parent_messages.insert(identity).second) return;
 	const nlohmann::json assistant_message = JsonObjectValue(message, "message");
 	const nlohmann::json content = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(assistant_message, "content"));
 	const bool child_message = !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty();
