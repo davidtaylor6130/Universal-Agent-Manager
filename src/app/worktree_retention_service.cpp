@@ -1,7 +1,9 @@
 #include "app/worktree_retention_service.h"
 
 #include "app/startup_native_import_service.h"
+#include "common/chat/chat_repository.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/app_paths.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/diagnostic_log.h"
@@ -40,6 +42,13 @@ namespace uam
 			for (const std::string* path : {&chat.workspace_directory, &chat.workspace_worktree_directory, &chat.workspace_source_directory})
 				if (!path->empty()) snapshot.protected_paths.push_back(paths::PathFromUtf8(*path));
 		}
+		// Archived agent transcripts are deliberately excluded from the sidebar catalogue.
+		for (const AgentRun& run : app.agent_runs)
+		{
+			if (run.transcript_chat_id.empty() || chat_ids.contains(run.transcript_chat_id)) continue;
+			if (snapshot.agent_transcript_ids.size() >= 4096) return false;
+			snapshot.agent_transcript_ids.push_back(run.transcript_chat_id);
+		}
 		for (const ChatFolder& folder : app.folders)
 		{
 			if (!paths::IsControllerLocalWorkspace(folder) || folder.directory.empty()) continue;
@@ -63,7 +72,36 @@ namespace uam
 		for (const ResourceCollection& collection : app.resource_collections)
 			for (const ResourceReference& reference : collection.references)
 				if (reference.type == "file" || reference.type == "desktop-app") snapshot.protected_paths.push_back(paths::PathFromUtf8(reference.target));
+		snapshot.known_chat_ids = std::move(chat_ids);
 		return true;
+	}
+
+	bool WorktreeRetentionService::ProtectStoredWorkspaces(const Snapshot& snapshot,
+	    std::vector<std::filesystem::path>& protected_paths, std::stop_token stop)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		const std::filesystem::path root = AppPaths::UamChatsRootPath(snapshot.data_root);
+		if (paths::IsLinkOrReparsePointNoThrow(snapshot.data_root) || paths::IsLinkOrReparsePointNoThrow(root)) return false;
+		std::unordered_set<std::string> unresolved(snapshot.agent_transcript_ids.begin(), snapshot.agent_transcript_ids.end());
+		std::error_code error;
+		std::filesystem::directory_iterator iterator(root, error), end;
+		if (error == std::errc::no_such_file_or_directory) return unresolved.empty() && !stop.stop_requested();
+		std::size_t visited = 0;
+		for (; !error && iterator != end; iterator.increment(error))
+		{
+			if (++visited > 262144 || stop.stop_requested() || std::chrono::steady_clock::now() >= deadline) return false;
+			if (iterator->path().extension() != ".json") continue;
+			if (paths::IsLinkOrReparsePointNoThrow(iterator->path()) || !iterator->is_regular_file(error) || error) return false;
+			const std::string id = paths::Utf8PathString(iterator->path().stem());
+			if (snapshot.known_chat_ids.contains(id)) continue;
+			const std::optional<ChatSession> chat = ChatRepository::LoadLocalChatSummaryReadOnly(snapshot.data_root, id);
+			if (!chat) return false;
+			unresolved.erase(id);
+			if (!paths::IsControllerLocalWorkspace(*chat)) continue;
+			for (const std::string* path : {&chat->workspace_directory, &chat->workspace_worktree_directory, &chat->workspace_source_directory})
+				if (!path->empty()) protected_paths.push_back(paths::PathFromUtf8(*path));
+		}
+		return !error && unresolved.empty() && !stop.stop_requested() && std::chrono::steady_clock::now() < deadline;
 	}
 
 	bool WorktreeRetentionService::ProtectProcessWorkspace(const std::filesystem::path& data_root,
@@ -85,7 +123,7 @@ namespace uam
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 		std::size_t visited = 0;
 		std::vector<std::filesystem::path> protected_paths = snapshot.protected_paths;
-		if (!ProtectProcessWorkspace(snapshot.data_root, protected_paths)) return result;
+		if (!ProtectProcessWorkspace(snapshot.data_root, protected_paths) || !ProtectStoredWorkspaces(snapshot, protected_paths, stop)) return result;
 		const GitWorktreeService worktrees;
 		const std::filesystem::path storage = snapshot.data_root / "worktrees";
 		if (paths::IsLinkOrReparsePointNoThrow(storage) || paths::IsLinkOrReparsePointNoThrow(snapshot.data_root)) return result;
@@ -182,7 +220,7 @@ namespace uam
 				{
 					std::shared_ptr<WorkspaceLeaseGate::Lease> active = std::move(lease);
 					Result result;
-					if (ProtectProcessWorkspace(snapshot.data_root, snapshot.protected_paths))
+					if (ProtectProcessWorkspace(snapshot.data_root, snapshot.protected_paths) && ProtectStoredWorkspaces(snapshot, snapshot.protected_paths, stop))
 						result.removed = GitWorktreeService().RemoveRetentionCandidate(snapshot.data_root, candidate.source, candidate.worktree, snapshot.protected_paths, *active, stop);
 					diagnostics::Write(std::string("[retention] ") + (result.removed ? "Removed " : "Preserved ") +
 					    paths::Utf8PathString(candidate.worktree.directory) + "; branch " + candidate.worktree.branch_name +

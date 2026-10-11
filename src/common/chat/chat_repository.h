@@ -77,6 +77,8 @@ class ChatRepository
 	static std::vector<ChatSession> LoadLocalChatSummaries(const std::filesystem::path& data_root, std::string* warning_out = nullptr);
 	/// <summary>Reads current primary chat summaries without migration, repair, or backup publication.</summary>
 	static std::vector<ChatSession> LoadLocalChatSummariesReadOnly(const std::filesystem::path& data_root, std::stop_token stop_token = {});
+	/// <summary>Reads one bounded metadata record without repair or cache publication; unknown or oversized ownership returns no record.</summary>
+	static std::optional<ChatSession> LoadLocalChatSummaryReadOnly(const std::filesystem::path& data_root, std::string_view chat_id);
 	/// <summary>Loads one locally persisted chat without scanning sibling files.</summary>
 	static std::optional<ChatSession> LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages = true, std::string* warning_out = nullptr, bool publish_summary_cache = true);
 	/// <summary>Loads one locally persisted chat with its message bodies.</summary>

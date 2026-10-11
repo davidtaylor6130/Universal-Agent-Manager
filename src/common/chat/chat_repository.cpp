@@ -1259,9 +1259,14 @@ namespace
 		uam::diagnostics::Write("Queued inputs held: journal is unreadable or does not match saved chat " + chat.id);
 	}
 
-	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0, bool publish_summary_cache = true)
+	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0, bool publish_summary_cache = true, std::size_t max_read_bytes = 0)
 	{
-		const std::string file_text = uam::io::ReadTextFile(path);
+		std::string file_text;
+		if (max_read_bytes != 0)
+		{
+			if (!uam::io::TryReadTextFile(path, file_text, max_read_bytes)) return {std::nullopt, "cannot be read within the metadata size limit"};
+		}
+		else file_text = uam::io::ReadTextFile(path);
 		if (file_text.empty())
 		{
 			return {std::nullopt, "is empty"};
@@ -1274,6 +1279,15 @@ namespace
 		}
 
 		JsonValue& root = *root_opt;
+		if (max_read_bytes != 0)
+		{
+			// Cleanup cannot treat malformed ownership as an unreferenced workspace.
+			for (const std::string_view field : {kChatExecutionHostIdField, kChatWorkspaceDirectoryField, kChatWorkspaceWorktreeDirectoryField, kChatWorkspaceSourceDirectoryField})
+			{
+				const JsonValue* value = root.Find(field);
+				if (value != nullptr && value->type != JsonValue::Type::String) return {std::nullopt, "contains invalid workspace ownership"};
+			}
+		}
 		if (expected_source_size > 0 &&
 		    NonNegativeUintmaxFieldOrZero(root.Find(kChatSummarySourceSizeField)) != expected_source_size)
 		{
@@ -3071,6 +3085,28 @@ bool ChatRepository::AdoptHydratedMessagesIfUnchanged(ChatSession& current, Chat
 	current.messages = std::move(loaded.messages);
 	current.messages_loaded = true;
 	return true;
+}
+
+std::optional<ChatSession> ChatRepository::LoadLocalChatSummaryReadOnly(const fs::path& data_root, std::string_view chat_id)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id)) return std::nullopt;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
+	const fs::path summary = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
+	if (uam::paths::IsLinkOrReparsePointNoThrow(primary) || uam::paths::IsLinkOrReparsePointNoThrow(summary)) return std::nullopt;
+	std::error_code error;
+	const std::uintmax_t size = fs::file_size(primary, error);
+	if (error) return std::nullopt;
+	const fs::file_time_type modified = fs::last_write_time(primary, error);
+	if (error) return std::nullopt;
+	LoadChatResult loaded;
+	if (SummaryCacheIsCurrent(primary, summary))
+		loaded = ParseLocalChatFile(summary, false, size, false, 1024 * 1024);
+	if (!loaded.chat || loaded.chat->id != chat_id)
+		loaded = ParseLocalChatFile(primary, false, 0, false, 32 * 1024 * 1024);
+	if (!loaded.chat || loaded.chat->id != chat_id) return std::nullopt;
+	if (fs::file_size(primary, error) != size || error) return std::nullopt;
+	if (fs::last_write_time(primary, error) != modified || error) return std::nullopt;
+	return std::move(loaded.chat);
 }
 
 std::vector<ChatSession> ChatRepository::LoadLocalChatSummariesReadOnly(const fs::path& data_root, std::stop_token stop_token)
