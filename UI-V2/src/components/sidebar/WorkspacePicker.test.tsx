@@ -56,7 +56,7 @@ describe('WorkspacePicker', () => {
     expect(options()[0].textContent).toContain('App')
     query('no such project')
     expect(options()).toHaveLength(0)
-    expect(document.querySelector('[role="status"]')?.textContent).toBe('No matching workspaces')
+    expect(document.querySelector('[role="status"]')?.textContent).toBe('No workspaces match “no such project”')
     key('Enter')
     expect(props.onChange).not.toHaveBeenCalled()
   })

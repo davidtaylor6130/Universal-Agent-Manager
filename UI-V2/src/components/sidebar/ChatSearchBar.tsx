@@ -149,32 +149,21 @@ export function ChatSearchBar({
             aria-haspopup="menu"
             aria-expanded={filtersOpen}
             aria-controls={filtersOpen ? menuId : undefined}
-            className="relative flex items-center justify-center rounded-md transition-colors duration-fast"
+            className="flex items-center justify-center gap-1 rounded-md transition-colors duration-fast"
             style={{
-              width: 32,
+              minWidth: 32,
               height: 32,
-              border: '1px solid transparent',
-              background: activeFilterCount > 0 ? 'var(--accent)' : 'var(--surface-up)',
-              color: activeFilterCount > 0 ? 'white' : 'var(--text-2)',
+              padding: activeFilterCount > 0 ? '0 8px' : 0,
+              border: `1px solid ${activeFilterCount > 0 ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'transparent'}`,
+              background: activeFilterCount > 0 ? 'var(--accent-dim)' : 'var(--surface-up)',
+              color: activeFilterCount > 0 ? 'var(--accent)' : 'var(--text-2)',
+              fontSize: 'var(--fs-xs)',
+              fontVariantNumeric: 'tabular-nums',
             }}
             onClick={() => setFiltersOpen((open) => !open)}
           >
             <SlidersHorizontal size={15} aria-hidden />
-            {activeFilterCount > 0 && (
-              <span
-                aria-hidden="true"
-                className="absolute -right-1 -top-1 flex items-center justify-center rounded-full text-[10px] font-semibold"
-                style={{
-                  minWidth: 14,
-                  height: 14,
-                  background: 'var(--surface)',
-                  color: 'var(--accent)',
-                  border: '1px solid var(--border)',
-                }}
-              >
-                {activeFilterCount}
-              </span>
-            )}
+            {activeFilterCount > 0 && <span aria-hidden="true" className="font-semibold">{activeFilterCount}</span>}
           </button>
           </Tooltip>
 

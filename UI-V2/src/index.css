@@ -1701,10 +1701,12 @@ summary,
 /* Shared workflow controls follow the active UAM theme. */
 .uam-status-indicator { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; flex-shrink:0; cursor:help; }
 .uam-status-count { font-size:11px; font-weight:700; border:1px solid currentColor; border-radius:50%; width:18px; height:18px; display:grid; place-items:center; }
-.uam-selection-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(76px,1fr)); gap:8px; }
-.uam-selection-option { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; min-width:0; padding:16px 8px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:12px; transition:background-color 150ms,border-color 150ms; }
+.uam-selection-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(68px,1fr)); gap:6px; }
+.uam-selection-option { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; min-width:0; padding:10px 3px; background:var(--surface); color:var(--text-2); border:1px solid var(--border); border-radius:var(--r-md); cursor:pointer; font-size:11px; letter-spacing:-.01em; transition:background-color var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+.uam-selection-option:active:not(:disabled) { transform:scale(.97); }
+.uam-selection-option:focus-visible { outline:none; box-shadow:var(--focus-ring); }
 .uam-selection-option:hover { background:var(--surface-up); }
-.uam-selection-option[aria-pressed="true"] { background:var(--accent-dim); border-color:var(--accent); }
+.uam-selection-option[aria-pressed="true"] { background:color-mix(in srgb, var(--accent) 8%, var(--surface)); border-color:color-mix(in srgb, var(--accent) 70%, transparent); color:var(--text); }
 .uam-selection-option:disabled { opacity:.5; cursor:not-allowed; }
 .uam-selection-icon { display:flex; height:24px; align-items:center; justify-content:center; }
 .uam-selection-status { position:absolute; top:2px; right:2px; }

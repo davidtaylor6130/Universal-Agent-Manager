@@ -23,6 +23,7 @@ import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuIte
 import type { ResourceCollection } from '../../types/resourceCollection'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
+import { usePresence } from '../ui/Overlay'
 
 interface FolderTreeProps {
   searchQuery: string
@@ -332,6 +333,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const activeExpanded = searchModel.isSearching || !activeCollapsed
   const pinnedExpanded = searchModel.isSearching || !pinnedCollapsed
   const allChatsExpanded = searchModel.isSearching || !allChatsCollapsed
+  // Section rows stay mounted through the exit window, then unmount (collapsed rows are not rendered).
+  const activeList = usePresence(activeExpanded)
+  const snoozedList = usePresence(snoozedExpanded)
+  const pinnedList = usePresence(pinnedExpanded)
+  const allChatsList = usePresence(allChatsExpanded)
   const familySessionIdsByRootId = useMemo(() => {
     const families = new Map<string, string[]>()
     for (const session of sessions) {
@@ -842,11 +848,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           <div
             id="active-chat-list"
             className="uam-sb-collapse"
-            hidden={!activeExpanded}
+            data-state={activeList.closing ? 'closed' : 'open'}
+            hidden={!activeList.mounted}
             aria-hidden={!activeExpanded}
             {...(!activeExpanded ? { inert: '' } : {})}
           >
-            {activeExpanded && searchModel.activeSessionIds.map(renderActivitySessionItem)}
+            <div className="uam-sb-collapse__inner">
+              {activeList.mounted && searchModel.activeSessionIds.map(renderActivitySessionItem)}
+            </div>
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
             <button
@@ -868,10 +877,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         <div className="mb-0.5" data-testid="snoozed-chats">
           <SidebarSectionHeader label="Snoozed" listId="snoozed-chat-list" expanded={snoozedExpanded} onToggle={() => setSnoozedCollapsed((value) => !value)}
             trailing={<span className="ml-auto text-[10px]">{searchModel.snoozedSessionIds.length}</span>} />
-          <div id="snoozed-chat-list" className="uam-sb-collapse" hidden={!snoozedExpanded} aria-hidden={!snoozedExpanded} {...(!snoozedExpanded ? { inert: '' } : {})}>
-            {snoozedExpanded && searchModel.snoozedSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
-            ))}
+          <div id="snoozed-chat-list" className="uam-sb-collapse" data-state={snoozedList.closing ? 'closed' : 'open'} hidden={!snoozedList.mounted} aria-hidden={!snoozedExpanded} {...(!snoozedExpanded ? { inert: '' } : {})}>
+            <div className="uam-sb-collapse__inner">
+              {snoozedList.mounted && searchModel.snoozedSessionIds.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -888,13 +899,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           <div
             id="pinned-chat-list"
             className="uam-sb-collapse"
-            hidden={!pinnedExpanded}
+            data-state={pinnedList.closing ? 'closed' : 'open'}
+            hidden={!pinnedList.mounted}
             aria-hidden={!pinnedExpanded}
             {...(!pinnedExpanded ? { inert: '' } : {})}
           >
-            {pinnedExpanded && searchModel.pinnedSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
-            ))}
+            <div className="uam-sb-collapse__inner">
+              {pinnedList.mounted && searchModel.pinnedSessionIds.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -913,12 +927,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       <div
         id="all-chat-list"
         className="uam-sb-collapse"
-        hidden={!allChatsExpanded}
+        data-state={allChatsList.closing ? 'closed' : 'open'}
+        hidden={!allChatsList.mounted}
         aria-hidden={!allChatsExpanded}
         {...(!allChatsExpanded ? { inert: '' } : {})}
       >
-
-      {allChatsExpanded && <>
+      <div className="uam-sb-collapse__inner">
+      {allChatsList.mounted && <>
       {!searchModel.isSearching && collectionGroups.map(({ collection, folderRows }) => (
         <FolderCollection
           key={collection.id}
@@ -1029,6 +1044,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       )}
 
       </>}
+      </div>
       </div>
 
       {searchModel.isSearching && !searchModel.hasMatches && (

@@ -1,12 +1,18 @@
 /* Sidebar motion. Scoped to .uam-sb-* so it cannot leak into other surfaces. */
 
-/* Section lists fade and slide when a section is expanded or collapsed. */
+/* Section lists animate height (grid rows) and fade on expand/collapse; rows unmount after the exit window. */
 .uam-sb-collapse {
-  transition:
-    opacity var(--dur-base) var(--ease-out-soft),
-    transform var(--dur-base) var(--ease-out-soft),
-    display var(--dur-base) allow-discrete;
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-base) var(--ease-out-soft), opacity var(--dur-base) var(--ease-out-soft);
 }
+.uam-sb-collapse[data-state="closed"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition-duration: var(--dur-exit);
+  transition-timing-function: var(--ease);
+}
+.uam-sb-collapse__inner { min-height: 0; overflow: hidden; }
 .uam-sb-collapse[hidden] {
   display: none;
   opacity: 0;
@@ -97,3 +103,12 @@
 }
 .uam-sb-attention-strip:hover { background: var(--warning-dim); filter: brightness(1.08); }
 .uam-sb-attention-strip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Organization undo toast: rises from the bottom edge and fades out on dismiss. */
+.uam-sb-undo-toast { animation: uam-sb-toast-in var(--dur-base) var(--ease-out-soft) backwards; }
+.uam-sb-undo-toast[data-state="closed"] { animation: uam-sb-toast-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-sb-toast-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes uam-sb-toast-out { to { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) {
+  .uam-sb-undo-toast, .uam-sb-undo-toast[data-state="closed"] { animation: none; }
+}

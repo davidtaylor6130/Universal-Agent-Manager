@@ -503,19 +503,21 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                 </span>
               ) : (
                 <>
+                  {/* Done overlays the status/time on hover so the row never reflows. */}
+                  <span className="relative flex shrink-0 items-center justify-end">
                   {activityStatus ? (
-                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium group-hover:hidden group-focus-within:hidden" style={{ color: activityStatus.color }}>
+                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: activityStatus.color }}>
                       <activityStatus.Icon size={12} className="shrink-0" aria-hidden />
                       <span role="status">{activityStatus.label}</span>
                     </span>
                   ) : (
-                    <span className="shrink-0 text-[11px] tabular-nums group-hover:hidden group-focus-within:hidden" style={{ color: 'var(--text-3)' }} title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
+                    <span className="shrink-0 text-[11px] tabular-nums transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
                   )}
                   {!isCompanionContext() && (
                     <button
                       type="button"
                       aria-label={`Mark ${sessionName} done`}
-                      className="hidden shrink-0 items-center gap-1 rounded px-1 group-hover:inline-flex group-focus-within:inline-flex hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+                      className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-1 rounded px-1 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
                       style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
                       onClick={(e) => {
                         e.stopPropagation()
@@ -528,6 +530,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                       Done
                     </button>
                   )}
+                  </span>
                 </>
               )}
             </div>

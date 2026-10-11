@@ -58,16 +58,23 @@ function OrganizationUndoNotice() {
   const [pending, setPending] = useState<typeof undo>(null)
   const pendingRef = useRef(false)
   const [failure, setFailure] = useState<{ undo: typeof undo; message: string } | null>(null)
-  if (!undo || undo === dismissed) return null
-  const label = ({ 'Pin chat': 'Chat pinned', 'Unpin chat': 'Chat unpinned', 'Move resource': 'Resource moved', 'Reorder collections': 'Collections reordered', 'Reorder references': 'Collection items reordered', 'Reorder workspaces': 'Workspaces reordered' } as Record<string, string>)[undo.label] ?? undo.label
+  const shown = undo && undo !== dismissed ? undo : null
+  const { mounted, closing } = usePresence(shown !== null)
+  // Keep the last offer on screen while the toast animates out.
+  const lastShown = useRef(shown)
+  if (shown) lastShown.current = shown
+  const current = shown ?? lastShown.current
+  if (!mounted || !current) return null
+  const label = ({ 'Pin chat': 'Chat pinned', 'Unpin chat': 'Chat unpinned', 'Move resource': 'Resource moved', 'Reorder collections': 'Collections reordered', 'Reorder references': 'Collection items reordered', 'Reorder workspaces': 'Workspaces reordered' } as Record<string, string>)[current.label] ?? current.label
   const busy = pending !== null
-  return <div role="status" className="fixed bottom-4 left-16 flex items-center gap-2 rounded-md px-3 py-2 text-xs"
-    style={{ zIndex: VIEWPORT_MENU_Z_INDEX, maxWidth: 'calc(100vw - 80px)', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-bright)' }}>
-    <span>{failure?.undo === undo ? failure.message : label}</span>
-    <Button size="sm" disabled={busy} onClick={() => {
-      if (pendingRef.current || useAppStore.getState().organizationUndo !== undo) return
+  const failed = failure?.undo === current
+  return <div role="status" data-state={closing ? 'closed' : 'open'} className="uam-sb-undo-toast fixed bottom-4 left-16 flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
+    style={{ zIndex: VIEWPORT_MENU_Z_INDEX, maxWidth: 'calc(100vw - 80px)', background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
+    <span className="min-w-0 truncate" style={{ color: failed ? 'var(--error)' : 'var(--text)' }}>{failed ? failure.message : label}</span>
+    <Button variant="ghost" size="sm" disabled={busy} leadingIcon={<Undo2 size={13} />} onClick={() => {
+      if (pendingRef.current || useAppStore.getState().organizationUndo !== current) return
       pendingRef.current = true
-      const submitted = undo
+      const submitted = current
       setPending(submitted)
       setFailure(null)
       void useAppStore.getState().undoOrganization().then((ok) => {
@@ -76,10 +83,10 @@ function OrganizationUndoNotice() {
         if (useAppStore.getState().organizationUndo === submitted) setFailure({ undo: submitted, message: 'Could not undo. Try again.' })
       }).finally(() => {
         pendingRef.current = false
-        setPending((current) => current === submitted ? null : current)
+        setPending((value) => value === submitted ? null : value)
       })
-    }}><Undo2 size={13} />{pending === undo ? 'Undoing…' : 'Undo'}</Button>
-    <IconButton icon={<X size={13} />} size="sm" label="Dismiss undo" onClick={() => setDismissed(undo)} />
+    }}>{pending === current ? 'Undoing…' : 'Undo'}</Button>
+    <IconButton icon={<X size={13} />} size="sm" label="Dismiss undo" onClick={() => setDismissed(current)} />
   </div>
 }
 
