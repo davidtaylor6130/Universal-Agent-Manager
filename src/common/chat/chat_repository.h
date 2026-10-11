@@ -83,6 +83,9 @@ class ChatRepository
 	static std::optional<ChatSession> LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages = true, std::string* warning_out = nullptr, bool publish_summary_cache = true);
 	/// <summary>Loads one locally persisted chat with its message bodies.</summary>
 	static bool HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out = nullptr);
+	/// <summary>Checks transcript ownership before adoption or detached page publication.</summary>
+	static bool CanAdoptHydratedMessages(const ChatSession& current, const ChatSession& loaded,
+	                                     std::size_t expected_count, std::string_view expected_digest);
 	/// <summary>Adopts a validated hydrated transcript without replacing live chat metadata.</summary>
 	static bool AdoptHydratedMessagesIfUnchanged(ChatSession& current, ChatSession&& loaded,
 	                                             std::size_t expected_count, std::string_view expected_digest);

@@ -396,31 +396,47 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		    [this, chat_id, known_digest, page, defer_tool_call_content, search_target, expected_count,
 		     expected_digest, loaded, tail, cached_revision, data_root](uam::query_handler_async::AsyncCefResult& response)
 		    {
-			    if (!response.ok) return;
-			    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
-			    if (current == nullptr || m_app.data_root != data_root)
+			    const std::function<void()> complete = [&]()
 			    {
-				    response = uam::query_handler_async::AsyncFailure(404, "Chat was removed while its history was loading.");
-				    return;
-			    }
-			    if (current->messages_loaded)
-			    {
-				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == current->id);
-				    return;
-			    }
-			    if (cached_revision->has_value())
-			    {
-				    if (current->persisted_message_count != expected_count || current->persisted_messages_digest != expected_digest ||
-				        m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.worktree_operation_chat_ids.contains(chat_id) ||
-				        ChatRepository::ChatStorageRevision(data_root, chat_id) != *cached_revision)
+				    if (!response.ok) return;
+				    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+				    if (current == nullptr || m_app.data_root != data_root)
+				    {
+					    response = uam::query_handler_async::AsyncFailure(404, "Chat was removed while its history was loading.");
+					    return;
+				    }
+				    if (current->messages_loaded)
+				    {
+					    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == current->id);
+					    return;
+				    }
+				    if (cached_revision->has_value())
+				    {
+					    if (current->persisted_message_count != expected_count || current->persisted_messages_digest != expected_digest ||
+					        m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.worktree_operation_chat_ids.contains(chat_id) ||
+					        ChatRepository::ChatStorageRevision(data_root, chat_id) != *cached_revision)
+						    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
+					    return;
+				    }
+				    if (!uam::TranscriptRetentionService::CompleteHistoryLoad(
+				            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value()))
 					    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
-				    return;
-			    }
-			    if (!uam::TranscriptRetentionService::CompleteHistoryLoad(
-			            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value()))
-				    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
-			    else if (!m_app.pending_chat_save_at_by_chat_id.contains(chat_id) && !m_app.worktree_operation_chat_ids.contains(chat_id))
-				    (void)ChatRepository::PublishPreparedChatSave(*tail);
+				    else if (!m_app.pending_chat_save_at_by_chat_id.contains(chat_id) && !m_app.worktree_operation_chat_ids.contains(chat_id))
+					    (void)ChatRepository::PublishPreparedChatSave(*tail);
+			    };
+			    const std::function<void()> dispose = [&]()
+			    {
+				    if (!loaded->has_value()) return;
+				    // Keep destruction of large detached transcripts off the GUI thread.
+				    uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr, [loaded]()
+				    {
+					    loaded->reset();
+					    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
+				    });
+			    };
+			    try { complete(); }
+			    catch (...) { dispose(); throw; }
+			    dispose();
 		    }, TID_FILE_USER_BLOCKING);
 		return;
 	}

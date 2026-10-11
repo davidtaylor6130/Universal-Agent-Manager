@@ -383,9 +383,8 @@ namespace uam
 	{
 		if (retain_history)
 			return ChatRepository::AdoptHydratedMessagesIfUnchanged(current, std::move(loaded), expected_count, expected_digest);
-		if (current.messages_loaded) return false;
-		ChatSession detached = current;
-		return ChatRepository::AdoptHydratedMessagesIfUnchanged(detached, std::move(loaded), expected_count, expected_digest);
+		// A detached page keeps its buffers on the worker-owned snapshot.
+		return ChatRepository::CanAdoptHydratedMessages(current, loaded, expected_count, expected_digest);
 	}
 
 	void TranscriptRetentionService::SetVisibleChatIds(const std::vector<std::string>& chat_ids)

@@ -151,7 +151,10 @@ UAM_TEST(TranscriptPageLoadingLeavesNativeHistoryColdAndPreservesDurableContext)
 	UAM_ASSERT(summary.has_value() && loaded.has_value());
 	const std::size_t count = summary->persisted_message_count;
 	const std::string digest = summary->persisted_messages_digest;
+	const Message* const loaded_messages = loaded->messages.data();
 	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), count, digest, false));
+	UAM_ASSERT(loaded->messages.data() == loaded_messages);
+	UAM_ASSERT_EQ(loaded->messages.size(), original.messages.size());
 	UAM_ASSERT(!summary->messages_loaded && summary->messages.empty());
 	UAM_ASSERT_EQ(summary->persisted_message_count, std::size_t{1000});
 	UAM_ASSERT_EQ(summary->persisted_messages_digest, digest);

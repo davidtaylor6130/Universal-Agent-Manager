@@ -3071,17 +3071,19 @@ bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root,
 	return true;
 }
 
+bool ChatRepository::CanAdoptHydratedMessages(const ChatSession& current, const ChatSession& loaded,
+                                             std::size_t expected_count, std::string_view expected_digest)
+{
+	return current.id == loaded.id && !current.messages_loaded && loaded.messages_loaded &&
+	    current.persisted_message_count == expected_count && loaded.persisted_message_count == expected_count &&
+	    current.persisted_messages_digest == expected_digest && loaded.persisted_messages_digest == expected_digest;
+}
+
 bool ChatRepository::AdoptHydratedMessagesIfUnchanged(ChatSession& current, ChatSession&& loaded,
                                                       std::size_t expected_count,
                                                       std::string_view expected_digest)
 {
-	if (current.id != loaded.id || current.messages_loaded || !loaded.messages_loaded ||
-	    current.persisted_message_count != expected_count || loaded.persisted_message_count != expected_count ||
-	    current.persisted_messages_digest != expected_digest || loaded.persisted_messages_digest != expected_digest)
-	{
-		return false;
-	}
-
+	if (!CanAdoptHydratedMessages(current, loaded, expected_count, expected_digest)) return false;
 	current.messages = std::move(loaded.messages);
 	current.messages_loaded = true;
 	return true;
