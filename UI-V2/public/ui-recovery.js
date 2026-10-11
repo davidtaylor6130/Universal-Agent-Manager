@@ -19,4 +19,6 @@
   }, true)
   window.addEventListener('unhandledrejection', () => { if (!mounted || !root.childNodes.length) show() })
   document.getElementById('uam-reload-interface')?.addEventListener('click', () => window.location.reload())
+  // Keep the HTML fallback visible if this script is missing; hide it once recovery is armed.
+  fallback.hidden = true
 })()
