@@ -1059,7 +1059,11 @@ endif()
 # ---------------------------------------------------------------------------
 
 set(UAM_WINDOW_ICON_BMP "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.bmp")
-set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.png")
+if(APPLE)
+  set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon_macos.png")
+else()
+  set(UAM_WINDOW_ICON_PNG "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.png")
+endif()
 set(UAM_BUNDLE_ICON_ICNS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.icns")
 if(APPLE AND UAM_MACOS_BUNDLE)
   add_custom_command(TARGET universal_agent_manager POST_BUILD
