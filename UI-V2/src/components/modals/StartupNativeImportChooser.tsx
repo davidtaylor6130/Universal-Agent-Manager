@@ -6,6 +6,7 @@ import { parseStartupNativeImportPage, type StartupNativeImportPage, type Startu
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import { providerMetadataForId } from '../../utils/providerMetadata'
 import { Button, IconButton, Overlay } from '../ui'
+import '../shared/review.css'
 
 /** Reviews only cached startup metadata. Dismissal never records a native decision. */
 export function StartupNativeImportChooser() {
@@ -168,28 +169,61 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
   }
   const importing = awaitingPublication || page?.phase === 'importing' || status.phase === 'importing'
   const candidates = page?.candidates ?? []
+  const pageIds = candidates.map((candidate) => candidate.candidateId)
+  const allOnPage = pageIds.length > 0 && pageIds.every((id) => selected.includes(id))
+  const selectPage = (checked: boolean) => {
+    setSelected((current) => checked ? [...new Set([...current, ...pageIds])] : current.filter((id) => !pageIds.includes(id)))
+    selectionAnchor.current = null
+  }
+  const pageNumber = Math.floor(offset / 100) + 1
+  const pageCount = Math.max(1, Math.ceil((page?.totalCount ?? 0) / 100))
+  // Progress counts only this batch: expectedCount is set when the user starts the import.
+  const batch = publication.current
+  const batchDone = Math.max(0, Math.min(batch.expectedCount, status.importedCount - batch.importedCount))
   return <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!busyRef.current) onClose() }}>
-    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Import chats" aria-busy={busy} className="flex min-h-0 flex-col w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-black text-white border border-[var(--border)] p-4 text-xs">
-      <div className="flex justify-between items-center mb-3"><strong>Import chats</strong><IconButton icon={<X size={16} />} label="Close import chats" disabled={busy} onClick={onClose} /></div>
-      <p className="mb-2">Choose chats to add to UAM.</p>
-      <div className="min-h-0 overflow-y-auto" aria-label="Pending chats">
-      {candidates.map((candidate) => <label key={candidate.candidateId} className="flex gap-2 items-start border-t border-[var(--border)] py-2">
-        <input type="checkbox" aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
-        <span className="min-w-0"><span className="block truncate">{candidate.title}</span><span className="block break-all" style={{ color: 'var(--text-3)' }}>{providerMetadataForId(candidate.providerId).name}{candidate.executionHostId && candidate.executionHostId !== 'local' ? ` · ${candidate.executionHostId}` : ''} · {candidate.workspaceDirectory}</span></span>
-      </label>)}
-      </div>
-      {!busy && !importing && page && candidates.length === 0 && <p>No pending chats on this page{folderId ? ' for this workspace' : ''}.</p>}
-      {busy && <p role="status" style={{ color: 'var(--text-3)' }}>{busyAction === 'resolve' ? 'Saving…' : 'Loading history…'}</p>}
-      {importing && !busy && <p role="status" style={{ color: 'var(--text-3)' }}>Importing selected chats…</p>}
-      {error && <p role="alert" className="py-2" style={{ color: 'var(--red)' }}>{error}</p>}
-      {page && <p className="mt-2" role="status">Page {Math.floor(offset / 100) + 1} of {Math.max(1, Math.ceil(page.totalCount / 100))} · {page.totalCount} pending · {selected.length} selected</p>}
-      <div className="flex shrink-0 flex-wrap gap-2 mt-3">
-        <Button type="button" size="sm" variant="primary" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>Import selected</Button>
-        <Button type="button" size="sm" disabled={busy || importing || !page?.totalCount} onClick={() => void decide(true, true)}>Import all</Button>
-        <Button type="button" size="sm" disabled={busy || importing || selected.length === 0} onClick={() => void decide(false)}>Ignore selected</Button>
-        <Button type="button" size="sm" disabled={busy || importing || offset === 0} onClick={() => void load(Math.max(0, offset - 100))}>Previous</Button>
-        <Button type="button" size="sm" disabled={busy || importing || !page || page.nextOffset >= page.totalCount} onClick={() => page && void load(page.nextOffset)}>Next</Button>
-        {error && <Button type="button" size="sm" disabled={busy} onClick={() => void load(offset, awaitingPublication)}>Reload</Button>}
+    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Import chats" aria-busy={busy} className="uam-rv-dialog w-full max-w-2xl max-h-[85vh] text-xs">
+      <header className="uam-rv-dialog__header">
+        <div className="min-w-0 flex-1">
+          <h2 className="uam-rv-title">Import chats</h2>
+          <p className="uam-rv-muted">Choose chats to add to UAM. Shift-click to select a range.</p>
+        </div>
+        <IconButton icon={<X size={16} />} label="Close import chats" disabled={busy} onClick={onClose} />
+      </header>
+      <div className="uam-rv-dialog__body">
+        {candidates.length > 0 && <div className="flex items-center gap-3 px-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
+          <input type="checkbox" className="uam-rv-check" aria-label="Select all chats on this page" checked={allOnPage} disabled={busy || importing} onChange={(event) => selectPage(event.target.checked)} />
+          <span style={{ color: 'var(--text-2)' }}>Select page</span>
+          <span className="ml-auto" style={{ color: 'var(--text-3)' }}>{candidates.length} on this page</span>
+        </div>}
+        <div className="uam-rv-list" aria-label="Pending chats">
+          {candidates.map((candidate) => <label key={candidate.candidateId} className="uam-rv-row" data-selected={selected.includes(candidate.candidateId)}>
+            <input className="uam-rv-check" type="checkbox" aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
+            <span className="min-w-0 flex-1"><span className="uam-rv-row__title">{candidate.title}</span><span className="uam-rv-row__meta" style={{ color: 'var(--text-3)' }}>{providerMetadataForId(candidate.providerId).name}{candidate.executionHostId && candidate.executionHostId !== 'local' ? ` · ${candidate.executionHostId}` : ''} · {candidate.workspaceDirectory}</span></span>
+          </label>)}
+        </div>
+        <div className="flex flex-col gap-2 px-4 py-2">
+          {!busy && !importing && page && candidates.length === 0 && <p style={{ color: 'var(--text-2)' }}>No pending chats on this page{folderId ? ' for this workspace' : ''}.</p>}
+          {busy && <p role="status" style={{ color: 'var(--text-3)' }}>{busyAction === 'resolve' ? 'Saving…' : 'Loading history…'}</p>}
+          {importing && !busy && <>
+            <p role="status" style={{ color: 'var(--text-2)' }}>{batch.expectedCount > 0 ? `Importing ${batchDone} of ${batch.expectedCount} chats…` : 'Importing selected chats…'}</p>
+            <div role="progressbar" aria-label="Import progress" aria-valuemin={0} aria-valuemax={batch.expectedCount || undefined} aria-valuenow={batch.expectedCount ? batchDone : undefined} className="uam-rv-progress">
+              <span style={{ transform: `scaleX(${batch.expectedCount > 0 ? batchDone / batch.expectedCount : 0.05})` }} />
+            </div>
+          </>}
+          {error && <p role="alert" className="uam-rv-alert" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{error}</p>}
+        </div>
+        <div className="uam-rv-summary">
+          {page ? <p role="status" className="min-w-0 flex-1 m-0">Page {pageNumber} of {pageCount} · {page.totalCount} pending · {selected.length} selected</p> : <span className="flex-1" />}
+        </div>
+        <div className="uam-rv-actions">
+          <Button type="button" size="sm" variant="primary" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>Import selected</Button>
+          <Button type="button" size="sm" disabled={busy || importing || !page?.totalCount} onClick={() => void decide(true, true)}>Import all</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy || importing || selected.length === 0} onClick={() => void decide(false)}>Ignore selected</Button>
+          <span className="uam-rv-actions__spacer" />
+          {error && <Button type="button" size="sm" disabled={busy} onClick={() => void load(offset, awaitingPublication)}>Reload</Button>}
+          <Button type="button" size="sm" variant="ghost" disabled={busy || importing || offset === 0} onClick={() => void load(Math.max(0, offset - 100))}>Previous</Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy || importing || !page || page.nextOffset >= page.totalCount} onClick={() => page && void load(page.nextOffset)}>Next</Button>
+        </div>
       </div>
     </div>
   </Overlay>

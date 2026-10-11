@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { routingConfigurationError, routingReservation, type ExecutionRoutingSettings, type RoutingHostPolicy, type RoutingReservation } from '../../types/executionRouting'
 import type { Session } from '../../types/session'
 import { Button, ConfirmDialog, Overlay } from '../ui'
+import '../shared/review.css'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
 /** Explicit opt-in and workspace mappings use registered folders; native settings own persisted confirmations. */
@@ -57,17 +58,17 @@ export function ExecutionRoutingDialog({ onClose }: { onClose: () => void }) {
     finally { busyRef.current = false; setBusy(false) }
   }
   return <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!busyRef.current) onClose() }}>
-    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="SSH routing" aria-busy={busy} className="w-full max-w-xl max-h-[85vh] overflow-y-auto bg-black text-white border border-[var(--border)] p-4 text-xs">
+    <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="SSH routing" aria-busy={busy} className="w-full max-w-xl max-h-[85vh] overflow-y-auto uam-rv-panel p-4 text-xs">
       <div className="flex justify-between items-center mb-3"><strong>SSH routing</strong><Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>Close</Button></div>
       <label className="flex gap-2 items-center mb-3"><input type="checkbox" checked={draft.enabled} disabled={busy} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />Enable automatic routing</label>
       {hosts.filter((host) => host.transport === 'ssh').map((host) => {
         const policy = draft.hosts.find((item) => item.hostId === host.id)
         return <fieldset key={host.id} disabled={busy} className="border-t border-[var(--border)] py-3 space-y-2"><legend>{host.label}</legend>
           <label className="flex gap-2 items-center"><input type="checkbox" aria-label={`Route to ${host.label}`} checked={policy?.enabled ?? false} onChange={(event) => update(host.id, (item) => ({ ...item, enabled: event.target.checked }))} />Use this computer</label>
-          <label className="flex gap-2 items-center">Concurrent sessions<input className="bg-black border border-[var(--border)] w-20 p-1" type="number" min={1} max={1024} aria-label={`Concurrent sessions on ${host.label}`} value={policy?.maxActiveTurns ?? 1} onChange={(event) => update(host.id, (item) => ({ ...item, maxActiveTurns: Number(event.target.value) }))} /></label>
+          <label className="flex gap-2 items-center">Concurrent sessions<input className="uam-rv-field w-20" type="number" min={1} max={1024} aria-label={`Concurrent sessions on ${host.label}`} value={policy?.maxActiveTurns ?? 1} onChange={(event) => update(host.id, (item) => ({ ...item, maxActiveTurns: Number(event.target.value) }))} /></label>
           <p>Confirm each provider after signing in on this computer.</p>
           {providers.filter((provider) => provider.supportsStructured !== false || provider.supportsCli !== false).map((provider) => <label key={provider.id} className="flex gap-2 items-center"><input type="checkbox" aria-label={`${provider.name} signed in on ${host.label}`} checked={confirmed(policy, host.id, provider.id)} onChange={(event) => update(host.id, (item) => ({ ...item, providers: event.target.checked ? [...item.providers.filter((entry) => entry.providerId !== provider.id), { providerId: provider.id, connectionIdentity: '', providerConfigurationIdentity: '', confirm: true }] : item.providers.filter((entry) => entry.providerId !== provider.id) }))} />{provider.name} signed in</label>)}
-          {folders.filter((folder) => folder.directory).map((source) => <label key={source.id} className="flex gap-2 items-center"><span className="flex-1 truncate" title={source.directory}>{source.name} · {source.directory}</span><select className="bg-black border border-[var(--border)] p-1 max-w-[50%]" aria-label={`Destination for ${source.name} on ${host.label}`} value={policy?.workspaceMappings.find((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)?.destinationFolderId ?? ''} onChange={(event) => update(host.id, (item) => ({ ...item, workspaceMappings: [...item.workspaceMappings.filter((mapping) => mapping.sourceFolderId !== source.id || mapping.sourceDirectory !== source.directory), ...(event.target.value ? [{ sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: event.target.value }] : [])] }))}><option value="">Do not route this workspace</option>{folders.filter((folder) => folder.executionHostId === host.id).map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}</select></label>)}
+          {folders.filter((folder) => folder.directory).map((source) => <label key={source.id} className="flex gap-2 items-center"><span className="flex-1 truncate" title={source.directory}>{source.name} · {source.directory}</span><select className="uam-rv-field max-w-[50%]" aria-label={`Destination for ${source.name} on ${host.label}`} value={policy?.workspaceMappings.find((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)?.destinationFolderId ?? ''} onChange={(event) => update(host.id, (item) => ({ ...item, workspaceMappings: [...item.workspaceMappings.filter((mapping) => mapping.sourceFolderId !== source.id || mapping.sourceDirectory !== source.directory), ...(event.target.value ? [{ sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: event.target.value }] : [])] }))}><option value="">Do not route this workspace</option>{folders.filter((folder) => folder.executionHostId === host.id).map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}</select></label>)}
         </fieldset>
       })}
       {error && <p role="alert" className="py-2">{error}</p>}
@@ -84,7 +85,7 @@ export function ExecutionRoutingWaitNotice({ session }: { session: Session }) {
   const busyRef = useRef(false)
   const [error, setError] = useState('')
   if (!session.routingWaitReason && !session.routingUnresolvedReservation) return null
-  return <div role="status" className="border-b border-[var(--border)] bg-black px-3 py-2 text-xs">
+  return <div role="status" className="border-b border-[var(--border)] px-3 py-2 text-xs" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
     <span>{session.routingWaitReason || 'This chat has an unresolved remote reservation.'}</span>
     <Button variant="ghost" size="sm" onClick={() => setConfigure(true)}>Routing settings</Button>
     {routingReservation(session) && <Button variant="ghost" size="sm" onClick={() => { setExpected(routingReservation(session)); setError('') }}>Release reservation</Button>}

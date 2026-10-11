@@ -4,6 +4,7 @@ import type { ChatFileChangeReceipt, ChatFileChangeReceiptsResponse } from '../.
 import { useAppStore } from '../../store/useAppStore'
 import { Button } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
+import '../shared/review.css'
 
 function receiptStatus(receipt: ChatFileChangeReceipt): string {
   if (receipt.destinationPath) return 'R'
@@ -75,14 +76,13 @@ export function RecordedChatEdits({ chatId, workspaceDirectory, workspaceWorktre
       {omitted > 0 && <p role="status" className="mb-2 text-xs">{omitted} saved edit{omitted === 1 ? '' : 's'} could not be shown within supported limits.</p>}
       <div className="min-h-0 overflow-auto">{receipts.map((receipt, index) => <button
         key={`${receipt.messageIndex}:${receipt.toolCallId}:${index}`} type="button"
-        className="uam-choice-button flex w-full flex-col gap-1 py-2 text-left text-xs"
-        style={{ borderBottom: '1px solid var(--border)', color: 'var(--text)' }}
+        className="uam-rv-row-btn"
         aria-label={`Review recorded edit ${index + 1}: ${receipt.path}`}
         title={`Tool ${receipt.toolCallId}`}
         onClick={() => setSelected(receipt)}
       >
-        <span className="break-all">{receipt.path}{receipt.destinationPath ? ` → ${receipt.destinationPath}` : ''}</span>
-        <span style={{ color: 'var(--text-3)' }}>Message {receipt.messageIndex + 1}{receipt.messageCreatedAt ? <> · <time dateTime={receipt.messageCreatedAt} title={receipt.messageCreatedAt}>{readableReceiptTime(receipt.messageCreatedAt)}</time></> : ''}</span>
+        <span className="break-all font-mono text-[12px]">{receipt.path}{receipt.destinationPath ? ` → ${receipt.destinationPath}` : ''}</span>
+        <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>Message {receipt.messageIndex + 1}{receipt.messageCreatedAt ? <> · <time dateTime={receipt.messageCreatedAt} title={receipt.messageCreatedAt}>{readableReceiptTime(receipt.messageCreatedAt)}</time></> : ''}</span>
       </button>)}</div>
     </>}
     {selected && <RepositoryDiffDialog chatId={chatId} vcsType="git" sourcePath={selected.destinationPath || selected.path} comparisonLabel="Recorded agent edit" file={{ path: `Recorded edit: ${selected.path}`, status: receiptStatus(selected), staged: false, binary: false,

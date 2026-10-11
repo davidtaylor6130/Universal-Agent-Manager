@@ -131,7 +131,7 @@ describe('startup native history chooser', () => {
     expect(requests).toHaveLength(2)
     await act(async () => requests[1].failure(409, 'Disk full'))
     expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Disk full')
-    expect(document.body.querySelector('[role="alert"]')?.getAttribute('style')).toContain('var(--red)')
+    expect(document.body.querySelector('[role="alert"]')?.getAttribute('style')).toContain('var(--error)')
     expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.checked).toBe(true)
     act(() => useAppStore.setState({ startupNativeImports: { ...page(), phase: 'importing' } }))
     act(() => useAppStore.setState({ startupNativeImports: page() }))

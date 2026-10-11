@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import './review.css'
 
 export interface DiffLine {
   text: string
@@ -90,28 +91,26 @@ export function UnifiedDiff({ diff, path, layout = 'unified' }: { diff: string; 
   const start = Math.max(0, Math.floor(viewport.top / ROW_HEIGHT) - OVERSCAN)
   const end = Math.min(rows.length, Math.ceil((viewport.top + viewport.height) / ROW_HEIGHT) + OVERSCAN)
   const width = useMemo(() => lines.reduce((longest, row) => Math.max(longest, row.text.length), 40), [lines])
-  return <div ref={viewportRef} className="min-h-0 flex-1 overflow-auto" role="region" aria-label={`${layout === 'split' ? 'Split' : 'Unified'} diff for ${path}`} tabIndex={0}
-    style={{ background: '#000', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-code, 12px)' }}
+  return <div ref={viewportRef} className="uam-rv-diff min-h-0 flex-1 overflow-auto" role="region" aria-label={`${layout === 'split' ? 'Split' : 'Unified'} diff for ${path}`} tabIndex={0}
     onScroll={(event) => setViewport({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}>
     <div style={{ height: rows.length * ROW_HEIGHT, minWidth: layout === 'split' ? `calc(${width * 2}ch + 100px)` : `calc(${width}ch + 100px)`, position: 'relative' }}>
       <div style={{ position: 'absolute', top: start * ROW_HEIGHT, width: '100%' }}>
         {layout === 'split' ? splitRows.slice(start, end).map((row, offset) => <div key={start + offset} data-diff-row={start + offset}
-          style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px`, display: 'flex', whiteSpace: 'pre' }}>
-          {row.header !== undefined ? <span style={{ color: 'var(--text-3)', paddingLeft: 8 }}>{row.header || ' '}</span> : (['left', 'right'] as const).map((side) => {
+          className="uam-rv-diff-row" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}>
+          {row.header !== undefined ? <span className="uam-rv-diff-text" style={{ color: 'var(--text-3)', paddingLeft: 8 }}>{row.header || ' '}</span> : (['left', 'right'] as const).map((side) => {
             const line = row[side]
-            return <div key={side} data-diff-side={side} style={{ width: '50%', display: 'flex', borderLeft: side === 'right' ? '1px solid var(--border)' : undefined,
-              color: 'var(--text)', background: line?.kind === 'added' ? 'color-mix(in srgb, var(--green) 12%, #000)' : line?.kind === 'removed' ? 'color-mix(in srgb, var(--red) 12%, #000)' : 'transparent' }}>
-              <span aria-label={side === 'left' ? 'Old line' : 'New line'} style={{ width: 44, flexShrink: 0, textAlign: 'right', color: 'var(--text-3)', paddingRight: 8, userSelect: 'none' }}>{side === 'left' ? line?.oldLine : line?.newLine}</span>
-              <span style={{ paddingRight: 12 }}>{line ? line.kind === 'header' ? line.text : line.text.slice(1) : ' '}</span>
+            return <div key={side} data-diff-side={side} data-kind={line?.kind ?? 'empty'} className="uam-rv-diff-side" style={{ lineHeight: `${ROW_HEIGHT}px` }}>
+              <span aria-label={side === 'left' ? 'Old line' : 'New line'} className="uam-rv-gutter">{side === 'left' ? line?.oldLine : line?.newLine}</span>
+              {line && line.kind !== 'header' && <span className="uam-rv-sign" aria-hidden>{line.text.charAt(0)}</span>}
+              <span className="uam-rv-diff-text">{line ? line.kind === 'header' ? line.text : line.text.slice(1) : ' '}</span>
             </div>
           })}
         </div>) : lines.slice(start, end).map((row, offset) => <div key={start + offset} data-diff-row={start + offset}
-          style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px`, display: 'flex', whiteSpace: 'pre',
-            color: row.kind === 'header' ? 'var(--text-3)' : 'var(--text)',
-            background: row.kind === 'added' ? 'color-mix(in srgb, var(--green) 12%, #000)' : row.kind === 'removed' ? 'color-mix(in srgb, var(--red) 12%, #000)' : 'transparent' }}>
-          <span aria-label="Old line" style={{ width: 44, flexShrink: 0, textAlign: 'right', color: 'var(--text-3)', paddingRight: 8, userSelect: 'none' }}>{row.oldLine}</span>
-          <span aria-label="New line" style={{ width: 44, flexShrink: 0, textAlign: 'right', color: 'var(--text-3)', paddingRight: 8, userSelect: 'none' }}>{row.newLine}</span>
-          <span style={{ paddingRight: 12 }}>{row.text || ' '}</span>
+          data-kind={row.kind} className="uam-rv-diff-row" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}>
+          <span aria-label="Old line" className="uam-rv-gutter">{row.oldLine}</span>
+          <span aria-label="New line" className="uam-rv-gutter">{row.newLine}</span>
+          {row.kind !== 'header' && <span className="uam-rv-sign" aria-hidden>{row.text.charAt(0)}</span>}
+          <span className="uam-rv-diff-text">{row.kind === 'header' ? row.text || ' ' : row.text.slice(1) || ' '}</span>
         </div>)}
       </div>
     </div>
