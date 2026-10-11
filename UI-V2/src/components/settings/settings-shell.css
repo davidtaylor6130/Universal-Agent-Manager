@@ -7,6 +7,7 @@
   top: 0;
   width: 3px;
   border-radius: 3px;
+  z-index: 1;
   background: var(--accent);
   pointer-events: none;
   transition: transform var(--dur-base) var(--ease-out-soft), height var(--dur-base) var(--ease-out-soft);
@@ -35,17 +36,48 @@
 }
 .uam-typo-row__meta { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
 
-/* Remote hosts: identity, mono alias and status in one compact card. */
+/* Section-level helpers shared by settings pages. */
+.uam-settings-group--flat .uam-settings-group__body { padding: 0; border: 0; background: none; }
+.uam-settings-group__desc { margin: -4px 0 10px 2px; font-size: var(--fs-xs); color: var(--text-3); }
+.uam-settings-field { display: grid; gap: 6px; font-size: var(--fs-sm); color: var(--text-2); }
+.uam-settings-field__hint { font-size: var(--fs-xs); color: var(--text-3); }
+.uam-settings-status { font-size: var(--fs-xs); color: var(--text-3); }
+.uam-settings-status[data-tone="error"] { color: var(--error); }
+.uam-settings-scrim { background: color-mix(in srgb, var(--bg) 60%, transparent); }
+
+/* Calm, collapsed-by-default note: the title is always visible, the body on demand. */
+.uam-settings-notice {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-up);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.uam-settings-notice > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--r-md);
+}
+.uam-settings-notice > summary::-webkit-details-marker { display: none; }
+.uam-settings-notice > summary svg { color: var(--info); flex-shrink: 0; }
+.uam-settings-notice > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-settings-notice > p { margin: 0; padding: 0 10px 10px 32px; line-height: 1.5; }
+
+/* Remote hosts: rows separated by hairlines, not nested cards. */
 .uam-remote-host {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg);
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
 }
+.uam-remote-host:first-child { border-top: 0; padding-top: 0; }
 .uam-settings-progress {
   position: relative;
   height: 2px;
@@ -88,6 +120,10 @@
 }
 .uam-settings-trigger:hover { border-color: var(--text-3); }
 .uam-settings-trigger:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Agent import preview: one hairline-separated block, no nested box. */
+.uam-settings-preview { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text); }
+.uam-settings-preview__title { font-weight: var(--fw-semibold); }
 
 /* Memory library: loading and error states share one calm block. */
 .uam-memory-state {

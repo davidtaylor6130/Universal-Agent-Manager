@@ -8,6 +8,11 @@ type Agent = { id: string; description: string; mode: string; workspaceAccess: s
 const blankAgent = (): Agent => ({ id: '', description: '', mode: 'primary', workspaceAccess: 'write', skills: [], delegates: [], instructions: '', builtIn: false })
 const field = 'uam-field w-full'
 type Option = { value: string; label: string; group?: string }
+const USED_AS = [
+  { value: 'primary', label: 'Chat agent', detail: 'Pick it as the agent for a chat.' },
+  { value: 'subagent', label: 'Helper', detail: 'Other agents can delegate work to it.' },
+  { value: 'both', label: 'Both', detail: 'A chat agent that helpers can also use.' },
+]
 
 /** Chosen items as removable chips plus an organised "+ Add" picker. */
 function ChipPicker({ label, values, options, onChange, disabled }: { label: string; values: string[]; options: Option[]; onChange: (values: string[]) => void; disabled?: boolean }) {
@@ -30,7 +35,7 @@ function ChipPicker({ label, values, options, onChange, disabled }: { label: str
 export function CentralProviderSettings() {
   const saved = useAppStore(state => state.centralProviderConfiguration)
   const skills = useAppStore(state => state.markdownStoreEntries)
-  const [instructionFiles, setInstructionFiles] = useState(saved.instructionFiles)
+  const [instructionFiles, setInstructionFiles] = useState(saved.instructionFiles ?? [])
   const [defaultAgents, setDefaultAgents] = useState(saved.defaultAgents ?? [])
   const [defaultSkills, setDefaultSkills] = useState(saved.defaultSkills ?? [])
   const [defaultAgentId, setDefaultAgentId] = useState(saved.defaultAgentId)
@@ -42,7 +47,7 @@ export function CentralProviderSettings() {
 
   const loadAgents = useCallback(async () => {
     const response = await sendToCEF<{ agents: Agent[]; errors: string[] }>({ action: 'listAgentDefinitions', payload: {} })
-    if (response.ok && response.data) { setAgents(response.data.agents); setAgentErrors(response.data.errors) }
+    if (response.ok && response.data) { setAgents(response.data.agents ?? []); setAgentErrors(response.data.errors ?? []) }
   }, [])
   useEffect(() => { void loadAgents(); void useAppStore.getState().refreshMarkdownStore() }, [loadAgents])
 
@@ -91,6 +96,7 @@ export function CentralProviderSettings() {
 
     <section className="grid gap-2">
       <strong className="uam-prov-heading">Default agent for new chats</strong>
+      <p className="text-xs" style={{ color: 'var(--text-3)' }}>Preselected when you start a new chat.</p>
       <select aria-label="Default agent for new chats" className={field} value={defaultAgentId} disabled={busy} onChange={event => setDefaultAgentId(event.currentTarget.value)}>
         {primaryAgents.map(agent => <option key={agent.id} value={agent.id}>{agent.id} — {agent.description}</option>)}
         {!primaryAgents.some(agent => agent.id === defaultAgentId) && <option value={defaultAgentId}>{defaultAgentId} (not found)</option>}
@@ -130,7 +136,13 @@ export function CentralProviderSettings() {
             <label className="grid gap-1"><span>Name</span><input className={field} value={draft.id} placeholder="reviewer" disabled={busy || agent.builtIn || !editing?.isNew} onChange={event => set({ id: event.currentTarget.value })} /><span className="text-xs" style={{ color: 'var(--text-3)' }}>Lowercase letters, numbers, - or _. Cannot be changed after saving.</span></label>
             <label className="grid gap-1"><span>Description</span><input className={field} value={draft.description} placeholder="Reviews diffs for bugs" disabled={busy || agent.builtIn} onChange={event => set({ description: event.currentTarget.value })} /></label>
             <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-1"><span>Used as</span><select className={field} value={draft.mode} disabled={busy || agent.builtIn} onChange={event => set({ mode: event.currentTarget.value })}><option value="primary">Chat agent</option><option value="subagent">Helper (delegated to)</option><option value="both">Both</option></select></label>
+              <div className="grid gap-1" role="radiogroup" aria-label="Used as">
+                <span>Used as</span>
+                {USED_AS.map(option => <label key={option.value} className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs" style={{ border: '1px solid var(--border)', background: draft.mode === option.value ? 'var(--accent-dim)' : 'transparent', color: 'var(--text)' }}>
+                  <input type="radio" name={`agent-used-as-${agent.id || 'new'}`} value={option.value} checked={draft.mode === option.value} disabled={busy || agent.builtIn} onChange={() => set({ mode: option.value })} className="mt-0.5" />
+                  <span><span className="font-medium">{option.label}</span> <span style={{ color: 'var(--text-3)' }}>{option.detail}</span></span>
+                </label>)}
+              </div>
               <label className="grid gap-1"><span>Workspace access</span><select className={field} value={draft.workspaceAccess} disabled={busy || agent.builtIn} onChange={event => set({ workspaceAccess: event.currentTarget.value })}><option value="write">Read and write</option><option value="read">Read only</option></select></label>
             </div>
             <div className="grid gap-1"><span>Skills for this agent</span><ChipPicker label="skill" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || agent.builtIn} /></div>
