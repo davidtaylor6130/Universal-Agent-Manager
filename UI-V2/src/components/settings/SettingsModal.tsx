@@ -1,6 +1,7 @@
 import { VcsSettings } from './VcsSettings'
 import { TypographySettings } from './TypographySettings'
 import { PermissionsSettings } from './PermissionsSettings'
+import { SettingRow, SettingsSection } from './SettingsPrimitives'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
@@ -307,12 +308,18 @@ function versionStatusText(manager: CliVersionProviderState) {
   return 'Version has not been checked'
 }
 
-function SectionCard({ title, description, children, hideTitle = false, flat = false }: { title: string; description?: string; children: ReactNode; hideTitle?: boolean; flat?: boolean }) {
+function SectionCard({ title, description, children, hideTitle = false, flat = false, actions }: { title: string; description?: string; children: ReactNode; hideTitle?: boolean; flat?: boolean; actions?: ReactNode }) {
+  // Legacy page sections render in the shared settings language (SettingsPrimitives); bodies keep their own grid content.
   return (
-    <section aria-label={title} className={flat ? 'uam-settings-group uam-settings-group--flat' : 'uam-settings-group'}>
-      {!hideTitle && <h3 className="uam-settings-group__title">{title}</h3>}
-      {description && <p className="uam-settings-group__desc">{description}</p>}
-      <div className="uam-settings-group__body">{children}</div>
+    <section aria-label={title} className="uam-set-section">
+      {(!hideTitle || description || actions) && <header className="uam-set-section__head">
+        <div className="min-w-0">
+          {!hideTitle && <h3 className="uam-set-section__title">{title}</h3>}
+          {description && <p className="uam-set-section__desc">{description}</p>}
+        </div>
+        {actions && <div className="uam-set-section__actions">{actions}</div>}
+      </header>}
+      <div className={flat ? 'uam-set-body uam-set-body--flat' : 'uam-set-card uam-set-body'}>{children}</div>
     </section>
   )
 }
@@ -508,7 +515,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (!nav) return
     const measure = () => {
       const active = nav.querySelector<HTMLElement>('[data-active="true"]')
-      setNavIndicator(active ? { top: active.offsetTop + 8, height: active.offsetHeight - 16 } : null)
+      setNavIndicator(active ? { top: active.offsetTop, height: active.offsetHeight } : null)
     }
     measure()
     if (typeof ResizeObserver === 'undefined') return
@@ -1528,13 +1535,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         : []
       return (
         <div className="space-y-4">
-          {!scopedProviderId && <SectionCard
-            title="AI Permission Reviewer"
-          >
-            <div className="grid gap-3 sm:grid-cols-2 text-xs" style={{ color: 'var(--text-2)' }}>
-              <div className="grid gap-1">
-                <div>Reviewer provider</div>
-                {renderDefaultsMenu(
+          {!scopedProviderId && <SettingsSection title="AI permission reviewer" description="A second model can approve routine permission requests; anything it is unsure about still comes to you.">
+            <SettingRow title="Reviewer provider" description="Which agent reviews permission requests." control={renderDefaultsMenu(
                   'permission-reviewer-provider',
                   permissionReviewerProviderId,
                   'AI permission reviewer provider',
@@ -1544,27 +1546,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   ],
                   (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
                   (option) => option.id ? <ProviderLogo providerId={option.id} /> : null
-                )}
-              </div>
-              <div className="grid gap-1">
-                <div>Reviewer model</div>
-                {renderDefaultsMenu(
+                )} />
+            <SettingRow title="Reviewer model" description="Model used for reviews. Defaults to the provider's own default." control={renderDefaultsMenu(
                   'permission-reviewer-model',
                   permissionReviewerModelId,
                   'AI permission reviewer model',
                   reviewerModels.length > 0 ? reviewerModels : [{ id: '', label: 'Provider default', detail: reviewerProvider ? 'Use the provider default model.' : 'Choose a reviewer provider first.' }],
                   (modelId) => void setMemorySettings({ permissionReviewerModelId: modelId })
-                )}
-              </div>
-            </div>
-          </SectionCard>}
-          <SectionCard
-            title={scopedProviderId ? "Models and chat defaults" : "New Chat Defaults"}
-          >
-            <div className="grid gap-4">
-              {!scopedProviderId && <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                <div>Default provider</div>
-                {renderDefaultsMenu(
+                )} />
+          </SettingsSection>}
+          {!scopedProviderId && <SettingsSection title="New chats" description="What a new chat starts with unless you choose otherwise.">
+            <SettingRow title="Default provider" description="Preselected in the New chat dialog." control={renderDefaultsMenu(
                   'default-provider',
                   defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID,
                   'Default provider',
@@ -1575,9 +1567,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   })),
                   (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }),
                   (option) => <ProviderLogo providerId={option.id} />
-                )}
-              </div>}
-
+                )} />
+          </SettingsSection>}
+          {scopedProviderId && <SectionCard
+            title={scopedProviderId ? "Models and chat defaults" : "New Chat Defaults"}
+            hideTitle={!scopedProviderId}
+          >
+            <div className="grid gap-4">
               <div className="space-y-3">
                 {providers.filter(provider => provider.id === scopedProviderId).map((provider) => {
                   const defaults = defaultsForProvider(provider)
@@ -1832,7 +1828,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 })}
               </div>
             </div>
-          </SectionCard>
+          </SectionCard>}
         </div>
       )
     }
@@ -2813,14 +2809,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>)}
             </nav>
           </aside>
-          <div className="min-w-0 min-h-0 flex flex-col p-5 md:p-6 overflow-hidden">
-            <div className="w-full mx-auto min-h-0 flex-1 flex flex-col" style={{maxWidth: 1040}}>
+          <div className="min-w-0 min-h-0 flex flex-col overflow-hidden">
+            <div className="w-full min-h-0 flex-1 flex flex-col">
               {themeDraft ? <div className="overflow-y-auto">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
                 {themeMessage && <p role="status" className="text-xs mt-3">{themeMessage}</p>}
               </div> : <>
-                <div className="uam-settings-page-header w-full mx-auto mb-5" style={{maxWidth: selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? undefined : 800}}>
+                {(() => {
+                  const fullHeight = selectedSection === 'memory-store' || selectedSection === 'markdown-store'
+                  const header = <div className="uam-settings-page-header w-full">
                   <div key={selectedSection} className="uam-reveal min-w-0">
                     <h2 className="uam-settings-page-header__title">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
                     {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="uam-settings-page-header__description">{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
@@ -2830,7 +2828,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     {selectedSection === 'editors' && renderAddEditor()}
                   </div>
                 </div>
-                <div key={selectedSection} className={`uam-settings-page flex-1 min-h-0 ${selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? 'overflow-hidden' : 'overflow-y-auto uam-settings-page--narrow'}`}>{renderSectionContent()}</div>
+                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}<div key={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</div></div>
+                  return <div className="uam-settings-scroll"><div className="uam-settings-frame">{header}<div key={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</div></div></div>
+                })()}
               </>}
             </div>
           </div>

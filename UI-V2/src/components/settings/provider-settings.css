@@ -108,12 +108,12 @@
 }
 
 .uam-prov-switch[aria-checked='true'] {
-  background: var(--accent-dim);
-  border-color: var(--accent);
+  background: var(--text);
+  border-color: var(--text);
 }
 
 .uam-prov-switch[aria-checked='true']::after {
-  background: var(--accent);
+  background: var(--bg);
   transform: translateX(12px);
 }
 
@@ -126,6 +126,10 @@
   cursor: default;
   opacity: 0.45;
 }
+
+/* While a save is in flight, switches pause without dimming so the matrix does not flash. */
+.uam-prov-switch[data-pending]:disabled { opacity: 1; cursor: progress; }
+.uam-prov-card td:not(:first-child):not(:nth-child(2)), .uam-prov-card th:not(:first-child):not(:nth-child(2)) { text-align: center; }
 
 .uam-prov-switch:focus-visible {
   outline: none;

@@ -1,3 +1,4 @@
+import { SettingsLoading } from '../settings/SettingsPrimitives'
 import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser'
 import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
@@ -830,7 +831,7 @@ export function AppShell() {
         <div className="min-h-0 flex-1"><MainPanel /></div>
       </main>
       </div>
-      {isSettingsOpen && <main hidden={usageOpen} style={usageOpen ? { display: 'none' } : undefined} className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div role="status" className="p-4 text-xs">Loading settings…</div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
+      {isSettingsOpen && <main hidden={usageOpen} style={usageOpen ? { display: 'none' } : undefined} className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div className="uam-settings-scroll"><div className="uam-settings-frame" style={{ maxWidth: 720 }}><SettingsLoading rows={4} /><SettingsLoading rows={2} /></div></div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
       {usageOpen && <InterfaceErrorBoundary panel onDismiss={() => setUsageOpen(false)}><Suspense fallback={<div role="status" className="min-w-0 flex-1 p-4 text-xs">Loading usage…</div>}><UsagePage onClose={() => { setUsageOpen(false); window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[aria-label="Usage"]')?.focus()) }} /></Suspense></InterfaceErrorBoundary>}
 
       {commitPresence.mounted && (

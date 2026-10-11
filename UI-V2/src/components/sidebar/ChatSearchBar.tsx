@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Search, X, SlidersHorizontal, Check } from 'lucide-react'
 import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
 import { Tooltip, ViewportMenu } from '../ui'
+import { ProviderLogo } from '../shared/ProviderLogo'
 
 interface ChatSearchProviderFilterOption {
   id: string
@@ -246,25 +247,26 @@ export function ChatSearchBar({
               <div className="mb-1 text-xs uppercase" style={{ color: 'var(--text-3)', letterSpacing: '0.08em' }}>
                 Provider
               </div>
-              <div className="max-h-40 space-y-1 overflow-auto">
+              <div className="flex max-h-40 flex-wrap gap-1 overflow-auto p-0.5">
                 {providerOptions.map((provider) => {
                   const active = filters.providerIds.includes(provider.id)
                   return (
-                    <button
-                      key={provider.id}
-                      type="button"
-                      role="menuitemcheckbox"
-                      aria-checked={active}
-                      className="flex w-full items-center justify-between rounded px-2 py-1"
-                      style={{
-                        background: active ? 'color-mix(in srgb, var(--accent) 14%, var(--surface))' : 'transparent',
-                        color: active ? 'var(--text)' : 'var(--text-2)',
-                      }}
-                      onClick={() => onToggleProviderFilter(provider.id)}
-                    >
-                      <span className="truncate">{provider.label}</span>
-                      {active && <Check size={13} style={{ color: 'var(--accent)' }} aria-hidden />}
-                    </button>
+                    <Tooltip key={provider.id} label={provider.label} side="bottom">
+                      <button
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-label={provider.label}
+                        aria-checked={active}
+                        className="flex h-8 w-8 items-center justify-center rounded-md transition-colors duration-fast"
+                        style={{
+                          background: active ? 'var(--accent-dim)' : 'transparent',
+                          border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'var(--border)'}`,
+                        }}
+                        onClick={() => onToggleProviderFilter(provider.id)}
+                      >
+                        <ProviderLogo providerId={provider.id} size={16} />
+                      </button>
+                    </Tooltip>
                   )
                 })}
               </div>

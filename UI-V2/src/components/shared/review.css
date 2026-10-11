@@ -179,6 +179,13 @@
   gap: var(--sp-2);
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.uam-rv-stat__add,
+.uam-rv-stat__del {
+  min-width: 36px;
+  text-align: right;
 }
 
 .uam-rv-bar {
@@ -209,11 +216,31 @@
   to { transform: scaleX(1); }
 }
 
-/* Changed files list. */
+/* Checkbox hit box shared by the select-all header and each file row (24px grid cell). */
+.uam-rv-check-btn {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.uam-rv-check-btn:disabled { cursor: default; opacity: 0.5; }
+.uam-rv-check-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Changed files list: fixed 28px rows. Columns: checkbox | status | name + muted dir | stats | chevron. */
 .uam-rv-file {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: 4px;
+  height: 28px;
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-sm);
   transition: background-color var(--dur-fast) var(--ease);
@@ -224,12 +251,14 @@
 .uam-rv-file[data-selected="true"] { background: var(--accent-dim); }
 
 .uam-rv-file__open {
-  display: flex;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 140px 14px;
   flex: 1;
   align-items: center;
-  gap: var(--sp-2);
+  column-gap: var(--sp-2);
+  height: 100%;
   min-width: 0;
-  padding: 6px var(--sp-1);
+  padding: 0 var(--sp-1) 0 0;
   background: transparent;
   border: 0;
   color: inherit;
@@ -237,8 +266,9 @@
   cursor: pointer;
 }
 
+.uam-rv-file__open:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
 .uam-rv-file__status {
-  flex-shrink: 0;
   width: 24px;
   text-align: center;
   font-family: var(--font-mono);
@@ -246,13 +276,49 @@
   font-weight: 600;
 }
 
+/* Name and muted directory share one cell; the directory truncates first. */
 .uam-rv-file__path {
-  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.uam-rv-file__name {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.uam-rv-file__dir {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
 }
+
+/* Stats cell is a fixed width so bars and +/- columns line up down the list. */
+.uam-rv-file__stat {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  font-size: var(--fs-xs);
+}
+
+.uam-rv-file__chevron {
+  justify-self: end;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.uam-rv-file:hover .uam-rv-file__chevron,
+.uam-rv-file:focus-within .uam-rv-file__chevron { opacity: 1; }
 
 /* Recorded edit rows: identity line plus muted detail line. */
 .uam-rv-row-btn {
@@ -280,11 +346,13 @@
   overflow-y: auto;
 }
 
+/* One line per chat: checkbox, title, provider icon, folder name. */
 .uam-rv-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: var(--sp-3);
-  padding: 8px var(--sp-4);
+  min-height: 30px;
+  padding: 4px var(--sp-4);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   transition: background-color var(--dur-fast) var(--ease);
@@ -295,7 +363,8 @@
 .uam-rv-row[data-selected="true"] { background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
 
 .uam-rv-row__title {
-  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -303,9 +372,18 @@
   font-size: var(--fs-base);
 }
 
+.uam-rv-row__provider {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
 .uam-rv-row__meta {
-  display: block;
-  overflow-wrap: anywhere;
+  flex-shrink: 1;
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
 }
@@ -317,16 +395,48 @@
   cursor: pointer;
 }
 
+.uam-rv-row .uam-rv-check { margin-top: 0; }
 .uam-rv-check:disabled { cursor: not-allowed; }
 
-.uam-rv-summary {
+.uam-rv-selectbar {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-4);
-  border-top: 1px solid var(--border);
+  padding: 6px var(--sp-4);
+  border-bottom: 1px solid var(--border);
   font-size: var(--fs-sm);
+}
+
+.uam-rv-selectall {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
   color: var(--text-2);
+  cursor: pointer;
+}
+
+/* Importing: spinner plus a bar that is determinate when counts are known. */
+.uam-rv-importing {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.uam-rv-spin { flex-shrink: 0; animation: uam-rv-spin 900ms linear infinite; }
+
+.uam-rv-progress--indeterminate > span {
+  width: 35%;
+  transform: none;
+  transition: none;
+  animation: uam-rv-slide 1.2s var(--ease) infinite;
+}
+
+.uam-rv-alert__count {
+  margin-left: var(--sp-2);
+  flex-shrink: 0;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .uam-rv-actions {
@@ -376,12 +486,23 @@
   from { opacity: 0; transform: translateY(4px); }
 }
 
+@keyframes uam-rv-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes uam-rv-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(290%); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .uam-rv-bar__fill,
   .uam-rv-file,
   .uam-rv-row,
   .uam-rv-row-btn,
-  .uam-rv-progress > span {
+  .uam-rv-progress > span,
+  .uam-rv-spin,
+  .uam-rv-progress--indeterminate > span {
     animation: none;
     transition: none;
   }

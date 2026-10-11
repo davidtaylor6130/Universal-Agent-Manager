@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { Download, EyeOff, Loader2, RefreshCw, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import { parseStartupNativeImportPage, type StartupNativeImportPage, type StartupNativeImportStatus } from '../../types/startupNativeImports'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 import { providerMetadataForId } from '../../utils/providerMetadata'
-import { Button, IconButton, Overlay } from '../ui'
+import { Button, IconButton, Overlay, Tooltip } from '../ui'
+import { ProviderLogo } from '../shared/ProviderLogo'
 import '../shared/review.css'
+
+function lastDirectoryName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
+}
 
 /** Reviews only cached startup metadata. Dismissal never records a native decision. */
 export function StartupNativeImportChooser() {
@@ -40,6 +45,8 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
   const [busy, setBusy] = useState(false)
   const [busyAction, setBusyAction] = useState<'load' | 'resolve' | null>(null)
   const [error, setError] = useState('')
+  // Set when a started import finishes short of its expected count.
+  const [outcome, setOutcome] = useState<{ failed: number; total: number } | null>(null)
   const requestSequence = useRef(0)
   const loadedFolderId = useRef(folderId)
   const busyRef = useRef(false)
@@ -65,16 +72,24 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (previous?.isConnected && (!document.activeElement || document.activeElement === document.body || dialog?.contains(document.activeElement))) previous.focus()
     }
   }, [])
-  function publicationFailure(data: StartupNativeImportPage): string {
+  function publicationFailure(data: StartupNativeImportPage): { message: string; failed: number; total: number } | null {
     const pending = publication.current
-    if (data.importedCount - pending.importedCount >= pending.expectedCount) return ''
-    if (data.totalCount === 0) return 'Some selected chats could not be imported. They are no longer available.'
-    return 'Some selected chats could not be imported. Review the remaining history to retry.'
+    const imported = data.importedCount - pending.importedCount
+    if (imported >= pending.expectedCount) return null
+    const total = pending.expectedCount
+    const failed = total - Math.max(0, imported)
+    const gone = data.totalCount === 0
+    if (failed >= total) return { message: `None of the selected chats could be imported.${gone ? ' They are no longer available.' : ''}`, failed, total }
+    return { message: `${failed} ${failed === 1 ? 'chat' : 'chats'} couldn't be imported. ${gone ? 'They are no longer available.' : 'They stay in the list so you can retry.'}`, failed, total }
+  }
+  function reportFailure(failure: ReturnType<typeof publicationFailure>) {
+    setOutcome(failure ? { failed: failure.failed, total: failure.total } : null)
+    setError(failure?.message ?? '')
   }
   async function load(nextOffset: number, afterPublication = false) {
     if (busyRef.current) return
     const request = ++requestSequence.current
-    busyRef.current = true; setBusy(true); setBusyAction('load'); setError('')
+    busyRef.current = true; setBusy(true); setBusyAction('load'); setError(''); setOutcome(null)
     try {
       const response = await sendToCEF<unknown>({ action: 'getStartupNativeImports', payload: { offset: nextOffset, limit: 100, folderId } })
       if (!owns(request)) return
@@ -91,7 +106,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (afterPublication && data.phase !== 'importing') {
         setAwaitingPublication(false)
         const failure = publicationFailure(data)
-        if (failure) setError(failure)
+        reportFailure(failure)
         publication.current = { start: status, refreshed: null, importedCount: data.importedCount, expectedCount: 0 }
         if (!failure && data.phase === 'complete' && data.totalCount === 0) closeRef.current()
       }
@@ -104,7 +119,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     loadedFolderId.current = folderId
     ++requestSequence.current
     busyRef.current = false
-    setBusy(false); setBusyAction(null); setPage(null); setOffset(0); setSelected([]); setError('')
+    setBusy(false); setBusyAction(null); setPage(null); setOffset(0); setSelected([]); setError(''); setOutcome(null)
     void load(0)
   }, [folderId])
   useEffect(() => {
@@ -123,7 +138,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
     const ids = selected.slice(0, 200)
     let resolutionMayHaveStarted = false
     if (importSelected) publication.current = { start: status, refreshed: null, importedCount: status.importedCount, expectedCount: importAll ? page!.totalCount : ids.length }
-    busyRef.current = true; setBusy(true); setBusyAction('resolve'); setError('')
+    busyRef.current = true; setBusy(true); setBusyAction('resolve'); setError(''); setOutcome(null)
     try {
       const response = await sendToCEF<unknown>({ action: 'resolveStartupNativeImports', payload: { generation, selectedIds: importSelected && !importAll ? ids : [], declinedIds: importSelected ? [] : ids, folderId, ...(importAll ? { importAll: true } : {}) } })
       if (!owns(request)) return
@@ -140,7 +155,7 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
       if (importSelected && data.phase === 'complete') {
         setAwaitingPublication(false)
         const failure = publicationFailure(data)
-        if (failure) setError(failure)
+        reportFailure(failure)
         publication.current = { start: status, refreshed: null, importedCount: data.importedCount, expectedCount: 0 }
         if (data.phase === 'complete' && data.totalCount === 0 && !failure) closeRef.current()
       }
@@ -180,49 +195,68 @@ function ImportReview({ generation, folderId, onClose }: { generation: string; f
   // Progress counts only this batch: expectedCount is set when the user starts the import.
   const batch = publication.current
   const batchDone = Math.max(0, Math.min(batch.expectedCount, status.importedCount - batch.importedCount))
-  return <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!busyRef.current) onClose() }}>
+  const partial = outcome !== null && outcome.failed < outcome.total
+  return <Overlay open zIndex={50} onBackdropMouseDown={() => { if (!busyRef.current) onClose() }}>
     <div ref={panel} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Import chats" aria-busy={busy} className="uam-rv-dialog w-full max-w-2xl max-h-[85vh] text-xs">
       <header className="uam-rv-dialog__header">
         <div className="min-w-0 flex-1">
-          <h2 className="uam-rv-title">Import chats</h2>
-          <p className="uam-rv-muted">Choose chats to add to UAM. Shift-click to select a range.</p>
+          <h2 className="uam-rv-title">Import chats from other tools</h2>
+          <p className="uam-rv-muted">UAM found chats it hasn't imported yet. Select the ones you want.</p>
         </div>
         <IconButton icon={<X size={16} />} label="Close import chats" disabled={busy} onClick={onClose} />
       </header>
       <div className="uam-rv-dialog__body">
-        {candidates.length > 0 && <div className="flex items-center gap-3 px-4 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-          <input type="checkbox" className="uam-rv-check" aria-label="Select all chats on this page" checked={allOnPage} disabled={busy || importing} onChange={(event) => selectPage(event.target.checked)} />
-          <span style={{ color: 'var(--text-2)' }}>Select page</span>
-          <span className="ml-auto" style={{ color: 'var(--text-3)' }}>{candidates.length} on this page</span>
+        {candidates.length > 0 && <div className="uam-rv-selectbar">
+          <label className="uam-rv-selectall">
+            <input type="checkbox" className="uam-rv-check" aria-label="Select all chats on this page" checked={allOnPage} disabled={busy || importing} onChange={(event) => selectPage(event.target.checked)} />
+            <span>Select all</span>
+          </label>
+          <span className="uam-rv-muted">{selected.length} selected</span>
         </div>}
         <div className="uam-rv-list" aria-label="Pending chats">
-          {candidates.map((candidate) => <label key={candidate.candidateId} className="uam-rv-row" data-selected={selected.includes(candidate.candidateId)}>
-            <input className="uam-rv-check" type="checkbox" aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
-            <span className="min-w-0 flex-1"><span className="uam-rv-row__title">{candidate.title}</span><span className="uam-rv-row__meta" style={{ color: 'var(--text-3)' }}>{providerMetadataForId(candidate.providerId).name}{candidate.executionHostId && candidate.executionHostId !== 'local' ? ` · ${candidate.executionHostId}` : ''} · {candidate.workspaceDirectory}</span></span>
-          </label>)}
+          {candidates.map((candidate) => {
+            const providerName = providerMetadataForId(candidate.providerId).name
+            const host = candidate.executionHostId && candidate.executionHostId !== 'local' ? candidate.executionHostId : ''
+            const providerLabel = host ? `${providerName} · ${host}` : providerName
+            return <label key={candidate.candidateId} className="uam-rv-row" data-selected={selected.includes(candidate.candidateId)}>
+              <input className="uam-rv-check" type="checkbox" aria-label={`Select ${candidate.title}`} disabled={busy || importing} checked={selected.includes(candidate.candidateId)} onChange={(event) => selectCandidate(candidate.candidateId, event.target.checked, 'shiftKey' in event.nativeEvent && event.nativeEvent.shiftKey === true)} />
+              <span className="uam-rv-row__title">{candidate.title}</span>
+              <Tooltip label={providerLabel}>
+                <span role="img" aria-label={providerLabel} className="uam-rv-row__provider"><ProviderLogo providerId={candidate.providerId} size={14} /></span>
+              </Tooltip>
+              <Tooltip label={candidate.workspaceDirectory}>
+                <span className="uam-rv-row__meta" style={{ color: 'var(--text-3)' }}>{lastDirectoryName(candidate.workspaceDirectory)}</span>
+              </Tooltip>
+            </label>
+          })}
         </div>
         <div className="flex flex-col gap-2 px-4 py-2">
           {!busy && !importing && page && candidates.length === 0 && <p style={{ color: 'var(--text-2)' }}>No pending chats on this page{folderId ? ' for this workspace' : ''}.</p>}
-          {busy && <p role="status" style={{ color: 'var(--text-3)' }}>{busyAction === 'resolve' ? 'Saving…' : 'Loading history…'}</p>}
-          {importing && !busy && <>
-            <p role="status" style={{ color: 'var(--text-2)' }}>{batch.expectedCount > 0 ? `Importing ${batchDone} of ${batch.expectedCount} chats…` : 'Importing selected chats…'}</p>
-            <div role="progressbar" aria-label="Import progress" aria-valuemin={0} aria-valuemax={batch.expectedCount || undefined} aria-valuenow={batch.expectedCount ? batchDone : undefined} className="uam-rv-progress">
-              <span style={{ transform: `scaleX(${batch.expectedCount > 0 ? batchDone / batch.expectedCount : 0.05})` }} />
+          {busy && !importing && <p role="status" style={{ color: 'var(--text-3)' }}>{busyAction === 'resolve' ? 'Saving…' : 'Loading history…'}</p>}
+          {importing && <div className="flex flex-col gap-1">
+            <div className="uam-rv-importing">
+              <Loader2 size={14} className="uam-rv-spin" aria-hidden style={{ color: 'var(--text-2)' }} />
+              <p role="status" className="m-0" style={{ color: 'var(--text-2)' }}>{batch.expectedCount > 0 ? `Importing ${batchDone} of ${batch.expectedCount}…` : 'Importing selected chats…'}</p>
             </div>
-          </>}
-          {error && <p role="alert" className="uam-rv-alert" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{error}</p>}
-        </div>
-        <div className="uam-rv-summary">
-          {page ? <p role="status" className="min-w-0 flex-1 m-0">Page {pageNumber} of {pageCount} · {page.totalCount} pending · {selected.length} selected</p> : <span className="flex-1" />}
+            <div role="progressbar" aria-label="Import progress" aria-valuemin={0} aria-valuemax={batch.expectedCount || undefined} aria-valuenow={batch.expectedCount ? batchDone : undefined} className={batch.expectedCount > 0 ? 'uam-rv-progress' : 'uam-rv-progress uam-rv-progress--indeterminate'}>
+              <span style={batch.expectedCount > 0 ? { transform: `scaleX(${batchDone / batch.expectedCount})` } : undefined} />
+            </div>
+          </div>}
+          {error && <p role="alert" className="uam-rv-alert" style={outcome ? { background: partial ? 'var(--warning-dim)' : 'var(--error-dim)', color: partial ? 'var(--warning)' : 'var(--error)' } : { background: 'var(--error-dim)', color: 'var(--error)' }}>
+            {error}
+            {outcome && outcome.failed > 0 && <strong className="uam-rv-alert__count">{outcome.failed} failed</strong>}
+          </p>}
         </div>
         <div className="uam-rv-actions">
-          <Button type="button" size="sm" variant="primary" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>Import selected</Button>
-          <Button type="button" size="sm" disabled={busy || importing || !page?.totalCount} onClick={() => void decide(true, true)}>Import all</Button>
-          <Button type="button" size="sm" variant="ghost" disabled={busy || importing || selected.length === 0} onClick={() => void decide(false)}>Ignore selected</Button>
+          <Button type="button" size="sm" variant="primary" leadingIcon={<Download size={14} />} aria-label="Import selected" disabled={busy || importing || selected.length === 0} onClick={() => void decide(true)}>Import</Button>
+          <IconButton size="sm" icon={<EyeOff size={14} />} label="Ignore selected" disabled={busy || importing || selected.length === 0} onClick={() => void decide(false)} />
           <span className="uam-rv-actions__spacer" />
-          {error && <Button type="button" size="sm" disabled={busy} onClick={() => void load(offset, awaitingPublication)}>Reload</Button>}
-          <Button type="button" size="sm" variant="ghost" disabled={busy || importing || offset === 0} onClick={() => void load(Math.max(0, offset - 100))}>Previous</Button>
-          <Button type="button" size="sm" variant="ghost" disabled={busy || importing || !page || page.nextOffset >= page.totalCount} onClick={() => page && void load(page.nextOffset)}>Next</Button>
+          {error && <IconButton size="sm" icon={<RefreshCw size={14} />} label="Reload" disabled={busy} onClick={() => void load(offset, awaitingPublication)} />}
+          {page && pageCount > 1 && <>
+            <Button type="button" size="sm" variant="ghost" disabled={busy || importing || offset === 0} onClick={() => void load(Math.max(0, offset - 100))}>Previous</Button>
+            <span className="uam-rv-muted">Page {pageNumber} of {pageCount}</span>
+            <Button type="button" size="sm" variant="ghost" disabled={busy || importing || page.nextOffset >= page.totalCount} onClick={() => void load(page.nextOffset)}>Next</Button>
+          </>}
         </div>
       </div>
     </div>

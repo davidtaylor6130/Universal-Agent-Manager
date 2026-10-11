@@ -16,16 +16,16 @@ import type { Goal } from '../../types/goal'
 import { GoalBanner } from '../shared/GoalBanner'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
-import { buildAcpErrorCopyText, ContextUsageStatus, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { buildAcpErrorCopyText, ChatStatusStrip, ContextUsageStatus, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { isImageAttachment, AttachmentList, CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
-import { ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, IconButton } from '../ui'
+import { Button, IconButton, Tooltip } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
 import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
@@ -1319,7 +1319,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     } finally { sideBusyRef.current = false; setSideBusy(false) }
   }
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
-  const sourceWorkspaceDirectory = session.workspaceSourceDirectory?.trim() || (!isGitWorktree ? workspaceDirectory : '')
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
     acp?.processing ||
     acp?.pendingPermission ||
@@ -1444,6 +1443,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const currentErrorTitle = `${currentErrorSource} error`
   const currentAcpError = acp?.promptActionError?.message || acp?.lastError || ''
   const currentAcpErrorKey = acp?.promptActionError ? `${session.id}:prompt:${acp.promptActionError.id}` : currentAcpError ? `${session.id}:${currentAcpError}` : ''
+  const stoppedStatusLabel = acp && !acp.running && !currentAcpError && acp.lastStopReason &&
+    !messages.some((message) => message.stopReason === acp.lastStopReason)
+    ? stoppedResponseLabel(acp.lastStopReason, acp.lastStopReason !== 'timeout' && acp.lastStopReason !== 'provider-update')
+    : ''
   const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
     ? 'error'
     : /working|unavailable|provider-managed/i.test(slashMessage)
@@ -2331,9 +2334,18 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               <div className="uam-message-list space-y-1.5" aria-busy={historyLoading}>
               {messages.length === 0 && !chatHistoryError && <div role="status" className="conversation-empty">
                 {historyLoading && <div className="conversation-skeleton" aria-hidden>
-                  <span className="conversation-skeleton__row" />
-                  <span className="conversation-skeleton__row conversation-skeleton__row--user" />
-                  <span className="conversation-skeleton__row conversation-skeleton__row--short" />
+                  <span className="conversation-skeleton__bubble" />
+                  <div className="conversation-skeleton__text">
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--mid" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                  </div>
+                  <span className="conversation-skeleton__bubble conversation-skeleton__bubble--short" />
+                  <div className="conversation-skeleton__text">
+                    <span className="conversation-skeleton__line" />
+                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                  </div>
                 </div>}
                 <span>{historyLoading ? 'Loading chat history…' : 'No messages yet'}</span>
               </div>}
@@ -2611,11 +2623,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               </div>
               </SubAgentDisclosureProvider>
-              {acp?.compacting && <div role="status" className="conversation-status" data-tone="accent">
-                <span>Compacting context…</span>
-                {acp.providerUsage?.contextUsage && <ContextUsageStatus usage={acp.providerUsage.contextUsage} />}
-              </div>}
-              <SubagentWaitStatus binding={acp} />
             </div>
             {/* Follow the padded end so the latest output clears the floating composer. */}
             <div ref={bottomRef} />
@@ -2733,12 +2740,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            {acp && !acp.running && !currentAcpError && acp.lastStopReason &&
-              !messages.some((message) => message.stopReason === acp.lastStopReason) && (
-                <div role="status" className="conversation-interrupted">
-                  {stoppedResponseLabel(acp.lastStopReason, acp.lastStopReason !== 'timeout' && acp.lastStopReason !== 'provider-update')}
-                </div>
-              )}
+            <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" icon={AlertTriangle} title={stoppedStatusLabel} />
+            <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" icon={LoaderCircle} spin title="Compacting context…"
+              detail={acp?.providerUsage?.contextUsage ? <ContextUsageStatus usage={acp.providerUsage.contextUsage} /> : undefined} />
+            <SubagentWaitStatus binding={acp} />
             {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
               <div
                 role="alert"
@@ -2862,15 +2867,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         {workspaceDirectory}
                       </div>
                       {isGitWorktree && (
-                        <div className="flex items-center gap-2 px-2 py-1 text-[11px]" title={session.workspaceBranchName}>
-                          <ComposerIcon name="git-tree" size={14} />
-                          <span className="truncate">{session.workspaceBranchName}</span>
-                        </div>
-                      )}
-                      {isGitWorktree && (
-                        <div className="px-2 pb-1 text-[11px]" style={{ color: 'var(--green)' }}>
-                          Git worktree{sourceWorkspaceDirectory ? ` · source ${sourceWorkspaceDirectory}` : ''}
-                        </div>
+                        <Tooltip label={workspaceDirectory} side="right">
+                          <div className="flex items-center gap-2 px-2 py-1 text-[11px]" style={{ color: 'var(--green)' }}>
+                            <ComposerIcon name="git-tree" size={14} />
+                            <span className="truncate">{session.workspaceBranchName || 'Git worktree'}</span>
+                          </div>
+                        </Tooltip>
                       )}
                       {remoteComputerUseDisabled ? (
                         <div className="px-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, RotateCw, Sparkles, X } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, PanelRightClose, RotateCw, Sparkles } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
 import { Button, IconButton, MenuSelect, Presence } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
@@ -199,8 +199,10 @@ export function VcsCommitPanel() {
           onClick={() => { void refresh(selectedVcsType, true) }}
         />
         <IconButton
-          icon={<X size={16} />}
+          icon={<PanelRightClose size={16} aria-hidden />}
           label="Close commit panel"
+          tooltip="Hide panel"
+          tooltipSide="bottom"
           onClick={() => setCommitPanelOpen(false)}
         />
       </div>
@@ -251,7 +253,7 @@ export function VcsCommitPanel() {
             aria-checked={allSelected}
             disabled={status.changedFiles.length === 0}
             onClick={toggleAllFiles}
-            className="uam-icon-button"
+            className="uam-rv-check-btn"
           >
             {allSelected ? <CheckCircle2 size={16} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={16} aria-hidden />}
           </button>
@@ -272,8 +274,7 @@ export function VcsCommitPanel() {
                   aria-checked={selected}
                   aria-label={`${selected ? 'Deselect' : 'Select'} ${file.path}`}
                   onClick={() => toggleFile(file.path)}
-                  className="uam-icon-button shrink-0"
-                  style={{ marginLeft: 4 }}
+                  className="uam-rv-check-btn"
                 >
                   {selected ? <CheckCircle2 size={15} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={15} aria-hidden style={{ color: 'var(--text-3)' }} />}
                 </button>
@@ -285,19 +286,24 @@ export function VcsCommitPanel() {
                   style={{ color: 'inherit' }}
                 >
                   <span className="uam-rv-file__status" style={{ color: statusColor(file.status) }}>{file.status.trim() || 'M'}</span>
-                  <span className="uam-rv-file__path" title={file.path}>{file.path.split('/').pop()}<span className="ml-1.5" style={{ color: 'var(--text-3)' }}>{file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''}</span></span>
-                  {!lineStatsReady ? (
-                    <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>...</span>
-                  ) : file.binary ? (
-                    <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>BIN</span>
-                  ) : (
-                    <span className="uam-rv-stat flex-shrink-0">
-                      <ChangeBar additions={file.additions} deletions={file.deletions} max={maxChange} />
-                      <span style={{ color: 'var(--success)' }}>+{file.additions}</span>
-                      <span style={{ color: 'var(--error)' }}>-{file.deletions}</span>
-                    </span>
-                  )}
-                  <ChevronRight size={13} aria-hidden className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100" style={{ color: 'var(--text-3)' }} />
+                  <span className="uam-rv-file__path" title={file.path}>
+                    <span className="uam-rv-file__name">{file.path.split('/').pop()}</span>
+                    {file.path.includes('/') && <span className="uam-rv-file__dir">{file.path.slice(0, file.path.lastIndexOf('/'))}</span>}
+                  </span>
+                  <span className="uam-rv-file__stat">
+                    {!lineStatsReady ? (
+                      <span className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>...</span>
+                    ) : file.binary ? (
+                      <span className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>BIN</span>
+                    ) : (
+                      <span className="uam-rv-stat">
+                        <ChangeBar additions={file.additions} deletions={file.deletions} max={maxChange} />
+                        <span className="uam-rv-stat__add" style={{ color: 'var(--success)' }}>+{file.additions}</span>
+                        <span className="uam-rv-stat__del" style={{ color: 'var(--error)' }}>-{file.deletions}</span>
+                      </span>
+                    )}
+                  </span>
+                  <ChevronRight size={13} aria-hidden className="uam-rv-file__chevron" style={{ color: 'var(--text-3)' }} />
                 </button>
               </div>
             )
