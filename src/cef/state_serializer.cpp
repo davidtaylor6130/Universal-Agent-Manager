@@ -42,7 +42,9 @@
 #include <cctype>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
+#include <tuple>
 #include <unordered_set>
 #include <vector>
 
@@ -124,12 +126,22 @@ namespace uam
 			return uam::strings::Trim(chat.native_session_id);
 		}
 
-		std::string ModelCatalogWorkspace(const AppState& app, const ChatSession& chat)
+		struct CatalogSnapshotCache
 		{
-			return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
-		}
+			using WorkspaceKey = std::tuple<bool, bool, std::string, std::string, std::string, std::string>;
+			std::unordered_map<std::string, nlohmann::json> catalogs;
+			std::map<WorkspaceKey, std::filesystem::path> workspaces;
+		};
 
-		using CatalogSnapshotCache = std::unordered_map<std::string, nlohmann::json>;
+		/// <summary>Reuse identical workspace scopes only within this serialization.</summary>
+		const std::filesystem::path& WorkspaceSnapshotForChat(const AppState& app, const ChatSession& chat,
+		                                                       CatalogSnapshotCache& cache)
+		{
+			const CatalogSnapshotCache::WorkspaceKey key{chat.imported_read_only, uam::paths::IsGitWorktreeIsolated(chat),
+			    chat.execution_host_id, chat.workspace_directory, chat.workspace_worktree_directory, chat.folder_id};
+			if (const auto found = cache.workspaces.find(key); found != cache.workspaces.end()) return found->second;
+			return cache.workspaces.emplace(key, uam::paths::ResolveWorkspaceRootPath(app, chat)).first->second;
+		}
 
 		std::string CatalogSnapshotKey(const std::string& provider_id,
 		                              std::string_view workspace,
@@ -154,11 +166,11 @@ namespace uam
 		nlohmann::json CatalogSnapshotForChat(const AppState& app, const ChatSession& chat,
 		                                     CatalogSnapshotCache& cache)
 		{
-			const std::string workspace = ModelCatalogWorkspace(app, chat);
+			const std::string workspace = WorkspaceSnapshotForChat(app, chat, cache).generic_string();
 			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
-			if (const auto found = cache.find(key); found != cache.end()) return found->second;
+			if (const auto found = cache.catalogs.find(key); found != cache.catalogs.end()) return found->second;
 			if (app.provider_model_catalog != nullptr)
-				return cache.emplace(key, app.provider_model_catalog->GetCatalogSnapshot(
+				return cache.catalogs.emplace(key, app.provider_model_catalog->GetCatalogSnapshot(
 				    chat.provider_id, workspace, chat.execution_host_id)).first->second;
 			return {{"availableModels", nlohmann::json::array()}, {"configOptions", nlohmann::json::array()},
 			        {"modelsLoading", false}, {"modelRefreshError", ""}};
@@ -200,7 +212,7 @@ namespace uam
 					ChatSession scope;
 					scope.workspace_directory = folder.directory;
 					scope.execution_host_id = folder.execution_host_id;
-					const std::string workspace = ModelCatalogWorkspace(app, scope);
+					const std::string workspace = WorkspaceSnapshotForChat(app, scope, cache).generic_string();
 					append_catalog(provider.id, workspace, folder.execution_host_id);
 				}
 			}
@@ -1200,7 +1212,7 @@ namespace uam
 		                                           CatalogSnapshotCache& cache, bool cache_selected = false)
 		{
 			nlohmann::json chat_json;
-			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), cache_selected);
+			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(WorkspaceSnapshotForChat(app, chat, cache)), cache_selected);
 			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 			chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
@@ -1604,7 +1616,7 @@ namespace uam
 				const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 				chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
-				chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
+				chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(WorkspaceSnapshotForChat(app, chat, catalog_cache));
 				chat_json["cliTerminal"] = SerializeChatTerminalSummary(app, chat);
 				chat_json["acpSession"] = SerializeAcpSessionSummary(app, chat, catalog_cache);
 				chat_json["computerUse"] = SerializeComputerUseState(app, chat);

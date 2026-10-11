@@ -1274,6 +1274,7 @@ if(UAM_BUILD_TESTS)
     tests/acp_session_tests.cpp
     tests/claude_projection_tests.cpp
     tests/claude_usage_tests.cpp
+    tests/state_workspace_snapshot_tests.cpp
     tests/terminal_tests.cpp
     tests/goal_tests.cpp
     tests/theme_tests.cpp
