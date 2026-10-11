@@ -32,6 +32,9 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
   const creditOnly = limits?.credits?.unlimited ? 'Unlimited' : limits?.credits?.hasCredits ? 'Credits available' : null
   const value = percent === null ? creditOnly : `${percent}% remaining`
   const label = limits && timestampValid && value ? `${cached ? 'Cached ' : ''}${value}` : 'Unavailable'
+  // Mini meter shows the most-used window; colour follows the same thresholds as the usage page.
+  const usedPercent = percent === null || label === 'Unavailable' ? null : 100 - percent
+  const tone = usedPercent === null ? 'var(--text-3)' : usedPercent >= 95 ? 'var(--error)' : usedPercent >= 80 ? 'var(--warning)' : 'var(--success)'
   const detail = limits ? <div className="flex flex-col gap-1">
     <span>Codex session-reported account allowance</span>
     <span>{running ? 'Current session snapshot' : 'Last session snapshot'}</span>
@@ -45,7 +48,7 @@ export function ProviderAllowanceIndicator({ providerId, sourceProviderId, rateL
   </div> : <span>{providerId === 'codex-cli' ? 'Codex has not reported an account allowance for this session.' : 'This provider does not expose account allowances in UAM.'}</span>
   return <Tooltip label={detail}>
     <button type="button" onFocus={() => setInteractionTime(Date.now())} onMouseEnter={() => setInteractionTime(Date.now())} aria-label={`Account allowance: ${label}`} className="inline-flex shrink-0 items-center gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-      <Gauge size={13} aria-hidden />
+      {usedPercent === null ? <Gauge size={13} aria-hidden /> : <span aria-hidden className="inline-block h-1 w-7 overflow-hidden rounded-full" style={{ background: 'var(--surface-up)' }}><span className="block h-full" style={{ width: `${Math.min(100, usedPercent)}%`, background: tone, transition: 'width var(--dur-base) var(--ease-out-soft)' }} /></span>}
       {label !== 'Unavailable' && <span>{label}</span>}
     </button>
   </Tooltip>
