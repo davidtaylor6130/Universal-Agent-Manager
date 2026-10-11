@@ -13,6 +13,21 @@ describe('Message navigation rail', () => {
     expect(messageIndexAtPointer(1, 0, 0, 10)).toBe(0)
   })
 
+  it('explains unloaded messages in the hover preview', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const messages = [{ id: '0', sessionId: 'chat', role: 'user' as const, content: 'Loaded question', createdAt: new Date() }]
+    try {
+      act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 2, 40]} startIndex={0} messages={messages} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector('[role="slider"]')!
+      act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
+      expect(host.textContent).toContain('Not loaded yet')
+      expect(host.textContent).toContain('Scroll up or click to load this part of the chat.')
+      expect(host.textContent).not.toContain('Open this message')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('allocates positions only to user messages and keeps the orange marker', () => {
     const host = document.createElement('div')
     document.body.append(host)

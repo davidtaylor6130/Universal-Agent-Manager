@@ -97,7 +97,8 @@
 }
 
 .conversation-turn-start { display: block; text-align: center; margin: var(--sp-4) 0 var(--sp-2); color: var(--text-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; opacity: 0.85; }
-.conversation-interrupted { margin-top: 8px; color: var(--warning); font-size: 12px; }
+.conversation-interrupted { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 2px 8px; border-radius: var(--r-full); background: var(--surface-up); border: 1px solid var(--border); color: var(--text-2); font-size: var(--fs-xs); }
+.conversation-interrupted::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
 [data-processing-step="true"] .conversation-work__tool-title,
 [data-processing-step="true"] .conversation-work__thought-label,
 .uam-thinking-block[data-active="true"] .uam-thinking-row__kind,
