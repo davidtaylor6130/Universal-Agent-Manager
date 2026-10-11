@@ -10,10 +10,16 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/json_runtime.h"
+#include "common/runtime/acp/acp_protocol_methods.h"
+#include "common/usage/transcript_usage.h"
+#include "common/utils/time_utils.h"
+#include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/io_utils.h"
 #include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
+#include <functional>
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -107,6 +113,67 @@ bool GeminiCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSess
 	if (!TextContainsAnyCaseInsensitive(details.failure.message + "\n" + details.error_data,
 	        {"invalid session identifier", "use --list-sessions"})) return false;
 	return RetrySessionNewAfterInvalidLoad(app, session, chat, details);
+}
+
+/// <summary>Count Gemini prompt replies observed by this attachment, never an inferred native-history total.</summary>
+bool GeminiCliProviderRuntime::OnAcpHandleResult(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
+    const std::string& method, const std::string&, const nlohmann::json& result) const
+{
+	if (method != uam::acp_methods::kSessionPrompt) return false;
+	uam::AcpTokenUsageState& usage = session.provider_usage.token_usage;
+	if (usage.session_id != session.session_id) usage = {};
+	if (session.session_id.empty() || session.session_id.size() > 512) return false;
+	const nlohmann::json* tokens = uam::nlohmann_json::FindObjectField(result, "usage");
+	const bool standard = tokens != nullptr;
+	if (!tokens)
+	{
+		const nlohmann::json* meta = uam::nlohmann_json::FindObjectField(result, "_meta");
+		const nlohmann::json* quota = meta ? uam::nlohmann_json::FindObjectField(*meta, "quota") : nullptr;
+		tokens = quota ? uam::nlohmann_json::FindObjectField(*quota, "token_count") : nullptr;
+	}
+	// A completed prompt without counts must not leave a prior prompt labeled as the last turn.
+	usage.last_available = false;
+	if (!tokens) return false;
+	const std::function<std::optional<std::int64_t>(const char*, bool)> count = [&](const char* key, bool required) -> std::optional<std::int64_t>
+	{
+		const nlohmann::json* field = uam::nlohmann_json::FindField(*tokens, key);
+		if (!field || field->is_null()) return required ? std::nullopt : std::optional<std::int64_t>{0};
+		if (!field->is_number_integer()) return std::nullopt;
+		if (field->is_number_unsigned() && field->get<std::uint64_t>() > static_cast<std::uint64_t>(uam::usage::kMaxExactTokenCount)) return std::nullopt;
+		const std::int64_t parsed = field->get<std::int64_t>();
+		return parsed >= 0 && parsed <= uam::usage::kMaxExactTokenCount ? std::optional<std::int64_t>{parsed} : std::nullopt;
+	};
+	const std::optional<std::int64_t> input = count(standard ? "inputTokens" : "input_tokens", true);
+	const std::optional<std::int64_t> output = count(standard ? "outputTokens" : "output_tokens", true);
+	const std::optional<std::int64_t> cached = standard ? count("cachedReadTokens", false) : std::optional<std::int64_t>{0};
+	const std::optional<std::int64_t> thought = standard ? count("thoughtTokens", false) : std::optional<std::int64_t>{0};
+	if (!input || !output || !cached || !thought || *cached > *input || *output > uam::usage::kMaxExactTokenCount - *input ||
+	    *thought > uam::usage::kMaxExactTokenCount - *input - *output) return false;
+	const std::int64_t total = *input + *output + *thought;
+	if (standard)
+	{
+		const std::optional<std::int64_t> reported = count("totalTokens", true);
+		// Gemini candidates exclude reasoning; accept a total that either includes or excludes it.
+		if (!reported || (*reported != *input + *output && *reported != total)) return false;
+	}
+	if (total > uam::usage::kMaxExactTokenCount - usage.total.total_tokens) return false;
+	uam::AcpTokenUsageBreakdownState last;
+	last.input_tokens = *input;
+	last.cached_input_tokens = *cached;
+	last.output_tokens = *output + *thought;
+	last.reasoning_output_tokens = *thought;
+	last.total_tokens = total;
+	usage.session_id = session.session_id;
+	usage.available = true;
+	usage.last_available = true;
+	usage.last = last;
+	usage.total.input_tokens += last.input_tokens;
+	usage.total.cached_input_tokens += last.cached_input_tokens;
+	usage.total.output_tokens += last.output_tokens;
+	usage.total.reasoning_output_tokens += last.reasoning_output_tokens;
+	usage.total.total_tokens += last.total_tokens;
+	usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	return false;
 }
 
 const char* GeminiCliProviderRuntime::RuntimeId() const

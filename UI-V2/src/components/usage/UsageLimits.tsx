@@ -49,7 +49,7 @@ function UsageHostLimits({ executionHostId }: { executionHostId: string }) {
         <h2 className="flex items-center gap-2 text-sm font-medium"><ProviderLogo providerId={provider} size={17} />{providerShortName(undefined, provider)}</h2>
         {!consumption && <p className="text-xs">Consumed tokens unavailable.</p>}
         {consumption && <div className="grid gap-1 text-xs">
-          <p>Tokens consumed in {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}</p>
+          <p>{provider === 'gemini-cli' ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}</p>
           <p>Input {consumption.usage.total.inputTokens.toLocaleString()} · Output {consumption.usage.total.outputTokens.toLocaleString()}</p>
           {(consumption.usage.total.cachedInputTokens > 0 || consumption.usage.total.cacheWriteInputTokens > 0) && <p>Of input: cache read {consumption.usage.total.cachedInputTokens.toLocaleString()} · cache write {consumption.usage.total.cacheWriteInputTokens.toLocaleString()}</p>}
           {consumption.usage.total.reasoningOutputTokens > 0 && <p>Of output: reasoning {consumption.usage.total.reasoningOutputTokens.toLocaleString()}</p>}

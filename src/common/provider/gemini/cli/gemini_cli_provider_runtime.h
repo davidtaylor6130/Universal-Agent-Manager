@@ -8,6 +8,8 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	const char* AcpProtocolKind() const override { return "gemini-acp"; }
 	const char* GetAcpDisplayName() const override { return "Gemini ACP"; }
 	const char* RuntimeId() const override;
+	bool OnAcpHandleResult(uam::AppState&, uam::AcpSessionState&, ChatSession&,
+	    const std::string&, const std::string&, const nlohmann::json&) const override;
 	bool OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
 	    const uam::acp_detail::AcpResponseFailureDetails& details) const override;
 	const ProviderCliPolicy* CliVersionPolicy() const override;
