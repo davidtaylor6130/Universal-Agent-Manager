@@ -3,6 +3,7 @@
 #include "app/provider_model_catalog_service.h"
 #include "app/execution_routing_service.h"
 #include "common/models/app_models.h"
+#include "common/paths/workspace_lease.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
 #include "common/platform/observed_process_stop.h"
@@ -993,6 +994,7 @@ namespace uam
 	struct MemoryActivityRefreshTask;
 	struct AppState
 	{
+		WorkspaceLeaseGate worktree_retention_gate;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::shared_ptr<StartupNativeImportService> startup_native_import_service;
 		// Weak reservations expire if the async callback is discarded during bridge shutdown.

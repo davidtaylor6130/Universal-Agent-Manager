@@ -7,6 +7,7 @@
 #include "app/startup_native_import_service.h"
 #include "app/model_discovery_service.h"
 #include "app/computer_use_service.h"
+#include "app/worktree_retention_service.h"
 
 #include <future>
 #include <chrono>
@@ -48,6 +49,7 @@ class Application
 	uam::AppState m_app;
 	uam::StartupModelDiscoveryService m_startupModelDiscovery;
 	uam::ComputerUseService m_computerUseService;
+	uam::WorktreeRetentionService m_worktreeRetention;
 	PlatformServices* m_platformServices = nullptr;
 	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	std::shared_ptr<std::atomic_bool> m_lifetimeToken = std::make_shared<std::atomic_bool>(true);

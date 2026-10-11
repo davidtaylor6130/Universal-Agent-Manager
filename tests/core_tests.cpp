@@ -9127,9 +9127,12 @@ UAM_TEST(WorktreeRetentionInspectionPreservesReferencesDirtyFilesAndBranches)
 	for (const fs::directory_entry& entry : fs::recursive_directory_iterator(worktree)) fs::last_write_time(entry.path(), old);
 	fs::last_write_time(worktree, old);
 	UAM_ASSERT(service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
+	UAM_ASSERT(RunGitForTest(repo, "pack-refs --all"));
+	UAM_ASSERT(service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
 	UAM_ASSERT_EQ(candidate.branch_name, chat.workspace_branch_name);
 	UAM_ASSERT(!candidate.head_sha.empty());
 	const fs::path admin = candidate.administrative_directory;
+	const uam::GitWorktreeRetentionCandidate eligible = candidate;
 	UAM_ASSERT(uam::io::WriteTextFile(admin / "locked", "keep locked worktree"));
 	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
 	fs::remove(admin / "locked");
@@ -9156,6 +9159,20 @@ UAM_TEST(WorktreeRetentionInspectionPreservesReferencesDirtyFilesAndBranches)
 	std::stop_source canceled;
 	canceled.request_stop();
 	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate, canceled.get_token()));
+	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> mutation = app.worktree_retention_gate.TryAcquireMutation();
+	UAM_ASSERT(!service.RemoveRetentionCandidate(app.data_root, repo, eligible, {}, *mutation));
+	mutation.reset();
+	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> cleanup = app.worktree_retention_gate.TryAcquireCleanup();
+	UAM_ASSERT(cleanup);
+	UAM_ASSERT(!service.RemoveRetentionCandidate(app.data_root, repo, eligible, {}, *cleanup));
+	UAM_ASSERT(RunGitForTest(worktree, "restore app.txt"));
+	for (const fs::directory_entry& entry : fs::recursive_directory_iterator(repo / ".git")) fs::last_write_time(entry.path(), old);
+	fs::last_write_time(worktree, old);
+	UAM_ASSERT(!service.RemoveRetentionCandidate(app.data_root, repo, eligible, {worktree}, *cleanup));
+	UAM_ASSERT(!service.RemoveRetentionCandidate(app.data_root, repo, eligible, {}, *cleanup, canceled.get_token()));
+	UAM_ASSERT(service.RemoveRetentionCandidate(app.data_root, repo, eligible, {}, *cleanup));
+	UAM_ASSERT(!fs::exists(worktree));
+	UAM_ASSERT(RunGitForTest(repo, "show-ref --verify " + ShellQuoteForTest("refs/heads/" + chat.workspace_branch_name)));
 }
 
 UAM_TEST(MessageBranchFromGitWorktreeChecksOutHistoricalAssistantCheckpoint)

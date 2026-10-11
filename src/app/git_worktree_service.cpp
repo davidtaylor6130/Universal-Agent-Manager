@@ -1059,10 +1059,13 @@ namespace uam
 	{
 		candidate = {};
 		if (stop_token.stop_requested() || data_root.empty() || source_root.empty() || worktree.empty()) return false;
-		const std::function<bool(const std::filesystem::path&, const std::string&, std::string&)> query = [&stop_token](const std::filesystem::path& directory, const std::string& arguments, std::string& output)
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		const std::function<bool(const std::filesystem::path&, const std::string&, std::string&)> query = [&stop_token, deadline](const std::filesystem::path& directory, const std::string& arguments, std::string& output)
 		{
+			const int remaining_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+			if (remaining_ms <= 0 || stop_token.stop_requested()) return false;
 			const ProcessExecutionResult result = RunCommand("git --no-optional-locks -C " +
-			    uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " " + arguments, 2000, stop_token);
+			    uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " " + arguments, std::min(2000, remaining_ms), stop_token);
 			if (!CommandSucceeded(result) || result.output_truncated) return false;
 			output = uam::strings::Trim(result.output);
 			return true;
@@ -1134,7 +1137,8 @@ namespace uam
 		inspected.activity_at = std::filesystem::file_time_type::min();
 		const std::vector<std::filesystem::path> activity_paths = {
 		    absolute, absolute / ".git", admin / "HEAD", admin / "index", admin / "logs" / "HEAD",
-		    common / "refs" / "heads" / uam::paths::PathFromUtf8(inspected.branch_name), common / "packed-refs"};
+		    common / "refs" / "heads" / uam::paths::PathFromUtf8(inspected.branch_name),
+		    common / "logs" / "refs" / "heads" / uam::paths::PathFromUtf8(inspected.branch_name)};
 		for (const std::filesystem::path& path : activity_paths)
 		{
 			const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
@@ -1150,6 +1154,21 @@ namespace uam
 		if (!query(absolute, "status --porcelain --untracked-files=normal --ignored=matching", status) || !status.empty() || stop_token.stop_requested()) return false;
 		candidate = std::move(inspected);
 		return true;
+	}
+
+	bool GitWorktreeService::RemoveRetentionCandidate(const std::filesystem::path& data_root,
+	    const std::filesystem::path& source_root, const GitWorktreeRetentionCandidate& candidate,
+	    const std::vector<std::filesystem::path>& protected_paths, const WorkspaceLeaseGate::Lease& lease,
+	    std::stop_token stop_token) const
+	{
+		if (!lease.IsExclusive() || stop_token.stop_requested()) return false;
+		GitWorktreeRetentionCandidate current;
+		if (!InspectRetentionCandidate(data_root, source_root, candidate.directory, protected_paths, current, stop_token) ||
+		    current.administrative_directory != candidate.administrative_directory || current.branch_name != candidate.branch_name ||
+		    current.head_sha != candidate.head_sha || current.activity_at != candidate.activity_at) return false;
+		const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(source_root,
+		    "worktree remove " + uam::shell::EscapeArg(uam::paths::Utf8PathString(candidate.directory))), 2000, stop_token);
+		return CommandSucceeded(result);
 	}
 
 	bool GitWorktreeService::RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out) const

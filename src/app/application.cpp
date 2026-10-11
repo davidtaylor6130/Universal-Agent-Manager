@@ -463,6 +463,7 @@ void Application::PollTick()
 	const bool model_discovery_retry_changed = uam::RetryCompatibilityBlockedAcpModelDiscoveries(m_app);
 	const bool startup_model_discovery_changed = m_startupModelDiscovery.Poll(m_app);
 	const bool history_discovery_changed = PollHistoryDiscovery();
+	m_worktreeRetention.Poll(m_app);
 
 	// Poll the provider model catalog service for async model refresh completion.
 	bool model_catalog_changed = false;
@@ -798,6 +799,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	m_worktreeRetention.Stop();
 	if (m_app.startup_native_import_service != nullptr) m_app.startup_native_import_service->Cancel();
 	if (m_shutdownComplete)
 	{

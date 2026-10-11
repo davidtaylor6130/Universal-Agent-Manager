@@ -431,6 +431,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/chat_lifecycle_service.cpp
   src/app/computer_use_service.cpp
   src/app/git_worktree_service.cpp
+  src/app/worktree_retention_service.cpp
   src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
   src/common/memory/memory_library_store.cpp
@@ -1234,6 +1235,7 @@ if(UAM_BUILD_TESTS)
     tests/vcs_settings_tests.cpp
     tests/chat_snooze_tests.cpp
     tests/workspace_file_preview_tests.cpp
+    tests/workspace_lease_tests.cpp
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
     tests/provider_mcp_settings_tests.cpp
@@ -1263,6 +1265,7 @@ if(UAM_BUILD_TESTS)
     src/app/chat_lifecycle_service.cpp
     src/app/computer_use_service.cpp
     src/app/git_worktree_service.cpp
+    src/app/worktree_retention_service.cpp
     src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
     src/common/memory/memory_library_store.cpp

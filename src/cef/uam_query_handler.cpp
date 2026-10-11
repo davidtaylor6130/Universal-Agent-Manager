@@ -10,6 +10,25 @@
 #include <string>
 #include <string_view>
 
+namespace
+{
+	/// Retains the mutation lease until workers and their completion callbacks release this request.
+	class WorkspaceMutationCallback final : public CefMessageRouterBrowserSide::Callback
+	{
+	  public:
+		WorkspaceMutationCallback(CefRefPtr<Callback> callback, std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease)
+		    : m_callback(std::move(callback)), m_lease(std::move(lease)) {}
+		void Success(const CefString& response) override { m_callback->Success(response); }
+		void Success(const void* data, size_t size) override { m_callback->Success(data, size); }
+		void Failure(int code, const CefString& message) override { m_callback->Failure(code, message); }
+
+	  private:
+		CefRefPtr<Callback> m_callback;
+		std::shared_ptr<uam::WorkspaceLeaseGate::Lease> m_lease;
+		IMPLEMENT_REFCOUNTING(WorkspaceMutationCallback);
+	};
+}
+
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -56,6 +75,16 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		return true;
 	}
 	const std::string chat_id = payload.value("chatId", "");
+	if (uam::RequiresWorkspaceMutationLease(action))
+	{
+		std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
+		if (!lease)
+		{
+			cb->Failure(409, "Workspace cleanup is finishing. Try again shortly.");
+			return true;
+		}
+		cb = new WorkspaceMutationCallback(cb, std::move(lease));
+	}
 	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession" || action == "cancelChatTitle";
 	const bool is_cached_history_read = action == "getChatMessages" || action == "getToolCallContent" || action == "getAttachmentImagePreview";
 	if (m_workspaceDeletionPending && is_cached_history_read && !chat_id.empty() &&
