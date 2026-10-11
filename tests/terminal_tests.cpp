@@ -1575,6 +1575,14 @@ UAM_TEST(ChatRuntimeHelpersRecognizeAcpAndCliActiveTurns)
 	UAM_ASSERT(!uam::ChatHasBusyCliTerminal(app, "chat-1"));
 	UAM_ASSERT(!uam::ChatHasRunningRuntime(app, "chat-1"));
 
+	ChatSession idle_chat;
+	idle_chat.id = "chat-1";
+	idle_chat.native_session_id = "native-1";
+	app.chats.push_back(idle_chat);
+	UAM_ASSERT(!uam::ChatHasBusyCliTerminal(app, " chat-1 "));
+	UAM_ASSERT(!uam::ChatHasBusyCliTerminal(app, "native-1"));
+	app.chats.clear();
+
 	auto acp = std::make_unique<uam::AcpSessionState>();
 	acp->chat_id = " chat-1 ";
 	acp->running = true;

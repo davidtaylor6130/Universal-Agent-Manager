@@ -438,12 +438,16 @@ void Application::PollTick()
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
 	uam::FlushPendingChatSaves(m_app);
+	const std::chrono::steady_clock::time_point runtimes_finished = std::chrono::steady_clock::now();
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app, TerminalUiVisible(m_browser));
 	const bool routing_changed = uam::PollExecutionRouting(m_app);
+	const std::chrono::steady_clock::time_point terminals_finished = std::chrono::steady_clock::now();
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
+	const std::chrono::steady_clock::time_point memory_finished = std::chrono::steady_clock::now();
 	const bool computer_use_changed = m_computerUseService.PollInBackground(m_app);
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
 	const bool folder_availability_changed = PollWorkspaceAvailability();
+	const std::chrono::steady_clock::time_point controls_finished = std::chrono::steady_clock::now();
 	if (shell_actions_changed && m_browser && m_browser->GetHost())
 	{
 		m_browser->GetHost()->SetFocus(true);
@@ -462,8 +466,11 @@ void Application::PollTick()
 		m_app.remote_host_health_changed = false;
 	const bool model_discovery_retry_changed = uam::RetryCompatibilityBlockedAcpModelDiscoveries(m_app);
 	const bool startup_model_discovery_changed = m_startupModelDiscovery.Poll(m_app);
+	const std::chrono::steady_clock::time_point providers_finished = std::chrono::steady_clock::now();
 	const bool history_discovery_changed = PollHistoryDiscovery();
+	const std::chrono::steady_clock::time_point history_finished = std::chrono::steady_clock::now();
 	m_worktreeRetention.Poll(m_app);
+	const std::chrono::steady_clock::time_point retention_finished = std::chrono::steady_clock::now();
 
 	// Poll the provider model catalog service for async model refresh completion.
 	bool model_catalog_changed = false;
@@ -471,6 +478,7 @@ void Application::PollTick()
 	{
 		model_catalog_changed = m_app.provider_model_catalog->Poll();
 	}
+	const std::chrono::steady_clock::time_point catalogs_finished = std::chrono::steady_clock::now();
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
@@ -485,6 +493,7 @@ void Application::PollTick()
 		uam::PushStateUpdateIfChanged(m_browser, m_app);
 	}
 
+	const std::chrono::steady_clock::time_point push_finished = std::chrono::steady_clock::now();
 	// Keep the machine awake while an agent turn or goal loop is active so
 	// display sleep / App Nap cannot pause this polling loop mid-goal.
 	m_platformServices->process_service.SetKeepSystemAwake(uam::RuntimeShouldKeepSystemAwake(m_app));
@@ -495,7 +504,22 @@ void Application::PollTick()
 	if (poll_duration >= std::chrono::milliseconds(50) &&
 	    (last_slow_poll_report == std::chrono::steady_clock::time_point::min() || poll_finished - last_slow_poll_report >= std::chrono::seconds(5)))
 	{
-		uam::diagnostics::Write("[performance] PollTick took " + std::to_string(poll_duration.count()) + " ms.");
+		const std::function<std::string(std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point)> milliseconds =
+		    [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
+		{
+			return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+		};
+		uam::diagnostics::Write("[performance] PollTick took " + std::to_string(poll_duration.count()) + " ms; stages=" +
+		    "runtimes:" + milliseconds(poll_started, runtimes_finished) +
+		    ",terminals:" + milliseconds(runtimes_finished, terminals_finished) +
+		    ",memory:" + milliseconds(terminals_finished, memory_finished) +
+		    ",controls:" + milliseconds(memory_finished, controls_finished) +
+		    ",providers:" + milliseconds(controls_finished, providers_finished) +
+		    ",history:" + milliseconds(providers_finished, history_finished) +
+		    ",retention:" + milliseconds(history_finished, retention_finished) +
+		    ",catalogs:" + milliseconds(retention_finished, catalogs_finished) +
+		    ",push:" + milliseconds(catalogs_finished, push_finished) +
+		    ",awake:" + milliseconds(push_finished, poll_finished) + " ms.");
 		last_slow_poll_report = poll_finished;
 	}
 

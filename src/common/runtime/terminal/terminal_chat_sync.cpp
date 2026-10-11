@@ -233,6 +233,8 @@ bool CliTerminalHasActiveTurn(const CliTerminalState& terminal)
 
 bool ChatHasBusyCliTerminal(const AppState& app, std::string_view chat_id)
 {
+	// Idle memory scans must not search the chat catalog when no terminal can be busy.
+	if (app.cli_terminals.empty()) return false;
 	const std::string target_id = NormalizeChatSyncTargetId(chat_id);
 	if (target_id.empty())
 	{
