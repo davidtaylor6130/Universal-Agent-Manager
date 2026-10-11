@@ -810,3 +810,48 @@ UAM_TEST(ComputerUseBackgroundPollPreservesTranscriptAndHonorsStopAndDeletion)
 	UAM_ASSERT(app.chats.empty());
 	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at("background-chat").state, std::string("stopped"));
 }
+
+
+UAM_TEST(ComputerUseBackgroundPollPublishesSignatureOnlyChangesAndRemovesRemoteState)
+{
+	TempDir temp("uam-computer-use-background-delta");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "delta-chat";
+	chat.provider_id = "claude-cli";
+	chat.computer_use_backend = "uam";
+	app.chats.push_back(std::move(chat));
+	const fs::path control = temp.root / "computer-use/delta-chat/control.json";
+	UAM_ASSERT(fs::create_directories(control.parent_path()));
+	UAM_ASSERT(uam::io::WriteTextFile(control, "{\"state\":\"armed\"}\n"));
+	uam::ComputerUseService service;
+	const double load_deadline = uam::GetAppTimeSeconds() + 5.0;
+	while (!app.computer_use_by_chat_id.contains("delta-chat") && uam::GetAppTimeSeconds() < load_deadline)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(app.computer_use_by_chat_id.contains("delta-chat"));
+	const std::string signature = app.computer_use_by_chat_id.at("delta-chat").source_signature;
+	const std::string fingerprint = app.computer_use_by_chat_id.at("delta-chat").fingerprint;
+	fs::last_write_time(control, fs::last_write_time(control) + std::chrono::seconds(1));
+	const double signature_deadline = uam::GetAppTimeSeconds() + 5.0;
+	while (app.computer_use_by_chat_id.at("delta-chat").source_signature == signature && uam::GetAppTimeSeconds() < signature_deadline)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(app.computer_use_by_chat_id.at("delta-chat").source_signature != signature);
+	UAM_ASSERT_EQ(app.computer_use_by_chat_id.at("delta-chat").fingerprint, fingerprint);
+	UAM_ASSERT(app.chats.front().computer_use_enabled);
+	app.chats.front().execution_host_id = "remote-host";
+	const double removal_deadline = uam::GetAppTimeSeconds() + 5.0;
+	while (app.computer_use_by_chat_id.contains("delta-chat") && uam::GetAppTimeSeconds() < removal_deadline)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(!app.computer_use_by_chat_id.contains("delta-chat"));
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+}

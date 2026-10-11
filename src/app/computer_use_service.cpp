@@ -170,6 +170,7 @@ namespace uam
 	{
 		AppState state;
 		std::vector<ChatSession> baseline;
+		std::vector<std::size_t> changed_indices;
 		std::unordered_map<std::string, std::string> signatures;
 	};
 
@@ -211,12 +212,12 @@ namespace uam
 			std::shared_ptr<Scan> scan;
 			try { scan = m_scan.get(); }
 			catch (const std::exception& error) { diagnostics::Write(std::string("Computer-use background scan failed: ") + error.what()); m_nextScanTime = GetAppTimeSeconds() + 1.0; }
-			if (scan && scan->state.data_root == app.data_root)
+			if (scan && !scan->changed_indices.empty() && scan->state.data_root == app.data_root)
 			{
 				std::unordered_map<std::string, ChatSession*> current_by_id;
 				current_by_id.reserve(app.chats.size());
 				for (ChatSession& chat : app.chats) current_by_id.emplace(chat.id, &chat);
-				for (std::size_t index = 0; index < scan->baseline.size(); ++index)
+				for (const std::size_t index : scan->changed_indices)
 				{
 					const ChatSession& baseline = scan->baseline[index];
 					const std::unordered_map<std::string, ChatSession*>::const_iterator found = current_by_id.find(baseline.id);
@@ -266,8 +267,24 @@ namespace uam
 			std::packaged_task<std::shared_ptr<Scan>()> task([scan, retired = std::move(m_retiredScan)]() mutable
 			{
 				retired.reset();
+				std::unordered_map<std::string, std::pair<std::string, std::string>> prior_states;
+				prior_states.reserve(scan->state.computer_use_by_chat_id.size());
+				for (const std::pair<const std::string, ComputerUseRuntimeState>& entry : scan->state.computer_use_by_chat_id)
+					prior_states.emplace(entry.first, std::make_pair(entry.second.fingerprint, entry.second.source_signature));
 				scan->state.chats = scan->baseline;
 				(void)Poll(scan->state);
+				// Unchanged scans need no catalog lookup or runtime-state copying on the GUI thread.
+				for (std::size_t index = 0; index < scan->baseline.size(); ++index)
+				{
+					const ChatSession& baseline = scan->baseline[index];
+					const std::unordered_map<std::string, std::pair<std::string, std::string>>::const_iterator prior = prior_states.find(baseline.id);
+					const std::unordered_map<std::string, ComputerUseRuntimeState>::const_iterator next = scan->state.computer_use_by_chat_id.find(baseline.id);
+					if (!SameControlIdentity(baseline, scan->state.chats[index]) ||
+					    (prior == prior_states.end()) != (next == scan->state.computer_use_by_chat_id.end()) ||
+					    (prior != prior_states.end() && next != scan->state.computer_use_by_chat_id.end() &&
+					     (prior->second.first != next->second.fingerprint || prior->second.second != next->second.source_signature)))
+						scan->changed_indices.push_back(index);
+				}
 				return scan;
 			});
 			m_scan = task.get_future();
