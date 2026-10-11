@@ -1,12 +1,21 @@
 import { useMemo } from 'react'
 import { useAppStore } from '../../store/useAppStore'
-import { USAGE_PROVIDERS } from '../../services/usageHistory'
+import { ALL_MACHINES_HOST_ID, USAGE_PROVIDERS } from '../../services/usageHistory'
 import type { AcpContextUsage, AcpRateLimits } from '../../store/cpp/types'
 import { providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 
 /** Show the latest provider-reported allowance for this host without launching or changing a chat. */
 export function UsageLimits({ executionHostId }: { executionHostId: string }) {
+  const configured = useAppStore(state => state.executionHosts)
+  if (executionHostId !== ALL_MACHINES_HOST_ID) return <UsageHostLimits executionHostId={executionHostId} />
+  const hosts = configured.some(host => host.id === 'local') ? configured : [{ id: 'local', label: 'This computer' }, ...configured]
+  return <div className="mx-auto grid max-w-6xl gap-8">{hosts.map(host => <section key={host.id} aria-label={`${host.label} limits`} className="grid gap-4">
+    <h2 className="text-sm font-semibold">{host.label}</h2><UsageHostLimits executionHostId={host.id} />
+  </section>)}</div>
+}
+
+function UsageHostLimits({ executionHostId }: { executionHostId: string }) {
   const sessions = useAppStore(state => state.sessions)
   const bindings = useAppStore(state => state.acpBindingBySessionId)
   const latest = useMemo(() => {

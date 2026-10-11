@@ -21,7 +21,7 @@
 
 namespace uam::query_handler_async { struct AsyncCefResult; }
 namespace uam { struct WorkspaceDeletionTask; }
-namespace uam::usage { class Collector; }
+namespace uam::usage { class MultiHostHistory; }
 
 /// <summary>
 /// Handles all window.cefQuery() requests from the React frontend.
@@ -45,7 +45,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
   private:
 	uam::AppState& m_app;
 	uam::TranscriptRetentionService m_transcriptRetention;
-	std::shared_ptr<uam::usage::Collector> m_usageHistory;
+	std::shared_ptr<uam::usage::MultiHostHistory> m_usageHistory;
 	CefRefPtr<CefThread> m_usageQueries;
 	CefRefPtr<CefThread> m_titleQueries;
 	CefRefPtr<CefThread> m_snoozeQueries;
@@ -67,6 +67,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	bool HasActiveDeletionHistoryLoad() const;
 
 	// ---- action handlers -------------------------------------------------
+	void RefreshUsageTargets();
 	void HandleGetUsageHistory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetStartupNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleResolveStartupNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

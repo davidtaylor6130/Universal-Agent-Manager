@@ -32,6 +32,24 @@ describe('usage history contract', () => {
     expect(() => parseUsageHistory({ ...data, version: 3, asOfMs: 8640000000000001, windowDays: 1, collecting: false, collectionError: '' }, 'local', windowRange)).toThrow('Cached usage')
   })
 
+  it('validates per-machine freshness and finishes loading partial cached totals', async () => {
+    const coverage = [{ executionHostId: 'local', label: 'This computer', status: 'ready', asOfMs: windowRange.endMs, error: '' }, { executionHostId: 'peer', label: 'Windows', status: 'cached', asOfMs: 1000, error: 'Offline' }]
+    const value = history({ version: 3, executionHostId: '*', asOfMs: windowRange.endMs, windowDays: 1, collecting: false, collectionError: '', complete: false, coverage: coverage as UsageHistory['coverage'] })
+    expect(parseUsageHistory(value, '*', windowRange).coverage).toHaveLength(2)
+    for (const bad of [[coverage[0], coverage[0]], [{ ...coverage[0], status: 'other' }], [{ ...coverage[0], asOfMs: null }], [{ ...coverage[0], error: 'x'.repeat(1025) }]]) {
+      expect(() => parseUsageHistory({ ...value, coverage: bad }, '*', windowRange)).toThrow('coverage')
+    }
+    expect(() => parseUsageHistory({ ...value, executionHostId: 'peer' }, 'peer', windowRange)).toThrow('coverage')
+    window.cefQuery = request => request.onSuccess(JSON.stringify(value))
+    let state!: ReturnType<typeof useUsageHistory>
+    function Probe() { state = useUsageHistory('*', windowRange); return null }
+    const root = createRoot(document.createElement('div'))
+    try {
+      await act(async () => root.render(<Probe />))
+      expect(state.data?.complete).toBe(false); expect(state.loading).toBe(false); expect(state.error).toBe('')
+    } finally { act(() => root.unmount()) }
+  })
+
   it('preserves unknown cost, real zero prices, partial coverage and reasoning as a subset', () => {
     const value = parseUsageHistory(history(), 'local', windowRange)
     expect(formatUsageCost(value.totals)).toBe('Unknown')

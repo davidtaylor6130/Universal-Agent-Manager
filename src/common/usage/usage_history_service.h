@@ -7,6 +7,7 @@
 namespace uam::usage
 {
 	using AccountingSink = std::function<bool(const std::string&, const std::vector<Record>&, std::size_t, std::string&)>;
+	nlohmann::json EmptyHistoryMetadata(std::string_view host_id = "local");
 	void ApplyUsageSummary(nlohmann::json& result, const Summary& summary, std::int64_t start_ms, std::int64_t end_ms);
 	struct HistorySource
 	{

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
-import { EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageWindow, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
+import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageWindow, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
 import { useAppStore } from '../../store/useAppStore'
 import { providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -75,7 +75,7 @@ function PriceEditor({ model, prices, onSave, onClose }: { model: UsageModel; pr
 /** T3-inspired usage workspace. Native readers supply counts; unknown prices and scan gaps remain visible. */
 export function UsagePage({ onClose }: { onClose: () => void }) {
   const hosts = useAppStore(state => state.executionHosts)
-  const [hostId, setHostId] = useState('local')
+  const [hostId, setHostId] = useState(ALL_MACHINES_HOST_ID)
   const [metric, setMetric] = useState<UsageMetric>('cost')
   const [days, setDays] = useState<UsageWindowDays>(7)
   const [range, setRange] = useState(() => usageWindow(7))
@@ -88,6 +88,11 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const history = useUsageHistory(hostId, range, prices, metric !== 'limits')
   const headingRef = useRef<HTMLHeadingElement>(null)
   useEffect(() => { headingRef.current?.focus() }, [])
+  useEffect(() => {
+    if (hostId !== ALL_MACHINES_HOST_ID && hostId !== 'local' && !hosts.some(host => host.id === hostId)) {
+      setHostId(ALL_MACHINES_HOST_ID); setSelectedModel(null); setEditingPrice(false)
+    }
+  }, [hosts, hostId])
   const data = history.data
   const totals = useMemo(() => sumProviderUsage((data?.providers ?? []).filter(provider => !hiddenProviders.has(provider.providerId))), [data, hiddenProviders])
   const models = useMemo(() => (data?.models ?? []).filter(model => !hiddenProviders.has(model.providerId)).sort((a, b) => metric === 'cost' ? (usageCost(b) ?? -1) - (usageCost(a) ?? -1) : b.totalTokens - a.totalTokens), [data, metric, hiddenProviders])
@@ -115,13 +120,13 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const currentModel = data?.models.find(model => modelKey(model) === selectedModel)
   const refresh = () => { setRange(usageWindow(days)); history.refresh() }
   const warnings = data?.providers.filter(provider => provider.errors || provider.invalidLines || provider.oversizedLines || provider.pendingLines) ?? []
-  return <main aria-label="Usage workspace" className="flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }} onKeyDown={event => {
+  return <main aria-label="Usage workspace" className="flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: '#000', color: 'var(--text)' }} onKeyDown={event => {
     if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('[aria-modal="true"]') && !editingPrice) { event.preventDefault(); onClose() }
   }}>
     <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
       <IconButton icon={<ArrowLeft size={16} />} label="Back from usage" onClick={onClose} />
       <h1 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">Usage</h1>
-      <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>
+      <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>
       <div role="group" aria-label="Usage metric" className="flex gap-1">{(['cost', 'tokens', 'limits'] as const).map(value => <Button key={value} size="sm" variant={metric === value ? 'primary' : 'ghost'} aria-pressed={metric === value} onClick={() => setMetric(value)}>{value[0].toUpperCase() + value.slice(1)}</Button>)}</div>
       <div role="group" aria-label="Usage period" className="flex gap-1">{USAGE_WINDOWS.map(option => <Button size="sm" key={option.days} disabled={metric === 'limits'} variant={days === option.days ? 'secondary' : 'ghost'} aria-pressed={days === option.days} onClick={() => { setDays(option.days); setRange(usageWindow(option.days)); setSelectedModel(null); setEditingPrice(false) }}>{option.label}</Button>)}</div>
       {metric !== 'limits' && <IconButton icon={<RefreshCw size={15} />} label="Refresh usage" aria-busy={history.loading} disabled={history.loading} onClick={refresh} />}
@@ -138,7 +143,11 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
             {data.pricing.error && <p>{data.pricing.error}</p>}
             {data.pricing.aliasError && <p>{data.pricing.aliasError}</p>}
           </div>}
-          {!data.complete && <p className="text-xs">Partial history. Totals will update as loading continues.</p>}
+          {!data.complete && <p className="text-xs">Partial history. Totals include available and cached records.</p>}
+          {data.coverage && <ul aria-label="Usage machine coverage" className="grid gap-1 text-xs">{data.coverage.map(machine => <li key={machine.executionHostId}>
+            {machine.label || machine.executionHostId}: {machine.status === 'ready' ? 'Current' : machine.status === 'cached' ? 'Cached' : machine.status === 'loading' ? 'Loading' : 'Unavailable'}
+            {machine.asOfMs && ` · ${new Date(machine.asOfMs).toLocaleString()}`}{machine.error && ` · ${machine.error}`}
+          </li>)}</ul>}
           {data.listingLimited && <p className="text-xs">Some history is outside the scan limit. These totals are incomplete.</p>}
           {warnings.map(provider => <p key={provider.providerId} className="text-xs">{providerLabel(provider.providerId)}: {provider.errors} read errors, {provider.invalidLines} invalid records, {provider.oversizedLines} oversized records, {provider.pendingLines} unfinished lines.</p>)}
           <section className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">

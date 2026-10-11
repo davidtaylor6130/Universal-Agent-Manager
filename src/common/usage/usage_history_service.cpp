@@ -48,6 +48,17 @@ namespace uam::usage
 		}
 	}
 
+	nlohmann::json EmptyHistoryMetadata(std::string_view host_id)
+	{
+		nlohmann::json result{{"version", 3}, {"source", "native-transcripts"}, {"executionHostId", host_id}, {"complete", false},
+		    {"filesChecked", 0}, {"filesTotal", 0}, {"bytesRead", 0}, {"listingLimited", false}};
+		result["providers"] = nlohmann::json::array();
+		for (const char* provider : provider_ids::kAllCliProviderIds)
+			result["providers"].push_back({{"providerId", provider}, {"available", false}, {"files", 0}, {"errors", 0},
+			    {"invalidLines", 0}, {"oversizedLines", 0}, {"suppressedForkRecords", 0}, {"pendingLines", 0}});
+		return result;
+	}
+
 	bool ParseHistoryRequest(const nlohmann::json& payload, HistoryRequest& request, std::string& error)
 	{
 		HistoryRequest parsed;

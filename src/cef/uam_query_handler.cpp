@@ -2,7 +2,7 @@
 #include "cef/uam_query_handler.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/uam_cef_security.h"
-#include "common/usage/usage_collector.h"
+#include "common/usage/multi_host_history.h"
 
 #include "include/wrapper/cef_helpers.h"
 
@@ -35,7 +35,7 @@ namespace
 
 UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url) : m_app(app), m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
 {
-	m_usageHistory = std::make_shared<uam::usage::Collector>(m_app.data_root);
+	m_usageHistory = std::make_shared<uam::usage::MultiHostHistory>(m_app.data_root, m_app.settings.execution_hosts);
 }
 
 UamQueryHandler::~UamQueryHandler()

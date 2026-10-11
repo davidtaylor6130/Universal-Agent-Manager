@@ -11,23 +11,14 @@ namespace uam::usage
 		{
 			return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 		}
-		nlohmann::json EmptyMetadata()
-		{
-			nlohmann::json result{{"version", 3}, {"source", "native-transcripts"}, {"executionHostId", "local"}, {"complete", false},
-			    {"filesChecked", 0}, {"filesTotal", 0}, {"bytesRead", 0}, {"listingLimited", false}};
-			result["providers"] = nlohmann::json::array();
-			for (const char* provider : provider_ids::kAllCliProviderIds)
-				result["providers"].push_back({{"providerId", provider}, {"available", false}, {"files", 0}, {"errors", 0},
-				    {"invalidLines", 0}, {"oversizedLines", 0}, {"suppressedForkRecords", 0}, {"pendingLines", 0}});
-			return result;
-		}
+
 	}
 
 	Collector::Collector(std::filesystem::path data_root, bool export_accounting)
-	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_store(m_dataRoot), m_pricing(m_dataRoot, PricingCache::PublicCatalogFetcher()), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
 	Collector::Collector(std::filesystem::path data_root, std::vector<HistorySource> sources, RateFetcher fetch_rates, bool export_accounting)
-	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
+	    : m_dataRoot(std::move(data_root)), m_exportAccounting(export_accounting), m_store(m_dataRoot), m_history(std::move(sources)), m_pricing(m_dataRoot, std::move(fetch_rates)), m_catalog(m_pricing.Catalog()), m_pricingMetadata(m_pricing.Metadata(Now())), m_metadata(EmptyHistoryMetadata()), m_worker([this](std::stop_token stop) { Run(stop); }) {}
 
 	Collector::~Collector()
 	{
@@ -161,18 +152,40 @@ namespace uam::usage
 		return {{"dataBase64", base64::Encode(chunk)}, {"offset", offset}, {"totalBytes", bytes->size()}, {"fingerprint", current_fingerprint}};
 	}
 
+	std::shared_ptr<const std::string> Collector::AccountingSnapshot() const
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		return m_accountingBytes;
+	}
+
+	std::pair<bool, std::string> Collector::CollectionStatus() const
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		return {m_collecting, m_error};
+	}
+
 	nlohmann::json Collector::Query(int days, const std::map<ModelKey, ModelPrices>& prices) const
 	{
 		if (days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
 		std::shared_ptr<const Ledger> ledger;
-		std::shared_ptr<const RateCatalog> catalog;
-		ModelAliases aliases;
 		nlohmann::json result;
 		{
-			std::lock_guard<std::mutex> lock(m_mutex); ledger = m_ledger; catalog = m_catalog; aliases = m_aliases; result = m_metadata; result["pricing"] = m_pricingMetadata;
+			std::lock_guard<std::mutex> lock(m_mutex); ledger = m_ledger; result = m_metadata;
 			result["collecting"] = m_collecting; result["collectionError"] = m_error;
 		}
 		if (!ledger) return {{"pending", true}, {"collectionError", result["collectionError"]}};
+		return Render(*ledger, std::move(result), days, prices);
+	}
+
+	nlohmann::json Collector::Render(const Ledger& selected, nlohmann::json result, int days, const std::map<ModelKey, ModelPrices>& prices) const
+	{
+		if (days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
+		std::shared_ptr<const RateCatalog> catalog;
+		ModelAliases aliases;
+		{
+			std::lock_guard<std::mutex> lock(m_mutex); catalog = m_catalog; aliases = m_aliases; result["pricing"] = m_pricingMetadata;
+		}
+		const Ledger* ledger = &selected;
 		const std::int64_t start = ledger->WindowStart(days), end = ledger->GeneratedMs();
 		std::optional<Summary> summary = ledger->Query(start, end);
 		if (!summary) return {{"error", "Usage totals exceed supported limits."}};

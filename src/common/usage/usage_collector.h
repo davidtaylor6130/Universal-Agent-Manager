@@ -20,6 +20,10 @@ namespace uam::usage
 		nlohmann::json Query(int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
 		/// <summary>Returns immutable bounded wire chunks; never reads provider files or accounting storage.</summary>
 		nlohmann::json ExportAccounting(std::size_t offset = 0, std::string_view fingerprint = {}) const;
+		std::shared_ptr<const std::string> AccountingSnapshot() const;
+		std::pair<bool, std::string> CollectionStatus() const;
+		/// <summary>Prices an immutable combined ledger using the locally cached catalog, without I/O.</summary>
+		nlohmann::json Render(const Ledger& ledger, nlohmann::json metadata, int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
 		const std::filesystem::path& DataRoot() const { return m_dataRoot; }
 
 	private:

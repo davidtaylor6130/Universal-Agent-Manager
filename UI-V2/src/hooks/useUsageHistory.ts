@@ -41,7 +41,7 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
           return
         }
         const data = parseUsageHistory(reply.data, executionHostId, window)
-        setState({ data, loading: !data.complete, error: data.collectionError || '', scope, dataScope: scope })
+        setState({ data, loading: data.version === 3 ? Boolean(data.collecting) : !data.complete, error: data.collectionError || '', scope, dataScope: scope })
         timer = setTimeout(() => { void load() }, (data.collecting || data.pricing?.refreshing) ? 2000 : 30000)
       } catch (error) {
         clearTimeout(timeout)

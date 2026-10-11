@@ -204,6 +204,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		m_app.settings.execution_hosts.push_back(host);
 	// Install progress is transient. A competing controller must not change
 	// durable host metadata before the target-side transaction lock succeeds.
+	RefreshUsageTargets();
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	const std::string install_nonce = plan.nonce;
 	g_remote_install_tokens[host.id] = install_nonce;
@@ -278,9 +279,11 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    if (!result->ok)
 			    {
 				    release_install();
+				    RefreshUsageTargets();
 				    uam::PushStateUpdateIfChanged(browser, m_app);
 				    return;
 			    }
+			    RefreshUsageTargets();
 			    uam::PushStateUpdateIfChanged(browser, m_app);
 			    uam::query_handler_async::AsyncCefResult outcome = response;
 			    const auto finalized = std::make_shared<bool>(false);
@@ -340,6 +343,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					        }
 				        }
 				        release_install();
+				        RefreshUsageTargets();
 				        uam::PushStateUpdateIfChanged(browser, m_app);
 			        });
 			    response.callback_deferred = true;
@@ -353,6 +357,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					    PersistenceCoordinator().SaveSettings(m_app);
 				    }
 				    release_install();
+				    RefreshUsageTargets();
 				    uam::PushStateUpdateIfChanged(browser, m_app);
 			    }
 		    };
@@ -419,6 +424,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		g_remote_install_tokens.erase(host.id);
 		m_app.settings = previous;
 		PersistenceCoordinator().SaveSettings(m_app);
+		RefreshUsageTargets();
 		uam::PushStateUpdateIfChanged(browser, m_app);
 	}
 }
@@ -497,6 +503,7 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 		cb->Failure(500, "Host options could not be saved.");
 		return;
 	}
+	RefreshUsageTargets();
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	if (!configure_startup) { cb->Success("{}"); return; }
 	const std::string token = PlatformServicesFactory::Instance().process_service.GenerateUuid();
@@ -526,6 +533,7 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 			    current->startup_status = "pending";
 			    response = uam::query_handler_async::AsyncFailure(500, "Startup changed on the host, but its confirmed status could not be saved. Save host options again to confirm it.");
 		    }
+		    RefreshUsageTargets();
 		    uam::PushStateUpdateIfChanged(browser, m_app);
 	    });
 	if (!queued)
@@ -584,6 +592,7 @@ void UamQueryHandler::HandleRemoveRemoteHost(CefRefPtr<CefBrowser> browser,
 		cb->Failure(500, "Failed to remove the remote host.");
 		return;
 	}
+	RefreshUsageTargets();
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -661,6 +670,7 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		    if (!PersistenceCoordinator().SaveSettings(m_app) && response.ok)
 			    response = uam::query_handler_async::AsyncFailure(
 			        500, "Remote helper health changed, but its status could not be saved.");
+		    RefreshUsageTargets();
 		    uam::PushStateUpdateIfChanged(browser, m_app);
 	    });
 }

@@ -1,6 +1,7 @@
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID } from '../utils/providerMetadata'
 
 export const USAGE_PROVIDERS = [CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, ANTIGRAVITY_CLI_PROVIDER_ID] as const
+export const ALL_MACHINES_HOST_ID = '*'
 export type UsageProviderId = typeof USAGE_PROVIDERS[number]
 export type UsageSpeed = 'standard' | 'fast' | 'ultrafast'
 export type UsageMetric = 'cost' | 'tokens' | 'limits'
@@ -40,7 +41,15 @@ export interface UsageModel extends UsageTotals {
 }
 export interface UsagePeriod extends UsageTotals { startMs: number }
 export interface UsageProviderPeriod extends UsagePeriod { providerId: UsageProviderId }
+export interface UsageCoverage {
+  executionHostId: string
+  label: string
+  status: 'ready' | 'loading' | 'cached' | 'unavailable'
+  asOfMs: number | null
+  error: string
+}
 export interface UsageHistory {
+  coverage?: UsageCoverage[]
   version: 2 | 3
   asOfMs?: number
   windowDays?: UsageWindowDays
@@ -126,6 +135,19 @@ function pricing(value: unknown): value is UsagePricing {
     && ['error', 'aliasError'].every(key => typeof value[key] === 'string' && (value[key] as string).length <= 1024)
 }
 
+function coverage(value: unknown, hostId: string): value is UsageCoverage[] {
+  if (!Array.isArray(value) || !value.length || value.length > 33 || (hostId !== ALL_MACHINES_HOST_ID && value.length !== 1)) return false
+  const seen = new Set<string>()
+  return value.every(row => {
+    if (!object(row) || typeof row.executionHostId !== 'string' || !row.executionHostId || row.executionHostId.length > 160 || row.executionHostId === ALL_MACHINES_HOST_ID || seen.has(row.executionHostId)
+      || (hostId !== ALL_MACHINES_HOST_ID && row.executionHostId !== hostId) || typeof row.label !== 'string' || row.label.length > 128
+      || !['ready', 'loading', 'cached', 'unavailable'].includes(row.status as string) || !(row.asOfMs === null || timestamp(row.asOfMs))
+      || ((row.status === 'ready' || row.status === 'cached') && row.asOfMs === null) || typeof row.error !== 'string' || row.error.length > 1024) return false
+    seen.add(row.executionHostId)
+    return true
+  })
+}
+
 function totals(value: unknown): value is UsageTotals {
   if (!object(value) || !countFields.every(key => integer(value[key])) || !['reportedCostUsd', 'estimatedCostUsd', 'estimatedCacheSavingsUsd'].every(key => money(value[key]))) return false
   const row = value as unknown as UsageTotals
@@ -180,6 +202,7 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
   if (!totals(value.totals) || typeof value.complete !== 'boolean' || typeof value.listingLimited !== 'boolean'
     || !['filesChecked', 'filesTotal', 'bytesRead', 'duplicates', 'unidentifiedRecords'].every(key => integer(value[key]))
     || (value.filesChecked as number) > (value.filesTotal as number)) throw new Error('Usage data is incomplete or invalid. Refresh to try again.')
+  if (value.coverage !== undefined && !coverage(value.coverage, executionHostId)) throw new Error('Usage machine coverage is invalid. Refresh to try again.')
   if (value.pricing !== undefined && !pricing(value.pricing)) throw new Error('Usage pricing data is invalid. Refresh to try again.')
   const seenProviders = new Set<string>(), seenModels = new Set<string>()
   if (!Array.isArray(value.providers) || value.providers.length !== USAGE_PROVIDERS.length || !value.providers.every(row => {

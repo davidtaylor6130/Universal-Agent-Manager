@@ -42,6 +42,32 @@ describe('UsagePage', () => {
     }
   })
 
+  it('opens all machines, shows offline coverage, and returns there after removing the selected machine', async () => {
+    storage()
+    const previous = useAppStore.getState(), requests: string[] = []
+    useAppStore.setState({ executionHosts: [{ id: 'local', label: 'This computer' }, { id: 'peer', label: 'Windows' }] as typeof previous.executionHosts })
+    window.cefQuery = request => {
+      const { payload } = JSON.parse(request.request); requests.push(payload.executionHostId)
+      request.onSuccess(JSON.stringify({ version: 3, executionHostId: payload.executionHostId, source: 'native-transcripts', asOfMs: payload.endMs, windowDays: payload.windowDays, collecting: false, collectionError: '',
+        startMs: payload.startMs, endMs: payload.endMs, totals: total, complete: false, listingLimited: false, filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 0, unidentifiedRecords: 0,
+        coverage: [{ executionHostId: 'peer', label: 'Windows', status: 'cached', asOfMs: 1000, error: 'Machine is offline.' }],
+        providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? total : blank), providerId, available: true, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
+        models: [], days: [], hours: [], providerDays: [], providerHours: [] }))
+    }
+    const host = document.createElement('div'), root = createRoot(host); document.body.appendChild(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      expect(requests[0]).toBe('*')
+      expect(host.querySelector('[aria-label="Usage machine coverage"]')?.textContent).toContain('Windows: Cached')
+      expect(host.textContent).toContain('Machine is offline.'); expect(host.textContent).not.toContain('Loading usage history')
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Usage host"]')!.click())
+      await act(async () => Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(option => option.textContent?.includes('Windows'))!.click())
+      expect(requests.at(-1)).toBe('peer')
+      await act(async () => useAppStore.setState({ executionHosts: [{ id: 'local', label: 'This computer' }] as typeof previous.executionHosts }))
+      expect(requests.at(-1)).toBe('*')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(previous, true) }
+  })
+
   it('shows unknown costs, request diagnostics, token subsets and editable zero/blank rates', async () => {
     storage()
     const requests: Record<string, unknown>[] = []
@@ -142,6 +168,21 @@ describe('UsagePage', () => {
 })
 
 describe('UsageLimits', () => {
+  it('keeps machine allowances separate in the all-machines view', () => {
+    const previous = useAppStore.getState()
+    const limits = (percent: number) => ({ updatedAt: Date.now(), limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: null, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
+    useAppStore.setState({ executionHosts: [{ id: 'local', label: 'Mac' }, { id: 'peer', label: 'Windows' }] as typeof previous.executionHosts,
+      sessions: [{ id: 'local-chat', providerId: 'codex-cli', executionHostId: 'local' }, { id: 'remote-chat', providerId: 'codex-cli', executionHostId: 'peer' }] as typeof previous.sessions,
+      acpBindingBySessionId: { 'local-chat': { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(25) } }, 'remote-chat': { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(90) } } } as typeof previous.acpBindingBySessionId })
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      act(() => root.render(<UsageLimits executionHostId="*" />))
+      expect(host.querySelector('[aria-label="Mac limits"]')?.textContent).toContain('75% remaining')
+      expect(host.querySelector('[aria-label="Windows limits"]')?.textContent).toContain('10% remaining')
+      expect(host.querySelector('[aria-label="Mac limits"]')?.textContent).not.toContain('10% remaining')
+    } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
+  })
+
   it('uses the newest matching provider/host snapshot and labels passed resets', () => {
     const previous = useAppStore.getState()
     const limits = (percent: number, time: number) => ({ updatedAt: time, limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: Date.now() / 1000 - 60, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
