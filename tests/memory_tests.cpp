@@ -2078,6 +2078,17 @@ UAM_TEST(RemoteProjectMemoryScanRunsWithTargetPolicyAndLeavesControllerMemoryUnt
 	UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$UAM_TEST_MEMORY_SSH_LOG\"\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(worker, R"(#!/bin/sh
 [ -f opencode.json ] || exit 2
+found_directory=0
+expected_directory=$(pwd)
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--dir" ]; then
+        shift
+        [ "$1" -ef "$expected_directory" ] || exit 3
+        found_directory=1
+    fi
+    shift
+done
+[ "$found_directory" = 1 ] || exit 4
 cat > "$UAM_TEST_MEMORY_PROMPT"
 printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Target lesson","memory":"Use Allman braces in this project.","evidence":"User explicitly requested Allman braces.","confidence":"high"}]}'
 )"));
@@ -2747,4 +2758,18 @@ UAM_TEST(GeminiTextWorkerPolicyKeepsDenyRulesWithinAdminTier)
 	verify_rule();
 	UAM_ASSERT_EQ(rules, 2);
 	UAM_ASSERT(mcp);
+}
+
+UAM_TEST(ProviderTextWorkerPathsRemapOwnedRootAndDescendantsOnly)
+{
+	const fs::path original = "/controller/private-worker";
+	std::vector<std::string> windows = {"--dir", original.string(), "/controller/private-worker/policy.toml", "/controller/private-worker\\nested\\policy.toml", "/controller/private-worker-other/policy.toml", "--model", "provider/model"};
+	uam::provider_workers::RemapWorkerPaths(windows, original, fs::path("C:\\Temp\\owned-worker"), "windows");
+	UAM_ASSERT_EQ(windows, (std::vector<std::string>{"--dir", "C:\\Temp\\owned-worker", "C:\\Temp\\owned-worker\\policy.toml", "C:\\Temp\\owned-worker\\nested\\policy.toml", "/controller/private-worker-other/policy.toml", "--model", "provider/model"}));
+	std::vector<std::string> linux = {original.string(), "/controller/private-worker\\nested\\policy.toml", "/controller/private-worker-other"};
+	uam::provider_workers::RemapWorkerPaths(linux, original, "/target/owned-worker", "linux");
+	UAM_ASSERT_EQ(linux, (std::vector<std::string>{"/target/owned-worker", "/target/owned-worker/nested/policy.toml", "/controller/private-worker-other"}));
+	const std::vector<std::string> unchanged = linux;
+	uam::provider_workers::RemapWorkerPaths(linux, {}, "/other", "linux");
+	UAM_ASSERT_EQ(linux, unchanged);
 }

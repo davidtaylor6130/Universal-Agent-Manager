@@ -215,6 +215,8 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildWorkerArgv(const Provi
 {
 	std::vector<std::string> argv = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "opencode");
 	argv.push_back("run");
+	// Workers must not inherit a default subagent or generate a second model-backed title.
+	uam::provider_runtime_internal::AppendArgs(argv, {"--agent", "uam-text-worker", "--title", "UAM text worker"});
 	const std::vector<std::string> flags = uam::provider_runtime_internal::ProviderWorkerFlags(profile, settings);
 	uam::provider_runtime_internal::AppendArgs(argv, flags);
 

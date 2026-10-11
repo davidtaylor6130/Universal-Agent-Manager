@@ -14013,7 +14013,8 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 			UAM_ASSERT(!uam::ranges::Contains(invocation.argv, "--dangerously-skip-permissions"));
 			UAM_ASSERT(!uam::ranges::Contains(invocation.argv, "--yolo"));
 			UAM_ASSERT(!uam::ranges::Contains(invocation.argv, "--allow-all"));
-			UAM_ASSERT(!uam::ranges::Contains(invocation.argv, "--agent"));
+			UAM_ASSERT(!uam::ranges::Contains(invocation.argv, "unsafe"));
+			UAM_ASSERT_EQ(uam::ranges::Contains(invocation.argv, "--agent"), profile.id == uam::provider_ids::kOpenCodeCli);
 			UAM_ASSERT(!uam::ranges::Contains(invocation.argv, "--plugin-dir"));
 
 			if (profile.id == uam::provider_ids::kCodexCli)
@@ -14028,9 +14029,21 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 			}
 			else if (profile.id == uam::provider_ids::kOpenCodeCli)
 			{
+				const std::vector<std::string>::const_iterator agent = std::ranges::find(invocation.argv, "--agent");
+				UAM_ASSERT(agent != invocation.argv.end() && std::next(agent) != invocation.argv.end());
+				UAM_ASSERT_EQ(*std::next(agent), std::string("uam-text-worker"));
+				const std::vector<std::string>::const_iterator title = std::ranges::find(invocation.argv, "--title");
+				UAM_ASSERT(title != invocation.argv.end() && std::next(title) != invocation.argv.end());
+				UAM_ASSERT_EQ(*std::next(title), std::string("UAM text worker"));
+				const std::vector<std::string>::const_iterator directory = std::ranges::find(invocation.argv, "--dir");
+				UAM_ASSERT(directory != invocation.argv.end() && std::next(directory) != invocation.argv.end());
+				UAM_ASSERT_EQ(*std::next(directory), uam::paths::Utf8PathString(isolation_directory));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--pure"));
 				const std::string config = uam::io::ReadTextFile(isolation_directory / "opencode.json");
 				UAM_ASSERT(uam::strings::Contains(config, R"("*":"deny")"));
+				const nlohmann::json agent_config = nlohmann::json::parse(config)["agent"]["uam-text-worker"];
+				UAM_ASSERT_EQ(agent_config["mode"].get<std::string>(), std::string("primary"));
+				UAM_ASSERT_EQ(agent_config["permission"]["*"].get<std::string>(), std::string("deny"));
 			}
 			else if (profile.id == uam::provider_ids::kGeminiCli)
 			{

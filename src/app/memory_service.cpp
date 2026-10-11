@@ -1318,18 +1318,7 @@ namespace
 		const std::string id = service.GenerateUuid();
 		fs::path directory;
 		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;
-		const std::string previous_directory = invocation.isolated_working_directory ? uam::paths::Utf8PathString(*invocation.isolated_working_directory) : std::string{};
-		for (std::string& argument : invocation.argv)
-		{
-			if (!previous_directory.empty() && argument.size() > previous_directory.size() && argument.starts_with(previous_directory) &&
-			    (argument[previous_directory.size()] == '/' || argument[previous_directory.size()] == '\\'))
-			{
-				std::string relative = argument.substr(previous_directory.size() + 1);
-				const char separator = host.platform == "windows" ? '\\' : '/';
-				std::replace(relative.begin(), relative.end(), separator == '/' ? '\\' : '/', separator);
-				argument = uam::paths::Utf8PathString(directory) + separator + relative;
-			}
-		}
+		uam::provider_workers::RemapWorkerPaths(invocation.argv, invocation.isolated_working_directory ? *invocation.isolated_working_directory : fs::path{}, directory, host.platform);
 		result = client.ExecuteCommand(id, directory, invocation.argv, kMemoryWorkerTimeoutMs, stop_token, invocation.standard_input);
 		std::string cleanup_error;
 		if (!client.RemoveTextWorker(id, &cleanup_error) && result.ok) { result.ok = false; result.error = cleanup_error; }

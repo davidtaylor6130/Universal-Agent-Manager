@@ -74,16 +74,37 @@ namespace uam::provider_workers
 		return phase == Phase::Complete ? std::optional<std::string>(std::move(final_text)) : std::nullopt;
 	}
 
+	/// <summary>Maps owned worker paths to the selected host without changing adjacent directory names.</summary>
+	inline void RemapWorkerPaths(std::vector<std::string>& argv, const std::filesystem::path& original_directory,
+	    const std::filesystem::path& target_directory, std::string_view platform)
+	{
+		const std::string original = uam::paths::Utf8PathString(original_directory);
+		if (original.empty()) return;
+		const std::string target = uam::paths::Utf8PathString(target_directory);
+		for (std::string& argument : argv)
+		{
+			if (argument == original) argument = target;
+			else if (argument.size() > original.size() && argument.starts_with(original) &&
+			    (argument[original.size()] == '/' || argument[original.size()] == '\\'))
+			{
+				std::string relative = argument.substr(original.size() + 1);
+				const char separator = platform == "windows" ? '\\' : '/';
+				std::replace(relative.begin(), relative.end(), separator == '/' ? '\\' : '/', separator);
+				argument = target + separator + relative;
+			}
+		}
+	}
+
 	inline bool ApplyWorkerIsolationPolicy(const ProviderProfile& profile, const std::filesystem::path& workspace, std::vector<std::string>& argv)
 	{
 		if (IsProvider(profile, uam::provider_ids::kOpenCodeCli))
 		{
-			if (!uam::io::WriteTextFile(workspace / "opencode.json", R"({"permission":{"*":"deny","external_directory":"deny"},"share":"disabled","autoupdate":false})"))
+			if (!uam::io::WriteTextFile(workspace / "opencode.json", R"({"permission":{"*":"deny","external_directory":"deny"},"agent":{"uam-text-worker":{"mode":"primary","prompt":"Complete the supplied text-only task directly. Do not delegate or compact. Tools are denied.","permission":{"*":"deny"}}},"share":"disabled","autoupdate":false})"))
 			{
 				return false;
 			}
 			if (argv.size() < 2) return false;
-			argv.insert(argv.begin() + 2, "--pure");
+			argv.insert(argv.begin() + 2, {"--pure", "--dir", uam::paths::Utf8PathString(workspace)});
 		}
 		else if (IsProvider(profile, uam::provider_ids::kGeminiCli))
 		{

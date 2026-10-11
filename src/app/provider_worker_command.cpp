@@ -299,17 +299,7 @@ namespace uam
 		std::filesystem::path directory;
 		if (!client.PrepareTextWorker(id, provider_id, directory, &result.error, stop_token)) return result;
 		std::vector<std::string> argv = invocation.argv;
-		const std::string original = invocation.isolated_working_directory ? paths::Utf8PathString(*invocation.isolated_working_directory) : std::string{};
-		for (std::string& argument : argv)
-		{
-			if (!original.empty() && argument.size() > original.size() && argument.starts_with(original) && (argument[original.size()] == '/' || argument[original.size()] == '\\'))
-			{
-				std::string relative = argument.substr(original.size() + 1);
-				const char separator = remote_host->platform == "windows" ? '\\' : '/';
-				std::replace(relative.begin(), relative.end(), separator == '/' ? '\\' : '/', separator);
-				argument = paths::Utf8PathString(directory) + separator + relative;
-			}
-		}
+		uam::provider_workers::RemapWorkerPaths(argv, invocation.isolated_working_directory ? *invocation.isolated_working_directory : std::filesystem::path{}, directory, remote_host->platform);
 		try { result = client.ExecuteCommand(id, directory, argv, timeout_ms, stop_token, invocation.standard_input); }
 		catch (...) { (void)client.RemoveTextWorker(id); throw; }
 		std::string cleanup_error;
