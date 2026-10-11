@@ -25554,6 +25554,12 @@ UAM_TEST(BoundedMessageTailPreservesPagingAndRejectsSameSizeStorageReplacement)
 	UAM_ASSERT(newest.has_value());
 	UAM_ASSERT_EQ(newest->messages.size(), std::size_t(204));
 	UAM_ASSERT_EQ(newest->messages.front().content.back(), 'y');
+	const std::shared_ptr<PreparedChatSave> deleted_tail = uam::MessageTailCache::Prepare(temp.root, *newest);
+	UAM_ASSERT(deleted_tail != nullptr);
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(temp.root, chat.id).Failed());
+	UAM_ASSERT(!ChatRepository::PublishPreparedChatSave(deleted_tail));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id, false).has_value());
+	UAM_ASSERT(!std::filesystem::exists(deleted_tail->summary_path));
 }
 
 UAM_TEST(BoundedMessageTailCachesCompleteSuffixWhenRecentMessagesExceedBudget)

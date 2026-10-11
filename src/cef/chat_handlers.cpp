@@ -396,6 +396,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		    [this, chat_id, known_digest, page, defer_tool_call_content, search_target, expected_count,
 		     expected_digest, loaded, tail, cached_revision, data_root](uam::query_handler_async::AsyncCefResult& response)
 		    {
+			    bool publish_tail = false;
 			    const std::function<void()> complete = [&]()
 			    {
 				    if (!response.ok) return;
@@ -422,14 +423,16 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value()))
 					    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 				    else if (!m_app.pending_chat_save_at_by_chat_id.contains(chat_id) && !m_app.worktree_operation_chat_ids.contains(chat_id))
-					    (void)ChatRepository::PublishPreparedChatSave(*tail);
+					    publish_tail = true;
 			    };
 			    const std::function<void()> dispose = [&]()
 			    {
-				    if (!loaded->has_value()) return;
-				    // Keep destruction of large detached transcripts off the GUI thread.
-				    uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr, [loaded]()
+				    if (!loaded->has_value() && !*tail) return;
+				    // Publish revision-guarded cache files and dispose large buffers off the GUI thread.
+				    uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr, [loaded, tail, publish_tail]()
 				    {
+					    if (publish_tail) (void)ChatRepository::PublishPreparedChatSave(*tail);
+					    tail->reset();
 					    loaded->reset();
 					    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
 				    });
