@@ -5,6 +5,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 
 #include "app/agent_definition_service.h"
+#include "app/memory_service.h"
 #include "common/provider/provider_runtime.h"
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
@@ -356,6 +357,9 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.turn_serial = chat.execution_host_id == uam::execution_hosts::kLocalHostId
 	    ? 0 : std::max(session.turn_serial, chat.remote_turn_serial);
 	session.queued_prompt.clear();
+	session.memory_recall_position.reset();
+	session.memory_recall_query.clear();
+	session.memory_recall_preparation.reset();
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
 	session.claude_input_preparation.reset();
@@ -1223,12 +1227,32 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	return true;
 }
 
+static MemoryRecallIdentity MemoryRecallSnapshot(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	return {app.data_root, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)),
+	    chat.id, session.provider_id, session.session_id, session.queued_prompt, session.memory_recall_query,
+	    session.memory_recall_position.value_or(0), session.turn_serial, app.settings.memory_recall_budget_bytes,
+	    memory_levels::Normalize(chat.memory_level, chat.memory_enabled), chat.small_model_mode};
+}
+
+static std::string PreparedPromptText(const AcpSessionState& session)
+{
+	std::string prompt = session.queued_prompt;
+	if (session.memory_recall_preparation != nullptr && session.memory_recall_position.has_value())
+	{
+		const std::shared_ptr<MemoryRecallPreparation>& state = session.memory_recall_preparation->state;
+		if (state->finished.load(std::memory_order_acquire) && state->error.empty() && *session.memory_recall_position <= prompt.size())
+			prompt.insert(*session.memory_recall_position, state->context);
+	}
+	return prompt;
+}
+
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 {
 	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
 	return {chat.id, session.provider_id, chat.provider_id, session.session_id,
-	    session.process_execution_host_id, chat.execution_host_id, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)), session.queued_prompt,
+	    session.process_execution_host_id, chat.execution_host_id, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)), PreparedPromptText(session),
 	    chat.model_id, session.goal_turn_model_id, chat.approval_mode, chat.computer_use_backend, chat.computer_use_enabled,
 	    session.turn_serial, first, session.turn_user_message_index, uam::claude_input::TurnImages(chat, first, session.turn_user_message_index)};
 }
@@ -1236,6 +1260,12 @@ static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSes
 
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (session.memory_recall_preparation != nullptr &&
+	    (!paths::IsControllerLocalWorkspace(chat) || !session.memory_recall_position.has_value() ||
+	     session.queued_prompt.empty() || !memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) ||
+	     app.settings.memory_recall_budget_bytes <= 0 ||
+	     session.memory_recall_preparation->state->identity != MemoryRecallSnapshot(app, session, chat)))
+		session.memory_recall_preparation.reset();
 	// Cancel obsolete context even while startup responses prevent prompt delivery.
 	if (session.remote_context_preparation != nullptr)
 	{
@@ -1272,6 +1302,9 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		if (owner == nullptr || owner->goal_command_revision != session.goal_command_revision)
 		{
 			session.queued_prompt.clear();
+			session.memory_recall_position.reset();
+			session.memory_recall_query.clear();
+			session.memory_recall_preparation.reset();
 			session.claude_input_preparation.reset();
 			session.goal_turn_kind.clear();
 			session.goal_review_turn = false;
@@ -1310,7 +1343,55 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		return false;
 	}
-	const std::string prompt = session.queued_prompt;
+	if (paths::IsControllerLocalWorkspace(chat) && session.memory_recall_position.has_value() &&
+	    memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) && app.settings.memory_recall_budget_bytes > 0)
+	{
+		if (*session.memory_recall_position > session.queued_prompt.size())
+		{
+			FailAcpTurnOrSession(session, &chat, "Memory recall prompt ownership changed.");
+			return true;
+		}
+		if (session.memory_recall_preparation == nullptr)
+		{
+			const std::size_t active = std::ranges::count_if(app.memory_recall_tasks, [](const MemoryRecallTask& task)
+			{ return task.state != nullptr && !task.state->finished.load(std::memory_order_acquire); });
+			if (active >= 2) return false;
+			std::shared_ptr<MemoryRecallPreparation> state = std::make_shared<MemoryRecallPreparation>();
+			state->identity = MemoryRecallSnapshot(app, session, chat);
+			MemoryRecallTask task;
+			task.state = state;
+			task.worker = std::make_unique<std::jthread>([state](std::stop_token shutdown)
+			{
+				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
+				try
+				{
+					AppState detached;
+					detached.data_root = state->identity.data_root;
+					detached.settings.memory_recall_budget_bytes = state->identity.budget;
+					ChatSession input;
+					input.workspace_directory = state->identity.workspace;
+					input.imported_read_only = state->identity.workspace.empty();
+					input.memory_level = state->identity.memory_level;
+					input.small_model_mode = state->identity.small_model_mode;
+					state->context = MemoryService::BuildRecallPreface(detached, input, state->identity.query, state->cancel.get_token());
+				}
+				catch (...) { state->error = "Memory recall could not be prepared. Retry the prompt."; }
+				state->finished.store(true, std::memory_order_release);
+			});
+			app.memory_recall_tasks.push_back(std::move(task));
+			session.memory_recall_preparation = std::make_unique<MemoryRecallPreparationLease>(state);
+			return false;
+		}
+		const std::shared_ptr<MemoryRecallPreparation>& state = session.memory_recall_preparation->state;
+		if (!state->finished.load(std::memory_order_acquire)) return false;
+		if (!state->error.empty())
+		{
+			const std::string error = state->error;
+			FailAcpTurnOrSession(session, &chat, error);
+			return true;
+		}
+	}
+	const std::string prompt = PreparedPromptText(session);
 	std::string context;
 	if (chat.execution_host_id != execution_hosts::kLocalHostId)
 	{
@@ -1579,6 +1660,9 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
 	session.queued_prompt.clear();
+	session.memory_recall_position.reset();
+	session.memory_recall_query.clear();
+	session.memory_recall_preparation.reset();
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
 	session.claude_input_preparation.reset();
@@ -1759,6 +1843,9 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.cancel_requested_time_s = 0.0;
 	session.inactivity_timeout_pending = false;
 	session.queued_prompt.clear();
+	session.memory_recall_position.reset();
+	session.memory_recall_query.clear();
+	session.memory_recall_preparation.reset();
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
 	session.claude_input_preparation.reset();

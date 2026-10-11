@@ -8372,7 +8372,35 @@ UAM_TEST(AcpRecallPrefaceIsSentOncePerChatBeforeFollowup)
 	UAM_ASSERT(uam::SendAcpPrompt(app, stored_chat.id, "Second queued prompt", &error));
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(
 	    app, *raw_session, stored_chat, "ready", nullptr, false);
-	const std::string first_prompt = raw_session->queued_prompt;
+	UAM_ASSERT(raw_session->queued_prompt.find(memory_sentinel) == std::string::npos);
+	UAM_ASSERT(raw_session->memory_recall_position.has_value());
+#if defined(_WIN32)
+	const std::vector<std::string> sink_argv = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink_argv = {"/bin/sh", "-c", "cat >/dev/null"};
+#endif
+	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+	UAM_ASSERT(process.StartStdioProcess(*raw_session, workspace, sink_argv, &error));
+	struct ProcessGuard
+	{
+		IPlatformProcessService& process;
+		uam::AcpSessionState& session;
+		~ProcessGuard() { process.StopStdioProcess(session, true); process.CloseStdioProcessHandles(session); }
+	} guard{process, *raw_session};
+	raw_session->running = true;
+	raw_session->session_ready = true;
+	raw_session->session_id = "recall-fixture";
+	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, stored_chat));
+	UAM_ASSERT(raw_session->memory_recall_preparation != nullptr);
+	const std::shared_ptr<uam::MemoryRecallPreparation> prepared = raw_session->memory_recall_preparation->state;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!prepared->finished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+	UAM_ASSERT(prepared->finished.load(std::memory_order_acquire));
+	UAM_ASSERT(prepared->error.empty());
+	std::string first_prompt = raw_session->queued_prompt;
+	first_prompt.insert(*raw_session->memory_recall_position, prepared->context);
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, stored_chat));
+	raw_session->session_ready = false;
 	const auto first_count = [&first_prompt, &memory_sentinel]() {
 		std::size_t count = 0;
 		for (std::size_t offset = first_prompt.find(memory_sentinel);
