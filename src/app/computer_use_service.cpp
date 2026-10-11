@@ -204,6 +204,7 @@ namespace uam
 
 	bool ComputerUseService::PollInBackground(AppState& app)
 	{
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 		bool changed = false;
 		if (m_scan.valid() && m_scan.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
 		{
@@ -245,23 +246,44 @@ namespace uam
 					}
 				}
 			}
+			m_retiredScan = std::move(scan);
 		}
+		const std::chrono::steady_clock::time_point publication_finished = std::chrono::steady_clock::now();
 		if (!m_scan.valid() && GetAppTimeSeconds() >= m_nextScanTime)
 		{
 			std::shared_ptr<Scan> scan = std::make_shared<Scan>();
 			scan->state.data_root = app.data_root;
 			scan->state.computer_use_by_chat_id = app.computer_use_by_chat_id;
+			scan->baseline.reserve(app.chats.size());
+			scan->signatures.reserve(app.chats.size());
 			for (const ChatSession& chat : app.chats)
 			{
 				scan->baseline.push_back(ControlSnapshot(chat));
 				const auto prior = app.computer_use_by_chat_id.find(chat.id);
 				scan->signatures[chat.id] = prior == app.computer_use_by_chat_id.end() ? "" : prior->second.source_signature;
 			}
-			scan->state.chats = scan->baseline;
-			std::packaged_task<std::shared_ptr<Scan>()> task([scan]() { (void)Poll(scan->state); return scan; });
+			// Copy and release large scan vectors on the worker, outside interactive GUI work.
+			std::packaged_task<std::shared_ptr<Scan>()> task([scan, retired = std::move(m_retiredScan)]() mutable
+			{
+				retired.reset();
+				scan->state.chats = scan->baseline;
+				(void)Poll(scan->state);
+				return scan;
+			});
 			m_scan = task.get_future();
 			std::thread(std::move(task)).detach();
 			m_nextScanTime = GetAppTimeSeconds() + 0.25;
+		}
+		const std::chrono::steady_clock::time_point finished = std::chrono::steady_clock::now();
+		static std::chrono::steady_clock::time_point last_report = std::chrono::steady_clock::time_point::min();
+		if (finished - started >= std::chrono::milliseconds(50) &&
+		    (last_report == std::chrono::steady_clock::time_point::min() || finished - last_report >= std::chrono::seconds(5)))
+		{
+			diagnostics::Write("[performance] Computer-use GUI poll: publication=" +
+			    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(publication_finished - started).count()) +
+			    ",preparation=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(finished - publication_finished).count()) +
+			    " ms; chats=" + std::to_string(app.chats.size()) + ".");
+			last_report = finished;
 		}
 		return changed;
 	}

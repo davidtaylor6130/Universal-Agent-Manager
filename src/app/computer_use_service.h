@@ -23,6 +23,7 @@ namespace uam
 	  private:
 		struct Scan;
 		std::future<std::shared_ptr<Scan>> m_scan;
+		std::shared_ptr<Scan> m_retiredScan;
 		double m_nextScanTime = 0.0;
 	};
 } // namespace uam

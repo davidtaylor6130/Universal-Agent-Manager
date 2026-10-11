@@ -772,6 +772,14 @@ UAM_TEST(ComputerUseBackgroundPollPreservesTranscriptAndHonorsStopAndDeletion)
 	other.provider_id = "claude-cli";
 	other.computer_use_backend = "uam";
 	app.chats.push_back(std::move(other));
+	for (int index = 0; index < 256; ++index)
+	{
+		ChatSession idle;
+		idle.id = "idle-background-" + std::to_string(index);
+		idle.provider_id = "claude-cli";
+		idle.computer_use_backend = "uam";
+		app.chats.push_back(std::move(idle));
+	}
 	const Message* body = app.chats.front().messages.data();
 	const fs::path directory = temp.root / "computer-use/background-chat";
 	UAM_ASSERT(fs::create_directories(directory));
