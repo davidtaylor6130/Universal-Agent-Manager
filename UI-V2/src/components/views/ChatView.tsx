@@ -325,19 +325,11 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   sessionBranchFromMessageIndex,
   sessionBranchMessageEdited,
   branchSessions,
-  isEditing,
-  editingText,
-  editingAttachments,
-  onRemoveEditingAttachment,
   actionsDisabled,
-  canChangeProvider,
-  branching,
   planActions,
   workingMode,
   retryInPlace,
   onBeginEdit,
-  onCancelEdit,
-  onEditingTextChange,
   onCreateBranch,
   onSelectBranch,
   onSelectTool,
@@ -351,19 +343,11 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   sessionBranchFromMessageIndex?: number
   sessionBranchMessageEdited?: boolean
   branchSessions: Session[]
-  isEditing: boolean
-  editingText: string
-  editingAttachments: Attachment[]
-  onRemoveEditingAttachment: (id: string) => void
   actionsDisabled: boolean
-  canChangeProvider: boolean
-  branching: boolean
   planActions?: PersistedPlanActions
   workingMode: WorkingDisplayMode
   retryInPlace: boolean
   onBeginEdit: (index: number, content: string) => void
-  onCancelEdit: () => void
-  onEditingTextChange: (content: string) => void
   onCreateBranch: (index: number, content?: string, retainedAttachmentIds?: string[]) => void | Promise<void>
   onSelectBranch: (parentId: string, index: number, sessionId: string) => void
   onSelectTool: (messageId: string, toolId: string) => void
@@ -390,7 +374,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
 
   return (
 		<>
-    {!isEditing && (message.attachments ?? []).some(isImageAttachment) && (
+    {(message.attachments ?? []).some(isImageAttachment) && (
       <div className={`conversation-image-attachments mb-2${isUserMessage ? ' ml-auto w-fit max-w-[85%]' : ''}`}>
         <AttachmentList attachments={(message.attachments ?? []).filter(isImageAttachment)} chatId={sessionId} nativeMessageIndex={message.nativeMessageIndex} />
       </div>
@@ -412,41 +396,6 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       revertLabel={retryInPlace ? 'Retry message' : undefined}
     >
 			{isUserMessage && message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'}</div>}
-			{isEditing ? (
-        <div className="space-y-2">
-          {editingAttachments.map((attachment) => (
-            <div key={attachment.id} className="inline-flex items-center gap-1">
-              <AttachmentList attachments={[attachment]} chatId={sessionId} nativeMessageIndex={message.nativeMessageIndex} />
-              <IconButton icon={<X size={14} />} label={`Remove ${attachment.name} from edited message`} disabled={branching} onClick={() => onRemoveEditingAttachment(attachment.id)} />
-            </div>
-          ))}
-          <textarea
-            aria-label="Edit message"
-            disabled={branching}
-            autoFocus
-            value={editingText}
-            onChange={(event) => onEditingTextChange(event.target.value)}
-            rows={Math.max(3, editingText.split('\n').length)}
-            className="w-full resize-y rounded-md p-2 text-sm"
-            style={{ border: '1px solid var(--border-bright)', background: 'var(--bg)', color: 'var(--text)' }}
-          />
-          <div className="flex justify-end gap-2">
-            <Button type="button" size="sm" variant="ghost" disabled={branching} onClick={onCancelEdit}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="primary"
-              loading={branching}
-              disabled={(!editingText.trim() && editingAttachments.length === 0) || !canChangeProvider}
-              onClick={() => void onCreateBranch(index, editingText, editingAttachments.map((attachment) => attachment.id))}
-            >
-              Save to new branch
-            </Button>
-          </div>
-        </div>
-      ) : (
         <PersistedMessageContent
           message={message}
           omitImages
@@ -456,7 +405,6 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
           sourceChatId={sessionId}
           workingMode={workingMode}
         />
-      )}
       {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
         <div className="conversation-interrupted">{stoppedResponseLabel(message.stopReason, message.interrupted)}</div>}
 		</MessageFrame>
@@ -1253,6 +1201,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
   const submit = async (event?: FormEvent, promptOverride?: string, steerNow = false) => {
     event?.preventDefault()
+    if (editingMessageIndex !== null) {
+      if (branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim() || editingMessageAttachments.length > 0)) {
+        await createMessageBranch(editingMessageIndex, editingMessageText, editingMessageAttachments.map((attachment) => attachment.id))
+      }
+      return
+    }
     const prompt = (promptOverride ?? draft).trim()
     if (prompt === '/compact') { await runCompact(promptOverride ?? draft); return }
     if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || composerAttachments.some((attachment) => attachment.status !== 'ready')) return
@@ -1541,6 +1495,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     const message = useAppStore.getState().messages[session.id]?.[messageIndex - historyStartIndex]
     setEditingMessageAttachments([...(message?.attachments ?? [])])
     setMessageBranchError('')
+    composerTextareaRef.current?.focus()
   }, [session.id, historyStartIndex])
   const removeEditingAttachment = useCallback((id: string) => {
     setEditingMessageAttachments((current) => current.filter((attachment) => attachment.id !== id))
@@ -1559,8 +1514,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [])
   const dictationActive = dictationState !== 'idle'
   const canSend = useMemo(
-    () => providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
-    [providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, composerAttachments]
+    () => editingMessageIndex === null && providerSupported && !session.importedReadOnly && (draft.trim().length > 0 || composerAttachments.length > 0) && !submitting && !goalSubmitting && !composerAttachments.some((attachment) => attachment.status !== 'ready'),
+    [editingMessageIndex, providerSupported, session.importedReadOnly, draft, submitting, goalSubmitting, composerAttachments]
   )
   const dictationAvailable = isCefContext()
 
@@ -2110,7 +2065,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     : slashQuery !== null
       ? slashCommands.filter((command) => command.label.slice(1).toLowerCase().startsWith(slashQuery))
       : []
-  const slashOpen = !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
+  const slashOpen = editingMessageIndex === null && !appModalOpen && slashMatches.length > 0 && (slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined)
   const slashPaletteVisible = slashQuery !== null || permissionModeQuery !== undefined || memoryLevelQuery !== undefined || codexOptionKind !== undefined || variantQuery !== undefined
   useEffect(() => {
     if (slashPaletteVisible && markdownStoreEntries.length === 0) {
@@ -2165,6 +2120,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     : undefined
 
   const onComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (editingMessageIndex !== null) {
+      if (event.key === 'Escape') { event.preventDefault(); cancelEditingMessage() }
+      else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) { event.preventDefault(); void submit() }
+      return
+    }
 	const nativeEvent = event.nativeEvent
 	if (nativeEvent.isComposing || nativeEvent.keyCode === 229) return
 	if (matchesUamAgentCycleShortcut(uamAgentCycleShortcut, event) &&
@@ -2488,19 +2448,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         sessionBranchFromMessageIndex={session.branchFromMessageIndex}
                         sessionBranchMessageEdited={session.branchMessageEdited}
                         branchSessions={branchSessions}
-                        isEditing={editingMessageIndex === index + historyStartIndex}
-                        editingText={editingMessageIndex === index + historyStartIndex ? editingMessageText : ''}
-                        editingAttachments={editingMessageAttachments}
-                        onRemoveEditingAttachment={removeEditingAttachment}
                         actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
-                        canChangeProvider={canChangeProvider}
-                        branching={branchingMessageIndex === index + historyStartIndex}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
                         retryInPlace={index === retryInPlaceMessageIndex}
                         onBeginEdit={beginEditingMessage}
-                        onCancelEdit={cancelEditingMessage}
-                        onEditingTextChange={setEditingMessageText}
                         onCreateBranch={createMessageBranch}
                         onSelectBranch={selectMessageBranch}
                         onSelectTool={selectPersistedTool}
@@ -2986,7 +2938,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 overflow: 'visible',
               }}
             >
-            {(markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
+            {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {markdownStoreAttachments.map((entry) => (
                   <span
@@ -3149,8 +3101,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
             <textarea
               ref={composerTextareaRef}
-              value={draft}
+              value={editingMessageIndex !== null ? editingMessageText : draft}
+              aria-label={editingMessageIndex !== null ? "Edit message" : undefined}
               onChange={(event) => {
+                if (editingMessageIndex !== null) { setEditingMessageText(event.target.value); return }
                 setDraft(event.target.value)
                 setComposerSelection({ start: event.target.selectionStart, end: event.target.selectionEnd })
                 setSlashGroup('')
@@ -3162,10 +3116,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 }
               }}
               onKeyDown={onComposerKeyDown}
-              onPaste={onComposerPaste}
+              onPaste={editingMessageIndex === null ? onComposerPaste : undefined}
               rows={1}
               placeholder={`Message ${currentProviderName} · / for commands`}
-              disabled={dictationActive || session.importedReadOnly}
+              disabled={dictationActive || session.importedReadOnly || branchingMessageIndex !== null}
               aria-describedby={dictationActive || dictationError ? `dictation-status-${session.id}` : undefined}
               aria-haspopup="listbox"
               aria-expanded={slashOpen}
@@ -3182,6 +3136,18 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               }}
             />
             </div>
+            {editingMessageIndex !== null && (
+              <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-2">
+                {editingMessageAttachments.map((attachment) => (
+                  <div key={attachment.id} className="inline-flex items-center gap-1">
+                    <AttachmentList attachments={[attachment]} chatId={session.id} nativeMessageIndex={messages[editingMessageIndex - historyStartIndex]?.nativeMessageIndex} />
+                    <IconButton icon={<X size={14} />} label={`Remove ${attachment.name} from edited message`} disabled={branchingMessageIndex !== null} onClick={() => removeEditingAttachment(attachment.id)} />
+                  </div>
+                ))}
+                <Button type="button" size="sm" variant="ghost" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage}>Cancel</Button>
+                <Button type="button" size="sm" variant="primary" loading={branchingMessageIndex !== null} disabled={(!editingMessageText.trim() && editingMessageAttachments.length === 0) || !canChangeProvider} onClick={() => void submit()}>Save to new branch</Button>
+              </div>
+            )}
             <input
               ref={fileInputRef}
               type="file"

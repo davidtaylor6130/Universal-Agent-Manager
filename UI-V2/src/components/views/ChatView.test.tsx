@@ -1912,15 +1912,28 @@ describe('ChatView', () => {
     expect(revertButton).toBeTruthy()
     expect(editButton?.parentElement?.classList.contains('conversation-turn__actions')).toBe(true)
 
+    const composer = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(composer, 'Unsent draft stays here')
+      composer?.dispatchEvent(new Event('input', { bubbles: true }))
+    })
     act(() => editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     const editTextarea = host.querySelector('textarea[aria-label="Edit message"]') as HTMLTextAreaElement | null
+    expect(editTextarea).toBe(composer)
+    expect(host.querySelectorAll('textarea')).toHaveLength(1)
     expect(editTextarea?.value).toBe('Please inspect the workspace')
+    expect(document.activeElement).toBe(composer)
+    act(() => composer?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(composer?.value).toBe('Unsent draft stays here')
+    act(() => editButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(editTextarea, 'Inspect only the tests')
       editTextarea?.dispatchEvent(new Event('input', { bubbles: true }))
     })
     const saveButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Save to new branch')
-    await act(async () => saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    if (historyOffset === 0) await act(async () => editTextarea?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    else await act(async () => saveButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(composer?.value).toBe('Unsent draft stays here')
     expect(branchFromMessage).toHaveBeenCalledWith('chat-1', historyOffset, 'Inspect only the tests', [])
 
     await act(async () => revertButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
