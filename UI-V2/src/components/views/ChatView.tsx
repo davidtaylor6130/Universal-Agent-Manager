@@ -1320,8 +1320,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const reviewGoal = activeGoalId ? goals.find(goal => goal.id === activeGoalId) : null
   const chatWorking = chatHasUnfinishedWork(acp, cli, reviewGoal)
   useEffect(() => {
-    if (chatWorking) setSelectedRepositoryFile(null)
-  }, [chatWorking])
+    if (chatWorking || historyLoading) setSelectedRepositoryFile(null)
+  }, [chatWorking, historyLoading])
   const completedTurnKey = !chatWorking && latestAssistantMessageIndex > latestUserMessageIndex
     ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
     : ''
@@ -2337,7 +2337,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           accentColor={accentColor}
         />
       )}
-      {!chatWorking && selectedRepositoryFile && repositoryChanges && (
+      {!chatWorking && !historyLoading && selectedRepositoryFile && repositoryChanges && (
         <RepositoryDiffDialog
           chatId={session.id}
           file={selectedRepositoryFile}
@@ -2599,7 +2599,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   </WorkSectionContext.Provider>
                 </MessageFrame>
               )}
-              {!chatWorking && (repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
+              {!chatWorking && !historyLoading && (repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
                 <section
                   aria-label="Review changes"
                   className="mx-4 overflow-hidden rounded-md text-xs"

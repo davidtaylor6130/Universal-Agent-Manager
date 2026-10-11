@@ -1067,6 +1067,15 @@ describe('ChatView', () => {
       ...state.acpBindingBySessionId,
       'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', backgroundTaskCount: 0 },
     } })))
+    const loadedMessages = useAppStore.getState().messages['chat-1']
+    await act(async () => useAppStore.setState(state => ({
+      messages: Object.fromEntries(Object.entries(state.messages).filter(([id]) => id !== 'chat-1')),
+      sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, messageCount: 204 } : session),
+    })))
+    await act(async () => root.render(<ChatView session={useAppStore.getState().sessions.find(session => session.id === 'chat-1')!} />))
+    expect(host.textContent).toContain('Loading chat history')
+    expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
+    await act(async () => useAppStore.setState(state => ({ messages: { ...state.messages, 'chat-1': loadedMessages } })))
     const providerGoal = { id: 'provider-review-goal', chatId: 'chat-1', objective: 'Finish implementation', status: 'active' as const, executionOwner: 'provider' as const, createdAt: new Date(), updatedAt: new Date() }
     await act(async () => useAppStore.setState({ goalsByChatId: { 'chat-1': [providerGoal] }, activeGoalIdByChatId: { 'chat-1': providerGoal.id } }))
     expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
