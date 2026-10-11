@@ -372,6 +372,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		auto loaded = std::make_shared<std::optional<ChatSession>>();
 		auto tail = std::make_shared<std::shared_ptr<PreparedChatSave>>();
 		auto cached_revision = std::make_shared<std::optional<std::string>>();
+		// Opening history must not queue behind background VCS subprocess checks.
 		uam::query_handler_async::RunAsyncCefQuery(
 		    m_asyncLifetime, cb,
 		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded, tail, cached_revision, expected_count, expected_digest]()
@@ -420,7 +421,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 			    else if (!m_app.pending_chat_save_at_by_chat_id.contains(chat_id) && !m_app.worktree_operation_chat_ids.contains(chat_id))
 				    (void)ChatRepository::PublishPreparedChatSave(*tail);
-		    });
+		    }, TID_FILE_USER_BLOCKING);
 		return;
 	}
 
