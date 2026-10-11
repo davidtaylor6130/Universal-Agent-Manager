@@ -86,7 +86,7 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
       <span aria-hidden style={{ position: 'absolute', top: count === 1 ? '50%' : 0, bottom: count === 1 ? undefined : -1, left: 6, width: 7, height: count === 1 ? 1 : undefined,
         background: count === 1 ? 'var(--text-3)' : undefined,
         backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--text-3) 1px, transparent 1px)' : undefined,
-        backgroundSize: count > 1 ? `100% ${100 / (count - 1)}%` : undefined }} />
+        backgroundSize: count > 1 ? `100% calc((100% - 1px) / ${count - 1})` : undefined }} />
       {previewIndex !== null && [-2, -1, 1, 2].map(distance => {
         const neighbor = index + distance
         if (neighbor < 0 || neighbor >= count) return null
