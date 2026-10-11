@@ -14,6 +14,7 @@
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/utils/string_utils.h"
+#include "common/usage/transcript_usage.h"
 
 #include <algorithm>
 #include <string>
@@ -448,6 +449,59 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 	}
 }
 
+/// <summary>Publish whole-tree cumulative tokens; per-turn totals remain unknown on resumed streams.</summary>
+static void HandleClaudeResultUsage(AcpSessionState& session, const nlohmann::json& message)
+{
+	if (JsonDiagnosticStringValue(message, "type") != "result") return;
+	const nlohmann::json::const_iterator parent = message.find("parent_tool_use_id");
+	if (parent != message.end() && !parent->is_null() && (!parent->is_string() || !parent->get_ref<const std::string&>().empty())) return;
+	const nlohmann::json* scope_field = uam::nlohmann_json::FindStringField(message, "session_id");
+	if (scope_field == nullptr) return;
+	const std::string& scope = scope_field->get_ref<const std::string&>();
+	if (scope.empty() || scope.size() > 512 || scope != session.session_id) return;
+	AcpTokenUsageState& usage = session.provider_usage.token_usage;
+	if (usage.session_id != scope) usage = {};
+	usage.session_id = scope;
+	const nlohmann::json* models = uam::nlohmann_json::FindObjectField(message, "modelUsage");
+	if (models == nullptr || models->empty() || models->size() > 128) return;
+	AcpTokenUsageBreakdownState next;
+	for (const nlohmann::json::value_type& model : *models)
+	{
+		if (!model.is_object()) return;
+		std::int64_t counts[4]{};
+		const char* fields[4] = {"inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", "outputTokens"};
+		for (std::size_t index = 0; index < 4; ++index)
+		{
+			const nlohmann::json::const_iterator value = model.find(fields[index]);
+			if (value == model.end() || !value->is_number_integer()) return;
+			if (value->is_number_unsigned())
+			{
+				const std::uint64_t count = value->get<std::uint64_t>();
+				if (count > static_cast<std::uint64_t>(uam::usage::kMaxExactTokenCount)) return;
+				counts[index] = static_cast<std::int64_t>(count);
+			}
+			else
+			{
+				counts[index] = value->get<std::int64_t>();
+				if (counts[index] < 0 || counts[index] > uam::usage::kMaxExactTokenCount) return;
+			}
+			if (counts[index] > uam::usage::kMaxExactTokenCount - next.total_tokens) return;
+			next.total_tokens += counts[index];
+		}
+		next.input_tokens += counts[0] + counts[1] + counts[2];
+		next.cached_input_tokens += counts[1];
+		next.cache_write_input_tokens += counts[2];
+		next.output_tokens += counts[3];
+	}
+	const bool error = JsonBooleanValueOr(message, "is_error", false) || uam::acp_claude_stream::IsResultErrorSubtype(JsonDiagnosticStringValue(message, "subtype"));
+	if (error && next.total_tokens == 0 && usage.available && usage.total.total_tokens > 0) return;
+	usage.available = true;
+	usage.last_available = false;
+	usage.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+	usage.total = next;
+	usage.last = {};
+}
+
 void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
 	const bool quota_wait = OwnClaudeQuotaWait(app, session, chat, message, uam::time::TimestampNowSec());
@@ -464,6 +518,8 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 			SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
 		}
 	}
+
+	HandleClaudeResultUsage(session, message);
 
 	const std::string model_id = uam::nlohmann_json::TrimmedStringValueOr(message, "model", "");
 	if (!model_id.empty())
@@ -664,6 +720,16 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 				SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
 				SaveChatQuietly(app, chat);
 			}
+		}
+
+		// A native reset must not expose the previous conversation's cumulative tokens.
+		const nlohmann::json* usage_scope = uam::nlohmann_json::FindStringField(message, "session_id");
+		if (usage_scope != nullptr && !usage_scope->get_ref<const std::string&>().empty() &&
+		    usage_scope->get_ref<const std::string&>().size() <= 512 &&
+		    session.provider_usage.token_usage.session_id != usage_scope->get_ref<const std::string&>())
+		{
+			session.provider_usage.token_usage = {};
+			session.provider_usage.token_usage.session_id = usage_scope->get_ref<const std::string&>();
 		}
 
 		session.current_model_id = uam::nlohmann_json::TrimmedStringValueOr(message, "model", session.current_model_id);

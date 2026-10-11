@@ -936,7 +936,7 @@ namespace uam
 			    ? nlohmann::json{
 			          {"updatedAt", usage.token_usage.updated_at_ms},
 			          {"total", SerializeAcpTokenUsageBreakdown(usage.token_usage.total)},
-			          {"last", SerializeAcpTokenUsageBreakdown(usage.token_usage.last)},
+			          {"last", usage.token_usage.last_available ? SerializeAcpTokenUsageBreakdown(usage.token_usage.last) : nlohmann::json(nullptr)},
 			          {"modelContextWindow", usage.token_usage.model_context_window > 0 ? nlohmann::json(usage.token_usage.model_context_window) : nlohmann::json(nullptr)},
 			      }
 			    : nlohmann::json(nullptr);

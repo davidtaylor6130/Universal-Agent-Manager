@@ -217,6 +217,16 @@ describe('backend state reconciliation', () => {
     for (const invalid of [{ usedTokens: -1 }, { usedTokens: null }, { usedTokens: 1.5 }, { usedTokens: 200001 }, { windowTokens: 0 }, { windowTokens: Number.MAX_SAFE_INTEGER + 1 }]) expect(sanitizeCppAcpSession({ providerUsage: { contextUsage: { ...contextUsage, ...invalid } } })?.providerUsage).toBeNull()
   })
 
+  it('keeps cumulative usage when the last-turn breakdown is unknown', () => {
+    const tokenUsage = { updatedAt: 1000, total: { totalTokens: 123 }, last: null }
+    const parsed = sanitizeCppAcpSession({ providerUsage: { tokenUsage } })?.providerUsage?.tokenUsage
+    expect(parsed?.total.totalTokens).toBe(123)
+    expect(parsed?.last).toBeNull()
+    for (const last of [undefined, { totalTokens: -1 }, { totalTokens: Number.MAX_SAFE_INTEGER + 1 }]) {
+      expect(sanitizeCppAcpSession({ providerUsage: { tokenUsage: { ...tokenUsage, last } } })?.providerUsage).toBeNull()
+    }
+  })
+
   it('sanitizes and reconciles provider usage updates', () => {
     const usage = {
       tokenUsage: {

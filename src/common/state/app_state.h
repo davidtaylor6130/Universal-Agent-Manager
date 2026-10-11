@@ -261,6 +261,8 @@ namespace uam
 	struct AcpTokenUsageState
 	{
 		bool available = false;
+		bool last_available = true;
+		std::string session_id;
 		std::int64_t updated_at_ms = 0;
 		AcpTokenUsageBreakdownState total;
 		AcpTokenUsageBreakdownState last;

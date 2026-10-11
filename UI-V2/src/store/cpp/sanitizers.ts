@@ -704,7 +704,7 @@ function sanitizeProviderUsage(value: unknown): AcpProviderUsage | null {
     const updatedAt = nonNegativeInteger(value.tokenUsage.updatedAt)
     const total = sanitizeTokenUsageBreakdown(value.tokenUsage.total)
     const last = sanitizeTokenUsageBreakdown(value.tokenUsage.last)
-    if (updatedAt !== null && total && last) {
+    if (updatedAt !== null && total && (last || value.tokenUsage.last === null)) {
       tokenUsage = {
         updatedAt,
         total,

@@ -349,7 +349,7 @@ export interface AcpTokenUsageBreakdown {
 export interface AcpTokenUsage {
   updatedAt: number
   total: AcpTokenUsageBreakdown
-  last: AcpTokenUsageBreakdown
+  last: AcpTokenUsageBreakdown | null
   modelContextWindow: number | null
 }
 

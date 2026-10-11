@@ -168,6 +168,52 @@ describe('UsagePage', () => {
 })
 
 describe('UsageLimits', () => {
+  it('keeps reported zero and known last-turn tokens while labeling an invalid update time', () => {
+    const previous = useAppStore.getState()
+    const zero = { inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 }
+    useAppStore.setState({
+      sessions: [{ id: 'codex', name: 'Zero usage', providerId: 'codex-cli' }] as typeof previous.sessions,
+      acpBindingBySessionId: { codex: { providerId: 'codex-cli', providerUsage: { tokenUsage: { updatedAt: Date.now() + 60000, total: zero, last: zero, modelContextWindow: null }, rateLimits: null } } } as typeof previous.acpBindingBySessionId,
+    })
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      act(() => root.render(<UsageLimits executionHostId="local" />))
+      expect(host.textContent).toContain('Tokens consumed in Zero usage: 0')
+      expect(host.textContent).toContain('Last turn: 0 tokens')
+      expect(host.textContent).toContain('Update time unavailable')
+      expect(host.textContent).toContain('Cached snapshot')
+      expect(host.textContent).toContain('Consumed tokens unavailable.')
+    } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
+  })
+
+  it('shows provider consumption from the latest matching local chat without summing snapshots or cache subsets', () => {
+    const previous = useAppStore.getState()
+    const tokens = (time: number, count: number) => ({ updatedAt: time, total: { inputTokens: 120, cachedInputTokens: 20, cacheWriteInputTokens: 5, outputTokens: 41, reasoningOutputTokens: 3, totalTokens: count }, last: null, modelContextWindow: null })
+    useAppStore.setState({
+      sessions: [{ id: 'old', name: 'Old chat', providerId: 'claude-cli' }, { id: 'new', name: 'Current Claude', providerId: 'claude-cli' }, { id: 'remote', name: 'Remote chat', providerId: 'claude-cli', executionHostId: 'ssh' }, { id: 'mismatch', name: 'Wrong provider', providerId: 'opencode-cli' }] as typeof previous.sessions,
+      acpBindingBySessionId: {
+        old: { providerId: 'claude-cli', providerUsage: { tokenUsage: tokens(1, 99), rateLimits: null } },
+        new: { providerId: 'claude-cli', providerUsage: { tokenUsage: tokens(2, 161), rateLimits: null } },
+        remote: { providerId: 'claude-cli', providerUsage: { tokenUsage: tokens(3, 777), rateLimits: null } },
+        mismatch: { providerId: 'claude-cli', providerUsage: { tokenUsage: tokens(4, 888), rateLimits: null } },
+      } as typeof previous.acpBindingBySessionId,
+    })
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      act(() => root.render(<UsageLimits executionHostId="local" />))
+      expect(host.textContent).toContain('Tokens consumed in Current Claude: 161')
+      expect(host.textContent).toContain('Input 120 · Output 41')
+      expect(host.textContent).toContain('Of input: cache read 20 · cache write 5')
+      expect(host.textContent).toContain('Of output: reasoning 3')
+      expect(host.textContent).toContain('Last turn: Unavailable')
+      expect(host.textContent).toContain('Cached snapshot')
+      expect(host.textContent).not.toContain('Tokens consumed in Old chat')
+      expect(host.textContent).not.toContain('Remote chat')
+      expect(host.textContent).not.toContain('Wrong provider')
+      expect(host.textContent).not.toContain('Tokens consumed in Current Claude: 186')
+    } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
+  })
+
   it('keeps machine allowances separate in the all-machines view', () => {
     const previous = useAppStore.getState()
     const limits = (percent: number) => ({ updatedAt: Date.now(), limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: null, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
