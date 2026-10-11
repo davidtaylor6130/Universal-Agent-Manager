@@ -352,7 +352,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           />
           </div>
           {SSH_ENABLED && <Button variant="ghost" size="sm" disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button>}
-          {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{hostIssue}</p>}
+          {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{hostIssue}</p>}
 
           {/* Folder */}
           {folders.some((folder) => (folder.executionHostId || 'local') === executionHostId) && (
@@ -419,7 +419,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               {creatingWorkspace ? 'Choosing…' : 'Choose workspace'}
             </Button>
           </div>}
-          {workspaceError && <p id="new-chat-workspace-error" role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{workspaceError}</p>}
+          {workspaceError && <p id="new-chat-workspace-error" role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{workspaceError}</p>}
           <div>
           <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Provider</div>
           <SelectionGrid
@@ -438,7 +438,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             onChange={chooseProvider}
           />
           </div>
-          {availability.issues.length > 0 && <p role={structuredCreationBlocked && terminalCreationBlocked ? 'alert' : undefined} className="text-xs" style={{ color: structuredCreationBlocked && terminalCreationBlocked ? 'var(--red)' : 'var(--text-2)' }}>{availability.issues[availability.issues.length - 1]}</p>}
+          {availability.issues.length > 0 && <p role={structuredCreationBlocked && terminalCreationBlocked ? 'alert' : undefined} className="text-xs" style={{ color: structuredCreationBlocked && terminalCreationBlocked ? 'var(--error)' : 'var(--text-2)' }}>{availability.issues[availability.issues.length - 1]}</p>}
           {terminalFallback && <p role="status" className="flex items-center gap-2 text-xs" style={{ color: 'var(--text)' }}><SquareTerminal size={14} aria-hidden />Creates a terminal chat. Structured chat is unavailable.</p>}
 
           <div role="group" aria-label="Model and reasoning" className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-3 items-start">
@@ -505,7 +505,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         )}
 
         {/* Footer */}
-        {chatError && <div role="alert" className="px-5 pt-3 text-xs" style={{ color: 'var(--red)' }}>{chatError}</div>}
+        {chatError && <div role="alert" className="px-5 pt-3 text-xs" style={{ color: 'var(--error)' }}>{chatError}</div>}
         <div
           className="flex shrink-0 items-center justify-end gap-2 px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}

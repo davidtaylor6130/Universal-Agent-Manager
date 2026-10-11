@@ -987,7 +987,7 @@ describe('NewChatModal', () => {
     expect(create().disabled).toBe(true)
     expect(host.textContent).toContain('Terminal fallback is also unavailable.')
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Terminal fallback is also unavailable.')
-    expect((host.querySelector('[role="alert"]') as HTMLElement).style.color).toBe('var(--red)')
+    expect((host.querySelector('[role="alert"]') as HTMLElement).style.color).toBe('var(--error)')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Home lab"]')!.click())
     const path = host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')!
     act(() => {

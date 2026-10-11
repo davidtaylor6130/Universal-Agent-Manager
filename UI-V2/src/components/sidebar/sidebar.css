@@ -1,0 +1,99 @@
+/* Sidebar motion. Scoped to .uam-sb-* so it cannot leak into other surfaces. */
+
+/* Section lists fade and slide when a section is expanded or collapsed. */
+.uam-sb-collapse {
+  transition:
+    opacity var(--dur-base) var(--ease-out-soft),
+    transform var(--dur-base) var(--ease-out-soft),
+    display var(--dur-base) allow-discrete;
+}
+.uam-sb-collapse[hidden] {
+  display: none;
+  opacity: 0;
+  transform: translateY(-4px);
+}
+@starting-style {
+  .uam-sb-collapse:not([hidden]) {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.uam-sb-chevron {
+  transition: transform var(--dur-base) var(--ease-out-soft);
+}
+
+/* Newly rendered chat rows settle into place instead of popping. */
+.uam-sb-row {
+  animation: uam-sb-row-in var(--dur-base) var(--ease-out-soft) backwards;
+}
+@keyframes uam-sb-row-in {
+  from { opacity: 0; transform: translateY(-3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-sb-collapse,
+  .uam-sb-chevron {
+    transition: none;
+  }
+  .uam-sb-row {
+    animation: none;
+  }
+}
+
+/* Indeterminate bar for delete requests that report no per-item progress. */
+.uam-sb-progress {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-high);
+}
+.uam-sb-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: uam-sb-progress-sweep 1.2s var(--ease-out-soft) infinite;
+}
+@keyframes uam-sb-progress-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(290%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-sb-progress > span { animation: none; transform: translateX(40%); }
+}
+
+/* Shared row-menu item (chat context menu and snooze presets). */
+.uam-sb-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-3);
+  text-align: left;
+  font-size: var(--fs-base);
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);
+}
+.uam-sb-menu-item:hover:not(:disabled) { background: var(--sidebar-item-hover); color: var(--text); }
+.uam-sb-menu-item:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--accent); }
+.uam-sb-menu-item:disabled { opacity: .5; cursor: default; }
+.uam-sb-menu-item--danger { color: var(--error); }
+.uam-sb-menu-item--danger:hover:not(:disabled) { background: var(--error-dim); color: var(--error); }
+
+/* Collapsed Active section: one calm warning strip that expands the section. */
+.uam-sb-attention-strip {
+  color: var(--warning);
+  background: var(--warning-dim);
+  border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft);
+}
+.uam-sb-attention-strip:hover { background: var(--warning-dim); filter: brightness(1.08); }
+.uam-sb-attention-strip:focus-visible { outline: none; box-shadow: var(--focus-ring); }

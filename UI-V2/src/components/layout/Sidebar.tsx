@@ -118,27 +118,28 @@ export function Sidebar() {
         onToggleStatusFilter={toggleStatusFilter}
         onClearFilters={clearFilters}
       />
-      {deepSearchLoading && <div role="status" className="px-3 pb-2 text-xs" style={{ color: 'var(--text-3)' }}>Searching message contents…</div>}
+      {deepSearchLoading && <div role="status" className="uam-sb-search-status px-3 pb-2 text-xs">Searching message contents…</div>}
       {deepSearchError && (
-        <div role="alert" className="flex items-center justify-between gap-2 px-3 pb-2 text-xs" style={{ color: 'var(--red)' }}>
+        <div role="alert" className="uam-sb-search-error flex items-center justify-between gap-2 px-3 pb-2 text-xs">
           <span>{deepSearchError}</span>
           <Button size="sm" variant="ghost" onClick={() => setDeepSearchRetry((value) => value + 1)}>Retry</Button>
         </div>
       )}
-      {deepSearchHits.length > 0 && <div aria-label="Message matches" className="max-h-40 overflow-y-auto px-3 pb-2">
+      {deepSearchHits.length > 0 && <div aria-label="Message matches" className="uam-sb-hits max-h-40 overflow-y-auto px-3 pb-2">
+        <div className="uam-sb-hits__label" aria-hidden>Message matches</div>
         {deepSearchHits.filter((hit) => sessions.some((session) => session.id === hit.chatId)).map((hit) => {
           const session = sessions.find((candidate) => candidate.id === hit.chatId)!
           const source = hit.field === 'thoughts' ? 'Thoughts' : hit.field === 'planSummary' ? 'Plan' : 'Message'
           return <button key={`${hit.chatId}:${hit.messageIndex}:${hit.field}`} type="button"
-            className="block w-full py-1 text-left text-xs" style={{ color: 'var(--text)' }}
+            className="uam-sb-hit block w-full rounded-md px-2 py-1 text-left text-xs" 
             disabled={searchNavigation?.phase === 'loading'}
             onClick={() => {
               void jumpToChatSearchHit(hit, hitRequestId).then((opened) => {
                 if (!opened && latestDeepSearchRequestRef.current === hitRequestId) setDeepSearchError('Search result changed. Search again to open the message.')
               })
             }}>
-            <span className="block truncate">{session.name} · {source} {hit.messageIndex + 1}</span>
-            <span className="block line-clamp-2">{hit.excerpt}</span>
+            <span className="block truncate"><span className="font-medium">{session.name}</span><span style={{ color: 'var(--text-3)' }}> · {source} {hit.messageIndex + 1}</span></span>
+            <span className="uam-sb-hit__excerpt block line-clamp-2">{hit.excerpt}</span>
           </button>
         })}
       </div>}

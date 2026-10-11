@@ -27,3 +27,27 @@
     animation: none;
   }
 }
+
+/* Deep message search: tokens only, quiet until hovered or focused. */
+.uam-sidebar-glide .uam-sb-search-status { color: var(--text-3); }
+.uam-sidebar-glide .uam-sb-search-error { color: var(--error); }
+.uam-sidebar-glide .uam-sb-hits { border-top: 1px solid var(--border); padding-top: var(--sp-1); }
+.uam-sidebar-glide .uam-sb-hit {
+  color: var(--text);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft);
+}
+.uam-sidebar-glide .uam-sb-hit:hover { background: var(--sidebar-item-hover); }
+.uam-sidebar-glide .uam-sb-hit:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-sidebar-glide .uam-sb-hit:disabled { opacity: .5; cursor: default; }
+.uam-sidebar-glide .uam-sb-hit__excerpt { color: var(--text-2); margin-top: 1px; }
+.uam-sidebar-glide .uam-sb-hits__label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: var(--sp-1) var(--sp-2) 2px;
+}

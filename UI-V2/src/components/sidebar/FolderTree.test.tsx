@@ -956,7 +956,7 @@ describe('FolderTree', () => {
 
     const active = host.querySelector<HTMLElement>('[data-testid="active-chats"] [data-session-id="active"]')
     const pinned = host.querySelector<HTMLElement>('[data-testid="pinned-chats"] [data-session-id="pinned"]')
-    expect(active?.className).toContain('py-2')
+    expect(active?.className).toContain('py-1.5')
     expect(active?.style.opacity).toBe('0.95')
     expect(active?.querySelector('[role="status"]')?.textContent).toBe('Working')
     expect(active?.textContent).toContain('Project')
