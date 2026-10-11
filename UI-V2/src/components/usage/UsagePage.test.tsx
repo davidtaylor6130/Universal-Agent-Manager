@@ -108,7 +108,7 @@ describe('UsagePage', () => {
       const count = requests.length
       await act(async () => button('Limits').click())
       expect(requests).toHaveLength(count)
-      expect(host.textContent).toContain('No limits received')
+      expect(host.textContent).toContain('Not readable at this time')
     } finally { act(() => root.unmount()); host.remove() }
   })
   it('filters totals, chart bands and models together without rescanning history', async () => {

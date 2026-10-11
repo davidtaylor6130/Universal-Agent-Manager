@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { ArrowLeft, RefreshCw, SlidersHorizontal } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { ArrowLeft, Info, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
 import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageWindow, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
 import { useAppStore } from '../../store/useAppStore'
-import { providerShortName } from '../../utils/providerMetadata'
+import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, StatusDot, cx } from '../ui'
+import { Button, IconButton, MenuSelect, Tooltip, cx } from '../ui'
 import { UsageLimits } from './UsageLimits'
 import './usage.css'
 
@@ -30,48 +30,61 @@ function readPrices(): UsagePriceOverride[] {
 }
 const modelKey = (model: Pick<UsageModel, 'providerId' | 'modelId' | 'speed'>) => JSON.stringify([model.providerId, model.modelId, model.speed])
 const providerLabel = (id: string) => providerShortName(undefined, id)
-const providerColors = ['var(--accent)', 'var(--blue)', 'var(--green)', 'var(--teal)', 'var(--yellow)', 'var(--text-2)']
+/** One colour per provider. Values live in usage.css (--usage-*); no two providers share one. */
+const providerColor: Record<UsageProviderId, string> = {
+  [CODEX_CLI_PROVIDER_ID]: 'var(--usage-codex)',
+  [CLAUDE_CLI_PROVIDER_ID]: 'var(--usage-claude)',
+  [DEFAULT_PROVIDER_ID]: 'var(--usage-gemini)',
+  [OPENCODE_CLI_PROVIDER_ID]: 'var(--usage-opencode)',
+  [COPILOT_CLI_PROVIDER_ID]: 'var(--usage-copilot)',
+  [ANTIGRAVITY_CLI_PROVIDER_ID]: 'var(--usage-antigravity)',
+}
 
 const money = (value: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: value > 0 && value < 0.01 ? 4 : 2 }).format(value)
 const percentOf = (part: number, whole: number) => whole > 0 ? `${Math.round(part / whole * 100)}%` : '0%'
-/** Token segments are disjoint: input + cache read + cache write + output (reasoning is a hatched part of output). */
+/** Token segments are disjoint: input + cache read + cache write + output (reasoning is a part of output). */
 const TOKEN_SEGMENTS = [
-  { key: 'input', label: 'Input', color: 'var(--blue)', value: (total: UsageTotals) => total.inputTokens },
-  { key: 'cache', label: 'Cache read', color: 'var(--teal)', value: (total: UsageTotals) => total.cachedInputTokens },
-  { key: 'cache-write', label: 'Cache write', color: 'var(--purple)', value: (total: UsageTotals) => total.cacheWriteTokens },
-  { key: 'output', label: 'Output', color: 'var(--green)', value: (total: UsageTotals) => total.outputTokens - total.reasoningTokens },
-  { key: 'reasoning', label: 'Reasoning, included in output', color: 'var(--yellow)', value: (total: UsageTotals) => total.reasoningTokens },
+  { key: 'input', label: 'Input', color: 'var(--usage-tok-input)', value: (total: UsageTotals) => total.inputTokens },
+  { key: 'cache', label: 'Cache read', color: 'var(--usage-tok-cache)', value: (total: UsageTotals) => total.cachedInputTokens },
+  { key: 'cache-write', label: 'Cache write', color: 'var(--usage-tok-cache-write)', value: (total: UsageTotals) => total.cacheWriteTokens },
+  { key: 'output', label: 'Output', color: 'var(--usage-tok-output)', value: (total: UsageTotals) => total.outputTokens - total.reasoningTokens },
+  { key: 'reasoning', label: 'Reasoning, included in output', color: 'var(--usage-tok-reasoning)', value: (total: UsageTotals) => total.reasoningTokens },
 ] as const
 
-/** Stacked token composition: one horizontal bar, proportional segments, exact counts in the legend. */
-function TokenStack({ total, height = 10 }: { total: UsageTotals; height?: number }) {
+/** Token composition as one proportional bar. Labels sit inside wide segments; every segment keeps an exact tooltip. */
+function TokenStack({ total, height = 14, labels = false }: { total: UsageTotals; height?: number; labels?: boolean }) {
+  const parts = TOKEN_SEGMENTS.map(segment => ({ segment, value: segment.value(total) }))
+  const sum = parts.reduce((acc, part) => acc + Math.max(0, part.value), 0)
   return <span className="uam-usage-stack" aria-hidden style={{ height }}>
-    {TOKEN_SEGMENTS.map(segment => { const value = segment.value(total); return value > 0 ? <span key={segment.key} className={segment.key === 'reasoning' ? 'uam-usage-hatch' : undefined} style={{ flexGrow: value, '--c': segment.color } as CSSProperties} title={`${segment.label} · ${value.toLocaleString()}`} /> : null })}
+    {parts.map(({ segment, value }) => {
+      if (value <= 0) return null
+      const share = value / sum
+      return <span key={segment.key} title={`${segment.label} · ${value.toLocaleString()}`} style={{ flexGrow: value, '--c': segment.color } as CSSProperties}>
+        {labels && share >= 0.12 && <span className="uam-usage-stack-label">{share >= 0.3 ? `${segment.key === 'reasoning' ? 'Reasoning' : segment.label} ` : ''}{formatUsageCount(value)}</span>}
+      </span>
+    })}
   </span>
 }
 
 function TokenLegend({ total }: { total: UsageTotals }) {
-  return <dl className="uam-usage-legend">
-    {TOKEN_SEGMENTS.map(segment => { const value = segment.value(total); return <div key={segment.key} className="uam-usage-legend-row">
-      <dt><span className={cx('uam-usage-swatch', segment.key === 'reasoning' && 'uam-usage-hatch')} style={{ '--c': segment.color } as CSSProperties} aria-hidden />{segment.label}</dt>
-      <dd className="tabular-nums" title={value.toLocaleString()}>{formatUsageCount(value)} <span className="uam-usage-muted">{percentOf(value, total.totalTokens)}</span></dd>
-    </div> })}
-  </dl>
+  return <ul className="uam-usage-key text-xs">
+    {TOKEN_SEGMENTS.map(segment => { const value = segment.value(total); return <li key={segment.key} className="uam-usage-key-item">
+      <i className="uam-usage-swatch" style={{ '--c': segment.color } as CSSProperties} aria-hidden />{segment.label}
+      <span className="tabular-nums uam-usage-muted" title={value.toLocaleString()}>{formatUsageCount(value)} · {percentOf(value, total.totalTokens)}</span>
+    </li> })}
+  </ul>
 }
 
-/** Spend bar: solid = reported charge, hatched = local estimate. Unknown prices draw nothing. */
-function SpendBar({ total, max, color }: { total: UsageTotals; max: number; color: string }) {
-  const cost = total.reportedCostUsd + total.estimatedCostUsd
-  const estimated = cost > 0 ? total.estimatedCostUsd / cost : 0
+/** Cost share as one solid bar in the provider colour; width is relative to the largest row. */
+function CostBar({ cost, max, color }: { cost: number; max: number; color: string }) {
   return <span className="uam-usage-stack" aria-hidden style={{ width: max > 0 ? `${Math.min(100, cost / max * 100)}%` : '0%' }}>
-    <span style={{ flexGrow: 1 - estimated, '--c': color } as CSSProperties} />
-    <span className="uam-usage-hatch" style={{ flexGrow: estimated, '--c': color } as CSSProperties} />
+    <span style={{ flexGrow: 1, '--c': color } as CSSProperties} />
   </span>
 }
 
-function StatTile({ label, value, sub, title, swatch }: { label: string; value: string; sub?: string; title?: string; swatch?: ReactNode }) {
+function StatTile({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
   return <div className="uam-usage-tile">
-    <span className="uam-usage-label">{swatch}{label}</span>
+    <span className="uam-usage-label">{label}</span>
     <span className="uam-usage-tile-value tabular-nums" title={title}>{value}</span>
     {sub && <span className="uam-usage-muted text-xs">{sub}</span>}
   </div>
@@ -152,7 +165,6 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const numeric = (total: UsageTotals) => metric === 'cost' ? usageCost(total) ?? 0 : total.totalTokens
   const peak = Math.max(0, ...periods.map(numeric))
   const maxModel = Math.max(0, ...models.map(numeric))
-  const maxProvider = Math.max(0, ...(data?.providers ?? []).map(numeric))
   const currentModel = data?.models.find(model => modelKey(model) === selectedModel)
   const refresh = () => { setRange(usageWindow(days)); history.refresh() }
   const warnings = data?.providers.filter(provider => provider.errors || provider.invalidLines || provider.oversizedLines || provider.pendingLines) ?? []
@@ -161,12 +173,33 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const axisValue = (value: number) => metric === 'cost' ? money(value) : formatUsageCount(value)
   const tipLabel = (startMs: number) => new Date(startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', timeZone: 'UTC' })
   const noCostData = metric === 'cost' && totals.totalTokens > 0 && totals.reportedCostTokens + totals.estimatedCostTokens === 0
-  return <main aria-label="Usage workspace" className="flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }} onKeyDown={event => {
+  const hasReported = totals.reportedCostUsd > 0
+  const coverageLabel = (status: string) => status === 'ready' ? 'Current' : status === 'cached' ? 'Cached' : status === 'loading' ? 'Loading' : 'Unavailable'
+  const coverage = (data?.coverage ?? []).map(machine => [`${machine.label || machine.executionHostId}: ${coverageLabel(machine.status)}`, machine.asOfMs ? new Date(machine.asOfMs).toLocaleString() : '', machine.error].filter(Boolean).join(' · '))
+  // Status lives in one header icon (tooltip + screen-reader list), not as text on the page.
+  const notes = data ? [
+    history.kept && 'Showing the previous answer while the selected range loads.',
+    data.asOfMs && `Updated ${new Date(data.asOfMs).toLocaleString()}`,
+    metric === 'cost' && data.pricing && `${data.pricing.refreshing ? 'Updating reference prices…' : data.pricing.status === 'unavailable' ? 'Using verified model references where available.' : `Using ${data.pricing.status === 'cached' ? 'cached' : 'current'} reference prices.`}${data.pricing.fetchedAtMs ? ` Retrieved ${new Date(data.pricing.fetchedAtMs).toLocaleString()}.` : ''}`,
+    metric === 'cost' && data.pricing?.error,
+    metric === 'cost' && data.pricing?.aliasError,
+    !data.complete && 'Partial history. Totals include available and cached records.',
+    data.listingLimited && 'Some history is outside the scan limit. These totals are incomplete.',
+    noCostData && 'No cost data for this range. Tokens were recorded, but no prices are known. Add model prices under Breakdown, or switch to Tokens.',
+    !hiddenProviders.has('copilot-cli') && data.providers.some(provider => provider.providerId === 'copilot-cli' && provider.records > 0) && 'Copilot history is grouped by saved checkpoint time.',
+    ...warnings.map(provider => `${providerLabel(provider.providerId)}: ${provider.errors} read errors, ${provider.invalidLines} invalid records, ${provider.oversizedLines} oversized records, ${provider.pendingLines} unfinished lines.`),
+  ].filter((line): line is string => Boolean(line)) : []
+  const attention = Boolean(data && (!data.complete || data.listingLimited || warnings.length > 0 || noCostData || data.coverage?.some(machine => machine.status !== 'ready')))
+  const statusLines = [...notes, ...coverage]
+  return <main aria-label="Usage workspace" className="uam-usage flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }} onKeyDown={event => {
     if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('[aria-modal="true"]') && !editingPrice) { event.preventDefault(); onClose() }
   }}>
     <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
       <IconButton icon={<ArrowLeft size={16} />} label="Back from usage" onClick={onClose} />
       <h1 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">Usage</h1>
+      {statusLines.length > 0 && <Tooltip side="bottom" align="start" label={<span className="uam-usage-status-tip">{statusLines.map((line, index) => <span key={index} className="block">{line}</span>)}</span>}>
+        <button type="button" aria-label="Usage status" className={cx('uam-usage-status', attention && 'is-attention')}><Info size={14} aria-hidden /></button>
+      </Tooltip>}
       <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>
       <div role="group" aria-label="Usage metric" className="uam-usage-seg">{(['cost', 'tokens', 'limits'] as const).map(value => <Button key={value} size="sm" variant={metric === value ? 'secondary' : 'ghost'} aria-pressed={metric === value} onClick={() => setMetric(value)}>{value[0].toUpperCase() + value.slice(1)}</Button>)}</div>
       <div role="group" aria-label="Usage period" className="uam-usage-seg">{USAGE_WINDOWS.map(option => <Button size="sm" key={option.days} disabled={metric === 'limits'} variant={days === option.days ? 'secondary' : 'ghost'} aria-pressed={days === option.days} onClick={() => { setDays(option.days); setRange(usageWindow(option.days)); setSelectedModel(null); setEditingPrice(false) }}>{option.label}</Button>)}</div>
@@ -178,80 +211,56 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
         {history.error && <div role="alert" className="flex flex-wrap items-center gap-3 text-xs" style={{ color: 'var(--error)' }}>{history.error}<Button size="sm" onClick={refresh}>Retry</Button></div>}
         {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
         {data && <div className="grid gap-6" style={{ opacity: history.kept ? 0.5 : 1 }} data-kept={history.kept || undefined}>
-          {history.kept && <p className="text-xs uam-usage-muted">Showing the previous answer while the selected range loads.</p>}
-          {data.asOfMs && <time className="text-xs uam-usage-muted" dateTime={new Date(data.asOfMs).toISOString()}>Updated {new Date(data.asOfMs).toLocaleString()}</time>}
-          {metric === 'cost' && data.pricing && <div className="grid gap-1 text-xs uam-usage-muted">
-            <p>{data.pricing.refreshing ? 'Updating reference prices…' : data.pricing.status === 'unavailable' ? 'Using verified model references where available.' : `Using ${data.pricing.status === 'cached' ? 'cached' : 'current'} reference prices.`}{data.pricing.fetchedAtMs && ` Retrieved ${new Date(data.pricing.fetchedAtMs).toLocaleString()}.`}</p>
-            {data.pricing.error && <p>{data.pricing.error}</p>}
-            {data.pricing.aliasError && <p>{data.pricing.aliasError}</p>}
-          </div>}
-          {!data.complete && <p className="uam-usage-note">Partial history. Totals include available and cached records.</p>}
-          {data.coverage && <ul aria-label="Usage machine coverage" className="flex flex-wrap gap-2 text-xs">{data.coverage.map(machine => <li key={machine.executionHostId} className="uam-usage-chip is-static">
-            <StatusDot tone={machine.status === 'ready' ? 'success' : machine.status === 'loading' ? 'info' : machine.status === 'cached' ? 'warning' : 'error'} />
-            <span>{machine.label || machine.executionHostId}: {machine.status === 'ready' ? 'Current' : machine.status === 'cached' ? 'Cached' : machine.status === 'loading' ? 'Loading' : 'Unavailable'}</span>
-            {machine.asOfMs && <span className="uam-usage-muted">{new Date(machine.asOfMs).toLocaleString()}</span>}{machine.error && <span className="uam-usage-muted">{machine.error}</span>}
-          </li>)}</ul>}
-          {data.listingLimited && <p className="uam-usage-note">Some history is outside the scan limit. These totals are incomplete.</p>}
-          {warnings.map(provider => <p key={provider.providerId} className="text-xs uam-usage-muted">{providerLabel(provider.providerId)}: {provider.errors} read errors, {provider.invalidLines} invalid records, {provider.oversizedLines} oversized records, {provider.pendingLines} unfinished lines.</p>)}
-          {noCostData && <p className="uam-usage-note">No cost data for this range. Tokens were recorded, but no prices are known. Add model prices under Breakdown, or switch to Tokens.</p>}
+          <ul className="sr-only" aria-label="Usage status details">{notes.map((line, index) => <li key={index}>{line}</li>)}</ul>
+          {coverage.length > 0 && <ul aria-label="Usage machine coverage" className="sr-only">{coverage.map((line, index) => <li key={index}>{line}</li>)}</ul>}
+          <div role="group" aria-label="Providers" className="uam-usage-chips">{data.providers.map(provider => {
+            const off = hiddenProviders.has(provider.providerId)
+            return <button key={provider.providerId} type="button" aria-label={`Include ${providerLabel(provider.providerId)} usage`} aria-pressed={!off} className={cx('uam-usage-chip', off && 'is-off')} style={{ '--c': providerColor[provider.providerId] } as CSSProperties} onClick={() => { setHiddenProviders(previous => { const next = new Set(previous); if (next.has(provider.providerId)) next.delete(provider.providerId); else next.add(provider.providerId); return next }); setSelectedModel(null); setEditingPrice(false) }}>
+              <span className="uam-usage-chip-dot" aria-hidden />
+              <ProviderLogo providerId={provider.providerId} size={14} />
+              <span className="uam-usage-chip-name">{providerLabel(provider.providerId)}</span>
+              <span className="uam-usage-chip-value tabular-nums" title={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}>{provider.available || provider.records > 0 ? amount(provider) : 'Unavailable'}</span>
+            </button>
+          })}</div>
           {totals.totalTokens === 0 && !history.loading && <p className="uam-usage-empty">No usage recorded in this range.</p>}
           <section className="grid gap-6 lg:grid-cols-[18rem_minmax(0,1fr)]">
             <div className="grid content-start gap-4">
               <div className="uam-usage-tiles">
-                <StatTile label={metric === 'cost' ? 'API equivalent' : 'Total tokens'} value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totals.sessions.toLocaleString()} sessions`} />
                 {metric === 'cost' ? <>
-                  <StatTile label="Reported" swatch={<span className="uam-usage-swatch" style={{ '--c': 'var(--text-2)' } as CSSProperties} aria-hidden />} value={totals.reportedCostTokens || !totals.totalTokens ? money(totals.reportedCostUsd) : 'Unknown'} sub="Provider-reported" />
-                  <StatTile label="Estimated" swatch={<span className="uam-usage-swatch uam-usage-hatch" style={{ '--c': 'var(--text-2)' } as CSSProperties} aria-hidden />} value={totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCostUsd) : 'Unknown'} sub="From known list prices" />
+                  <StatTile label={hasReported ? 'Total cost' : 'Estimated cost'} value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`API list prices · ${totals.sessions.toLocaleString()} sessions`} />
+                  {hasReported && <StatTile label="Reported" value={money(totals.reportedCostUsd)} sub="Provider-reported" />}
+                  {hasReported && <StatTile label="Estimated" value={totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCostUsd) : 'Unknown'} sub="API list prices" />}
+                  {!hasReported && <StatTile label="Unpriced tokens" value={formatUsageCount(totals.unpricedTokens)} sub="No known price" />}
                 </> : <>
+                  <StatTile label="Total tokens" value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totals.sessions.toLocaleString()} sessions`} />
                   <StatTile label="Cache read" value={percentOf(totals.cachedInputTokens, totals.totalTokens)} sub={`${formatUsageCount(totals.cachedInputTokens)} tokens`} />
                   <StatTile label="Reasoning" value={percentOf(totals.reasoningTokens, totals.totalTokens)} sub={`${formatUsageCount(totals.reasoningTokens)} tokens`} />
                 </>}
               </div>
-              {metric === 'cost' && <div className="grid gap-2">
-                <SpendBar total={totals} max={usageCost(totals) ?? 0} color="var(--text-2)" />
-                <p className="text-xs uam-usage-muted">Reported: {totals.reportedCostTokens || !totals.totalTokens ? money(totals.reportedCostUsd) : 'Unknown'}. Estimated: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCostUsd) : 'Unknown'}.{totals.unpricedTokens > 0 && ` ${formatUsageCount(totals.unpricedTokens)} tokens are unpriced.`}</p>
-              </div>}
-              {!hiddenProviders.has('copilot-cli') && data.providers.some(provider => provider.providerId === 'copilot-cli' && provider.records > 0) && <p className="text-xs uam-usage-muted">Copilot history is grouped by saved checkpoint time.</p>}
-              <div className="uam-usage-chips" role="group" aria-label="Providers">{data.providers.map(provider => {
-                const off = hiddenProviders.has(provider.providerId)
-                return <button key={provider.providerId} type="button" aria-label={`Include ${providerLabel(provider.providerId)} usage`} aria-pressed={!off} className={cx('uam-usage-chip', off && 'is-off')} onClick={() => { setHiddenProviders(previous => { const next = new Set(previous); if (next.has(provider.providerId)) next.delete(provider.providerId); else next.add(provider.providerId); return next }); setSelectedModel(null); setEditingPrice(false) }}>
-                  <ProviderLogo providerId={provider.providerId} size={14} />
-                  <span className="uam-usage-chip-name">{providerLabel(provider.providerId)}</span>
-                  <span className="uam-usage-chip-value tabular-nums" title={provider.available ? `${provider.files} history files` : 'Historical usage reader unavailable'}>{provider.available || provider.records > 0 ? amount(provider) : 'Unavailable'}</span>
-                  <span className="uam-usage-chip-bar" aria-hidden><span style={{ width: `${maxProvider ? numeric(provider) / maxProvider * 100 : 0}%`, background: providerColors[USAGE_PROVIDERS.indexOf(provider.providerId)] }} /></span>
-                </button>
-              })}</div>
             </div>
             <div className="grid content-start gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-medium">{hourly ? 'Hourly usage' : 'Daily usage'}</h2>
-                {metric === 'cost' && <div className="uam-usage-key text-xs" aria-hidden><span><i className="uam-usage-swatch" style={{ '--c': 'var(--text-2)' } as CSSProperties} />Reported</span><span><i className="uam-usage-swatch uam-usage-hatch" style={{ '--c': 'var(--text-2)' } as CSSProperties} />Estimated</span></div>}
-              </div>
+              <h2 className="text-sm font-medium">{hourly ? 'Hourly' : 'Daily'} {metric === 'cost' ? 'estimated cost' : 'tokens'}</h2>
               <div className="uam-usage-chart">
                 <div className="uam-usage-axis text-xs tabular-nums" aria-hidden><span>{axisValue(peak)}</span><span>{axisValue(peak / 2)}</span><span>0</span></div>
-                <div key={plotKey} role="img" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'known costs, unpriced tokens excluded' : 'tokens'} from loaded history`} className="uam-usage-plot" style={{ gap: periods.length > 31 ? 1 : 4 }}>
+                <div key={plotKey} role="img" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'estimated costs, unpriced tokens excluded' : 'tokens'} from loaded history`} className="uam-usage-plot" style={{ gap: periods.length > 31 ? 1 : 4 }}>
                   {metric === 'cost' && peak === 0 && totals.unpricedTokens > 0 && <span className="absolute inset-0 flex items-center justify-center text-xs">No priced usage in this range.</span>}
                   {periods.map((period, index) => <div key={period.startMs} className="uam-usage-col" style={{ '--i': Math.min(index, 40) } as CSSProperties} title={`${new Date(period.startMs).toLocaleString()} · ${amount(period)}`}>
-                    <div className="uam-usage-col-stack" style={{ height: `${peak ? numeric(period) / peak * 100 : 0}%`, minHeight: numeric(period) > 0 ? 2 : 0 }}>{period.bands.map(band => {
-                      const value = numeric(band), cost = band.reportedCostUsd + band.estimatedCostUsd
-                      const estimated = metric === 'cost' && cost > 0 ? band.estimatedCostUsd / cost : 0
-                      return <div key={band.providerId} className="uam-usage-band" title={`${providerLabel(band.providerId)} · ${amount(band)}`} style={{ height: `${numeric(period) ? value / numeric(period) * 100 : 0}%`, '--c': providerColors[USAGE_PROVIDERS.indexOf(band.providerId)] } as CSSProperties}>
-                        <span className="uam-usage-band-part" style={{ flexGrow: 1 - estimated }} /><span className="uam-usage-band-part uam-usage-hatch" style={{ flexGrow: estimated }} />
-                      </div>
-                    })}</div>
+                    <div className="uam-usage-col-stack" style={{ height: `${peak ? numeric(period) / peak * 100 : 0}%`, minHeight: numeric(period) > 0 ? 2 : 0 }}>{period.bands.map(band => <div key={band.providerId} className="uam-usage-band" title={`${providerLabel(band.providerId)} · ${amount(band)}`} style={{ height: `${numeric(period) ? numeric(band) / numeric(period) * 100 : 0}%`, '--c': providerColor[band.providerId] } as CSSProperties} />)}</div>
                     <span className="uam-usage-col-tip" aria-hidden>{tipLabel(period.startMs)} · {amount(period)}</span>
                   </div>)}
                 </div>
               </div>
-              <p className="text-xs uam-usage-muted">{new Date(data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ' · Daily buckets use UTC' : ''}{metric === 'cost' && totals.unpricedTokens > 0 ? ' · Unpriced usage excluded' : ''}</p>
+              <p className="text-xs uam-usage-muted">{new Date(data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ' · Daily buckets use UTC' : ''}</p>
             </div>
           </section>
-          <section className="grid gap-4"><div className="flex flex-wrap items-baseline justify-between gap-3"><h2 className="text-sm font-medium">Totals</h2>{metric === 'cost' && <p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : 'Unknown'}</p>}</div>
-            <TokenStack total={totals} height={12} />
+          <section className="grid gap-3"><div className="flex flex-wrap items-baseline justify-between gap-3"><h2 className="text-sm font-medium">Totals</h2>{metric === 'cost' && <p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : 'Unknown'}</p>}</div>
+            <TokenStack total={totals} height={16} labels />
             <TokenLegend total={totals} />
             <div className="grid gap-3 pt-2"><h3 className="uam-usage-label">Token mix by provider</h3>
-              {data.providers.filter(provider => !hiddenProviders.has(provider.providerId) && provider.totalTokens > 0).map(provider => <div key={provider.providerId} className="grid gap-1.5">
-                <div className="flex items-center justify-between gap-3 text-xs"><span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={provider.providerId} size={14} />{providerLabel(provider.providerId)}</span><span className="tabular-nums">{formatUsageCount(provider.totalTokens)} tokens</span></div>
-                <TokenStack total={provider} height={6} />
+              {data.providers.filter(provider => !hiddenProviders.has(provider.providerId) && provider.totalTokens > 0).map(provider => <div key={provider.providerId} className="uam-usage-mixrow">
+                <span className="flex min-w-0 items-center gap-2 text-xs"><i className="uam-usage-swatch" style={{ '--c': providerColor[provider.providerId] } as CSSProperties} aria-hidden /><span className="truncate">{providerLabel(provider.providerId)}</span></span>
+                <TokenStack total={provider} height={14} labels />
+                <span className="text-right text-xs tabular-nums">{formatUsageCount(provider.totalTokens)}</span>
               </div>)}
               {data.providers.every(provider => hiddenProviders.has(provider.providerId) || provider.totalTokens === 0) && <p className="text-xs uam-usage-muted">No provider usage to compare.</p>}
             </div>
@@ -260,10 +269,10 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
             {breakdown === 'model' ? <div>{models.length === 0 && <p className="py-4 text-xs uam-usage-muted">No model usage in this range.</p>}{models.slice(0, modelLimit).map(model => <div key={modelKey(model)} className="border-b" style={{ borderColor: 'var(--border)' }}>
               <button className="uam-btn uam-btn--ghost uam-usage-model-row text-xs" aria-label={`Inspect ${providerLabel(model.providerId)} ${model.modelId} ${model.speed}`} aria-expanded={modelKey(model) === selectedModel} onClick={() => { setSelectedModel(previous => previous === modelKey(model) ? null : modelKey(model)); setEditingPrice(false) }}>
                 <span className="flex min-w-0 items-center gap-2"><ProviderLogo providerId={model.providerId} size={16} /><span className="truncate" title={model.modelId}>{model.modelId}</span>{model.speed !== 'standard' && <span className="uam-usage-muted">{model.speed}</span>}</span><span className="shrink-0 tabular-nums">{amount(model)}</span>
-                <span className="uam-usage-model-bar">{metric === 'cost' ? <SpendBar total={model} max={maxModel} color={providerColors[USAGE_PROVIDERS.indexOf(model.providerId)]} /> : <TokenStack total={model} height={6} />}</span>
+                <span className="uam-usage-model-bar">{metric === 'cost' ? <CostBar cost={usageCost(model) ?? 0} max={maxModel} color={providerColor[model.providerId]} /> : <TokenStack total={model} height={14} />}</span>
               </button>
               {currentModel === model && <div className="grid gap-3 pb-4"><TokenLegend total={model} /><p className="text-xs uam-usage-muted">{model.sessions} sessions · {model.records} usage records · {formatUsageCount(model.unpricedTokens)} unpriced tokens</p><Button size="sm" leadingIcon={<SlidersHorizontal size={13} />} onClick={() => setEditingPrice(value => !value)}>Model prices</Button>{editingPrice && <PriceEditor model={model} prices={prices} onSave={setPrices} onClose={() => setEditingPrice(false)} />}</div>}
-            </div>)}{models.length > modelLimit && <Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button>}</div> : <div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="tabular-nums">{amount(period)}</span><span className="uam-usage-model-bar col-span-2"><span className="uam-usage-stack" style={{ width: peak ? `${numeric(period) / peak * 100}%` : '0%' }}><span style={{ flexGrow: 1, '--c': 'var(--text-3)' } as CSSProperties} /></span></span></div>)}</div>}
+            </div>)}{models.length > modelLimit && <Button size="sm" className="mt-3" onClick={() => setModelLimit(value => value + 100)}>Show more models ({models.length - modelLimit} remaining)</Button>}</div> : <div>{[...periods].reverse().map(period => <div key={period.startMs} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 border-b py-3 text-xs" style={{ borderColor: 'var(--border)' }}><span>{new Date(period.startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })}{!hourly ? ' UTC' : ''}</span><span className="tabular-nums">{amount(period)}</span><span className="uam-usage-model-bar col-span-2"><CostBar cost={numeric(period)} max={peak} color="var(--text-3)" /></span></div>)}</div>}
           </section>
           {(data.duplicates > 0 || data.unidentifiedRecords > 0 || data.providers.some(provider => provider.suppressedForkRecords > 0)) && <details className="text-xs"><summary className="cursor-pointer">History diagnostics</summary><p className="mt-2">{data.duplicates} duplicate records, {data.unidentifiedRecords} records without stable identity, {data.providers.reduce((sum, provider) => sum + provider.suppressedForkRecords, 0)} copied fork records suppressed.</p></details>}
         </div>}

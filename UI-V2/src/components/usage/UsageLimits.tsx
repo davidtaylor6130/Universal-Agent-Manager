@@ -1,6 +1,6 @@
 import { useMemo, type CSSProperties } from 'react'
 import { useAppStore } from '../../store/useAppStore'
-import { ALL_MACHINES_HOST_ID, USAGE_PROVIDERS } from '../../services/usageHistory'
+import { ALL_MACHINES_HOST_ID, USAGE_PROVIDERS, type UsageProviderId } from '../../services/usageHistory'
 import type { AcpContextUsage, AcpRateLimits, AcpTokenUsage } from '../../store/cpp/types'
 import { providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -20,21 +20,21 @@ function Meter({ label, percent }: { label: string; percent: number | null }) {
 function ConsumptionStack({ total }: { total: AcpTokenUsage['total'] }) {
   const cache = Math.max(0, total.cachedInputTokens) + Math.max(0, total.cacheWriteInputTokens)
   const segments = [
-    ['Input', Math.max(0, total.inputTokens - cache), 'var(--blue)'],
-    ['Cache read', total.cachedInputTokens, 'var(--teal)'],
-    ['Cache write', total.cacheWriteInputTokens, 'var(--purple)'],
-    ['Output', Math.max(0, total.outputTokens - total.reasoningOutputTokens), 'var(--green)'],
-    ['Reasoning', total.reasoningOutputTokens, 'var(--yellow)'],
+    ['Input', Math.max(0, total.inputTokens - cache), 'var(--usage-tok-input)'],
+    ['Cache read', total.cachedInputTokens, 'var(--usage-tok-cache)'],
+    ['Cache write', total.cacheWriteInputTokens, 'var(--usage-tok-cache-write)'],
+    ['Output', Math.max(0, total.outputTokens - total.reasoningOutputTokens), 'var(--usage-tok-output)'],
+    ['Reasoning', total.reasoningOutputTokens, 'var(--usage-tok-reasoning)'],
   ] as const
   return <div className="grid gap-2"><span className="uam-usage-stack" aria-hidden>{segments.map(([label, value, color]) => value > 0 ? <span key={label} title={`${label} · ${value.toLocaleString()}`} style={{ flexGrow: value, '--c': color } as CSSProperties} /> : null)}</span>
-    <div className="uam-usage-key text-xs" aria-hidden>{segments.map(([label, , color]) => <span key={label}><i className="uam-usage-swatch" style={{ '--c': color } as CSSProperties} />{label}</span>)}</div>
+    <ul className="uam-usage-key text-xs" aria-hidden>{segments.map(([label, , color]) => <li key={label} className="uam-usage-key-item"><i className="uam-usage-swatch" style={{ '--c': color } as CSSProperties} />{label}</li>)}</ul>
   </div>
 }
 
 /** Show provider consumption, context and allowances scoped to the selected host. */
 export function UsageLimits({ executionHostId }: { executionHostId: string }) {
   const configured = useAppStore(state => state.executionHosts)
-  const column = 'mx-auto grid max-w-6xl gap-8'
+  const column = 'uam-usage mx-auto grid max-w-6xl gap-8'
   if (executionHostId !== ALL_MACHINES_HOST_ID) return <div className={column}><UsageHostLimits executionHostId={executionHostId} /></div>
   const hosts = configured.some(host => host.id === 'local') ? configured : [{ id: 'local', label: 'This computer' }, ...configured]
   return <div className={column}>{hosts.map(host => <section key={host.id} aria-label={`${host.label} limits`} className="grid gap-4">
@@ -64,62 +64,64 @@ function UsageHostLimits({ executionHostId }: { executionHostId: string }) {
     return { limits: result, contexts, tokens }
   }, [sessions, bindings, executionHostId])
   const now = Date.now()
-  const hasData = (provider: string) => latest.limits.has(provider) || latest.contexts.has(provider) || latest.tokens.has(provider)
-  const active = USAGE_PROVIDERS.filter(hasData)
-  const idle = USAGE_PROVIDERS.filter(provider => !hasData(provider))
   return <div className="grid gap-4"><p className="text-xs uam-usage-muted">Latest provider snapshots from chats on this host.</p>
-    {active.length > 0 && <div className="uam-limits-grid">{active.map(provider => {
-      const limits = latest.limits.get(provider)
-      const context = latest.contexts.get(provider)
-      const consumption = latest.tokens.get(provider)
-      const consumptionTimeValid = Boolean(consumption && consumption.usage.updatedAt > 0 && consumption.usage.updatedAt <= now && Number.isFinite(new Date(consumption.usage.updatedAt).getTime()))
-      const timestampValid = Boolean(limits && limits.updatedAt > 0 && limits.updatedAt <= now && Number.isFinite(new Date(limits.updatedAt).getTime()))
-      const stale = Boolean(limits && (!timestampValid || now - limits.updatedAt >= 300000))
-      const contextPercent = context ? Math.min(100, Math.max(0, context.usage.usedTokens / context.usage.windowTokens * 100 || 0)) : 0
-      return <section key={provider} className="uam-limits-card" aria-label={`${providerShortName(undefined, provider)} limits`}>
-        <header className="uam-limits-card__head">
-          <h2 className="flex items-center gap-2 text-sm font-medium"><ProviderLogo providerId={provider} size={17} />{providerShortName(undefined, provider)}</h2>
-          {limits && <span className="uam-limits-chip">{limits.planType || limits.limitName || 'Provider allowance'}</span>}
-          {limits && <span className="uam-limits-updated" title={timestampValid ? new Date(limits.updatedAt).toLocaleString() : undefined}>{timestampValid ? `Updated ${relativeAgo(limits.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span>}
-        </header>
-        {!limits ? <p className="text-xs uam-usage-muted">No limits received.</p> : <div className="grid gap-3 text-xs">
-          {(['primary', 'secondary'] as const).map(key => {
-            const window = limits[key]
-            if (!window) return null
-            const percent = window.usedPercent
-            const valid = Number.isFinite(percent) && percent >= 0 && percent <= 100
-            const expired = window.resetsAt !== null && window.resetsAt * 1000 <= now
-            return <div key={key} className="grid gap-1.5">
-              <div className="flex items-baseline justify-between gap-4"><span className="uam-limits-label">{windowLabel(window.windowDurationMinutes, key)}</span><span className="tabular-nums"><b className="uam-limits-pct" style={{ color: valid ? meterTone(percent) : undefined }}>{valid ? `${Math.round(percent)}% used` : 'Usage unavailable'}</b>{valid ? <span className="uam-usage-muted"> · {Math.round(100 - percent)}% remaining</span> : null}</span></div>
-              <Meter label={`${providerShortName(undefined, provider)} ${key} usage`} percent={valid ? percent : null} />
-              {window.resetsAt !== null && <p className="uam-usage-muted" title={new Date(window.resetsAt * 1000).toLocaleString()}>{expired ? 'Reset passed, awaiting update' : `Resets ${relativeIn(window.resetsAt * 1000, now)}`}<span className="sr-only"> · reset passed, awaiting update</span></p>}
-            </div>
-          })}
-          {limits.individualLimit && <div className="grid gap-1.5"><div className="flex justify-between gap-4"><span className="uam-limits-label">Spend limit</span><span className="tabular-nums">Spend limit: {limits.individualLimit.used} of {limits.individualLimit.limit} · {Math.round(limits.individualLimit.remainingPercent)}% remaining</span></div><Meter label={`${providerShortName(undefined, provider)} spend limit`} percent={Math.min(100, Math.max(0, 100 - limits.individualLimit.remainingPercent))} /></div>}
-          {limits.credits && <p>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance ?? 'Available' : 'None'}</p>}
-          {limits.spendControlReached && <p style={{ color: 'var(--error)' }}>Provider spend limit reached.</p>}
-        </div>}
-        {context && <div className="grid gap-1.5 text-xs">
-          <div className="flex items-baseline justify-between gap-4"><span className="uam-limits-label">Context window</span><span className="tabular-nums uam-usage-muted">{Math.round(contextPercent)}%</span></div>
-          <span className="uam-usage-meter" aria-hidden><span style={{ width: `${contextPercent}%`, background: meterTone(contextPercent) }} /></span>
-          <p className="uam-usage-muted">Context in {context.title || 'chat'}: {context.usage.usedTokens.toLocaleString()} of {context.usage.windowTokens.toLocaleString()} tokens · {Math.round(context.usage.usedTokens / context.usage.windowTokens * 100)}%{now - context.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
-        </div>}
-        {!consumption ? <p className="text-xs uam-usage-muted">Consumed tokens unavailable.</p> : <details className="uam-limits-tokens text-xs">
-          <summary><span className="uam-limits-label">Tokens</span><span className="tabular-nums">{compactTokens(consumption.usage.total.totalTokens)}</span></summary>
-          <ConsumptionStack total={consumption.usage.total} />
-          <div className="grid gap-1 uam-usage-muted">
-          <p>{(provider === 'gemini-cli' || provider === 'opencode-cli') ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}</p>
-          <p>Input {consumption.usage.total.inputTokens.toLocaleString()} · Output {consumption.usage.total.outputTokens.toLocaleString()}</p>
-          {(consumption.usage.total.cachedInputTokens > 0 || consumption.usage.total.cacheWriteInputTokens > 0) && <p>Of input: cache read {consumption.usage.total.cachedInputTokens.toLocaleString()} · cache write {consumption.usage.total.cacheWriteInputTokens.toLocaleString()}</p>}
-          {consumption.usage.total.reasoningOutputTokens > 0 && <p>Of output: reasoning {consumption.usage.total.reasoningOutputTokens.toLocaleString()}</p>}
-          <p>Last turn: {consumption.usage.last ? `${consumption.usage.last.totalTokens.toLocaleString()} tokens` : 'Unavailable'}</p>
-          <p>{consumptionTimeValid ? `Updated ${new Date(consumption.usage.updatedAt).toLocaleString()}` : 'Update time unavailable'}{!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
-          </div>
-        </details>}
-      </section>
-    })}</div>}
-    {idle.length > 0 && <div className="uam-limits-idle">{idle.map(provider => <span key={provider} title="No limits received. Consumed tokens unavailable."><ProviderLogo providerId={provider} size={14} />{providerShortName(undefined, provider)}</span>)}<span className="uam-usage-muted">No limits received yet. Start a chat with these providers to see allowances.</span><span className="sr-only">No limits received. Consumed tokens unavailable.</span></div>}
+    <div className="uam-limits-grid">{USAGE_PROVIDERS.map(provider => <ProviderLimitCard key={provider} provider={provider} limits={latest.limits.get(provider)} context={latest.contexts.get(provider)} consumption={latest.tokens.get(provider)} now={now} />)}</div>
   </div>
+}
+
+/** One card per provider with the same structure whether or not data exists; unreadable windows show as empty tracks. */
+function ProviderLimitCard({ provider, limits, context, consumption, now }: {
+  provider: UsageProviderId
+  limits: AcpRateLimits | undefined
+  context: { usage: AcpContextUsage; title: string } | undefined
+  consumption: { usage: AcpTokenUsage; title: string } | undefined
+  now: number
+}) {
+  const name = providerShortName(undefined, provider)
+  const consumptionTimeValid = Boolean(consumption && consumption.usage.updatedAt > 0 && consumption.usage.updatedAt <= now && Number.isFinite(new Date(consumption.usage.updatedAt).getTime()))
+  const timestampValid = Boolean(limits && limits.updatedAt > 0 && limits.updatedAt <= now && Number.isFinite(new Date(limits.updatedAt).getTime()))
+  const stale = Boolean(limits && (!timestampValid || now - limits.updatedAt >= 300000))
+  const contextPercent = context ? Math.min(100, Math.max(0, context.usage.usedTokens / context.usage.windowTokens * 100 || 0)) : 0
+  return <section className="uam-limits-card" aria-label={`${name} limits`}>
+    <header className="uam-limits-card__head">
+      <h2 className="flex items-center gap-2 text-sm font-medium"><ProviderLogo providerId={provider} size={17} />{name}</h2>
+      {limits && <span className="uam-limits-chip">{limits.planType || limits.limitName || 'Provider allowance'}</span>}
+      {limits && <span className="uam-limits-updated" title={timestampValid ? new Date(limits.updatedAt).toLocaleString() : undefined}>{timestampValid ? `Updated ${relativeAgo(limits.updatedAt, now)}` : 'Update time unavailable'}{stale ? ' · Cached snapshot' : ''}</span>}
+    </header>
+    <div className="grid gap-3 text-xs">
+      {(['primary', 'secondary'] as const).map(key => {
+        const window = limits?.[key] ?? null
+        const percent = window ? window.usedPercent : NaN
+        const valid = Number.isFinite(percent) && percent >= 0 && percent <= 100
+        const expired = window !== null && window.resetsAt !== null && window.resetsAt * 1000 <= now
+        return <div key={key} className="grid gap-1.5">
+          <div className="flex items-baseline justify-between gap-4"><span className="uam-limits-label">{window ? windowLabel(window.windowDurationMinutes, key) : key === 'primary' ? '5 hour window' : 'Weekly window'}</span><span className="tabular-nums">{valid ? <><b className="uam-limits-pct" style={{ color: meterTone(percent) }}>{`${Math.round(percent)}% used`}</b><span className="uam-usage-muted"> · {Math.round(100 - percent)}% remaining</span></> : <span className="uam-usage-muted">{window ? 'Usage unavailable' : 'Not readable at this time'}</span>}</span></div>
+          <Meter label={`${name} ${key} usage`} percent={valid ? percent : null} />
+          {window && window.resetsAt !== null && <p className="uam-usage-muted" title={new Date(window.resetsAt * 1000).toLocaleString()}>{expired ? 'Reset passed, awaiting update' : `Resets ${relativeIn(window.resetsAt * 1000, now)}`}<span className="sr-only"> · reset passed, awaiting update</span></p>}
+        </div>
+      })}
+      {limits?.individualLimit && <div className="grid gap-1.5"><div className="flex justify-between gap-4"><span className="uam-limits-label">Spend limit</span><span className="tabular-nums">Spend limit: {limits.individualLimit.used} of {limits.individualLimit.limit} · {Math.round(limits.individualLimit.remainingPercent)}% remaining</span></div><Meter label={`${name} spend limit`} percent={Math.min(100, Math.max(0, 100 - limits.individualLimit.remainingPercent))} /></div>}
+      {limits?.credits && <p>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance ?? 'Available' : 'None'}</p>}
+      {limits?.spendControlReached && <p style={{ color: 'var(--error)' }}>Provider spend limit reached.</p>}
+    </div>
+    {context && <div className="grid gap-1.5 text-xs">
+      <div className="flex items-baseline justify-between gap-4"><span className="uam-limits-label">Context window</span><span className="tabular-nums uam-usage-muted">{Math.round(contextPercent)}%</span></div>
+      <span className="uam-usage-meter" aria-hidden><span style={{ width: `${contextPercent}%`, background: meterTone(contextPercent) }} /></span>
+      <p className="uam-usage-muted">Context in {context.title || 'chat'}: {context.usage.usedTokens.toLocaleString()} of {context.usage.windowTokens.toLocaleString()} tokens · {Math.round(context.usage.usedTokens / context.usage.windowTokens * 100)}%{now - context.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
+    </div>}
+    {!consumption ? <p className="text-xs uam-usage-muted">Consumed tokens unavailable.</p> : <details className="uam-limits-tokens text-xs">
+      <summary><span className="uam-limits-label">Tokens</span><span className="tabular-nums">{compactTokens(consumption.usage.total.totalTokens)}</span></summary>
+      <ConsumptionStack total={consumption.usage.total} />
+      <div className="grid gap-1 uam-usage-muted">
+        <p>{(provider === 'gemini-cli' || provider === 'opencode-cli') ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}</p>
+        <p>Input {consumption.usage.total.inputTokens.toLocaleString()} · Output {consumption.usage.total.outputTokens.toLocaleString()}</p>
+        {(consumption.usage.total.cachedInputTokens > 0 || consumption.usage.total.cacheWriteInputTokens > 0) && <p>Of input: cache read {consumption.usage.total.cachedInputTokens.toLocaleString()} · cache write {consumption.usage.total.cacheWriteInputTokens.toLocaleString()}</p>}
+        {consumption.usage.total.reasoningOutputTokens > 0 && <p>Of output: reasoning {consumption.usage.total.reasoningOutputTokens.toLocaleString()}</p>}
+        <p>Last turn: {consumption.usage.last ? `${consumption.usage.last.totalTokens.toLocaleString()} tokens` : 'Unavailable'}</p>
+        <p>{consumptionTimeValid ? `Updated ${new Date(consumption.usage.updatedAt).toLocaleString()}` : 'Update time unavailable'}{!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
+      </div>
+    </details>}
+  </section>
 }
 
 function windowLabel(minutes: number | null | undefined, key: 'primary' | 'secondary') {
