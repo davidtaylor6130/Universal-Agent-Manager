@@ -131,6 +131,8 @@ UAM_TEST(ColdMemoryPreparationCannotMarkANewWorkspaceProcessedFromAnOldLowSignal
 		remote_task.data_root = remote_app.data_root;
 		remote_task.running = true;
 		remote_task.chat_id = remote_chat.id;
+		remote_task.owner_provider_id = remote_chat.provider_id;
+		remote_task.memory_level = "strict";
 		remote_task.prepared_from_cold = true;
 		remote_task.source_persisted_message_count = remote_app.chats.front().persisted_message_count;
 		remote_task.source_persisted_messages_digest = remote_app.chats.front().persisted_messages_digest;

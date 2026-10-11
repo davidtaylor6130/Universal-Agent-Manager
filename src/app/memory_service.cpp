@@ -347,15 +347,15 @@ namespace
 
 	bool ShouldQueueAutomaticMemoryScan(const ChatSession& chat)
 	{
+		const std::string level = MemoryLevel(chat);
+		if (level == uam::memory_levels::kOpen)
+		{
+			return static_cast<std::size_t>(std::max(0, chat.memory_last_processed_message_count)) < chat.messages.size();
+		}
 		const std::string lowered = uam::strings::ToLowerAscii(TranscriptDeltaText(chat));
 		if (lowered.empty())
 		{
 			return false;
-		}
-		const std::string level = MemoryLevel(chat);
-		if (level == uam::memory_levels::kOpen)
-		{
-			return true;
 		}
 		const bool has_progress_signal = ContainsProgressOnlySignal(lowered);
 		if (has_progress_signal && !HasDurableNonProgressSignal(lowered))
@@ -1184,6 +1184,8 @@ namespace
 		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
+		task.owner_provider_id = chat.provider_id;
+		task.memory_level = MemoryLevel(chat);
 		task.message_count = MessageCount(chat);
 		task.prepared_from_cold = true;
 		task.source_persisted_message_count = chat.persisted_message_count;
@@ -1258,6 +1260,15 @@ namespace
 		const std::optional<std::string> text = tools ? std::nullopt : uam::provider_workers::CompletedTextWorkerOutput(provider_id, result.output, uam::platform::kCapturedCommandMaxOutputBytes);
 		const std::optional<nlohmann::json> parsed = text ? ExtractMemoryJsonObject(*text, &tools) : std::nullopt;
 		if (tools || !parsed) { result.ok = false; result.error = tools ? "Memory worker attempted tool or file access; output was rejected." : "Memory worker did not return the required JSON object."; return result; }
+		// Remote writes require a current UI owner, not merely the worker's launch snapshot.
+		extraction.remote_publication_ready.store(true, std::memory_order_release);
+		{
+			std::unique_lock lock(extraction.remote_publication_mutex);
+			if (!extraction.remote_publication_condition.wait(lock, stop_token, [&extraction]() { return extraction.remote_publication_permitted; }) || stop_token.stop_requested())
+			{
+				result.ok = false; result.canceled = true; result.error = "Memory scan canceled."; return result;
+			}
+		}
 		for (const nlohmann::json& entry : (*parsed)["memories"])
 		{
 			if (stop_token.stop_requested()) { result.ok = false; result.canceled = true; result.error = "Memory scan canceled."; return result; }
@@ -1269,7 +1280,7 @@ namespace
 			draft.extraction_key = chat.id + ":" + std::to_string(MessageCount(chat));
 			if (uam::sensitive::LooksSensitiveText(draft.title + "\n" + draft.memory + "\n" + draft.evidence)) continue;
 			MemoryLibraryStore::Entry created;
-			if (!client.CreateMemoryEntry(uam::paths::PathFromUtf8(workspace), draft, created, &result.error)) { result.ok = false; return result; }
+			if (!client.CreateMemoryEntry(uam::paths::PathFromUtf8(workspace), draft, created, &result.error, stop_token)) { result.ok = false; result.canceled = stop_token.stop_requested(); return result; }
 			++extraction.remote_entry_count;
 		}
 		extraction.remote_applied = true;
@@ -1313,6 +1324,8 @@ namespace
 		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
+		task.owner_provider_id = chat.provider_id;
+		task.memory_level = MemoryLevel(chat);
 		task.message_count = MessageCount(chat);
 		task.prepared_from_cold = !chat.messages_loaded;
 		task.source_persisted_message_count = chat.persisted_message_count;
@@ -1970,6 +1983,22 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		uam::AsyncMemoryExtractionTask& task = *it;
 		if (!task.state || !task.state->completed.load(std::memory_order_acquire))
 		{
+			if (task.remote_host && task.worker)
+			{
+				const ChatSession* owner = ChatDomainService().FindChatById(app, task.chat_id);
+				if (task.worker->get_stop_token().stop_requested() || task.data_root != app.data_root || !owner || !MemoryScanEligible(*owner) ||
+				    !MemoryTaskStillOwnsWorkspace(app, *owner, task) || owner->provider_id != task.owner_provider_id ||
+				    MemoryLevel(*owner) != task.memory_level)
+					task.worker->request_stop();
+				else if (task.extraction_state && task.extraction_state->remote_publication_ready.load(std::memory_order_acquire))
+				{
+					{
+						std::lock_guard lock(task.extraction_state->remote_publication_mutex);
+						task.extraction_state->remote_publication_permitted = true;
+					}
+					task.extraction_state->remote_publication_condition.notify_all();
+				}
+			}
 			++it;
 			continue;
 		}
@@ -2000,7 +2029,9 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		if (chat_ptr != nullptr)
 		{
 			ChatSession& chat = *chat_ptr;
-			const bool workspace_stale = (task.prepared_from_cold || task.state->result.ok) && !MemoryTaskStillOwnsWorkspace(app, chat, task);
+			const bool remote_policy_stale = task.remote_host &&
+			                                 (chat.provider_id != task.owner_provider_id || MemoryLevel(chat) != task.memory_level);
+			const bool workspace_stale = remote_policy_stale || ((task.prepared_from_cold || task.state->result.ok) && !MemoryTaskStillOwnsWorkspace(app, chat, task));
 			const bool preparation_stale = task.prepared_from_cold &&
 			                               (chat.messages_loaded || chat.persisted_message_count != static_cast<std::size_t>(task.source_persisted_message_count) ||
 			                                chat.persisted_messages_digest != task.source_persisted_messages_digest);

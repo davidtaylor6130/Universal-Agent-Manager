@@ -118,7 +118,7 @@ namespace uam::remote
 		bool PrepareTextWorker(std::string_view id, std::string_view provider, std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool RemoveTextWorker(std::string_view id, std::string* error_out = nullptr);
 		bool ListMemoryEntries(const std::filesystem::path& workspace, std::vector<MemoryLibraryStore::Entry>& entries, std::string* error_out = nullptr);
-		bool CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out = nullptr);
+		bool CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool DeleteMemoryEntry(const std::filesystem::path& workspace, std::string_view id, std::string* error_out = nullptr);
 		bool ReadProjectMemory(const std::filesystem::path& workspace, int budget, std::string& text,
 		                       std::string* error_out = nullptr, std::stop_token stop_token = {});
