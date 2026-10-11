@@ -169,6 +169,14 @@ UAM_TEST(ClaudeParentEnvelopeReplayDoesNotDuplicateNarration)
 	frame["uuid"] = "another-parent-frame";
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
 	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Parent answerParent answer"));
+	frame["uuid"] = "parent-frame";
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Parent answerParent answer"));
+	// Older envelopes without identity must not be deduplicated by their text.
+	frame.erase("uuid");
+	for (int index = 0; index < 2; ++index)
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("Parent answerParent answerParent answerParent answer"));
 #endif
 }
 
