@@ -2575,3 +2575,64 @@ UAM_TEST(MemoryPreparedOutputRetainsRetryReceiptsAfterInterruptedPublication)
 	UAM_ASSERT(MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error));
 	UAM_ASSERT(!MemoryService::PublishPreparedWorkerOutput(app, chat, workspace, prepared, &error));
 }
+
+UAM_TEST(MemoryAutomaticGatePreservesSignalsAcrossLargeTranscriptBoundaries)
+{
+	TempDir temp("uam-memory-streamed-gate");
+	int case_index = 0;
+	for (const std::string level : {"strict", "balanced"})
+	{
+		for (const std::size_t offset : {65520u, 65535u, 65550u, 65565u, 131070u})
+		{
+			for (const std::string signal : {"REMEMBER THIS", "remaining work", "I ALWAYS WANT Allman braces.", "neutral details"})
+			{
+				uam::AppState app;
+				app.data_root = temp.root / ("data-" + std::to_string(case_index++));
+				app.settings.memory_idle_delay_seconds = 3600;
+				ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+				chat.workspace_directory = temp.root.string();
+				chat.memory_level = level;
+				chat.messages.push_back({MessageRole::User, "critical failure: this previously processed message must not qualify the new delta"});
+				chat.memory_last_processed_message_count = 1;
+				std::string body(offset, 'x');
+				body[7] = '\0';
+				body += signal + " café ";
+				chat.messages.push_back({MessageRole::User, "  " + body + "  "});
+				UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+				app.chats.push_back(std::move(chat));
+				const bool accepted = signal == "I ALWAYS WANT Allman braces." ||
+				                      (signal != "remaining work" && (level == "balanced" || signal == "REMEMBER THIS"));
+				(void)MemoryService::ProcessDueMemoryWork(app);
+				UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, accepted ? 1 : 2);
+				UAM_ASSERT_EQ(app.memory_idle_started_at_by_chat_id.contains(app.chats.front().id), accepted);
+				UAM_ASSERT(app.memory_extraction_tasks.empty());
+				UAM_ASSERT(app.memory_extraction_queue.empty());
+			}
+		}
+	}
+}
+
+UAM_TEST(MemoryAutomaticGateCombinesSignalsAcrossMessagesWithoutReplayingProcessedHistory)
+{
+	TempDir temp("uam-memory-streamed-progress");
+	for (const std::string level : {"strict", "balanced"})
+	{
+		for (const bool durable_preference : {false, true})
+		{
+			uam::AppState app;
+			app.data_root = temp.root / (level + (durable_preference ? "-preference" : "-progress"));
+			app.settings.memory_idle_delay_seconds = 3600;
+			ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+			chat.workspace_directory = temp.root.string();
+			chat.memory_level = level;
+			chat.messages.push_back({MessageRole::User, "Remember this unfinished task"});
+			chat.messages.push_back({MessageRole::Assistant, std::string(256 * 1024, 'x') + (durable_preference ? "Never use unsafe casts." : "Neutral output.")});
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+			app.chats.push_back(std::move(chat));
+			(void)MemoryService::ProcessDueMemoryWork(app);
+			UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, durable_preference ? 0 : 2);
+			UAM_ASSERT_EQ(app.memory_idle_started_at_by_chat_id.contains(app.chats.front().id), durable_preference);
+			UAM_ASSERT(app.memory_extraction_tasks.empty());
+		}
+	}
+}
