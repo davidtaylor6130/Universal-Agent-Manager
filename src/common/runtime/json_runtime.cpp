@@ -545,8 +545,15 @@ void AppendJsonEscapedString(const std::string& value, Output& out)
 {
 	out.push_back('"');
 
-	for (const unsigned char ch : value)
+	// Count and append ordinary UTF-8 bytes as spans, retaining identical escaping
+	// and the bounded serializer's overflow check for each complete span.
+	std::size_t span_start = 0;
+	for (std::size_t index = 0; index < value.size(); ++index)
 	{
+		const unsigned char ch = static_cast<unsigned char>(value[index]);
+		if (ch >= 0x20 && ch != '"' && ch != '\\') continue;
+		if (index != span_start) out += std::string_view(value).substr(span_start, index - span_start);
+		span_start = index + 1;
 		switch (ch)
 		{
 		case '"':
@@ -579,14 +586,11 @@ void AppendJsonEscapedString(const std::string& value, Output& out)
 				out.push_back(kHex[ch >> 4]);
 				out.push_back(kHex[ch & 0x0f]);
 			}
-			else
-			{
-				out.push_back(static_cast<char>(ch));
-			}
 
 			break;
 		}
 	}
+	if (span_start != value.size()) out += std::string_view(value).substr(span_start);
 
 	out.push_back('"');
 }

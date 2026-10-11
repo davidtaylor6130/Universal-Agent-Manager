@@ -485,6 +485,34 @@ UAM_TEST(BoundedJsonSerializationCountsEscapingAndFinalNewline)
 	}
 }
 
+UAM_TEST(JsonSerializationPreservesMixedSpansAndExactByteLimit)
+{
+	const std::string plain(1024U * 1024U, 'x');
+	std::string controls;
+	for (int value = 0; value < 32; ++value) controls.push_back(static_cast<char>(value));
+	const std::string input = "\"\\" + plain + controls + "é😀" + plain + "\\\"";
+	const std::string escaped_controls =
+	    "\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007"
+	    "\\b\\t\\n\\u000b\\f\\r\\u000e\\u000f"
+	    "\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017"
+	    "\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f";
+	const std::string expected = "\"\\\"\\\\" + plain + escaped_controls + "é😀" + plain + "\\\\\\\"\"\n";
+	const JsonValue value = uam::json::String(input);
+	UAM_ASSERT_EQ(SerializeJson(value), expected);
+	UAM_ASSERT_EQ(SerializeJson(value, expected.size()), expected);
+	const std::optional<JsonValue> parsed = ParseJson(expected);
+	UAM_ASSERT(parsed.has_value());
+	UAM_ASSERT_EQ(parsed->string_value, input);
+	for (const std::size_t limit : {std::size_t{0}, plain.size(), expected.size() - 1})
+	{
+		bool rejected = false;
+		try { (void)SerializeJson(value, limit); }
+		catch (const std::length_error&) { rejected = true; }
+		UAM_ASSERT(rejected);
+	}
+	UAM_ASSERT_EQ(SerializeJson(uam::json::String(""), 3), std::string("\"\"\n"));
+}
+
 UAM_TEST(OversizedChatSavePreservesExistingTranscript)
 {
 	TempDir temp("oversized-chat-save");
