@@ -1,7 +1,8 @@
-import { useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, CornerUpRight, Pencil, X } from 'lucide-react'
 import type { AcpQueuedPrompt } from '../../store/cpp/types'
-import { Button, IconButton, StatusDot } from '../ui'
+import { Button, IconButton, StatusDot, motionAllowed } from '../ui'
+import { EXIT_MS } from '../ui/Overlay'
 import './InlinePromptQueue.css'
 
 interface InlinePromptQueueProps {
@@ -23,6 +24,8 @@ function FileChip({ name, title, trailing }: { name: string; title?: string; tra
   </span>
 }
 
+/** Removed rows stay visible for the exit animation; reduced motion or no matchMedia (jsdom) drops them at once. */
+
 /** Edits queue snapshots separately from the composer; native ID/revision guards own admission. */
 export function InlinePromptQueue({ prompts, held = false, onResume, disabled = false, onEdit, onReorder, onSteer, onRemove }: InlinePromptQueueProps) {
   const [editing, setEditing] = useState<{ id: string; revision: number; text: string; retainedAttachmentIds?: string[] } | null>(null)
@@ -31,6 +34,23 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
   const [error, setError] = useState('')
   const blocked = disabled || pending
   const reorderable = prompts.every((prompt) => prompt.id && prompt.revision && !prompt.prepared)
+  const [leaving, setLeaving] = useState<{ prompt: AcpQueuedPrompt; index: number }[]>([])
+  const previousPrompts = useRef(prompts)
+  useLayoutEffect(() => {
+    const before = previousPrompts.current
+    previousPrompts.current = prompts
+    if (!motionAllowed()) return
+    const ids = new Set(prompts.map((prompt) => prompt.id))
+    const removed = before.flatMap((prompt, index) => prompt.id && !ids.has(prompt.id) ? [{ prompt, index }] : [])
+    if (removed.length) setLeaving((current) => [...current.filter((item) => !ids.has(item.prompt.id)), ...removed])
+  }, [prompts])
+  useLayoutEffect(() => {
+    if (leaving.length === 0) return
+    const timer = window.setTimeout(() => setLeaving([]), EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [leaving])
+  const rows = prompts.map((prompt, index) => ({ prompt, index, leaving: false }))
+  for (const item of leaving) rows.splice(Math.min(item.index, rows.length), 0, { ...item, leaving: true })
 
   async function run(operation: () => Promise<boolean>, failure: string, finish?: () => void) {
     if (blocked || pendingRef.current) return
@@ -57,7 +77,7 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
     void run(() => onReorder(expected, ordered), 'Queue changed or could not be reordered. Try again.')
   }
 
-  if (prompts.length === 0 && !editing) return null
+  if (prompts.length === 0 && !editing && leaving.length === 0) return null
   const editedPrompt = editing ? prompts.find((prompt) => prompt.id === editing.id) : undefined
   const editedPromptIndex = editedPrompt ? prompts.indexOf(editedPrompt) : -1
   const staleEdit = Boolean(editing && (!editedPrompt || editedPrompt.revision !== editing.revision))
@@ -81,7 +101,11 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
       </span>
       <Button type="button" size="sm" variant="secondary" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'Queue changed or could not be resumed. Your queued prompts are kept.')}>Resume queue</Button>
     </div>}
-    <div className="uam-queue-list">{prompts.map((prompt, index) => <div key={prompt.id ?? `legacy-${index}`} className="uam-queue-row uam-queued-prompt" data-held={held || undefined}>
+    <div className="uam-queue-list">{rows.map(({ prompt, index, leaving: exiting }) => exiting
+      ? <div key={`leaving-${prompt.id}`} className="uam-queue-row uam-queued-prompt" data-leaving="" aria-hidden>
+        <div className="uam-queue-row__main"><span className="uam-queue-row__text">{prompt.text}</span></div>
+      </div>
+      : <div key={prompt.id ?? `legacy-${index}`} className="uam-queue-row uam-queued-prompt" data-held={held || undefined}>
       <div className="uam-queue-row__main">
         <span className="uam-queue-row__label">Queued{prompts.length > 1 ? ` ${index + 1}` : ''}</span>
         <span className="uam-queue-row__text">{prompt.text}</span>

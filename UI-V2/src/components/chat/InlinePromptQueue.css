@@ -98,12 +98,22 @@
 .uam-queue-edit__actions { display: flex; align-items: center; gap: var(--sp-1); }
 .uam-queue-error { font-size: var(--fs-xs); color: var(--error); padding: var(--sp-1) 0; }
 
-/* Rows and the edit panel settle in; exit is instant because the list re-renders from store state. */
+/* Rows and the edit panel settle in; removed rows fade and fold up before unmounting. */
+.uam-queue-row[data-leaving] {
+  overflow: hidden;
+  pointer-events: none;
+  animation: uam-queue-row-out var(--dur-exit) var(--ease) forwards;
+}
+@keyframes uam-queue-row-out {
+  from { max-height: 120px; }
+  to { opacity: 0; transform: translateY(-4px); max-height: 0; padding-block: 0; }
+}
 @keyframes uam-queue-row-in {
   from { opacity: 0; transform: translateY(-4px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .uam-queue-row,
+  .uam-queue-row[data-leaving],
   .uam-queue-edit,
   .uam-queue-held { animation: none; }
 }

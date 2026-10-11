@@ -4,9 +4,21 @@ import { useAppStore, type McpServerConfiguration } from '../../store/useAppStor
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Button, IconButton, Notice, Switch } from '../ui'
+import { usePresence } from '../ui/Overlay'
 import './provider-settings.css'
 
 type Reference = McpServerConfiguration['environment'][number]
+
+/** Grid-rows collapse for a server editor; keeps the last open content mounted while it closes. */
+function ServerEditorCollapse({ open, children }: { open: boolean; children: ReactNode }) {
+  const { mounted, closing } = usePresence(open)
+  const lastChildren = useRef(children)
+  if (open) lastChildren.current = children
+  if (!mounted) return null
+  return <div className="uam-prov-collapse" data-state={closing ? 'closed' : 'open'}>
+    <div className="uam-prov-collapse__inner">{open ? children : lastChildren.current}</div>
+  </div>
+}
 type JsonEntry = { type: 'builtin' | 'local' | 'remote'; name?: string; uamId?: string; enabled?: boolean; command?: string[]; environment?: Record<string, string>; url?: string; headers?: Record<string, string>; sse?: boolean; workspace?: string; host?: string }
 const BUILTIN = 'uam-mcp'
 const hasSubstitution = (value: string) => /\{(?:env|file):/.test(value)
@@ -274,7 +286,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
             {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
             <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete ${serverName}`} disabled={busy} onClick={() => { setServers(list => list.filter(item => item.id !== server.id)); setMessage('') }} />
           </div>
-          {expanded && <div className="uam-prov-enter grid gap-3 px-3 pb-3 pt-1">
+          <ServerEditorCollapse open={expanded}><div className="uam-prov-enter grid gap-3 px-3 pb-3 pt-1">
             {text('Name', server.name, name => update(server.id, { name }), 'playwright', 'Short name shown to the agent.')}
             <label className="grid gap-1 text-sm"><span>Connection type</span>
               <select className="uam-field w-full" value={server.transport} disabled={busy} onChange={event => update(server.id, { transport: event.currentTarget.value as McpServerConfiguration['transport'] })}>
@@ -320,7 +332,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
                 </label>
               </div>
             </details>
-          </div>}
+          </div></ServerEditorCollapse>
         </div>
       })}
       <Button size="sm" className="self-start" disabled={busy} onClick={() => { setSetup('choose'); setMessage('') }}>+ Add server</Button>

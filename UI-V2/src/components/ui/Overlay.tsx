@@ -6,7 +6,7 @@ import { cx } from './cx'
 /** Exit animation length; keep in sync with --dur-exit in index.css. */
 export const EXIT_MS = 170
 
-function motionAllowed(): boolean {
+export function motionAllowed(): boolean {
   // No matchMedia (jsdom) or reduced motion: unmount immediately.
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function' &&
     !window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -45,6 +45,9 @@ export interface OverlayProps {
  * filter or overflow can clip it. Direct children animate in and out.
  */
 export function Overlay({ open, children, onBackdropMouseDown, className, style, zIndex = 70, dim = true }: OverlayProps) {
+  // Inside <Presence>, the parent's exit window closes this overlay so its out-animation plays.
+  const presenceOpen = useContext(OverlayStateContext) !== 'closed'
+  open = open && presenceOpen
   const { mounted, closing } = usePresence(open)
   // Keep the last open content on screen while it animates out.
   const lastChildren = useRef(children)

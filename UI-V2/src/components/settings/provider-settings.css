@@ -171,7 +171,12 @@
   box-shadow: var(--focus-ring);
 }
 
-/* Smooth disclosure: content eases in; collapsing unmounts instantly so nothing lingers. */
+/* Smooth disclosure: content eases in and out (grid-rows 1fr <-> 0fr); unmounts after the exit window. */
+.uam-prov-collapse { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--dur-base) var(--ease-out-soft); }
+.uam-prov-collapse[data-state="closed"] { grid-template-rows: 0fr; transition-duration: var(--dur-exit); transition-timing-function: var(--ease); }
+.uam-prov-collapse__inner { min-height: 0; overflow: clip; overflow-clip-margin: 4px; }
+.uam-prov-collapse[data-state="closed"] > .uam-prov-collapse__inner > .uam-prov-enter { animation: none; }
+
 .uam-prov-enter {
   animation: uam-prov-enter var(--dur-base) var(--ease-out-soft) both;
 }

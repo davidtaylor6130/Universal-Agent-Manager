@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, RotateCw, Sparkles, X } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect } from '../ui'
+import { Button, IconButton, MenuSelect, Presence } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
 import '../shared/review.css'
@@ -332,7 +332,7 @@ export function VcsCommitPanel() {
           </Button>
         </div>
       </div>}
-      {reviewScope === 'workspace' && diffSelection && diffSelection.chatId === activeSessionId && diffSelection.workspaceDirectory === session?.workspaceDirectory && diffSelection.workspaceWorktreeDirectory === session?.workspaceWorktreeDirectory && diffSelection.executionHostId === session?.executionHostId && (
+      {(() => { const diffOpen = Boolean(reviewScope === 'workspace' && diffSelection && diffSelection.chatId === activeSessionId && diffSelection.workspaceDirectory === session?.workspaceDirectory && diffSelection.workspaceWorktreeDirectory === session?.workspaceWorktreeDirectory && diffSelection.executionHostId === session?.executionHostId); return <Presence open={diffOpen}>{diffOpen && diffSelection && (
         <RepositoryDiffDialog
           chatId={diffSelection.chatId}
           file={diffSelection.file}
@@ -341,7 +341,7 @@ export function VcsCommitPanel() {
           getDiff={getVcsFileDiff}
           onClose={() => setDiffSelection(null)}
         />
-      )}
+      )}</Presence> })()}
     </aside>
   )
 }

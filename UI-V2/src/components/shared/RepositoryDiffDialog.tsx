@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Columns2, FileText, Rows3, X } from 'lucide-react'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { Button, IconButton, Overlay } from '../ui'
+import { Button, IconButton, Overlay, Presence } from '../ui'
 import './review.css'
 import { UnifiedDiff } from './UnifiedDiff'
 import { getTopmostModal } from '../../utils/modalFocus'
@@ -126,5 +126,5 @@ export function RepositoryDiffDialog({
         </div>
       </section>
     </Overlay>
-  {inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path) && <FilePreviewDialog zIndex={zIndex + 100} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} />}</>
+  <Presence open={inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path)}>{inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path) && <FilePreviewDialog zIndex={zIndex + 100} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} />}</Presence></>
 }
