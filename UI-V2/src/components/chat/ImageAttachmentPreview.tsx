@@ -80,6 +80,6 @@ export function ImageAttachmentPreview({ chatId, messageIndex, attachment, fallb
   const current = preview?.identity === identity ? preview : null
   return <span ref={host} className="inline-flex max-w-full">
     {current ? <img src={current.url} alt={attachment.name} width={current.width} height={current.height}
-      className="h-20 w-20 object-contain" onError={() => { URL.revokeObjectURL(current.url); setPreview(null) }} /> : fallback}
+      className="conversation-image-preview h-20 w-20 object-contain" onError={() => { URL.revokeObjectURL(current.url); setPreview(null) }} /> : fallback}
   </span>
 }

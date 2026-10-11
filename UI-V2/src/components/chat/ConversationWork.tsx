@@ -96,7 +96,7 @@ function ConversationTool({ tool, onSelectTool, renderSubAgentHistory }: {
   return <li className="conversation-work__event">
     <button type="button" className="conversation-work__tool" title={title} onClick={() => onSelectTool(tool.id)} aria-label={`${title}, ${status}`}>
       <Icon size={15} className="conversation-work__event-icon" aria-hidden />
-      <span className="conversation-work__tool-title">{title}</span>
+      <span className="conversation-work__tool-title">{title}{tool.isSubAgent && tool.currentActivity && <span className="conversation-work__activity">{tool.currentActivity}</span>}</span>
       <span className="conversation-work__status" data-failed={['failed', 'error'].includes(status) || undefined}>{status}</span>
     </button>
     {tool.isSubAgent && renderSubAgentHistory && <details className="conversation-work__subagent" open={historyOpen}>
@@ -146,6 +146,7 @@ export function ConversationWork({ events, tools, active, duration, onSelectTool
   if (headerOnly) return <div className="conversation-work" data-testid="working-summary" data-active={active}>
     {active ? (
       <span className="conversation-work__heading" aria-label="Work in progress">
+        <span className="conversation-work__live" aria-hidden />
         <WorkingHeading active={active} duration={duration} startedAt={startedAt} />
       </span>
     ) : collapsible ? (

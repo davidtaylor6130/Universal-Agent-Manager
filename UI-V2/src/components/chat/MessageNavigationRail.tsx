@@ -61,7 +61,6 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
       aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={label} aria-disabled={busy}
       className="relative w-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
       style={{ height: Math.max(1, count - 1) * 4, maxHeight: '100%' }}
-      title={`${label}\n${preview}`}
       onMouseMove={(event) => {
         const rect = event.currentTarget.getBoundingClientRect()
         setPreviewIndex(messageIndexAtPointer(count, rect.top, rect.height, event.clientY))
@@ -93,6 +92,10 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none transition-transform duration-150 motion-reduce:transition-none" style={{ position: 'absolute', top: `${neighbor / (count - 1) * 100}%`, left: 6, width: 24, height: 1, background: 'var(--text-3)', transformOrigin: 'left', transform: `scaleX(${Math.abs(distance) === 1 ? 2 / 3 : 5 / 12})` }} />
       })}
       <span aria-hidden data-rail-target={index} className="pointer-events-none transition-transform duration-150 motion-reduce:transition-none" style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 6, width: 24, height: 3, background: 'var(--accent)', transformOrigin: 'left', transform: `scaleX(${previewIndex === null ? 11 / 24 : 1})` }} />
+      {previewIndex !== null && <div className="conversation-rail-preview" aria-hidden style={{ top: `${count === 1 ? 50 : index / (count - 1) * 100}%` }}>
+        <div className="conversation-rail-preview__label">{label}</div>
+        <div className="conversation-rail-preview__text">{preview}</div>
+      </div>}
     </div>
   </div>
 }

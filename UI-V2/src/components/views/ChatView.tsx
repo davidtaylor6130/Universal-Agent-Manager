@@ -16,14 +16,14 @@ import type { Goal } from '../../types/goal'
 import { GoalBanner } from '../shared/GoalBanner'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
-import { buildAcpErrorCopyText, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { buildAcpErrorCopyText, ContextUsageStatus, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { isImageAttachment, AttachmentList, CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
-import { ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Shield, Target, X } from 'lucide-react'
+import { ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
@@ -353,7 +353,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectTool: (messageId: string, toolId: string) => void
 }) {
   if (message.blocks?.length === 1 && message.blocks[0].type === 'context_compaction') {
-    return <CompactionSeparator summary={message.blocks[0].text} />
+    const block = message.blocks[0]
+    return <CompactionSeparator summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} />
   }
   const isUserMessage = message.role === 'user'
   const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
@@ -2328,8 +2329,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               <SubAgentDisclosureProvider key={session.id}>
               <div className="uam-message-list space-y-1.5" aria-busy={historyLoading}>
-              {messages.length === 0 && !chatHistoryError && <div role="status" className="flex min-h-[30vh] items-center justify-center text-sm" style={{ color: 'var(--text-2)' }}>
-                {historyLoading ? 'Loading chat history…' : 'No messages yet'}
+              {messages.length === 0 && !chatHistoryError && <div role="status" className="conversation-empty">
+                {historyLoading && <div className="conversation-skeleton" aria-hidden>
+                  <span className="conversation-skeleton__row" />
+                  <span className="conversation-skeleton__row conversation-skeleton__row--user" />
+                  <span className="conversation-skeleton__row conversation-skeleton__row--short" />
+                </div>}
+                <span>{historyLoading ? 'Loading chat history…' : 'No messages yet'}</span>
               </div>}
               {(earliestRenderedMessageIndex > 0 || historyStartIndex > 0) && (
                 <div className="flex justify-center">
@@ -2605,7 +2611,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               </div>
               </SubAgentDisclosureProvider>
-              {acp?.compacting && <div role="status" className="px-4 py-2 text-xs" style={{ color: 'var(--accent)' }}>Compacting context…</div>}
+              {acp?.compacting && <div role="status" className="conversation-status" data-tone="accent">
+                <span>Compacting context…</span>
+                {acp.providerUsage?.contextUsage && <ContextUsageStatus usage={acp.providerUsage.contextUsage} />}
+              </div>}
               <SubagentWaitStatus binding={acp} />
             </div>
             {/* Follow the padded end so the latest output clears the floating composer. */}
@@ -2639,7 +2648,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               setGoalsPopupOwner(null)
               goalsTriggerRef.current?.focus()
             }}
-            style={{ width: 560, maxHeight: 'min(360px, calc(100vh - 16px))', background: '#000', color: '#fff', border: '1px solid var(--border)' }}>
+            className="conversation-goals-popup"
+            style={{ width: 560, maxHeight: 'min(360px, calc(100vh - 16px))' }}>
           <GoalBanner key={goalOwner}
             goal={displayedGoal}
             onComplete={handleCompleteGoal}
@@ -2905,13 +2915,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             )}
             {displayedGoal && <button ref={goalsTriggerRef} type="button" aria-label="Goals" aria-expanded={goalsPopupOpen}
               aria-controls={goalsPopupOpen ? goalsPopupId : undefined} aria-haspopup="true"
-              className="inline-flex min-w-0 items-center gap-1 text-left text-xs" title={displayedGoal.objective}
+              className="conversation-goal-chip" title={displayedGoal.objective}
               onClick={() => { setGoalsPopupOwner(goalsPopupOpen ? null : goalOwner); setWorkspaceMenuOpen(false); setModelOpen(false) }}
               onKeyDown={(event) => {
                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setGoalsPopupOwner(goalOwner) }
                 else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setGoalsPopupOwner(null) }
               }}>
-              <Target size={14} aria-hidden /><span>Goals · {displayedGoal.status}</span><span className="min-w-0 truncate">{displayedGoal.objective}</span>
+              <Target size={13} aria-hidden /><span className="conversation-goal-chip__status">{displayedGoal.status}</span><span className="conversation-goal-chip__title">{displayedGoal.objective}</span>
             </button>}
             </div>}
             {pendingUserInput && !session.importedReadOnly && (
@@ -2926,6 +2936,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 onStopRuntime={stopLiveRuntime}
               />
             )}
+            {editingMessageIndex !== null && <div className="conversation-edit-strip" role="status">
+              <Pencil size={13} aria-hidden />
+              <span className="min-w-0 flex-1 truncate">Editing message. Saving creates a new branch.</span>
+              <Button type="button" size="sm" variant="ghost" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage}>Cancel</Button>
+            </div>}
             <div
               className="uam-composer-surface"
               onDragOver={(event) => event.preventDefault()}
