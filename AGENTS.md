@@ -1,5 +1,16 @@
 # AGENTS.md
 
+## V5 Master Change Log
+
+Every agent implementing a V5 change must read and update the tracked root document
+[`V5 Improvement Change log.md`](<V5 Improvement Change log.md>) in the same commit as
+the implementation. Update an existing matching row or append distinct work using
+**Group | Type | Change | Summary**. Types are **Performance**, **Graphical**,
+**Code Only**, **Bugfix** or **Misc**; Change names have at most five words and Summary
+is one factual sentence. Preserve other agents' entries and explicitly distinguish
+completed work from partial implementation or unverified acceptance. Keep detailed
+working evidence in `.UAM/AINotes/`, but do not substitute ignored notes for this log.
+
 ## Release Slice
 
 This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, GitHub Copilot CLI, and Antigravity CLI (terminal only). Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
