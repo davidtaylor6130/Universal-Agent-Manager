@@ -1702,21 +1702,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return true;
 		}
 
-		bool CanMergeQueuedUserPrompts(const AcpQueuedUserPromptState& target, const AcpQueuedUserPromptState& next)
-		{
-			return target.revision < std::numeric_limits<int>::max() &&
-			       target.append_user_message && next.append_user_message &&
-			       !target.priority_steer && !next.priority_steer &&
-			       target.uam_agent_id == next.uam_agent_id &&
-			       target.uam_agent_definition_hash == next.uam_agent_definition_hash &&
-			       target.uam_agent_definition_snapshot == next.uam_agent_definition_snapshot &&
-			       target.uam_agent_execution_capability == next.uam_agent_execution_capability &&
-			       target.uam_agent_workspace_access == next.uam_agent_workspace_access &&
-			       target.goal_mode == next.goal_mode && target.goal_id == next.goal_id &&
-			       target.computer_use_mode == next.computer_use_mode;
-		}
-
-		bool QueuedMarkdownStoreContentFits(const std::deque<AcpQueuedUserPromptState>& existing, const AcpQueuedUserPromptState& next, bool merge_with_back, std::string* error_out)
+		bool QueuedMarkdownStoreContentFits(const std::deque<AcpQueuedUserPromptState>& existing, const AcpQueuedUserPromptState& next, std::string* error_out)
 		{
 			std::size_t markdown_store_bytes = 0;
 			const auto add_prompt_block = [&](const std::string& prompt_block)
@@ -1741,10 +1727,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			for (std::size_t index = 0; index < next.markdown_store_prompt_blocks.size(); ++index)
 			{
-				if (merge_with_back && uam::ranges::Contains(existing.back().markdown_store_files, next.markdown_store_files[index]))
-				{
-					continue;
-				}
 				if (!add_prompt_block(next.markdown_store_prompt_blocks[index]))
 					return false;
 			}
@@ -1752,7 +1734,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		bool QueuedUserPromptFits(const std::deque<AcpQueuedUserPromptState>& existing,
-		                         const AcpQueuedUserPromptState& next, bool merge_with_back,
+		                         const AcpQueuedUserPromptState& next,
 		                         std::string* error_out)
 		{
 			std::size_t text_bytes = next.text.size();
@@ -1762,8 +1744,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				text_bytes += queued.text.size();
 				attachment_count += queued.attachments.size();
 			}
-			if (merge_with_back) text_bytes += 2;
-			if ((!merge_with_back && existing.size() >= kAcpQueuedPromptMaxCount) ||
+			if ((existing.size() >= kAcpQueuedPromptMaxCount) ||
 			    text_bytes > kAcpQueuedPromptMaxBytes ||
 			    attachment_count > kAcpQueuedAttachmentMaxCount)
 			{
@@ -1776,30 +1757,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return true;
 		}
 
-		void MergeQueuedUserPrompt(AcpQueuedUserPromptState& target, AcpQueuedUserPromptState&& next)
-		{
-			if (target.id.empty()) target.id = next.id;
-			++target.revision;
-			target.text += "\n\n" + next.text;
-			const bool can_merge_snapshots = target.markdown_store_prompt_blocks.size() == target.markdown_store_files.size() && next.markdown_store_prompt_blocks.size() == next.markdown_store_files.size();
-			for (std::size_t index = 0; index < next.markdown_store_files.size(); ++index)
-			{
-				std::string& file = next.markdown_store_files[index];
-				if (!uam::ranges::Contains(target.markdown_store_files, file))
-				{
-					target.markdown_store_files.push_back(std::move(file));
-					if (can_merge_snapshots)
-					{
-						target.markdown_store_prompt_blocks.push_back(std::move(next.markdown_store_prompt_blocks[index]));
-					}
-			}
-			}
-			if (!can_merge_snapshots)
-				target.markdown_store_prompt_blocks.clear();
-			target.attachments.insert(target.attachments.end(),
-			                          std::make_move_iterator(next.attachments.begin()),
-			                          std::make_move_iterator(next.attachments.end()));
-		}
 	} // namespace
 
 	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out)
@@ -2011,20 +1968,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const std::size_t previous_dispatched = chat.acp_dispatched_queued_prompt_count;
 			const bool previous_chat_held = chat.acp_queue_held;
 			const bool previous_restart_pending = chat.remote_restart_pending;
-			const bool merge_with_back = !chat.small_model_mode && !session.queued_user_prompts.empty() && CanMergeQueuedUserPrompts(session.queued_user_prompts.back(), queued);
-			if (!QueuedUserPromptFits(session.queued_user_prompts, queued, merge_with_back, error_out) ||
-			    (!chat.small_model_mode && !QueuedMarkdownStoreContentFits(session.queued_user_prompts, queued, merge_with_back, error_out)))
+			if (!QueuedUserPromptFits(session.queued_user_prompts, queued, error_out) ||
+			    (!chat.small_model_mode && !QueuedMarkdownStoreContentFits(session.queued_user_prompts, queued, error_out)))
 			{
 				return false;
 			}
-			if (merge_with_back)
-			{
-				MergeQueuedUserPrompt(session.queued_user_prompts.back(), std::move(queued));
-			}
-			else
-			{
-				session.queued_user_prompts.push_back(std::move(queued));
-			}
+			session.queued_user_prompts.push_back(std::move(queued));
 			if (restart_remote_cancellation) chat.remote_restart_pending = true;
 			if (!PersistQueuedPromptOutbox(app, session, chat, error_out, !restart_remote_cancellation && !chat.small_model_mode))
 			{
@@ -2569,14 +2518,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 		}
-		std::deque<AcpQueuedUserPromptState> batch;
-		for (const AcpQueuedUserPromptState& queued : session.queued_user_prompts)
-		{
-			if (!batch.empty() && (chat.small_model_mode ||
-			                          !CanMergeQueuedUserPrompts(batch.front(), queued)))
-				break;
-			batch.push_back(queued);
-		}
+		// Each accepted queue entry owns one provider turn and one durable dispatch marker.
+		const std::deque<AcpQueuedUserPromptState> batch{session.queued_user_prompts.front()};
 		std::string error;
 		chat.acp_queued_prompts.assign(
 		    session.queued_user_prompts.begin(), session.queued_user_prompts.end());

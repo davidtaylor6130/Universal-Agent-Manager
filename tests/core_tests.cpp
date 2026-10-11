@@ -8496,8 +8496,9 @@ UAM_TEST(ColdPromptPreparationContinuesThroughDurableFifoOutbox)
 	const auto persisted = ChatRepository::LoadLocalChat(temp.root, saved.id);
 	UAM_ASSERT(persisted.has_value());
 	UAM_ASSERT_EQ(persisted->messages.front().content, saved.messages.front().content);
-	UAM_ASSERT_EQ(persisted->acp_queued_prompts.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(persisted->acp_queued_prompts[0].text, std::string("first accepted\n\nsecond accepted"));
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts[0].text, std::string("first accepted"));
+	UAM_ASSERT_EQ(persisted->acp_queued_prompts[1].text, std::string("second accepted"));
 }
 
 UAM_TEST(ColdPromptPreparationUnreadableHistoryNeverPublishes)

@@ -7893,9 +7893,10 @@ UAM_TEST(AcpQueuedPromptTextCannotGrowWithoutBound)
 	const std::string one_mib(1024 * 1024, 'p');
 	std::string error;
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, one_mib, {}, {}, false, &error));
-	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, one_mib, {}, {}, false, &error));
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, one_mib, {}, {}, false, &error));
+	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "p", {}, {}, false, &error));
 	UAM_ASSERT(error.find("session limit") != std::string::npos);
-	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.front().text.size(), one_mib.size());
 }
 
@@ -8208,11 +8209,12 @@ UAM_TEST(AcpSendAfterTurnFailureResumesPreservedUserQueue)
 			UAM_ASSERT(transport_stopped);
 			UAM_ASSERT(session.reconnect_pending);
 			UAM_ASSERT(!session.last_error.empty());
-			UAM_ASSERT_EQ(session.queued_user_prompts.size(), static_cast<std::size_t>(1));
-			UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Preserved steering\n\nContinue after failure"));
+			UAM_ASSERT_EQ(session.queued_user_prompts.size(), static_cast<std::size_t>(2));
+			UAM_ASSERT_EQ(session.queued_user_prompts[0].text, std::string("Preserved steering"));
+			UAM_ASSERT_EQ(session.queued_user_prompts[1].text, std::string("Continue after failure"));
 			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, stored_chat.id);
 			UAM_ASSERT(saved.has_value());
-			UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+			UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), static_cast<std::size_t>(2));
 			UAM_ASSERT(saved->messages.empty());
 			continue;
 		}
@@ -8220,18 +8222,20 @@ UAM_TEST(AcpSendAfterTurnFailureResumesPreservedUserQueue)
 		if (retrying)
 		{
 			UAM_ASSERT_EQ(session.prompt_request_id, 42);
-			UAM_ASSERT_EQ(session.queued_user_prompts.size(), static_cast<std::size_t>(1));
+			UAM_ASSERT_EQ(session.queued_user_prompts.size(), static_cast<std::size_t>(2));
 			UAM_ASSERT(stored_chat.messages.empty());
 			continue;
 		}
 		UAM_ASSERT(session.prompt_request_id > 42);
 		UAM_ASSERT(session.pending_request_methods.contains(session.prompt_request_id));
-		UAM_ASSERT(session.queued_user_prompts.empty());
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Continue after failure"));
 		UAM_ASSERT_EQ(stored_chat.messages.size(), static_cast<std::size_t>(1));
-		UAM_ASSERT_EQ(stored_chat.messages.front().content, std::string("Preserved steering\n\nContinue after failure"));
+		UAM_ASSERT_EQ(stored_chat.messages.front().content, std::string("Preserved steering"));
 		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, stored_chat.id);
 		UAM_ASSERT(saved.has_value());
-		UAM_ASSERT(saved->acp_queued_prompts.empty());
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Continue after failure"));
 		UAM_ASSERT_EQ(saved->messages.front().content, stored_chat.messages.front().content);
 	}
 }
@@ -8287,8 +8291,8 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue", "First queued prompt", {skill.string()}, {attachment}, true, &error, goal.id));
 	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue", "Second queued prompt", {}, {}, true, &error, goal.id));
 	UAM_ASSERT(error.empty());
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("First queued prompt\n\nSecond queued prompt"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("First queued prompt"));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().attachments.front().id, std::string("attachment-1"));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().markdown_store_files.front(), normalized_skill);
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().goal_id, goal.id);
@@ -8298,8 +8302,8 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 
 	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 	const nlohmann::json queued = serialized["chats"][0]["acpSession"]["queuedPrompts"];
-	UAM_ASSERT_EQ(queued.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(queued[0].value("text", ""), std::string("First queued prompt\n\nSecond queued prompt"));
+	UAM_ASSERT_EQ(queued.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(queued[0].value("text", ""), std::string("First queued prompt"));
 	UAM_ASSERT_EQ(queued[0].value("goalId", ""), goal.id);
 	UAM_ASSERT_EQ(queued[0]["attachments"][0].value("id", ""), std::string("attachment-1"));
 	UAM_ASSERT(serialized.dump().find(skill_body_sentinel) == std::string::npos);
@@ -8308,17 +8312,28 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 	UAM_ASSERT(uam::io::WriteTextFile(skill, "# Changed\n\n" + changed_skill_sentinel + "\n"));
 
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
-	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("Second queued prompt"));
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("First queued prompt\n\nSecond queued prompt"));
+	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("First queued prompt"));
 	UAM_ASSERT_EQ(app.chats.front().messages[0].attachments.front().id, std::string("attachment-1"));
 	UAM_ASSERT_EQ(app.chats.front().messages[0].markdown_store_files.front(), normalized_skill);
-	UAM_ASSERT(raw_session->queued_prompt.find("First queued prompt\n\nSecond queued prompt") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("First queued prompt") != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find(skill_body_sentinel) != std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find(changed_skill_sentinel) == std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find(normalized_skill) == std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find(source_path_sentinel) == std::string::npos);
 	UAM_ASSERT(raw_session->queued_prompt.find("attachments/diagram.png") != std::string::npos);
+	UAM_ASSERT(!raw_session->goal_review_scheduled);
+
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("Second queued prompt"));
+	UAM_ASSERT(app.chats.front().messages.back().attachments.empty());
+	UAM_ASSERT(app.chats.front().messages.back().markdown_store_files.empty());
+	UAM_ASSERT(raw_session->queued_prompt.find("First queued prompt") == std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("Second queued prompt") != std::string::npos);
 	UAM_ASSERT(!raw_session->goal_review_scheduled);
 
 	raw_session->processing = true;
@@ -8412,10 +8427,15 @@ UAM_TEST(AcpRecallPrefaceIsSentOncePerChatBeforeFollowup)
 		return count;
 	}();
 	UAM_ASSERT_EQ(first_count, static_cast<std::size_t>(1));
-	UAM_ASSERT(first_prompt.find("First queued prompt\n\nSecond queued prompt") != std::string::npos);
+	UAM_ASSERT(first_prompt.find("First queued prompt") != std::string::npos);
 
 	raw_session->processing = true;
 	UAM_ASSERT(uam::SendAcpPrompt(app, stored_chat.id, "Follow-up prompt", &error));
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(
+	    app, *raw_session, stored_chat, "ready", nullptr, false);
+	UAM_ASSERT(raw_session->queued_prompt.find("Second queued prompt") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find(memory_sentinel) == std::string::npos);
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), std::size_t{1});
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(
 	    app, *raw_session, stored_chat, "ready", nullptr, false);
 	UAM_ASSERT(raw_session->queued_prompt.find("Follow-up prompt") != std::string::npos);
@@ -8672,12 +8692,14 @@ UAM_TEST(AcpQueuedUserPromptFailureKeepsLaterPromptsInOrder)
 
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First\n\nSecond"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[1].text, std::string("Second"));
 	UAM_ASSERT(app.chats.front().messages.empty());
 	UAM_ASSERT(uam::SendAcpPrompt(app, "chat-queue-failure", "Third", {}, {}, false, &error));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First\n\nSecond\n\nThird"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First"));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts[2].text, std::string("Third"));
 }
 
 UAM_TEST(AcpResumeSetupContinuesPreservedQueuedPromptsInOrder)
@@ -8724,19 +8746,23 @@ UAM_TEST(AcpResumeSetupContinuesPreservedQueuedPromptsInOrder)
 	    R"({"jsonrpc":"2.0","id":8,"result":{}})"));
 
 	UAM_ASSERT(raw_session->session_ready);
-	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("Second preserved prompt"));
 	UAM_ASSERT(raw_session->processing);
 	UAM_ASSERT_EQ(raw_session->prompt_request_id, 9);
 	UAM_ASSERT_EQ(raw_session->pending_request_methods.at(9), std::string("session/prompt"));
-	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
 	UAM_ASSERT_EQ(app.chats.front().messages[0].content, std::string("First preserved prompt"));
-	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Second preserved prompt"));
 	UAM_ASSERT(raw_session->queued_prompt.empty());
 	UAM_ASSERT(raw_session->last_error.empty());
 	(void)uam::PollAllAcpSessions(app);
 	UAM_ASSERT_EQ(raw_session->reconnect_attempts, 2);
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
 	UAM_ASSERT_EQ(raw_session->reconnect_attempts, 0);
+	UAM_ASSERT(raw_session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Second preserved prompt"));
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 10);
 
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
@@ -10984,14 +11010,17 @@ UAM_TEST(AcpImmediateSendAfterSteerPreservesQueuedSkillSnapshotsInOrder)
 	UAM_ASSERT_EQ(app.chats.front().messages.back().markdown_store_prompt_blocks.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(app.chats.front().messages.back().markdown_store_prompt_blocks.front().find("STEER_SKILL_SNAPSHOT") != std::string::npos);
 	UAM_ASSERT(app.chats.front().messages.back().markdown_store_prompt_blocks.front().find("CHANGED_STEER_SKILL") == std::string::npos);
-	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), std::size_t{2});
 	const uam::AcpQueuedUserPromptState& remaining = raw_session->queued_user_prompts.front();
-	UAM_ASSERT_EQ(remaining.text, std::string("Older queued\n\nNewest queued"));
-	UAM_ASSERT_EQ(remaining.markdown_store_prompt_blocks.size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(remaining.text, std::string("Older queued"));
+	UAM_ASSERT_EQ(remaining.markdown_store_prompt_blocks.size(), std::size_t{1});
 	UAM_ASSERT(remaining.markdown_store_prompt_blocks[0].find("OLDER_SKILL_SNAPSHOT") != std::string::npos);
-	UAM_ASSERT(remaining.markdown_store_prompt_blocks[1].find("NEWEST_SKILL_SNAPSHOT") != std::string::npos);
+	const uam::AcpQueuedUserPromptState& newest = raw_session->queued_user_prompts.back();
+	UAM_ASSERT_EQ(newest.text, std::string("Newest queued"));
+	UAM_ASSERT_EQ(newest.markdown_store_prompt_blocks.size(), std::size_t{1});
+	UAM_ASSERT(newest.markdown_store_prompt_blocks[0].find("NEWEST_SKILL_SNAPSHOT") != std::string::npos);
 	UAM_ASSERT(remaining.markdown_store_prompt_blocks[0].find("CHANGED_OLDER_SKILL") == std::string::npos);
-	UAM_ASSERT(remaining.markdown_store_prompt_blocks[1].find("CHANGED_NEWEST_SKILL") == std::string::npos);
+	UAM_ASSERT(newest.markdown_store_prompt_blocks[0].find("CHANGED_NEWEST_SKILL") == std::string::npos);
 
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
