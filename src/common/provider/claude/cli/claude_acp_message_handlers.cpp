@@ -157,7 +157,10 @@ namespace uam::acp_detail
 			}
 			AppendToolTurnEventIfNeeded(session, tool_id);
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-			SaveChatQuietly(app, chat);
+			if (subtype == "task_progress" || (subtype == "task_updated" &&
+			    (uam::acp_statuses::IsActiveStatus(tool.status) || tool.status == "paused")))
+				ScheduleChatSave(app, chat, 0.0);
+			else SaveChatQuietly(app, chat);
 			MarkAcpChatUnseenIfBackground(app, chat);
 			return true;
 		}
@@ -207,7 +210,7 @@ namespace uam::acp_detail
 			}
 			AppendToolTurnEventIfNeeded(session, parent);
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
-			SaveChatQuietly(app, chat);
+			ScheduleChatSave(app, chat, 0.0);
 			return true;
 		}
 

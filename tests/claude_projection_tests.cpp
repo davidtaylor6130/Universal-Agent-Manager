@@ -1485,3 +1485,52 @@ UAM_TEST(ClaudeQuotaHeldFutureQueueRemainsVisibleEditableAndCannotBeOverwrittenA
 	}
 #endif
 }
+
+UAM_TEST(ClaudeChildStreamingDefersWritesButPersistsItsTerminalBarrier)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string frame : {
+	    R"({"type":"system","subtype":"task_progress","task_id":"owned-task","description":"Read fixture file"})",
+	    R"({"type":"system","subtype":"task_updated","task_id":"owned-task","patch":{"status":"running"}})",
+	    R"({"type":"assistant","uuid":"owned-child-message","parent_tool_use_id":"owned-tool","message":{"content":[{"type":"text","text":"Read fixture file."}]}})",
+	    R"({"type":"user","uuid":"owned-child-result","parent_tool_use_id":"owned-tool","message":{"content":[{"type":"tool_result","tool_use_id":"owned-read","content":"Fixture bytes."}]}})"})
+	{
+		TempDir temp("uam-claude-progress-save");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "owned-claude-progress";
+		chat.provider_id = "claude-cli";
+		chat.messages.push_back({MessageRole::User, "Inspect the fixture."});
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.running = true;
+		session.processing = true;
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"system","subtype":"task_started","task_id":"owned-task","tool_use_id":"owned-tool","task_type":"local_agent","description":"Inspect fixture"})"));
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		const fs::path file = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const std::string before = ReadFile(file);
+		const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(app.data_root, chat.id);
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame));
+		UAM_ASSERT_EQ(ReadFile(file), before);
+		UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(app.data_root, chat.id), revision);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+		const std::vector<Message> expected = app.chats.front().messages;
+		uam::FlushPendingChatSaves(app, true);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(restored.has_value());
+		UAM_ASSERT_EQ(restored->messages, expected);
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame));
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"system","subtype":"task_notification","task_id":"owned-task","status":"completed","summary":"Fixture finished."})"));
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		const std::optional<ChatSession> final = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(final.has_value());
+		UAM_ASSERT_EQ(final->messages, app.chats.front().messages);
+		UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("completed"));
+	}
+#endif
+}
