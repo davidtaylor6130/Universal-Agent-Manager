@@ -650,6 +650,38 @@ UAM_TEST(DesktopDiagnosticsPersistRotateAndFallBackWithoutTouchingStdout)
 	UAM_ASSERT_EQ(output.str(), std::string("{\"id\":1}\n"));
 }
 
+UAM_TEST(DesktopDiagnosticsRecoverOversizedLogsWithoutRemovingSpecialBackups)
+{
+	TempDir temp("uam-log-oversized");
+	const fs::path log = temp.root / "uam.log";
+	const fs::path previous = temp.root / "uam.log.1";
+	const std::string oversized(uam::diagnostics::kMaxFileBytes + 1, 'x');
+	UAM_ASSERT(uam::io::WriteTextFile(log, oversized));
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error));
+	uam::diagnostics::Write("logging recovered");
+	uam::diagnostics::StopFileLog();
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(previous), oversized);
+	UAM_ASSERT(uam::strings::Contains(uam::io::ReadTextFile(log), "logging recovered"));
+	fs::remove(previous);
+	fs::create_directory(previous);
+	UAM_ASSERT(uam::io::WriteTextFile(log, oversized));
+	UAM_ASSERT(!uam::diagnostics::StartFileLog(log, error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(fs::is_directory(previous));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(log), oversized);
+	fs::remove(previous);
+#if !defined(_WIN32)
+	const fs::path target = temp.root / "keep.log";
+	UAM_ASSERT(uam::io::WriteTextFile(target, "keep"));
+	fs::create_symlink(target, previous);
+	UAM_ASSERT(!uam::diagnostics::StartFileLog(log, error));
+	UAM_ASSERT(fs::is_symlink(fs::symlink_status(previous)));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), "keep");
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(log), oversized);
+#endif
+}
+
 UAM_TEST(DesktopDiagnosticRetentionExpiresOnlyOldRegularBackupFiles)
 {
 	TempDir temp("uam-log-retention");

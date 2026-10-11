@@ -50,6 +50,10 @@ namespace
 		std::filesystem::path previous = g_path;
 		previous += ".1";
 		std::error_code error;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(previous, error);
+		if (error && error != std::errc::no_such_file_or_directory) return false;
+		if (std::filesystem::exists(status) && !std::filesystem::is_regular_file(status)) return false;
+		error.clear();
 		std::filesystem::remove(previous, error);
 		if (error) return false;
 		std::filesystem::rename(g_path, previous, error);
@@ -149,9 +153,14 @@ bool StartFileLog(const std::filesystem::path& path, std::string& error)
 	{
 		g_file.seekp(0, std::ios::end);
 		const std::streampos end = g_file.tellp();
-		if (end >= 0 && static_cast<std::uintmax_t>(end) <= kMaxFileBytes)
+		if (end >= 0)
 		{
 			g_bytes = static_cast<std::uintmax_t>(end);
+			if (g_bytes > kMaxFileBytes && !Rotate())
+			{
+				error = "Oversized diagnostic log could not be rotated; using stderr.";
+				return false;
+			}
 			try
 			{
 				g_worker = std::make_unique<std::jthread>(Drain);
