@@ -843,7 +843,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             aria-hidden={!activeExpanded}
             {...(!activeExpanded ? { inert: '' } : {})}
           >
-            {searchModel.activeSessionIds.map(renderActivitySessionItem)}
+            {activeExpanded && searchModel.activeSessionIds.map(renderActivitySessionItem)}
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
             <button
@@ -867,7 +867,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           <SidebarSectionHeader label="Snoozed" listId="snoozed-chat-list" expanded={snoozedExpanded} onToggle={() => setSnoozedCollapsed((value) => !value)}
             trailing={<span className="ml-auto text-[10px]">{searchModel.snoozedSessionIds.length}</span>} />
           <div id="snoozed-chat-list" hidden={!snoozedExpanded} aria-hidden={!snoozedExpanded} {...(!snoozedExpanded ? { inert: '' } : {})}>
-            {searchModel.snoozedSessionIds.map((id) => (
+            {snoozedExpanded && searchModel.snoozedSessionIds.map((id) => (
               <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
             ))}
           </div>
@@ -889,7 +889,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
             aria-hidden={!pinnedExpanded}
             {...(!pinnedExpanded ? { inert: '' } : {})}
           >
-            {searchModel.pinnedSessionIds.map((id) => (
+            {pinnedExpanded && searchModel.pinnedSessionIds.map((id) => (
               <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
             ))}
           </div>
@@ -914,6 +914,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         {...(!allChatsExpanded ? { inert: '' } : {})}
       >
 
+      {allChatsExpanded && <>
       {!searchModel.isSearching && collectionGroups.map(({ collection, folderRows }) => (
         <FolderCollection
           key={collection.id}
@@ -1023,6 +1024,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         </div>
       )}
 
+      </>}
       </div>
 
       {searchModel.isSearching && !searchModel.hasMatches && (
