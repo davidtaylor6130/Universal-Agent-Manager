@@ -1658,14 +1658,19 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		return true;
 	}
 
+	// The delivery-intent save already persists local state unless delivery changes metadata.
+	bool local_delivery_save_needed = unsent_messages.empty();
 	if (session.active_uam_agent_execution_capability == "uam-prompt-injected" &&
 	    !session.active_uam_agent_instructions.empty())
 	{
-		chat.last_prompt_agent_definition_hash = chat.provider_id + ":" + session.active_uam_agent_definition_hash;
+		const std::string definition_hash = chat.provider_id + ":" + session.active_uam_agent_definition_hash;
+		local_delivery_save_needed = local_delivery_save_needed || chat.last_prompt_agent_definition_hash != definition_hash;
+		chat.last_prompt_agent_definition_hash = definition_hash;
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
 	if (!chat.provider_handoff_context.empty())
 	{
+		local_delivery_save_needed = local_delivery_save_needed || chat.provider_handoff_session_id != session.session_id;
 		chat.provider_handoff_session_id = session.session_id;
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
@@ -1676,7 +1681,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
 	session.remote_context_preparation.reset();
 	session.claude_input_preparation.reset();
-	if (!remote && !SaveChatQuietly(app, chat))
+	if (!remote && local_delivery_save_needed && !SaveChatQuietly(app, chat))
 	{
 		session.last_error = "Prompt was delivered, but chat state could not be saved.";
 		app.status_line = session.last_error;

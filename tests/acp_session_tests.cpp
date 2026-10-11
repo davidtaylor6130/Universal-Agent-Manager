@@ -1132,6 +1132,13 @@ UAM_TEST(AcpPromptDispatchClearsOnlyCurrentBatchNonDeliveryMarkers)
 	UAM_ASSERT(!app.chats.front().messages[1].acp_prompt_not_sent);
 	UAM_ASSERT(!app.chats.front().messages[2].acp_prompt_not_sent);
 	UAM_ASSERT(app.chats.front().messages[3].acp_prompt_not_sent);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, app.chats.front().id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages.size(), std::size_t{4});
+	UAM_ASSERT(saved->messages[0].acp_prompt_not_sent);
+	UAM_ASSERT(!saved->messages[1].acp_prompt_not_sent);
+	UAM_ASSERT(!saved->messages[2].acp_prompt_not_sent);
+	UAM_ASSERT(saved->messages[3].acp_prompt_not_sent);
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*raw_session);
 }
