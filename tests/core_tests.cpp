@@ -584,6 +584,7 @@ UAM_TEST(DesktopDiagnosticsPersistRotateAndFallBackWithoutTouchingStdout)
 	uam::AcpSessionState session;
 	uam::acp_detail::AppendAcpDiagnostic(session, "test", "acp_failure", "", "", false, 0, "ACP diagnostic", "");
 	std::cout << "{\"id\":1}\n";
+	uam::diagnostics::FlushFileLog();
 	const std::string initial = uam::io::ReadTextFile(log);
 	UAM_ASSERT(uam::strings::Contains(initial, "CLI diagnostic"));
 	UAM_ASSERT(uam::strings::Contains(initial, "ACP diagnostic"));
@@ -599,6 +600,7 @@ UAM_TEST(DesktopDiagnosticsPersistRotateAndFallBackWithoutTouchingStdout)
 		});
 	}
 	writers.clear();
+	uam::diagnostics::FlushFileLog();
 	const std::string concurrent = uam::io::ReadTextFile(log);
 	UAM_ASSERT_EQ(std::count(concurrent.begin(), concurrent.end(), '\n'), 102);
 	for (int worker = 0; worker < 4; ++worker)
@@ -607,7 +609,10 @@ UAM_TEST(DesktopDiagnosticsPersistRotateAndFallBackWithoutTouchingStdout)
 
 	const std::string oversized(uam::diagnostics::kMaxEntryBytes * 2, 'x');
 	for (std::size_t entry = 0; entry < 2 * uam::diagnostics::kMaxFileBytes / uam::diagnostics::kMaxEntryBytes + 2; ++entry)
+	{
 		uam::diagnostics::Write(oversized);
+		if (entry % 16 == 0) uam::diagnostics::FlushFileLog();
+	}
 	uam::diagnostics::Write("latest-entry\nsecond-line");
 	uam::diagnostics::StopFileLog();
 	UAM_ASSERT(fs::file_size(log) <= uam::diagnostics::kMaxFileBytes);
@@ -630,6 +635,7 @@ UAM_TEST(DesktopDiagnosticsPersistRotateAndFallBackWithoutTouchingStdout)
 	UAM_ASSERT(uam::io::WriteTextFile(previous / "keep", "keep"));
 	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error));
 	uam::diagnostics::Write("fallback-entry");
+	uam::diagnostics::FlushFileLog();
 	UAM_ASSERT(uam::strings::Contains(errors.str(), "fallback-entry"));
 	UAM_ASSERT_EQ(fs::file_size(log), uam::diagnostics::kMaxFileBytes);
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(previous / "keep"), std::string("keep"));
@@ -642,6 +648,32 @@ UAM_TEST(DesktopDiagnosticsPersistRotateAndFallBackWithoutTouchingStdout)
 	uam::diagnostics::Write("after-close");
 	UAM_ASSERT(uam::strings::Contains(errors.str(), "after-close"));
 	UAM_ASSERT_EQ(output.str(), std::string("{\"id\":1}\n"));
+}
+
+UAM_TEST(DesktopDiagnosticRetentionExpiresOnlyOldRegularBackupFiles)
+{
+	TempDir temp("uam-log-retention");
+	const fs::path log = temp.root / "uam.log";
+	const fs::path previous = temp.root / "uam.log.1";
+	UAM_ASSERT(uam::io::WriteTextFile(previous, "old backup"));
+	fs::last_write_time(previous, fs::file_time_type::clock::now() - std::chrono::hours(24 * 15));
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error));
+	uam::diagnostics::Write("current survives");
+	uam::diagnostics::StopFileLog();
+	UAM_ASSERT(!fs::exists(previous));
+	UAM_ASSERT(uam::strings::Contains(uam::io::ReadTextFile(log), "current survives"));
+	UAM_ASSERT(uam::io::WriteTextFile(previous, "recent backup"));
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error));
+	uam::diagnostics::StopFileLog();
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(previous), "recent backup");
+	fs::remove(previous);
+	fs::create_directory(previous);
+	UAM_ASSERT(uam::io::WriteTextFile(previous / "keep", "keep"));
+	fs::last_write_time(previous, fs::file_time_type::clock::now() - std::chrono::hours(24 * 15));
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error));
+	uam::diagnostics::StopFileLog();
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(previous / "keep"), "keep");
 }
 
 #if defined(_WIN32)
