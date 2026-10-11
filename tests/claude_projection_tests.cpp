@@ -8,6 +8,111 @@
 
 using namespace uam_test;
 
+UAM_TEST(ClaudeNativePermissionTranslationHonorsPlanCeiling)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ChatSession chat;
+	chat.provider_id = "claude-cli";
+	for (const std::pair<std::string, std::string>& choice : std::vector<std::pair<std::string, std::string>>{
+	         {"aiReview", "auto"}, {"acceptEdits", "acceptEdits"}, {"off", "default"}, {"yolo", "default"}, {"medium", "auto"}})
+	{
+		chat.command_safety_tier = choice.first;
+		for (const std::string mode : {"default", "plan"})
+		{
+			chat.approval_mode = mode;
+			const std::vector<std::string> argv = uam::BuildAcpLaunchArgvForTests(chat);
+			const std::vector<std::string>::const_iterator permission = std::ranges::find(argv, "--permission-mode");
+			UAM_ASSERT(permission != argv.end() && permission + 1 != argv.end());
+			UAM_ASSERT_EQ(*(permission + 1), mode == "plan" ? std::string("plan") : choice.second);
+			UAM_ASSERT(!uam::ranges::Contains(argv, "--dangerously-skip-permissions"));
+		}
+	}
+#endif
+}
+
+UAM_TEST(ClaudeConfirmedNativeAutomaticReviewKeepsResidualRequestsForUser)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string native_mode : {"auto", "default"})
+	{
+		TempDir temp("uam-claude-native-permission");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "native-permission";
+		chat.provider_id = "claude-cli";
+		chat.command_safety_tier = "aiReview";
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.running = true;
+		session.processing = true;
+		session.current_mode_id = native_mode;
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"native-review","request":{"subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write","input":{"file_path":"example.txt","content":"Fixture"}}})"));
+		UAM_ASSERT(session.waiting_for_permission);
+		UAM_ASSERT_EQ(session.pending_permission.request_id_json, std::string("\"native-review\""));
+		UAM_ASSERT(app.permission_review_tasks.empty());
+		const bool attempted_review = std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)
+		{
+			return diagnostic.event == "permission_review";
+		});
+		UAM_ASSERT_EQ(attempted_review, native_mode != "auto");
+	}
+#endif
+}
+
+UAM_TEST(ClaudeNativeAutomaticModeMatchesWithoutWeakeningOtherModes)
+{
+	uam::AcpSessionState session;
+	session.provider_id = "claude-cli";
+	session.current_mode_id = "auto";
+	UAM_ASSERT(uam::AcpSessionMatchesPermissionMode(session, "default", "aiReview"));
+	UAM_ASSERT(uam::AcpSessionMatchesPermissionMode(session, "default", "medium"));
+	UAM_ASSERT(!uam::AcpSessionMatchesPermissionMode(session, "plan", "aiReview"));
+	UAM_ASSERT(!uam::AcpSessionMatchesPermissionMode(session, "default", "off"));
+	UAM_ASSERT(!uam::AcpSessionMatchesPermissionMode(session, "acceptEdits", "acceptEdits"));
+	session.current_mode_id = "default";
+	UAM_ASSERT(uam::AcpSessionMatchesPermissionMode(session, "default", "aiReview"));
+	session.current_mode_id = "plan";
+	UAM_ASSERT(uam::AcpSessionMatchesPermissionMode(session, "plan", "aiReview"));
+	UAM_ASSERT(!uam::AcpSessionMatchesPermissionMode(session, "default", "aiReview"));
+	session.provider_id = "opencode-cli";
+	session.current_mode_id = "auto";
+	UAM_ASSERT(!uam::AcpSessionMatchesPermissionMode(session, "default", "aiReview"));
+}
+
+UAM_TEST(ClaudeNativeEditPromptsNeverGetParentAutoApproval)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const std::string native_mode : {"auto", "acceptEdits"})
+	{
+		TempDir temp("uam-claude-residual-edit");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "residual-edit";
+		chat.provider_id = "claude-cli";
+		chat.command_safety_tier = "acceptEdits";
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "claude-code-stream-json";
+		session.running = true;
+		session.current_mode_id = native_mode;
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"type":"control_request","request_id":"protected-edit","request":{"subtype":"can_use_tool","tool_name":"Write","tool_use_id":"write","input":{"file_path":".claude/settings.json","content":"Fixture"}}})"));
+		UAM_ASSERT(session.waiting_for_permission);
+		UAM_ASSERT(session.last_error.empty());
+		UAM_ASSERT(!std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)
+		{
+			return diagnostic.event == "write";
+		}));
+	}
+#endif
+}
+
 UAM_TEST(ToolProjectionPreservesKindApprovalAndDetailsAcrossAllProviders)
 {
 	for (const std::string provider : {"claude-cli", "codex-cli", "opencode-cli", "gemini-cli", "copilot-cli"})

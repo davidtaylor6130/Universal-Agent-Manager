@@ -1336,7 +1336,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			      runtime.AcpModelChangeAction() == ProviderAcpSettingChangeAction::RestartSession) ||
 			     (first.uam_agent_execution_capability != "opencode-native-agent-config" &&
 			      (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
-			      session.current_mode_id != desired_mode &&
+			      !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) &&
 			      runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
@@ -1406,7 +1406,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			if (session.active_uam_agent_execution_capability != "opencode-native-agent-config" &&
 			    session.session_ready && (!uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
-			    session.current_mode_id != desired_mode &&
+			    !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) &&
 			    !SetAcpSessionMode(app, chat.id, desired_mode, error_out))
 			{
 				return false;

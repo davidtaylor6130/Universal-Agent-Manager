@@ -14289,7 +14289,7 @@ UAM_TEST(ClaudeCliInteractiveArgvUsesResumeModelModeAndFlags)
 #endif
 }
 
-UAM_TEST(ClaudeStructuredArgvIgnoresUamCommandSafetyTier)
+UAM_TEST(ClaudeStructuredArgvTranslatesUamEditTier)
 {
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 	ChatSession chat;
@@ -14301,7 +14301,7 @@ UAM_TEST(ClaudeStructuredArgvIgnoresUamCommandSafetyTier)
 	UAM_ASSERT_EQ(argv.size(), static_cast<std::size_t>(11));
 	UAM_ASSERT_EQ(argv[0], std::string("claude"));
 	UAM_ASSERT_EQ(argv[9], std::string("--permission-mode"));
-	UAM_ASSERT_EQ(argv[10], std::string("default"));
+	UAM_ASSERT_EQ(argv[10], std::string("acceptEdits"));
 
 	chat.approval_mode = "plan";
 	const std::vector<std::string> plan_argv = uam::BuildAcpLaunchArgvForTests(chat);
@@ -14325,7 +14325,7 @@ UAM_TEST(ClaudeStructuredArgvMapsOnlySupportedPermissionModes)
 	argv = uam::BuildAcpLaunchArgvForTests(chat);
 	const auto automatic = std::ranges::find(argv, "--permission-mode");
 	UAM_ASSERT(automatic != argv.end());
-	UAM_ASSERT_EQ(*(automatic + 1), std::string("default"));
+	UAM_ASSERT_EQ(*(automatic + 1), std::string("auto"));
 
 	chat.command_safety_tier = "yolo";
 	argv = uam::BuildAcpLaunchArgvForTests(chat);

@@ -1,12 +1,23 @@
 #pragma once
 
 #include "common/state/app_state.h"
+#include "common/config/approval_modes.h"
+#include "common/provider/provider_ids.h"
+#include "common/security/command_safety.h"
 
 #include <algorithm>
 #include <optional>
 
 namespace uam
 {
+	/// <summary>Native Claude auto realizes UAM automatic mode without restarting each prepared turn.</summary>
+	inline bool AcpSessionMatchesPermissionMode(const AcpSessionState& session, std::string_view desired_mode, std::string_view safety_tier)
+	{
+		return session.current_mode_id == desired_mode ||
+		    (session.provider_id == provider_ids::kClaudeCli && session.current_mode_id == approval_modes::kProviderAutoApprovalMode &&
+		     desired_mode == approval_modes::kDefaultApprovalMode && command_safety::ParseTier(safety_tier) == command_safety::Tier::AiReview);
+	}
+
 	enum class AcpTurnInactivityRecoveryAction
 	{
 		None,

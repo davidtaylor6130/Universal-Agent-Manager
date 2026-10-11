@@ -2,6 +2,7 @@
 
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/config/approval_modes.h"
+#include "common/security/command_safety.h"
 #include "common/provider/provider_ids.h"
 #include "common/state/app_state.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
@@ -35,9 +36,11 @@ namespace
 
 	std::string ClaudeStructuredPermissionMode(const ChatSession& chat)
 	{
-		return uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode
-		           ? uam::approval_modes::kPlanApprovalMode
-		           : uam::approval_modes::kDefaultApprovalMode;
+		if (uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode) return uam::approval_modes::kPlanApprovalMode;
+		const uam::command_safety::Tier tier = uam::command_safety::ParseTier(chat.command_safety_tier);
+		if (tier == uam::command_safety::Tier::AiReview) return uam::approval_modes::kProviderAutoApprovalMode;
+		if (tier == uam::command_safety::Tier::AcceptEdits) return uam::approval_modes::kAcceptEditsApprovalMode;
+		return uam::approval_modes::kDefaultApprovalMode;
 	}
 
 	void AppendClaudeModeArgs(std::vector<std::string>& argv, const ChatSession& chat, const AppSettings& settings)

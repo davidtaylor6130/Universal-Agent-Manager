@@ -75,6 +75,7 @@ namespace
 	bool TryStartPermissionReview(AppState& app, AcpSessionState& session, const ChatSession& chat)
 	{
 		if (uam::command_safety::ParseTier(chat.command_safety_tier) != uam::command_safety::Tier::AiReview ||
+		    (session.provider_id == uam::provider_ids::kClaudeCli && session.current_mode_id == uam::approval_modes::kProviderAutoApprovalMode) ||
 		    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission) ||
 		    session.pending_permission.request_id_json.empty() ||
 		    HasPermissionReviewTask(app, chat.id, session.pending_permission.request_id_json))
@@ -372,7 +373,10 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 			continue;
 		}
 
-		if (tier == uam::command_safety::Tier::Off || tier == uam::command_safety::Tier::AiReview ||
+		// Native prompts that survive classifier/edit handling still require the user's decision.
+		if ((session.provider_id == uam::provider_ids::kClaudeCli &&
+		     (session.current_mode_id == uam::approval_modes::kProviderAutoApprovalMode || session.current_mode_id == uam::approval_modes::kAcceptEditsApprovalMode)) ||
+		    tier == uam::command_safety::Tier::Off || tier == uam::command_safety::Tier::AiReview ||
 		    (tier == uam::command_safety::Tier::AcceptEdits && session.pending_permission.safety_tier != "acceptEdits") ||
 		    (tier != uam::command_safety::Tier::Yolo && tier != uam::command_safety::Tier::AcceptEdits &&
 		     (session.pending_permission.safety_risk.empty() || session.pending_permission.safety_requires_approval)))
