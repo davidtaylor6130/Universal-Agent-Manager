@@ -1,0 +1,18 @@
+/* Goal token meter lives in the goal banner; colour steps up at 80% and 95%. */
+.uam-goal-meter {
+  display: inline-block;
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-high);
+  overflow: hidden;
+}
+.uam-goal-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--dur-base) var(--ease-out-soft), background var(--dur-fast) var(--ease);
+}
+.uam-goal-meter[data-level="warning"] > span { background: var(--warning); }
+.uam-goal-meter[data-level="error"] > span { background: var(--error); }

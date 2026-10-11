@@ -5,6 +5,7 @@ import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil, X, ChevronR
 import type { Goal } from '../../types/goal'
 import { StatusDot, Tooltip, ViewportMenu, type StatusTone } from '../ui'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
+import './GoalBanner.css'
 
 interface GoalBannerProps {
   goal: Goal
@@ -199,6 +200,8 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
 	const blockerLabel = blockerKindLabel(goal)
 	const blockerAction = blockerDisplay ? blockerNextAction(goal) : ''
   const tone = statusTone(goal.status)
+  const budgetPercent = goal.tokenBudget ? Math.min(100, ((goal.tokensUsed ?? 0) / goal.tokenBudget) * 100) : 0
+  const budgetLevel = budgetPercent > 95 ? 'error' : budgetPercent > 80 ? 'warning' : 'normal'
   const completedCount = goal.completedItems?.length ?? 0
   const totalItems = completedCount + (goal.remainingItems?.length ?? 0)
   const isComplete = goal.status === 'complete'
@@ -291,9 +294,14 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
         <span className="whitespace-nowrap">{progressLabel}</span>
       </div>
 
-      {budgetDisplay && (
+      {budgetDisplay && goal.tokenBudget && (
         <Tooltip label="Tokens used / budget">
-          <span className="uam-goal-banner__secondary text-xs font-mono flex-shrink-0" style={{ color: 'var(--text-3)' }}>{budgetDisplay}</span>
+          <span className="uam-goal-banner__secondary flex flex-shrink-0 items-center gap-1.5 text-xs" style={{ color: 'var(--text-3)' }}>
+            <span aria-hidden className="uam-goal-meter" data-level={budgetLevel}>
+              <span style={{ width: `${budgetPercent}%` }} />
+            </span>
+            <span className="font-mono">{budgetDisplay}</span>
+          </span>
         </Tooltip>
       )}
 
@@ -308,7 +316,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
             aria-expanded={menuOpen}
             aria-controls={menuOpen ? menuId : undefined}
             className="flex items-center justify-center rounded-md transition-colors duration-100"
-            style={{ width: 28, height: 26, border: '1px solid var(--border)', background: menuOpen ? 'var(--surface-up)' : 'transparent', color: 'var(--text-2)', cursor: 'pointer' }}
+            style={{ width: 26, height: 26, border: '1px solid var(--border)', background: menuOpen ? 'var(--surface-up)' : 'transparent', color: 'var(--text-2)', cursor: 'pointer' }}
             onClick={() => setMenuOpen((v) => !v)}
           >
             <MoreHorizontal size={15} aria-hidden />

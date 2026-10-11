@@ -4042,7 +4042,7 @@ describe('ChatView', () => {
 
     const trigger = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
     expect(trigger.getAttribute('aria-haspopup')).toBe('menu')
-    expect(trigger.style.borderRadius).toBe('7px')
+    expect(trigger.style.borderRadius).toBe('6px')
     act(() => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
 
     const menu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]') as HTMLDivElement

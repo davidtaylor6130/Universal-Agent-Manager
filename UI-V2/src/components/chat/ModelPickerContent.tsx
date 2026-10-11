@@ -133,7 +133,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
       : selectable[(position + (event.key === 'ArrowDown' ? 1 : -1) + selectable.length) % selectable.length])
   }
 
-  return <div className="flex min-h-[300px]" onKeyDown={onKeyDown}>
+  return <div className="uam-model-picker flex min-h-[300px]" onKeyDown={onKeyDown}>
     <div role="toolbar" aria-label="Providers" aria-orientation="vertical" data-model-picker-sidebar="true"
       className="w-11 shrink-0 overflow-x-hidden overflow-y-auto border-r p-1" style={{ borderColor: 'var(--border)', background: 'var(--surface-high)' }}
       onKeyDown={(event) => {
@@ -153,7 +153,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
         disabled={entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider}
         tabIndex={entry.id === selectedProvider ? 0 : -1}
         onClick={() => selectProvider(entry.id)}
-        className="relative mb-1 flex h-9 w-full items-center justify-center rounded-md hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+        className="uam-model-picker-rail-button relative mb-1 flex h-9 w-full items-center justify-center rounded-md"
         style={{ color: 'var(--text)', opacity: entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider ? 0.4 : 1 }}>
         {entry.id === 'favorites' ? <Star size={19} fill="currentColor" aria-hidden /> : <ProviderLogo providerId={entry.id} size={20} />}
         {entry.id === selectedProvider && <span aria-hidden className="absolute -right-1 h-5 w-[3px] rounded-l" style={{ background: 'var(--accent)' }} />}
@@ -181,7 +181,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
               {!(option.providerId === COPILOT_CLI_PROVIDER_ID && option.detail.trim().toLowerCase() === option.label.trim().toLowerCase()) && <span className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{option.detail}</span>}
             </button>
             <button type="button" aria-label={`${favorite ? 'Unfavorite' : 'Favorite'} ${option.label}`} aria-pressed={favorite} title={favorite ? 'Remove favorite' : 'Add favorite'}
-              onClick={() => toggleFavorite(option.providerId, option.id)} className="absolute right-1 flex h-7 w-7 items-center justify-center rounded hover:bg-white/10" style={{ color: favorite ? 'var(--accent)' : 'var(--text-3)' }}><Star size={13} fill={favorite ? 'currentColor' : 'none'} aria-hidden /></button>
+              onClick={() => toggleFavorite(option.providerId, option.id)} className="uam-model-picker-favorite absolute right-1 flex h-7 w-7 items-center justify-center rounded" style={{ color: favorite ? 'var(--accent)' : 'var(--text-3)' }}><Star size={13} fill={favorite ? 'currentColor' : 'none'} aria-hidden /></button>
           </div>
         })}
         {virtual && <div aria-hidden style={{ height: (models.length - last) * ROW_HEIGHT }} />}

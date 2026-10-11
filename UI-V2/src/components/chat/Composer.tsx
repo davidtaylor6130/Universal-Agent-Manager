@@ -301,7 +301,7 @@ export function ComposerToolbar({
   const memoryDisabled = false
   const permissionModes = permissionsManagedByUam
     ? PERMISSION_MODES.filter((mode) => mode.id !== 'acceptEdits' || caps.hasAcceptEditsMode)
-    : [{ id: 'provider', name: 'Provider managed', description: 'Respond to permission prompts in the provider interface.' }]
+    : [{ id: 'provider', name: 'Ask in provider', description: 'Respond to permission prompts in the provider interface.' }]
   const running = Boolean(acp?.processing)
   const dictationVisualState = dictationError ? 'error' : dictationState
   const dictationLabel = !dictationAvailable
@@ -363,13 +363,13 @@ export function ComposerToolbar({
   }
   const iconChipStyle = {
     ...chipStyle,
-    width: 30,
+    width: 26,
     justifyContent: 'center',
   }
 
   return (
     <div
-      className="uam-composer-toolbar flex items-center gap-2 px-2 py-2 text-xs"
+      className="uam-composer-toolbar flex items-center gap-2 px-2 py-1.5 text-xs"
       style={{
         borderTop: '1px solid var(--border)',
         color: 'var(--text-2)',
@@ -602,8 +602,8 @@ export function ComposerToolbar({
           data-dictation-state={dictationVisualState}
           onClick={onToggleDictation}
           disabled={!dictationAvailable || dictationState === 'starting' || dictationState === 'stopping'}
-          className="uam-composer-action uam-dictation-button flex h-[30px] min-w-0 flex-1 items-center justify-center gap-3 px-3 text-xs font-semibold animate-fade-in"
-          style={{ borderRadius: 7, opacity: !dictationAvailable || dictationState === 'starting' || dictationState === 'stopping' ? 0.55 : 1 }}
+          className="uam-composer-action uam-dictation-button flex h-[26px] min-w-0 flex-1 items-center justify-center gap-3 px-3 text-xs font-semibold animate-fade-in"
+          style={{ borderRadius: 6, opacity: !dictationAvailable || dictationState === 'starting' || dictationState === 'stopping' ? 0.55 : 1 }}
         >
           {dictationState === 'listening' ? (
             <span className="uam-dictation-listening-indicator uam-dictation-wave uam-dictation-wave--wide" aria-hidden>
@@ -662,7 +662,7 @@ export function ComposerToolbar({
             className="uam-provider-model-trigger uam-composer-action inline-flex min-w-0 max-w-[150px] items-center gap-1.5 px-2"
             style={{
               ...chipStyle,
-              borderRadius: 7,
+              borderRadius: 6,
               color: modelOpen ? 'var(--text)' : 'var(--text-2)',
               background: modelOpen ? 'var(--surface-high)' : chipStyle.background,
               opacity: selectorDisabled ? 0.55 : 1,
@@ -681,7 +681,7 @@ export function ComposerToolbar({
               role="menu"
               aria-label="Provider and model"
               manageFocus={false}
-              className="animate-fade-in"
+              className="uam-composer-model-popover"
               style={{
                 width: 360,
                 border: '1px solid var(--border-bright)',
@@ -711,22 +711,22 @@ export function ComposerToolbar({
             </ViewportMenu>
           )}
         </div>
-        {!isCompanionContext() && <button type="button" title={dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[30px] text-xs font-semibold inline-flex items-center justify-center gap-1.5 px-2" style={{ borderRadius: 7, opacity: dictationAvailable ? 1 : 0.55 }}>
+        {!isCompanionContext() && <button type="button" title={dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0" style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}>
           <Mic size={15} aria-hidden />
         </button>}
       </div>
       </>}
         {running && !canSend ? (
-          <button type="button" title="Cancel turn" aria-label="Cancel turn" onClick={onCancelTurn} className="uam-composer-action h-[30px] w-[34px] shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ borderRadius: 7, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }}><Square size={11} fill="currentColor" aria-hidden /></button>
+          <button type="button" title="Cancel turn" aria-label="Cancel turn" onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }}><Square size={11} fill="currentColor" aria-hidden /></button>
         ) : (
         <button
           type="submit"
           title={running ? 'Queue prompt' : 'Send prompt'}
           aria-label={running ? 'Queue prompt' : 'Send prompt'}
           disabled={!canSend}
-          className="uam-composer-action h-[30px] w-[34px] shrink-0 text-xs font-semibold inline-flex items-center justify-center"
+          className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center"
           style={{
-            borderRadius: 7,
+            borderRadius: 8,
             border: '1px solid color-mix(in srgb, var(--accent) 64%, var(--border-bright))',
             background: canSend ? 'var(--accent)' : 'var(--surface-up)',
             color: canSend ? '#fff' : 'var(--text-3)',
