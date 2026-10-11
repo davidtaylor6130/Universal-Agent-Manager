@@ -1,3 +1,4 @@
+#include "common/usage/antigravity_accounting.h"
 #include "common/usage/multi_host_history.h"
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
@@ -70,7 +71,7 @@ namespace uam::usage
 			for (const nlohmann::json& row : document["facts"])
 			{
 				std::optional<AccountingRecord> fact = DecodeAccountingRecord(row);
-				if (!fact || fact->record.timestamp_ms < start || fact->record.timestamp_ms >= data.as_of || !identities.insert(fact->identity).second) return std::nullopt;
+				if (!fact || ((fact->record.timestamp_ms < start || fact->record.timestamp_ms >= data.as_of) && !DecodeAntigravityAccountingRecord(fact->record)) || !identities.insert(fact->identity).second) return std::nullopt;
 				data.records.push_back(std::move(*fact));
 			}
 			data.bytes = document.dump().size();

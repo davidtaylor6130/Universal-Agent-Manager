@@ -1,4 +1,5 @@
 #include "common/usage/usage_ledger.h"
+#include "common/usage/antigravity_accounting.h"
 
 #include <algorithm>
 #include <cmath>
@@ -46,15 +47,37 @@ namespace uam::usage
 		}
 	}
 
-	std::optional<Ledger> Ledger::Create(const std::vector<const Record*>& records, std::int64_t generated_ms)
+	std::optional<Ledger> Ledger::Create(const std::vector<const Record*>& input_records, std::int64_t generated_ms)
 	{
-		if (generated_ms <= 0 || generated_ms > kMaxExactTokenCount || records.size() > kMaxRows) return std::nullopt;
+		if (generated_ms <= 0 || generated_ms > kMaxExactTokenCount || input_records.size() > kMaxRows) return std::nullopt;
+		std::vector<const Record*> records;
+		std::vector<AntigravityUsageCandidate> candidates;
+		std::size_t alias_bytes = 0;
+		for (const Record* record : input_records)
+		{
+			if (!record) return std::nullopt;
+			if (record->provider_id == provider_ids::kAntigravityCli && record->dedupe_key.starts_with(kAntigravityAccountingPrefix))
+			{
+				const std::size_t weight = sizeof(AntigravityUsageCandidate) + record->model_id.size() + record->session_id.size() + 3 * record->dedupe_key.size();
+				if (record->dedupe_key.size() > 8192 || weight > 64 * 1024 * 1024 - alias_bytes) return std::nullopt;
+				alias_bytes += weight;
+				std::optional<AntigravityUsageCandidate> candidate = DecodeAntigravityAccountingRecord(*record);
+				if (!candidate) return std::nullopt;
+				candidates.push_back(std::move(*candidate));
+			}
+			else records.push_back(record);
+		}
+		std::vector<const AntigravityUsageCandidate*> aliases;
+		for (const AntigravityUsageCandidate& candidate : candidates) aliases.push_back(&candidate);
+		std::optional<std::vector<Record>> merged = MergeAntigravityCandidates(aliases);
+		if (!merged) return std::nullopt;
+		for (const Record& record : *merged) records.push_back(&record);
 		// Validate before combining cohorts, including zero-token monetary records and overflow.
 		const std::optional<Summary> checked = AggregateReferences(records, 0, kMaxExactTokenCount);
 		if (!checked) return std::nullopt;
 		Ledger ledger;
 		ledger.m_generatedMs = generated_ms;
-		ledger.m_duplicates = checked->duplicates;
+		ledger.m_duplicates = checked->duplicates + candidates.size() - merged->size();
 		const std::int64_t start = ledger.WindowStart(90), cutoff = ledger.WindowStart(1);
 		std::map<std::pair<std::string, std::string>, std::size_t> originals;
 		for (std::size_t index = 0; index < records.size(); ++index)

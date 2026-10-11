@@ -1,6 +1,7 @@
 #include "common/usage/usage_history_service.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/string_utils.h"
 #include "common/provider/copilot/cli/copilot_session_paths.h"
 
 #include <algorithm>
@@ -133,8 +134,35 @@ namespace uam::usage
 		const std::filesystem::path claude_home = configured_claude ? *configured_claude : home ? *home / ".claude" : std::filesystem::path{};
 		const std::optional<std::filesystem::path> configured_gemini = env::GetTrimmedPath("GEMINI_CLI_HOME");
 		const std::filesystem::path gemini_home = configured_gemini ? *configured_gemini : home.value_or(std::filesystem::path{});
+		std::vector<std::filesystem::path> antigravity_roots;
+		const std::optional<std::string> configured_antigravity = env::GetTrimmedString("ANTIGRAVITY_DATA_DIR");
+		if (configured_antigravity)
+		{
+			std::size_t position = 0;
+			while (position < configured_antigravity->size())
+			{
+				const std::size_t comma = configured_antigravity->find(',', position);
+				std::string value = strings::Trim(configured_antigravity->substr(position, comma == std::string::npos ? comma : comma - position));
+				if (home && value.starts_with("~/")) value = paths::Utf8PathString(*home / paths::PathFromUtf8(value.substr(2)));
+				const std::filesystem::path path = paths::PathFromUtf8(value);
+				if (!value.empty() && path.is_absolute()) antigravity_roots.push_back(path.lexically_normal());
+				if (comma == std::string::npos) break;
+				position = comma + 1;
+			}
+		}
+		else if (home)
+		{
+			for (const char* name : {"antigravity", "antigravity-cli", "antigravity-ide", "antigravity-backup"}) antigravity_roots.push_back(*home / ".gemini" / name);
+			antigravity_roots.push_back(*home / ".config" / "antigravity");
+		}
+		for (std::filesystem::path& root : antigravity_roots)
+		{
+			std::error_code error;
+			const std::filesystem::path nested = root / "conversations";
+			if (std::filesystem::is_directory(std::filesystem::symlink_status(nested, error))) root = nested;
+		}
 		return {{provider_ids::kGeminiCli, gemini_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{gemini_home / ".gemini" / "tmp"}}, {provider_ids::kCodexCli, {codex_home / "sessions", codex_home / "archived_sessions"}},
-		    {provider_ids::kOpenCodeCli, {}, std::move(opencode_databases)}, {provider_ids::kCopilotCli, {CopilotSessionStatePath()}}, {provider_ids::kClaudeCli, claude_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{claude_home / "projects"}}};
+		    {provider_ids::kOpenCodeCli, {}, std::move(opencode_databases)}, {provider_ids::kCopilotCli, {CopilotSessionStatePath()}}, {provider_ids::kClaudeCli, claude_home.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{claude_home / "projects"}}, {provider_ids::kAntigravityCli, std::move(antigravity_roots)}};
 	}
 
 	bool HistoryService::Enumerate(const std::function<bool()>& cancelled)
@@ -144,22 +172,35 @@ namespace uam::usage
 		m_files.clear();
 		m_databases.clear();
 		m_nextDatabase = 0;
+		m_antigravityDatabases.clear();
+		m_nextAntigravityDatabase = 0;
 		m_sourceErrors.clear();
 		m_listingLimited = false;
 		for (const HistorySource& source : m_sources)
 		{
-			if (source.provider_id == provider_ids::kOpenCodeCli)
+			if (source.provider_id == provider_ids::kOpenCodeCli || source.provider_id == provider_ids::kAntigravityCli)
 			{
 				for (const std::filesystem::path& database : source.databases)
 				{
 					std::error_code error;
-					if (std::filesystem::is_regular_file(database, error)) m_databases.push_back(database);
+					const std::filesystem::file_status status = std::filesystem::symlink_status(database, error);
+					if (std::filesystem::is_regular_file(status))
+					{
+						const std::filesystem::path normalized = database.lexically_normal();
+						if (seen.insert({source.provider_id, normalized}).second)
+							(source.provider_id == provider_ids::kAntigravityCli ? m_antigravityDatabases : m_databases).push_back(normalized);
+					}
+					else if (std::filesystem::is_symlink(status)) ++m_sourceErrors[source.provider_id];
 					else if (error && error != std::errc::no_such_file_or_directory) ++m_sourceErrors[source.provider_id];
+					if (m_files.size() + m_databases.size() + m_antigravityDatabases.size() >= 20000) { m_listingLimited = true; break; }
 				}
+				if (m_listingLimited && m_files.size() + m_databases.size() + m_antigravityDatabases.size() >= 20000) break;
 			}
 			for (const std::filesystem::path& directory : source.directories)
 			{
 				std::error_code error;
+				if (source.provider_id == provider_ids::kAntigravityCli && std::filesystem::is_symlink(std::filesystem::symlink_status(directory, error)))
+				{ ++m_sourceErrors[source.provider_id]; continue; }
 				if (!std::filesystem::exists(directory, error))
 				{
 					if (error) ++m_sourceErrors[source.provider_id];
@@ -175,6 +216,19 @@ namespace uam::usage
 					const bool symlink = iterator->is_symlink(error);
 					if (error) { ++m_sourceErrors[source.provider_id]; error.clear(); continue; }
 					if (symlink) { iterator.disable_recursion_pending(); continue; }
+					if (source.provider_id == provider_ids::kAntigravityCli)
+					{
+						if (iterator->path().extension() != ".db") continue;
+						if (!iterator->is_regular_file(error))
+						{
+							if (error) { ++m_sourceErrors[source.provider_id]; error.clear(); }
+							continue;
+						}
+						const std::filesystem::path normalized = iterator->path().lexically_normal();
+						if (seen.insert({source.provider_id, normalized}).second) m_antigravityDatabases.push_back(normalized);
+						if (m_files.size() + m_databases.size() + m_antigravityDatabases.size() >= 20000) { m_listingLimited = true; break; }
+						continue;
+					}
 					if (iterator->path().extension() != ".jsonl" && !(source.provider_id == provider_ids::kGeminiCli && iterator->path().extension() == ".json")) continue;
 					if (source.provider_id == provider_ids::kCopilotCli && iterator->path().filename() != "events.jsonl") continue;
 					if (source.provider_id == provider_ids::kGeminiCli)
@@ -191,17 +245,21 @@ namespace uam::usage
 					}
 					const std::pair<std::string, std::filesystem::path> file{source.provider_id, iterator->path().lexically_normal()};
 					if (seen.insert(file).second) m_files.push_back(file);
-					if (m_files.size() >= 20000) { m_listingLimited = true; break; }
+					if (m_files.size() + m_databases.size() + m_antigravityDatabases.size() >= 20000) { m_listingLimited = true; break; }
 				}
 				if (error) ++m_sourceErrors[source.provider_id];
-				if (m_listingLimited && m_files.size() >= 20000) break;
+				if (m_listingLimited && m_files.size() + m_databases.size() + m_antigravityDatabases.size() >= 20000) break;
 			}
-			if (m_listingLimited && m_files.size() >= 20000) break;
+			if (m_listingLimited && m_files.size() + m_databases.size() + m_antigravityDatabases.size() >= 20000) break;
 		}
 		std::sort(m_databases.begin(), m_databases.end());
 		m_databases.erase(std::unique(m_databases.begin(), m_databases.end()), m_databases.end());
+		std::sort(m_antigravityDatabases.begin(), m_antigravityDatabases.end());
+		m_antigravityDatabases.erase(std::unique(m_antigravityDatabases.begin(), m_antigravityDatabases.end()), m_antigravityDatabases.end());
+		if (!m_listingLimited && !m_sourceErrors.contains(provider_ids::kAntigravityCli))
+			std::erase_if(m_antigravityCache, [&](const std::pair<const std::filesystem::path, AntigravityHistoryScan>& entry) { return !std::binary_search(m_antigravityDatabases.begin(), m_antigravityDatabases.end(), entry.first); });
 		std::sort(m_files.begin(), m_files.end());
-		if (!m_sourceErrors.contains(provider_ids::kOpenCodeCli))
+		if (!m_listingLimited && !m_sourceErrors.contains(provider_ids::kOpenCodeCli))
 			std::erase_if(m_databaseCache, [&](const std::pair<const std::filesystem::path, OpenCodeHistoryScan>& entry) { return !std::binary_search(m_databases.begin(), m_databases.end(), entry.first); });
 		// Only a successful, complete listing proves that a previously cached file was removed.
 		if (!m_listingLimited)
@@ -309,6 +367,16 @@ namespace uam::usage
 				if (scanned.complete || !scanned.error.empty()) ++m_nextDatabase;
 			}
 		}
+		if (m_nextFile == m_files.size() && m_nextDatabase == m_databases.size() && m_nextAntigravityDatabase < m_antigravityDatabases.size() && bytes_read < byte_budget)
+		{
+			const std::filesystem::path& path = m_antigravityDatabases[m_nextAntigravityDatabase];
+			AntigravityHistoryScan& scan = m_antigravityCache[path];
+			const ScanResult scanned = scan.Refresh(path, cancelled);
+			bytes_read += scanned.bytes_read;
+			if (scanned.cancelled) return {{"cancelled", true}};
+			if (!scanned.error.empty()) ++m_sourceErrors[provider_ids::kAntigravityCli];
+			if (scanned.complete || !scanned.error.empty()) ++m_nextAntigravityDatabase;
+		}
 		std::vector<const Record*> records;
 		std::size_t cached_records = 0;
 		std::map<std::string, std::size_t> invalid_lines, oversized_lines, suppressed_forks, source_files, pending_lines;
@@ -332,10 +400,44 @@ namespace uam::usage
 			if (entry.second.Records().size() > 500000 - cached_records) return {{"error", "Usage history exceeds the aggregate-record limit; totals are incomplete."}};
 			cached_records += entry.second.Records().size();
 		}
+		std::vector<const AntigravityUsageCandidate*> antigravity_candidates;
+		for (const std::pair<const std::filesystem::path, AntigravityHistoryScan>& entry : m_antigravityCache)
+		{
+			++source_files[provider_ids::kAntigravityCli]; invalid_lines[provider_ids::kAntigravityCli] += entry.second.InvalidRows();
+			if (entry.second.Candidates().size() > 500000 - cached_records) return {{"error", "Usage history exceeds the aggregate-record limit; totals are incomplete."}};
+			cached_records += entry.second.Candidates().size();
+			if (!sink || m_nextAntigravityDatabase == m_antigravityDatabases.size())
+				for (const AntigravityUsageCandidate& candidate : entry.second.Candidates()) antigravity_candidates.push_back(&candidate);
+		}
+		std::optional<std::vector<Record>> antigravity_records;
+		if (!sink)
+		{
+			antigravity_records = MergeAntigravityCandidates(antigravity_candidates);
+			if (!antigravity_records) return {{"error", "Antigravity accounting aliases exceed supported limits."}};
+			for (const Record& record : *antigravity_records) records.push_back(&record);
+		}
+		else if (m_nextAntigravityDatabase == m_antigravityDatabases.size() && m_antigravityAccountedRefreshId != refresh_id)
+		{
+			std::vector<Record> accounting;
+			std::size_t accounting_bytes = 0;
+			for (const AntigravityUsageCandidate* candidate : antigravity_candidates)
+			{
+				if (cancelled && cancelled()) return {{"cancelled", true}};
+				std::optional<Record> record = EncodeAntigravityAccountingRecord(*candidate);
+				if (!record) return {{"error", "Antigravity accounting identity exceeds supported limits."}};
+				const std::size_t weight = sizeof(Record) + record->dedupe_key.size() + record->session_id.size() + record->model_id.size();
+				if (weight > 64 * 1024 * 1024 - accounting_bytes) return {{"error", "Antigravity accounting exceeds the byte limit."}};
+				accounting_bytes += weight; accounting.push_back(std::move(*record));
+			}
+			std::string accounting_error;
+			// Import the completed cache together, including unchanged stores and out-of-window time witnesses.
+			if (!account({provider_ids::kAntigravityCli, "antigravity-history"}, accounting, true, accounting_error)) return {{"error", accounting_error}};
+			m_antigravityAccountedRefreshId = std::string(refresh_id);
+		}
 		const std::optional<Summary> summary = AggregateReferences(records, start_ms, end_ms, prices);
 		if (!summary) return {{"error", "Usage totals or prices exceed supported numeric limits."}};
 		nlohmann::json result{{"version", 2}, {"executionHostId", "local"}, {"source", "native-transcripts"}, {"startMs", start_ms}, {"endMs", end_ms},
-		    {"totals", SerializeTotals(summary->total)}, {"complete", m_nextFile == m_files.size() && m_nextDatabase == m_databases.size()}, {"filesChecked", m_nextFile + m_nextDatabase}, {"filesTotal", m_files.size() + m_databases.size()},
+		    {"totals", SerializeTotals(summary->total)}, {"complete", m_nextFile == m_files.size() && m_nextDatabase == m_databases.size() && m_nextAntigravityDatabase == m_antigravityDatabases.size()}, {"filesChecked", m_nextFile + m_nextDatabase + m_nextAntigravityDatabase}, {"filesTotal", m_files.size() + m_databases.size() + m_antigravityDatabases.size()},
 		    {"bytesRead", bytes_read}, {"duplicates", summary->duplicates}, {"unidentifiedRecords", summary->unidentified_records}, {"listingLimited", m_listingLimited}};
 		result["providers"] = nlohmann::json::array();
 		for (const char* provider : provider_ids::kAllCliProviderIds)

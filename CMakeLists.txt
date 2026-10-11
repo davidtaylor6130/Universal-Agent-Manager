@@ -323,6 +323,8 @@ endif()
 add_executable(uam_runner
   src/common/memory/memory_library_store.cpp
   src/common/usage/transcript_usage.cpp
+  src/common/usage/antigravity_accounting.cpp
+  src/common/usage/antigravity_history_scan.cpp
   src/common/usage/usage_aggregation.cpp
   src/common/usage/transcript_scan.cpp
   src/common/usage/opencode_history_scan.cpp
@@ -523,6 +525,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/chat/chat_branching.cpp
   src/common/chat/native_chat_identity.cpp
   src/common/usage/transcript_usage.cpp
+  src/common/usage/antigravity_accounting.cpp
+  src/common/usage/antigravity_history_scan.cpp
   src/common/usage/usage_aggregation.cpp
   src/common/usage/transcript_scan.cpp
   src/common/usage/opencode_history_scan.cpp
@@ -1244,6 +1248,8 @@ if(UAM_BUILD_TESTS)
     tests/chat_search_tests.cpp
     tests/provider_configuration_tests.cpp
     tests/transcript_usage_tests.cpp
+    tests/antigravity_accounting_tests.cpp
+    tests/antigravity_history_scan_tests.cpp
     tests/transcript_scan_tests.cpp
     tests/usage_history_service_tests.cpp
     tests/usage_ledger_tests.cpp
@@ -1325,6 +1331,8 @@ if(UAM_BUILD_TESTS)
     src/common/chat/chat_branching.cpp
     src/common/chat/native_chat_identity.cpp
     src/common/usage/transcript_usage.cpp
+    src/common/usage/antigravity_accounting.cpp
+    src/common/usage/antigravity_history_scan.cpp
     src/common/usage/usage_aggregation.cpp
     src/common/usage/transcript_scan.cpp
     src/common/usage/opencode_history_scan.cpp

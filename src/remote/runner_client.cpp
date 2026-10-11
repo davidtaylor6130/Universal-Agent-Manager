@@ -10,6 +10,7 @@
 #include "common/utils/hash_utils.h"
 #include "remote/runner_protocol.h"
 #include "common/usage/usage_store.h"
+#include "common/usage/antigravity_accounting.h"
 #include <unordered_set>
 
 #include <nlohmann/json.hpp>
@@ -957,7 +958,7 @@ namespace uam::remote
 		{
 			if (interrupted()) { if (error_out) *error_out = "Usage accounting loading was cancelled or timed out."; snapshot = {}; return false; }
 			const std::optional<uam::usage::AccountingRecord> fact = uam::usage::DecodeAccountingRecord(row);
-			if (!fact || fact->record.timestamp_ms < start || fact->record.timestamp_ms >= as_of || !identities.insert(fact->identity).second)
+			if (!fact || ((fact->record.timestamp_ms < start || fact->record.timestamp_ms >= as_of) && !uam::usage::DecodeAntigravityAccountingRecord(fact->record)) || !identities.insert(fact->identity).second)
 			{ if (error_out) *error_out = "The runner returned invalid accounting identities."; snapshot = {}; return false; }
 		}
 		return true;

@@ -1,4 +1,5 @@
 #include "common/usage/usage_store.h"
+#include "common/usage/antigravity_accounting.h"
 #include "common/utils/io_utils.h"
 
 #include <cmath>
@@ -56,6 +57,7 @@ namespace uam::usage
 			if (record.tokens.Total() > kMaxExactTokenCount || record.tokens.reasoning > record.tokens.output) return false;
 			for (const std::optional<double> cost : {record.reported_cost_usd, record.estimated_cost_usd})
 				if (cost && (!std::isfinite(*cost) || *cost < 0)) return false;
+			if (record.provider_id == provider_ids::kAntigravityCli && record.dedupe_key.starts_with(kAntigravityAccountingPrefix) && !DecodeAntigravityAccountingRecord(record)) return false;
 			return true;
 		}
 
@@ -163,11 +165,16 @@ namespace uam::usage
 		if (!database) return std::nullopt;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		const std::int64_t start = std::max<std::int64_t>(0, generated_ms / 86400000 * 86400000 - 89LL * 86400000);
+		const std::string alias_lower = "[\"native\",\"antigravity-cli\",";
+		std::string alias_upper = alias_lower; ++alias_upper.back();
+		// Resolve aliases before pruning: an old reliable timestamp can suppress a recently stamped copy.
+		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Usage storage is busy."; return std::nullopt; }
 		sqlite3_stmt* raw = nullptr;
-		if (sqlite3_prepare_v2(database.get(), "SELECT identity,created,data FROM facts WHERE created>=?1 AND created<?2 ORDER BY created LIMIT 500001", -1, &raw, nullptr) != SQLITE_OK)
+		if (sqlite3_prepare_v2(database.get(), "SELECT identity,created,data FROM facts WHERE (created>=?1 AND created<?2) OR (identity>=?3 AND identity<?4) ORDER BY created LIMIT 500001", -1, &raw, nullptr) != SQLITE_OK)
 		{ error = "Could not read usage accounting."; return std::nullopt; }
 		Statement statement(raw, sqlite3_finalize);
 		sqlite3_bind_int64(statement.get(), 1, start); sqlite3_bind_int64(statement.get(), 2, generated_ms);
+		sqlite3_bind_text(statement.get(), 3, alias_lower.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_text(statement.get(), 4, alias_upper.c_str(), -1, SQLITE_TRANSIENT);
 		std::vector<AccountingRecord> records;
 		std::size_t accounting_bytes = 0;
 		int status = SQLITE_OK;
@@ -191,10 +198,52 @@ namespace uam::usage
 		}
 		if (status != SQLITE_DONE) { error = "Could not complete usage accounting read."; return std::nullopt; }
 		statement.reset();
+		std::vector<AntigravityUsageCandidate> candidates;
+		std::vector<std::size_t> candidate_rows;
+		std::size_t alias_bytes = 0;
+		std::vector<bool> keep(records.size(), true);
+		for (std::size_t index = 0; index < records.size(); ++index)
+		{
+			if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return std::nullopt; }
+			const Record& record = records[index].record;
+			if (record.provider_id == provider_ids::kAntigravityCli && record.dedupe_key.starts_with(kAntigravityAccountingPrefix))
+			{
+				const std::size_t weight = sizeof(AntigravityUsageCandidate) + record.model_id.size() + record.session_id.size() + 3 * record.dedupe_key.size();
+				if (weight > 64 * 1024 * 1024 - alias_bytes) { error = "Antigravity aliases exceed the accounting limit."; return std::nullopt; }
+				alias_bytes += weight;
+				std::optional<AntigravityUsageCandidate> candidate = DecodeAntigravityAccountingRecord(record);
+				if (!candidate) { error = "Antigravity accounting aliases are invalid."; return std::nullopt; }
+				candidates.push_back(std::move(*candidate)); candidate_rows.push_back(index);
+			}
+			else keep[index] = record.timestamp_ms >= start;
+		}
+		std::vector<const AntigravityUsageCandidate*> references;
+		for (const AntigravityUsageCandidate& candidate : candidates) references.push_back(&candidate);
+		std::vector<std::size_t> owners;
+		if (!MergeAntigravityCandidates(references, &owners)) { error = "Antigravity accounting aliases exceed supported limits."; return std::nullopt; }
+		std::vector<bool> recent(candidates.size(), false);
+		for (std::size_t index = 0; index < candidates.size(); ++index)
+			if (candidates[index].record.timestamp_ms >= start) recent[owners[index]] = true;
+		for (std::size_t index = 0; index < candidates.size(); ++index) keep[candidate_rows[index]] = recent[owners[index]];
 		sqlite3_stmt* prune_raw = nullptr;
-		if (sqlite3_prepare_v2(database.get(), "DELETE FROM facts WHERE created<?1", -1, &prune_raw, nullptr) != SQLITE_OK) { error = "Could not maintain usage retention."; return std::nullopt; }
+		if (sqlite3_prepare_v2(database.get(), "DELETE FROM facts WHERE created<?1 AND NOT(identity>=?2 AND identity<?3)", -1, &prune_raw, nullptr) != SQLITE_OK) { error = "Could not maintain usage retention."; return std::nullopt; }
 		Statement prune(prune_raw, sqlite3_finalize); sqlite3_bind_int64(prune.get(), 1, start);
+		sqlite3_bind_text(prune.get(), 2, alias_lower.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_text(prune.get(), 3, alias_upper.c_str(), -1, SQLITE_TRANSIENT);
 		if (sqlite3_step(prune.get()) != SQLITE_DONE) { error = "Could not maintain usage retention."; return std::nullopt; }
+		prune.reset(); prune_raw = nullptr;
+		if (sqlite3_prepare_v2(database.get(), "DELETE FROM facts WHERE identity=?1 AND created<?2", -1, &prune_raw, nullptr) != SQLITE_OK) { error = "Could not maintain alias retention."; return std::nullopt; }
+		prune.reset(prune_raw); sqlite3_bind_int64(prune.get(), 2, start);
+		std::vector<AccountingRecord> retained;
+		for (std::size_t index = 0; index < records.size(); ++index)
+		{
+			if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return std::nullopt; }
+			if (keep[index]) { retained.push_back(std::move(records[index])); continue; }
+			sqlite3_reset(prune.get()); sqlite3_bind_text(prune.get(), 1, records[index].identity.c_str(), -1, SQLITE_TRANSIENT);
+			if (sqlite3_step(prune.get()) != SQLITE_DONE) { error = "Could not maintain alias retention."; return std::nullopt; }
+		}
+		prune.reset();
+		if (sqlite3_exec(database.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Could not commit usage retention."; return std::nullopt; }
+		records = std::move(retained);
 		return records;
 	}
 

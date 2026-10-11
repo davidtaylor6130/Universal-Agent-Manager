@@ -1,3 +1,4 @@
+#include "common/usage/antigravity_accounting.h"
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
 #include "test_harness.h"
@@ -4321,6 +4322,7 @@ UAM_TEST(RemoteUsageAccountingRunnerClientReassemblesDurableFactsInsideBoundedFr
 	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", temp.root.string());
 	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
 	ScopedEnvVar xdg_data("XDG_DATA_HOME", (temp.root / "xdg").string());
+	ScopedEnvVar antigravity_home("ANTIGRAVITY_DATA_DIR", (temp.root / "antigravity").string());
 	ScopedEnvVar opencode_db("OPENCODE_DB", (temp.root / "missing.db").string());
 	uam::usage::Store store(temp.root / ".uam" / "runner-usage");
 	std::vector<uam::usage::Record> records;
@@ -4332,6 +4334,17 @@ UAM_TEST(RemoteUsageAccountingRunnerClientReassemblesDurableFactsInsideBoundedFr
 		record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 3000;
 		record.tokens.input = 12; record.tokens.output = 3;
 		records.push_back(std::move(record));
+	}
+	for (int index = 0; index < 4; ++index)
+	{
+		uam::usage::AntigravityUsageCandidate candidate;
+		candidate.record.provider_id = uam::provider_ids::kAntigravityCli; candidate.record.model_id = "gemini-3-pro"; candidate.record.session_id = "session"; candidate.record.tokens.input = 4;
+		candidate.location_id = nlohmann::json::array({"antigravity","session","step",index/2,0}).dump();
+		candidate.aliases = {nlohmann::json::array({12,index<2 ? "old-request" : "future-request"}).dump()};
+		candidate.timestamp_quality = index%2 ? 0 : 2;
+		const std::int64_t now = uam::time::SystemEpochMillisecondsNow();
+		candidate.record.timestamp_ms = index%2 ? now-3000 : index==0 ? now-100*86400000LL : now+86400000;
+		const std::optional<uam::usage::Record> record = uam::usage::EncodeAntigravityAccountingRecord(candidate); UAM_ASSERT(record); records.push_back(*record);
 	}
 	std::vector<uam::usage::SourceRecord> references;
 	for (std::size_t index = 0; index < records.size(); ++index) references.push_back({&records[index], "fixture", index});
@@ -4355,8 +4368,15 @@ UAM_TEST(RemoteUsageAccountingRunnerClientReassemblesDurableFactsInsideBoundedFr
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	} while (std::chrono::steady_clock::now() < deadline);
 	UAM_ASSERT(snapshot.contains("facts"));
-	UAM_ASSERT_EQ(snapshot["facts"].size(), std::size_t{100});
+	UAM_ASSERT_EQ(snapshot["facts"].size(), std::size_t{104});
 	UAM_ASSERT(snapshot.dump().size() > 1024 * 1024);
+	std::vector<uam::usage::AccountingRecord> transferred;
+	for (const nlohmann::json& row : snapshot["facts"]) { const std::optional<uam::usage::AccountingRecord> record = uam::usage::DecodeAccountingRecord(row); UAM_ASSERT(record); transferred.push_back(*record); }
+	std::vector<const uam::usage::Record*> accounting;
+	for (const uam::usage::AccountingRecord& record : transferred) accounting.push_back(&record.record);
+	const std::int64_t as_of = snapshot["asOfMs"].get<std::int64_t>();
+	const std::optional<uam::usage::Ledger> ledger = uam::usage::Ledger::Create(accounting,as_of); UAM_ASSERT(ledger);
+	UAM_ASSERT_EQ(ledger->Query(ledger->WindowStart(7),as_of)->total.tokens.Total(),1500LL);
 	UAM_ASSERT(uam::usage::DecodeAccountingRecord(snapshot["facts"][0]));
 	const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 	std::stop_source cancellation; cancellation.request_stop();

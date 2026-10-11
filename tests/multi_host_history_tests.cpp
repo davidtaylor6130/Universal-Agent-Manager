@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "common/usage/multi_host_history.h"
+#include "common/usage/antigravity_accounting.h"
 #include <atomic>
 #include <thread>
 
@@ -168,4 +169,35 @@ UAM_TEST(UsageMultiHostRecoversFromUnsupportedMachineCountWithoutLaunchingConnec
 	history.SetHosts({hosts.front()});
 	const nlohmann::json restored = WaitUsage(history, "*", [](const nlohmann::json& value) { return value.contains("totals") && value.value("complete", false); });
 	UAM_ASSERT_EQ(restored["totals"]["totalTokens"].get<int>(), 15); UAM_ASSERT_EQ(calls.load(), 1);
+}
+
+
+UAM_TEST(UsageMultiHostRetainsAntigravityTimeWitnessesOutsideTheAccountingWindow)
+{
+	TempDir temp("uam-usage-antigravity-witnesses");
+	const std::int64_t now = UsageNow();
+	nlohmann::json document = UsageSnapshot("antigravity-cli","unused"); document["facts"] = nlohmann::json::array();
+	for (int index = 0; index < 4; ++index)
+	{
+		uam::usage::AntigravityUsageCandidate candidate;
+		candidate.record.provider_id = uam::provider_ids::kAntigravityCli; candidate.record.model_id = "gemini-3-pro";
+		candidate.record.session_id = "session"; candidate.record.tokens.input = 4;
+		candidate.location_id = nlohmann::json::array({"antigravity","session","step",index/2,0}).dump();
+		candidate.aliases = {nlohmann::json::array({12,index<2 ? "old-request" : "future-request"}).dump()};
+		candidate.timestamp_quality = index%2 ? 0 : 2;
+		candidate.record.timestamp_ms = index%2 ? now-1000 : index==0 ? now-100*86400000LL : now+86400000;
+		const std::optional<uam::usage::Record> record = uam::usage::EncodeAntigravityAccountingRecord(candidate); UAM_ASSERT(record);
+		document["facts"].push_back(uam::usage::EncodeAccountingRecord({nlohmann::json::array({"native",record->provider_id,record->dedupe_key}).dump(),*record}));
+	}
+	{
+		uam::usage::MultiHostHistory history(temp.root,EmptyLocal(temp.root),{UsageHost("peer")},
+		    [document](const ExecutionHost&,std::stop_token,std::string&) -> std::optional<nlohmann::json> { return document; });
+		const nlohmann::json result = WaitUsage(history,"peer",[](const nlohmann::json& value) { return value.contains("totals") && !value.value("collecting",true); });
+		UAM_ASSERT(result.contains("totals")); UAM_ASSERT_EQ(result["totals"]["totalTokens"].get<int>(),0);
+		UAM_ASSERT_EQ(result["coverage"][0]["status"].get<std::string>(),std::string("ready"));
+	}
+	uam::usage::MultiHostHistory offline(temp.root,EmptyLocal(temp.root),{UsageHost("peer")},
+	    [](const ExecutionHost&,std::stop_token,std::string& error) -> std::optional<nlohmann::json> { error="Offline"; return std::nullopt; });
+	const nlohmann::json restored = WaitUsage(offline,"peer",[](const nlohmann::json& value) { return value.contains("coverage") && value["coverage"][0]["status"]=="cached" && !value.value("collecting",true); });
+	UAM_ASSERT_EQ(restored["totals"]["totalTokens"].get<int>(),0);
 }

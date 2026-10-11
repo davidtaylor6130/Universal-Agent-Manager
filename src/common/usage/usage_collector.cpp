@@ -97,7 +97,7 @@ namespace uam::usage
 					for (std::size_t index = position; index < records.size(); ++index)
 					{
 						if (cancelled()) return false;
-						if (records[index].timestamp_ms < start || records[index].timestamp_ms >= as_of) continue;
+						if (records[index].provider_id != provider_ids::kAntigravityCli && (records[index].timestamp_ms < start || records[index].timestamp_ms >= as_of)) continue;
 						batch.push_back({&records[index], source, index});
 						if (batch.size() == 2048)
 						{

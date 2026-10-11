@@ -2,6 +2,7 @@
 
 #include "common/usage/transcript_scan.h"
 #include "common/usage/opencode_history_scan.h"
+#include "common/usage/antigravity_history_scan.h"
 #include "common/usage/usage_aggregation.h"
 
 namespace uam::usage
@@ -52,6 +53,10 @@ namespace uam::usage
 		std::map<std::filesystem::path, std::string> m_pendingDatabaseFingerprints;
 		std::map<std::filesystem::path, std::string> m_databaseScanRefreshIds;
 		std::size_t m_nextDatabase = 0;
+		std::vector<std::filesystem::path> m_antigravityDatabases;
+		std::map<std::filesystem::path, AntigravityHistoryScan> m_antigravityCache;
+		std::size_t m_nextAntigravityDatabase = 0;
+		std::string m_antigravityAccountedRefreshId;
 		std::map<std::string, std::size_t> m_sourceErrors;
 		std::size_t m_nextFile = 0;
 		bool m_listingComplete = false;
