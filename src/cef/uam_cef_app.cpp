@@ -23,6 +23,7 @@
 #include "include/views/cef_window.h"
 #include "include/wrapper/cef_stream_resource_handler.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <vector>
 
@@ -75,7 +76,7 @@ namespace
 		IMPLEMENT_REFCOUNTING(UamUiSchemeHandlerFactory);
 	};
 
-	CefRefPtr<CefImage> LoadUamWindowIcon()
+	CefRefPtr<CefImage> LoadUamWindowIcon(std::size_t target_dip_size = 0)
 	{
 		CefString exe_dir_string;
 		if (!CefGetPath(PK_DIR_EXE, exe_dir_string))
@@ -109,7 +110,14 @@ namespace
 			CefRefPtr<CefImage> image = CefImage::CreateImage();
 			if (image != nullptr && image->AddPNG(1.0f, bytes.data(), bytes.size()))
 			{
-				return image;
+				if (target_dip_size == 0) return image;
+				const std::size_t source_size = std::max(image->GetWidth(), image->GetHeight());
+				if (source_size == 0) continue;
+				CefRefPtr<CefImage> window_icon = CefImage::CreateImage();
+				const float scale = static_cast<float>(source_size) / static_cast<float>(target_dip_size);
+				if (window_icon != nullptr && window_icon->AddPNG(scale, bytes.data(), bytes.size()) &&
+				    std::max(window_icon->GetWidth(), window_icon->GetHeight()) == target_dip_size)
+					return window_icon;
 			}
 		}
 
@@ -167,8 +175,18 @@ namespace
 			window->SetTitle("Universal Agent Manager");
 			if (CefRefPtr<CefImage> icon = LoadUamWindowIcon())
 			{
-				window->SetWindowIcon(icon);
 				window->SetWindowAppIcon(icon);
+			}
+			// CEF rejects title-bar images whose largest dimension is not 16 DIP.
+			if (CefRefPtr<CefImage> icon = LoadUamWindowIcon(16))
+			{
+				window->SetWindowIcon(icon);
+				const CefRefPtr<CefImage> applied = window->GetWindowIcon();
+				if (applied != nullptr)
+					uam::diagnostics::Write("[UI startup] Title icon applied at " + std::to_string(applied->GetWidth()) + "x" +
+					                        std::to_string(applied->GetHeight()) + " DIP.");
+				else
+					uam::diagnostics::Write("[UI startup] CEF rejected the title icon.");
 			}
 
 			window->SetToFillLayout();
