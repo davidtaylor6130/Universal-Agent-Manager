@@ -3383,6 +3383,37 @@ UAM_TEST(RemoteTextWorkersUseOwnedPrivatePoliciesAndRejectUnknownProviders)
 }
 
 #if !defined(_WIN32)
+UAM_TEST(RemoteRunnerCancellationRefusesWritesWithoutDisconnecting)
+{
+	TempDir temp("uam-remote-cancel-write");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	uam::remote::RunnerClient client(service, {runner.string(), "bridge-direct"});
+	const fs::path workspace = fs::canonical(temp.root);
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+	uam::remote::ProcessPollResult poll;
+	bool interrupted = false;
+	client.SetProcessControlToken("not-created", "owned-cancel-control");
+	UAM_ASSERT(!client.PollProcess("not-created", poll, &error, []() { return true; }, &interrupted));
+	UAM_ASSERT(interrupted);
+	UAM_ASSERT_EQ(error, "The remote runner request was canceled.");
+	UAM_ASSERT(client.IsConnected());
+	// A refused write must leave no unmatched reply in the stream.
+	std::vector<MemoryLibraryStore::Entry> entries;
+	UAM_ASSERT(client.ListMemoryEntries(workspace, entries, &error));
+	UAM_ASSERT(entries.empty());
+	std::stop_source stop;
+	stop.request_stop();
+	MemoryLibraryStore::Draft draft;
+	draft.title = "Refused fixture";
+	draft.memory = "Never persisted.";
+	MemoryLibraryStore::Entry created;
+	UAM_ASSERT(!client.CreateMemoryEntry(workspace, draft, created, &error, stop.get_token()));
+	UAM_ASSERT(client.ListMemoryEntries(workspace, entries, &error));
+	UAM_ASSERT(entries.empty());
+}
+
 UAM_TEST(RemoteCommandDeliversBoundedStdinAndCleansItsOwnedWorker)
 {
 	TempDir temp("uam-remote-worker-stdin");

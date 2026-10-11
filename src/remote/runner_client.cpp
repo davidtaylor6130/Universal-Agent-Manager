@@ -226,6 +226,12 @@ namespace uam::remote
 			if (error_out != nullptr) *error_out = "The remote runner request is too large.";
 			return false;
 		}
+		if (interrupt && interrupt())
+		{
+			if (interrupted_out != nullptr) *interrupted_out = true;
+			if (error_out != nullptr) *error_out = "The remote runner request was canceled.";
+			return false;
+		}
 		std::string error;
 		if (!m_processService.WriteToStdioProcess(m_bridge, frame.data(), frame.size(), &error) ||
 		    !ReadResponse(response, &error, interrupt, interrupted_out))
@@ -781,13 +787,14 @@ namespace uam::remote
 		return true;
 	}
 
-	bool RunnerClient::CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out)
+	bool RunnerClient::CreateMemoryEntry(const std::filesystem::path& workspace, const MemoryLibraryStore::Draft& draft, MemoryLibraryStore::Entry& created, std::string* error_out, std::stop_token stop_token)
 	{
-		if (!m_connected && !Connect(error_out)) return false;
+		if (stop_token.stop_requested()) { if (error_out != nullptr) *error_out = "Memory scan canceled."; return false; }
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
 		if (!m_projectMemory) { if (error_out != nullptr) *error_out = "Update this host's runner to manage project memory."; return false; }
 		nlohmann::json response;
 		const nlohmann::json value = {{"category", draft.category}, {"title", draft.title}, {"memory", draft.memory}, {"evidence", draft.evidence}, {"confidence", draft.confidence}, {"sourceChatId", draft.source_chat_id}, {"extractionKey", draft.extraction_key}};
-		if (!Request({{"type", "memory.create"}, {"workspace", paths::Utf8PathString(workspace)}, {"draft", value}}, response, error_out)) return false;
+		if (!Request({{"type", "memory.create"}, {"workspace", paths::Utf8PathString(workspace)}, {"draft", value}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
 		if (!response["result"].contains("entry") || !DecodeMemoryEntry(response["result"]["entry"], created)) { if (error_out != nullptr) *error_out = "The runner returned an invalid created memory entry."; return false; }
 		return true;
 	}

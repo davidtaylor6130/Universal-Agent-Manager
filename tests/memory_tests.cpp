@@ -62,13 +62,12 @@ namespace
 {
 	void DrainMemoryWork(uam::AppState& app)
 	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 		while (!app.memory_extraction_tasks.empty())
 		{
-			for (uam::AsyncMemoryExtractionTask& task : app.memory_extraction_tasks)
-			{
-				if (task.worker != nullptr && task.worker->joinable()) task.worker->join();
-			}
 			(void)MemoryService::ProcessDueMemoryWork(app);
+			UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+			if (!app.memory_extraction_tasks.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 	}
 }
@@ -2108,6 +2107,12 @@ printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","ti
 	std::string error;
 	UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued, &error));
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	const std::shared_ptr<uam::AsyncMemoryExtractionState> publication = app.memory_extraction_tasks.front().extraction_state;
+	const std::chrono::steady_clock::time_point ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (!publication->remote_publication_ready.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < ready_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	UAM_ASSERT(publication->remote_publication_ready.load());
+	UAM_ASSERT(!fs::exists(target / ".UAM/Lessons/User_Lessons/target-lesson.md"));
 	DrainMemoryWork(app);
 	UAM_ASSERT_EQ(app.chats[0].memory_last_processed_message_count, 1);
 	UAM_ASSERT(fs::exists(target / ".UAM/Lessons/User_Lessons/target-lesson.md"));
@@ -2118,6 +2123,20 @@ printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","ti
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 	DrainMemoryWork(app);
 	UAM_ASSERT(uam::io::ReadTextFile(target / ".UAM/Lessons/User_Lessons/target-lesson.md").find("Occurrence count: 1") != std::string::npos);
+	const fs::path entry = target / ".UAM/Lessons/User_Lessons/target-lesson.md";
+	const std::string before_cancel = uam::io::ReadTextFile(entry);
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued, &error));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	const std::shared_ptr<uam::AsyncMemoryExtractionState> canceled = app.memory_extraction_tasks.front().extraction_state;
+	const std::chrono::steady_clock::time_point cancel_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (!canceled->remote_publication_ready.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < cancel_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	UAM_ASSERT(canceled->remote_publication_ready.load());
+	app.chats.front().memory_enabled = false;
+	DrainMemoryWork(app);
+	UAM_ASSERT(!canceled->remote_publication_permitted);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(entry), before_cancel);
+	UAM_ASSERT(!fs::exists(MemoryService::GlobalMemoryRoot(app.data_root)));
 }
 #endif
 

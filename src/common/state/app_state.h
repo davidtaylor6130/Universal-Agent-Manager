@@ -12,9 +12,11 @@
 #include <atomic>
 #include <array>
 #include <cstdint>
+#include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -808,6 +810,10 @@ namespace uam
 
 	struct AsyncMemoryExtractionState
 	{
+		std::atomic<bool> remote_publication_ready{false};
+		std::mutex remote_publication_mutex;
+		std::condition_variable_any remote_publication_condition;
+		bool remote_publication_permitted = false;
 		int hydrated_message_count = -1;
 		std::string hydrated_messages_digest;
 		bool low_signal_skip = false;
@@ -833,6 +839,8 @@ namespace uam
 		std::filesystem::path workspace_root;
 		std::optional<ExecutionHost> remote_host;
 		std::string remote_workspace;
+		std::string owner_provider_id;
+		std::string memory_level;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::shared_ptr<AsyncMemoryExtractionState> extraction_state;
 		std::unique_ptr<std::jthread> worker;
