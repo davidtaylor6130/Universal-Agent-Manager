@@ -43,6 +43,15 @@ namespace uam
 		std::string message;
 	};
 
+	struct GitWorktreeRetentionCandidate
+	{
+		std::filesystem::path directory;
+		std::filesystem::path administrative_directory;
+		std::string branch_name;
+		std::string head_sha;
+		std::filesystem::file_time_type activity_at;
+	};
+
 	struct GitTurnRollbackSnapshot
 	{
 		std::string chat_id;
@@ -71,6 +80,10 @@ namespace uam
 	class GitWorktreeService
 	{
 	  public:
+		/// Background-only inspection. Removal requires a separate exclusive workspace lease and fresh reference validation.
+		bool InspectRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& source_root,
+		    const std::filesystem::path& worktree, const std::vector<std::filesystem::path>& protected_paths,
+		    GitWorktreeRetentionCandidate& candidate, std::stop_token stop_token = {}) const;
 		GitWorktreeStatus Status(const AppState& app, const ChatSession& chat) const;
 		/// Creates the saved default worktree before a new local chat launches a provider.
 		bool PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr) const;

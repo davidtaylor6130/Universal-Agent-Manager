@@ -14,6 +14,8 @@
 #include "common/utils/time_utils.h"
 
 #include <fstream>
+#include <functional>
+#include <chrono>
 #include <algorithm>
 #include <cctype>
 #include <sstream>
@@ -1048,6 +1050,106 @@ namespace uam
 		branch.workspace_base_ref = checkpoint_sha;
 		CompleteSuccessfulResult(result, Status(app, branch), "Created an isolated branch at the selected message's checkpoint.");
 		return result;
+	}
+
+	bool GitWorktreeService::InspectRetentionCandidate(const std::filesystem::path& data_root,
+	    const std::filesystem::path& source_root, const std::filesystem::path& worktree,
+	    const std::vector<std::filesystem::path>& protected_paths, GitWorktreeRetentionCandidate& candidate,
+	    std::stop_token stop_token) const
+	{
+		candidate = {};
+		if (stop_token.stop_requested() || data_root.empty() || source_root.empty() || worktree.empty()) return false;
+		const std::function<bool(const std::filesystem::path&, const std::string&, std::string&)> query = [&stop_token](const std::filesystem::path& directory, const std::string& arguments, std::string& output)
+		{
+			const ProcessExecutionResult result = RunCommand("git --no-optional-locks -C " +
+			    uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " " + arguments, 2000, stop_token);
+			if (!CommandSucceeded(result) || result.output_truncated) return false;
+			output = uam::strings::Trim(result.output);
+			return true;
+		};
+		std::string repository_root;
+		if (!query(source_root, "rev-parse --show-toplevel", repository_root)) return false;
+		const std::filesystem::path bucket = data_root / "worktrees" /
+		    uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(uam::paths::PathFromUtf8(repository_root))));
+		const std::filesystem::path absolute = uam::paths::AbsolutePathNoThrow(worktree).lexically_normal();
+		const std::filesystem::path owned_root = uam::paths::AbsolutePathNoThrow(bucket).lexically_normal();
+		if (absolute == owned_root || !PathIsWithin(absolute, owned_root)) return false;
+		// Walk every owned ancestor: canonical containment alone would accept an internal directory link.
+		for (std::filesystem::path path = absolute; ; path = path.parent_path())
+		{
+			if (!uam::paths::IsDirectoryNoThrow(path) || uam::paths::IsLinkOrReparsePointNoThrow(path)) return false;
+			if (path == uam::paths::AbsolutePathNoThrow(data_root).lexically_normal()) break;
+			if (path == path.parent_path()) return false;
+		}
+		for (const std::filesystem::path& protected_path : protected_paths)
+		{
+			if (protected_path.empty()) continue;
+			std::error_code reference_error;
+			const std::filesystem::path reference = std::filesystem::weakly_canonical(protected_path, reference_error);
+			if (reference_error) return false;
+			const std::filesystem::path resolved = std::filesystem::canonical(absolute, reference_error);
+			if (reference_error || PathIsWithin(reference, resolved) || PathIsWithin(resolved, reference)) return false;
+			// File identity also protects alternate casing on case-insensitive volumes.
+			for (const std::pair<std::filesystem::path, std::filesystem::path>& pair :
+			    {std::make_pair(reference, resolved), std::make_pair(resolved, reference)})
+			{
+				for (std::filesystem::path parent = pair.first; ; parent = parent.parent_path())
+				{
+					if (std::filesystem::equivalent(parent, pair.second, reference_error)) return false;
+					if (reference_error && reference_error != std::errc::no_such_file_or_directory) return false;
+					reference_error.clear();
+					if (parent == parent.parent_path()) break;
+				}
+			}
+		}
+		std::error_code error;
+		const std::filesystem::file_status marker_status = std::filesystem::symlink_status(absolute / ".git", error);
+		if (error || !std::filesystem::is_regular_file(marker_status) || uam::paths::IsLinkOrReparsePointNoThrow(absolute / ".git")) return false;
+
+		std::string common_output;
+		std::string expected_common_output;
+		std::string admin_output;
+		if (!query(absolute, "rev-parse --path-format=absolute --git-common-dir", common_output) ||
+		    !query(source_root, "rev-parse --path-format=absolute --git-common-dir", expected_common_output) ||
+		    !query(absolute, "rev-parse --absolute-git-dir", admin_output)) return false;
+		const std::filesystem::path common = std::filesystem::canonical(uam::paths::PathFromUtf8(common_output), error);
+		if (error) return false;
+		const std::filesystem::path expected_common = std::filesystem::canonical(uam::paths::PathFromUtf8(expected_common_output), error);
+		if (error || common != expected_common) return false;
+		const std::filesystem::path admin = std::filesystem::canonical(uam::paths::PathFromUtf8(admin_output), error);
+		if (error || admin.parent_path() != common / "worktrees" || uam::paths::IsLinkOrReparsePointNoThrow(uam::paths::PathFromUtf8(admin_output))) return false;
+		if (std::filesystem::exists(admin / "locked", error) || error) return false;
+		const std::filesystem::path gitdir_file = admin / "gitdir";
+		if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(gitdir_file, error)) || error ||
+		    std::filesystem::file_size(gitdir_file, error) > 8192 || error) return false;
+		const std::filesystem::path back_pointer = std::filesystem::canonical(
+		    uam::paths::PathFromUtf8(uam::strings::Trim(uam::io::ReadTextFile(gitdir_file))), error);
+		if (error || back_pointer != std::filesystem::canonical(absolute / ".git", error) || error) return false;
+		GitWorktreeRetentionCandidate inspected;
+		inspected.directory = absolute;
+		inspected.administrative_directory = admin;
+		if (!query(absolute, "symbolic-ref --short HEAD", inspected.branch_name) ||
+		    !query(absolute, "rev-parse HEAD", inspected.head_sha)) return false;
+		const std::filesystem::file_time_type cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 14);
+		inspected.activity_at = std::filesystem::file_time_type::min();
+		const std::vector<std::filesystem::path> activity_paths = {
+		    absolute, absolute / ".git", admin / "HEAD", admin / "index", admin / "logs" / "HEAD",
+		    common / "refs" / "heads" / uam::paths::PathFromUtf8(inspected.branch_name), common / "packed-refs"};
+		for (const std::filesystem::path& path : activity_paths)
+		{
+			const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
+			if (error == std::errc::no_such_file_or_directory) { error.clear(); continue; }
+			if (error || uam::paths::IsLinkOrReparsePointNoThrow(path)) return false;
+			if (!std::filesystem::exists(status)) continue;
+			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, error);
+			if (error || modified >= cutoff) return false;
+			inspected.activity_at = std::max(inspected.activity_at, modified);
+		}
+		// Git removes ignored files with a clean worktree, so include them in the preservation check.
+		std::string status;
+		if (!query(absolute, "status --porcelain --untracked-files=normal --ignored=matching", status) || !status.empty() || stop_token.stop_requested()) return false;
+		candidate = std::move(inspected);
+		return true;
 	}
 
 	bool GitWorktreeService::RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out) const

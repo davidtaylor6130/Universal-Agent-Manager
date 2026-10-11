@@ -9096,6 +9096,68 @@ UAM_TEST(MessageBranchRetryFailureRollsBackLegacyAndPreservesIdempotentBranch)
 	UAM_ASSERT(!preserved->branch_retry_error.empty());
 }
 
+UAM_TEST(WorktreeRetentionInspectionPreservesReferencesDirtyFilesAndBranches)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-worktree-retention");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "baseline\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / ".gitignore", "ignored.log\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add app.txt .gitignore"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-retention";
+	chat.title = "Retention fixture";
+	chat.workspace_directory = repo.string();
+	const uam::GitWorktreeService service;
+	UAM_ASSERT(service.CreateForChat(app, chat).ok);
+	const fs::path worktree = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
+	uam::GitWorktreeRetentionCandidate candidate;
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
+	// Age metadata only inside this temporary repository; source content is never removed by inspection.
+	const fs::file_time_type old = fs::file_time_type::clock::now() - std::chrono::hours(24 * 15);
+	for (const fs::directory_entry& entry : fs::recursive_directory_iterator(repo / ".git")) fs::last_write_time(entry.path(), old);
+	for (const fs::directory_entry& entry : fs::recursive_directory_iterator(worktree)) fs::last_write_time(entry.path(), old);
+	fs::last_write_time(worktree, old);
+	UAM_ASSERT(service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
+	UAM_ASSERT_EQ(candidate.branch_name, chat.workspace_branch_name);
+	UAM_ASSERT(!candidate.head_sha.empty());
+	const fs::path admin = candidate.administrative_directory;
+	UAM_ASSERT(uam::io::WriteTextFile(admin / "locked", "keep locked worktree"));
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
+	fs::remove(admin / "locked");
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, temp.root, worktree, {}, candidate));
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, repo, {}, candidate));
+	UAM_ASSERT(service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
+#if !defined(_WIN32)
+	const fs::path alias = temp.root / "referenced-alias";
+	fs::create_directory_symlink(worktree, alias);
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {alias}, candidate));
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, alias, {}, candidate));
+#endif
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {worktree / "subfolder"}, candidate));
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {worktree.parent_path()}, candidate));
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "ignored.log", "keep ignored output"));
+	fs::last_write_time(worktree, old);
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
+	fs::remove(worktree / "ignored.log");
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "keep changed content\n"));
+	fs::last_write_time(worktree, old);
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(worktree / "app.txt"), "keep changed content\n");
+	UAM_ASSERT(RunGitForTest(repo, "show-ref --verify " + ShellQuoteForTest("refs/heads/" + chat.workspace_branch_name)));
+	std::stop_source canceled;
+	canceled.request_stop();
+	UAM_ASSERT(!service.InspectRetentionCandidate(app.data_root, repo, worktree, {}, candidate, canceled.get_token()));
+}
+
 UAM_TEST(MessageBranchFromGitWorktreeChecksOutHistoricalAssistantCheckpoint)
 {
 	if (!GitAvailableForTests()) return;
