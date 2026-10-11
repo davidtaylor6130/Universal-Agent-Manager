@@ -12762,3 +12762,48 @@ UAM_TEST(CodexStreamingPlanAndToolEventsDeferTranscriptWritesUntilSaveBarrier)
 		UAM_ASSERT(ReadFile(file) != saved_activity);
 	}
 }
+
+UAM_TEST(CodexLocalSetupDeliversCompleteCentralInstructionsForStartAndResume)
+{
+	TempDir temp("uam-codex-local-central-wire");
+	const std::string instructions = "Complete \"local\"\n" + std::string(192 * 1024, 'x');
+	uam::AppState app;
+	app.data_root = temp.root;
+	auto& process = PlatformServicesFactory::Instance().process_service;
+	for (const bool resume : {false, true})
+	{
+		ChatSession chat;
+		chat.id = "central-local";
+		chat.provider_id = uam::provider_ids::kCodexCli;
+		chat.workspace_directory = temp.root.string();
+		if (resume) chat.native_session_id = "08f433b8-6172-4ef6-b3b7-6c2846412b17";
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.provider_protocol_instructions = instructions;
+		std::string error;
+		const std::vector<std::string> argv{uam::paths::Utf8PathString(process.ResolveCurrentExecutablePath()), "--uam-test-codex-setup"};
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, argv, &error));
+		session.running = true;
+		session.initialized = true;
+		UAM_ASSERT(uam::acp_detail::SendSessionSetupIfReady(app, session, chat));
+		process.CloseStdioProcessInput(session);
+		std::string output;
+		char buffer[16384];
+		for (int attempt = 0; attempt < 300; ++attempt)
+		{
+			const std::ptrdiff_t read = process.ReadStdioProcessStdout(session, buffer, sizeof(buffer), &error);
+			if (read > 0) output.append(buffer, static_cast<std::size_t>(read));
+			if (process.PollStdioProcessExited(session) && read <= 0) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		process.StopStdioProcess(session, true);
+		process.CloseStdioProcessHandles(session);
+		const nlohmann::json wire = nlohmann::json::parse(output);
+		UAM_ASSERT_EQ(wire["method"], nlohmann::json(resume ? "thread/resume" : "thread/start"));
+		UAM_ASSERT_EQ(wire["params"]["developerInstructions"], nlohmann::json(instructions));
+		if (resume) UAM_ASSERT_EQ(wire["params"]["threadId"], nlohmann::json(chat.native_session_id));
+		uam::acp_detail::ResetAcpRuntimeState(app, session, chat);
+		UAM_ASSERT(session.provider_protocol_instructions.empty());
+	}
+}

@@ -1,3 +1,4 @@
+#include "common/provider/provider_setup_input.h"
 #include "test_harness.h"
 #include <barrier>
 #include <thread>
@@ -705,4 +706,118 @@ UAM_TEST(McpServersAcceptLanUrlsAndLiteralValuesButRejectCredentialUrls)
 	std::vector<McpServerConfiguration> both{local};
 	both.front().environment.front().environment_variable = "SEARXNG_URL";
 	UAM_ASSERT(!uam::mcp_server_config::NormalizeAndValidate(both, &error));
+}
+
+UAM_TEST(CodexCentralAppServerSetupPreservesLargeInstructionsWithoutLaunchArguments)
+{
+	TempDir temp("uam-codex-large-central-instructions");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = "Quoted \"instruction\"\n" + std::string(192 * 1024, 'x') + "\nEnd marker";
+	ChatSession chat;
+	chat.id = "large-codex";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error));
+	std::vector<std::string> argv{"codex", "app-server", "--listen", "stdio://"};
+	uam::provider_setup::Environment environment;
+	std::string instructions;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error, nlohmann::json::array(), &instructions));
+	UAM_ASSERT(instructions.find(settings.central_provider_configuration.instructions) != std::string::npos);
+	UAM_ASSERT(std::ranges::none_of(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions=") || argument.size() > 12 * 1024; }));
+}
+
+UAM_TEST(CodexSetupInputPreservesFragmentedFramesAndRejectsInvalidSetup)
+{
+	const std::string instructions = "Complete \"quoted\" \n UTF8: caf\xc3\xa9 " + std::string(192 * 1024, 'x');
+	for (const std::string& method : {"thread/start", "thread/resume"})
+	{
+		const std::string initialize = R"({"id":1,"method":"initialize","params":{}})" "\n";
+		const nlohmann::json setup = {{"id", 2}, {"method", method}, {"params", {{"cwd", "workspace"}, {"threadId", "saved-thread"}}}};
+		const std::string bytes = initialize + setup.dump() + "\n" + "opaque remaining prompt";
+		uam::codex::SetupInputState state;
+		std::string wire;
+		for (const char byte : bytes)
+		{
+			std::string output, error;
+			uam::codex::SetupInputState next;
+			UAM_ASSERT(uam::codex::PrepareSetupInput(instructions, state, std::string_view(&byte, 1), output, next, error));
+			state = std::move(next);
+			wire += output;
+		}
+		UAM_ASSERT(state.configured && state.pending.empty());
+		UAM_ASSERT(wire.starts_with(initialize));
+		const std::size_t end = wire.find('\n', initialize.size());
+		const nlohmann::json delivered = nlohmann::json::parse(wire.substr(initialize.size(), end - initialize.size()));
+		UAM_ASSERT_EQ(delivered["params"]["developerInstructions"], nlohmann::json(instructions));
+		UAM_ASSERT_EQ(delivered["params"]["threadId"], setup["params"]["threadId"]);
+		UAM_ASSERT_EQ(wire.substr(end + 1), std::string("opaque remaining prompt"));
+		std::string output, error;
+		uam::codex::SetupInputState next;
+		UAM_ASSERT(uam::codex::PrepareSetupInput(instructions, {}, bytes, output, next, error));
+		UAM_ASSERT_EQ(output, wire);
+	}
+	for (const std::string& invalid : {std::string("not-json\n"), std::string(R"({"method":"thread/start","params":null})" "\n"), std::string(32 * 1024 * 1024 + 1, 'x')})
+	{
+		uam::codex::SetupInputState state, next;
+		std::string output, error;
+		UAM_ASSERT(!uam::codex::PrepareSetupInput(instructions, state, invalid, output, next, error));
+		UAM_ASSERT(!error.empty() && state.pending.empty() && !state.configured);
+	}
+	uam::codex::SetupInputState next;
+	std::string output, error;
+	UAM_ASSERT(uam::codex::PrepareSetupInput("", {}, "opaque\n", output, next, error));
+	UAM_ASSERT_EQ(output, std::string("opaque\n"));
+}
+
+UAM_TEST(RemoteCodexCentralSetupUsesCompleteInstructionsAndIdempotentInput)
+{
+	TempDir temp("uam-remote-codex-setup-wire");
+	const fs::path workspace = fs::weakly_canonical(temp.root);
+	const std::string instructions = "Complete central marker\n" + std::string(192 * 1024, 'x');
+	const nlohmann::json manifest = {{"format", 1}, {"files", {{"AGENTS.md", {{"size", instructions.size()}, {"digest", uam::provider_setup::Digest(instructions)}}}}}};
+	const fs::path directory = workspace / ".UAM/provider-setup" / uam::provider_setup::Digest(manifest.dump());
+	uam::remote::RunnerState runner;
+	UAM_ASSERT(runner.HandleProcessRequest({{"id", "prepare"}, {"type", "configuration.prepare"}, {"directory", directory.string()}, {"manifest", manifest}}).value("ok", false));
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "AGENTS.md", instructions));
+	const auto request = [&](nlohmann::json body)
+	{
+		body["id"] = "request";
+		body["sessionId"] = "codex-setup-wire";
+		body["controlToken"] = "owned-codex-control";
+		return runner.HandleProcessRequest(body);
+	};
+	UAM_ASSERT(request({{"type", "process.start"}, {"cwd", workspace.string()}, {"argv", nlohmann::json::array({uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()), "--uam-test-codex-setup", "app-server"})}, {"configurationDirectory", directory.string()}, {"configurationProvider", "codex-cli"}}).value("ok", false));
+	const std::string first = R"({"id":1,"method":"thread/resume","params":{"threadId":")";
+	const std::string second = "saved-native\"}}\n";
+	const auto write = [&](const std::string& bytes, std::uint64_t sequence)
+	{
+		return request({{"type", "process.write"}, {"dataBase64", uam::base64::Encode(bytes)}, {"inputSequence", sequence}, {"deliveryId", "owned-" + std::to_string(sequence)}});
+	};
+	UAM_ASSERT(write(first, 1).value("ok", false));
+	UAM_ASSERT(write(first, 1)["result"].value("duplicate", false));
+	UAM_ASSERT(!request({{"type", "process.closeInput"}}).value("ok", true));
+	UAM_ASSERT(!write("bad\n", 2).value("ok", true));
+	UAM_ASSERT(write(second, 2).value("ok", false));
+	UAM_ASSERT(write(second, 2)["result"].value("duplicate", false));
+	UAM_ASSERT(request({{"type", "process.closeInput"}}).value("ok", false));
+	std::string output;
+	bool exited = false;
+	for (int attempt = 0; attempt < 300; ++attempt)
+	{
+		const nlohmann::json poll = request({{"type", "process.poll"}});
+		UAM_ASSERT(poll.value("ok", false));
+		std::string chunk;
+		UAM_ASSERT(uam::base64::Decode(poll["result"].value("stdoutBase64", ""), chunk));
+		output += chunk;
+		if (!poll["result"].value("running", true)) { exited = true; UAM_ASSERT_EQ(poll["result"].value("exitCode", -1), 0); break; }
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(exited);
+	const nlohmann::json delivered = nlohmann::json::parse(output);
+	UAM_ASSERT_EQ(delivered["params"]["developerInstructions"], nlohmann::json(instructions));
+	UAM_ASSERT_EQ(delivered["params"]["threadId"], nlohmann::json("saved-native"));
+	UAM_ASSERT(request({{"type", "process.remove"}}).value("ok", false));
 }

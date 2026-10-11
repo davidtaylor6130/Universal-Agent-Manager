@@ -21,6 +21,14 @@ namespace
 	constexpr std::string_view kProcessControlToken = "test-process-control-token";
 }
 
+std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv)
+{
+	if (argc < 2 || std::string_view(argv[1]) != "--uam-test-codex-setup") return std::nullopt;
+	std::string line;
+	while (std::getline(std::cin, line)) std::cout << line << std::endl;
+	return 0;
+}
+
 std::optional<int> RunRemoteEmptyArgumentsFixture(int argc, char** argv)
 {
 	if (argc < 2 || std::string_view(argv[1]) != "--uam-test-empty-arguments") return std::nullopt;
