@@ -216,7 +216,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Navigation and interface | Graphical | Main Application Icon | The selected full-tile app icon and accepted CEF title-bar icon are packaged. | Claude Review; Not User Tested |
 | Navigation and interface | Graphical | Active Host Labels | Active chat rows display their owning host. | Claude Review; Not User Tested |
 | Navigation and interface | Graphical | Scoped Branch Labels | Activity branch labels remain bound to the correct workspace and load near the viewport. | Claude Review; Not User Tested |
-| Navigation and interface | Performance | Collapsed Row Unmounting | Collapsed sidebar sections stop mounting hidden chat rows and their background hooks. | Un-Reviewed; Not User Tested |
+| Navigation and interface | Performance | Collapsed Row Unmounting | Collapsed sidebar sections stop mounting hidden chat rows and their background hooks. | Un-Reviewed; Claude Review; Not User Tested |
 | Navigation and interface | Bugfix | Loading Draft Preservation | History-loading and empty states preserve the composer draft. | Claude Review; Not User Tested |
 | Navigation and interface | Bugfix | Startup Recovery Visibility | Startup recovery remains hidden while the armed interface is loading. | Claude Review; Not User Tested |
 | Navigation and interface | Bugfix | Empty Assistant Rows | Contiguous assistant text no longer produces empty message-action rows. | Claude Review; Not User Tested |
@@ -346,7 +346,7 @@ The historical commit inventory below preserves the source/test/build entries, i
 
 ## Historical alpha82 commit inventory
 
-These 276 entries are reachable from the pinned alpha82 source and include follow-up fixes, test changes and checkpoints rather than 276 independent features.
+These 278 entries are reachable from the pinned alpha82 source and include follow-up fixes, parallel commit variants, test changes and checkpoints rather than 278 independent features.
 
 
 | Commit | Date | Work |
@@ -419,6 +419,8 @@ These 276 entries are reachable from the pinned alpha82 source and include follo
 | `1ee3a00c` | 2026-10-10 | Regenerate chat titles with guarded background workers |
 | `627a1266` | 2026-10-10 | Read memory recall previews without loading whole bodies |
 | `9e0be7a6` | 2026-10-10 | Add chat name and ID copy actions to sidebar menus |
+| `3f696191` | 2026-10-10 | Include source manifests in locally built helper artifacts |
+| `e78c62e1` | 2026-10-10 | Use the official Copilot mark and verify sidebar provider switching |
 | `ba49fe88` | 2026-10-10 | Use the official Copilot mark and verify sidebar provider switching |
 | `ea9b0d89` | 2026-10-10 | Stop ordinary memory recall scans when their prompt budget is full |
 | `e86fc55e` | 2026-10-10 | Resolve usage estimates from cached reference model prices |
@@ -627,3 +629,7 @@ These 276 entries are reachable from the pinned alpha82 source and include follo
 | `0fc0b984` | 2026-10-07 | Fix reconciliation of remote recovery-only updates |
 | `5f8fd137` | 2026-10-07 | Fix composer workspace actions and missing-commit worktree errors (#425) |
 | `5ba483ba` | 2026-10-07 | UAM checkpoint: chat-1791323829636-0ead76 turn 13 |
+
+## Feature branch coverage check
+
+Checked 2026-10-11 against `uam/v5-improvements` at `5d5e40a3` and `codex/t3-inspired-features` at `6079c141`. The V5 branch contains the complete feature branch history, with zero missing commits. All 117 non-merge commits since the feature branch was created at `d9a7cba9` now appear in the historical inventory; merge commits remain excluded from that inventory. The original Copilot mark and helper-manifest commits supplement existing descriptions of the same work. The collapsed-sidebar entry retains its pending acceptance flags and now explicitly requires Claude Review. No implementation, packaged source pin, user sign-off or outstanding-work ownership changed during this check.
