@@ -1250,6 +1250,7 @@ if(UAM_BUILD_TESTS)
     tests/organization_tests.cpp
     tests/transcript_retention_tests.cpp
     tests/chat_search_tests.cpp
+    tests/interaction_performance_tests.cpp
     tests/provider_configuration_tests.cpp
     tests/transcript_usage_tests.cpp
     tests/antigravity_accounting_tests.cpp

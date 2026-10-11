@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "npm run test:unit && npm run test:performance",
+    "test:unit": "vitest run --exclude \"src/**/*.performance.test.{ts,tsx}\"",
+    "test:performance": "vitest run .performance.test --maxWorkers=1 --no-file-parallelism"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.0.19",
