@@ -512,7 +512,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 			    }
 			    HandleSendAcpPrompt(browser, payload, cb);
 			    result.callback_deferred = true;
-		    });
+		    }, TID_FILE_USER_BLOCKING);
 		if (!queued) (void)domain.ConsumeBranchPreparation(m_app, chat_id, preparation->ownership);
 		return;
 	}
