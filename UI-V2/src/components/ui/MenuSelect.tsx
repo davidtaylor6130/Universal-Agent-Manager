@@ -7,6 +7,7 @@ export interface MenuSelectOption {
   label: string
   description?: string
   icon?: ReactNode
+  disabled?: boolean
 }
 
 export function MenuSelect({
@@ -34,7 +35,7 @@ export function MenuSelect({
 
   useEffect(() => {
     if (!open) return
-    setFocusIndex(selectedIndex)
+    setFocusIndex(options[selectedIndex]?.disabled ? options.findIndex((option) => !option.disabled) : selectedIndex)
     const onPointerDown = (event: MouseEvent) => {
       const target = event.target as Node
       if (!rootRef.current?.contains(target) && !listRef.current?.contains(target)) setOpen(false)
@@ -44,8 +45,14 @@ export function MenuSelect({
   }, [open, selectedIndex])
 
   useEffect(() => {
-    if (open) optionRefs.current[focusIndex]?.focus()
-  }, [focusIndex, open])
+    if (!open) return
+    if (options[focusIndex]?.disabled) {
+      setFocusIndex(options.findIndex((option) => !option.disabled))
+      return
+    }
+    if (options[focusIndex]) optionRefs.current[focusIndex]?.focus()
+    else triggerRef.current?.focus()
+  }, [focusIndex, open, options])
 
   const close = () => {
     setOpen(false)
@@ -64,9 +71,16 @@ export function MenuSelect({
     }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
     event.preventDefault()
-    if (event.key === 'Home') setFocusIndex(0)
-    else if (event.key === 'End') setFocusIndex(options.length - 1)
-    else setFocusIndex((index) => (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length)
+    const enabled = options.flatMap((option, index) => option.disabled ? [] : [index])
+    if (enabled.length === 0) return
+    if (event.key === 'Home') setFocusIndex(enabled[0])
+    else if (event.key === 'End') setFocusIndex(enabled[enabled.length - 1])
+    else {
+      const current = enabled.indexOf(focusIndex)
+      const direction = event.key === 'ArrowDown' ? 1 : -1
+      setFocusIndex(current < 0 ? enabled[direction > 0 ? 0 : enabled.length - 1]
+        : enabled[(current + direction + enabled.length) % enabled.length])
+    }
   }
 
   return (
@@ -114,8 +128,10 @@ export function MenuSelect({
               type="button"
               role="option"
               aria-selected={option.value === value}
-              onMouseEnter={() => setFocusIndex(index)}
+              disabled={option.disabled}
+              onMouseEnter={() => { if (!option.disabled) setFocusIndex(index) }}
               onClick={() => {
+                if (option.disabled) return
                 onChange(option.value)
                 close()
               }}
