@@ -188,9 +188,9 @@ namespace uam::remote
 			for (const nlohmann::json& value : request["argv"])
 			{
 				if (!value.is_string() ||
-				    !IsBoundedText(value.get_ref<const std::string&>(), kMaxArgumentBytes))
+				    !IsBoundedText(value.get_ref<const std::string&>(), kMaxArgumentBytes, !arguments.empty()))
 				{
-					error = "Every argv item must be a non-empty bounded string.";
+					error = "argv requires a non-empty executable and bounded argument strings.";
 					return false;
 				}
 				arguments.push_back(value.get<std::string>());

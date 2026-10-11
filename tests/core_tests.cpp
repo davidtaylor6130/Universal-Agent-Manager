@@ -24107,6 +24107,7 @@ UAM_TEST(MacTerminalFastStopTerminatesProcessGroupChildren)
 
 std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv);
 std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv);
+std::optional<int> RunRemoteEmptyArgumentsFixture(int argc, char** argv);
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[]);
 
 #if defined(__APPLE__)
@@ -24115,6 +24116,7 @@ std::optional<int> RunMacTerminalSignalFixtureIfRequested(int argc, char* argv[]
 
 int main(int argc, char** argv)
 {
+	if (const std::optional<int> result = RunRemoteEmptyArgumentsFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOpenCodeCreateFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunOpenCodeSessionCreateFixtureIfRequested(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteMcpLostAckFixture(argc, argv)) return *result;
