@@ -2668,6 +2668,7 @@ UAM_TEST(RemoteRunnerMcpShimRelaysTheActualUamControlProtocolOverTheSharedServic
 	    "mcp-provider", temp.root, {"/bin/sh", "-c", "sleep 30"}, {}, false,
 	    "mcp-provider-token");
 	uam::platform::StdioProcessPlatformFields proxy;
+	ServiceGuard proxy_guard{proxy};
 	UAM_ASSERT(service.StartStdioProcess(
 	    proxy, temp.root, {runner.string(), "proxy", "--alias", "test-host",
 	                       "--platform", "linux", "--version", runner_version}, &error,
@@ -2680,6 +2681,7 @@ UAM_TEST(RemoteRunnerMcpShimRelaysTheActualUamControlProtocolOverTheSharedServic
 	UAM_ASSERT(service.WriteToStdioProcess(proxy, control_line.data(), control_line.size(), &error));
 
 	uam::platform::StdioProcessPlatformFields shim;
+	ServiceGuard shim_guard{shim};
 	UAM_ASSERT(service.StartStdioProcess(
 	    shim, temp.root,
 	    {runner.string(), "mcp", "--channel", channel_id, "--socket", socket.string()},
@@ -2718,6 +2720,53 @@ UAM_TEST(RemoteRunnerMcpShimRelaysTheActualUamControlProtocolOverTheSharedServic
 		if (!has_goal_response()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
 	UAM_ASSERT(has_goal_response());
+	output.clear();
+	const std::string initialized = R"({"jsonrpc":"2.0","method":"notifications/initialized"})" "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(shim, initialized.data(), initialized.size(), &error));
+	const std::string list = R"({"jsonrpc":"2.0","id":20,"method":"tools/list"})" "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(shim, list.data(), list.size(), &error));
+	const auto read_response = [&](int id) -> nlohmann::json
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(app);
+			const std::ptrdiff_t read = service.ReadStdioProcessStdout(shim, buffer.data(), buffer.size(), &error);
+			if (read > 0) output.append(buffer.data(), static_cast<std::size_t>(read));
+			std::size_t newline = output.find('\n');
+			while (newline != std::string::npos)
+			{
+				const nlohmann::json response = nlohmann::json::parse(output.substr(0, newline), nullptr, false);
+				output.erase(0, newline + 1);
+				if (response.is_object() && response.value("id", -1) == id) return response;
+				newline = output.find('\n');
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		return nullptr;
+	};
+	const nlohmann::json definitions = read_response(20);
+	UAM_ASSERT(definitions.is_object() && definitions.contains("result"));
+	UAM_ASSERT(std::ranges::any_of(definitions["result"]["tools"], [](const nlohmann::json& tool) { return tool.value("name", "") == "user_question"; }));
+	UAM_ASSERT(!app.uam_control_capabilities.front().mcp_connection_id.empty());
+	const std::string question = R"({"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"user_question","arguments":{"question":"Which file should I inspect?","options":["Source","Tests"]}}})" "\n";
+	UAM_ASSERT(service.WriteToStdioProcess(shim, question.data(), question.size(), &error));
+	const std::chrono::steady_clock::time_point question_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	std::optional<uam::AcpPendingUserInputState> pending;
+	while (!pending && std::chrono::steady_clock::now() < question_deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		pending = uam::UamControlService::PendingApprovalForChat(app, app.chats.front().id);
+		if (!pending) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(pending && pending->questions.front().question == "Which file should I inspect?");
+	UAM_ASSERT(pending->questions.front().options.size() == 2 && pending->questions.front().is_other);
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(app, app.chats.front().id, pending->request_id_json,
+	    {{"userQuestion", {"Review the README first"}}}, &error));
+	const nlohmann::json answer = read_response(21);
+	UAM_ASSERT(answer.is_object() && answer.contains("result") && !answer["result"].value("isError", true));
+	UAM_ASSERT_EQ(nlohmann::json::parse(answer["result"]["content"][0]["text"].get<std::string>())["answer"], "Review the README first");
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, app.chats.front().id));
 	// A relay must drain the child's final response after observing its exit.
 	const std::string final_response =
 	    "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":\"" + std::string(128 * 1024 + 7, 'x') + "\"}\n";
