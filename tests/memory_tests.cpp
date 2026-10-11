@@ -903,7 +903,7 @@ UAM_TEST(MemoryServiceBuildsNonInteractiveCopilotWorkerCommand)
 	const std::string command = MemoryService::BuildWorkerCommandForTests(copilot, settings, "remember this", " gpt-5.1 ");
 
 	UAM_ASSERT(command.find("copilot") != std::string::npos);
-	UAM_ASSERT(command.find("-p") == std::string::npos);
+	UAM_ASSERT(command.find(" -p ") == std::string::npos);
 	UAM_ASSERT(command.find("remember this") == std::string::npos);
 	UAM_ASSERT(command.find("prompt via stdin") != std::string::npos);
 	UAM_ASSERT(command.find("--model") != std::string::npos);
@@ -2537,11 +2537,98 @@ UAM_TEST(MemoryCompletedWorkerPublishesPreparedEntriesWithoutCancellingItsOwner)
 	UAM_ASSERT(completion.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
 	completion.get();
 	UAM_ASSERT(state->completed.load(std::memory_order_acquire));
+	const fs::path chat_file = AppPaths::UamChatFilePath(app.data_root, source.id);
+	const std::string saved_before = ReadFile(chat_file);
+	app.chats.front().messages.push_back({MessageRole::User, "Still saving the new turn."});
+	app.pending_chat_save_at_by_chat_id[source.id] = uam::GetAppTimeSeconds() + 3600.0;
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT_EQ(ReadFile(chat_file), saved_before);
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
+	UAM_ASSERT_EQ(app.memory_extraction_tasks.size(), 1u);
+	UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::LocalMemoryRoot(source.workspace_directory)), 0u);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	app.pending_chat_save_at_by_chat_id.clear();
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 	UAM_ASSERT(app.memory_extraction_tasks.empty());
 	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 1);
 	UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::LocalMemoryRoot(source.workspace_directory)), 1u);
 	UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::GlobalMemoryRoot(app.data_root)), 1u);
+}
+
+UAM_TEST(MemoryQueuedLowSignalScanWaitsForPendingTranscriptPublication)
+{
+	TempDir temp("uam-memory-queued-pending-publication");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli");
+	chat.workspace_directory = temp.root.string();
+	chat.memory_level = "strict";
+	chat.messages.push_back({MessageRole::User, "Neutral text."});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const fs::path file = AppPaths::UamChatFilePath(app.data_root, chat.id);
+	const std::string baseline = ReadFile(file);
+	chat.messages.push_back({MessageRole::User, "Please change the spacing."});
+	const std::string id = chat.id;
+	app.chats.push_back(std::move(chat));
+	uam::QueuedMemoryExtractionTask queued;
+	queued.chat_id = id;
+	queued.scan_start_message_index = -1;
+	app.memory_extraction_queue.push_back(std::move(queued));
+	app.pending_chat_save_at_by_chat_id[id] = uam::GetAppTimeSeconds() + 3600.0;
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT_EQ(ReadFile(file), baseline);
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), 1u);
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	app.pending_chat_save_at_by_chat_id.clear();
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(app.memory_extraction_queue.empty());
+	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 2);
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, id, true);
+	UAM_ASSERT(restored.has_value());
+	UAM_ASSERT_EQ(restored->memory_last_processed_message_count, 2);
+	UAM_ASSERT(restored->messages == app.chats.front().messages);
+}
+
+UAM_TEST(MemoryPendingHistoryDoesNotRetainCanceledOrReplacedCompletedOwners)
+{
+	TempDir temp("uam-memory-pending-stale-owner");
+	for (const std::string scenario : {"canceled", "deleted", "data-root", "workspace", "disabled"})
+	{
+		uam::AppState app;
+		InitializePreparedMemoryFixture(app, temp.root / scenario);
+		const ChatSession source = app.chats.front();
+		const fs::path data_root = app.data_root;
+		const fs::path file = AppPaths::UamChatFilePath(data_root, source.id);
+		const std::string baseline = ReadFile(file);
+		uam::AsyncMemoryExtractionTask task;
+		task.data_root = data_root;
+		task.chat_id = source.id;
+		task.workspace_root = source.workspace_directory;
+		task.message_count = 1;
+		task.running = true;
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->result.ok = scenario != "canceled";
+		task.state->result.canceled = scenario == "canceled";
+		task.state->completed.store(true, std::memory_order_release);
+		task.extraction_state = std::make_shared<uam::AsyncMemoryExtractionState>();
+		task.extraction_state->output_prepared = true;
+		task.extraction_state->prepared_output = MemoryService::PrepareWorkerOutput(data_root, source,
+		    source.workspace_directory, kPreparedMemoryOutput, 1);
+		UAM_ASSERT(task.extraction_state->prepared_output != nullptr);
+		app.memory_extraction_tasks.push_back(std::move(task));
+		app.pending_chat_save_at_by_chat_id[source.id] = uam::GetAppTimeSeconds() + 3600.0;
+		if (scenario == "deleted") app.chats.clear();
+		if (scenario == "data-root") app.data_root = temp.root / "replacement";
+		if (scenario == "workspace") app.chats.front().workspace_directory = (temp.root / "replacement").string();
+		if (scenario == "disabled") app.chats.front().memory_level = "off";
+		(void)MemoryService::ProcessDueMemoryWork(app);
+		UAM_ASSERT(app.memory_extraction_tasks.empty());
+		UAM_ASSERT_EQ(ReadFile(file), baseline);
+		UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::LocalMemoryRoot(source.workspace_directory)), 0u);
+		UAM_ASSERT_EQ(PreparedMemoryFinalCount(MemoryService::GlobalMemoryRoot(data_root)), 0u);
+	}
 }
 
 UAM_TEST(MemoryPreparedOutputRetainsRetryReceiptsAfterInterruptedPublication)

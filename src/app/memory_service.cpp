@@ -1013,7 +1013,8 @@ namespace
 
 	bool QueuedMemoryWorkTemporarilyBlocked(const uam::AppState& app, const ChatSession& chat)
 	{
-		return ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) || !MemoryRetryDue(app, chat.id, uam::GetAppTimeSeconds());
+		return app.pending_chat_save_at_by_chat_id.contains(chat.id) || ChatIsBusy(app, chat.id) ||
+		       HasRunningTaskForChat(app, chat.id) || !MemoryRetryDue(app, chat.id, uam::GetAppTimeSeconds());
 	}
 
 	bool CopilotWorkerVersionCheckPending(const uam::AppState& app, const ChatSession& chat)
@@ -2070,6 +2071,20 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			}
 			++it;
 			continue;
+		}
+
+		// Progress must follow the owned history save, rather than forcing its full rewrite here.
+		if (task.data_root == app.data_root && app.pending_chat_save_at_by_chat_id.contains(task.chat_id) &&
+		    !task.state->result.canceled && (task.state->result.ok ||
+		    (task.extraction_state && task.extraction_state->low_signal_skip)))
+		{
+			const ChatSession* owner = ChatDomainService().FindChatById(app, task.chat_id);
+			if (owner && MemoryScanEligible(*owner) && MemoryHostAvailable(app, *owner) &&
+			    MemoryTaskStillOwnsWorkspace(app, *owner, task))
+			{
+				++it;
+				continue;
+			}
 		}
 
 		if (task.worker)
