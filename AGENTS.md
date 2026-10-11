@@ -20,6 +20,19 @@ can authorize **Complete**; record the approval reference and satisfy its requir
 review first. Automated tests, builds, installation, restarts and requests to
 continue are not user sign-off. Preserve pending flags when adding follow-up fixes.
 
+Agents must also maintain the **Incomplete Work** section in that root log using
+**Group | Type | Change | Summary | Status | Owner**. Add newly discovered fixes or
+missing acceptance immediately, deduplicate against existing entries, and claim work
+before starting by setting Owner to the exact **UAM chat ID** and Status to **In
+Progress** while retaining acceptance flags. Unclaimed work is **Unassigned**; never
+invent IDs or substitute display names, PIDs or branch names. Contact an existing
+owner using available UAM tools before overlapping work or transferring ownership;
+when communication is unavailable, record the gate and avoid conflicting edits.
+Record explicit handoffs with the prior and next chat IDs in linked working evidence.
+Move completed implementation into the main Changes table while retaining unresolved
+acceptance in Incomplete Work; preserve a recorded disposition before removing a
+resolved task. A completed implementation is not David's user sign-off.
+
 ## Release Slice
 
 This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, GitHub Copilot CLI, and Antigravity CLI (terminal only). Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.

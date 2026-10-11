@@ -296,6 +296,50 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Remaining acceptance | Misc | Full Provider Acceptance | Remaining provider-policy, account, reviewer, physical-device and startup-session gates remain documented. | Un-Reviewed; Not User Tested |
 | Remaining performance | Performance | Asynchronous Send Durability | Moving the complete pre-dispatch durable save off the GUI thread remains unfinished despite faster serialization. | Un-Reviewed; Not User Tested |
 
+## Incomplete Work
+
+This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.
+
+### Discovery, ownership and handoff
+
+- Every agent must read this section before starting work and add newly discovered fixes or missing acceptance here, updating an existing matching row instead of creating duplicates.
+- Keep **Group | Type | Change | Summary | Status | Owner**, with the same Type, five-word Change and one-sentence Summary rules as the main table.
+- New items start with **Owner = Unassigned**; before implementation or investigation, claim the row using the agent’s exact **UAM chat ID** and set **In Progress** while preserving pending review and user-test flags.
+- Never invent an ID or use a display name, PID or branch name as the Owner; if the chat ID is unavailable, record that limitation and leave the item Unassigned until it can be obtained.
+- An existing owner must be contacted through the available UAM communication tools before overlapping work or reassignment; if those tools are unavailable, record the coordination gate and avoid conflicting edits.
+- Use **Open**, **In Progress** or **Blocked** for work state and record specific blockers or handoffs in linked `.UAM/AINotes/` evidence; release or transfer ownership explicitly, preserving the prior chat ID in the handoff record.
+- When implementation finishes, update or append its main Changes entry and retain any remaining acceptance here; remove a fully resolved task only with a recorded disposition and owner handoff, never by silently dropping it.
+- **Claude Review**, **Un-Reviewed** and **Not User Tested** remain acceptance flags; only David’s explicit approval of that specific change, with required review satisfied and evidence recorded, permits **Complete**.
+
+| Group | Type | Change | Summary | Status | Owner |
+|---|---|---|---|---|---|
+| Performance | Performance | Asynchronous Send Durability | Move the remaining pre-dispatch durable save off the GUI thread while preserving admission, ordering and crash recovery. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Performance | Performance | Large Chat Opening Acceptance | Measure current live CEF opening of the reported huge chat against David’s one-to-two-second target and fix remaining bottlenecks. | Open; Claude Review; Not User Tested | Unassigned |
+| Performance | Performance | Typing And Sending Acceptance | Reproduce periodic typing stalls and multi-second sends in the current app and correct measured remaining delays. | Open; Claude Review; Not User Tested | Unassigned |
+| Graphical review | Graphical | Animation Smoothness Acceptance | Review and verify current transition smoothness without introducing continuously repainting decorative animations. | Open; Claude Review; Not User Tested | Unassigned |
+| Graphical review | Graphical | Claude Interface Review | Complete Claude review of every flagged React or UX change and resolve its findings before removing review flags. | Open; Claude Review; Not User Tested | Unassigned |
+| Remote maintenance | Bugfix | Remote Ownership Refusals | Investigate helpers that still refuse guarded Stop and retire verified idle ownership without terminating unrelated live work. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Remote maintenance | Misc | Current Helper Activation | Verify safe activation of the latest packaged helpers on both remote hosts after resolving their ownership guards. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Remote maintenance | Misc | Elevated Provider Update Acceptance | Verify saved per-host elevation choices update the identified provider installations without resetting settings or granting chat sessions privileges. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Remote maintenance | Misc | Interactive Sudo Update Support | Resolve the unimplemented password-authenticated update path for hosts requiring interactive sudo without placing passwords in chat or settings. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Remote startup | Misc | Runner Startup Acceptance | Verify real Linux user-session and Windows login startup behavior while preserving independently saved host options on failure. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Remote routing | Misc | Concurrent Two Host Acceptance | Run the production-linked two-host lifecycle packet with independent review and verify pinning, token refusal, authorized release and scoped cleanup. | Blocked; Un-Reviewed; Not User Tested | Unassigned |
+| Remote evidence | Misc | Missing Incident Evidence | Keep the failed r4 run and missing historical startup or Stop traces explicit until equivalent fresh evidence can be captured. | Blocked; Un-Reviewed; Not User Tested | Unassigned |
+| Provider acceptance | Misc | Six Provider Live Matrix | Complete fresh authenticated acceptance for all six providers across applicable local and remote launch, send, resume and cancellation paths. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Provider acceptance | Misc | Managed Action Acceptance | Verify real question, permission, model-setting and MCP invocation flows rather than treating tool discovery as successful execution. | Open; Claude Review; Not User Tested | Unassigned |
+| Provider acceptance | Misc | Handoff And Review Acceptance | Verify current provider handoffs and recorded-edit review preserve the selected chat’s context and ownership in real sessions. | Open; Claude Review; Not User Tested | Unassigned |
+| Provider acceptance | Misc | Queue Restart Acceptance | Verify queue editing, individual delivery and restart recovery through the current interface without replaying acknowledged work. | Open; Claude Review; Not User Tested | Unassigned |
+| Provider acceptance | Misc | Claude Lifecycle Acceptance | Verify authenticated Claude child ownership, Stop, shutdown and Review changes suppression after the isolated lifecycle fixes. | Open; Claude Review; Not User Tested | Unassigned |
+| Provider acceptance | Misc | Quota Continuation Acceptance | Verify trusted five-hour reset continuation in an authenticated native session without replaying accepted prompts or tools. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Provider resources | Misc | Provider Policy Gates | Resolve compatible Gemini account or client access and Antigravity headless tool-policy gates without bypassing provider restrictions. | Blocked; Un-Reviewed; Not User Tested | Unassigned |
+| Provider resources | Misc | Independent Reviewer Availability | Restore the permitted UAM reviewer connection and obtain hash-bound independent verdicts for work still awaiting that review. | Blocked; Un-Reviewed; Not User Tested | Unassigned |
+| Data ownership | Performance | Copied Deletion Timing | Measure bounded deletion phases on isolated copied data with private provider homes and survivor-byte checks after confirming capacity. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Data ownership | Misc | Live Folder Consolidation | Obtain David’s explicit mapping approval before consolidating the conflicting histories and folder aliases identified by the copied-data rehearsal. | Blocked; Un-Reviewed; Not User Tested | Unassigned |
+| Platform acceptance | Misc | Current Windows Application Acceptance | Verify the latest source with full Windows application builds and live GUI checks instead of relying on older pinned builds or helper cross-compilation. | Open; Claude Review; Not User Tested | Unassigned |
+| Platform acceptance | Misc | Physical Mobile Acceptance | Verify physical iPhone paging, authentication persistence, reconnect and installed icon behavior when the designated device is available. | Blocked; Claude Review; Not User Tested | Unassigned |
+| Platform acceptance | Misc | Image And Cleanup Acceptance | Complete applicable live image, transcript-cleanup and account-allowance checks while retaining provider and platform limits. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| User acceptance | Misc | Explicit Change Signoff | Collect David’s item-specific testing and approval references before marking any cumulative change Complete. | Open; Not User Tested | Unassigned |
+
 The historical commit inventory below preserves the source/test/build entries, including follow-up corrections and checkpoints.
 
 
