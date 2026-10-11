@@ -445,7 +445,9 @@ void Application::PollTick()
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
 	const std::chrono::steady_clock::time_point memory_finished = std::chrono::steady_clock::now();
 	const bool computer_use_changed = m_computerUseService.PollInBackground(m_app);
+	const std::chrono::steady_clock::time_point computer_use_finished = std::chrono::steady_clock::now();
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
+	const std::chrono::steady_clock::time_point shell_actions_finished = std::chrono::steady_clock::now();
 	const bool folder_availability_changed = PollWorkspaceAvailability();
 	const std::chrono::steady_clock::time_point controls_finished = std::chrono::steady_clock::now();
 	if (shell_actions_changed && m_browser && m_browser->GetHost())
@@ -514,6 +516,9 @@ void Application::PollTick()
 		    ",terminals:" + milliseconds(runtimes_finished, terminals_finished) +
 		    ",memory:" + milliseconds(terminals_finished, memory_finished) +
 		    ",controls:" + milliseconds(memory_finished, controls_finished) +
+		    ",computer_use:" + milliseconds(memory_finished, computer_use_finished) +
+		    ",shell_actions:" + milliseconds(computer_use_finished, shell_actions_finished) +
+		    ",workspace_availability:" + milliseconds(shell_actions_finished, controls_finished) +
 		    ",providers:" + milliseconds(controls_finished, providers_finished) +
 		    ",history:" + milliseconds(providers_finished, history_finished) +
 		    ",retention:" + milliseconds(history_finished, retention_finished) +
