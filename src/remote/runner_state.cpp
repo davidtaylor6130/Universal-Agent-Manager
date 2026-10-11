@@ -1233,6 +1233,7 @@ namespace uam::remote
 			std::vector<std::string> arguments;
 			std::vector<std::pair<std::string, std::string>> environment;
 			std::string error;
+			std::string protocol_instructions;
 			if (!ParseStart(request, session_id, working_directory, arguments, environment,
 			                error))
 				return ProcessError(request, "invalid_request", std::move(error));
@@ -1243,7 +1244,7 @@ namespace uam::remote
 				const std::filesystem::path directory = uam::paths::PathFromUtf8(request["configurationDirectory"].get<std::string>());
 				if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM" || directory.parent_path().parent_path().parent_path().lexically_normal() != working_directory.lexically_normal())
 					return ProcessError(request, "invalid_request", "Central resource folder does not belong to this workspace.");
-				if (!uam::provider_setup::Apply(request["configurationProvider"].get<std::string>(), directory, working_directory, arguments, environment, error, request.value("sessionMcpServers", nlohmann::json::array())))
+				if (!uam::provider_setup::Apply(request["configurationProvider"].get<std::string>(), directory, working_directory, arguments, environment, error, request.value("sessionMcpServers", nlohmann::json::array()), &protocol_instructions))
 					return ProcessError(request, "configuration_failed", error);
 			}
 			if (!request.contains("controlToken") || !request["controlToken"].is_string() ||
@@ -1273,7 +1274,8 @@ namespace uam::remote
 					                    "A remote process already uses this sessionId.");
 				Process& process = *existing->second;
 				if (process.working_directory != working_directory ||
-				    process.arguments != arguments || process.environment != environment)
+				    process.arguments != arguments || process.environment != environment ||
+				    process.provider_protocol_instructions != protocol_instructions)
 					return ProcessError(request, "session_conflict",
 					                    "The existing remote process does not match this launch request.");
 				if (!process.ready.load(std::memory_order_acquire))
@@ -1293,6 +1295,7 @@ namespace uam::remote
 			process->arguments = arguments;
 			process->environment = environment;
 			process->control_token = control_token;
+			process->provider_protocol_instructions = std::move(protocol_instructions);
 			process->transient_lease = transient_lease_ms > 0;
 			process->lease_duration_ms = transient_lease_ms;
 			RenewLease(*process);
@@ -1438,8 +1441,16 @@ namespace uam::remote
 				if (input_sequence != process.input_sequence + 1)
 					return ProcessError(request, "input_sequence_gap", "Process input sequence is not contiguous.");
 			}
-			if (!ProcessService().WriteToStdioProcess(process.fields, decoded.data(), decoded.size(), &error))
+			std::string prepared_input;
+			uam::codex::SetupInputState next_setup_input;
+			const bool preparing_setup = !process.provider_protocol_instructions.empty() && !process.provider_setup_input.configured;
+			if (preparing_setup && !uam::codex::PrepareSetupInput(process.provider_protocol_instructions, process.provider_setup_input,
+			                                                   decoded, prepared_input, next_setup_input, error))
+				return ProcessError(request, "invalid_request", std::move(error));
+			const std::string& input_bytes = preparing_setup ? prepared_input : decoded;
+			if (!input_bytes.empty() && !ProcessService().WriteToStdioProcess(process.fields, input_bytes.data(), input_bytes.size(), &error))
 				return ProcessError(request, "write_failed", std::move(error));
+			if (preparing_setup) process.provider_setup_input = std::move(next_setup_input);
 			if (sequenced)
 			{
 				process.input_sequence = input_sequence;
@@ -1466,6 +1477,8 @@ namespace uam::remote
 		if (type == "process.closeInput")
 		{
 			std::scoped_lock lock(process.mutex);
+			if (!process.provider_setup_input.pending.empty())
+				return ProcessError(request, "invalid_request", "Codex startup input contains an incomplete request.");
 			ProcessService().CloseStdioProcessInput(process.fields);
 			return ProcessSuccess(request, nlohmann::json::object());
 		}

@@ -1,3 +1,4 @@
+#include "common/provider/provider_setup_input.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "app/execution_routing_integration.h"
 #include "app/provider_configuration_service.h"
@@ -322,6 +323,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	InterruptUnconfirmedAcpSteers(app, session, chat);
 	if (!session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	session.claude_live_background_task_ids.clear();
+	session.provider_protocol_instructions.clear();
 	session.initialized = false;
 	session.session_ready = false;
 	session.load_session_supported = false;
@@ -833,7 +835,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (!session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process &&
 	    (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error,
 	                                  session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr) ||
-	     (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers))))
+	     (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers, &session.provider_protocol_instructions))))
 	{
 		session.lifecycle_state = kAcpLifecycleError;
 		session.last_error = startup_error;
@@ -1048,6 +1050,8 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		msg = runtime.OnAcpBuildSetupRequest(id, resume_chat, cwd, session.load_session_supported, method);
 	}
+	if (session.provider_id == uam::provider_ids::kCodexCli)
+		(void)uam::codex::ApplySetupInstructions(msg, session.provider_protocol_instructions);
 	if (!AddWorkspaceMcpServers(app, session, method, cwd, msg))
 	{
 		return FailAcpSessionSetupWrite(app, session, chat, "Failed to configure MCP servers.");

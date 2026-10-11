@@ -626,6 +626,7 @@ namespace uam
 		std::string managed_agent_run_id;
 		std::unique_ptr<std::jthread> uam_control_relay;
 		std::filesystem::path provider_configuration_directory;
+		std::string provider_protocol_instructions;
 		std::string uam_control_capability_id;
 		bool managed_launch_attempted = false;
 		bool managed_cancellation_pending = false;

@@ -6,6 +6,7 @@
 #include "common/paths/path_utils.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
+#include <algorithm>
 #include <fstream>
 #include <map>
 #include <set>
@@ -191,8 +192,10 @@ namespace uam::provider_setup
 	/// <summary>Apply session-only settings on the executing host; secrets never travel from controller to SSH.</summary>
 	inline bool Apply(const std::string& provider, const std::filesystem::path& directory,
 	                  const std::filesystem::path& workspace, std::vector<std::string>& argv,
-	                  Environment& environment, std::string& error, const nlohmann::json& session_servers = nlohmann::json::array())
+	                  Environment& environment, std::string& error, const nlohmann::json& session_servers = nlohmann::json::array(),
+	                  std::string* protocol_instructions = nullptr)
 	{
+		if (protocol_instructions) protocol_instructions->clear();
 		if (argv.empty() || (provider != uam::provider_ids::kCodexCli && provider != uam::provider_ids::kClaudeCli && provider != uam::provider_ids::kGeminiCli && provider != uam::provider_ids::kOpenCodeCli && provider != uam::provider_ids::kCopilotCli && provider != uam::provider_ids::kAntigravityCli))
 		{ error = "Central configuration does not support this provider."; return false; }
 		if (!session_servers.is_array()) { error = "Session MCP configuration is invalid."; return false; }
@@ -324,8 +327,13 @@ namespace uam::provider_setup
 #else
 			constexpr std::size_t max_instruction_bytes = 64 * 1024;
 #endif
-			if (instructions.size() > max_instruction_bytes) { error = "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
-			if (!mcp_only) argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
+			const bool structured_setup = protocol_instructions != nullptr && std::ranges::find(argv, "app-server") != argv.end();
+			if (!mcp_only && structured_setup) *protocol_instructions = instructions;
+			else if (!mcp_only)
+			{
+				if (instructions.size() > max_instruction_bytes) { error = "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
+				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
+			}
 			for (const auto& [name, server] : native_servers.items())
 			{
 				const std::string prefix = "mcp_servers." + nlohmann::json(name).dump() + ".";
