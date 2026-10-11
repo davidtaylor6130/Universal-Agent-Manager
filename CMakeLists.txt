@@ -347,6 +347,18 @@ set_target_properties(uam_runner PROPERTIES
   FOLDER "Remote"
 )
 target_include_directories(uam_runner PRIVATE src)
+# OpenCode and other provider histories use SQLite. Read them directly with read-only connections.
+FetchContent_Declare(uam_sqlite
+  URL https://www.sqlite.org/2026/sqlite-amalgamation-3540000.zip
+  URL_HASH SHA256=68e913b0fe8ec6b4e5f391c594a28872884e80d6cd042a1e50c957be46b5aa4d
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(uam_sqlite)
+add_library(uam_sqlite STATIC "${uam_sqlite_SOURCE_DIR}/sqlite3.c")
+target_include_directories(uam_sqlite PUBLIC "${uam_sqlite_SOURCE_DIR}")
+target_compile_definitions(uam_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
+target_link_libraries(uam_runner PRIVATE uam_sqlite)
+
 target_link_libraries(uam_runner PRIVATE nlohmann_json::nlohmann_json)
 if(APPLE)
   target_sources(uam_runner PRIVATE
@@ -593,18 +605,7 @@ if(NOT ZLIB_FOUND)
 endif()
 target_link_libraries(universal_agent_manager PRIVATE ZLIB::ZLIB)
 
-# OpenCode and other provider histories use SQLite. Read them directly with read-only connections.
-FetchContent_Declare(uam_sqlite
-  URL https://www.sqlite.org/2026/sqlite-amalgamation-3540000.zip
-  URL_HASH SHA256=68e913b0fe8ec6b4e5f391c594a28872884e80d6cd042a1e50c957be46b5aa4d
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-)
-FetchContent_MakeAvailable(uam_sqlite)
-add_library(uam_sqlite STATIC "${uam_sqlite_SOURCE_DIR}/sqlite3.c")
-target_include_directories(uam_sqlite PUBLIC "${uam_sqlite_SOURCE_DIR}")
-target_compile_definitions(uam_sqlite PRIVATE SQLITE_THREADSAFE=1 SQLITE_OMIT_LOAD_EXTENSION)
 target_link_libraries(universal_agent_manager PRIVATE uam_sqlite)
-target_link_libraries(uam_runner PRIVATE uam_sqlite)
 
 # CEF link targets depend on platform.
 # The CEF distribution's own CMakeLists.txt exposes 'libcef_dll_wrapper'.
