@@ -776,7 +776,12 @@ namespace
 		} cleanup{process, app};
 		const int code = kind.ends_with("unconfirmed") ? 70 : 0;
 	#if defined(_WIN32)
-		const std::vector<std::string> argv = {"cmd.exe", "/d", "/c", kind == "local-delayed" ? "set /p line= & echo {\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"running\",\"patch\":{\"status\":\"completed\"}} & echo late stop stderr 1>&2 & exit /b 0" : "set /p line= & exit /b " + std::to_string(code)};
+		const fs::path actor = temp.root / "stop-actor.ps1";
+		const std::string body = kind == "local-delayed"
+		    ? R"([void][Console]::ReadLine(); [Console]::WriteLine('{"type":"system","subtype":"task_updated","task_id":"running","patch":{"status":"completed"}}'); [Console]::Error.WriteLine('late stop stderr'); exit 0)"
+		    : "[void][Console]::ReadLine(); exit " + std::to_string(code);
+		UAM_ASSERT(uam::io::WriteTextFile(actor, body));
+		const std::vector<std::string> argv = {"powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", actor.string()};
 	#else
 		const std::vector<std::string> argv = {"/bin/sh", "-c", kind == "local-delayed" ? "IFS= read -r line; printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"running\",\"patch\":{\"status\":\"completed\"}}'; printf 'late stop stderr\\n' >&2; exit 0" : "IFS= read -r line; exit " + std::to_string(code)};
 	#endif

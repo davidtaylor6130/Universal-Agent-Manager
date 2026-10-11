@@ -1,6 +1,7 @@
 #include "remote/runner_service_windows.h"
 
 #include "common/utils/hash_utils.h"
+#include "common/utils/env_utils.h"
 #include "remote/runner_protocol.h"
 #include "remote/runner_state.h"
 
@@ -73,6 +74,9 @@ namespace uam::remote
 			    sid.size() * sizeof(wchar_t));
 			uam::hashing::UpdateFnv1a64(digest, runner_version);
 			uam::hashing::UpdateFnv1a64(digest, std::to_string(kRunnerProtocolVersion));
+			// Explicit namespaces isolate acceptance services from the normal per-user helper.
+			if (const std::optional<std::string> scope = uam::env::GetNonEmptyString("UAM_RUNNER_SERVICE_NAMESPACE"))
+				uam::hashing::UpdateFnv1a64(digest, "\nnamespace:" + *scope);
 			const std::string suffix = uam::hashing::Hex64Padded(digest);
 			return std::wstring(kind) +
 			       std::wstring(suffix.begin(), suffix.end());

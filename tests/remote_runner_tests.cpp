@@ -2054,6 +2054,8 @@ UAM_TEST(RemoteRunnerProcessInputSequenceIsIdempotent)
 #if defined(_WIN32)
 UAM_TEST(WindowsRemoteRunnerServiceSupportsReconnectConcurrentChatsAndCleanShutdown)
 {
+	TempDir isolated("uam-win-service");
+	ScopedEnvVar service_namespace("UAM_RUNNER_SERVICE_NAMESPACE", isolated.root.string());
 	const fs::path runner =
 	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
 	        .parent_path() / "uam-runner.exe";

@@ -269,7 +269,7 @@ UAM_TEST(ProviderMcpLayeredImportPreservesReferencesAndFilesOnMalformedLayer)
 	const std::string overlay = R"({/* bounded layer */"mcp":{"docs":{"url":"https://other.test/mcp",},"manual":{"type":"remote","url":"https://example.test/mcp","oauth":false}}})";
 	UAM_ASSERT(uam::io::WriteTextFile(first, original));
 	UAM_ASSERT(uam::io::WriteTextFile(second, overlay));
-	const nlohmann::json preview = uam::provider_mcp_settings::ReadImport(uam::paths::Utf8PathString(temp.root), "/fixture/workspace", "", "", {}, {});
+	const nlohmann::json preview = uam::provider_mcp_settings::ReadImport(uam::paths::Utf8PathString(temp.root), uam::paths::Utf8PathString(temp.root / "workspace"), "", "", {}, {});
 	UAM_ASSERT_EQ(preview["sources"].size(), std::size_t{2});
 	UAM_ASSERT_EQ(preview["servers"].size(), std::size_t{1});
 	const McpServerConfiguration server = uam::mcp_server_config::Parse(preview["servers"]).front();

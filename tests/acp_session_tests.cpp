@@ -12677,7 +12677,7 @@ UAM_TEST(ClaudeImagePreparationCancelsEveryStaleIdentityBeforeStartupGates)
 		const std::shared_ptr<uam::ClaudeInputPreparation> state = std::make_shared<uam::ClaudeInputPreparation>();
 		state->host = *uam::execution_hosts::Find(app.settings.execution_hosts, "local");
 		state->identity = {chat.id, session.provider_id, chat.provider_id, session.session_id, session.process_execution_host_id,
-		    chat.execution_host_id, chat.workspace_directory, session.queued_prompt, chat.model_id, session.goal_turn_model_id,
+		    chat.execution_host_id, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), session.queued_prompt, chat.model_id, session.goal_turn_model_id,
 		    chat.approval_mode, chat.computer_use_backend, chat.computer_use_enabled, session.turn_serial, 0, 0, user.attachments};
 		session.claude_input_preparation = std::make_unique<uam::ClaudeInputPreparationLease>(state);
 		// An unchanged prefix is retained while startup is still waiting.
@@ -12723,6 +12723,7 @@ UAM_TEST(CodexStreamingPlanAndToolEventsDeferTranscriptWritesUntilSaveBarrier)
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
 		const fs::path file = AppPaths::UamChatFilePath(app.data_root, app.chats.front().id);
 		const std::string baseline = ReadFile(file);
+		const std::vector<Message> original_messages = app.chats.front().messages;
 		const std::optional<std::string> baseline_revision = ChatRepository::ChatStorageRevision(app.data_root, app.chats.front().id);
 		UAM_ASSERT(baseline_revision.has_value());
 		uam::AcpSessionState session;
@@ -12748,7 +12749,9 @@ UAM_TEST(CodexStreamingPlanAndToolEventsDeferTranscriptWritesUntilSaveBarrier)
 		const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
 		UAM_ASSERT(restored.has_value());
 		UAM_ASSERT_EQ(restored->messages, expected);
-		UAM_ASSERT(ChatRepository::ChatStorageRevision(app.data_root, app.chats.front().id) != baseline_revision);
+		// Tool-only activity can leave persisted messages unchanged. Test actual durable
+		// bytes, not a timestamp change which a fast identical save need not produce.
+		if (expected != original_messages) UAM_ASSERT(ReadFile(file) != baseline);
 		const std::string saved_activity = ReadFile(file);
 		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
 		    R"({"jsonrpc":"2.0","method":"item/plan/delta","params":{"itemId":"final-plan","delta":"Final verification."}})"));
