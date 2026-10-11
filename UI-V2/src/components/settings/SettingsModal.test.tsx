@@ -272,7 +272,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Overview"]')!.click())
     act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
-    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Provider connection overview"] button')).find(button => button.textContent === 'Codex')!.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Provider connection overview"] button')).find(button => button.querySelector('.uam-prov-provider__name')?.textContent === 'Codex')!.click())
     expect(host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')?.getAttribute('aria-selected')).toBe('true')
     expect(host.textContent).toContain('CLI installation on Lab')
     expect(host.textContent).toContain('8.0')

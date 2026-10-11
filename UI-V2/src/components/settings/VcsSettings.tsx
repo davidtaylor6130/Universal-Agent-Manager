@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { GitBranch, FolderGit2 } from 'lucide-react'
-import { Switch } from '../ui'
+import { StatusDot, Switch } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 
 export function VcsSettings() {
@@ -18,17 +18,30 @@ export function VcsSettings() {
     } catch { setError('Could not save. Try again.') }
     finally { setSaving(false) }
   }
-  return <div>
-    {([
-      { key: 'gitEnabled', name: 'Git', icon: GitBranch, enabled: gitEnabled, detail: 'File changes, commits, new worktrees and turn checkpoints.' },
-      { key: 'svnEnabled', name: 'SVN', icon: FolderGit2, enabled: svnEnabled, detail: 'File changes, revisions and commits.' },
-    ] as const).map(({ key, name, icon: Icon, enabled, detail }) => <div key={key} className="flex items-center gap-3 border-b py-4" style={{ borderColor: 'var(--border)' }}>
-      <Icon size={18} aria-hidden />
-      <div className="flex-1"><div className="text-sm font-medium">{name}</div><p className="mt-1 text-xs" style={{ color: 'var(--text-2)' }}>{detail}</p></div>
-      <Switch label={`Enable ${name}`} hideLabel checked={enabled} disabled={saving} onChange={() => { void update(key, !enabled) }} />
-    </div>)}
-    <p className="mt-3 text-xs" style={{ color: 'var(--text-2)' }}>Existing worktree locations and cleanup are preserved. Turning Git off makes new chats use the workspace directly.</p>
-    {error && <p role="alert" className="mt-3 text-sm" style={{ color: 'var(--red)' }}>{error}</p>}
-    {saving && <p role="status" className="mt-3 text-xs">Saving…</p>}
+  return <div className="uam-vcs-settings">
+    <section aria-label="Version control systems" className="uam-settings-group">
+      <h3 className="uam-settings-group__title">Systems</h3>
+      <div className="uam-settings-group__body">
+        {([
+          { key: 'gitEnabled', name: 'Git', icon: GitBranch, enabled: gitEnabled, detail: 'File changes, commits, new worktrees and turn checkpoints.' },
+          { key: 'svnEnabled', name: 'SVN', icon: FolderGit2, enabled: svnEnabled, detail: 'File changes, revisions and commits.' },
+        ] as const).map(({ key, name, icon: Icon, enabled, detail }) => <div key={key} className="flex items-center gap-3">
+          <Icon size={16} aria-hidden style={{ color: 'var(--text-3)' }} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              {name}
+              <span className="flex items-center gap-1.5 text-xs font-normal" style={{ color: enabled ? 'var(--success)' : 'var(--text-3)' }}>
+                <StatusDot tone={enabled ? 'success' : 'neutral'} size={6} />{enabled ? 'On' : 'Off'}
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs" style={{ color: 'var(--text-3)' }}>{detail}</p>
+          </div>
+          <Switch label={`Enable ${name}`} hideLabel checked={enabled} disabled={saving} onChange={() => { void update(key, !enabled) }} />
+        </div>)}
+      </div>
+    </section>
+    <p className="text-xs" style={{ color: 'var(--text-3)' }}>Existing worktree locations and cleanup are preserved. Turning Git off makes new chats use the workspace directly.</p>
+    {error && <p role="alert" className="mt-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
+    {saving && <p role="status" className="mt-3 text-xs" style={{ color: 'var(--text-3)' }}>Saving…</p>}
   </div>
 }

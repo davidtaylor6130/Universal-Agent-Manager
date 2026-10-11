@@ -123,7 +123,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
       {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50" onClick={event => { if (event.target === event.currentTarget && !applying) setPendingExit(null) }}>
         <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}} onKeyDown={event => { if(event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if(!applying) setPendingExit(null) } }}>
           <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
-          {error && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{error}</p>}
+          {error && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{error}</p>}
           <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if(await apply()) { const next=pendingExit; setPendingExit(null); next() } }}>Save and leave</Button></div>
         </div>
       </div>}
@@ -155,7 +155,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
             <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--text)' }}>{action.label || 'Untitled action'}</span>
             {JSON.stringify(action) !== JSON.stringify(appliedActions.find(item => item.id === action.id)) && <StatusIndicator issues={['This action has unsaved changes']} />}
             <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
-            <IconButton icon={<Trash2 size={15} />} label={`Remove ${action.label}`} variant="solid" className="hover:!text-[var(--red)]" onClick={() => setPendingDeleteActionId(action.id)} />
+            <IconButton icon={<Trash2 size={15} />} label={`Remove ${action.label}`} variant="solid" className="hover:!text-[var(--error)]" onClick={() => setPendingDeleteActionId(action.id)} />
           </div>
           {pendingDeleteActionId === action.id && (
             <div className="p-3">
@@ -278,7 +278,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
         )
       })}
 
-      {(error || notification) && <div role="status" className="flex items-center justify-between gap-2 text-xs" style={{ color: error ? 'var(--red)' : 'var(--text-2)' }}><span>{error || notification}</span><IconButton icon={<X size={14}/>} label="Dismiss shell action message" onClick={() => {setError(''); void useAppStore.getState().dismissShellActionNotification()}} /></div>}
+      {(error || notification) && <div role="status" className="flex items-center justify-between gap-2 text-xs" style={{ color: error ? 'var(--error)' : 'var(--text-2)' }}><span>{error || notification}</span><IconButton icon={<X size={14}/>} label="Dismiss shell action message" onClick={() => {setError(''); void useAppStore.getState().dismissShellActionNotification()}} /></div>}
     </div>
   )
 })

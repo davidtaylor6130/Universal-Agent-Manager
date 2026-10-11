@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, useOverlayState } from '../ui'
+import { Button, IconButton, Notice, useOverlayState } from '../ui'
 
 export function MemoryScanModal() {
   const overlayState = useOverlayState()
@@ -104,14 +104,12 @@ export function MemoryScanModal() {
           </div>
 
           {memoryScanError && (
-            <div className="mb-4 rounded-md px-3 py-2 text-xs" style={{ background: 'color-mix(in srgb, var(--red) 14%, transparent)', color: 'var(--red)', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
-              {memoryScanError}
-            </div>
+            <Notice tone="error" dismissLabel="Dismiss scan error">{memoryScanError}</Notice>
           )}
 
           {memoryScanLoading ? (
-            <div className="text-sm" style={{ color: 'var(--text-3)' }}>
-              Loading eligible chats...
+            <div role="status" aria-busy="true" className="uam-memory-state">
+              <p className="text-sm" style={{ color: 'var(--text-3)' }}>Loading eligible chats…</p>
             </div>
           ) : memoryScanCandidates.length === 0 ? (
             <div
@@ -151,7 +149,7 @@ export function MemoryScanModal() {
                         {candidate.folderTitle || 'Unsorted'} • {candidate.providerId} • {candidate.messageCount} message{candidate.messageCount === 1 ? '' : 's'}
                       </div>
                       <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                        Last memory scan: {candidate.memoryLastProcessedAt || 'Never'}
+                        Last scanned: {candidate.memoryLastProcessedAt || 'Never'}
                       </div>
                     </div>
                   </label>
@@ -179,7 +177,7 @@ export function MemoryScanModal() {
             onClick={() => void startMemoryScan()}
             disabled={memoryScanRunning || selectedMemoryScanChatIds.length === 0}
           >
-            {memoryScanRunning ? 'Starting scan...' : `Scan ${selectedMemoryScanChatIds.length} chat${selectedMemoryScanChatIds.length === 1 ? '' : 's'}`}
+            {memoryScanRunning ? 'Starting scan…' : `Scan ${selectedMemoryScanChatIds.length} chat${selectedMemoryScanChatIds.length === 1 ? '' : 's'}`}
           </Button>
         </div>
       </div>

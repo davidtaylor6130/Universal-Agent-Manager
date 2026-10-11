@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, MenuSelect, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
 import type { Folder, ExecutionHost } from '../../types/session'
 import type { MemoryEntry, MemoryEntryDraft, MemoryScope } from '../../types/memory'
 
@@ -325,7 +325,16 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   )
 
   if (!memoryLibraryScope) {
-    return embedded ? <div role="status" className="text-sm">{memoryLibraryError || 'Loading memory library…'}{memoryLibraryError && <Button onClick={() => void openAllMemoryLibrary()}>Retry</Button>}</div> : null
+    if (!embedded) return null
+    return memoryLibraryError
+      ? <div role="alert" className="uam-memory-state">
+          <p className="text-sm font-medium" style={{ color: 'var(--text)' }}>The memory library did not open.</p>
+          <p className="text-xs" style={{ color: 'var(--text-3)' }}>{memoryLibraryError}</p>
+          <div><Button size="sm" onClick={() => void openAllMemoryLibrary()}>Try again</Button></div>
+        </div>
+      : <div role="status" aria-busy="true" className="uam-memory-state">
+          <p className="text-sm" style={{ color: 'var(--text-3)' }}>Loading memory library…</p>
+        </div>
   }
 
   const isAllMemory = memoryLibraryScope.scopeType === 'all'
@@ -532,14 +541,15 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             </div>
 
             {memoryLibraryError && (
-              <div className="mb-4 rounded-md px-3 py-2 text-xs flex items-center justify-between gap-2" style={{ background: 'color-mix(in srgb, var(--red) 14%, transparent)', color: 'var(--red)', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
-                <span>{memoryLibraryError}</span><IconButton icon={<X size={14}/>} label="Dismiss memory error" onClick={() => useAppStore.setState({ memoryLibraryError: '' })} />
-              </div>
+              <Notice tone="error" dismissLabel="Dismiss memory error" onDismiss={() => useAppStore.setState({ memoryLibraryError: '' })}
+                actions={<Button size="sm" variant="ghost" disabled={memoryLibraryLoading} onClick={() => void refreshMemoryLibrary()}>Try again</Button>}>
+                {memoryLibraryError}
+              </Notice>
             )}
 
             {memoryLibraryLoading ? (
-              <div className="text-sm" style={{ color: 'var(--text-3)' }}>
-                Loading memory library...
+              <div role="status" aria-busy="true" className="uam-memory-state">
+                <p className="text-sm" style={{ color: 'var(--text-3)' }}>Loading memory library…</p>
               </div>
             ) : !selectedLocation || selectedLocation.entries.length === 0 ? (
               <div
@@ -550,10 +560,10 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                   ? <SearchX size={24} strokeWidth={1.5} aria-hidden />
                   : <FolderOpen size={24} strokeWidth={1.5} aria-hidden />}
                 <div className="text-sm font-medium" style={{ color: 'var(--text-2)' }}>
-                  {hasSearchQuery ? 'No memory matches this search' : 'No memory saved here yet'}
+                  {memoryLibraryError ? 'Memories are unavailable' : hasSearchQuery ? 'No memory matches this search' : 'No memory saved here yet'}
                 </div>
                 <div className="text-xs">
-                  {hasSearchQuery ? 'Try another term or clear the search.' : 'Add a memory to make it available to future chats.'}
+                  {memoryLibraryError ? 'Try again above, then refresh the library.' : hasSearchQuery ? 'Try another term or clear the search.' : 'Add a memory to make it available to future chats.'}
                 </div>
               </div>
             ) : selectedLocation ? (
@@ -698,7 +708,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                   </label>
                 </div>
 
-                {(localError || memoryLibraryError) && <div role="alert" className="text-xs" style={{color:'var(--red)'}}>{localError || memoryLibraryError}</div>}
+                {(localError || memoryLibraryError) && <div role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError || memoryLibraryError}</div>}
                 <Button
                   variant="primary"
                   block
@@ -713,7 +723,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
       {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
         <div role="alertdialog" aria-modal="true" aria-label="Unsaved memory" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm mx-4" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}}>
           <h3 className="text-sm font-semibold">Save this memory before leaving?</h3>
-          {localError && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{localError}</p>}
+          {localError && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError}</p>}
           <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
         </div>
       </div>}

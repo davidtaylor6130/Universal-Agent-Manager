@@ -6,7 +6,7 @@ import { CentralProviderSettings } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
   MAX_MEMORY_RECALL_BUDGET_BYTES,
@@ -40,7 +40,7 @@ import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, IconButton, MenuSelect, Notice, Switch, ViewportMenu } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, StatusDot, Switch, ViewportMenu } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -56,6 +56,7 @@ import {
 } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
 import './settings-motion.css'
+import './settings-shell.css'
 
 interface MemoryModelOption {
   id: string
@@ -428,6 +429,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
   const { theme, setTheme } = useTheme()
   const [settingsSearch, setSettingsSearch] = useState('')
+  const navRef = useRef<HTMLElement>(null)
+  const [navIndicator, setNavIndicator] = useState<{ top: number; height: number } | null>(null)
   const searchTerms = settingsSearch.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)
   const visibleSettingsGroups = SETTINGS_GROUPS.map(group => ({...group, sections: group.sections.filter(id => {
     const section = SETTINGS_SECTIONS.find(item => item.id === id)
@@ -495,6 +498,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [chatDataFolder, setChatDataFolder] = useState('')
   const [chatDataMessage, setChatDataMessage] = useState<{ tone: 'success' | 'warning' | 'error' | 'info'; text: string } | null>(null)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
+  // Measure the active nav item so one indicator can glide between items.
+  useLayoutEffect(() => {
+    const nav = navRef.current
+    if (!nav) return
+    const measure = () => {
+      const active = nav.querySelector<HTMLElement>('[data-active="true"]')
+      setNavIndicator(active ? { top: active.offsetTop + 8, height: active.offsetHeight - 16 } : null)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [selectedSection, visibleSettingsGroups.length])
   const memoryRef = useRef<MemoryLibraryHandle>(null)
   const shellRef = useRef<ShellActionsHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
@@ -922,7 +939,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 }}
               >
                 <span className="flex-1">{preset.label}</span>
-                {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
+                {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
               </button>
             )
           })}
@@ -1119,7 +1136,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     ))}
                   </div>}
                   {!themeDraftValid && (
-                    <p id="theme-color-format-error" role="alert" className="text-xs" style={{ color: 'var(--red)' }}>
+                    <p id="theme-color-format-error" role="alert" className="text-xs" style={{ color: 'var(--error)' }}>
                       Every color must use #RRGGBB format.
                     </p>
                   )}
@@ -1246,7 +1263,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
   }
   const copyIcon = (kind: 'token' | 'url') => companionCopy?.kind === kind
-    ? companionCopy.ok ? <Check key="ok" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--green)' }} /> : <X key="fail" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--red)' }} />
+    ? companionCopy.ok ? <Check key="ok" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--success)' }} /> : <X key="fail" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--error)' }} />
     : <Copy key="idle" size={14} aria-hidden />
   const copyLabel = (kind: 'token' | 'url', idle: string) => companionCopy?.kind === kind ? companionCopy.ok ? 'Copied' : 'Copy failed' : idle
   const renderPhoneAccess = () => <SectionCard title="Phone Access">
@@ -1268,13 +1285,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       <div className="flex items-center gap-2">
         <Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>
       </div>
-      {companionSettings?.enabled && companionSettings.proxyRunning === false && <p style={{ color: 'var(--red)' }}>The phone HTTPS proxy is not running. Restart UAM and check the network address.</p>}
+      {companionSettings?.enabled && companionSettings.proxyRunning === false && <p style={{ color: 'var(--error)' }}>The phone HTTPS proxy is not running. Restart UAM and check the network address.</p>}
       {companionSettings?.localAddresses?.map((address) => {
         let host = ''
         try { host = new URL(companionSettings.url).hostname } catch { /* No configured URL. */ }
         if (!host || host === address || host === '127.0.0.1' || !/^\d+\.\d+\.\d+\.\d+$/.test(host) || companionSettings.localAddresses?.includes(host)) return null
         return <div key={address} className="flex items-center justify-between gap-3">
-          <span style={{ color: 'var(--red)' }}>The configured address {host} is no longer on this Mac.</span>
+          <span style={{ color: 'var(--error)' }}>The configured address {host} is no longer on this Mac.</span>
           <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => {
             setCompanionBusy(true)
             void sendToCEF<typeof companionSettings>({ action: 'repairCompanionLanAddress', payload: { address } }).then((result) => {
@@ -1285,7 +1302,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           }}>Use {address}</Button>
         </div>
       })}
-      {companionMessage && <div role="status" style={{ color: companionCopy?.ok === false ? 'var(--red)' : 'var(--text-2)' }}>{companionMessage}</div>}
+      {companionMessage && <div role="status" style={{ color: companionCopy?.ok === false ? 'var(--error)' : 'var(--text-2)' }}>{companionMessage}</div>}
     </div>
   </SectionCard>
 
@@ -1360,7 +1377,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
           <p>UAM checks {computerUseOsLabel} permissions here. The allowlist below only narrows which applications UAM may target.</p>
           {statusRows.map(([label, permission, state]) => <div key={permission} className="flex items-center justify-between gap-3 border-b py-2" style={{ borderColor: 'var(--border)' }}>
-            <span>{label}</span><span className="flex items-center gap-2" style={{ color: state ? (state.available ? 'var(--green)' : 'var(--red)') : 'var(--text-3)' }}>{state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}<Button size="sm" variant="ghost" disabled={computerUseBusy} onClick={() => void openComputerUseSystemSettings(permission)}>Open settings</Button></span>
+            <span>{label}</span><span className="flex items-center gap-2" style={{ color: state ? (state.available ? 'var(--success)' : 'var(--error)') : 'var(--text-3)' }}>{state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}<Button size="sm" variant="ghost" disabled={computerUseBusy} onClick={() => void openComputerUseSystemSettings(permission)}>Open settings</Button></span>
           </div>)}
           <div className="flex flex-wrap gap-2 pt-2">
             <Button size="sm" disabled={computerUseBusy} onClick={() => void checkComputerUsePermissions()}>Check permissions</Button>
@@ -1448,7 +1465,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   }}
                 />
               </div>
-              {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--red)' : 'var(--text-2)' }}>{themeMessage}</div>}
+              {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--error)' : 'var(--text-2)' }}>{themeMessage}</div>}
             </div>
           </SectionCard>
           <SectionCard title="Sidebar">
@@ -1933,21 +1950,23 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           >
             <div className="grid gap-3">
               <p className="text-xs" style={{ color: 'var(--text-3)' }}>Turn an agent defined for another CLI into a UAM agent.</p>
-              <span className="uam-inline-form__label" style={{ marginBottom: -8 }}>Source provider</span>
-              <MenuSelect
-                label="Source provider"
-                value={agentImportProvider}
-                options={[
-                  { value: 'opencode-cli', label: 'OpenCode' },
-                  { value: 'copilot-cli', label: 'GitHub Copilot CLI' },
-                  { value: 'gemini-cli', label: 'Gemini CLI' },
-				  { value: 'claude-cli', label: 'Claude Code' },
-                ]}
-                onChange={(value) => {
-                  setAgentImportProvider(value)
-                  invalidateAgentImport()
-                }}
-              />
+              <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                <span>Source provider</span>
+                <MenuSelect
+                  label="Source provider"
+                  value={agentImportProvider}
+                  options={[
+                    { value: 'opencode-cli', label: 'OpenCode' },
+                    { value: 'copilot-cli', label: 'GitHub Copilot CLI' },
+                    { value: 'gemini-cli', label: 'Gemini CLI' },
+                    { value: 'claude-cli', label: 'Claude Code' },
+                  ]}
+                  onChange={(value) => {
+                    setAgentImportProvider(value)
+                    invalidateAgentImport()
+                  }}
+                />
+              </div>
               <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                 <span>Native Markdown file</span>
                 <span className="flex gap-2">
@@ -1977,12 +1996,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <div className="grid gap-2 rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
                   <div><strong>{agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}</strong> · {agentImportPreview.mode || 'unknown mode'}</div>
                   {agentImportPreview.securityFields.length > 0 && (
-                    <div role="alert" style={{ color: 'var(--red)' }}>Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</div>
+                    <div role="alert" style={{ color: 'var(--error)' }}>Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</div>
                   )}
                   {agentImportPreview.ignoredFields.length > 0 && (
                     <div style={{ color: 'var(--text-2)' }}>Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</div>
                   )}
-                  {agentImportPreview.error && <div role="alert" style={{ color: 'var(--red)' }}>{agentImportPreview.error}</div>}
+                  {agentImportPreview.error && <div role="alert" style={{ color: 'var(--error)' }}>{agentImportPreview.error}</div>}
                   {agentImportPreview.supported && (
                     <>
                       <label className="grid gap-1">
@@ -2037,7 +2056,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   )}
                 </div>
               )}
-              {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--green)' : 'var(--red)' }}>{agentImportMessage}</div>}
+              {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--success)' : 'var(--error)' }}>{agentImportMessage}</div>}
               {!activeSessionId && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat before importing.</div>}
             </div>
           </SectionCard>
@@ -2084,7 +2103,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     actions={<StatusIndicator issues={issues} okLabel={manager.status === 'provider-managed' ? 'Provider managed' : 'CLI verified'}/>}
                   >
                     <div className="flex items-start justify-between gap-3">
-                    <div className="grid gap-1 text-xs" style={{color:'var(--yellow)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
+                    <div className="grid gap-1 text-xs" style={{color:'var(--warning)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
                       <div className="flex items-center gap-1">
                       <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
                         setCliActionError(current => ({...current,[actionErrorKey]:''}))
@@ -2189,22 +2208,25 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   Preview setup
                 </Button>
               </div>
-              {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--green)' : 'var(--text-2)' }}>{remoteMessage}</div>}
+              {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--success)' : 'var(--text-2)' }}>{remoteMessage}</div>}
             </div>
           </SectionCard>
 
           <SectionCard title="Configured hosts">
+            {remoteBusy && <div role="progressbar" aria-label="Remote host task running" className="uam-settings-progress" />}
             <div className="grid gap-3">
               {remoteHosts.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No remote hosts configured.</div>}
               {remoteHosts.map((host) => (
-                <div key={host.id} className="flex items-start justify-between gap-4 rounded-lg p-3" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
-                  <div className="min-w-0 text-xs">
-                    <div className="font-medium" style={{ color: 'var(--text)' }}>{host.label}</div>
-                    <div className="mt-1 font-mono" style={{ color: 'var(--text-2)' }}>{host.sshAlias}</div>
-                    <div className="mt-1" style={{ color: host.runnerStatus === 'ready' ? 'var(--green)' : host.runnerStatus === 'error' ? 'var(--red)' : 'var(--text-3)' }}>
-                      {host.runnerStatus}{host.runnerVersion ? ` · runner ${host.runnerVersion}` : ''}{host.platform ? ` · ${host.platform} ${host.architecture}` : ''}
+                <div key={host.id} className="uam-remote-host">
+                  <div className="min-w-0 flex-1 text-xs">
+                    <div className="truncate text-sm font-medium" style={{ color: 'var(--text)' }}>{host.label}</div>
+                    <div className="mt-0.5 truncate font-mono" style={{ color: 'var(--text-2)' }}>{host.sshAlias}</div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5" style={{ color: 'var(--text-2)' }}>
+                      <StatusDot tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} />
+                      <span>{host.runnerStatus}</span>
+                      {(host.runnerVersion || host.platform) && <span style={{ color: 'var(--text-3)' }}>{[host.runnerVersion ? `runner ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span>}
                     </div>
-					<div className="mt-1" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
+                    <div className="mt-1 font-mono" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
                     <details className="mt-3">
                       <summary className="cursor-pointer" style={{ color: 'var(--text)' }}>Host options</summary>
                       <form className="mt-3 grid gap-2" onSubmit={(event) => {
@@ -2217,13 +2239,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           Start runner at login
                         </label>
                         <div style={{ color: 'var(--text-3)' }}>{host.startupStatus || 'disabled'} · Windows login or Linux systemd user session</div>
-                        {host.platform === 'linux' && <label className="flex items-center gap-2">
-                          <input type="checkbox" name="cliUpdatesAsAdmin" title="Requires passwordless sudo for npm. Chat sessions continue as your SSH user." defaultChecked={host.cliUpdatesAsAdmin || false} />
-                          Run CLI updates with sudo
-                        </label>}
+                        {host.platform === 'linux' && <Switch name="cliUpdatesAsAdmin" label="Run CLI updates with sudo" description="Opt in only if npm works with passwordless sudo. Chat sessions still run as your SSH user." defaultChecked={host.cliUpdatesAsAdmin || false} />}
                         <label className="grid gap-1">
                           Host instruction file
-                          <input name="instructionFile" aria-label={`Instruction file on ${host.label}`} defaultValue={host.instructionFile || ''} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="px-2 py-1 font-mono outline-none" style={{ color: 'var(--text)', background: '#000', border: '1px solid var(--border)' }} />
+                          <input name="instructionFile" aria-label={`Instruction file on ${host.label}`} defaultValue={host.instructionFile || ''} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
                         </label>
                         <div style={{ color: 'var(--text-3)' }}>Read on this host before project context. Leave empty to skip.</div>
                         <div className="flex gap-2">
@@ -2236,12 +2255,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
                             })
                           }}>Check file</Button>
-                          <Button size="sm" type="submit" disabled={remoteBusy}>Save host options</Button>
+                          <Button size="sm" variant="primary" type="submit" disabled={remoteBusy}>Save host options</Button>
                         </div>
                       </form>
                     </details>
                   </div>
-                  <div className="flex shrink-0 gap-1">
+                  <div className="flex shrink-0 gap-1 self-start">
                     <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={remoteBusy} onClick={() => void previewRemoteHost(host)} />
                     <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={remoteBusy} onClick={() => void removeRemoteHost(host)} />
                   </div>
@@ -2347,14 +2366,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           aria-haspopup="listbox"
                           aria-expanded={openMemoryMenu === providerMenuId}
                           onClick={() => setOpenMemoryMenu(openMemoryMenu === providerMenuId ? null : providerMenuId)}
-                          className="w-full text-left"
-                          style={{
-                            background: 'var(--surface-up)',
-                            color: 'var(--text)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            padding: '8px 10px',
-                          }}
+                          className="uam-settings-trigger"
                         >
                           <span className="inline-flex items-center gap-2">
                             <ProviderLogo providerId={binding.workerProviderId} />
@@ -2399,7 +2411,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                 >
                                   <ProviderLogo providerId={candidate.id} />
                                   <span className="flex-1">{providerDisplayName(candidate, candidate.id)}</span>
-                                  {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
+                                  {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
                                 </button>
                               )
                             })}
@@ -2415,14 +2427,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           aria-haspopup="listbox"
                           aria-expanded={openMemoryMenu === modelMenuId}
                           onClick={() => setOpenMemoryMenu(openMemoryMenu === modelMenuId ? null : modelMenuId)}
-                          className="w-full text-left"
-                          style={{
-                            background: 'var(--surface-up)',
-                            color: 'var(--text)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            padding: '8px 10px',
-                          }}
+                          className="uam-settings-trigger"
                         >
                           {selectedMemoryModelLabel(modelOptions, binding.workerModelId)}
                         </button>
@@ -2464,7 +2469,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                 >
                                   <span className="flex items-center gap-2">
                                     <span className="flex-1">{option.label}</span>
-                                    {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
+                                    {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
                                   </span>
                                   <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
                                 </button>
@@ -2487,12 +2492,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               <div
                 className="mt-3 rounded-lg overflow-hidden"
                 style={{
-                  background: workerLogIsFailure ? 'color-mix(in srgb, var(--red) 7%, var(--surface))' : 'var(--surface)',
-                  border: `1px solid ${workerLogIsFailure ? 'color-mix(in srgb, var(--red) 35%, var(--border))' : 'var(--border)'}`,
+                  background: workerLogIsFailure ? 'color-mix(in srgb, var(--error) 7%, var(--surface))' : 'var(--surface)',
+                  border: `1px solid ${workerLogIsFailure ? 'color-mix(in srgb, var(--error) 35%, var(--border))' : 'var(--border)'}`,
                 }}
               >
                 <div className="px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <div className="text-xs font-semibold" style={{ color: workerLogIsFailure ? 'var(--red)' : 'var(--text)' }}>
+                  <div className="text-xs font-semibold" style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>
                     Last worker log
                   </div>
                   {memoryActivity.lastWorkerStatus && (
@@ -2693,7 +2698,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 })}
               </div>
 
-              {editorError && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{editorError}</p>}
+              {editorError && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{editorError}</p>}
 
             </div>
           </SectionCard>
@@ -2776,7 +2781,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <SectionCard
           title="Update checks"
         >
-          <Switch label="Automatically check for updates" checked={updateChecksEnabled} onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }} />
+          <Switch label="Automatically check for updates" description="Look for newer UAM releases in the background." checked={updateChecksEnabled} onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }} />
         </SectionCard>
       </div>
     )
@@ -2794,9 +2799,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               <input type="text" role="searchbox" aria-label="Search settings" placeholder="Search settings" value={settingsSearch} onChange={event => setSettingsSearch(event.target.value)} className="min-w-0 w-full py-2 text-xs" style={{background:'transparent',border:0,color:'var(--text)'}}/>
               {settingsSearch && <IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/>}
             </div>
-            <nav aria-label="Settings pages" className="space-y-5 min-h-0 overflow-y-auto flex-1">
+            <nav ref={navRef} aria-label="Settings pages" className="uam-settings-nav min-h-0 overflow-y-auto flex-1">
+              {navIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
               {visibleSettingsGroups.length === 0 && <p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p>}
-              {visibleSettingsGroups.map(group => <div key={group.label}>
+              {visibleSettingsGroups.map(group => <div key={group.label} className="mb-5 last:mb-0">
                 <h2 className="px-2 mb-1 text-xs font-medium" style={{color:'var(--text-3)'}}>{group.label}</h2>
                 {group.sections.map(id => {
                   const section = SETTINGS_SECTIONS.find(item => item.id === id)!
@@ -2814,10 +2820,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 {renderThemeEditor()}
                 {themeMessage && <p role="status" className="text-xs mt-3">{themeMessage}</p>}
               </div> : <>
-                <div className="w-full mx-auto flex items-start justify-between gap-3 mb-5" style={{maxWidth: selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? undefined : 800}}>
+                <div className="uam-settings-page-header w-full mx-auto mb-5" style={{maxWidth: selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? undefined : 800}}>
                   <div key={selectedSection} className="uam-reveal min-w-0">
-                    <h2 className="text-lg font-semibold">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
-                    {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="mt-0.5 text-xs" style={{color:'var(--text-3)'}}>{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
+                    <h2 className="uam-settings-page-header__title">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
+                    {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="uam-settings-page-header__description">{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
                   </div>
                   <div className="flex items-center gap-2">
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
@@ -2868,9 +2874,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 					<span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
 				  </label>
 				  <div className="ml-6">
-					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="mt-2 w-full rounded-lg px-3 py-2 font-mono text-xs outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: `1px solid ${remoteDirectoryValidation ? 'var(--red)' : 'var(--border)'}` }} />
+					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="mt-2 w-full rounded-lg px-3 py-2 font-mono text-xs outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: `1px solid ${remoteDirectoryValidation ? 'var(--error)' : 'var(--border)'}` }} />
 					<span id="remote-helper-folder-help" className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
-					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--red)' }}>{remoteDirectoryValidation}</span>}
+					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span>}
 					{remoteCustomDirectory && !remoteDirectoryValidation && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
 				  </div>
 				</div>
