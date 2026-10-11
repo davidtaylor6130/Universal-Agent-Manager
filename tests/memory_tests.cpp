@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include <future>
+#include "common/provider/provider_text_worker.h"
 
 using namespace uam_test;
 
@@ -2710,4 +2711,40 @@ UAM_TEST(MemoryAutomaticScanWaitsForPendingTranscriptPublication)
 		UAM_ASSERT(app.memory_extraction_tasks.empty());
 		UAM_ASSERT(app.memory_extraction_queue.empty());
 	}
+}
+
+UAM_TEST(GeminiTextWorkerPolicyKeepsDenyRulesWithinAdminTier)
+{
+	TempDir temp("uam-gemini-worker-policy-schema");
+	std::vector<std::string> argv = {"gemini"};
+	UAM_ASSERT(uam::provider_workers::ApplyWorkerIsolationPolicy(ProviderProfileStore::DefaultGeminiProfile(), temp.root, argv));
+	std::istringstream input(ReadFile(temp.root / "deny-all-tools.toml"));
+	std::string line;
+	int rules = 0;
+	bool tool_selector = false, deny = false, priority = false, mcp = false;
+	const auto verify_rule = [&]()
+	{
+		UAM_ASSERT(tool_selector && deny && priority);
+	};
+	while (std::getline(input, line))
+	{
+		line = uam::strings::Trim(line);
+		if (line == "[[rule]]")
+		{
+			if (rules > 0) verify_rule();
+			++rules; tool_selector = false; deny = false; priority = false;
+		}
+		else if (line == "toolName = \"*\"") tool_selector = true;
+		else if (line == "decision = \"deny\"") deny = true;
+		else if (line == "mcpName = \"*\"") mcp = true;
+		else if (line.starts_with("priority = "))
+		{
+			const int value = std::stoi(line.substr(11));
+			UAM_ASSERT(value >= 0 && value <= 999);
+			priority = value == 999;
+		}
+	}
+	verify_rule();
+	UAM_ASSERT_EQ(rules, 2);
+	UAM_ASSERT(mcp);
 }

@@ -91,12 +91,13 @@ namespace uam::provider_workers
 			if (!uam::io::WriteTextFile(policy_file, R"([[rule]]
 toolName = "*"
 decision = "deny"
-priority = 999999
+priority = 999
 
 [[rule]]
+toolName = "*"
 mcpName = "*"
 decision = "deny"
-priority = 999999
+priority = 999
 )"))
 			{
 				return false;
