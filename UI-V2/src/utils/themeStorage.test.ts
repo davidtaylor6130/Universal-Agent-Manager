@@ -76,10 +76,33 @@ describe('themeStorage', () => {
     applyDocumentTheme('system')
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
 
+    vi.mocked(window.matchMedia).mockReturnValue({ matches: false } as MediaQueryList)
+    applyDocumentTheme('system')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: originalMatchMedia,
     })
+  })
+
+  it.each(['focus', 'light', 'midnight'] as const)('does not mutate the document when reapplying %s', (theme) => {
+    applyDocumentTheme(theme)
+    const attribute = vi.spyOn(document.documentElement, 'setAttribute')
+    const set = vi.spyOn(document.documentElement.style, 'setProperty')
+    const remove = vi.spyOn(document.documentElement.style, 'removeProperty')
+    try {
+      const started = performance.now()
+      for (let index = 0; index < 200; index++) applyDocumentTheme(theme)
+      expect(performance.now() - started).toBeLessThan(100)
+      expect(attribute).not.toHaveBeenCalled()
+      expect(set).not.toHaveBeenCalled()
+      expect(remove).not.toHaveBeenCalled()
+    } finally {
+      attribute.mockRestore()
+      set.mockRestore()
+      remove.mockRestore()
+    }
   })
 
   it('validates and applies every custom theme color', () => {
@@ -103,6 +126,38 @@ describe('themeStorage', () => {
     expect(document.documentElement.style.getPropertyValue('--accent-dim')).toContain('#38bdf8')
     expect(document.documentElement.style.getPropertyValue('--text-2')).toContain('60%')
     expect(document.documentElement.style.getPropertyValue('--text-3')).toContain('90%')
-    expect(normalizeCustomTheme({ ...theme, colors: { ...theme?.colors, accent: 'blue' } })).toBeNull()
+    if (!theme) throw new Error('Expected valid custom theme')
+    const attribute = vi.spyOn(document.documentElement, 'setAttribute')
+    const set = vi.spyOn(document.documentElement.style, 'setProperty')
+    const remove = vi.spyOn(document.documentElement.style, 'removeProperty')
+    try {
+      const started = performance.now()
+      for (let index = 0; index < 200; index++) applyDocumentTheme(theme.id, [theme])
+      expect(performance.now() - started).toBeLessThan(100)
+      expect(attribute).not.toHaveBeenCalled()
+      expect(set).not.toHaveBeenCalled()
+      expect(remove).not.toHaveBeenCalled()
+
+      const updated = { ...theme, colors: { ...theme.colors, accent: '#abcdef' } }
+      applyDocumentTheme(theme.id, [updated])
+      expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#abcdef')
+      expect(document.documentElement.style.getPropertyValue('--accent-dim')).toContain('#abcdef')
+      expect(document.documentElement.style.getPropertyValue('--term-cursor')).toBe('#abcdef')
+      document.documentElement.style.setProperty('--accent', '#000000')
+      applyDocumentTheme(theme.id, [updated])
+      expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#abcdef')
+
+      document.documentElement.style.setProperty('--unrelated', 'keep')
+      applyDocumentTheme('focus', [updated])
+      expect(document.documentElement.getAttribute('data-theme')).toBe('focus')
+      expect(document.documentElement.style.length).toBe(1)
+      expect(document.documentElement.style.getPropertyValue('--unrelated')).toBe('keep')
+      document.documentElement.style.removeProperty('--unrelated')
+    } finally {
+      attribute.mockRestore()
+      set.mockRestore()
+      remove.mockRestore()
+    }
+    expect(normalizeCustomTheme({ ...theme, colors: { ...theme.colors, accent: 'blue' } })).toBeNull()
   })
 })
