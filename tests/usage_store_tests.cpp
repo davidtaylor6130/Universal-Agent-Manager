@@ -104,6 +104,93 @@ UAM_TEST(UsageStorePrunesOutsideTheCalendarWindowAndRejectsUnsupportedOrCorruptS
 	UAM_ASSERT(error.find("unsupported") != std::string::npos);
 }
 
+UAM_TEST(UsageStoreArchivesOldCanonicalReceiptsBeforeRetentionPruning)
+{
+	TempDir temp("uam-usage-archive-retention");
+	uam::usage::Store store(temp.root);
+	std::string error;
+	uam::usage::Record old = StoreEvent("archived-native"), recent = StoreEvent("recent-native");
+	old.timestamp_ms = kStoreAsOf - 180LL * 86400000;
+	UAM_ASSERT(store.Import({{&old, "private-old-source", 0}, {&recent, "private-recent-source", 0}}, error));
+	UAM_ASSERT(store.Read(kStoreAsOf, error));
+	sqlite3* database = nullptr;
+	UAM_ASSERT_EQ(sqlite3_open(store.Path().string().c_str(), &database), SQLITE_OK);
+	struct Cleanup { sqlite3* database; ~Cleanup() { sqlite3_close(database); } } cleanup{database};
+	sqlite3_stmt* raw = nullptr;
+	UAM_ASSERT_EQ(sqlite3_prepare_v2(database, "SELECT identity,created,data FROM archived_facts", -1, &raw, nullptr), SQLITE_OK);
+	std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> row(raw, sqlite3_finalize);
+	UAM_ASSERT_EQ(sqlite3_step(row.get()), SQLITE_ROW);
+	UAM_ASSERT_EQ(sqlite3_column_int64(row.get(), 1), old.timestamp_ms);
+	const std::string identity(reinterpret_cast<const char*>(sqlite3_column_text(row.get(), 0)));
+	const nlohmann::json data = nlohmann::json::parse(reinterpret_cast<const char*>(sqlite3_column_text(row.get(), 2)));
+	const std::optional<uam::usage::AccountingRecord> archived = uam::usage::DecodeAccountingRecord(nlohmann::json::array({identity, old.timestamp_ms, data}));
+	UAM_ASSERT(archived.has_value());
+	UAM_ASSERT_EQ(archived->record.dedupe_key, old.dedupe_key);
+	UAM_ASSERT_EQ(archived->record.tokens.output, old.tokens.output);
+	UAM_ASSERT_EQ(sqlite3_step(row.get()), SQLITE_DONE);
+}
+
+UAM_TEST(UsageArchiveMigrationPreservesMutableIdentityWithoutRecentCopyBilling)
+{
+	TempDir temp("uam-usage-archive-migration");
+	uam::usage::Store store(temp.root);
+	std::string error;
+	UAM_ASSERT(uam::paths::CreateDirectoriesNoThrow(store.Path().parent_path()));
+	sqlite3* raw = nullptr;
+	UAM_ASSERT_EQ(sqlite3_open(store.Path().string().c_str(), &raw), SQLITE_OK);
+	std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+	UAM_ASSERT_EQ(sqlite3_exec(database.get(), "CREATE TABLE facts(identity TEXT PRIMARY KEY,created INTEGER NOT NULL,data TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX facts_time ON facts(created); PRAGMA user_version=1", nullptr, nullptr, nullptr), SQLITE_OK);
+	uam::usage::Record old = StoreEvent("migration-native");
+	old.timestamp_ms = kStoreAsOf - 180LL * 86400000;
+	UAM_ASSERT(store.Import({{&old, "source", 0}}, error));
+	UAM_ASSERT(store.Read(kStoreAsOf, error));
+	old.tokens.output = 45;
+	old.estimated_cost_usd = 0.025;
+	UAM_ASSERT(uam::usage::Store(temp.root).Import({{&old, "source", 0}}, error));
+	uam::usage::Record copy = old;
+	copy.timestamp_ms = kStoreAsOf - 86400000;
+	copy.tokens.output = 999;
+	UAM_ASSERT(store.Import({{&copy, "fork", 0}}, error));
+	const std::optional<uam::usage::Ledger> recent = store.Read(kStoreAsOf, error);
+	UAM_ASSERT(recent);
+	UAM_ASSERT_EQ(recent->Query(recent->WindowStart(90), kStoreAsOf)->total.records, std::size_t{0});
+	sqlite3_stmt* statement_raw = nullptr;
+	UAM_ASSERT_EQ(sqlite3_prepare_v2(database.get(), "SELECT created,data,(SELECT COUNT(*) FROM facts),(SELECT user_version FROM pragma_user_version) FROM archived_facts", -1, &statement_raw, nullptr), SQLITE_OK);
+	std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(statement_raw, sqlite3_finalize);
+	UAM_ASSERT_EQ(sqlite3_step(statement.get()), SQLITE_ROW);
+	UAM_ASSERT_EQ(sqlite3_column_int64(statement.get(), 0), old.timestamp_ms);
+	const nlohmann::json data = nlohmann::json::parse(reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 1)));
+	UAM_ASSERT_EQ(data[8].get<int>(), 45);
+	UAM_ASSERT_EQ(data[11].get<double>(), 0.025);
+	UAM_ASSERT_EQ(sqlite3_column_int(statement.get(), 2), 0);
+	UAM_ASSERT_EQ(sqlite3_column_int(statement.get(), 3), 2);
+	UAM_ASSERT_EQ(sqlite3_step(statement.get()), SQLITE_DONE);
+}
+
+UAM_TEST(UsageArchiveCancellationRollsBackCopyAndPruneTogether)
+{
+	TempDir temp("uam-usage-archive-cancel");
+	uam::usage::Store store(temp.root);
+	std::string error;
+	uam::usage::Record old = StoreEvent("cancelled-archive");
+	old.timestamp_ms = kStoreAsOf - 180LL * 86400000;
+	UAM_ASSERT(store.Import({{&old, "source", 0}}, error));
+	int checks = 0;
+	UAM_ASSERT(!store.ReadRecords(kStoreAsOf, error, [&]() { return ++checks >= 2; }));
+	UAM_ASSERT_EQ(checks, 2);
+	sqlite3* raw = nullptr;
+	UAM_ASSERT_EQ(sqlite3_open(store.Path().string().c_str(), &raw), SQLITE_OK);
+	std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+	sqlite3_stmt* statement_raw = nullptr;
+	UAM_ASSERT_EQ(sqlite3_prepare_v2(database.get(), "SELECT (SELECT COUNT(*) FROM facts),(SELECT COUNT(*) FROM archived_facts)", -1, &statement_raw, nullptr), SQLITE_OK);
+	std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(statement_raw, sqlite3_finalize);
+	UAM_ASSERT_EQ(sqlite3_step(statement.get()), SQLITE_ROW);
+	UAM_ASSERT_EQ(sqlite3_column_int(statement.get(), 0), 1);
+	UAM_ASSERT_EQ(sqlite3_column_int(statement.get(), 1), 0);
+	statement.reset();
+	UAM_ASSERT(store.ReadRecords(kStoreAsOf, error));
+}
+
 UAM_TEST(UsageStoreBusyWriterDoesNotLoseAccountingAndRecoversAfterRelease)
 {
 	TempDir temp("uam-usage-store-busy");

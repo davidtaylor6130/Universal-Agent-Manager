@@ -175,7 +175,7 @@ UAM_TEST(UsageAntigravityRetentionKeepsLinkedReliableEvidenceAndExpiresWholeOldG
 	UAM_ASSERT(restarted); UAM_ASSERT_EQ(restarted->size(),std::size_t(2));
 	const std::optional<std::vector<uam::usage::AccountingRecord>> aged = store.ReadRecords(end+100*86400000LL,error);
 	UAM_ASSERT(aged); UAM_ASSERT(aged->empty());
-	UAM_ASSERT(store.ReadRecords(end,error)->empty()); // The expired group was removed, not only hidden from the result.
+	UAM_ASSERT_EQ(store.ReadRecords(end,error)->size(),std::size_t(2)); // Archived witnesses remain available when querying the original window.
 }
 
 UAM_TEST(UsageAntigravityRetentionCarriesFutureReliableEvidenceWithoutChargingRecentCopies)

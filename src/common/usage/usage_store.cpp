@@ -41,9 +41,11 @@ namespace uam::usage
 			if (sqlite3_step(probe.get()) != SQLITE_ROW) { error = "Could not inspect usage storage version."; database.reset(); return database; }
 			const int version = sqlite3_column_int(probe.get(), 0);
 			probe.reset();
-			if (version != 0 && version != 1) { error = "Usage storage version is unsupported."; database.reset(); return database; }
-			if (version == 0 && sqlite3_exec(database.get(), "BEGIN; CREATE TABLE facts(identity TEXT PRIMARY KEY, created INTEGER NOT NULL, data TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX facts_time ON facts(created); PRAGMA user_version=1; COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+			if (version != 0 && version != 1 && version != 2) { error = "Usage storage version is unsupported."; database.reset(); return database; }
+			if (version == 0 && sqlite3_exec(database.get(), "BEGIN; CREATE TABLE facts(identity TEXT PRIMARY KEY, created INTEGER NOT NULL, data TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX facts_time ON facts(created); CREATE TABLE archived_facts(identity TEXT PRIMARY KEY, created INTEGER NOT NULL, data TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX archived_facts_time ON archived_facts(created); PRAGMA user_version=2; COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
 			{ error = "Could not initialize usage storage."; database.reset(); return database; }
+			if (version == 1 && sqlite3_exec(database.get(), "BEGIN IMMEDIATE; CREATE TABLE archived_facts(identity TEXT PRIMARY KEY, created INTEGER NOT NULL, data TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX archived_facts_time ON archived_facts(created); PRAGMA user_version=2; COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+			{ error = "Could not migrate usage storage."; database.reset(); return database; }
 			return database;
 		}
 
@@ -83,9 +85,12 @@ namespace uam::usage
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
 		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Usage storage is busy."; return false; }
 		sqlite3_stmt* raw = nullptr;
-		if (sqlite3_prepare_v2(database.get(), "INSERT INTO facts(identity,created,data) VALUES(?1,?2,?3) ON CONFLICT(identity) DO UPDATE SET created=excluded.created,data=excluded.data WHERE excluded.created<=facts.created AND (excluded.created!=facts.created OR excluded.data!=facts.data)", -1, &raw, nullptr) != SQLITE_OK)
+		if (sqlite3_prepare_v2(database.get(), "INSERT INTO facts(identity,created,data) SELECT ?1,?2,?3 WHERE NOT EXISTS(SELECT 1 FROM archived_facts WHERE identity=?1) ON CONFLICT(identity) DO UPDATE SET created=excluded.created,data=excluded.data WHERE excluded.created<=facts.created AND (excluded.created!=facts.created OR excluded.data!=facts.data)", -1, &raw, nullptr) != SQLITE_OK)
 		{ error = "Could not prepare usage accounting update."; return false; }
 		Statement statement(raw, sqlite3_finalize);
+		if (sqlite3_prepare_v2(database.get(), "UPDATE archived_facts SET created=?2,data=?3 WHERE identity=?1 AND ?2<=created AND (?2!=created OR ?3!=data)", -1, &raw, nullptr) != SQLITE_OK)
+		{ error = "Could not prepare archived accounting update."; return false; }
+		Statement archived_update(raw, sqlite3_finalize);
 		for (const SourceRecord& entry : records)
 		{
 			if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return false; }
@@ -97,11 +102,15 @@ namespace uam::usage
 			    record.tokens.input, record.tokens.cached_input, record.tokens.cache_write, record.tokens.output, record.tokens.reasoning,
 			    record.reported_cost_usd ? nlohmann::json(*record.reported_cost_usd) : nlohmann::json(nullptr),
 			    record.estimated_cost_usd ? nlohmann::json(*record.estimated_cost_usd) : nlohmann::json(nullptr)}).dump();
-			sqlite3_reset(statement.get()); sqlite3_clear_bindings(statement.get());
-			sqlite3_bind_text(statement.get(), 1, identity.c_str(), static_cast<int>(identity.size()), SQLITE_TRANSIENT);
-			sqlite3_bind_int64(statement.get(), 2, record.timestamp_ms);
-			sqlite3_bind_text(statement.get(), 3, data.c_str(), static_cast<int>(data.size()), SQLITE_TRANSIENT);
-			if (sqlite3_step(statement.get()) != SQLITE_DONE) { error = "Could not update usage accounting."; return false; }
+			// Archived identities remain canonical when a copied transcript is stamped more recently.
+			for (sqlite3_stmt* update : {archived_update.get(), statement.get()})
+			{
+				sqlite3_reset(update); sqlite3_clear_bindings(update);
+				sqlite3_bind_text(update, 1, identity.c_str(), static_cast<int>(identity.size()), SQLITE_TRANSIENT);
+				sqlite3_bind_int64(update, 2, record.timestamp_ms);
+				sqlite3_bind_text(update, 3, data.c_str(), static_cast<int>(data.size()), SQLITE_TRANSIENT);
+				if (sqlite3_step(update) != SQLITE_DONE) { error = "Could not update usage accounting."; return false; }
+			}
 		}
 		statement.reset();
 		if (sqlite3_exec(database.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Could not commit usage accounting."; return false; }
@@ -170,7 +179,7 @@ namespace uam::usage
 		// Resolve aliases before pruning: an old reliable timestamp can suppress a recently stamped copy.
 		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Usage storage is busy."; return std::nullopt; }
 		sqlite3_stmt* raw = nullptr;
-		if (sqlite3_prepare_v2(database.get(), "SELECT identity,created,data FROM facts WHERE (created>=?1 AND created<?2) OR (identity>=?3 AND identity<?4) ORDER BY created LIMIT 500001", -1, &raw, nullptr) != SQLITE_OK)
+		if (sqlite3_prepare_v2(database.get(), "SELECT identity,created,data FROM facts WHERE (created>=?1 AND created<?2) OR (identity>=?3 AND identity<?4) UNION ALL SELECT identity,created,data FROM archived_facts WHERE identity>=?3 AND identity<?4 ORDER BY created LIMIT 500001", -1, &raw, nullptr) != SQLITE_OK)
 		{ error = "Could not read usage accounting."; return std::nullopt; }
 		Statement statement(raw, sqlite3_finalize);
 		sqlite3_bind_int64(statement.get(), 1, start); sqlite3_bind_int64(statement.get(), 2, generated_ms);
@@ -225,23 +234,28 @@ namespace uam::usage
 		for (std::size_t index = 0; index < candidates.size(); ++index)
 			if (candidates[index].record.timestamp_ms >= start) recent[owners[index]] = true;
 		for (std::size_t index = 0; index < candidates.size(); ++index) keep[candidate_rows[index]] = recent[owners[index]];
+		// Copy and remove within one transaction: cancellation or storage failure preserves the source.
+		sqlite3_stmt* archive_raw = nullptr;
+		if (sqlite3_prepare_v2(database.get(), "INSERT INTO archived_facts(identity,created,data) SELECT identity,created,data FROM facts WHERE created<?1 ON CONFLICT(identity) DO UPDATE SET created=excluded.created,data=excluded.data WHERE excluded.created<=archived_facts.created", -1, &archive_raw, nullptr) != SQLITE_OK)
+		{ error = "Could not prepare accounting archival."; return std::nullopt; }
+		Statement archive(archive_raw, sqlite3_finalize);
+		sqlite3_bind_int64(archive.get(), 1, start);
+		if (sqlite3_step(archive.get()) != SQLITE_DONE) { error = "Could not archive usage accounting."; return std::nullopt; }
+		archive.reset();
 		sqlite3_stmt* prune_raw = nullptr;
-		if (sqlite3_prepare_v2(database.get(), "DELETE FROM facts WHERE created<?1 AND NOT(identity>=?2 AND identity<?3)", -1, &prune_raw, nullptr) != SQLITE_OK) { error = "Could not maintain usage retention."; return std::nullopt; }
-		Statement prune(prune_raw, sqlite3_finalize); sqlite3_bind_int64(prune.get(), 1, start);
-		sqlite3_bind_text(prune.get(), 2, alias_lower.c_str(), -1, SQLITE_TRANSIENT); sqlite3_bind_text(prune.get(), 3, alias_upper.c_str(), -1, SQLITE_TRANSIENT);
+		if (sqlite3_prepare_v2(database.get(), "DELETE FROM facts WHERE created<?1", -1, &prune_raw, nullptr) != SQLITE_OK)
+		{ error = "Could not maintain usage retention."; return std::nullopt; }
+		Statement prune(prune_raw, sqlite3_finalize);
+		sqlite3_bind_int64(prune.get(), 1, start);
 		if (sqlite3_step(prune.get()) != SQLITE_DONE) { error = "Could not maintain usage retention."; return std::nullopt; }
-		prune.reset(); prune_raw = nullptr;
-		if (sqlite3_prepare_v2(database.get(), "DELETE FROM facts WHERE identity=?1 AND created<?2", -1, &prune_raw, nullptr) != SQLITE_OK) { error = "Could not maintain alias retention."; return std::nullopt; }
-		prune.reset(prune_raw); sqlite3_bind_int64(prune.get(), 2, start);
+		prune.reset();
 		std::vector<AccountingRecord> retained;
 		for (std::size_t index = 0; index < records.size(); ++index)
 		{
 			if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return std::nullopt; }
-			if (keep[index]) { retained.push_back(std::move(records[index])); continue; }
-			sqlite3_reset(prune.get()); sqlite3_bind_text(prune.get(), 1, records[index].identity.c_str(), -1, SQLITE_TRANSIENT);
-			if (sqlite3_step(prune.get()) != SQLITE_DONE) { error = "Could not maintain alias retention."; return std::nullopt; }
+			if (keep[index]) retained.push_back(std::move(records[index]));
 		}
-		prune.reset();
+		if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return std::nullopt; }
 		if (sqlite3_exec(database.get(), "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Could not commit usage retention."; return std::nullopt; }
 		records = std::move(retained);
 		return records;
