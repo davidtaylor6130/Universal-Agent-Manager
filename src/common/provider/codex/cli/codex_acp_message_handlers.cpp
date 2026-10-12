@@ -11,6 +11,7 @@
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_tool_items.h"
 #include "common/provider/codex/cli/codex_tool_item.h"
+#include "common/provider/codex/codex_options.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 
@@ -743,6 +744,12 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	    ReplayPersistedInteractionResponseIfMatched(app, session, chat, message))
 		return;
 	const bool pending_cancel = uam::AcpSessionHasPendingCancel(session);
+	if (method == "thread/settings/updated")
+	{
+		if (session.codex_thread_id.empty() || JsonDiagnosticStringValue(params, "threadId") != session.codex_thread_id) return;
+		session.codex_approvals_reviewer = uam::codex::NormalizeApprovalsReviewer(JsonDiagnosticStringValue(JsonObjectValue(params, "threadSettings"), "approvalsReviewer"));
+		return;
+	}
 	const bool cancel_boundary = pending_cancel &&
 	    (method == uam::acp_methods::kTurnStarted || method == uam::acp_methods::kTurnCompleted);
 	// A queued steer keeps the session active, but late output still belongs to the cancelled turn.

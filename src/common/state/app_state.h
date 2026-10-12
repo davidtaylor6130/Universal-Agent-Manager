@@ -719,6 +719,8 @@ namespace uam
 		std::unordered_map<std::string, std::string> codex_agent_message_text_by_item_id;
 		std::string codex_last_agent_message_item_id;
 		std::unordered_set<std::string> codex_streamed_reasoning_keys;
+		/// <summary>Effective reviewer confirmed by this native thread, never inferred from requested settings.</summary>
+		std::string codex_approvals_reviewer;
 		std::string codex_last_reasoning_section;
 		std::vector<AcpCommandState> available_commands;
 		std::vector<AcpModeState> available_modes;

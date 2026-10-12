@@ -1234,6 +1234,7 @@ if(UAM_BUILD_TESTS)
     tests/turn_finalization_ownership_tests.cpp
     tests/checkpoint_staging_tests.cpp
     tests/codex_allowance_ownership_tests.cpp
+    tests/codex_permission_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp
     tests/routing_default_scope_tests.cpp

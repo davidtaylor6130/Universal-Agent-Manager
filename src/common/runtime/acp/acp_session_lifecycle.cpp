@@ -323,6 +323,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	InterruptUnconfirmedAcpSteers(app, session, chat);
 	if (!session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	session.claude_live_background_task_ids.clear();
+	session.codex_approvals_reviewer.clear();
 	session.provider_protocol_instructions.clear();
 	session.initialized = false;
 	session.session_ready = false;
@@ -1036,6 +1037,11 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 
 	ChatSession resume_chat = chat;
 	resume_chat.native_session_id = resume_id.empty() ? resolved_resume_id : resume_id;
+	if (session.provider_id == uam::provider_ids::kCodexCli)
+	{
+		session.codex_approvals_reviewer.clear();
+		if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") resume_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
+	}
 	if (!session.goal_turn_model_id.empty()) resume_chat.model_id = session.goal_turn_model_id;
 
 	const int id = session.next_request_id++;
@@ -1520,6 +1526,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		prompt_chat.service_tier = chat.service_tier;
 		prompt_chat.service_tier_explicit = chat.service_tier_explicit;
 		prompt_chat.approval_mode = chat.approval_mode;
+		prompt_chat.command_safety_tier = chat.command_safety_tier;
 		msg = runtime.OnAcpBuildPrompt(session, session.next_request_id, context + prompt, prompt_chat, method);
 	}
 	const int id = session.next_request_id++;

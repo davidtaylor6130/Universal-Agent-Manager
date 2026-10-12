@@ -17444,7 +17444,8 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT_EQ(thread_start.value("method", ""), std::string("thread/start"));
 	UAM_ASSERT_EQ(thread_start["params"].value("cwd", ""), std::string("/tmp/project"));
 	UAM_ASSERT_EQ(thread_start["params"].value("approvalPolicy", ""), std::string("on-request"));
-	UAM_ASSERT_EQ(thread_start["params"].value("sandbox", ""), std::string("workspace-write"));
+	UAM_ASSERT_EQ(thread_start["params"].value("sandbox", ""), std::string("read-only"));
+	UAM_ASSERT_EQ(thread_start["params"].value("approvalsReviewer", ""), std::string("user"));
 	UAM_ASSERT_EQ(thread_start["params"].value("model", ""), std::string("gpt-5.6"));
 	UAM_ASSERT(thread_start["params"].value("persistExtendedHistory", false));
 	UAM_ASSERT_EQ(thread_start["params"].value("serviceName", ""), std::string("universal-agent-manager"));
@@ -17455,7 +17456,8 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	UAM_ASSERT_EQ(thread_resume.value("method", ""), std::string("thread/resume"));
 	UAM_ASSERT_EQ(thread_resume["params"].value("threadId", ""), chat.native_session_id);
 	UAM_ASSERT_EQ(thread_resume["params"].value("approvalPolicy", ""), std::string("on-request"));
-	UAM_ASSERT_EQ(thread_resume["params"].value("sandbox", ""), std::string("workspace-write"));
+	UAM_ASSERT_EQ(thread_resume["params"].value("sandbox", ""), std::string("read-only"));
+	UAM_ASSERT_EQ(thread_resume["params"].value("approvalsReviewer", ""), std::string("user"));
 	UAM_ASSERT_EQ(thread_resume["params"].value("model", ""), std::string("gpt-5.6"));
 	UAM_ASSERT(thread_resume["params"].value("persistExtendedHistory", false));
 	UAM_ASSERT(!thread_resume["params"].contains("serviceName"));
@@ -17466,11 +17468,11 @@ UAM_TEST(CodexAppServerRequestBuildersUseCodexProtocolMethods)
 	yolo_chat.native_session_id.clear();
 	const nlohmann::json yolo_thread_start = runtime.OnAcpBuildSetupRequest(241, yolo_chat, "/tmp/project", false, setup_method);
 	UAM_ASSERT_EQ(yolo_thread_start["params"].value("approvalPolicy", ""), std::string("on-request"));
-	UAM_ASSERT_EQ(yolo_thread_start["params"].value("sandbox", ""), std::string("workspace-write"));
+	UAM_ASSERT_EQ(yolo_thread_start["params"].value("sandbox", ""), std::string("read-only"));
 	yolo_chat.native_session_id = chat.native_session_id;
 	const nlohmann::json yolo_thread_resume = runtime.OnAcpBuildSetupRequest(242, yolo_chat, "/tmp/project", false, setup_method);
 	UAM_ASSERT_EQ(yolo_thread_resume["params"].value("approvalPolicy", ""), std::string("on-request"));
-	UAM_ASSERT_EQ(yolo_thread_resume["params"].value("sandbox", ""), std::string("workspace-write"));
+	UAM_ASSERT_EQ(yolo_thread_resume["params"].value("sandbox", ""), std::string("read-only"));
 
 	ChatSession default_model_chat = chat;
 	default_model_chat.model_id.clear();

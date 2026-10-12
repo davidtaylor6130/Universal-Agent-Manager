@@ -2,6 +2,7 @@
 
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/config/approval_modes.h"
+#include "common/security/command_safety.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/codex/cli/codex_terminal_activity.h"
@@ -27,6 +28,11 @@
 
 namespace
 {
+	std::string RequestedCodexApprovalsReviewer(const ChatSession& chat, bool read_only)
+	{
+		return !read_only && uam::command_safety::ParseTier(chat.command_safety_tier) == uam::command_safety::Tier::AiReview ? "auto_review" : "user";
+	}
+
 	void FinishCodexSteer(uam::AppState& app, uam::AcpSessionState& session,
 	    ChatSession& chat, const std::string& request_id, const std::string& error)
 	{
@@ -351,6 +357,7 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionStat
 {
 	// Account limits belong to this process's login; retained transcript tokens do not.
 	session.provider_usage.rate_limits = {};
+	session.codex_approvals_reviewer.clear();
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kInitialize,
 	                                  {
 	                                      {"clientInfo", uam::acp_request_defaults::ClientInfo()},
@@ -466,6 +473,7 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 		session.session_setup_request_id = 0;
 		session.session_id.clear();
 		session.codex_thread_id.clear();
+		session.codex_approvals_reviewer.clear();
 		session.provider_usage.token_usage = uam::AcpTokenUsageState{};
 		SyncResolvedNativeSessionIdForChat(app, chat, {});
 		AppendAcpDiagnostic(session, "response", "codex_invalid_resume_id_retry_start", failure.method, failure.request_id, failure.has_code, failure.code, "Codex rejected the stored thread id. Starting a new thread instead.", detail_text);
@@ -474,7 +482,9 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 		const std::string cwd = AcpWorkingDirectoryString(workspace_root);
 		const int retry_id = session.next_request_id++;
 		std::string retry_method;
-		const nlohmann::json retry_request = OnAcpBuildSetupRequest(retry_id, chat, cwd, false, retry_method);
+		ChatSession retry_chat = chat;
+		if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") retry_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
+		const nlohmann::json retry_request = OnAcpBuildSetupRequest(retry_id, retry_chat, cwd, false, retry_method);
 		session.pending_request_methods[retry_id] = retry_method;
 		session.session_setup_request_id = retry_id;
 		session.lifecycle_state = kAcpLifecycleStarting;
@@ -537,11 +547,13 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 		{
 			session.codex_thread_id = returned_thread_id;
 			session.session_id = session.codex_thread_id;
+			session.codex_approvals_reviewer = uam::codex::NormalizeApprovalsReviewer(JsonDiagnosticStringValue(result, "approvalsReviewer"));
 		}
 		else
 		{
 			session.codex_thread_id.clear();
 			session.session_id.clear();
+			session.codex_approvals_reviewer.clear();
 		}
 		if (!session.goal_internal_session)
 		{
@@ -671,8 +683,10 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildSetupRequest(int request_id, c
 {
 	(void)can_load;
 	const std::string resume_id = uam::codex::ValidThreadIdOrEmpty(chat.native_session_id);
+	const bool read_only = uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode;
 	nlohmann::json params = {
-	    {"cwd", cwd}, {"approvalPolicy", "on-request"}, {"sandbox", "workspace-write"}, {"persistExtendedHistory", true},
+	    {"cwd", cwd}, {"approvalPolicy", "on-request"}, {"approvalsReviewer", RequestedCodexApprovalsReviewer(chat, read_only)},
+	    {"sandbox", read_only ? "read-only" : "workspace-write"}, {"persistExtendedHistory", true},
 	};
 	if (resume_id.empty())
 	{
@@ -699,8 +713,13 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& s
     const std::string& prompt, const ChatSession& chat, std::string& out_method) const
 {
 	out_method = uam::acp_methods::kTurnStart;
+	const bool read_only = uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode ||
+	    session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	nlohmann::json sandbox_policy = {{"type", read_only ? "readOnly" : "workspaceWrite"}, {"networkAccess", false}};
+	if (!read_only && !chat.workspace_directory.empty()) sandbox_policy["writableRoots"] = nlohmann::json::array({chat.workspace_directory});
 	nlohmann::json params = {
 	    {"threadId", session.session_id},
+	    {"approvalPolicy", "on-request"}, {"approvalsReviewer", RequestedCodexApprovalsReviewer(chat, read_only)}, {"sandboxPolicy", std::move(sandbox_policy)},
 	    {"input", nlohmann::json::array({{{"type", "text"}, {"text", prompt}, {"text_elements", nlohmann::json::array()}}})},
 	};
 
@@ -718,8 +737,7 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& s
 	}
 	if (chat.service_tier_explicit) params["serviceTier"] = uam::nlohmann_json::StringOrNull(service_tier);
 
-	const std::string app_mode_id = uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
-	const std::string requested_mode_id = app_mode_id == uam::approval_modes::kPlanApprovalMode ? uam::approval_modes::kPlanApprovalMode : uam::approval_modes::kDefaultApprovalMode;
+	const std::string requested_mode_id = read_only ? uam::approval_modes::kPlanApprovalMode : uam::approval_modes::kDefaultApprovalMode;
 	if (!collaboration_model_id.empty())
 	{
 		nlohmann::json settings = {

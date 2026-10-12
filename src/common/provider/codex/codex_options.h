@@ -10,6 +10,14 @@
 
 namespace uam::codex
 {
+	/// <summary>Only recognized native reviewer values can suppress UAM fallback review.</summary>
+	inline std::string NormalizeApprovalsReviewer(std::string_view value)
+	{
+		const std::string_view trimmed = uam::strings::TrimAsciiView(value);
+		if (trimmed == "guardian_subagent") return "auto_review";
+		return trimmed == "user" || trimmed == "auto_review" ? std::string(trimmed) : std::string{};
+	}
+
 	inline constexpr auto kReasoningEfforts = std::to_array<std::string_view>({
 	    "none",
 	    "minimal",
