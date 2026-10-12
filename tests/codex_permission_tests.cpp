@@ -260,3 +260,45 @@ UAM_TEST(CodexSetupReviewerObservationResetsOnFreshInitialize)
 	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.event == "permission_review"; }));
 #endif
 }
+
+UAM_TEST(CodexNativeReviewerWarningsAreScopedAndDoNotLeakSensitiveContent)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	for (const std::string thread : {kPermissionThread, std::string("another-thread"), std::string{}})
+	{
+		TempDir temp("uam-codex-review-warning");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "review-warning";
+		chat.provider_id = "codex-cli";
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = "codex-app-server";
+		session.running = true;
+		session.codex_thread_id = kPermissionThread;
+		const std::string warning = "Native reviewer rejected an action outside the task scope.";
+		nlohmann::json frame = {{"jsonrpc", "2.0"}, {"method", "guardianWarning"}, {"params", {{"threadId", thread}, {"message", warning}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, frame.dump()));
+		UAM_ASSERT_EQ(session.diagnostics.size(), thread == kPermissionThread ? std::size_t{1} : std::size_t{0});
+		if (thread == kPermissionThread)
+		{
+			UAM_ASSERT_EQ(session.diagnostics.back().reason, std::string("native_review_warning"));
+			UAM_ASSERT_EQ(session.diagnostics.back().message, warning);
+			frame["params"]["message"] = "https://example.test/mcp?token=fixture-private";
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, frame.dump()));
+			UAM_ASSERT_EQ(session.diagnostics.back().reason, std::string("native_review_warning_redacted"));
+			UAM_ASSERT(session.diagnostics.back().message.empty());
+			UAM_ASSERT(session.diagnostics.back().detail.empty());
+			frame["params"]["message"] = std::string(511, 'x') + "\xE2\x82\xAC" + "tail";
+			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, frame.dump()));
+			const std::string encoded = nlohmann::json{{"message", session.diagnostics.back().message}}.dump();
+			UAM_ASSERT(!encoded.empty());
+		}
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT(session.last_error.empty());
+		UAM_ASSERT(session.pending_permission.request_id_json.empty());
+	}
+#endif
+}

@@ -41,8 +41,11 @@ std::string CapDiagnosticString(const std::string& value, std::size_t max_bytes)
 		return value;
 	}
 
+	std::size_t prefix_bytes = max_bytes;
+	// Preserve complete code points so clipped provider text remains valid bridge JSON.
+	while (prefix_bytes > 0 && (static_cast<unsigned char>(value[prefix_bytes]) & 0xC0) == 0x80) --prefix_bytes;
 	std::ostringstream out;
-	out << value.substr(0, max_bytes) << "... [truncated " << (value.size() - max_bytes) << " bytes]";
+	out << value.substr(0, prefix_bytes) << "... [truncated " << (value.size() - prefix_bytes) << " bytes]";
 	return out.str();
 }
 

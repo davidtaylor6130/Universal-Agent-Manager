@@ -13,6 +13,7 @@
 #include "common/provider/codex/cli/codex_tool_item.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/utils/string_utils.h"
+#include "common/utils/sensitive_text.h"
 #include "common/utils/time_utils.h"
 
 #include <cstdint>
@@ -744,6 +745,16 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	    ReplayPersistedInteractionResponseIfMatched(app, session, chat, message))
 		return;
 	const bool pending_cancel = uam::AcpSessionHasPendingCancel(session);
+	if (method == "guardianWarning")
+	{
+		if (session.codex_thread_id.empty() || JsonDiagnosticStringValue(params, "threadId") != session.codex_thread_id) return;
+		const std::string warning = JsonDiagnosticStringValue(params, "message");
+		if (warning.empty()) return;
+		const bool sensitive = uam::sensitive::LooksSensitiveText(warning);
+		AppendAcpDiagnostic(session, "permission_review", sensitive ? "native_review_warning_redacted" : "native_review_warning",
+		    method, "", false, 0, sensitive ? std::string{} : CapDiagnosticString(warning, 512));
+		return;
+	}
 	if (method == "thread/settings/updated")
 	{
 		if (session.codex_thread_id.empty() || JsonDiagnosticStringValue(params, "threadId") != session.codex_thread_id) return;

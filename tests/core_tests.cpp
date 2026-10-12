@@ -37,6 +37,18 @@
 
 using namespace uam_test;
 
+UAM_TEST(AcpDiagnosticCapsPreserveUtf8AtEveryBoundary)
+{
+	const std::string text = std::string("A") + "\xC3\xA9" + "B" + "\xE2\x82\xAC" + "C" + "\xF0\x9F\x98\x80" + "D";
+	for (std::size_t limit = 0; limit <= text.size(); ++limit)
+	{
+		const std::string capped = uam::acp_detail::CapDiagnosticString(text, limit);
+		const std::string encoded = nlohmann::json{{"diagnostic", capped}}.dump();
+		UAM_ASSERT_EQ(nlohmann::json::parse(encoded)["diagnostic"].get<std::string>(), capped);
+		if (limit == text.size()) UAM_ASSERT_EQ(capped, text);
+	}
+}
+
 namespace
 {
 /// <summary>Captures native requests using a private descriptor, including assertion cleanup.</summary>
