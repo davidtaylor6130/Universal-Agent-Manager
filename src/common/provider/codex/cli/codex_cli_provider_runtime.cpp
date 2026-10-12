@@ -358,6 +358,11 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionStat
 	// Account limits belong to this process's login; retained transcript tokens do not.
 	session.provider_usage.rate_limits = {};
 	session.codex_approvals_reviewer.clear();
+	if ((!session.recovering_remote_process && !session.recovering_remote_turn) || session.remote_source_exit_reported)
+	{
+		session.codex_known_child_thread_ids.clear();
+		session.codex_live_background_thread_ids.clear();
+	}
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kInitialize,
 	                                  {
 	                                      {"clientInfo", uam::acp_request_defaults::ClientInfo()},
@@ -474,6 +479,8 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 		session.session_id.clear();
 		session.codex_thread_id.clear();
 		session.codex_approvals_reviewer.clear();
+		session.codex_known_child_thread_ids.clear();
+		session.codex_live_background_thread_ids.clear();
 		session.provider_usage.token_usage = uam::AcpTokenUsageState{};
 		SyncResolvedNativeSessionIdForChat(app, chat, {});
 		AppendAcpDiagnostic(session, "response", "codex_invalid_resume_id_retry_start", failure.method, failure.request_id, failure.has_code, failure.code, "Codex rejected the stored thread id. Starting a new thread instead.", detail_text);
@@ -545,6 +552,11 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 		}
 		if (uam::codex::IsValidThreadId(returned_thread_id))
 		{
+			if (session.codex_thread_id != returned_thread_id)
+			{
+				session.codex_known_child_thread_ids.clear();
+				session.codex_live_background_thread_ids.clear();
+			}
 			session.codex_thread_id = returned_thread_id;
 			session.session_id = session.codex_thread_id;
 			session.codex_approvals_reviewer = uam::codex::NormalizeApprovalsReviewer(JsonDiagnosticStringValue(result, "approvalsReviewer"));
@@ -552,6 +564,8 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 		else
 		{
 			session.codex_thread_id.clear();
+			session.codex_known_child_thread_ids.clear();
+			session.codex_live_background_thread_ids.clear();
 			session.session_id.clear();
 			session.codex_approvals_reviewer.clear();
 		}

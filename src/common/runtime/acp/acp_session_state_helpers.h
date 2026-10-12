@@ -81,7 +81,8 @@ inline bool AcpSessionHasDeferredUserQueueOnly(const AcpSessionState& session)
 
 inline bool AcpSessionHasBlockingRuntimeWork(const AcpSessionState& session)
 {
-	return AcpSessionHasActiveTurn(session) || AcpSessionHasPendingRuntimeRequest(session);
+	return AcpSessionHasActiveTurn(session) || AcpSessionHasPendingRuntimeRequest(session) ||
+	    !session.claude_live_background_task_ids.empty() || !session.codex_live_background_thread_ids.empty();
 }
 
 

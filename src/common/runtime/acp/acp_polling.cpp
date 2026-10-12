@@ -817,6 +817,11 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 	    ? session.process_execution_host_id != uam::execution_hosts::kLocalHostId
 	    : chat != nullptr && !uam::paths::IsControllerLocalWorkspace(*chat);
 	// A proxy exit alone does not establish that its runner-owned native process exited.
+	if (!remote_process || session.remote_source_exit_reported)
+	{
+		session.codex_known_child_thread_ids.clear();
+		session.codex_live_background_thread_ids.clear();
+	}
 	if ((!remote_process || session.remote_source_exit_reported) && !session.claude_live_background_task_ids.empty())
 	{
 		(void)SettleClaudeBackgroundTasks(session, chat, uam::acp_statuses::kFailed);

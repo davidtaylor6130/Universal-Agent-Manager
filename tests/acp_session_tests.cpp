@@ -8,9 +8,191 @@
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/acp/acp_polling.h"
 #include "remote/runner_proxy.h"
 
 using namespace uam_test;
+
+namespace
+{
+	struct CodexNativeChildActivityFixture
+	{
+		TempDir temp{"uam-codex-native-child-activity"};
+		ScopedEnvVar codex_home{"CODEX_HOME", (temp.root / "codex-home").string()};
+		uam::AppState app;
+		const std::string parent = "0194c9a0-1111-7111-8111-111111111111";
+		const std::string child = "0194c9a0-2222-7222-8222-222222222222";
+		const std::string second = "0194c9a0-3333-7333-8333-333333333333";
+		const std::string foreign = "0194c9a0-4444-7444-8444-444444444444";
+		int item_serial = 0;
+
+		CodexNativeChildActivityFixture()
+		{
+			app.data_root = temp.root / "data";
+			app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
+			ChatSession chat;
+			chat.id = "codex-child-parent";
+			chat.provider_id = "codex-cli";
+			chat.native_session_id = parent;
+			chat.workspace_directory = temp.root.string();
+			app.chats.push_back(chat);
+			std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = chat.id;
+			session->provider_id = chat.provider_id;
+			session->protocol_kind = "codex-app-server";
+			session->codex_thread_id = parent;
+			session->session_id = parent;
+			session->running = true;
+			session->session_ready = true;
+			session->lifecycle_state = "ready";
+			app.acp_sessions.push_back(std::move(session));
+		}
+
+		uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
+		std::size_t Count()
+		{
+			return uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["backgroundTaskCount"].get<std::size_t>();
+		}
+		void Event(const std::string& method, const nlohmann::json& params)
+		{
+			(void)uam::ProcessAcpLineForTests(app, Session(), app.chats.front(), nlohmann::json{{"jsonrpc", "2.0"}, {"method", method}, {"params", params}}.dump());
+		}
+		void Observe(const nlohmann::json& states, const std::vector<std::string>& receivers, std::string thread = {})
+		{
+			const bool started_here = !Session().processing;
+			const std::string turn = "observation-" + std::to_string(item_serial + 1);
+			if (started_here)
+			{
+				// UAM admits the prompt before Codex acknowledges its native turn.
+				Session().processing = true;
+				Event("turn/started", {{"threadId", parent}, {"turn", {{"id", turn}, {"status", "inProgress"}}}});
+			}
+			Event("item/completed", {{"threadId", thread.empty() ? parent : thread}, {"item", {
+			    {"id", "collab-" + std::to_string(++item_serial)}, {"type", "collabAgentToolCall"},
+			    {"tool", "wait"}, {"status", "completed"}, {"senderThreadId", parent},
+			    {"receiverThreadIds", receivers}, {"agentsStates", states}}}});
+			if (started_here) Event("turn/completed", {{"threadId", parent}, {"turn", {{"id", turn}, {"status", "completed"}}}});
+		}
+	};
+}
+
+UAM_TEST(CodexNativeChildrenKeepIdleParentBusyAcrossTurnResets)
+{
+	CodexNativeChildActivityFixture fixture;
+	UAM_ASSERT(uam::AcpSessionCanIdleShutdown(fixture.Session(), fixture.app.chats.front()));
+	fixture.Session().processing = true;
+	fixture.Observe({{fixture.child, {{"status", "running"}}}, {fixture.second, {{"status", "pendingInit"}}}}, {fixture.child, fixture.second});
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{2});
+	fixture.Event("turn/completed", {{"threadId", fixture.parent}, {"turn", {{"id", "parent-turn"}, {"status", "completed"}}}});
+	UAM_ASSERT(!fixture.Session().processing);
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{2});
+	UAM_ASSERT(uam::AcpSessionHasBlockingRuntimeWork(fixture.Session()));
+	UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(fixture.Session(), fixture.app.chats.front()));
+	uam::acp_detail::ResetAcpTurnStreamState(fixture.Session());
+	UAM_ASSERT(fixture.Session().tool_calls.empty());
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{2});
+	UAM_ASSERT(!uam::AcpSessionCanIdleShutdown(fixture.Session(), fixture.app.chats.front()));
+}
+
+UAM_TEST(CodexNativeChildActivityIsScopedAndSettlesFromNativeEvents)
+{
+	CodexNativeChildActivityFixture fixture;
+	fixture.Observe({{fixture.child, {{"status", "running"}}}}, {fixture.child});
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{1});
+	fixture.Observe({{fixture.second, {{"status", "running"}}}}, {fixture.second}, fixture.foreign);
+	fixture.Observe({{fixture.foreign, {{"status", "running"}}}}, {fixture.child});
+	fixture.Observe({{fixture.parent, {{"status", "running"}}}, {"not-a-thread", {{"status", "running"}}}}, {fixture.parent, "not-a-thread"});
+	fixture.Observe({{fixture.child, "running"}}, {fixture.child});
+	fixture.Event("thread/status/changed", {{"threadId", fixture.foreign}, {"status", {{"type", "active"}, {"activeFlags", nlohmann::json::array()}}}});
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{1});
+	fixture.Event("thread/status/changed", {{"threadId", fixture.child}, {"status", {{"type", "idle"}}}});
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{0});
+	UAM_ASSERT(uam::AcpSessionCanIdleShutdown(fixture.Session(), fixture.app.chats.front()));
+	fixture.Event("thread/status/changed", {{"threadId", fixture.child}, {"status", {{"type", "active"}, {"activeFlags", {"waitingOnApproval"}}}}});
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{1});
+	UAM_ASSERT(!fixture.Session().processing);
+	fixture.Event("thread/closed", {{"threadId", fixture.child}});
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{0});
+	fixture.Event("thread/status/changed", {{"threadId", fixture.child}, {"status", {{"type", "active"}, {"activeFlags", nlohmann::json::array()}}}});
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{0});
+	for (const std::string status : {"interrupted", "completed", "errored", "shutdown", "notFound"})
+	{
+		fixture.Observe({{fixture.second, {{"status", "running"}}}}, {fixture.second});
+		UAM_ASSERT_EQ(fixture.Count(), std::size_t{1});
+		fixture.Observe({{fixture.second, {{"status", status}}}}, {fixture.second});
+		UAM_ASSERT_EQ(fixture.Count(), std::size_t{0});
+	}
+}
+
+UAM_TEST(CodexNativeChildActivitySurvivesProxyLossButResetsWithOwner)
+{
+	for (const std::string reset : {"initialize", "thread", "native-exit"})
+	{
+		CodexNativeChildActivityFixture fixture;
+		fixture.Observe({{fixture.child, {{"status", "running"}}}}, {fixture.child});
+		UAM_ASSERT_EQ(fixture.Count(), std::size_t{1});
+		if (reset == "initialize")
+			(void)ProviderRuntimeRegistry::ResolveById("codex-cli").OnAcpBuildInitialize(fixture.Session(), 7);
+		else if (reset == "thread")
+			(void)ProviderRuntimeRegistry::ResolveById("codex-cli").OnAcpHandleResult(fixture.app, fixture.Session(), fixture.app.chats.front(), "thread/start", "7", {{"thread", {{"id", fixture.foreign}}}});
+		else
+		{
+			fixture.Session().process_execution_host_id = "ssh-fixture";
+			uam::acp_detail::MarkAcpProcessExited(fixture.Session(), &fixture.app.chats.front(), true, 70, false);
+			UAM_ASSERT_EQ(fixture.Count(), std::size_t{1});
+			fixture.Session().remote_source_exit_reported = true;
+			uam::acp_detail::MarkAcpProcessExited(fixture.Session(), &fixture.app.chats.front(), true, 0, false);
+		}
+		UAM_ASSERT_EQ(fixture.Count(), std::size_t{0});
+		fixture.Event("thread/status/changed", {{"threadId", fixture.child}, {"status", {{"type", "active"}, {"activeFlags", nlohmann::json::array()}}}});
+		UAM_ASSERT_EQ(fixture.Count(), std::size_t{0});
+	}
+}
+
+UAM_TEST(CodexIdleParentCancelStopsOwnedNativeChildWorkAndPreservesOtherProcesses)
+{
+	CodexNativeChildActivityFixture fixture;
+	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+	struct ProcessCleanup
+	{
+		IPlatformProcessService& service;
+		uam::platform::StdioProcessPlatformFields& fields;
+		~ProcessCleanup()
+		{
+			service.StopStdioProcess(fields, true);
+			service.CloseStdioProcessHandles(fields);
+		}
+	};
+	uam::platform::StdioProcessPlatformFields survivor;
+	ProcessCleanup parent_cleanup{process, fixture.Session()};
+	ProcessCleanup survivor_cleanup{process, survivor};
+#if defined(_WIN32)
+	const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+	const std::vector<std::string> sink = {"/bin/sh", "-c", "exec /bin/cat >/dev/null"};
+#endif
+	std::string error;
+	UAM_ASSERT(process.StartStdioProcess(fixture.Session(), fixture.temp.root, sink, &error));
+	UAM_ASSERT(process.StartStdioProcess(survivor, fixture.temp.root, sink, &error));
+	fixture.Observe({{fixture.child, {{"status", "running"}}}}, {fixture.child});
+	UAM_ASSERT(!fixture.Session().processing && !uam::AcpSessionHasActiveTurn(fixture.Session()));
+	UAM_ASSERT(uam::CancelAcpTurn(fixture.app, fixture.app.chats.front().id, &error));
+	UAM_ASSERT(std::ranges::any_of(fixture.app.acp_process_stop_tasks, [&](const uam::AsyncAcpProcessStopTask& task) {
+		return task.chat_id == fixture.app.chats.front().id && task.observe_exit;
+	}));
+	UAM_ASSERT(fixture.Session().local_stop_pending);
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (uam::AcpStopInProgress(fixture.app, fixture.app.chats.front().id) && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollAllAcpSessions(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	(void)uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT(!uam::AcpStopInProgress(fixture.app, fixture.app.chats.front().id));
+	UAM_ASSERT_EQ(fixture.Count(), std::size_t{0});
+	int exit_code = -1;
+	UAM_ASSERT(!process.PollStdioProcessExited(survivor, &exit_code));
+}
 
 UAM_TEST(PermissionReviewCompletionRechecksNativeOwnershipAndReadOnlyCeilings)
 {

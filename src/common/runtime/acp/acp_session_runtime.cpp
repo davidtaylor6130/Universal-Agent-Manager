@@ -2866,6 +2866,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return true;
 		}
+		const bool native_child_work_only = session->provider_id == uam::provider_ids::kCodexCli &&
+		    !session->codex_live_background_thread_ids.empty() && !AcpSessionHasActiveTurn(*session);
 		if (session->remote_stop_pending)
 		{
 			if (error_out != nullptr) *error_out = "The remote turn is stopping.";
@@ -2975,6 +2977,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		const IProviderRuntime& cancel_runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+		if (native_child_work_only)
+		{
+			// A finished parent turn has no interrupt target. Stop its owned provider
+			// process and retain child ownership until that stop is observed.
+			const bool stopped = StopAcpSession(app, chat_id, AcpStopPurpose::Interrupt, preserve_queued_prompts);
+			if (stopped || session->local_stop_pending || session->remote_stop_pending) return true;
+			if (error_out != nullptr && error_out->empty()) *error_out = app.status_line;
+			return false;
+		}
 		int cancel_id = session->next_request_id++;
 		std::string cancel_method;
 		nlohmann::json cancel_msg = cancel_runtime.OnAcpBuildCancel(*session, cancel_id, cancel_method);
@@ -3287,6 +3298,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.context_compaction_in_progress = false;
 		session.recovering_remote_turn = false;
 		session.recovering_remote_process = false;
+		session.codex_known_child_thread_ids.clear();
+		session.codex_live_background_thread_ids.clear();
 		session.turn_checkpoint_eligible = false;
 		session.cancel_requested = false;
 		session.cancel_requested_time_s = 0.0;
@@ -3519,10 +3532,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (session->running)
 		{
 			const bool temporary = chat != nullptr && !chat->temporary_parent_chat_id.empty();
+			const bool native_children_live = !session->claude_live_background_task_ids.empty() || !session->codex_live_background_thread_ids.empty();
 			QueueAcpProcessStop(app, *session, session->chat_id, session->stop_purpose,
-			                    temporary || !session->claude_live_background_task_ids.empty());
+			                    temporary || native_children_live);
 			if (temporary) chat->side_cleanup_stop_finished = app.acp_process_stop_tasks.back().finished;
-			if (session->stop_purpose == AcpStopPurpose::Timeout || !session->claude_live_background_task_ids.empty())
+			if (session->stop_purpose == AcpStopPurpose::Timeout || native_children_live)
 			{
 				session->running = false;
 				session->local_stop_pending = true;
@@ -4182,7 +4196,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				// startup crash), the turn can be retried safely without risking a
 				// duplicate prompt reaching the provider.
 				const bool turn_was_active = uam::AcpSessionHasActiveTurn(session);
-				const bool child_tasks_were_live = !session.claude_live_background_task_ids.empty();
+				const bool child_tasks_were_live = !session.claude_live_background_task_ids.empty() || !session.codex_live_background_thread_ids.empty();
 				const bool remote_source_exit = session.remote_source_exit_reported;
 				const std::optional<std::string> remote_startup_error = chat.execution_host_id != uam::execution_hosts::kLocalHostId
 				    ? ConfirmedRemoteConfigurationStartupError(session, exit_code) : std::nullopt;
@@ -4201,7 +4215,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				// helper process instead of resetting ownership for a fresh launch.
 				if (!turn_was_active && !remote_source_exit && !remote_process_missing &&
 				    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
-				    chat.remote_process_exists && !session.claude_live_background_task_ids.empty())
+				    chat.remote_process_exists && child_tasks_were_live)
 					session.recovering_remote_process = true;
 				const bool recovering_remote_process = session.recovering_remote_process;
 				const bool remote_turn_missing = remote_turn_recovery && remote_process_missing;
@@ -4274,7 +4288,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				if (remote_startup_rejected && !turn_was_active) FailAcpTurnOrSession(session, &chat, session.last_error);
 				if ((turn_was_active && !remote_turn_recovery) || remote_source_exit || remote_startup_rejected ||
-				    (child_tasks_were_live && session.claude_live_background_task_ids.empty()))
+				    (child_tasks_were_live && session.claude_live_background_task_ids.empty() && session.codex_live_background_thread_ids.empty()))
 					SaveChatQuietly(app, chat);
 				if (remote_stop_cleanup_missing)
 				{
@@ -4501,7 +4515,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		acp_detail::StopTurnCheckpointTasks(app);
 		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
 		{
-			if (session == nullptr || !session->running || session->claude_live_background_task_ids.empty()) continue;
+			if (session == nullptr || !session->running ||
+			    (session->claude_live_background_task_ids.empty() && session->codex_live_background_thread_ids.empty())) continue;
 			ChatSession* chat = FindAcpRuntimeChatById(app, session->chat_id);
 			if (chat != nullptr && chat->execution_host_id == uam::execution_hosts::kLocalHostId)
 				(void)StopAcpSession(app, session->chat_id, AcpStopPurpose::Interrupt, true);
@@ -4579,6 +4594,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (stop.confirmed)
 			{
 				(void)acp_detail::SettleClaudeBackgroundTasks(*stop.session, stop.chat, uam::acp_statuses::kCancelled);
+				stop.session->codex_known_child_thread_ids.clear();
+				stop.session->codex_live_background_thread_ids.clear();
 				stop.chat->remote_stop_cleanup_pending = false;
 				stop.chat->remote_process_exists = false;
 				(void)acp_detail::SaveChatQuietly(app, *stop.chat);

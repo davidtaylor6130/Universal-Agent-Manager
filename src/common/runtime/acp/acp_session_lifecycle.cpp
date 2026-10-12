@@ -323,6 +323,11 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	InterruptUnconfirmedAcpSteers(app, session, chat);
 	if (!session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	session.claude_live_background_task_ids.clear();
+	if ((!session.recovering_remote_process && !session.recovering_remote_turn) || session.remote_source_exit_reported)
+	{
+		session.codex_known_child_thread_ids.clear();
+		session.codex_live_background_thread_ids.clear();
+	}
 	session.codex_approvals_reviewer.clear();
 	session.provider_protocol_instructions.clear();
 	session.initialized = false;

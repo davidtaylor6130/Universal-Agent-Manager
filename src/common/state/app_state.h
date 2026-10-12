@@ -568,6 +568,9 @@ namespace uam
 		std::string session_id;
 		std::string codex_thread_id;
 		std::string codex_turn_id;
+		/// Native child identities observed from this process's current parent, never restored from saved tools.
+		std::unordered_set<std::string> codex_known_child_thread_ids;
+		std::unordered_set<std::string> codex_live_background_thread_ids;
         /// Antigravity reports per-step usage separately from cumulative conversation results.
         int64_t antigravity_input_tokens = 0;
         int64_t antigravity_output_tokens = 0;

@@ -11,6 +11,7 @@
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_tool_items.h"
 #include "common/provider/codex/cli/codex_tool_item.h"
+#include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/sensitive_text.h"
@@ -20,6 +21,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <string_view>
 #include <vector>
 
@@ -488,7 +490,46 @@ void RemoveCodexPlanDeltaEntryForItem(AcpSessionState& session, const std::strin
 	std::erase_if(session.plan_entries, [&](const AcpPlanEntryState& entry) { return entry.priority == item_id; });
 }
 
-void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nlohmann::json& item, bool completed)
+/// <summary>Normalizes an observed native UUID without manufacturing an identity for missing or malformed data.</summary>
+static std::string CodexChildThreadKey(const std::string& value)
+{
+	std::string key = uam::codex::ValidThreadIdOrEmpty(value);
+	if (key.starts_with(uam::codex::kUuidUrnPrefix)) key.erase(0, uam::codex::kUuidUrnPrefix.size());
+	return uam::strings::ToLowerAscii(key);
+}
+
+/// <summary>Tracks only the current parent's reported receivers; saved collaboration tool text is never proof of live work.</summary>
+static void ObserveCodexNativeChildren(AcpSessionState& session, const nlohmann::json& item)
+{
+	const std::string parent = CodexChildThreadKey(session.codex_thread_id);
+	if (!session.running || parent.empty() || CodexChildThreadKey(JsonDiagnosticStringValue(item, "senderThreadId")) != parent) return;
+	std::unordered_set<std::string> receivers;
+	for (const nlohmann::json& receiver : JsonArrayValue(item, "receiverThreadIds"))
+	{
+		if (!receiver.is_string()) continue;
+		const std::string child = CodexChildThreadKey(receiver.get<std::string>());
+		if (!child.empty() && child != parent) receivers.insert(child);
+	}
+	const nlohmann::json states = JsonObjectValue(item, "agentsStates");
+	for (nlohmann::json::const_iterator entry = states.cbegin(); entry != states.cend(); ++entry)
+	{
+		const std::string child = CodexChildThreadKey(entry.key());
+		if (!receivers.contains(child) || !entry.value().is_object()) continue;
+		const std::string status = JsonDiagnosticStringValue(entry.value(), "status");
+		if (status == "pendingInit" || status == "running")
+		{
+			session.codex_known_child_thread_ids.insert(child);
+			session.codex_live_background_thread_ids.insert(child);
+		}
+		else if (status == "interrupted" || status == "completed" || status == "errored" || status == "shutdown" || status == "notFound")
+		{
+			session.codex_known_child_thread_ids.insert(child);
+			session.codex_live_background_thread_ids.erase(child);
+		}
+	}
+}
+
+void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nlohmann::json& item, bool completed, bool current_parent_scope)
 {
 	const std::string item_id = JsonDiagnosticStringValue(item, "id");
 	const std::string type = JsonDiagnosticStringValue(item, "type");
@@ -542,6 +583,7 @@ void HandleCodexToolItem(AcpSessionState& session, ChatSession& chat, const nloh
 	ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
 	if (type == uam::acp_tool_items::kCollabAgentToolCall)
 	{
+		if (current_parent_scope) ObserveCodexNativeChildren(session, item);
 		tool_call.is_sub_agent = true;
 		const nlohmann::json receiver_ids = JsonArrayValue(item, "receiverThreadIds");
 		if (!receiver_ids.empty() && receiver_ids.front().is_string())
@@ -731,6 +773,26 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	if (!message.contains("id"))
 	{
 		const std::string thread_id = JsonDiagnosticStringValue(params, "threadId");
+		const std::string child = CodexChildThreadKey(thread_id);
+		if (session.codex_known_child_thread_ids.contains(child) &&
+		    (method == "thread/status/changed" || method == "thread/closed"))
+		{
+			if (method == "thread/closed")
+			{
+				session.codex_known_child_thread_ids.erase(child);
+				session.codex_live_background_thread_ids.erase(child);
+			}
+			else
+			{
+				const nlohmann::json status = JsonObjectValue(params, "status");
+				const std::string type = JsonDiagnosticStringValue(status, "type");
+				if (type == "active" && status.contains("activeFlags") && status["activeFlags"].is_array())
+					session.codex_live_background_thread_ids.insert(child);
+				else if (type == "idle" || type == "systemError")
+					session.codex_live_background_thread_ids.erase(child);
+			}
+			return;
+		}
 		if (!session.codex_thread_id.empty() && !thread_id.empty() && thread_id != session.codex_thread_id) return;
 		const std::string turn_id = method == uam::acp_methods::kTurnCompleted
 		    ? JsonDiagnosticStringValue(JsonObjectValue(params, "turn"), "id")
@@ -989,7 +1051,8 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			}
 			return;
 		}
-		HandleCodexToolItem(session, chat, item, method == uam::acp_methods::kItemCompleted);
+		HandleCodexToolItem(session, chat, item, method == uam::acp_methods::kItemCompleted,
+		    !session.codex_thread_id.empty() && JsonDiagnosticStringValue(params, "threadId") == session.codex_thread_id);
 		ScheduleChatSave(app, chat, 0.0);
 		return;
 	}
