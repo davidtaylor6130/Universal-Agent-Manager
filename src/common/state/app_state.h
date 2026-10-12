@@ -713,6 +713,7 @@ namespace uam
 		std::string agent_version;
 		std::unordered_map<int, std::string> pending_request_methods;
 		std::unordered_map<std::string, AcpPendingSteerState> pending_steer_requests;
+		std::unordered_map<int, std::function<void()>> pending_local_steer_abandon;
 		std::unordered_map<std::string, int> tool_call_message_indices;
 		std::vector<AcpToolCallState> tool_calls;
 		std::unordered_set<std::string> claude_seen_child_messages;

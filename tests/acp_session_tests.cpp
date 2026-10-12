@@ -11224,13 +11224,17 @@ UAM_TEST(CodexNativeSteerKeepsTurnAndTranscriptOrder)
 		const fs::path blocked_root = temp.root / "not-a-directory";
 		UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "blocked"));
 		app.data_root = blocked_root;
+		// Small-model fallback retains synchronous rejection; ordinary asynchronous failure has dedicated coverage.
+		app.chats.front().small_model_mode = true;
 		UAM_ASSERT(!uam::SteerAcpPrompt(app, session.chat_id, "Must remain unsent", {}, {}, false, &error));
 		app.data_root = temp.root;
+		app.chats.front().small_model_mode = false;
 		UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
 		UAM_ASSERT(session.pending_steer_requests.empty());
 		UAM_ASSERT(session.processing);
 		const int original_user_index = session.turn_user_message_index;
 		UAM_ASSERT(uam::SteerAcpPrompt(app, session.chat_id, "Also check recovery.", {}, {}, false, &error));
+		AwaitChatSave(app, app.chats.front());
 		UAM_ASSERT(!session.cancel_requested);
 		UAM_ASSERT_EQ(session.turn_user_message_index, original_user_index);
 		UAM_ASSERT_EQ(session.turn_assistant_message_index, 0);
@@ -11262,6 +11266,7 @@ UAM_TEST(CodexNativeSteerKeepsTurnAndTranscriptOrder)
 		UAM_ASSERT_EQ(session.turn_serial, 7);
 		UAM_ASSERT(uam::SendAcpPrompt(app, session.chat_id, "Queued correction", {}, {}, false, &error));
 		UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, session.chat_id, 0, &error));
+		AwaitChatSave(app, app.chats.front());
 		UAM_ASSERT(session.queued_user_prompts.empty());
 		UAM_ASSERT(app.chats.front().acp_queued_prompts.empty());
 		UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(4));
@@ -11275,6 +11280,7 @@ UAM_TEST(CodexNativeSteerKeepsTurnAndTranscriptOrder)
 		UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("Queued correction"));
 		UAM_ASSERT(session.last_error.find("turn changed") != std::string::npos);
 		UAM_ASSERT(uam::SteerAcpPrompt(app, session.chat_id, "Late acknowledgment", {}, {}, false, &error));
+		AwaitChatSave(app, app.chats.front());
 		UAM_ASSERT_EQ(session.turn_assistant_message_index, 2);
 		const int late_id = std::stoi(session.pending_steer_requests.begin()->first);
 		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"method":"turn/completed","params":{"turn":{"id":"turn-one","status":"completed"}}})"));
@@ -11289,6 +11295,7 @@ UAM_TEST(CodexNativeSteerKeepsTurnAndTranscriptOrder)
 		UAM_ASSERT(session.processing);
 		UAM_ASSERT(uam::SteerAcpPrompt(app, session.chat_id, "Unconfirmed one", {}, {}, false, &error));
 		UAM_ASSERT(uam::SteerAcpPrompt(app, session.chat_id, "Unconfirmed two", {}, {}, false, &error));
+		AwaitChatSave(app, app.chats.front());
 		process.CloseStdioProcessInput(session);
 		std::string wire_text;
 		char buffer[4096];
@@ -11513,13 +11520,16 @@ UAM_TEST(AcpQueuedPromptManagementRemovesAndPrioritizesSelectedPrompt)
 	const fs::path blocked_root = temp.root / "blocked-root";
 	UAM_ASSERT(uam::io::WriteTextFile(blocked_root, "blocked"));
 	app.data_root = blocked_root;
+	app.chats.front().small_model_mode = true;
 	UAM_ASSERT(!uam::SteerQueuedAcpPrompt(app, "chat-queued-management", 1, &error));
 	app.data_root = temp.root;
+	app.chats.front().small_model_mode = false;
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts[0].text, std::string("First"));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts[1].text, std::string("Second"));
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(uam::SteerQueuedAcpPrompt(app, "chat-queued-management", 1, &error));
+	AwaitChatSave(app, app.chats.front());
 	UAM_ASSERT(!raw_session->cancel_requested);
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("First"));

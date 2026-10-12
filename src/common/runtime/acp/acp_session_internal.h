@@ -294,7 +294,9 @@ bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& se
 bool SaveChatQuietly(AppState& app, const ChatSession& chat);
 void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id);
 /// <summary>Revokes a background publication before a newer synchronous command can replace its storage.</summary>
-void InvalidatePendingChatSave(AppState& app, std::string_view chat_id);
+void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);
+void AbandonPendingLocalSteers(AcpSessionState& session);
+std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Persists removal of a rejected resume ID; failure restores it and invalidates transport without losing queued work.</summary>
 bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession& chat);

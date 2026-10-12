@@ -61,7 +61,7 @@ namespace uam
 namespace uam::acp_detail
 {
 
-static std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 {
 	return nlohmann::json::array({chat.model_id, chat.reasoning_effort, chat.service_tier, chat.service_tier_explicit,
 	    chat.approval_mode, chat.command_safety_tier, session.current_model_id,
@@ -350,6 +350,7 @@ bool SendInitialize(AcpSessionState& session, std::string* error_out)
 
 void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	AbandonPendingLocalSteers(session);
 	RestorePendingPromptDelivery(session, chat);
 	session.defer_prompt_save = false;
 	const std::string quota_delivery_id = session.claude_quota_delivery_id;
@@ -1907,8 +1908,8 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
 {
-	// A newer dirty state revokes publication of an older snapshot under the save lock.
-	InvalidatePendingChatSave(app, chat.id);
+	// Streaming may retain a scoped admission; queue, owner changes and force barriers revoke it.
+	InvalidatePendingChatSave(app, chat.id, true);
 	const double now = GetAppTimeSeconds();
 	const double due_at = now + delay_seconds;
 	app.pending_chat_save_at_by_chat_id[chat.id] = due_at;
@@ -1975,6 +1976,7 @@ void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, 
 
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state)
 {
+	AbandonPendingLocalSteers(session);
 	if (session.processing) session.interaction_at = uam::time::InteractionTimestampNow();
 	// A completion notification can arrive before the prompt request's reply.
 	session.pending_request_methods.erase(session.prompt_request_id);

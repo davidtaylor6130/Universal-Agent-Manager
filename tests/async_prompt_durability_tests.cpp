@@ -55,6 +55,25 @@ namespace
 			if (session != nullptr) { process.StopStdioProcess(*session, true); process.CloseStdioProcessHandles(*session); }
 		}
 	};
+	void PrepareNativeSteer(PromptFixture& fixture)
+	{
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = "codex-cli";
+		chat.native_session_id = session.session_id = "6a6f0f3b-1a0b-4a9c-8a01-444444444444";
+		session.protocol_kind = "codex-app-server";
+		session.codex_thread_id = session.session_id;
+		session.codex_turn_id = "private-active-turn";
+		session.processing = true;
+		session.prompt_request_id = 17;
+		session.turn_serial = 7;
+		session.turn_user_message_index = session.turn_first_user_message_index = 0;
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = "Parent output before steering"});
+		session.current_assistant_message_index = session.turn_assistant_message_index = 1;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	}
 	void AwaitSave(uam::AppState& app)
 	{
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1077,4 +1096,220 @@ UAM_TEST(AcpFailedIdleDeferredAdmissionHoldsCapturedIntentWithoutProviderLaunch)
 		UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Retained idle failure input"));
 		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, chat));
 	}
+}
+
+UAM_TEST(AcpNativeSteerReturnsBeforeStorageAndReleasesOneOwnedControl)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	PrepareNativeSteer(fixture);
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared != nullptr);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SteerAcpPrompt(app, chat.id, "Owned additional requirement", {}, {}, false, &error);
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(accepted);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT(session.processing && session.prompt_request_id == 17 && session.turn_serial == 7);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	UAM_ASSERT(!acknowledgement.has_value());
+	AwaitSave(app);
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	UAM_ASSERT_EQ(session.pending_request_methods.size(), std::size_t{1});
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{3});
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("Owned additional requirement"));
+	UAM_ASSERT(chat.messages.back().continues_turn && !chat.messages.back().acp_prompt_not_sent);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages.back().content, chat.messages.back().content);
+	UAM_ASSERT(!saved->messages.back().acp_prompt_not_sent);
+	UAM_ASSERT_EQ(std::ranges::count_if(session.diagnostics, [](const uam::AcpDiagnosticEntryState& item)
+	    { return item.method == "turn/steer" && item.reason == "sent"; }), std::ptrdiff_t{1});
+}
+
+UAM_TEST(AcpNativeSteerAdmissionSurvivesContinuousParentOutput)
+{
+	PromptFixture fixture;
+	PrepareNativeSteer(fixture);
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Steer while parent streams", {}, {}, false, &error));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+	{
+		chat.messages[1].content += " parent-chunk";
+		uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	UAM_ASSERT_EQ(session.pending_request_methods.size(), std::size_t{1});
+	UAM_ASSERT(session.processing && session.prompt_request_id == 17);
+	AwaitSave(app);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages[1].content, chat.messages[1].content);
+	UAM_ASSERT_EQ(saved->messages.back().content, std::string("Steer while parent streams"));
+}
+
+UAM_TEST(AcpNativeSteerSaveFailureKeepsUnsentIntentWithoutStoppingParent)
+{
+	PromptFixture fixture;
+	PrepareNativeSteer(fixture);
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Retain failed steering", {}, {}, false, &error));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	fs::remove_all(app.data_root);
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "private failed steering storage"));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(acknowledgement.has_value() && !*acknowledgement);
+	UAM_ASSERT(session.processing && session.prompt_request_id == 17);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(session.pending_local_steer_abandon.empty());
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+	UAM_ASSERT(session.goal_resume_suppressed);
+	fs::remove(app.data_root);
+	AwaitSave(app);
+	UAM_ASSERT(session.pending_request_methods.empty());
+}
+
+UAM_TEST(AcpNativeSteerCancellationAndCompletionNeverReleaseExpiredControl)
+{
+	for (const bool cancel : {false, true})
+	{
+		PromptFixture fixture;
+		PrepareNativeSteer(fixture);
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Abandon pending steering", {}, {}, false, &error));
+		if (cancel) UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error));
+		else uam::acp_detail::CompletePromptTurn(session, "ready");
+		AwaitSave(app);
+		UAM_ASSERT(session.pending_local_steer_abandon.empty());
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(session.goal_resume_suppressed);
+		UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& item)
+		    { return item.method == "turn/steer" && item.reason == "sent"; }));
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value() && saved->messages.back().acp_prompt_not_sent);
+	}
+}
+
+UAM_TEST(AcpNativeSteerChangedConfigurationRetainsUnsentOriginalIntent)
+{
+	PromptFixture fixture;
+	PrepareNativeSteer(fixture);
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Original steering context", {}, {}, false, &error));
+	chat.reasoning_effort = "changed-policy";
+	uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+	AwaitSave(app);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+	UAM_ASSERT(session.processing && session.prompt_request_id == 17);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value() && saved->messages.back().acp_prompt_not_sent);
+}
+
+UAM_TEST(AcpNativeSteerForceReceiptIncludesItsMessageAndDoesNotReplay)
+{
+	PromptFixture fixture;
+	PrepareNativeSteer(fixture);
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Forced durable steering", {}, {}, false, &error));
+	UAM_ASSERT(uam::acp_detail::SaveChatQuietly(app, chat));
+	AwaitSave(app);
+	UAM_ASSERT_EQ(session.pending_request_methods.size(), std::size_t{1});
+	UAM_ASSERT_EQ(std::ranges::count_if(session.diagnostics, [](const uam::AcpDiagnosticEntryState& item)
+	    { return item.method == "turn/steer" && item.reason == "sent"; }), std::ptrdiff_t{1});
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages.back().content, std::string("Forced durable steering"));
+	UAM_ASSERT(!saved->messages.back().acp_prompt_not_sent);
+}
+
+UAM_TEST(AcpNativeSteerCoalescesFollowingQueueIntoCompleteOwnedReceipt)
+{
+	PromptFixture fixture;
+	PrepareNativeSteer(fixture);
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "First coalesced steering", {}, {}, false, &error));
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Second coalesced steering", {}, {}, false, &error));
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Following ordinary queued input", &error));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	AwaitSave(app);
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	UAM_ASSERT_EQ(session.pending_request_methods.size(), std::size_t{2});
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{4});
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages[2].content, std::string("First coalesced steering"));
+	UAM_ASSERT_EQ(saved->messages[3].content, std::string("Second coalesced steering"));
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Following ordinary queued input"));
+	UAM_ASSERT_EQ(std::ranges::count_if(session.diagnostics, [](const uam::AcpDiagnosticEntryState& item)
+	    { return item.method == "turn/steer" && item.reason == "sent"; }), std::ptrdiff_t{2});
+}
+
+UAM_TEST(AcpNativeSteerRejectsReplacedNativeTurnBeforeItsReceipt)
+{
+	PromptFixture fixture;
+	PrepareNativeSteer(fixture);
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Original native turn only", {}, {}, false, &error));
+	session.codex_turn_id = "replacement-native-turn";
+	uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+	AwaitSave(app);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT(session.processing && session.prompt_request_id == 17);
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+	UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& item)
+	    { return item.method == "turn/steer" && item.reason == "sent"; }));
 }
