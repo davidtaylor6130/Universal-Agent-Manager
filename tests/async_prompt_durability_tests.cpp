@@ -702,3 +702,111 @@ UAM_TEST(AcpFailedLocalQueueAdmissionRetainsOneUnsentMessageAndHeldFollowingInte
 	UAM_ASSERT(session.queue_held && app.chats.front().acp_queue_held);
 	UAM_ASSERT_EQ(app.chats.front().acp_dispatched_queued_prompt_count, std::size_t{0});
 }
+
+UAM_TEST(AcpSameSessionRetryReturnsWithinInputBudgetBeforeOwnedStorageReceipt)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	chat.native_session_id = session.session_id;
+	chat.messages.front().interrupted = true;
+	chat.messages.front().acp_prompt_not_sent = true;
+	chat.messages.push_back({.role = MessageRole::Assistant});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared != nullptr);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool retried = uam::RetryFailedAcpMessage(app, chat.id, 0, &error);
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(retried);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT(session.processing && session.prompt_request_id == 0);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+	UAM_ASSERT(chat.messages.front().acp_prompt_not_sent);
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	AwaitSave(app);
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	const std::optional<ChatSession> admitted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(admitted.has_value() && admitted->messages.size() == 1 && admitted->messages.front().acp_prompt_not_sent);
+	AwaitDelivery(app, session);
+	UAM_ASSERT(session.prompt_request_id != 0);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+}
+
+UAM_TEST(AcpFailedRetryAdmissionRestoresOriginalMessageWithoutProviderInput)
+{
+	for (const bool originally_unsent : {false, true})
+	{
+		PromptFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		chat.native_session_id = session.session_id;
+		chat.messages.front().interrupted = true;
+		chat.messages.front().acp_prompt_not_sent = originally_unsent;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::string error;
+		UAM_ASSERT(uam::RetryFailedAcpMessage(app, chat.id, 0, &error));
+		std::optional<bool> acknowledgement;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+		fs::remove_all(app.data_root);
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "private failed retry storage"));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(acknowledgement.has_value() && !*acknowledgement);
+		UAM_ASSERT(!session.processing && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+		UAM_ASSERT(chat.messages.front().interrupted && chat.messages.front().acp_prompt_not_sent);
+		UAM_ASSERT_EQ(chat.messages.front().content, std::string("Previously saved history"));
+		fs::remove(app.data_root);
+		AwaitSave(app);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	}
+}
+
+UAM_TEST(AcpCanceledStagedRetryPreservesOneUnsentOriginalMessage)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	chat.native_session_id = session.session_id;
+	chat.messages.front().interrupted = true;
+	chat.messages.front().acp_prompt_not_sent = false;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	std::string error;
+	UAM_ASSERT(uam::RetryFailedAcpMessage(app, chat.id, 0, &error));
+	AwaitSave(app);
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	UAM_ASSERT(session.pending_prompt_delivery != nullptr);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(uam::CancelAcpTurn(app, chat.id, &error));
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+	UAM_ASSERT(chat.messages.front().interrupted && chat.messages.front().acp_prompt_not_sent);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value() && saved->messages.size() == 1 && saved->messages.front().acp_prompt_not_sent);
+}

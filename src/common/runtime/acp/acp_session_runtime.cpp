@@ -1288,6 +1288,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		/** Uses staged durability for ordinary local input with a usable or pending transport. */
+		bool CanDeferLocalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+		{
+			if (chat.execution_host_id != execution_hosts::kLocalHostId || chat.small_model_mode ||
+			    !app.claude_quota_dispatch_id.empty()) return false;
+			if (!session.running || !session.session_ready) return true;
+#if defined(_WIN32)
+			return session.stdin_write != INVALID_HANDLE_VALUE && session.stdin_write != nullptr;
+#else
+			return session.stdin_write_fd >= 0;
+#endif
+		}
+
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out, bool defer_durable_admission = false, bool queued_dispatch = false)
 		{
 			if (chat.acp_queue_storage_error)
@@ -1503,7 +1516,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				chat.acp_dispatched_queued_prompt_count = 1;
 			}
 			session.defer_prompt_save = defer_durable_admission;
-			// Deferred inputs stage owned durability; legacy quota, small-model and retry callers retain synchronous rollback.
+			// Deferred inputs stage owned durability; legacy quota, small-model and unusable transport callers retain synchronous rollback.
 			if (defer_durable_admission) ScheduleChatSave(app, chat, 0.0);
 			else if (!SaveChatQuietly(app, chat))
 			{
@@ -2560,13 +2573,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		// Local admission atomically replaces one outbox entry with its unsent transcript message.
 		const std::deque<AcpQueuedUserPromptState> batch{session.queued_user_prompts.front()};
 		const bool local_dispatch = chat.execution_host_id == execution_hosts::kLocalHostId;
-		bool local_transport_usable = !session.running || !session.session_ready;
-#if defined(_WIN32)
-		local_transport_usable = local_transport_usable || session.stdin_write != INVALID_HANDLE_VALUE;
-#else
-		local_transport_usable = local_transport_usable || session.stdin_write_fd >= 0;
-#endif
-		const bool local_async = local_dispatch && local_transport_usable && !chat.small_model_mode && app.claude_quota_dispatch_id.empty();
+		const bool local_async = CanDeferLocalPromptAdmission(app, session, chat);
 		std::string error;
 		chat.acp_queued_prompts.assign(
 		    session.queued_user_prompts.begin(), session.queued_user_prompts.end());
@@ -2776,9 +2783,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			chat->messages.begin() + static_cast<std::ptrdiff_t>(user_index + 1),
 			chat->messages.end());
 		chat->messages.erase(chat->messages.begin() + static_cast<std::ptrdiff_t>(user_index + 1), chat->messages.end());
+		const bool local_async = CanDeferLocalPromptAdmission(app, *session, *chat);
 		chat->messages[user_index].interrupted = false;
+		if (local_async) chat->messages[user_index].acp_prompt_not_sent = true;
 		session->turn_user_message_index = message_index;
-		const bool started = StartAcpUserPrompt(app, *session, *chat, queued, error_out, false);
+		const bool started = StartAcpUserPrompt(app, *session, *chat, queued, error_out, local_async);
 		if (!started)
 		{
 			if (static_cast<std::size_t>(message_index) < chat->messages.size())

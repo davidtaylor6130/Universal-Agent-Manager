@@ -1331,6 +1331,7 @@ UAM_TEST(AcpRetryEmptyCompletedTurnKeepsChatAndGoalContext)
 	std::string error;
 	UAM_ASSERT(process.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
 	UAM_ASSERT(uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+	AwaitPromptAdmission(app, *raw_session, app.chats.front());
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(1));
 	process.CloseStdioProcessInput(*raw_session);
