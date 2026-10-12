@@ -1,0 +1,208 @@
+/* Settings shell: one sliding nav indicator and a calm page header. */
+.uam-settings-nav { position: relative; }
+.uam-settings-nav .uam-settings-nav-item[data-active="true"]::before { display: none; }
+.uam-settings-nav__indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  border-radius: var(--r-md);
+  z-index: 0;
+  /* The whole active pill glides between items: tint plus a 3px accent edge. */
+  background: var(--accent-dim);
+  box-shadow: inset 3px 0 0 var(--accent);
+  pointer-events: none;
+  transition: transform var(--dur-base) var(--ease-out-soft), height var(--dur-base) var(--ease-out-soft);
+}
+.uam-settings-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.uam-settings-page-header__title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
+.uam-settings-page-header__description { margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); }
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-settings-nav__indicator { transition: none; }
+}
+
+/* Typography: each row pairs its controls with a live sample. */
+.uam-typo-row { display: grid; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.uam-typo-row:last-child { padding-bottom: 0; border-bottom: 0; }
+.uam-typo-row__preview {
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text);
+  white-space: pre;
+  overflow-x: auto;
+  transition: font-size var(--dur-base) var(--ease-out-soft);
+}
+.uam-typo-row__meta { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); }
+
+/* Section-level helpers shared by settings pages. */
+.uam-settings-group--flat .uam-settings-group__body { padding: 0; border: 0; background: none; }
+.uam-settings-group__desc { margin: -4px 0 10px 2px; font-size: var(--fs-xs); color: var(--text-3); }
+.uam-settings-field { display: grid; gap: 6px; font-size: var(--fs-sm); color: var(--text-2); }
+.uam-settings-field__hint { font-size: var(--fs-xs); color: var(--text-3); }
+.uam-settings-status { font-size: var(--fs-xs); color: var(--text-3); }
+.uam-settings-status[data-tone="error"] { color: var(--error); }
+.uam-settings-scrim { background: color-mix(in srgb, var(--bg) 60%, transparent); }
+
+/* Calm, collapsed-by-default note: the title is always visible, the body on demand. */
+.uam-settings-notice {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-up);
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.uam-settings-notice > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--r-md);
+}
+.uam-settings-notice > summary::-webkit-details-marker { display: none; }
+.uam-settings-notice > summary svg { color: var(--info); flex-shrink: 0; }
+.uam-settings-notice > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-settings-notice > p { margin: 0; padding: 0 10px 10px 32px; line-height: 1.5; }
+
+/* Remote hosts: rows separated by hairlines, not nested cards. */
+.uam-remote-host {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.uam-remote-host:first-child { border-top: 0; padding-top: 0; }
+.uam-settings-progress {
+  position: relative;
+  height: 2px;
+  margin-bottom: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border);
+}
+.uam-settings-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: var(--accent);
+  animation: uam-settings-progress 1.1s var(--ease) infinite;
+}
+@keyframes uam-settings-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(260%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-settings-progress::after { animation: none; width: 100%; opacity: 0.5; }
+}
+
+/* Menu triggers in memory worker rows and similar pickers. */
+.uam-settings-trigger {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-md);
+  background: var(--surface-up);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.uam-settings-trigger:hover { border-color: var(--text-3); }
+.uam-settings-trigger:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Agent import preview: one hairline-separated block, no nested box. */
+.uam-settings-preview { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text); }
+.uam-settings-preview__title { font-weight: var(--fw-semibold); }
+
+/* Memory library: loading and error states share one calm block. */
+.uam-memory-state {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface-up);
+}
+
+/* Page frame: header and content travel together, centred both ways; wide pages grow to the space available and scroll vertically. */
+.uam-settings-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding: var(--sp-6) var(--sp-6) var(--sp-8); }
+.uam-settings-frame { width: 100%; max-width: 1180px; margin: auto; }
+.uam-settings-frame > .uam-settings-page-header { margin-bottom: var(--sp-5); }
+
+/* ── Settings language (SettingsPrimitives) ─────────────────── */
+.uam-set-section { display: grid; gap: var(--sp-2); margin-bottom: var(--sp-6); animation: uam-set-in var(--dur-enter) var(--ease-out-soft) backwards; }
+.uam-set-section:nth-child(2) { animation-delay: 30ms; } .uam-set-section:nth-child(3) { animation-delay: 60ms; } .uam-set-section:nth-child(n+4) { animation-delay: 90ms; }
+.uam-set-section__head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--sp-3); padding-inline: 2px; }
+.uam-set-section__title { font-size: var(--fs-xs); font-weight: var(--fw-semibold); letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
+.uam-set-section__desc { margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.45; }
+.uam-set-section__actions { display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; }
+.uam-set-card { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); padding: 2px var(--sp-4); }
+.uam-set-card--flush { padding: 0; overflow: hidden; }
+.uam-set-card > .uam-set-field { padding-block: var(--sp-3); }
+.uam-set-card > .uam-set-field + .uam-set-field, .uam-set-card > .uam-set-row + .uam-set-field, .uam-set-card > .uam-set-field + .uam-set-row { border-top: 1px solid var(--border); }
+.uam-set-row { padding-block: var(--sp-3); }
+.uam-set-row + .uam-set-row { border-top: 1px solid var(--border); }
+.uam-set-row__main { display: flex; align-items: center; gap: var(--sp-3); min-height: 32px; }
+.uam-set-row__main > .min-w-0 { flex: 1; }
+.uam-set-row__icon { display: inline-flex; color: var(--text-2); flex-shrink: 0; }
+.uam-set-row__title { display: block; font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--text); }
+.uam-set-row__desc { margin-top: 2px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.45; }
+.uam-set-row__status { margin-top: 3px; font-size: var(--fs-xs); color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.uam-set-row__control { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; max-width: 55%; }
+.uam-set-row__control > select, .uam-set-row__control > .uam-menu-select, .uam-set-row__control > input:not([type="checkbox"]) { min-width: 220px; }
+.uam-set-row__extra { margin-top: var(--sp-3); }
+.uam-set-field { display: grid; gap: 6px; align-content: start; }
+.uam-set-field__label { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-2); }
+.uam-set-field__hint { font-size: var(--fs-xs); color: var(--text-3); }
+@container (max-width: 560px) { .uam-set-row__main { flex-wrap: wrap; } .uam-set-row__control { max-width: none; width: 100%; } }
+@keyframes uam-set-in { from { opacity: 0; transform: translateY(4px); } }
+.uam-set-skeleton { height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-set-shimmer 1.2s ease-in-out infinite; }
+.uam-set-skeleton--thin { height: 8px; opacity: .7; }
+.uam-set-skeleton--label { width: 120px; height: 8px; margin: 0 2px 2px; }
+.uam-set-skeleton--control { width: 34px; height: 19px; border-radius: 999px; }
+@keyframes uam-set-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .uam-set-section, .uam-set-skeleton { animation: none; } }
+/* Legacy SectionCard bodies: same card, stacked content on a 14px rhythm. */
+.uam-set-body { display: grid; gap: 14px; padding: 14px var(--sp-4); }
+.uam-set-body--flat { padding: 0; }
+.uam-set-body > .uam-set-row { padding-block: 0; }
+.uam-set-body > .uam-set-row + .uam-set-row { padding-top: 14px; }
+/* Provider pages: one provider shown flat (no disclosure), status bar on top. */
+.uam-provider-flat { display: grid; gap: var(--sp-3); padding: var(--sp-4); }
+.uam-provider-flat__bar { display: flex; align-items: center; gap: var(--sp-2); min-height: 28px; }
+.uam-provider-flat__body { display: grid; gap: var(--sp-3); }
+
+/* Settings page cross-fade (SettingsPageSwap): the outgoing page fades out over 120ms; the layout never moves. */
+.uam-settings-swap { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.uam-settings-swap > .uam-settings-page { flex: 1 1 auto; min-height: 0; }
+.uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { position: absolute; inset: 0; pointer-events: none; animation: uam-settings-leave 120ms var(--ease) forwards; }
+@keyframes uam-settings-leave { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; } }
+
+/* Appearance: theme swatch grid. Tiles preview each theme's background, surface, text and accent. */
+.uam-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: var(--sp-2); width: 100%; padding-block: var(--sp-1); }
+.uam-theme-tile { display: grid; gap: 6px; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-up); color: var(--text-2); text-align: left; cursor: pointer; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.uam-theme-tile:hover { border-color: var(--border-bright); }
+.uam-theme-tile:active { transform: scale(.98); }
+.uam-theme-tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-theme-tile[data-selected] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--accent); color: var(--text); }
+.uam-theme-tile__preview { display: block; height: 46px; padding: 6px; border-radius: var(--r-sm); border: 1px solid var(--border); overflow: hidden; }
+.uam-theme-tile__surface { display: flex; align-items: center; gap: 5px; height: 100%; padding: 0 6px; border-radius: 3px; }
+.uam-theme-tile__line { display: block; flex: 1; max-width: 56%; height: 4px; border-radius: 2px; }
+.uam-theme-tile__dot { display: block; flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.uam-theme-tile__label { overflow: hidden; font-size: var(--fs-xs); font-weight: var(--fw-medium); text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .uam-theme-tile { transition: none; } }

@@ -2,7 +2,9 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, useOverlayState } from '../ui'
+import { Button, IconButton, Notice, useOverlayState } from '../ui'
+import { SettingRow, SettingsLoading } from './SettingsPrimitives'
+import './provider-settings.css'
 
 export function MemoryScanModal() {
   const overlayState = useOverlayState()
@@ -39,9 +41,8 @@ export function MemoryScanModal() {
 
   return (
     <div
-      className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center"
+      className="uam-overlay uam-overlay--dim fixed inset-0 z-[60] flex items-center justify-center"
       data-state={overlayState}
-      style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
       onClick={(event) => {
         if (event.target === event.currentTarget && !memoryScanRunning) {
           closeMemoryScanModal()
@@ -53,24 +54,12 @@ export function MemoryScanModal() {
         aria-modal="true"
         aria-label="Scan current chats"
         tabIndex={-1}
-        className="rounded-2xl shadow-2xl w-full max-w-4xl mx-4 animate-slide-in overflow-hidden flex flex-col"
-        style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--border-bright)',
-          maxHeight: 'calc(100vh - 2rem)',
-        }}
+        className="uam-scan-dialog uam-mcp-dialog"
       >
-        <div
-          className="flex items-center justify-between px-5 py-4"
-          style={{ borderBottom: '1px solid var(--border)' }}
-        >
-          <div>
-            <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
-              Scan Current Chats
-            </div>
-            <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-              Backfill durable memory from existing chat history.
-            </div>
+        <div className="uam-scan-head">
+          <div className="min-w-0">
+            <div className="uam-scan-title">Scan current chats</div>
+            <div className="uam-prov-sub">Add durable memory from existing chat history. Only the chats you select are read.</div>
           </div>
           <IconButton
             icon={<X size={16} />}
@@ -80,91 +69,62 @@ export function MemoryScanModal() {
           />
         </div>
 
-        <div className="p-5 md:p-6 overflow-y-auto min-h-0">
-          <div className="flex items-center justify-between gap-3 mb-4">
-            <div className="text-sm" style={{ color: 'var(--text)' }}>
+        <div className="uam-scan-body">
+          <div className="uam-scan-toolbar">
+            <div className="text-sm" style={{ color: 'var(--text-2)' }}>
               {memoryScanCandidates.length} eligible chat{memoryScanCandidates.length === 1 ? '' : 's'}
+              {memoryScanCandidates.length > 0 && <span style={{ color: 'var(--text-3)' }}> · {selectedMemoryScanChatIds.length} selected</span>}
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={selectAllMemoryScanChats}
-              >
+              <Button variant="ghost" size="sm" onClick={selectAllMemoryScanChats} disabled={memoryScanLoading || memoryScanRunning || memoryScanCandidates.length === 0}>
                 Select all
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={selectNoMemoryScanChats}
-              >
+              <Button variant="ghost" size="sm" onClick={selectNoMemoryScanChats} disabled={memoryScanLoading || memoryScanRunning || memoryScanCandidates.length === 0}>
                 Select none
               </Button>
             </div>
           </div>
 
           {memoryScanError && (
-            <div className="mb-4 rounded-md px-3 py-2 text-xs" style={{ background: 'color-mix(in srgb, var(--red) 14%, transparent)', color: 'var(--red)', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
-              {memoryScanError}
-            </div>
+            <Notice tone="error" dismissLabel="Dismiss scan error">{memoryScanError}</Notice>
           )}
 
           {memoryScanLoading ? (
-            <div className="text-sm" style={{ color: 'var(--text-3)' }}>
-              Loading eligible chats...
-            </div>
+            <SettingsLoading label="Loading eligible chats" rows={3} />
           ) : memoryScanCandidates.length === 0 ? (
-            <div
-              className="rounded-xl p-6 text-sm"
-              style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text-3)' }}
-            >
-              No eligible chats are available to scan right now.
+            <div className="uam-store-empty">
+              <div className="uam-store-empty__desc">No eligible chats are available to scan right now.</div>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="uam-set-card">
               {memoryScanCandidates.map((candidate) => {
                 const selected = selectedMemoryScanChatIds.includes(candidate.chatId)
+                const inputId = `memory-scan-${candidate.chatId}`
                 return (
-                  <label
+                  <SettingRow
                     key={candidate.chatId}
-                    className="flex items-start gap-3 rounded-xl p-4"
-                    style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', cursor: 'pointer' }}
-                  >
-                    <input
+                    htmlFor={inputId}
+                    title={<span className="uam-scan-title-row">
+                      {candidate.title}
+                      {candidate.alreadyFullyProcessed && <span className="uam-scan-chip">Previously processed</span>}
+                    </span>}
+                    description={`${candidate.folderTitle || 'Unsorted'} · ${candidate.messageCount} message${candidate.messageCount === 1 ? '' : 's'}`}
+                    status={<span>Provider <span className="uam-prov-detail">{candidate.providerId}</span> · Last scanned {candidate.memoryLastProcessedAt || 'never'}</span>}
+                    control={<input
+                      id={inputId}
                       type="checkbox"
                       checked={selected}
+                      disabled={memoryScanRunning}
                       onChange={() => toggleMemoryScanChat(candidate.chatId)}
-                      style={{ marginTop: 2 }}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
-                          {candidate.title}
-                        </div>
-                        {candidate.alreadyFullyProcessed && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ color: 'var(--text-2)', background: 'var(--surface)' }}>
-                            Previously processed
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                        {candidate.folderTitle || 'Unsorted'} • {candidate.providerId} • {candidate.messageCount} message{candidate.messageCount === 1 ? '' : 's'}
-                      </div>
-                      <div className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                        Last memory scan: {candidate.memoryLastProcessedAt || 'Never'}
-                      </div>
-                    </div>
-                  </label>
+                    />}
+                  />
                 )
               })}
             </div>
           )}
         </div>
 
-        <div
-          className="flex items-center justify-end gap-2 px-5 py-4"
-          style={{ borderTop: '1px solid var(--border)' }}
-        >
+        <div className="uam-scan-foot">
           <Button
             variant="secondary"
             size="sm"
@@ -179,7 +139,7 @@ export function MemoryScanModal() {
             onClick={() => void startMemoryScan()}
             disabled={memoryScanRunning || selectedMemoryScanChatIds.length === 0}
           >
-            {memoryScanRunning ? 'Starting scan...' : `Scan ${selectedMemoryScanChatIds.length} chat${selectedMemoryScanChatIds.length === 1 ? '' : 's'}`}
+            {memoryScanRunning ? 'Starting scan…' : `Scan ${selectedMemoryScanChatIds.length} chat${selectedMemoryScanChatIds.length === 1 ? '' : 's'}`}
           </Button>
         </div>
       </div>

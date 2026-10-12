@@ -1,12 +1,13 @@
 import { VcsSettings } from './VcsSettings'
 import { TypographySettings } from './TypographySettings'
 import { PermissionsSettings } from './PermissionsSettings'
+import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
   MAX_MEMORY_RECALL_BUDGET_BYTES,
@@ -32,6 +33,7 @@ import {
   resolveDocumentTheme,
   type CustomTheme,
   type ThemeColors,
+  type BuiltInTheme,
   type StoredTheme,
 } from '../../utils/themeStorage'
 import type { Provider } from '../../types/provider'
@@ -39,8 +41,8 @@ import type { ComputerUseBackend, ExecutionHost, Session } from '../../types/ses
 import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { Search, ArrowLeft, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, IconButton, MenuSelect, Notice, Switch, ViewportMenu } from '../ui'
+import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
+import { Button, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, ViewportMenu, motionAllowed } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -56,6 +58,7 @@ import {
 } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
 import './settings-motion.css'
+import './settings-shell.css'
 
 interface MemoryModelOption {
   id: string
@@ -159,7 +162,6 @@ interface SettingsSection {
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'permissions', label: 'Permissions', icon: Check },
   { id: 'appearance', label: 'Appearance', icon: Palette },
-  { id: 'typography', label: 'Typography', icon: Pencil },
   { id: 'defaults', label: 'Chat Defaults', icon: MessageSquare },
   { id: 'agents', label: 'Agents', icon: ClipboardList },
   { id: 'provider-summary', label: 'Overview', icon: TerminalSquare },
@@ -181,8 +183,11 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
     { id: 'about', label: 'About', icon: Info },
 ].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED) && (section.id !== 'phone' || MOBILE_COMPANION_ENABLED)) as SettingsSection[]
 
+// Retired pages that now live inside another page; old ids still resolve (search, deep links).
+const SETTINGS_SECTION_ALIASES: Partial<Record<string, SettingsSectionId>> = { typography: 'appearance' }
+
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
-  { label: 'General', sections: ['appearance', 'typography', 'defaults', 'phone', 'voice-input'] },
+  { label: 'General', sections: ['appearance', 'defaults', 'phone', 'voice-input'] },
   { label: 'Providers', sections: ['provider-summary', ...SUPPORTED_CLI_PROVIDER_IDS.map(id => `provider:${id}` as SettingsSectionId)] },
   { label: 'Connections', sections: ['remote-hosts', 'mcp-servers'] },
   { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
@@ -191,17 +196,17 @@ const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'App', sections: ['chat-data', 'about'] },
 ]
 const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
-  appearance: 'Theme, sidebar and how agent activity is shown.',
+  appearance: 'Theme, sidebar, how agent activity is shown, and fonts.',
   defaults: 'Default provider and permission reviewer for new chats.',
   'voice-input': 'Dictation for the message box.',
   'cli-version': 'Installed provider CLIs and their versions.',
-  agents: 'Agent favourites and the shortcut that cycles between them.',
+  agents: 'Favourites, the cycle shortcut and importing agents from other tools.',
   'remote-hosts': 'Computers that can run workspaces over SSH.',
   'central-configuration': 'Instructions and skills installed when providers launch locally or over SSH.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
   'computer-use': 'Which apps agents may see and control.',
   vcs: 'Enable Git and SVN integrations.',
-  editors: 'Which editor opens each kind of file.',
+  editors: 'Which app opens each kind of file, and the file explorer.',
   'shell-actions': 'Finder and Explorer actions for workspaces.',
   'memory-settings': 'What gets remembered between chats, and which models do it.',
   'memory-store': 'Browse, add and remove saved memories.',
@@ -217,8 +222,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
 const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   permissions: 'privacy local network microphone speech recording accessibility authorization',
   vcs: 'git svn source control version control worktrees checkpoints commits revisions',
-  typography: 'font fonts size text code monospace terminal message input',
-  appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity',
+  appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity typography font fonts size text code monospace terminal message input',
   defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
   agents: 'agents instructions import providers codex gemini claude copilot opencode',
   'cli-version': 'installed recommended latest download update version codex gemini claude copilot opencode',
@@ -232,7 +236,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   'central-configuration': 'central provider setup instructions agents.md skills files defaults ssh',
   'mcp-servers': 'mcp computer browser control setup server config json',
   'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos',
-  editors: 'editors extensions associations groups default vscode clion',
+  editors: 'editors extensions associations groups default vscode clion file types file explorer finder open',
   'shell-actions': 'finder explorer context menus shell actions groups save',
   'chat-data': 'chat data history storage import export backup',
   about: 'version build release updates app information',
@@ -266,6 +270,52 @@ const THEME_COLOR_FIELDS: Array<{ key: keyof ThemeColors; label: string }> = [
   { key: 'error', label: 'Error' },
 ]
 const THEME_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/
+// Shared surface for settings dialogs: title, body, then actions right-aligned with the primary last.
+const SETTINGS_DIALOG_STYLE = { background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }
+
+const PAGE_EXIT_MS = 120
+/**
+ * Cross-fades settings pages. The previous page stays mounted for its 120ms fade-out
+ * (not remounted, so its effects do not re-run); the new page fades in via .uam-settings-page.
+ */
+function SettingsPageSwap({ pageKey, className, children }: { pageKey: string; className: string; children: ReactNode }) {
+  const [shownKey, setShownKey] = useState(pageKey)
+  const [leaving, setLeaving] = useState<{ key: string; node: ReactNode } | null>(null)
+  const committed = useRef({ key: pageKey, node: children })
+  if (shownKey !== pageKey) {
+    setShownKey(pageKey)
+    if (motionAllowed()) setLeaving(committed.current)
+  }
+  useEffect(() => { committed.current = { key: pageKey, node: children } })
+  useEffect(() => {
+    if (!leaving) return
+    const timer = window.setTimeout(() => setLeaving(null), PAGE_EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [leaving])
+  return (
+    // One keyed array so the outgoing page keeps its instance (same key) instead of remounting.
+    <div className="uam-settings-swap">
+      {[
+        leaving && <div key={leaving.key} aria-hidden className={`${className} uam-settings-page--leaving`}>{leaving.node}</div>,
+        <div key={pageKey} className={className}>{children}</div>,
+      ]}
+    </div>
+  )
+}
+// Preview colours for the theme grid: background, surface, text and accent from each palette in index.css.
+type ThemeSwatch = { background: string; surface: string; accent: string; text: string }
+const BUILT_IN_THEME_SWATCHES: Record<BuiltInTheme, ThemeSwatch> = {
+  focus: { background: '#0b0c0f', surface: '#111318', accent: '#cf7538', text: '#f2f4f7' },
+  dark: { background: '#0f1117', surface: '#12141b', accent: '#ff6a00', text: '#eef1f7' },
+  light: { background: '#f7f8fa', surface: '#ffffff', accent: '#ff6a00', text: '#141820' },
+  // Follows the OS: split preview of the light and dark palettes.
+  system: { background: 'linear-gradient(135deg, #f7f8fa 50%, #0f1117 50%)', surface: 'linear-gradient(135deg, #ffffff 50%, #12141b 50%)', accent: '#ff6a00', text: 'linear-gradient(135deg, #141820 50%, #eef1f7 50%)' },
+  midnight: { background: '#0b1020', surface: '#11182b', accent: '#60a5fa', text: '#e6eefc' },
+  paper: { background: '#f8f7f1', surface: '#fffef9', accent: '#0f766e', text: '#26302a' },
+  dusk: { background: '#211c2d', surface: '#292239', accent: '#c4a7ff', text: '#f1eafd' },
+  aurora: { background: '#09252c', surface: '#0d3038', accent: '#f472b6', text: '#e1fff7' },
+  contrast: { background: '#000000', surface: '#111111', accent: '#00ffff', text: '#ffffff' },
+}
 
 function customThemeId(name: string, themes: CustomTheme[]) {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'theme'
@@ -306,17 +356,28 @@ function versionStatusText(manager: CliVersionProviderState) {
   return 'Version has not been checked'
 }
 
-function SectionCard({ title, children, hideTitle = false }: { title: string; children: ReactNode; hideTitle?: boolean }) {
+function SectionCard({ title, description, children, hideTitle = false, flat = false, actions }: { title: string; description?: string; children: ReactNode; hideTitle?: boolean; flat?: boolean; actions?: ReactNode }) {
+  // Legacy page sections render in the shared settings language (SettingsPrimitives); bodies keep their own grid content.
   return (
-    <section aria-label={title} className="uam-settings-group">
-      {!hideTitle && <h3 className="uam-settings-group__title">{title}</h3>}
-      <div className="uam-settings-group__body">{children}</div>
+    <section aria-label={title} className="uam-set-section">
+      {(!hideTitle || description || actions) && <header className="uam-set-section__head">
+        <div className="min-w-0">
+          {!hideTitle && <h3 className="uam-set-section__title">{title}</h3>}
+          {description && <p className="uam-set-section__desc">{description}</p>}
+        </div>
+        {actions && <div className="uam-set-section__actions">{actions}</div>}
+      </header>}
+      <div className={flat ? 'uam-set-body uam-set-body--flat' : 'uam-set-card uam-set-body'}>{children}</div>
     </section>
   )
 }
 
-function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expanded, onToggle, toggleLabel, children, actions, togglePosition = 'left' }: {
+function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expanded, onToggle, toggleLabel, children, actions, progress, togglePosition = 'left', alwaysOpen = false }: {
+  /** Provider pages show their single provider flat: no disclosure, content always visible. */
+  alwaysOpen?: boolean
   panelId: string
+  /** Shown under the header while work runs, so it stays visible when collapsed. */
+  progress?: ReactNode
   providerId?: string
   leadingIcon?: ReactNode
   title: string
@@ -327,6 +388,11 @@ function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expan
   actions?: ReactNode
   togglePosition?: 'left' | 'right'
 }) {
+  if (alwaysOpen) return <div className="uam-set-card uam-provider-flat">
+    <div className="uam-provider-flat__bar"><span className="uam-set-row__title flex-1">{title}</span>{actions}</div>
+    {progress}
+    <div id={panelId} className="uam-provider-flat__body">{children}</div>
+  </div>
   const chevron = <IconButton size="sm" className="uam-disclosure-row__toggle" icon={<ChevronRight size={14}/>} label={toggleLabel} aria-expanded={expanded} aria-controls={panelId} onClick={onToggle}/>
   return <div className="uam-disclosure-row" data-expanded={expanded}>
     <div className="uam-disclosure-row__header">
@@ -337,6 +403,7 @@ function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expan
       {actions}
       {togglePosition === 'right' && chevron}
     </div>
+    {progress}
     {expanded && <div id={panelId} className="uam-disclosure-row__panel uam-reveal">{children}</div>}
   </div>
 }
@@ -428,6 +495,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
   const { theme, setTheme } = useTheme()
   const [settingsSearch, setSettingsSearch] = useState('')
+  const navRef = useRef<HTMLElement>(null)
+  const [navIndicator, setNavIndicator] = useState<{ top: number; height: number } | null>(null)
   const searchTerms = settingsSearch.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean)
   const visibleSettingsGroups = SETTINGS_GROUPS.map(group => ({...group, sections: group.sections.filter(id => {
     const section = SETTINGS_SECTIONS.find(item => item.id === id)
@@ -495,6 +564,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [chatDataFolder, setChatDataFolder] = useState('')
   const [chatDataMessage, setChatDataMessage] = useState<{ tone: 'success' | 'warning' | 'error' | 'info'; text: string } | null>(null)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
+  // Measure the active nav item so one indicator can glide between items.
+  useLayoutEffect(() => {
+    const nav = navRef.current
+    if (!nav) return
+    const measure = () => {
+      const active = nav.querySelector<HTMLElement>('[data-active="true"]')
+      setNavIndicator(active ? { top: active.offsetTop, height: active.offsetHeight } : null)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [selectedSection, visibleSettingsGroups.length])
   const memoryRef = useRef<MemoryLibraryHandle>(null)
   const shellRef = useRef<ShellActionsHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
@@ -552,7 +635,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       else setSettingsOpen(false)
     }))
   }
-  const changeSection = (section: SettingsSectionId) => {
+  const changeSection = (requested: SettingsSectionId) => {
+    const section = SETTINGS_SECTION_ALIASES[requested] ?? requested
     if (!SETTINGS_SECTIONS.some((entry) => entry.id === section) || section === selectedSection || mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
       setThemeDraft(null)
@@ -899,7 +983,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             border: '1px solid var(--border-bright)',
             borderRadius: 10,
             background: 'var(--surface)',
-            boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+            boxShadow: 'var(--elev-3)',
             padding: 6,
           }}
         >
@@ -922,7 +1006,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 }}
               >
                 <span className="flex-1">{preset.label}</span>
-                {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
+                {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
               </button>
             )
           })}
@@ -1119,7 +1203,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     ))}
                   </div>}
                   {!themeDraftValid && (
-                    <p id="theme-color-format-error" role="alert" className="text-xs" style={{ color: 'var(--red)' }}>
+                    <p id="theme-color-format-error" role="alert" className="text-xs" style={{ color: 'var(--error)' }}>
                       Every color must use #RRGGBB format.
                     </p>
                   )}
@@ -1246,48 +1330,56 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
   }
   const copyIcon = (kind: 'token' | 'url') => companionCopy?.kind === kind
-    ? companionCopy.ok ? <Check key="ok" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--green)' }} /> : <X key="fail" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--red)' }} />
+    ? companionCopy.ok ? <Check key="ok" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--success)' }} /> : <X key="fail" size={14} aria-hidden className="uam-copy-pop" style={{ color: 'var(--error)' }} />
     : <Copy key="idle" size={14} aria-hidden />
   const copyLabel = (kind: 'token' | 'url', idle: string) => companionCopy?.kind === kind ? companionCopy.ok ? 'Copied' : 'Copy failed' : idle
-  const renderPhoneAccess = () => <SectionCard title="Phone Access">
-    <div className="space-y-3 text-xs" style={{ color: 'var(--text-2)' }}>
-      <Switch
-        label="Enable phone access"
-        description={companionSettings?.configured ? 'Open the companion URL on a phone or tablet on your network.' : 'Phone access is not configured.'}
-        checked={Boolean(companionSettings?.enabled)}
-        disabled={!companionSettings?.configured || companionBusy}
-        onChange={(event) => void setCompanionEnabled(event.target.checked)}
+  const renderPhoneAccess = () => <div className="grid gap-0">
+    <SettingsSection title="Phone access" description="Open UAM on a phone or tablet on the same network. Sign in with the token.">
+      <SettingRow
+        title="Enable phone access"
+        description={companionSettings?.configured ? 'Lets devices on your network open the companion URL. Restart UAM after changing access.' : 'Phone access is not configured on this computer.'}
+        status={companionSettings?.enabled && companionSettings.proxyRunning === false ? <span style={{ color: 'var(--error)' }}>The phone HTTPS proxy is not running. Restart UAM and check the network address.</span> : undefined}
+        control={<Switch
+          hideLabel
+          label="Enable phone access"
+          checked={Boolean(companionSettings?.enabled)}
+          disabled={!companionSettings?.configured || companionBusy}
+          onChange={(event) => void setCompanionEnabled(event.target.checked)}
+        />}
       />
-      <p style={{ color: 'var(--text-3)' }}>
-        {companionSettings?.configured ? 'Open the URL on another device on your network, then paste the token to sign in. Restart UAM after changing access.' : 'Phone access is not configured.'}
-      </p>
-      {companionSettings?.url && <div className="flex items-center gap-2 rounded-lg px-3 py-2" style={{ background: 'var(--bg)', border: '1px solid var(--border)' }}>
-        <code className="min-w-0 flex-1 truncate" title={companionSettings.url} style={{ color: 'var(--text)' }}>{companionSettings.url}</code>
-        <Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>
-      </div>}
-      <div className="flex items-center gap-2">
-        <Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>
-      </div>
-      {companionSettings?.enabled && companionSettings.proxyRunning === false && <p style={{ color: 'var(--red)' }}>The phone HTTPS proxy is not running. Restart UAM and check the network address.</p>}
+      {companionSettings?.url && <SettingRow
+        title="Companion URL"
+        description="Open this on the other device, on the same network."
+        control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}
+      >
+        <code className="block truncate font-mono text-xs" title={companionSettings.url} style={{ color: 'var(--text-2)' }}>{companionSettings.url}</code>
+      </SettingRow>}
+      <SettingRow
+        title="Access token"
+        description="Paste this when the phone asks you to sign in."
+        control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>}
+      />
       {companionSettings?.localAddresses?.map((address) => {
         let host = ''
         try { host = new URL(companionSettings.url).hostname } catch { /* No configured URL. */ }
         if (!host || host === address || host === '127.0.0.1' || !/^\d+\.\d+\.\d+\.\d+$/.test(host) || companionSettings.localAddresses?.includes(host)) return null
-        return <div key={address} className="flex items-center justify-between gap-3">
-          <span style={{ color: 'var(--red)' }}>The configured address {host} is no longer on this Mac.</span>
-          <Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => {
+        return <SettingRow
+          key={address}
+          title="Network address changed"
+          description={`The configured address ${host} is no longer on this Mac.`}
+          control={<Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => {
             setCompanionBusy(true)
             void sendToCEF<typeof companionSettings>({ action: 'repairCompanionLanAddress', payload: { address } }).then((result) => {
               if (!result.ok || !result.data) throw new Error(result.error || 'Could not update network address.')
               setCompanionSettings(result.data)
               setCompanionMessage('Network address updated. Restart UAM to start phone access.')
             }).catch((error) => setCompanionMessage(error instanceof Error ? error.message : 'Could not update network address.')).finally(() => setCompanionBusy(false))
-          }}>Use {address}</Button>
-        </div>
+          }}>Use {address}</Button>}
+        />
       })}
-      {companionMessage && <div role="status" style={{ color: companionCopy?.ok === false ? 'var(--red)' : 'var(--text-2)' }}>{companionMessage}</div>}
-    </div>
-  </SectionCard>
+    </SettingsSection>
+    {companionMessage && <p role="status" className="text-xs" style={{ color: companionCopy?.ok === false ? 'var(--error)' : 'var(--text-2)' }}>{companionMessage}</p>}
+  </div>
 
   const renderComputerUse = () => {
     const activeSession = sessions.find((session) => session.id === activeSessionId)
@@ -1305,87 +1397,105 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       ['Screen Recording', 'screenRecording', computerUseStatus?.screenRecording],
       ['Accessibility', 'accessibility', computerUseStatus?.accessibility],
     ] as const
-    return <div className="space-y-4">
-      <SectionCard title="Control method">
-        <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
-          <label htmlFor="computer-use-backend-settings" className="font-medium" style={{ color: 'var(--text)' }}>Computer Use backend</label>
-          <select
-            id="computer-use-backend-settings"
-            value={activeComputerUseBackend}
-            disabled={!activeSession || activeSession.computerUseEnabled || computerUseBusy}
-            onChange={(event) => {
-              if (!activeSession) return
-              setComputerUseBusy(true)
-              setComputerUseMessage('')
-              void setSessionComputerUseBackend(activeSession.id, event.target.value as ComputerUseBackend).then((result) => {
-                if (!result.ok) setComputerUseMessage(result.error || 'Could not change the Computer Use backend.')
-              }).finally(() => setComputerUseBusy(false))
-            }}
-            className="uam-field uam-field--select w-full"
-          >
-            <option value="auto">Automatic (recommended)</option>
-            <option value="provider" disabled={!activeComputerUseProviderAvailable}>Provider built-in</option>
-            <option value="uam">UAM controlled</option>
-          </select>
-          <p style={{ color: 'var(--text-3)' }}>
-            {activeSession
-              ? activeSession.computerUseEnabled
-                ? 'Turn Computer Use off in the active chat before changing its backend.'
-                : 'This applies to the active local chat. Target approval still appears only when the AI requests a target.'
-              : 'Open a local chat to choose its Computer Use backend.'}
-          </p>
-          <Switch
-            label="Allow UAM Control requests"
-            checked={Boolean(activeSession?.uamControlEnabled)}
-            disabled={!activeUamControlSupported || computerUseBusy}
-            onChange={(event) => {
-              if (!activeSession) return
-              setComputerUseBusy(true)
-              setComputerUseMessage('')
-              void setSessionUamControlEnabled(activeSession.id, event.target.checked)
-                .then((result) => {
-                  if (!result) setComputerUseMessage('Could not change UAM Control. Stop the active session first, then try again.')
-                })
-                .finally(() => setComputerUseBusy(false))
-            }}
+    return <div className="grid gap-0">
+      <SettingsSection title="Control method" description="How agents control apps in the active chat.">
+        <SettingRow
+          title="Computer Use backend"
+          description={activeSession
+            ? activeSession.computerUseEnabled
+              ? 'Turn Computer Use off in the active chat before changing its backend.'
+              : 'Applies to the active local chat. Target approval still appears only when the AI requests a target.'
+            : 'Open a local chat to choose its Computer Use backend.'}
+          control={
+            <div id="computer-use-backend-settings" style={{ width: 220 }}>
+              <MenuSelect
+                label="Computer Use backend"
+                value={activeComputerUseBackend}
+                disabled={!activeSession || activeSession.computerUseEnabled || computerUseBusy}
+                options={[
+                  { value: 'auto', label: 'Automatic (recommended)' },
+                  { value: 'provider', label: 'Provider built-in', disabled: !activeComputerUseProviderAvailable },
+                  { value: 'uam', label: 'UAM controlled' },
+                ]}
+                onChange={(value) => {
+                  if (!activeSession) return
+                  setComputerUseBusy(true)
+                  setComputerUseMessage('')
+                  void setSessionComputerUseBackend(activeSession.id, value as ComputerUseBackend).then((result) => {
+                    if (!result.ok) setComputerUseMessage(result.error || 'Could not change the Computer Use backend.')
+                  }).finally(() => setComputerUseBusy(false))
+                }}
+              />
+            </div>
+          }
+        />
+        <SettingRow
+          title="Allow UAM Control requests"
+          description={activeUamControlSupported
+            ? 'Lets the agent ask a question, request goal creation, and use Computer Use through UAM Control. Each request appears in the chat for approval.'
+            : 'UAM Control is available for supported local structured chats.'}
+          control={
+            <Switch
+              hideLabel
+              className="uam-switch--accent"
+              label="Allow UAM Control requests"
+              checked={Boolean(activeSession?.uamControlEnabled)}
+              disabled={!activeUamControlSupported || computerUseBusy}
+              onChange={(event) => {
+                if (!activeSession) return
+                setComputerUseBusy(true)
+                setComputerUseMessage('')
+                void setSessionUamControlEnabled(activeSession.id, event.target.checked)
+                  .then((result) => {
+                    if (!result) setComputerUseMessage('Could not change UAM Control. Stop the active session first, then try again.')
+                  })
+                  .finally(() => setComputerUseBusy(false))
+              }}
+            />
+          }
+        />
+      </SettingsSection>
+      <SettingsSection
+        title="Readiness"
+        description={`Operating system permissions UAM needs on ${computerUseOsLabel}. When a check fails, Computer Use stays stopped until the permission is granted.`}
+        actions={<Button size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void checkComputerUsePermissions()}>Check permissions</Button>}
+      >
+        {statusRows.map(([label, permission, state]) => <SettingRow
+          key={permission}
+          title={label}
+          description={permission === 'screenRecording' ? 'Lets UAM see the screen.' : 'Lets UAM click and type in apps.'}
+          status={<span className="inline-flex items-center gap-1.5" style={{ color: state ? (state.available ? 'var(--success)' : 'var(--error)') : 'var(--text-3)' }}>
+            <StatusDot tone={state ? (state.available ? 'success' : 'error') : 'neutral'} />
+            {state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}
+          </span>}
+          control={<div className="flex flex-wrap justify-end gap-1">
+            <Button size="sm" variant="ghost" disabled={computerUseBusy} onClick={() => void openComputerUseSystemSettings(permission)}>Open settings</Button>
+            <Button size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void requestComputerUsePermission(permission)}>{state?.available ? 'Re-request' : 'Request'} {label}</Button>
+          </div>}
+        />)}
+        {computerUseMessage && <p role="status" className="px-0 py-2 text-xs" style={{ color: 'var(--text-2)' }}>{computerUseMessage}</p>}
+      </SettingsSection>
+      <SettingsSection
+        title="Allowed targets"
+        description="Limit which apps agents can target. Without a list, each chat still asks before it targets an app."
+        actions={<Button size="sm" variant="secondary" onClick={() => void loadComputerUseApplications()}>Refresh applications</Button>}
+      >
+        <SettingRow
+          title="Only listed apps"
+          description={computerUseAllowlistEnabled ? `Only applications listed here can be selected. ${computerUseOsLabel} permissions are still required.` : 'No list is applied, so each chat asks for explicit target consent.'}
+          control={<Switch hideLabel label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />}
+        />
+        {computerUseApps.length === 0 && <SettingRow title="No applications loaded" description="Refresh applications to list the apps UAM can target." />}
+        {computerUseApps.map((app) => {
+          const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
+          return <SettingRow
+            key={`${app.identityKind}:${app.identity}`}
+            title={app.name}
+            description={<span className="font-mono">{app.identity}</span>}
+            control={<Switch hideLabel label={app.name} checked={allowed} disabled={computerUseSaveBusy} onChange={() => void saveComputerUseSettings(computerUseAllowlistEnabled, allowed ? computerUseAllowedApplications.filter((item) => item.identity !== app.identity || item.identityKind !== app.identityKind) : [...computerUseAllowedApplications, { identityKind: app.identityKind, identity: app.identity }])} />}
           />
-          <p style={{ color: 'var(--text-3)' }}>
-            {activeUamControlSupported
-              ? 'Lets the agent ask a question, request goal creation, and use Computer Use through UAM Control. Each request appears in the chat for approval.'
-              : 'UAM Control is available for supported local structured chats.'}
-          </p>
-        </div>
-      </SectionCard>
-      <SectionCard title="Readiness">
-        <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
-          <p>UAM checks {computerUseOsLabel} permissions here. The allowlist below only narrows which applications UAM may target.</p>
-          {statusRows.map(([label, permission, state]) => <div key={permission} className="flex items-center justify-between gap-3 border-b py-2" style={{ borderColor: 'var(--border)' }}>
-            <span>{label}</span><span className="flex items-center gap-2" style={{ color: state ? (state.available ? 'var(--green)' : 'var(--red)') : 'var(--text-3)' }}>{state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}<Button size="sm" variant="ghost" disabled={computerUseBusy} onClick={() => void openComputerUseSystemSettings(permission)}>Open settings</Button></span>
-          </div>)}
-          <div className="flex flex-wrap gap-2 pt-2">
-            <Button size="sm" disabled={computerUseBusy} onClick={() => void checkComputerUsePermissions()}>Check permissions</Button>
-            {statusRows.map(([label, permission, state]) => <Button key={permission} size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void requestComputerUsePermission(permission)}>{state?.available ? 'Re-request' : 'Request'} {label}</Button>)}
-          </div>
-        </div>
-      </SectionCard>
-      <SectionCard title="Allowed targets">
-        <div className="space-y-3 text-xs">
-          <Switch label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />
-          <p style={{ color: 'var(--text-3)' }}>{computerUseAllowlistEnabled ? `Only applications listed here can be selected. ${computerUseOsLabel} permissions are still required.` : 'With no application list restriction, each chat still asks for explicit target consent.'}</p>
-          <Button size="sm" variant="secondary" onClick={() => void loadComputerUseApplications()}>Refresh applications</Button>
-          {computerUseApps.map((app) => {
-            const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
-            return <label key={`${app.identityKind}:${app.identity}`} className="flex items-center justify-between gap-3 border-b py-2" style={{ borderColor: 'var(--border)' }}><span>{app.name}</span><input type="checkbox" disabled={computerUseSaveBusy} checked={allowed} onChange={() => void saveComputerUseSettings(computerUseAllowlistEnabled, allowed ? computerUseAllowedApplications.filter((item) => item.identity !== app.identity || item.identityKind !== app.identityKind) : [...computerUseAllowedApplications, { identityKind: app.identityKind, identity: app.identity }])} /></label>
-          })}
-        </div>
-      </SectionCard>
-      <SectionCard title="Recovery">
-        <div className="space-y-2 text-xs" style={{ color: 'var(--text-2)' }}>
-          <p>When a check fails, Computer Use remains stopped. Change the {computerUseOsLabel} permission, then check again.</p>
-          {computerUseMessage && <div role="status" style={{ color: 'var(--text-2)' }}>{computerUseMessage}</div>}
-          <Button size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void checkComputerUsePermissions()}>Re-check OS permissions</Button>
-        </div>
-      </SectionCard>
+        })}
+      </SettingsSection>
     </div>
   }
 
@@ -1400,99 +1510,144 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'provider-summary') return <ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onHostChange={handleProviderSettingsHostChange} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
-      return <div className="space-y-6"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onHostChange={handleProviderSettingsHostChange} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}</div>
+      return <div className="grid">{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<SettingsSection title="Connection and MCP" description="Live connection status and which MCP servers this provider loads in new sessions." flush><div className="p-3"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onHostChange={handleProviderSettingsHostChange} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div></SettingsSection></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
-      const themeOptions: Array<{ value: StoredTheme; label: string }> = [
-        ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
-        ...customThemes.map((customTheme) => ({ value: customTheme.id, label: customTheme.name })),
+      const themeChoices: Array<{ value: StoredTheme; label: string; swatch: ThemeSwatch }> = [
+        ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label, swatch: BUILT_IN_THEME_SWATCHES[id] })),
+        ...customThemes.map((customTheme) => ({
+          value: customTheme.id,
+          label: customTheme.name,
+          swatch: { background: customTheme.colors.background, surface: customTheme.colors.surface, accent: customTheme.colors.accent, text: customTheme.colors.text },
+        })),
       ]
       return (
-        <div className="space-y-4">
-          <SectionCard
-            title="Theme"
-          >
-            <div className="flex flex-wrap items-end gap-2">
-              <div className="grid gap-1 text-xs min-w-40 flex-1" style={{ color: 'var(--text-2)' }}>
-                <span>Theme</span>
-                <MenuSelect
-                  label="Theme"
-                  value={theme}
-                  options={themeOptions}
-                  onChange={(value) => {
-                    setThemeDraft(null)
-                    setTheme(value as StoredTheme)
-                    setThemeMessage('')
-                  }}
-                />
+        <div className="grid gap-0">
+          <SettingsSection title="Theme" description="Colours for the whole app. Copy a theme to make your own.">
+            <SettingRow
+              title="Colour theme"
+              description="Applies to every window straight away."
+            >
+              <div role="radiogroup" aria-label="Colour theme" className="uam-theme-grid" onKeyDown={(event) => {
+                // Arrow keys move between theme tiles; Enter or Space applies the focused one.
+                const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0
+                if (!step) return
+                const tiles = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]'))
+                const index = tiles.indexOf(document.activeElement as HTMLElement)
+                if (index < 0) return
+                event.preventDefault()
+                tiles[(index + step + tiles.length) % tiles.length]?.focus()
+              }}>
+                {themeChoices.map((choice) => {
+                  const selected = choice.value === theme
+                  return (
+                    <button
+                      key={choice.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      aria-label={choice.label}
+                      title={choice.label}
+                      data-selected={selected || undefined}
+                      onClick={() => {
+                        setThemeDraft(null)
+                        setTheme(choice.value)
+                        setThemeMessage('')
+                      }}
+                      className="uam-theme-tile"
+                    >
+                      <span aria-hidden className="uam-theme-tile__preview" style={{ background: choice.swatch.background }}>
+                        <span className="uam-theme-tile__surface" style={{ background: choice.swatch.surface }}>
+                          <span className="uam-theme-tile__line" style={{ background: choice.swatch.text }} />
+                          <span className="uam-theme-tile__dot" style={{ background: choice.swatch.accent }} />
+                        </span>
+                      </span>
+                      <span className="uam-theme-tile__label">{choice.label}</span>
+                    </button>
+                  )
+                })}
               </div>
-              <div className="flex flex-wrap gap-1">
-                <IconButton icon={<Plus size={15}/>} label="Add theme" onClick={() => startNewTheme()}/>
-                <IconButton icon={<Copy size={15}/>} label="Copy theme" onClick={cloneCurrentTheme}/>
-                <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0); setThemeMessage('') } else cloneCurrentTheme() }}/>
-                <IconButton icon={<Trash2 size={15}/>} label="Delete theme" variant="danger" disabled={!selectedCustomTheme} onClick={() => selectedCustomTheme && setPendingDelete({kind:'theme',id:selectedCustomTheme.id,name:selectedCustomTheme.name})}/>
-                <IconButton icon={<Upload size={15}/>} label="Import theme" onClick={() => themeImportRef.current?.click()}/>
-                <IconButton icon={<Download size={15}/>} label="Export theme" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}/>
-                <input
-                  ref={themeImportRef}
-                  type="file"
-                  accept="application/json,.json"
-                  className="hidden"
-                  aria-label="Import theme JSON"
-                  onChange={(event) => {
-                    const file = event.currentTarget.files?.[0]
-                    event.currentTarget.value = ''
-                    void importThemeFile(file)
-                  }}
+            </SettingRow>
+            <SettingRow
+              title="Manage themes"
+              description="Add, copy, edit or delete a theme. Import or export one as a JSON file."
+              control={
+                <div className="flex flex-wrap justify-end gap-1">
+                  <IconButton icon={<Plus size={15}/>} label="Add theme" onClick={() => startNewTheme()}/>
+                  <IconButton icon={<Copy size={15}/>} label="Copy theme" onClick={cloneCurrentTheme}/>
+                  <IconButton icon={<Pencil size={15}/>} label={selectedCustomTheme ? 'Edit theme' : 'Clone built-in theme to edit'} onClick={() => { if (selectedCustomTheme) { setThemeDraft({...selectedCustomTheme,colors:{...selectedCustomTheme.colors}}); setThemeStep(0); setThemeMessage('') } else cloneCurrentTheme() }}/>
+                  <IconButton icon={<Trash2 size={15}/>} label="Delete theme" variant="danger" disabled={!selectedCustomTheme} onClick={() => selectedCustomTheme && setPendingDelete({kind:'theme',id:selectedCustomTheme.id,name:selectedCustomTheme.name})}/>
+                  <IconButton icon={<Upload size={15}/>} label="Import theme" onClick={() => themeImportRef.current?.click()}/>
+                  <IconButton icon={<Download size={15}/>} label="Export theme" disabled={!selectedCustomTheme} onClick={exportSelectedTheme}/>
+                  <input
+                    ref={themeImportRef}
+                    type="file"
+                    accept="application/json,.json"
+                    className="hidden"
+                    aria-label="Import theme JSON"
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0]
+                      event.currentTarget.value = ''
+                      void importThemeFile(file)
+                    }}
+                  />
+                </div>
+              }
+            >
+              {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--error)' : 'var(--text-2)' }}>{themeMessage}</div>}
+            </SettingRow>
+          </SettingsSection>
+          <SettingsSection title="Sidebar" description="What each chat row shows.">
+            <SettingRow
+              title="Provider icons"
+              description="Show which agent each chat runs on."
+              control={
+                <Switch
+                  hideLabel
+                  label="Show provider icons in sidebar"
+                  checked={showProviderIconsInSidebar}
+                  onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar: event.target.checked, showWorktreePathInSidebar })}
                 />
-              </div>
-              {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--red)' : 'var(--text-2)' }}>{themeMessage}</div>}
-            </div>
-          </SectionCard>
-          <SectionCard title="Sidebar">
-            <div className="grid gap-3">
-              <Switch
-                label="Show provider icons in sidebar"
-                description="Show which agent each chat runs on."
-                checked={showProviderIconsInSidebar}
-                onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar: event.target.checked, showWorktreePathInSidebar })}
-              />
-              <Switch
-                label="Show worktree path in sidebar"
-                description="Show a chat's isolated worktree folder under its name."
-                checked={showWorktreePathInSidebar}
-                onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar, showWorktreePathInSidebar: event.target.checked })}
-              />
-            </div>
-          </SectionCard>
-          <SectionCard title="Chat activity">
-            <Switch
-              label="Compact working"
-                description="Condense tool activity while an agent is working."
-              checked={workingDisplayMode === 'compact'}
-              onChange={(event) => setWorkingDisplayMode(event.target.checked ? 'compact' : 'verbose')}
+              }
             />
-            <Switch
-              label="Expand work traces"
-                description="Open each turn's tool and reasoning trace by default."
-              checked={expandWorkTraces}
-              onChange={(event) => setExpandWorkTraces(event.target.checked)}
+            <SettingRow
+              title="Worktree path"
+              description="Show a chat's isolated worktree folder under its name."
+              control={
+                <Switch
+                  hideLabel
+                  label="Show worktree path in sidebar"
+                  checked={showWorktreePathInSidebar}
+                  onChange={(event) => void setSidebarSettings({ showProviderIconsInSidebar, showWorktreePathInSidebar: event.target.checked })}
+                />
+              }
             />
-            <Switch
-              label="Allow work sections to collapse"
-                description="Let finished work sections fold away."
-              checked={collapsibleWorkSections}
-              onChange={(event) => setCollapsibleWorkSections(event.target.checked)}
+          </SettingsSection>
+          <SettingsSection title="Chat activity" description="How agent work is shown while it runs.">
+            <SettingRow
+              title="Compact working"
+              description="Condense tool activity while an agent is working."
+              control={<Switch hideLabel label="Compact working" checked={workingDisplayMode === 'compact'} onChange={(event) => setWorkingDisplayMode(event.target.checked ? 'compact' : 'verbose')} />}
             />
-          </SectionCard>
+            <SettingRow
+              title="Expand work traces"
+              description="Open each turn's tool and reasoning trace by default."
+              control={<Switch hideLabel label="Expand work traces" checked={expandWorkTraces} onChange={(event) => setExpandWorkTraces(event.target.checked)} />}
+            />
+            <SettingRow
+              title="Collapsible work sections"
+              description="Let finished work sections fold away."
+              control={<Switch hideLabel label="Allow work sections to collapse" checked={collapsibleWorkSections} onChange={(event) => setCollapsibleWorkSections(event.target.checked)} />}
+            />
+          </SettingsSection>
+          <TypographySettings />
         </div>
       )
     }
 
     if (selectedSection === 'vcs') return <VcsSettings />
-    if (selectedSection === 'typography') return <TypographySettings />
 
     if (selectedSection === 'defaults') {
       const reviewerProvider = providers.find((provider) => provider.id === permissionReviewerProviderId)
@@ -1507,13 +1662,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         : []
       return (
         <div className="space-y-4">
-          {!scopedProviderId && <SectionCard
-            title="AI Permission Reviewer"
-          >
-            <div className="grid gap-3 sm:grid-cols-2 text-xs" style={{ color: 'var(--text-2)' }}>
-              <div className="grid gap-1">
-                <div>Reviewer provider</div>
-                {renderDefaultsMenu(
+          {!scopedProviderId && <SettingsSection title="AI permission reviewer" description="A second model can approve routine permission requests; anything it is unsure about still comes to you.">
+            <SettingRow title="Reviewer provider" description="Which agent reviews permission requests." control={renderDefaultsMenu(
                   'permission-reviewer-provider',
                   permissionReviewerProviderId,
                   'AI permission reviewer provider',
@@ -1523,27 +1673,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   ],
                   (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
                   (option) => option.id ? <ProviderLogo providerId={option.id} /> : null
-                )}
-              </div>
-              <div className="grid gap-1">
-                <div>Reviewer model</div>
-                {renderDefaultsMenu(
+                )} />
+            <SettingRow title="Reviewer model" description="Model used for reviews. Defaults to the provider's own default." control={renderDefaultsMenu(
                   'permission-reviewer-model',
                   permissionReviewerModelId,
                   'AI permission reviewer model',
                   reviewerModels.length > 0 ? reviewerModels : [{ id: '', label: 'Provider default', detail: reviewerProvider ? 'Use the provider default model.' : 'Choose a reviewer provider first.' }],
                   (modelId) => void setMemorySettings({ permissionReviewerModelId: modelId })
-                )}
-              </div>
-            </div>
-          </SectionCard>}
-          <SectionCard
-            title={scopedProviderId ? "Models and chat defaults" : "New Chat Defaults"}
-          >
-            <div className="grid gap-4">
-              {!scopedProviderId && <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                <div>Default provider</div>
-                {renderDefaultsMenu(
+                )} />
+          </SettingsSection>}
+          {!scopedProviderId && <SettingsSection title="New chats" description="What a new chat starts with unless you choose otherwise.">
+            <SettingRow title="Default provider" description="Preselected in the New chat dialog." control={renderDefaultsMenu(
                   'default-provider',
                   defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID,
                   'Default provider',
@@ -1554,9 +1694,15 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   })),
                   (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }),
                   (option) => <ProviderLogo providerId={option.id} />
-                )}
-              </div>}
-
+                )} />
+          </SettingsSection>}
+          {scopedProviderId && <SectionCard
+            flat
+            title={scopedProviderId ? "Models and chat defaults" : "New Chat Defaults"}
+            description="What new chats with this provider start with. You can still change these per chat."
+            hideTitle={!scopedProviderId}
+          >
+            <div className="grid gap-4">
               <div className="space-y-3">
                 {providers.filter(provider => provider.id === scopedProviderId).map((provider) => {
                   const defaults = defaultsForProvider(provider)
@@ -1595,9 +1741,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   return (
                     <ProviderDisclosureCard
                       key={provider.id}
+                      alwaysOpen={Boolean(scopedProviderId)}
                       panelId={`${provider.id}-defaults-panel`}
                       providerId={provider.id}
-                      title={providerName}
+                      title={scopedProviderId ? 'Model catalogue' : providerName}
                       expanded={expanded}
                       toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} chat defaults`}
                       onToggle={() => toggleDefaultProvider(provider.id)}
@@ -1811,7 +1958,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 })}
               </div>
             </div>
-          </SectionCard>
+          </SectionCard>}
         </div>
       )
     }
@@ -1869,12 +2016,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       }
       return (
         <div className="space-y-4">
-          <SectionCard
-            title="Composer agents"
-          >
-            <div className="grid gap-4">
-              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                <span>Agent cycle shortcut</span>
+          <SettingsSection title="Composer agents" description="Which agent the composer cycles through when you press the shortcut.">
+            <SettingRow
+              title="Agent cycle shortcut"
+              description="Press this in the composer to move to the next agent. Disabled turns the shortcut off."
+              control={
                 <MenuSelect
                   label="Agent cycle shortcut"
                   value={uamAgentCycleShortcut}
@@ -1887,81 +2033,98 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   ]}
                   onChange={(value) => updatePreferences(favoriteUamAgentIds, value as UamAgentCycleShortcut)}
                 />
-              </label>
+              }
+            />
+          </SettingsSection>
 
-              <div className="grid gap-2">
-                <div className="text-xs" style={{ color: 'var(--text-2)' }}>Ordered favorites</div>
-                {favoriteUamAgentIds.length === 0 ? (
-                  <div className="text-xs" style={{ color: 'var(--text-3)' }}>No custom favorites. The cycle is Build, then Plan.</div>
-                ) : favoriteUamAgentIds.map((agentId, index) => {
-                  const available = activeUamAgents.some((agent) => agent.id === agentId)
-                  return (
-                    <div key={agentId} className="flex items-center gap-2 rounded-md px-2 py-2" style={{ border: '1px solid var(--border)' }}>
-                      <span className="min-w-0 flex-1 truncate text-sm">{agentId}</span>
-                      {!available && <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>Unavailable here</span>}
-                      <Button size="sm" disabled={index === 0} onClick={() => moveFavorite(index, -1)} aria-label={`Move ${agentId} up`}>Up</Button>
-                      <Button size="sm" disabled={index === favoriteUamAgentIds.length - 1} onClick={() => moveFavorite(index, 1)} aria-label={`Move ${agentId} down`}>Down</Button>
-                      <Button size="sm" variant="danger" onClick={() => updatePreferences(favoriteUamAgentIds.filter((id) => id !== agentId))} aria-label={`Remove ${agentId}`}>Remove</Button>
-                    </div>
-                  )
-                })}
-              </div>
-
-              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                <MenuSelect
-                  label="Favorite UAM agent"
-                  value={selectedCandidate}
-                  options={selectableCustomAgents.length > 0
-                    ? selectableCustomAgents.map((agent) => ({ value: agent.id, label: agent.id, description: agent.description }))
-                    : [{ value: '', label: activeSessionId ? 'No more selectable custom agents' : 'Open a chat to list workspace agents' }]}
-                  onChange={setFavoriteAgentCandidate}
-                  disabled={selectableCustomAgents.length === 0}
-                />
+          <SettingsSection
+            title="Favourites"
+            description="Cycled in this order, after Build and Plan."
+            actions={
+              <>
+                <div className="w-[220px] max-w-full">
+                  <MenuSelect
+                    label="Favourite agent"
+                    value={selectedCandidate}
+                    options={selectableCustomAgents.length > 0
+                      ? selectableCustomAgents.map((agent) => ({ value: agent.id, label: agent.id, description: agent.description }))
+                      : [{ value: '', label: activeSessionId ? 'No more selectable custom agents' : 'Open a chat to list workspace agents' }]}
+                    onChange={setFavoriteAgentCandidate}
+                    disabled={selectableCustomAgents.length === 0}
+                  />
+                </div>
                 <Button
                   size="sm"
+                  variant="secondary"
+                  leadingIcon={<Plus size={14} />}
                   disabled={!selectedCandidate}
                   onClick={() => {
                     updatePreferences([...favoriteUamAgentIds, selectedCandidate])
                     setFavoriteAgentCandidate('')
                   }}
-                >Add favorite</Button>
-              </div>
-            </div>
-          </SectionCard>
-          <SectionCard
-            title="Import provider agent"
+                >Add favourite</Button>
+              </>
+            }
           >
+            {favoriteUamAgentIds.length === 0 && (
+              <SettingRow title="No custom favourites" description="The cycle is Build, then Plan. Add a favourite from the menu above." />
+            )}
+            {favoriteUamAgentIds.map((agentId, index) => {
+              const available = activeUamAgents.some((agent) => agent.id === agentId)
+              return (
+                <SettingRow
+                  key={agentId}
+                  icon={<GripVertical size={14} aria-hidden />}
+                  title={<span className="font-mono">{agentId}</span>}
+                  description={`Position ${index + 1} in the cycle`}
+                  status={available ? undefined : <><StatusDot tone="warning" /> Unavailable in this workspace</>}
+                  control={
+                    <div className="flex items-center gap-1">
+                      <IconButton icon={<ArrowUp size={14} />} label={`Move ${agentId} up`} disabled={index === 0} onClick={() => moveFavorite(index, -1)} />
+                      <IconButton icon={<ArrowDown size={14} />} label={`Move ${agentId} down`} disabled={index === favoriteUamAgentIds.length - 1} onClick={() => moveFavorite(index, 1)} />
+                      <IconButton icon={<X size={14} />} label={`Remove ${agentId}`} variant="danger" onClick={() => updatePreferences(favoriteUamAgentIds.filter((id) => id !== agentId))} />
+                    </div>
+                  }
+                />
+              )
+            })}
+          </SettingsSection>
+
+          <SettingsSection title="Import from a provider" description="Turn an agent defined for another CLI into a UAM agent.">
+            <SettingRow
+              title="Source provider"
+              description="The CLI the agent file was written for."
+              control={
+                <MenuSelect
+                  label="Source provider"
+                  value={agentImportProvider}
+                  options={[
+                    { value: 'opencode-cli', label: 'OpenCode' },
+                    { value: 'copilot-cli', label: 'GitHub Copilot CLI' },
+                    { value: 'gemini-cli', label: 'Gemini CLI' },
+                    { value: 'claude-cli', label: 'Claude Code' },
+                  ]}
+                  onChange={(value) => {
+                    setAgentImportProvider(value)
+                    invalidateAgentImport()
+                  }}
+                />
+              }
+            />
             <div className="grid gap-3">
-              <p className="text-xs" style={{ color: 'var(--text-3)' }}>Turn an agent defined for another CLI into a UAM agent.</p>
-              <span className="uam-inline-form__label" style={{ marginBottom: -8 }}>Source provider</span>
-              <MenuSelect
-                label="Source provider"
-                value={agentImportProvider}
-                options={[
-                  { value: 'opencode-cli', label: 'OpenCode' },
-                  { value: 'copilot-cli', label: 'GitHub Copilot CLI' },
-                  { value: 'gemini-cli', label: 'Gemini CLI' },
-				  { value: 'claude-cli', label: 'Claude Code' },
-                ]}
-                onChange={(value) => {
-                  setAgentImportProvider(value)
-                  invalidateAgentImport()
-                }}
-              />
-              <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                <span>Native Markdown file</span>
-                <span className="flex gap-2">
+              <SettingsField label="Native Markdown file" htmlFor="agent-import-path" hint="Path to the agent's .md file on this computer.">
+                <div className="flex gap-2">
                   <input
+                    id="agent-import-path"
                     aria-label="Native agent Markdown file"
                     value={agentImportPath}
                     onChange={(event) => {
                       setAgentImportPath(event.target.value)
                       invalidateAgentImport()
                     }}
-                    className="min-w-0 flex-1 rounded px-2 py-1.5 focus:outline-none"
-                    style={{ border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+                    className="uam-field min-w-0 flex-1 font-mono"
                   />
-                  <Button size="sm" onClick={() => {
+                  <Button size="sm" variant="secondary" onClick={() => {
                     invalidateAgentImport()
                     const requestId = agentImportRequest.current
                     void browseProviderAgentImport(agentImportPath).then((path) => {
@@ -1969,51 +2132,57 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       setAgentImportPath(path)
                     })
                   }}>Browse</Button>
-                  <Button size="sm" aria-busy={agentImportBusy || undefined} disabled={agentImportBusy || !agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
-                </span>
-              </label>
+                  <Button size="sm" variant={agentImportPath.trim() ? 'primary' : 'secondary'} aria-busy={agentImportBusy || undefined} disabled={agentImportBusy || !agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
+                </div>
+              </SettingsField>
 
               {agentImportPreview && (
-                <div className="grid gap-2 rounded-md border p-3 text-xs" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }}>
-                  <div><strong>{agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}</strong> · {agentImportPreview.mode || 'unknown mode'}</div>
+                <div className="grid gap-3 rounded-md p-3 text-xs" style={{ border: '1px solid var(--border)', background: 'var(--surface-up)', color: 'var(--text-2)' }}>
+                  <div className="text-sm font-medium" style={{ color: 'var(--text)' }}>
+                    {agentImportPreview.description || agentImportPreview.suggestedId || 'Provider agent'}
+                    <span className="font-normal" style={{ color: 'var(--text-3)' }}> · {agentImportPreview.mode || 'unknown mode'}</span>
+                  </div>
                   {agentImportPreview.securityFields.length > 0 && (
-                    <div role="alert" style={{ color: 'var(--red)' }}>Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</div>
+                    <div role="alert" style={{ color: 'var(--error)' }}>Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</div>
                   )}
                   {agentImportPreview.ignoredFields.length > 0 && (
-                    <div style={{ color: 'var(--text-2)' }}>Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</div>
+                    <div>Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</div>
                   )}
-                  {agentImportPreview.error && <div role="alert" style={{ color: 'var(--red)' }}>{agentImportPreview.error}</div>}
+                  {agentImportPreview.error && <div role="alert" style={{ color: 'var(--error)' }}>{agentImportPreview.error}</div>}
                   {agentImportPreview.supported && (
                     <>
-                      <label className="grid gap-1">
-                        <span>UAM agent ID</span>
+                      <SettingsField label="UAM agent ID" htmlFor="agent-import-id">
                         <input
+                          id="agent-import-id"
                           aria-label="Imported UAM agent ID"
                           value={agentImportId}
                           onChange={(event) => setAgentImportId(event.target.value)}
-                          className="rounded px-2 py-1.5 focus:outline-none"
-                          style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)' }}
+                          className="uam-field font-mono"
                         />
-                      </label>
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        <MenuSelect
-                          label="Workspace access"
-                          value={agentImportAccess}
-                          options={[
-                            { value: 'read', label: 'Read only', description: 'The imported agent cannot approve writes.' },
-                            { value: 'write', label: 'Read and write', description: 'The imported agent may request workspace changes.' },
-                          ]}
-                          onChange={(value) => setAgentImportAccess(value === 'write' ? 'write' : 'read')}
-                        />
-                        <MenuSelect
-                          label="Install scope"
-                          value={agentImportWorkspaceScope ? 'workspace' : 'global'}
-                          options={[
-                            { value: 'workspace', label: 'This workspace' },
-                            { value: 'global', label: 'All workspaces' },
-                          ]}
-                          onChange={(value) => setAgentImportWorkspaceScope(value === 'workspace')}
-                        />
+                      </SettingsField>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <SettingsField label="Workspace access">
+                          <MenuSelect
+                            label="Workspace access"
+                            value={agentImportAccess}
+                            options={[
+                              { value: 'read', label: 'Read only', description: 'The imported agent cannot approve writes.' },
+                              { value: 'write', label: 'Read and write', description: 'The imported agent may request workspace changes.' },
+                            ]}
+                            onChange={(value) => setAgentImportAccess(value === 'write' ? 'write' : 'read')}
+                          />
+                        </SettingsField>
+                        <SettingsField label="Install scope">
+                          <MenuSelect
+                            label="Install scope"
+                            value={agentImportWorkspaceScope ? 'workspace' : 'global'}
+                            options={[
+                              { value: 'workspace', label: 'This workspace' },
+                              { value: 'global', label: 'All workspaces' },
+                            ]}
+                            onChange={(value) => setAgentImportWorkspaceScope(value === 'workspace')}
+                          />
+                        </SettingsField>
                       </div>
                       {agentImportPreview.ignoredFields.length > 0 && (
                         <label className="flex items-start gap-2" style={{ color: 'var(--text-2)' }}>
@@ -2026,21 +2195,23 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           <span>I understand the listed provider-only fields will not be copied.</span>
                         </label>
                       )}
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        aria-busy={agentImportBusy || undefined}
-                        disabled={agentImportBusy || !activeSessionId || !agentImportId.trim() || (agentImportPreview.ignoredFields.length > 0 && !agentImportAcknowledged)}
-                        onClick={() => void runImport()}
-                      >Import agent</Button>
+                      <div className="flex justify-end">
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          aria-busy={agentImportBusy || undefined}
+                          disabled={agentImportBusy || !activeSessionId || !agentImportId.trim() || (agentImportPreview.ignoredFields.length > 0 && !agentImportAcknowledged)}
+                          onClick={() => void runImport()}
+                        >Import agent</Button>
+                      </div>
                     </>
                   )}
                 </div>
               )}
-              {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--green)' : 'var(--red)' }}>{agentImportMessage}</div>}
+              {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--success)' : 'var(--error)' }}>{agentImportMessage}</div>}
               {!activeSessionId && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat before importing.</div>}
             </div>
-          </SectionCard>
+          </SettingsSection>
         </div>
       )
     }
@@ -2049,11 +2220,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       return (
         <div className="space-y-4">
           <SectionCard
-            title={scopedProviderId ? `CLI installation on ${effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find(host => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId}` : "Provider CLIs"}
+            flat
+            description={scopedProviderId ? 'The provider CLI UAM runs. Keep it on the recommended version unless you need a newer one.' : undefined}
+            title={scopedProviderId ? `Installation on ${effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find(host => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId}` : "Provider CLIs"}
           >
             <div ref={cliVersionMenuRef} className="space-y-3">
               {!(effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).some(manager => !scopedProviderId || manager.providerId === scopedProviderId) && (
-                <div className="text-xs" style={{ color: 'var(--text-3)' }}>
+                <div className="uam-set-card text-xs" style={{ color: 'var(--text-3)', padding: '14px 16px' }}>
                   No CLI installation information is available. Check the provider on this host.
                 </div>
               )}
@@ -2074,17 +2247,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 return (
                   <ProviderDisclosureCard
                     key={manager.providerId}
+                    alwaysOpen={Boolean(scopedProviderId)}
                     togglePosition="right"
                     panelId={`${manager.providerId}-cli-version-panel`}
                     providerId={manager.providerId}
-                    title={providerName}
+                    title={scopedProviderId ? `${providerName} CLI` : providerName}
                     expanded={expanded}
                     toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} CLI version settings`}
                     onToggle={() => toggleCliVersionProvider(manager.providerId)}
                     actions={<StatusIndicator issues={issues} okLabel={manager.status === 'provider-managed' ? 'Provider managed' : 'CLI verified'}/>}
+                    progress={manager.running ? <div role="progressbar" aria-label={`${providerName} CLI task running`} className="uam-settings-progress" /> : undefined}
                   >
                     <div className="flex items-start justify-between gap-3">
-                    <div className="grid gap-1 text-xs" style={{color:'var(--yellow)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
+                    <div className="grid gap-1 text-xs" style={{color:'var(--warning)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
                       <div className="flex items-center gap-1">
                       <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
                         setCliActionError(current => ({...current,[actionErrorKey]:''}))
@@ -2150,174 +2325,175 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
       return (
         <div className="space-y-4">
-          <SectionCard
-            title="Remote execution hosts"
-          >
-            <div className="grid gap-4">
-              <Notice tone="info" title="Remote Computer Use is disabled" dismissLabel="Dismiss remote Computer Use notice">
-                Remote chats retain structured chat, permissions, cancellation, and provider controls. Screen observation and input stay disabled because UAM cannot safely supervise a remote desktop.
-              </Notice>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Display name
-                  <input
-                    aria-label="Remote host display name"
-                    value={remoteLabel}
-                    maxLength={128}
-                    placeholder="AI desktop"
-                    onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
-                    className="rounded-lg px-3 py-2 outline-none"
-                    style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
-                  />
-                </label>
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  SSH config alias
-                  <input
-                    aria-label="SSH config alias"
-                    value={remoteAlias}
-                    maxLength={255}
-                    placeholder="ai-desktop"
-                    spellCheck={false}
-                    onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
-                    className="rounded-lg px-3 py-2 font-mono outline-none"
-                    style={{ color: 'var(--text)', background: 'var(--bg)', border: '1px solid var(--border)' }}
-                  />
-                </label>
-              </div>
-              <div className="flex justify-end">
-                <Button size="sm" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
-                  Preview setup
-                </Button>
-              </div>
-              {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--green)' : 'var(--text-2)' }}>{remoteMessage}</div>}
-            </div>
-          </SectionCard>
+          <details className="text-xs" style={{ color: 'var(--text-3)' }}>
+            <summary className="flex cursor-pointer items-center gap-2" style={{ color: 'var(--text-2)' }}>
+              <Info size={14} aria-hidden />Remote Computer Use is off
+            </summary>
+            <p className="mt-1.5 pl-[22px] leading-relaxed">Remote chats keep structured chat, permissions, cancellation and provider controls. Screen observation and input stay off because UAM cannot safely supervise a remote desktop.</p>
+          </details>
 
-          <SectionCard title="Configured hosts">
-            <div className="grid gap-3">
-              {remoteHosts.length === 0 && <div className="text-xs" style={{ color: 'var(--text-3)' }}>No remote hosts configured.</div>}
-              {remoteHosts.map((host) => (
-                <div key={host.id} className="flex items-start justify-between gap-4 rounded-lg p-3" style={{ border: '1px solid var(--border)', background: 'var(--bg)' }}>
-                  <div className="min-w-0 text-xs">
-                    <div className="font-medium" style={{ color: 'var(--text)' }}>{host.label}</div>
-                    <div className="mt-1 font-mono" style={{ color: 'var(--text-2)' }}>{host.sshAlias}</div>
-                    <div className="mt-1" style={{ color: host.runnerStatus === 'ready' ? 'var(--green)' : host.runnerStatus === 'error' ? 'var(--red)' : 'var(--text-3)' }}>
-                      {host.runnerStatus}{host.runnerVersion ? ` · runner ${host.runnerVersion}` : ''}{host.platform ? ` · ${host.platform} ${host.architecture}` : ''}
-                    </div>
-					<div className="mt-1" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
-                    <details className="mt-3">
-                      <summary className="cursor-pointer" style={{ color: 'var(--text)' }}>Host options</summary>
-                      <form className="mt-3 grid gap-2" onSubmit={(event) => {
-                        event.preventDefault()
-                        const fields = new FormData(event.currentTarget)
-                        void saveRemoteHostOptions(host, String(fields.get('instructionFile') || ''), fields.get('startupEnabled') === 'on', fields.get('cliUpdatesAsAdmin') === 'on')
-                      }}>
-                        <label className="flex items-center gap-2">
-                          <input type="checkbox" name="startupEnabled" defaultChecked={host.startupEnabled || false} />
-                          Start runner at login
-                        </label>
-                        <div style={{ color: 'var(--text-3)' }}>{host.startupStatus || 'disabled'} · Windows login or Linux systemd user session</div>
-                        {host.platform === 'linux' && <label className="flex items-center gap-2">
-                          <input type="checkbox" name="cliUpdatesAsAdmin" title="Requires passwordless sudo for npm. Chat sessions continue as your SSH user." defaultChecked={host.cliUpdatesAsAdmin || false} />
-                          Run CLI updates with sudo
-                        </label>}
-                        <label className="grid gap-1">
-                          Host instruction file
-                          <input name="instructionFile" aria-label={`Instruction file on ${host.label}`} defaultValue={host.instructionFile || ''} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="px-2 py-1 font-mono outline-none" style={{ color: 'var(--text)', background: '#000', border: '1px solid var(--border)' }} />
-                        </label>
-                        <div style={{ color: 'var(--text-3)' }}>Read on this host before project context. Leave empty to skip.</div>
-                        <div className="flex gap-2">
-                          <Button size="sm" type="button" disabled={remoteBusy} onClick={(event) => {
-                            const form = event.currentTarget.closest('form')
-                            if (!form) return
-                            setRemoteBusy(true)
-                            void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile: String(new FormData(form).get('instructionFile') || '') } }).then((response) => {
-                              setRemoteBusy(false)
-                              setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
-                            })
-                          }}>Check file</Button>
-                          <Button size="sm" type="submit" disabled={remoteBusy}>Save host options</Button>
-                        </div>
-                      </form>
-                    </details>
-                  </div>
-                  <div className="flex shrink-0 gap-1">
+          <SettingsSection
+            title="Add a host"
+            description="Connect a computer you can reach over SSH. UAM installs a small helper on it."
+            actions={
+              <Button size="sm" variant="primary" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
+                Preview setup
+              </Button>
+            }
+          >
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SettingsField label="Display name" htmlFor="remote-host-name">
+                <input
+                  id="remote-host-name"
+                  aria-label="Remote host display name"
+                  value={remoteLabel}
+                  maxLength={128}
+                  placeholder="AI desktop"
+                  className="uam-field"
+                  onChange={(event) => { setRemoteLabel(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
+                />
+              </SettingsField>
+              <SettingsField label="SSH config alias" htmlFor="remote-host-alias" hint="The Host name from your ~/.ssh/config.">
+                <input
+                  id="remote-host-alias"
+                  aria-label="SSH config alias"
+                  value={remoteAlias}
+                  maxLength={255}
+                  placeholder="ai-desktop"
+                  spellCheck={false}
+                  className="uam-field font-mono"
+                  onChange={(event) => { setRemoteAlias(event.target.value); setRemotePreview(null); setRemoteMessage('') }}
+                />
+              </SettingsField>
+            </div>
+            {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--success)' : 'var(--text-2)' }}>{remoteMessage}</div>}
+          </SettingsSection>
+
+          <SettingsSection title="Configured hosts" description="Helpers installed on these computers. Each host keeps its own options.">
+            {remoteBusy && <div role="progressbar" aria-label="Remote host task running" className="uam-settings-progress" />}
+            {remoteHosts.length === 0 && <SettingRow title="No remote hosts yet" description="Add a computer above to run workspaces over SSH." />}
+            {remoteHosts.map((host) => (
+              <SettingRow
+                key={host.id}
+                icon={<Server size={15} aria-hidden />}
+                title={host.label}
+                description={<span className="font-mono">{host.sshAlias}</span>}
+                status={(
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    <StatusDot tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} />
+                    <span>{host.runnerStatus}</span>
+                    {(host.runnerVersion || host.platform) && <span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `runner ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span>}
+                  </span>
+                )}
+                control={(
+                  <div className="flex items-center gap-1">
                     <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={remoteBusy} onClick={() => void previewRemoteHost(host)} />
                     <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={remoteBusy} onClick={() => void removeRemoteHost(host)} />
                   </div>
+                )}
+              >
+                <div className="grid gap-3">
+                  <div className="font-mono text-xs" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
+                  <details>
+                    <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--text)' }}>Host options</summary>
+                    <form className="mt-2 grid gap-2" onSubmit={(event) => {
+                      event.preventDefault()
+                      const fields = new FormData(event.currentTarget)
+                      void saveRemoteHostOptions(host, String(fields.get('instructionFile') || ''), fields.get('startupEnabled') === 'on', fields.get('cliUpdatesAsAdmin') === 'on')
+                    }}>
+                      <SettingRow
+                        title="Start runner at login"
+                        description="Starts the helper when you sign in to the computer."
+                        status={`Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses Windows login or Linux systemd user session`}
+                        control={<Switch hideLabel name="startupEnabled" label="Start runner at login" defaultChecked={host.startupEnabled || false} />}
+                      />
+                      {host.platform === 'linux' && (
+                        <SettingRow
+                          title="Run CLI updates with sudo"
+                          description="Opt in only if npm works with passwordless sudo. Chat sessions still run as your SSH user."
+                          control={<Switch hideLabel name="cliUpdatesAsAdmin" label="Run CLI updates with sudo" defaultChecked={host.cliUpdatesAsAdmin || false} />}
+                        />
+                      )}
+                      <SettingsField label="Host instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Read on this host before project context. Leave empty to skip.">
+                        <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} defaultValue={host.instructionFile || ''} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
+                      </SettingsField>
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="secondary" type="button" disabled={remoteBusy} onClick={(event) => {
+                          const form = event.currentTarget.closest('form')
+                          if (!form) return
+                          setRemoteBusy(true)
+                          void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile: String(new FormData(form).get('instructionFile') || '') } }).then((response) => {
+                            setRemoteBusy(false)
+                            setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
+                          })
+                        }}>Check file</Button>
+                        <Button size="sm" variant="primary" type="submit" disabled={remoteBusy}>Save host options</Button>
+                      </div>
+                    </form>
+                  </details>
                 </div>
-              ))}
-            </div>
-          </SectionCard>
+              </SettingRow>
+            ))}
+          </SettingsSection>
         </div>
       )
     }
 
     if (selectedSection === 'memory-settings') {
       return (
-        <div className="space-y-4">
-          <SectionCard
-            title="Memory Defaults"
-          >
-            <div className="space-y-3">
-              <div>
-                <div className="mb-2 flex items-end justify-between gap-4">
-                  <div className="text-sm" style={{ color: 'var(--text)' }}>Default memory level</div>
-                  <div className="text-xs" style={{ color: 'var(--text-3)' }}>{MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevelDefault)?.detail}</div>
-                </div>
-                <div role="radiogroup" aria-label="Default memory level" className="grid grid-cols-4 overflow-hidden rounded-lg" style={{ border: '1px solid var(--border)' }}>
+        <div className="grid gap-0">
+          <SettingsSection title="Memory defaults" description="What new chats remember unless you change it for a chat.">
+            <SettingRow
+              title="Default memory level"
+              description={MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevelDefault)?.detail}
+              control={
+                <div role="radiogroup" aria-label="Default memory level" className="grid grid-cols-4 overflow-hidden rounded-lg" style={{ border: '1px solid var(--border)', width: 340 }}>
                   {MEMORY_LEVEL_OPTIONS.map((option) => {
                     const selected = option.id === memoryLevelDefault
                     return <button key={option.id} type="button" role="radio" aria-checked={selected} onClick={() => void setMemorySettings({ memoryLevelDefault: option.id })} className="uam-segment-button px-3 py-2 text-xs" style={{ border: 0, borderRight: option.id === 'open' ? 0 : '1px solid var(--border)', background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--accent)' : 'var(--text-2)' }}>{option.label}</button>
                   })}
                 </div>
-              </div>
+              }
+            />
+            <SettingRow
+              title="Idle delay (seconds)"
+              description="Seconds a chat must sit idle before its memory is processed."
+              htmlFor="memory-idle-delay"
+              control={
+                <input
+                  id="memory-idle-delay"
+                  type="number"
+                  className="uam-field"
+                  style={{ width: 120 }}
+                  min={MIN_MEMORY_IDLE_DELAY_SECONDS}
+                  max={MAX_MEMORY_IDLE_DELAY_SECONDS}
+                  value={memoryIdleDelaySeconds}
+                  onChange={(event) => void setMemorySettings({ memoryIdleDelaySeconds: Number(event.currentTarget.value) })}
+                />
+              }
+            />
+            <SettingRow
+              title="Recall budget (bytes)"
+              description="Largest amount of saved memory added to a new prompt."
+              htmlFor="memory-recall-budget"
+              control={
+                <input
+                  id="memory-recall-budget"
+                  type="number"
+                  className="uam-field"
+                  style={{ width: 120 }}
+                  min={MIN_MEMORY_RECALL_BUDGET_BYTES}
+                  max={MAX_MEMORY_RECALL_BUDGET_BYTES}
+                  step={256}
+                  value={memoryRecallBudgetBytes}
+                  onChange={(event) => void setMemorySettings({ memoryRecallBudgetBytes: Number(event.currentTarget.value) })}
+                />
+              }
+            />
+          </SettingsSection>
 
-              <div className="grid grid-cols-2 gap-3">
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Idle delay (seconds)
-                  <input
-                    type="number"
-                    min={MIN_MEMORY_IDLE_DELAY_SECONDS}
-                    max={MAX_MEMORY_IDLE_DELAY_SECONDS}
-                    value={memoryIdleDelaySeconds}
-                    onChange={(event) => void setMemorySettings({ memoryIdleDelaySeconds: Number(event.currentTarget.value) })}
-                    style={{
-                      background: 'var(--surface)',
-                      color: 'var(--text)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 8,
-                      padding: '8px 10px',
-                    }}
-                  />
-                </label>
-
-                <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                  Recall budget (bytes)
-                  <input
-                    type="number"
-                    min={MIN_MEMORY_RECALL_BUDGET_BYTES}
-                    max={MAX_MEMORY_RECALL_BUDGET_BYTES}
-                    step={256}
-                    value={memoryRecallBudgetBytes}
-                    onChange={(event) => void setMemorySettings({ memoryRecallBudgetBytes: Number(event.currentTarget.value) })}
-                    style={{
-                      background: 'var(--surface)',
-                      color: 'var(--text)',
-                      border: '1px solid var(--border)',
-                      borderRadius: 8,
-                      padding: '8px 10px',
-                    }}
-                  />
-                </label>
-              </div>
-            </div>
-          </SectionCard>
-
-          <SectionCard
-            title="Memory Workers"
-          >
-            <div ref={memoryMenuRef} className="space-y-3">
+          <SettingsSection title="Memory workers" description="The model that saves and recalls memory for each provider's chats.">
+            <div ref={memoryMenuRef}>
               {providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => {
                 const binding = memoryWorkerBindings[provider.id] ?? { workerProviderId: provider.id, workerModelId: '' }
                 const workerProvider = providers.find((candidate) => candidate.id === binding.workerProviderId) ?? provider
@@ -2329,16 +2505,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 const modelMenuId = `${provider.id}:model`
                 const modelOptions = memoryModelOptions(workerProvider, binding.workerProviderId, binding.workerModelId, workerAcp?.availableModels)
                 return (
-                  <div
+                  <SettingRow
                     key={provider.id}
-                    className="uam-memory-worker-row text-xs"
-                    style={{ color: 'var(--text-2)' }}
-                  >
-                    <div className="min-w-0">
-                      <div className="text-sm" style={{ color: 'var(--text)' }}>{providerDisplayName(provider, provider.id)} chats</div>
-                      <div style={{ color: 'var(--text-3)' }}>Memory worker and model</div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
+                    icon={<ProviderLogo providerId={provider.id} />}
+                    title={`${providerDisplayName(provider, provider.id)} chats`}
+                    description="Memory worker provider and model."
+                    control={
+                    <div className="grid grid-cols-2 gap-2" style={{ width: 380 }}>
                       <div className="relative">
                         <button
                           ref={(element) => { if (element) popupAnchorsRef.current.set(providerMenuId, element) }}
@@ -2347,19 +2520,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           aria-haspopup="listbox"
                           aria-expanded={openMemoryMenu === providerMenuId}
                           onClick={() => setOpenMemoryMenu(openMemoryMenu === providerMenuId ? null : providerMenuId)}
-                          className="w-full text-left"
-                          style={{
-                            background: 'var(--surface-up)',
-                            color: 'var(--text)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            padding: '8px 10px',
-                          }}
+                          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
                         >
-                          <span className="inline-flex items-center gap-2">
+                          <span className="flex min-w-0 items-center gap-2 truncate">
                             <ProviderLogo providerId={binding.workerProviderId} />
-                            <span>{providerDisplayName(workerProvider, binding.workerProviderId)}</span>
+                            <span className="truncate">{providerDisplayName(workerProvider, binding.workerProviderId)}</span>
                           </span>
+                          <ChevronDown className={openMemoryMenu === providerMenuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
                         </button>
                         {openMemoryMenu === providerMenuId && (
                           <ViewportMenu
@@ -2371,7 +2538,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               border: '1px solid var(--border-bright)',
                               borderRadius: 10,
                               background: 'var(--surface)',
-                              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+                              boxShadow: 'var(--elev-3)',
                               padding: 6,
                             }}
                           >
@@ -2399,7 +2566,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                 >
                                   <ProviderLogo providerId={candidate.id} />
                                   <span className="flex-1">{providerDisplayName(candidate, candidate.id)}</span>
-                                  {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
+                                  {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
                                 </button>
                               )
                             })}
@@ -2415,16 +2582,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           aria-haspopup="listbox"
                           aria-expanded={openMemoryMenu === modelMenuId}
                           onClick={() => setOpenMemoryMenu(openMemoryMenu === modelMenuId ? null : modelMenuId)}
-                          className="w-full text-left"
-                          style={{
-                            background: 'var(--surface-up)',
-                            color: 'var(--text)',
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            padding: '8px 10px',
-                          }}
+                          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
                         >
-                          {selectedMemoryModelLabel(modelOptions, binding.workerModelId)}
+                          <span className="truncate">{selectedMemoryModelLabel(modelOptions, binding.workerModelId)}</span>
+                          <ChevronDown className={openMemoryMenu === modelMenuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
                         </button>
                         {openMemoryMenu === modelMenuId && (
                           <ViewportMenu
@@ -2436,7 +2597,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               border: '1px solid var(--border-bright)',
                               borderRadius: 10,
                               background: 'var(--surface)',
-                              boxShadow: '0 14px 42px rgba(0, 0, 0, 0.28)',
+                              boxShadow: 'var(--elev-3)',
                               padding: 6,
                             }}
                           >
@@ -2464,7 +2625,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                                 >
                                   <span className="flex items-center gap-2">
                                     <span className="flex-1">{option.label}</span>
-                                    {selected && <Check size={13} style={{ color: 'var(--green)' }} aria-hidden />}
+                                    {selected && <Check size={13} style={{ color: 'var(--success)' }} aria-hidden />}
                                   </span>
                                   <span className="text-[11px]" style={{ color: 'var(--text-3)' }}>{option.detail}</span>
                                 </button>
@@ -2474,41 +2635,23 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         )}
                       </div>
                     </div>
-                  </div>
+                    }
+                  />
                 )
               })}
             </div>
-
-            {memoryLastStatus && (
-              <div className="text-xs mt-3" style={{ color: 'var(--text-3)' }}>{memoryLastStatus}</div>
-            )}
+            {memoryLastStatus && <SettingRow title="Last run" description={memoryLastStatus} />}
 
             {hasWorkerLog && (
-              <div
-                className="mt-3 rounded-lg overflow-hidden"
-                style={{
-                  background: workerLogIsFailure ? 'color-mix(in srgb, var(--red) 7%, var(--surface))' : 'var(--surface)',
-                  border: `1px solid ${workerLogIsFailure ? 'color-mix(in srgb, var(--red) 35%, var(--border))' : 'var(--border)'}`,
-                }}
-              >
-                <div className="px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-                  <div className="text-xs font-semibold" style={{ color: workerLogIsFailure ? 'var(--red)' : 'var(--text)' }}>
-                    Last worker log
-                  </div>
-                  {memoryActivity.lastWorkerStatus && (
-                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
-                      {memoryActivity.lastWorkerStatus}
-                    </div>
-                  )}
-                  {workerLogMeta && (
-                    <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-3)' }}>
-                      {workerLogMeta}
-                    </div>
-                  )}
-                </div>
+              <details className="mt-3 text-xs" style={{ color: 'var(--text-2)' }}>
+                <summary className="cursor-pointer" style={{ color: workerLogIsFailure ? 'var(--error)' : 'var(--text)' }}>Last worker log</summary>
+                {memoryActivity.lastWorkerStatus && <p className="mt-2 text-[11px]" style={{ color: 'var(--text-3)' }}>{memoryActivity.lastWorkerStatus}</p>}
+                {workerLogMeta && <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-3)' }}>{workerLogMeta}</p>}
                 <pre
-                  className="px-3 py-2 text-[11px] leading-5 overflow-auto"
+                  className="mt-2 rounded-lg px-3 py-2 text-[11px] leading-5 overflow-auto"
                   style={{
+                    background: 'var(--bg)',
+                    border: '1px solid var(--border)',
                     color: 'var(--text-2)',
                     maxHeight: 180,
                     whiteSpace: 'pre-wrap',
@@ -2518,9 +2661,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 >
                   {workerLogText || 'No worker output was captured.'}
                 </pre>
-              </div>
+              </details>
             )}
-          </SectionCard>
+          </SettingsSection>
 
         </div>
       )
@@ -2529,22 +2672,20 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'voice-input') {
       return (
-        <SectionCard title="Dictation">
-          <div role="status" className="flex items-start gap-3">
-            <span className="uam-settings-icon" aria-hidden><Mic size={16} /></span>
-            <div className="min-w-0 text-xs leading-5" style={{ color: 'var(--text-2)' }}>
-              <div className="text-sm" style={{ color: 'var(--text)' }}>System speech recognition</div>
-              Dictation stays on the native system speech service. Start it with the microphone button in the composer.
-            </div>
-          </div>
-        </SectionCard>
+        <SettingsSection title="Dictation" description="Speak a message instead of typing it.">
+          <SettingRow
+            icon={<Mic size={16} aria-hidden />}
+            title="System speech recognition"
+            description="Dictation stays on the native system speech service. Start it with the microphone button in the message box."
+          />
+        </SettingsSection>
       )
     }
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     if (selectedSection === 'markdown-store') return <div className="h-full min-h-0 flex flex-col gap-3">
-      <details className="uam-skill-folder shrink-0">
-        <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-sm)'}}><ChevronRight size={13} className="uam-skill-folder__chevron" aria-hidden/><FolderOpen size={14} aria-hidden style={{color:'var(--text-3)'}}/><span>Skills folder</span><span className="min-w-0 truncate" style={{color:'var(--text-3)',fontFamily:'var(--font-mono)',fontSize:'var(--fs-xs)'}}>{markdownStoreDirectory || 'Not set'}</span></summary>
+      <details className="uam-skill-folder shrink-0 order-last">
+        <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-xs)',color:'var(--text-3)'}}><ChevronRight size={12} className="uam-skill-folder__chevron" aria-hidden/><span>Enter folder path manually</span></summary>
         <div className="flex items-center gap-2 pt-2 pl-6">
           <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Skills directory" className="uam-field min-w-0 flex-1"/>
           <IconButton icon={<FolderOpen size={15}/>} label="Browse for Skills directory" onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) setMarkdownStoreDraftDirectory(selected) })}/>
@@ -2556,19 +2697,22 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'goal-loops') {
       return (
-        <SectionCard title="Goal Loop Safety">
-          <div className="grid gap-4 text-xs" style={{ color: 'var(--text-2)' }}>
-            <div className="grid gap-1">
-              <span>Maximum iterations</span>
+        <SettingsSection title="Goal loop safety" description="Limits that keep long-running goals bounded.">
+          <SettingRow
+            title="Maximum iterations"
+            description="How many loops a goal may run before it stops. Always between 1 and 200."
+            control={
               <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-			    <IconButton icon={<Minus size={14} />} label="Decrease maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations <= 1} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.max(1, goalMaxLoopIterations - 1) })} />
-			    <output aria-label="Maximum goal loop iterations" className="min-w-16 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{goalMaxLoopIterations}</output>
-			    <IconButton icon={<Plus size={14} />} label="Increase maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations >= 200} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.min(200, goalMaxLoopIterations + 1) })} />
+                <IconButton icon={<Minus size={14} />} label="Decrease maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations <= 1} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.max(1, goalMaxLoopIterations - 1) })} />
+                <output aria-label="Maximum goal loop iterations" className="min-w-16 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{goalMaxLoopIterations}</output>
+                <IconButton icon={<Plus size={14} />} label="Increase maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations >= 200} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.min(200, goalMaxLoopIterations + 1) })} />
               </div>
-			  <span style={{ color: 'var(--text-3)' }}>Always bounded between 1 and 200 iterations.</span>
-            </div>
-            <div className="grid w-72 gap-1">
-              <span>ACP setup inactivity timeout</span>
+            }
+          />
+          <SettingRow
+            title="Provider setup timeout"
+            description="Restarts a provider only after no setup activity for this long."
+            control={
               <MenuSelect
                 label="ACP setup inactivity timeout"
                 value={String(acpSetupInactivityTimeoutSeconds)}
@@ -2582,10 +2726,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 ]}
                 onChange={(value) => void setMemorySettings({ acpSetupInactivityTimeoutSeconds: Number(value) })}
               />
-              <span style={{ color: 'var(--text-3)' }}>Restarts an ACP provider only after no setup activity for this long.</span>
-            </div>
-            <div className="grid w-72 gap-1">
-              <span>Provider turn output ceiling</span>
+            }
+          />
+          <SettingRow
+            title="Turn output limit"
+            description="Largest output one provider turn may produce. Resets for every worker or review turn; startup history is excluded."
+            control={
               <MenuSelect
                 label="Provider turn output ceiling"
                 value={String(acpTurnOutputLimitMiB)}
@@ -2598,105 +2744,110 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 ]}
                 onChange={(value) => void setMemorySettings({ acpTurnOutputLimitMiB: Number(value) })}
               />
-              <span style={{ color: 'var(--text-3)' }}>Resets for every worker or review turn; startup history is excluded.</span>
-            </div>
-          </div>
-        </SectionCard>
+            }
+          />
+        </SettingsSection>
       )
     }
 
     if (selectedSection === 'editors') {
       return (
-        <div className="space-y-4">
-          <SectionCard
-            title="Workspace Editors"
-          >
-            <div ref={editorMenuRef} className="grid gap-3">
-              <div className="grid gap-2 text-xs">
-                <div><div className="text-sm" style={{ color: 'var(--text)' }}>File explorer</div><div style={{ color: 'var(--text-3)' }}>App used by “Open workspace” and “Reveal” actions.</div></div>
-                <MenuSelect label="File explorer" disabled={editorSaving} value={customExplorer ? 'custom' : 'system'} options={[{ value: 'system', label: 'System default' }, { value: 'custom', label: 'Custom application' }]} onChange={(value) => { setCustomExplorer(value === 'custom'); if (value === 'system') void saveExplorer('') }} />
-                {customExplorer && <div className="flex gap-2">
-                  <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="min-w-0 flex-1 rounded-lg px-3 py-1.5 font-mono text-xs outline-none" style={{ background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--border)' }} placeholder="/Applications/Path Finder.app" />
-                  <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setEditorError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
-                  <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
-                </div>}
-              </div>
-              <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                <div>Default editor</div>
-                {renderEditorPresetMenu(
-                  'default-editor',
-                  defaultEditorDraft,
-                  'Default editor',
-                  (presetId) => saveEditorSettings(editorAssociationsDraft, presetId)
-                )}
-              </div>
+        <div className="grid gap-0">
+          <SettingsSection title="Default editor" description="Opens any file that is not in a file type group below.">
+            <SettingRow
+              title="Editor"
+              description="Used for files outside every group."
+              control={renderEditorPresetMenu(
+                'default-editor',
+                defaultEditorDraft,
+                'Default editor',
+                (presetId) => saveEditorSettings(editorAssociationsDraft, presetId)
+              )}
+            />
+          </SettingsSection>
 
-              <div className="space-y-3">
-                {editorAssociationsDraft.map((association) => {
-                  const groupName = association.name.trim() || 'File group'
-                  const expanded = expandedEditorGroups[association.id] ?? false
-                  return (
-                    <ProviderDisclosureCard
-                      key={association.id}
-                      panelId={`${association.id}-editor-group-panel`}
-                      title={groupName}
-                      actions={<IconButton icon={<Trash2 size={14}/>} label={`Delete ${groupName} editor group`} variant="danger" size="sm" style={{border:'1px solid var(--border)',background:'var(--surface-up)'}} disabled={editorSaving || editorAssociationsDraft.length <= 1} onClick={() => setPendingDelete({kind:'editor',id:association.id,name:groupName})}/>}
-                      expanded={expanded}
-                      toggleLabel={`${expanded ? 'Hide' : 'Show'} ${groupName} editor group`}
-                      onToggle={() => toggleEditorGroup(association.id)}
-                    >
-                      <div className="grid gap-2">
-                        <div className="grid grid-cols-3 gap-2">
-                          <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            <input
-                              aria-label={`${groupName} group name`}
-                              placeholder="Group name"
-                              value={rawEditorNames[association.id] ?? association.name}
-                              disabled={editorSaving}
-                              aria-invalid={rawEditorNames[association.id] !== undefined && !rawEditorNames[association.id].trim()}
-                              onChange={event => { const name = event.currentTarget.value; setRawEditorNames(current => ({...current,[association.id]:name})) }}
-                              onBlur={() => commitEditorField(association.id,'name')}
-                              onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
-                              style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                            />
-                          </label>
-                          <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            <input
-                              aria-label={`${groupName} file extensions`}
-                              placeholder=".ts .tsx"
-                              value={rawExtensions[association.id] ?? extensionsText(association)}
-                              disabled={editorSaving}
-                              aria-invalid={rawExtensions[association.id] !== undefined && !parseExtensions(rawExtensions[association.id]).length}
-                              onChange={event => { const extensions = event.currentTarget.value; setRawExtensions(current => ({...current,[association.id]:extensions})) }}
-                              onBlur={() => commitEditorField(association.id,'extensions')}
-                              onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
-                              style={{ background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 10px' }}
-                            />
-                          </label>
-                          <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-                            {renderEditorPresetMenu(
-                              `${association.id}:editor`,
-                              association.editorPresetId,
-                              `${groupName} editor`,
-                              (presetId) => {
-                                const nextAssociations = editorAssociationsDraft.map((item) =>
-                                  item.id === association.id ? { ...item, editorPresetId: presetId } : item
-                                )
-                                saveEditorSettings(nextAssociations)
-                              }
-                            )}
-                          </div>
-                        </div>
+          <SettingsSection title="File types" description="Groups of file extensions, and the editor each group opens in." actions={renderAddEditor()}>
+            <div ref={editorMenuRef}>
+              {editorAssociationsDraft.map((association) => {
+                const groupName = association.name.trim() || 'File group'
+                const expanded = expandedEditorGroups[association.id] ?? false
+                const panelId = `${association.id}-editor-group-panel`
+                return (
+                  <SettingRow
+                    key={association.id}
+                    icon={<IconButton size="sm" icon={<ChevronRight size={14} style={{ transform: expanded ? 'rotate(90deg)' : undefined, transition: 'transform var(--dur-fast) var(--ease)' }} />} label={`${expanded ? 'Hide' : 'Show'} ${groupName} editor group`} aria-expanded={expanded} aria-controls={panelId} onClick={() => toggleEditorGroup(association.id)} />}
+                    title={groupName}
+                    description={<span className="font-mono">{extensionsText(association) || 'No extensions set'}</span>}
+                    control={<div className="flex items-center gap-2">
+                      <span className="text-xs" style={{ color: 'var(--text-3)' }}>Opens in {editorPresetLabel(association.editorPresetId)}</span>
+                      <IconButton icon={<Trash2 size={14}/>} label={`Delete ${groupName} editor group`} variant="danger" size="sm" disabled={editorSaving || editorAssociationsDraft.length <= 1} onClick={() => setPendingDelete({kind:'editor',id:association.id,name:groupName})}/>
+                    </div>}
+                  >
+                    {expanded && <div id={panelId} className="uam-reveal grid grid-cols-3 gap-2">
+                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        Name
+                        <input
+                          className="uam-field"
+                          aria-label={`${groupName} group name`}
+                          placeholder="Group name"
+                          value={rawEditorNames[association.id] ?? association.name}
+                          disabled={editorSaving}
+                          aria-invalid={rawEditorNames[association.id] !== undefined && !rawEditorNames[association.id].trim()}
+                          onChange={event => { const name = event.currentTarget.value; setRawEditorNames(current => ({...current,[association.id]:name})) }}
+                          onBlur={() => commitEditorField(association.id,'name')}
+                          onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                        />
+                      </label>
+                      <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        Extensions
+                        <input
+                          className="uam-field font-mono"
+                          aria-label={`${groupName} file extensions`}
+                          placeholder=".ts .tsx"
+                          value={rawExtensions[association.id] ?? extensionsText(association)}
+                          disabled={editorSaving}
+                          aria-invalid={rawExtensions[association.id] !== undefined && !parseExtensions(rawExtensions[association.id]).length}
+                          onChange={event => { const extensions = event.currentTarget.value; setRawExtensions(current => ({...current,[association.id]:extensions})) }}
+                          onBlur={() => commitEditorField(association.id,'extensions')}
+                          onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                        />
+                      </label>
+                      <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
+                        Editor
+                        {renderEditorPresetMenu(
+                          `${association.id}:editor`,
+                          association.editorPresetId,
+                          `${groupName} editor`,
+                          (presetId) => {
+                            const nextAssociations = editorAssociationsDraft.map((item) =>
+                              item.id === association.id ? { ...item, editorPresetId: presetId } : item
+                            )
+                            saveEditorSettings(nextAssociations)
+                          }
+                        )}
                       </div>
-                    </ProviderDisclosureCard>
-                  )
-                })}
-              </div>
-
-              {editorError && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{editorError}</p>}
-
+                    </div>}
+                  </SettingRow>
+                )
+              })}
+              {editorAssociationsDraft.length === 0 && <SettingRow title="No file types" description="Add a group to choose an editor for a set of extensions." />}
             </div>
-          </SectionCard>
+            {editorError && <p role="alert" className="pt-2 text-xs" style={{color:'var(--error)'}}>{editorError}</p>}
+          </SettingsSection>
+
+          <SettingsSection title="File explorer" description="The app used by the Open workspace and Reveal actions.">
+            <SettingRow
+              title="Application"
+              description={customExplorer ? 'A custom application opens folders.' : 'Your system file manager opens folders.'}
+              control={<MenuSelect label="File explorer" disabled={editorSaving} value={customExplorer ? 'custom' : 'system'} options={[{ value: 'system', label: 'System default' }, { value: 'custom', label: 'Custom application' }]} onChange={(value) => { setCustomExplorer(value === 'custom'); if (value === 'system') void saveExplorer('') }} />}
+            >
+              {customExplorer && <div className="flex gap-2">
+                <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="uam-field min-w-0 flex-1 font-mono" placeholder="/Applications/Path Finder.app" />
+                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) setEditorError(response.error || 'Application picker could not be opened.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
+                <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
+              </div>}
+            </SettingRow>
+          </SettingsSection>
         </div>
       )
     }
@@ -2707,29 +2858,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'central-configuration') return <CentralProviderSettings />
 
-    if (selectedSection === 'mcp-servers') return <SectionCard title="MCP servers"><McpServerSetup onBusyChange={setMcpSaving} onDirtyChange={setMcpDraftDirty} /></SectionCard>
+    if (selectedSection === 'mcp-servers') return <McpServerSetup onBusyChange={setMcpSaving} onDirtyChange={setMcpDraftDirty} />
 
     if (selectedSection === 'chat-data') {
       return (
-        <div className="space-y-4">
-          <SectionCard
-            title="Portable local chat bundle"
-          >
-            <div className="grid gap-4">
-              <p className="text-xs leading-5" style={{ color: 'var(--text-2)' }}>
-                Export writes a readable versioned folder with a manifest and canonical chat JSON files. Choose a new or empty folder. Import validates the complete bundle first and gives conflicting chats new local IDs.
-              </p>
-              {chatDataMessage && (
-                <Notice
-                  tone={chatDataMessage.tone}
-                  title="Chat data"
-                  dismissLabel="Dismiss chat data result"
-                  onDismiss={() => setChatDataMessage(null)}
-                >
-                  {chatDataMessage.text}
-                </Notice>
-              )}
-              <div className="flex flex-wrap gap-2">
+        <div className="grid gap-0">
+          <SettingsSection title="Chat bundle" description="Export writes a readable folder with a manifest and one JSON file per chat. Import checks the whole bundle first.">
+            <SettingRow
+              title="Export all chats"
+              description="Writes every chat to a new or empty folder you choose."
+              status={chatDataFolder ? <span className="break-all font-mono">Last folder: {chatDataFolder}</span> : undefined}
+              control={
                 <Button
                   size="sm"
                   leadingIcon={<Download size={14} />}
@@ -2739,6 +2878,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 >
                   Export all chats
                 </Button>
+              }
+            />
+            <SettingRow
+              title="Import a chat bundle"
+              description="Adds chats from a folder exported by UAM. Chats that clash get new local IDs."
+              control={
                 <Button
                   size="sm"
                   variant="secondary"
@@ -2749,35 +2894,37 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 >
                   Import chat bundle
                 </Button>
-              </div>
-              {chatDataFolder && <div className="text-xs" style={{ color: 'var(--text-3)', overflowWrap: 'anywhere' }}>Last folder: {chatDataFolder}</div>}
+              }
+            />
+          </SettingsSection>
+          {chatDataMessage && (
+            <div className="pt-1">
+              <Notice
+                tone={chatDataMessage.tone}
+                title="Chat data"
+                dismissLabel="Dismiss chat data result"
+                onDismiss={() => setChatDataMessage(null)}
+              >
+                {chatDataMessage.text}
+              </Notice>
             </div>
-          </SectionCard>
+          )}
         </div>
       )
     }
 
     return (
-      <div className="space-y-4">
-        <SectionCard
-          title="Universal Agent Manager"
-        >
-          <div className="grid gap-3 text-xs">
-            <div className="flex justify-between gap-3">
-              <span style={{ color: 'var(--text-3)' }}>Application</span>
-              <span style={{ color: 'var(--text)' }}>Universal Agent Manager</span>
-            </div>
-            <div className="flex justify-between gap-3">
-              <span style={{ color: 'var(--text-3)' }}>Version</span>
-              <span style={{ color: 'var(--text)' }}>{displayedVersion}</span>
-            </div>
-          </div>
-        </SectionCard>
-        <SectionCard
-          title="Update checks"
-        >
-          <Switch label="Automatically check for updates" checked={updateChecksEnabled} onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }} />
-        </SectionCard>
+      <div className="grid gap-0">
+        <SettingsSection title="Universal Agent Manager">
+          <SettingRow title="Version" control={<span style={{ color: 'var(--text)' }}>{displayedVersion}</span>} />
+        </SettingsSection>
+        <SettingsSection title="Updates" description="Check for newer UAM releases.">
+          <SettingRow
+            title="Check for updates automatically"
+            description="Look for newer UAM releases in the background."
+            control={<Switch hideLabel label="Automatically check for updates" checked={updateChecksEnabled} onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }} />}
+          />
+        </SettingsSection>
       </div>
     )
   }
@@ -2794,9 +2941,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               <input type="text" role="searchbox" aria-label="Search settings" placeholder="Search settings" value={settingsSearch} onChange={event => setSettingsSearch(event.target.value)} className="min-w-0 w-full py-2 text-xs" style={{background:'transparent',border:0,color:'var(--text)'}}/>
               {settingsSearch && <IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/>}
             </div>
-            <nav aria-label="Settings pages" className="space-y-5 min-h-0 overflow-y-auto flex-1">
+            <nav ref={navRef} aria-label="Settings pages" className="uam-settings-nav min-h-0 overflow-y-auto flex-1">
+              {navIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
               {visibleSettingsGroups.length === 0 && <p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p>}
-              {visibleSettingsGroups.map(group => <div key={group.label}>
+              {visibleSettingsGroups.map(group => <div key={group.label} className="mb-5 last:mb-0">
                 <h2 className="px-2 mb-1 text-xs font-medium" style={{color:'var(--text-3)'}}>{group.label}</h2>
                 {group.sections.map(id => {
                   const section = SETTINGS_SECTIONS.find(item => item.id === id)!
@@ -2807,102 +2955,125 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </div>)}
             </nav>
           </aside>
-          <div className="min-w-0 min-h-0 flex flex-col p-5 md:p-6 overflow-hidden">
-            <div className="w-full mx-auto min-h-0 flex-1 flex flex-col" style={{maxWidth: 1040}}>
+          <div className="min-w-0 min-h-0 flex flex-col overflow-hidden">
+            <div className="w-full min-h-0 flex-1 flex flex-col">
               {themeDraft ? <div className="overflow-y-auto">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
                 {themeMessage && <p role="status" className="text-xs mt-3">{themeMessage}</p>}
               </div> : <>
-                <div className="w-full mx-auto flex items-start justify-between gap-3 mb-5" style={{maxWidth: selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? undefined : 800}}>
+                {(() => {
+                  const fullHeight = selectedSection === 'memory-store' || selectedSection === 'markdown-store'
+                  const header = <div className="uam-settings-page-header w-full">
                   <div key={selectedSection} className="uam-reveal min-w-0">
-                    <h2 className="text-lg font-semibold">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
-                    {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="mt-0.5 text-xs" style={{color:'var(--text-3)'}}>{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
+                    <h2 className="uam-settings-page-header__title">{selectedSection === 'cli-version' ? 'CLI version control' : SETTINGS_SECTIONS.find(section => section.id === selectedSection)?.label}</h2>
+                    {SETTINGS_SECTION_DESCRIPTIONS[selectedSection] && <p className="uam-settings-page-header__description">{SETTINGS_SECTION_DESCRIPTIONS[selectedSection]}</p>}
                   </div>
                   <div className="flex items-center gap-2">
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
-                    {selectedSection === 'editors' && renderAddEditor()}
                   </div>
                 </div>
-                <div key={selectedSection} className={`uam-settings-page flex-1 min-h-0 ${selectedSection === 'memory-store' || selectedSection === 'markdown-store' ? 'overflow-hidden' : 'overflow-y-auto uam-settings-page--narrow'}`}>{renderSectionContent()}</div>
+                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div>
+                  return <div className="uam-settings-scroll"><div className="uam-settings-frame">{header}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
+                })()}
               </>}
             </div>
           </div>
         </div>
       </div>
-      {editorExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.5)'}}>
-        <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved editor changes" className="max-w-md p-5 space-y-4 rounded-xl" style={{background:'var(--surface)',border:'1px solid var(--border)'}}>
-          <h2 className="text-sm font-semibold">Save editor changes?</h2>
-          {editorError && <p role="alert" className="text-xs">{editorError}</p>}
-          <div className="flex gap-2"><Button autoFocus disabled={editorSaving} onClick={() => setEditorExit(null)}>Stay</Button><Button disabled={editorSaving} onClick={() => { const next=editorExit; setEditorExit(null); next() }}>Discard</Button><Button disabled={editorSaving} onClick={async () => {
-            const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
-            if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave() }
-          }}>Save</Button></div>
-        </div>
-      </div>}
-      {themeExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'rgba(0,0,0,.5)'}}>
-        <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="max-w-md rounded-xl p-5 space-y-4" style={{background:'var(--surface)',border:'1px solid var(--border)'}}>
-          <h2 className="text-sm font-semibold">Save theme changes?</h2>
-          <div className="flex gap-2"><Button autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button><Button disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button><Button disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button></div>
-          {themeMessage && <p role="status" className="text-xs">{themeMessage}</p>}
-        </div>
-      </div>}
-      {remotePreview && (
-		<div className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.5)' }} onClick={(event) => { if (event.target === event.currentTarget && !remoteBusy) setRemotePreview(null) }}>
-		  <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-			<div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
-			  <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
-			  <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>SSH alias: <code>{remotePreview.host.sshAlias}</code></div>
-			</div>
-			<div className="grid gap-4 p-5 text-sm" style={{ color: 'var(--text-2)' }}>
-			  <p>UAM uses your existing OpenSSH authentication, detects Ubuntu/Linux or Windows, copies the matching helper, verifies its SHA-256 checksum, and starts it. Unsupported systems stop before anything is copied.</p>
-			  <fieldset className="grid gap-2">
-				<legend className="mb-1 text-xs font-medium" style={{ color: 'var(--text)' }}>Install location</legend>
-				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--border)' : 'var(--accent)'}` }}>
-				  <input type="radio" name="remote-helper-location" checked={!remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(false)} />
-				  <span><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Recommended private location</span><span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></span>
-				</label>
-				<div className="rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
-				  <label className="flex cursor-pointer items-start gap-2">
-					<input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
-					<span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
-				  </label>
-				  <div className="ml-6">
-					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="mt-2 w-full rounded-lg px-3 py-2 font-mono text-xs outline-none" style={{ color: 'var(--text)', background: 'var(--bg)', border: `1px solid ${remoteDirectoryValidation ? 'var(--red)' : 'var(--border)'}` }} />
-					<span id="remote-helper-folder-help" className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
-					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--red)' }}>{remoteDirectoryValidation}</span>}
-					{remoteCustomDirectory && !remoteDirectoryValidation && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
-				  </div>
-				</div>
-			  </fieldset>
-			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
-			</div>
-			<div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-			  <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
-			  <Button size="sm" variant="primary" aria-busy={remoteBusy || undefined} disabled={remoteBusy || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
-			</div>
-		  </div>
-		</div>
-	  )}
-      {confirmDiscard && (
-        <div className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.45)' }}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Discard MCP changes?</div>
-            <p className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>The MCP server configuration has unsaved changes.</p>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+      <Presence open={Boolean(editorExit)}>
+        {editorExit && <Overlay open zIndex={80}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved editor changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save editor changes?</div>
+            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
+              <p>Your file type changes have not been saved.</p>
+              {editorError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{editorError}</p>}
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5">
+              <Button size="sm" disabled={editorSaving} onClick={() => { const next=editorExit; setEditorExit(null); next() }}>Discard</Button>
+              <Button size="sm" autoFocus disabled={editorSaving} onClick={() => setEditorExit(null)}>Stay</Button>
+              <Button size="sm" variant="primary" disabled={editorSaving} onClick={async () => {
+                const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
+                if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave() }
+              }}>Save</Button>
+            </div>
+          </div>
+        </Overlay>}
+      </Presence>
+      <Presence open={Boolean(themeExit)}>
+        {themeExit && <Overlay open zIndex={80}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save theme changes?</div>
+            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
+              <p>Your theme edits have not been saved.</p>
+              {themeMessage && <p role="status" className="text-xs">{themeMessage}</p>}
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5">
+              <Button size="sm" disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button>
+              <Button size="sm" autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button>
+              <Button size="sm" variant="primary" disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button>
+            </div>
+          </div>
+        </Overlay>}
+      </Presence>
+      <Presence open={Boolean(remotePreview)}>
+        {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => { if (!remoteBusy) setRemotePreview(null) }}>
+          <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5">
+              <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
+              <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>SSH alias: <code>{remotePreview.host.sshAlias}</code></div>
+            </div>
+            <div className="grid gap-4 px-5 pt-4 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
+  			  <p>UAM uses your existing OpenSSH authentication, detects Ubuntu/Linux or Windows, copies the matching helper, verifies its SHA-256 checksum, and starts it. Unsupported systems stop before anything is copied.</p>
+  			  <fieldset className="grid gap-2">
+  				<legend className="mb-1 text-xs font-medium" style={{ color: 'var(--text)' }}>Install location</legend>
+  				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--border)' : 'var(--accent)'}` }}>
+  				  <input type="radio" name="remote-helper-location" checked={!remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(false)} />
+  				  <span><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Recommended private location</span><span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></span>
+  				</label>
+  				<div className="rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
+  				  <label className="flex cursor-pointer items-start gap-2">
+  					<input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
+  					<span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
+  				  </label>
+  				  <div className="ml-6">
+  					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="uam-field mt-2 w-full font-mono" style={remoteDirectoryValidation ? { borderColor: 'var(--error)' } : undefined} />
+  					<span id="remote-helper-folder-help" className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
+  					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span>}
+  					{remoteCustomDirectory && !remoteDirectoryValidation && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
+  				  </div>
+  				</div>
+  			  </fieldset>
+  			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5">
+              <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
+              <Button size="sm" variant="primary" aria-busy={remoteBusy || undefined} disabled={remoteBusy || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
+            </div>
+          </div>
+        </Overlay>}
+      </Presence>
+      <Presence open={confirmDiscard}>
+        {confirmDiscard && <Overlay open zIndex={70}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Discard MCP changes?</div>
+            <p className="px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>The MCP server configuration has unsaved changes.</p>
+            <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" onClick={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}>Keep editing</Button>
               <Button size="sm" variant="danger" onClick={() => { setMcpDraftDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>Discard changes</Button>
             </div>
           </div>
-        </div>
-      )}
-      {pendingDelete && (
-        <div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.35)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingDelete(null) }}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
-            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</div>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              {(pendingDelete.kind === 'theme' ? themeMessage : editorError) && <span role="status" className="text-xs">{pendingDelete.kind === 'theme' ? themeMessage : editorError}</span>}
+        </Overlay>}
+      </Presence>
+      <Presence open={Boolean(pendingDelete)}>
+        {pendingDelete && <Overlay open zIndex={60} onBackdropMouseDown={() => setPendingDelete(null)}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
+            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
+              <p>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</p>
+              {(pendingDelete.kind === 'theme' ? themeMessage : editorError) && <p role="status" className="text-xs">{pendingDelete.kind === 'theme' ? themeMessage : editorError}</p>}
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" disabled={themeSaving || editorSaving} onClick={() => setPendingDelete(null)}>Cancel</Button>
               <Button size="sm" variant="danger" disabled={themeSaving || editorSaving} onClick={async () => {
                 const deleted = pendingDelete.kind === 'theme' ? await removeSelectedTheme() : await saveEditorSettings(editorAssociationsDraft.filter(item => item.id !== pendingDelete.id))
@@ -2910,8 +3081,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }}>Delete permanently</Button>
             </div>
           </div>
-        </div>
-      )}
+        </Overlay>}
+      </Presence>
     </div>
   )
 })

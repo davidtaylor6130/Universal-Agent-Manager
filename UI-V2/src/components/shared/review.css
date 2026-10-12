@@ -1,0 +1,509 @@
+/* Review surfaces: diffs, commit panel, file viewer, import chooser. Tokens only. */
+
+.uam-rv-dialog {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-lg);
+  box-shadow: var(--elev-3);
+}
+
+.uam-rv-dialog:focus,
+.uam-rv-dialog:focus-visible {
+  outline: none;
+}
+
+.uam-rv-dialog__header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-shrink: 0;
+  min-height: 48px;
+  padding: 6px var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.uam-rv-dialog__body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.uam-rv-title {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.uam-rv-muted {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.uam-rv-field {
+  min-width: 0;
+  padding: 6px var(--sp-2);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-base);
+}
+
+.uam-rv-field:focus-visible,
+.uam-rv-segmented button:focus-visible,
+.uam-rv-tab:focus-visible,
+.uam-rv-file:focus-within {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Segmented control: split/unified and scope toggles. */
+.uam-rv-segmented {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-up);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+
+.uam-rv-segmented button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.uam-rv-segmented button:hover:not([aria-pressed="true"]) {
+  color: var(--text);
+}
+
+.uam-rv-segmented button[aria-pressed="true"] {
+  background: var(--surface-high);
+  color: var(--text);
+}
+
+/* Tabs: underline style used for commit scope. */
+.uam-rv-tab {
+  padding: 8px var(--sp-1);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.uam-rv-tab[aria-pressed="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* Diff viewer. Row heights are set inline by UnifiedDiff for virtualization. */
+.uam-rv-diff {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code, 12px);
+  color: var(--text);
+  background: var(--bg);
+}
+
+.uam-rv-diff-row {
+  display: flex;
+  white-space: pre;
+}
+
+.uam-rv-diff-row[data-kind="added"] { background: var(--success-dim); }
+.uam-rv-diff-row[data-kind="removed"] { background: var(--error-dim); }
+.uam-rv-diff-row[data-kind="header"] { color: var(--text-3); background: var(--surface); }
+
+.uam-rv-gutter {
+  flex-shrink: 0;
+  width: 44px;
+  padding-right: var(--sp-2);
+  text-align: right;
+  color: var(--text-3);
+  user-select: none;
+}
+
+.uam-rv-sign {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  color: var(--text-3);
+  user-select: none;
+}
+
+.uam-rv-diff-row[data-kind="added"] .uam-rv-sign { color: var(--success); }
+.uam-rv-diff-row[data-kind="removed"] .uam-rv-sign { color: var(--error); }
+
+.uam-rv-diff-text {
+  padding-right: var(--sp-3);
+}
+
+/* Split view: each side is a half-width cell with its own tint. */
+.uam-rv-diff-side {
+  display: flex;
+  width: 50%;
+  min-width: 0;
+}
+
+.uam-rv-diff-side + .uam-rv-diff-side {
+  border-left: 1px solid var(--border);
+}
+
+.uam-rv-diff-side[data-kind="added"] { background: var(--success-dim); }
+.uam-rv-diff-side[data-kind="removed"] { background: var(--error-dim); }
+
+/* Change-size bars: a stacked add/remove meter beside the +/- counts. */
+.uam-rv-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.uam-rv-stat__add,
+.uam-rv-stat__del {
+  min-width: 36px;
+  text-align: right;
+}
+
+.uam-rv-bar {
+  display: inline-flex;
+  width: 48px;
+  height: 6px;
+  overflow: hidden;
+  background: var(--surface-up);
+  border-radius: 3px;
+}
+
+.uam-rv-bar__fill {
+  display: flex;
+  height: 100%;
+  min-width: 2px;
+  transform-origin: left center;
+  animation: uam-rv-grow var(--dur-base) var(--ease-out-soft) backwards;
+}
+
+.uam-rv-bar__add,
+.uam-rv-bar__del { flex-basis: 0; height: 100%; }
+
+.uam-rv-bar__add { background: var(--success); }
+.uam-rv-bar__del { background: var(--error); }
+
+@keyframes uam-rv-grow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+/* Checkbox hit box shared by the select-all header and each file row (24px grid cell). */
+.uam-rv-check-btn {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.uam-rv-check-btn:disabled { cursor: default; opacity: 0.5; }
+.uam-rv-check-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Changed files list: fixed 28px rows. Columns: checkbox | status | name + muted dir | stats | chevron. */
+.uam-rv-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+  transition: background-color var(--dur-fast) var(--ease);
+  animation: uam-rv-rise var(--dur-base) var(--ease-out-soft) backwards;
+}
+
+.uam-rv-file:hover { background: var(--surface-up); }
+.uam-rv-file[data-selected="true"] { background: var(--accent-dim); }
+
+.uam-rv-file__open {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 140px 14px;
+  flex: 1;
+  align-items: center;
+  column-gap: var(--sp-2);
+  height: 100%;
+  min-width: 0;
+  padding: 0 var(--sp-1) 0 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.uam-rv-file__open:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.uam-rv-file__status {
+  width: 24px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+/* Name and muted directory share one cell; the directory truncates first. */
+.uam-rv-file__path {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.uam-rv-file__name {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.uam-rv-file__dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+/* Stats cell is a fixed width so bars and +/- columns line up down the list. */
+.uam-rv-file__stat {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  font-size: var(--fs-xs);
+}
+
+.uam-rv-file__chevron {
+  justify-self: end;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.uam-rv-file:hover .uam-rv-file__chevron,
+.uam-rv-file:focus-within .uam-rv-file__chevron { opacity: 1; }
+
+/* Recorded edit rows: identity line plus muted detail line. */
+.uam-rv-row-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px var(--sp-3);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  animation: uam-rv-rise var(--dur-base) var(--ease-out-soft) backwards;
+}
+
+.uam-rv-row-btn:hover:not(:disabled) { background: var(--surface-up); }
+
+/* Import chooser rows. */
+.uam-rv-list {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* One line per chat: checkbox, title, provider icon, folder name. */
+.uam-rv-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 30px;
+  padding: 4px var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+  animation: uam-rv-rise var(--dur-base) var(--ease-out-soft) backwards;
+}
+
+.uam-rv-row:hover { background: var(--surface-up); }
+.uam-rv-row[data-selected="true"] { background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: inset 2px 0 0 var(--accent); }
+
+.uam-rv-row__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: var(--fs-base);
+}
+
+.uam-rv-row__provider {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.uam-rv-row__meta {
+  flex-shrink: 1;
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.uam-rv-check {
+  flex-shrink: 0;
+  margin-top: 3px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.uam-rv-row .uam-rv-check { margin-top: 0; }
+.uam-rv-check:disabled { cursor: not-allowed; }
+
+.uam-rv-selectbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 6px var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+
+.uam-rv-selectall {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+/* Importing: spinner plus a bar that is determinate when counts are known. */
+.uam-rv-importing {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.uam-rv-spin { flex-shrink: 0; animation: uam-rv-spin 900ms linear infinite; }
+
+.uam-rv-progress--indeterminate > span {
+  width: 35%;
+  transform: none;
+  transition: none;
+  animation: uam-rv-slide 1.2s var(--ease) infinite;
+}
+
+.uam-rv-alert__count {
+  margin-left: var(--sp-2);
+  flex-shrink: 0;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.uam-rv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+
+.uam-rv-actions__spacer { flex: 1; }
+
+.uam-rv-alert {
+  margin: 0;
+  padding: 6px var(--sp-3);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+}
+
+/* Plain floating panel for small modals (routing settings). */
+.uam-rv-panel {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-lg);
+  box-shadow: var(--elev-3);
+}
+
+/* Import progress: determinate when the batch size is known. */
+.uam-rv-progress {
+  height: 4px;
+  overflow: hidden;
+  background: var(--surface-up);
+  border-radius: 2px;
+}
+
+.uam-rv-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform var(--dur-base) var(--ease-out-soft);
+}
+
+@keyframes uam-rv-rise {
+  from { opacity: 0; transform: translateY(4px); }
+}
+
+@keyframes uam-rv-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes uam-rv-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(290%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-rv-bar__fill,
+  .uam-rv-file,
+  .uam-rv-row,
+  .uam-rv-row-btn,
+  .uam-rv-progress > span,
+  .uam-rv-spin,
+  .uam-rv-progress--indeterminate > span {
+    animation: none;
+    transition: none;
+  }
+}

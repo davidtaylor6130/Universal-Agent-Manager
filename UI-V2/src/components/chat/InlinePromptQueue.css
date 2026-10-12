@@ -1,0 +1,130 @@
+/* Queued prompts: compact rows, icon actions on the right, held state is a clear banner. */
+.uam-queue { font-size: var(--fs-sm); color: var(--text-2); }
+
+.uam-queue-held {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2);
+  margin-bottom: var(--sp-1);
+  border: 1px solid var(--warning-dim);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--warning-dim) 55%, transparent);
+  animation: uam-queue-row-in var(--dur-enter) var(--ease-out-soft) backwards;
+}
+.uam-queue-held__copy { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.uam-queue-held__copy strong { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.uam-queue-held__copy span { font-size: var(--fs-xs); color: var(--text-3); }
+
+.uam-queue-list { max-height: 10rem; overflow-y: auto; }
+
+.uam-queue-row {
+  border-bottom: 1px solid var(--border);
+  padding: var(--sp-1) 0;
+  animation: uam-queue-row-in var(--dur-enter) var(--ease-out-soft) backwards;
+}
+.uam-queue-row:last-child { border-bottom: 0; }
+.uam-queue-row__main { display: flex; align-items: center; gap: var(--sp-2); min-height: 26px; }
+.uam-queue-row[draggable="true"] { cursor: grab; }
+.uam-queue-row.is-dragging { opacity: 0.45; }
+.uam-queue-row.is-drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.uam-queue-row.is-drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.uam-queue-row__grip {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-3);
+  opacity: 0.7;
+}
+.uam-queue-row__grip[data-disabled] { opacity: 0.3; }
+.uam-queue-row__label {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.uam-queue-row__text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.uam-queue-row__actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.uam-queue-row[data-held] .uam-queue-row__text { color: var(--text-2); }
+.uam-queue-row__files { display: flex; flex-wrap: wrap; gap: var(--sp-1); padding-top: var(--sp-1); }
+
+.uam-queue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+}
+.uam-queue-chip__name { min-width: 0; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uam-queue-chip__type { color: var(--text-3); flex-shrink: 0; }
+
+.uam-queue-edit {
+  padding: var(--sp-2) 0 var(--sp-1);
+  display: grid;
+  gap: var(--sp-1);
+  animation: uam-queue-row-in var(--dur-enter) var(--ease-out-soft) backwards;
+}
+.uam-queue-edit__head { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-xs); color: var(--text-2); }
+.uam-queue-edit__badge {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.uam-queue-edit__input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  resize: vertical;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.uam-queue-edit__input:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.uam-queue-edit__input:disabled { opacity: 0.6; }
+.uam-queue-edit__actions { display: flex; align-items: center; gap: var(--sp-1); }
+.uam-queue-error { font-size: var(--fs-xs); color: var(--error); padding: var(--sp-1) 0; }
+
+/* Rows and the edit panel settle in; removed rows fade and fold up before unmounting. */
+.uam-queue-row[data-leaving] {
+  overflow: hidden;
+  pointer-events: none;
+  animation: uam-queue-row-out var(--dur-exit) var(--ease) forwards;
+}
+@keyframes uam-queue-row-out {
+  from { max-height: 120px; }
+  to { opacity: 0; transform: translateY(-4px); max-height: 0; padding-block: 0; }
+}
+@keyframes uam-queue-row-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-queue-row,
+  .uam-queue-row[data-leaving],
+  .uam-queue-edit,
+  .uam-queue-held { animation: none; }
+}

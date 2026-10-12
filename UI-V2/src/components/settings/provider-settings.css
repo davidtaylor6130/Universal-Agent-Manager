@@ -1,0 +1,308 @@
+/* Provider & MCP settings. Scoped to .uam-prov-*; colours are tokens only. */
+
+.uam-prov-heading {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.uam-prov-sub {
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+.uam-prov-label {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.uam-prov-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.uam-prov-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  transition: background var(--dur-fast) var(--ease-out-soft);
+}
+
+.uam-prov-row + .uam-prov-row {
+  border-top: 1px solid var(--border);
+}
+
+.uam-prov-row:hover {
+  background: var(--surface-up);
+}
+
+.uam-prov-card tbody tr {
+  transition: background var(--dur-fast) var(--ease-out-soft);
+}
+
+.uam-prov-card tbody tr:hover {
+  background: var(--surface-up);
+}
+
+.uam-prov-row-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  border-radius: var(--r-sm);
+}
+
+.uam-prov-detail {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+/* Connection status: a dot plus a word. Never a switch. */
+.uam-prov-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.uam-prov-status[data-tone='success'] { color: var(--success); }
+.uam-prov-status[data-tone='warning'] { color: var(--warning); }
+.uam-prov-status[data-tone='error'] { color: var(--error); }
+
+/* Configuration switch: on/off is what you set, not what is happening. */
+.uam-prov-switch {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border-bright);
+  background: var(--surface-high);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft), border-color var(--dur-fast) var(--ease-out-soft);
+}
+
+.uam-prov-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transition: transform var(--dur-fast) var(--ease-out-soft), background var(--dur-fast) var(--ease-out-soft);
+}
+
+.uam-prov-switch[aria-checked='true'] {
+  background: var(--text);
+  border-color: var(--text);
+}
+
+.uam-prov-switch[aria-checked='true']::after {
+  background: var(--bg);
+  transform: translateX(12px);
+}
+
+.uam-prov-switch[aria-checked='mixed'] {
+  border-style: dashed;
+  opacity: 0.6;
+}
+
+.uam-prov-switch:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* While a save is in flight, switches pause without dimming so the matrix does not flash. */
+.uam-prov-switch[data-pending]:disabled { opacity: 1; cursor: progress; }
+.uam-prov-card td:not(:first-child):not(:nth-child(2)), .uam-prov-card th:not(:first-child):not(:nth-child(2)) { text-align: center; }
+
+.uam-prov-switch:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Shared warning tint for session banners. */
+.uam-prov-warning {
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 9%, var(--bg));
+  color: var(--text);
+}
+
+.uam-prov-warning__title {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+/* Multiline MCP JSON / import editor. */
+.uam-prov-json {
+  width: 100%;
+  min-height: 320px;
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+}
+
+.uam-prov-json--compact {
+  min-height: 160px;
+}
+
+.uam-prov-json:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Smooth disclosure: content eases in and out (grid-rows 1fr <-> 0fr); unmounts after the exit window. */
+.uam-prov-collapse { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--dur-base) var(--ease-out-soft); }
+.uam-prov-collapse[data-state="closed"] { grid-template-rows: 0fr; transition-duration: var(--dur-exit); transition-timing-function: var(--ease); }
+.uam-prov-collapse__inner { min-height: 0; overflow: clip; overflow-clip-margin: 4px; }
+.uam-prov-collapse[data-state="closed"] > .uam-prov-collapse__inner > .uam-prov-enter { animation: none; }
+
+.uam-prov-enter {
+  animation: uam-prov-enter var(--dur-base) var(--ease-out-soft) both;
+}
+
+@keyframes uam-prov-enter {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-prov-enter,
+  .uam-prov-row,
+  .uam-prov-switch,
+  .uam-prov-switch::after {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* Overview matrix: host segmented control, sticky provider column, availability glyphs. */
+.uam-prov-seg { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.uam-prov-seg__item { height: 24px; padding: 0 var(--sp-3); border-radius: var(--r-sm); font-size: var(--fs-sm); color: var(--text-2); transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+.uam-prov-seg__item:hover { color: var(--text); background: var(--sidebar-item-hover); }
+.uam-prov-seg__item[aria-selected='true'] { color: var(--text); background: var(--surface-high); box-shadow: var(--elev-1); }
+.uam-prov-seg__item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-prov-provider { display: flex; align-items: center; gap: var(--sp-2); text-align: left; min-width: 0; border-radius: var(--r-sm); }
+.uam-prov-provider:not(:disabled):hover .uam-prov-provider__name { color: var(--accent); }
+.uam-prov-provider__name { font-size: var(--fs-base); font-weight: 500; color: var(--text); transition: color var(--dur-fast) var(--ease); }
+.uam-prov-sticky { position: sticky; left: 0; z-index: 1; background: var(--surface); }
+.uam-prov-card tbody tr:hover .uam-prov-sticky { background: var(--surface-up); }
+.uam-prov-detail--clip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+.uam-prov-avail { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; color: var(--text-3); cursor: default; }
+.uam-prov-avail[data-state='on'] { color: var(--success); background: var(--success-dim); }
+.uam-prov-avail[data-state='unknown'] { opacity: .5; }
+.uam-prov-spin { animation: uam-prov-spin 900ms linear infinite; }
+@keyframes uam-prov-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .uam-prov-spin { animation: none; } }
+
+/* Overview matrix fits the card: headers wrap to two lines, glyph columns stay narrow, provider column stays sticky. */
+.uam-prov-th { white-space: normal; line-height: 1.25; vertical-align: bottom; min-width: 56px; max-width: 88px; }
+.uam-prov-th--provider { min-width: 168px; max-width: none; }
+.uam-prov-provider-cell { min-width: 168px; }
+.uam-prov-glyph-cell { width: 1%; text-align: center; }
+
+/* MCP setup dialog (Overlay) and the optional advanced disclosure inside a server row. */
+.uam-mcp-dialog {
+  display: grid;
+  gap: var(--sp-3);
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: var(--sp-5);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--elev-3);
+}
+.uam-mcp-dialog:focus { outline: none; }
+.uam-mcp-advanced > summary { color: var(--text-2); border-radius: var(--r-sm); }
+.uam-mcp-advanced > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Central setup: removable chips for default skills and agents. */
+.uam-central-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.uam-central-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+  padding: 0 2px 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-up);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+.uam-central-editor { display: grid; gap: var(--sp-3); padding-block: var(--sp-3); border-top: 1px solid var(--border); }
+.uam-central-editor .uam-set-field { gap: 4px; }
+.uam-central-editor textarea.uam-field { font-family: var(--font-mono); font-size: var(--fs-xs); }
+.uam-central-choice { display: grid; gap: var(--sp-2); }
+
+/* Add-server chooser: descriptive option cards. */
+.uam-prov-option { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.uam-prov-option:hover { background: var(--surface-up); border-color: var(--border-bright); }
+.uam-prov-option:active { transform: scale(.99); }
+.uam-prov-option:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-prov-option__icon { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-md); background: var(--surface-high); color: var(--text-2); flex-shrink: 0; }
+.uam-prov-option__label { font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--text); }
+.uam-prov-option__detail { font-size: var(--fs-xs); color: var(--text-3); }
+.uam-prov-option__chevron { margin-left: auto; color: var(--text-3); transition: transform var(--dur-fast) var(--ease); }
+.uam-prov-option:hover .uam-prov-option__chevron { transform: translateX(2px); }
+
+/* Agent editor dialog: fixed header and footer, the fields scroll between them. */
+.uam-central-dialog { width: min(680px, calc(100vw - 32px)); padding: 0; gap: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr) auto; }
+.uam-central-dialog__head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border); }
+.uam-central-dialog__body { display: grid; align-content: start; gap: var(--sp-3); min-height: 0; overflow-y: auto; padding: var(--sp-4) var(--sp-5); }
+.uam-central-dialog__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-5); border-top: 1px solid var(--border); }
+
+/* Scan current chats dialog: fixed head and foot, the candidate list scrolls. */
+.uam-scan-dialog { width: min(760px, calc(100vw - 32px)); padding: 0; gap: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr) auto; }
+.uam-scan-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border); }
+.uam-scan-title { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.uam-scan-body { display: grid; align-content: start; gap: var(--sp-3); min-height: 0; overflow-y: auto; padding: var(--sp-4) var(--sp-5); }
+.uam-scan-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.uam-scan-foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-5); border-top: 1px solid var(--border); }
+.uam-scan-title-row { display: inline-flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.uam-scan-chip { padding: 0 var(--sp-2); border-radius: 999px; border: 1px solid var(--border); font-size: var(--fs-xs); font-weight: 400; line-height: 18px; color: var(--text-3); }
+
+/* Overview matrix with many servers: one "MCP servers" count chip opens a popover with each switch. */
+.uam-prov-mcp-chip { display: inline-flex; align-items: center; gap: var(--sp-2); height: 24px; padding: 0 var(--sp-2); border: 1px solid var(--border); border-radius: 999px; background: var(--surface-up); font-size: var(--fs-sm); color: var(--text-2); white-space: nowrap; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
+.uam-prov-mcp-chip:hover:not(:disabled), .uam-prov-mcp-chip[aria-expanded='true'] { background: var(--surface-high); border-color: var(--border-bright); color: var(--text); }
+.uam-prov-mcp-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-prov-mcp-chip:disabled { opacity: .5; cursor: default; }
+.uam-prov-meter { display: inline-flex; gap: 2px; }
+.uam-prov-meter i { width: 4px; height: 10px; border-radius: 2px; background: var(--surface-high); }
+.uam-prov-meter i[data-state='on'] { background: var(--success); }
+.uam-prov-meter i[data-state='unknown'] { opacity: .4; }
+.uam-prov-pop { display: grid; gap: 2px; width: min(320px, calc(100vw - 16px)); padding: var(--sp-2); border: 1px solid var(--border-bright); border-radius: var(--r-md); background: var(--surface); box-shadow: var(--elev-3); animation: uam-prov-pop-in var(--dur-base) var(--ease-out-soft) both; }
+.uam-prov-pop[data-state='closed'] { animation: uam-prov-pop-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+.uam-prov-pop:focus { outline: none; }
+.uam-prov-pop__row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); min-height: 32px; padding: 0 var(--sp-2); border-radius: var(--r-sm); }
+.uam-prov-pop__row:hover { background: var(--surface-up); }
+@keyframes uam-prov-pop-in { from { opacity: 0; transform: scale(.98) translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes uam-prov-pop-out { to { opacity: 0; transform: scale(.98) translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .uam-prov-pop, .uam-prov-pop[data-state='closed'] { animation: none; } }

@@ -25,30 +25,38 @@ describe('startup native history chooser', () => {
     expect(['one', 'two', 'three', 'four'].map((id) => checkbox(id).checked)).toEqual([false, false, false, false])
   })
 
-  it('shows page counts and imports all pending chats beyond the visible page', async () => {
+  it('shows page counts only with more than one page and pages through pending chats', async () => {
     mount(); await answer(0, { ...page('scan-1', ['one', 'two']), totalCount: 250, nextOffset: 100 })
     expect(document.body.textContent).toContain('Page 1 of 3')
     await click('Next')
     expect(requests[1].payload).toEqual({ offset: 100, limit: 100, folderId: null })
     await answer(1, { ...page('scan-1', ['three']), totalCount: 250, nextOffset: 200 })
     expect(document.body.textContent).toContain('Page 2 of 3')
-    await click('Import all')
-    expect(requests[2].payload).toEqual({ generation: 'scan-1', selectedIds: [], declinedIds: [], folderId: null, importAll: true })
-    expect(button('Import all').disabled).toBe(true)
-    await answer(2, { ...page('scan-1', []), phase: 'complete', totalCount: 0, importedCount: 250 })
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select all chats on this page"]')!.click())
+    await click('Import selected')
+    expect(requests[2].payload).toEqual({ generation: 'scan-1', selectedIds: ['three'], declinedIds: [], folderId: null })
+    await answer(2, { ...page('scan-1', []), phase: 'complete', totalCount: 0, importedCount: 1 })
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
   })
 
-  it('scopes Import all to the reviewed workspace and reports partial completion', async () => {
+  it('hides paging controls when everything fits on one page', async () => {
+    mount(); await answer(0, page())
+    expect(button('Next')).toBeUndefined()
+    expect(button('Previous')).toBeUndefined()
+  })
+
+  it('scopes imports to the reviewed workspace and reports partial completion', async () => {
     useAppStore.setState({ startupNativeImportReviewSequence: 1, startupNativeImportFolderId: 'folder-a' })
     // Mount first, then request an explicit workspace review.
     mount(); await answer(0, page())
     act(() => useAppStore.setState({ startupNativeImportReviewSequence: 2 }))
-    await answer(1, { ...page('scan-1', ['one']), totalCount: 150, nextOffset: 100 })
-    await click('Import all')
+    await answer(1, { ...page('scan-1', ['one', 'two']), totalCount: 150, nextOffset: 100 })
+    act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select all chats on this page"]')!.click())
+    await click('Import selected')
     expect(requests[2].payload.folderId).toBe('folder-a')
-    await answer(2, { ...page('scan-1', []), phase: 'complete', totalCount: 0, importedCount: 149 })
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('could not be imported')
+    await answer(2, { ...page('scan-1', []), phase: 'complete', totalCount: 148, importedCount: 1 })
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("1 chat couldn't be imported. They stay in the list so you can retry.")
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('1 failed')
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
   })
 
@@ -95,11 +103,14 @@ describe('startup native history chooser', () => {
     mount(); await answer(0, page('scan-1', ['one']))
     const dialog = document.body.querySelector('[role="dialog"]')!
     expect(dialog.getAttribute('aria-label')).toBe('Import chats')
-    expect(dialog.textContent).toContain('Import chats')
-    expect(dialog.textContent).toContain('Codex CLI')
+    expect(dialog.textContent).toContain('Import chats from other tools')
+    expect(dialog.querySelector('[aria-label="Codex CLI"]')).not.toBeNull()
+    expect(dialog.textContent).not.toContain('Codex CLI')
     expect(dialog.textContent).not.toContain('local ·')
-    const providerMetadata = dialog.querySelector('label > span > span:nth-child(2)')
-    expect(providerMetadata?.getAttribute('style')).toContain('var(--text-3)')
+    expect(dialog.textContent).toContain('workspace')
+    expect(dialog.textContent).not.toContain('/workspace')
+    const folder = dialog.querySelector('.uam-rv-row__meta')
+    expect(folder?.getAttribute('style')).toContain('var(--text-3)')
     expect(button('Import selected').className).toContain('uam-btn--primary')
     expect(button('Close import chats').className).toContain('uam-iconbtn--ghost')
   })
@@ -120,7 +131,8 @@ describe('startup native history chooser', () => {
     const remotePage = page('scan-1', ['remote'])
     remotePage.candidates[0].executionHostId = 'runner-a'
     await answer(0, remotePage)
-    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('Codex CLI · runner-a · /workspace')
+    expect(document.body.querySelector('[aria-label="Codex CLI · runner-a"]')).not.toBeNull()
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain('workspace')
   })
 
   it('sends only checked import or ignore decisions and preserves selections after save failure', async () => {
@@ -131,7 +143,7 @@ describe('startup native history chooser', () => {
     expect(requests).toHaveLength(2)
     await act(async () => requests[1].failure(409, 'Disk full'))
     expect(document.body.querySelector('[role="alert"]')?.textContent).toBe('Disk full')
-    expect(document.body.querySelector('[role="alert"]')?.getAttribute('style')).toContain('var(--red)')
+    expect(document.body.querySelector('[role="alert"]')?.getAttribute('style')).toContain('var(--error)')
     expect(document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.checked).toBe(true)
     act(() => useAppStore.setState({ startupNativeImports: { ...page(), phase: 'importing' } }))
     act(() => useAppStore.setState({ startupNativeImports: page() }))
@@ -195,7 +207,7 @@ describe('startup native history chooser', () => {
 
   it('owns Escape and Tab and restores focus without stealing from a newer dialog', async () => {
     const trigger = document.createElement('button'); document.body.appendChild(trigger); trigger.focus()
-    mount(); await answer(0, page())
+    mount(); await answer(0, { ...page(), totalCount: 150, nextOffset: 100 })
     const parent = vi.fn(); document.addEventListener('keydown', parent)
     act(() => { button('Next').focus(); window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })) })
     expect(document.activeElement).toBe(button('Close import chats'))
@@ -258,7 +270,7 @@ describe('startup native history chooser', () => {
     act(() => useAppStore.setState({ startupNativeImports: page('scan-1', ['one']) }))
     expect(requests[2].action).toBe('getStartupNativeImports')
     await answer(2, { ...page('scan-1', ['one']), errors: ['Selected chat failed to save.'] })
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('could not be imported')
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("None of the selected chats could be imported.")
     act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.click())
     await click('Import selected'); await answer(3, { ...page('scan-1', []), phase: 'importing' })
     act(() => useAppStore.setState({ startupNativeImports: { ...page('scan-1', []), phase: 'complete', importedCount: 1 } }))
@@ -283,7 +295,7 @@ describe('startup native history chooser', () => {
     const index = earlyCacheReply ? 3 : 2
     expect(requests[index].action).toBe('getStartupNativeImports')
     await answer(index, page('scan-1', ['one']))
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('could not be imported')
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("None of the selected chats could be imported.")
     act(() => document.body.querySelector<HTMLInputElement>('[aria-label="Select one"]')!.click())
     expect(button('Import selected').disabled).toBe(false)
     expect(requests).toHaveLength(index + 1)

@@ -8,6 +8,7 @@ import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { SessionItem } from './SessionItem'
+import './sidebar.css'
 import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
 import {
   type ChatSearchFilters,
@@ -22,6 +23,7 @@ import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuIte
 import type { ResourceCollection } from '../../types/resourceCollection'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
+import { usePresence } from '../ui/Overlay'
 
 interface FolderTreeProps {
   searchQuery: string
@@ -128,6 +130,7 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
     >
       <ChevronRight
         size={13}
+        className="uam-sb-chevron"
         style={{ flexShrink: 0, transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)' }}
         aria-hidden
       />
@@ -330,6 +333,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const activeExpanded = searchModel.isSearching || !activeCollapsed
   const pinnedExpanded = searchModel.isSearching || !pinnedCollapsed
   const allChatsExpanded = searchModel.isSearching || !allChatsCollapsed
+  // Section rows stay mounted through the exit window, then unmount (collapsed rows are not rendered).
+  const activeList = usePresence(activeExpanded)
+  const snoozedList = usePresence(snoozedExpanded)
+  const pinnedList = usePresence(pinnedExpanded)
+  const allChatsList = usePresence(allChatsExpanded)
   const familySessionIdsByRootId = useMemo(() => {
     const families = new Map<string, string[]>()
     for (const session of sessions) {
@@ -839,19 +847,22 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           />
           <div
             id="active-chat-list"
-            hidden={!activeExpanded}
+            className="uam-sb-collapse"
+            data-state={activeList.closing ? 'closed' : 'open'}
+            hidden={!activeList.mounted}
             aria-hidden={!activeExpanded}
             {...(!activeExpanded ? { inert: '' } : {})}
           >
-            {activeExpanded && searchModel.activeSessionIds.map(renderActivitySessionItem)}
+            <div className="uam-sb-collapse__inner">
+              {activeList.mounted && searchModel.activeSessionIds.map(renderActivitySessionItem)}
+            </div>
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
             <button
               type="button"
               data-testid="active-attention-strip"
-              className="mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded px-2 py-1 text-left text-[10px] hover:bg-[var(--warning-dim)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--yellow)]"
-              style={{ background: 'var(--warning-dim)', border: '1px solid color-mix(in srgb, var(--yellow) 28%, var(--border))', color: 'var(--yellow)', cursor: 'pointer' }}
-              onClick={() => setActiveCollapsed(false)}
+              className="uam-sb-attention-strip mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-md px-2 py-1 text-left text-[11px]"
+                            onClick={() => setActiveCollapsed(false)}
             >
               <TriangleAlert size={12} aria-hidden />
               {activeStatusCounts.attention === 1
@@ -866,10 +877,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         <div className="mb-0.5" data-testid="snoozed-chats">
           <SidebarSectionHeader label="Snoozed" listId="snoozed-chat-list" expanded={snoozedExpanded} onToggle={() => setSnoozedCollapsed((value) => !value)}
             trailing={<span className="ml-auto text-[10px]">{searchModel.snoozedSessionIds.length}</span>} />
-          <div id="snoozed-chat-list" hidden={!snoozedExpanded} aria-hidden={!snoozedExpanded} {...(!snoozedExpanded ? { inert: '' } : {})}>
-            {snoozedExpanded && searchModel.snoozedSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
-            ))}
+          <div id="snoozed-chat-list" className="uam-sb-collapse" data-state={snoozedList.closing ? 'closed' : 'open'} hidden={!snoozedList.mounted} aria-hidden={!snoozedExpanded} {...(!snoozedExpanded ? { inert: '' } : {})}>
+            <div className="uam-sb-collapse__inner">
+              {snoozedList.mounted && searchModel.snoozedSessionIds.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -885,13 +898,17 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           />
           <div
             id="pinned-chat-list"
-            hidden={!pinnedExpanded}
+            className="uam-sb-collapse"
+            data-state={pinnedList.closing ? 'closed' : 'open'}
+            hidden={!pinnedList.mounted}
             aria-hidden={!pinnedExpanded}
             {...(!pinnedExpanded ? { inert: '' } : {})}
           >
-            {pinnedExpanded && searchModel.pinnedSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
-            ))}
+            <div className="uam-sb-collapse__inner">
+              {pinnedList.mounted && searchModel.pinnedSessionIds.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -909,12 +926,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
 
       <div
         id="all-chat-list"
-        hidden={!allChatsExpanded}
+        className="uam-sb-collapse"
+        data-state={allChatsList.closing ? 'closed' : 'open'}
+        hidden={!allChatsList.mounted}
         aria-hidden={!allChatsExpanded}
         {...(!allChatsExpanded ? { inert: '' } : {})}
       >
-
-      {allChatsExpanded && <>
+      <div className="uam-sb-collapse__inner">
+      {allChatsList.mounted && <>
       {!searchModel.isSearching && collectionGroups.map(({ collection, folderRows }) => (
         <FolderCollection
           key={collection.id}
@@ -1025,6 +1044,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       )}
 
       </>}
+      </div>
       </div>
 
       {searchModel.isSearching && !searchModel.hasMatches && (
@@ -1351,7 +1371,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, onFolderD
         <ViewportMenu ref={menuRef} {...(menuPoint ? { point: menuPoint } : { anchorRef: menuTriggerRef, align: 'end' as const })} role="menu" aria-label={`${collection.name} actions`} className="rounded-md py-1" style={{ minWidth: 140, background: 'var(--surface-up)', border: '1px solid var(--border)', boxShadow: 'var(--elev-2)' }}>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--text-2)' }} onClick={() => { setMenuOpen(false); setEditing(true) }}><Pencil size={12} />Rename</button>
           <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" onClick={() => { setMenuOpen(false); iconPicker.open('collection', collection.id, collection.name) }}>Change icon</button>
-          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--red)' }} onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }}><Trash2 size={12} />Delete</button>
+          <button type="button" role="menuitem" className="uam-menu-select__option flex w-full items-center gap-2 rounded px-2 py-1 text-xs" style={{ border: 'none', color: 'var(--error)' }} onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }}><Trash2 size={12} />Delete</button>
         </ViewportMenu>
       )}
       <div
@@ -1455,8 +1475,12 @@ function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCanc
       <div className="px-5 py-4 text-sm font-semibold">Delete selected workspaces?</div>
       <div className="px-5 pb-5 text-sm">
         <p id="delete-workspaces-description">Delete {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
-        {deleting && <p role="status" aria-live="polite" className="mt-2">Deleting {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}…</p>}
-        {error && <p role="alert" className="mt-2" style={{ color: 'var(--red)' }}>{error}</p>}
+        {deleting && <>
+          <p role="status" aria-live="polite" className="mt-2">Deleting {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}…</p>
+          {/* Indeterminate: the delete request reports no per-item progress, so no fake percentage. */}
+          <div role="progressbar" aria-label="Deleting workspaces" className="uam-sb-progress mt-2"><span /></div>
+        </>}
+        {error && <p role="alert" className="mt-2" style={{ color: 'var(--error)' }}>{error}</p>}
       </div>
       <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
         <Button size="sm" disabled={deleting} onClick={onCancel}>Cancel</Button>
@@ -1538,13 +1562,13 @@ function WorkspaceFolderRecoveryModal({
               Checking saved workspace locations…
             </div>
           )}
-          {error && <div role="alert" className="rounded-md p-3 text-sm" style={{ color: 'var(--red)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>{error}</div>}
+          {error && <div role="alert" className="rounded-md p-3 text-sm" style={{ color: 'var(--error)', background: 'var(--surface-up)', border: '1px solid var(--border)' }}>{error}</div>}
           {!loading && preview && (
             <div className="grid gap-4">
               {preview.groups.length > 0 && (
                 <section aria-label="Ready workspace folders">
                   <div className="mb-2 flex items-center gap-2">
-                    <Check size={15} style={{ color: 'var(--green)' }} aria-hidden />
+                    <Check size={15} style={{ color: 'var(--success)' }} aria-hidden />
                     <h3 className="text-xs font-semibold" style={{ color: 'var(--text)' }}>Ready · {readyChatCount} chat{readyChatCount === 1 ? '' : 's'}</h3>
                   </div>
                   <div className="grid gap-2">
@@ -1566,7 +1590,7 @@ function WorkspaceFolderRecoveryModal({
               {attentionSections.length > 0 && (
                 <section aria-label="Chats needing attention">
                   <div className="mb-2 flex items-center gap-2">
-                    <TriangleAlert size={15} style={{ color: 'var(--yellow)' }} aria-hidden />
+                    <TriangleAlert size={15} style={{ color: 'var(--warning)' }} aria-hidden />
                     <h3 className="text-xs font-semibold" style={{ color: 'var(--text)' }}>Needs attention</h3>
                   </div>
                   <div className="grid gap-2">
@@ -1684,11 +1708,12 @@ function DeleteFolderModal({
           )}
 
           {chatCount > 0 && (
-            <p className="text-xs" style={{ color: 'var(--red)' }}>
+            <p className="text-xs" style={{ color: 'var(--error)' }}>
               Deleted chats cannot be restored from this app.
             </p>
           )}
-          {error && <p role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{error}</p>}
+          {deleting && <div role="progressbar" aria-label="Deleting workspace" className="uam-sb-progress"><span /></div>}
+          {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
         </div>
 
         <div
@@ -1726,8 +1751,7 @@ function FolderMenuItem({ icon, label, onClick, danger }: { icon: ReactNode; lab
     <button
       type="button"
       role="menuitem"
-      className="uam-menu-select__option flex w-full items-center gap-2 px-3 py-1.5 text-sm text-left"
-      style={{ color: danger ? 'var(--red)' : 'var(--text-2)', border: 'none', fontFamily: 'inherit' }}
+      className={`uam-sb-menu-item${danger ? ' uam-sb-menu-item--danger' : ''}`}
       onClick={onClick}
     >
       {icon}
@@ -1930,7 +1954,7 @@ const FolderRow = memo(function FolderRow({
             aria-label={`Workspace folder missing: ${folder.directory}`}
             title={`Workspace folder missing: ${folder.directory}`}
             data-testid={`folder-missing-${folder.id}`}
-            style={{ color: 'var(--yellow)', flexShrink: 0 }}
+            style={{ color: 'var(--warning)', flexShrink: 0 }}
           >
             <TriangleAlert size={14} aria-hidden />
           </span>

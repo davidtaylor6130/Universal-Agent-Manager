@@ -57,8 +57,10 @@ describe('Typography preferences', () => {
     const root = createRoot(host)
     try {
       act(() => root.render(<TypographySettings />))
-      const font = host.querySelector<HTMLSelectElement>('[aria-label="Terminal font"]')!
-      act(() => { font.value = 'consolas'; font.dispatchEvent(new Event('change', { bubbles: true })) })
+      const font = host.querySelector<HTMLButtonElement>('[aria-label="Terminal font"]')!
+      act(() => font.click())
+      const option = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((item) => item.textContent?.includes('Consolas'))!
+      act(() => option.click())
       const input = host.querySelector<HTMLInputElement>('[aria-label="Message input font size"]')!
       act(() => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '18')
@@ -68,7 +70,7 @@ describe('Typography preferences', () => {
       expect(JSON.parse(window.localStorage.getItem('uam-typography-v1')!).state.preferences).toMatchObject({ terminalFont: 'consolas', promptSize: 18 })
       act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Reset typography')!.click())
       expect(useTypographyStore.getState().preferences).toEqual(DEFAULT_TYPOGRAPHY)
-      expect(font.value).toBe('jetbrains')
+      expect(font.textContent).toContain('JetBrains')
     } finally {
       act(() => root.unmount())
       host.remove()

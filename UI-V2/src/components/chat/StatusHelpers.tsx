@@ -3,9 +3,60 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, Circle, CircleCheck, CircleX, Clock3, Copy, LoaderCircle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type { AcpBinding, AcpToolCall, CliBinding } from '../../store/useAppStore'
+import type { AcpContextUsage } from '../../store/cpp/types'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { Tooltip } from '../ui'
+
+/** Bar for a token quantity; callers pick the tone and keep exact numbers in text. */
+export function ContextMeter({ ratio, level = 'ok' }: { ratio: number; level?: 'ok' | 'warning' | 'error' }) {
+  return <span className="conversation-meter" data-level={level} aria-hidden>
+    <span style={{ transform: `scaleX(${Math.min(1, Math.max(0, ratio))})` }} />
+  </span>
+}
+
+/** Context window use: warning above 80 percent, error above 95 percent. */
+export function ContextUsageStatus({ usage }: { usage: AcpContextUsage }) {
+  const ratio = usage.windowTokens > 0 ? usage.usedTokens / usage.windowTokens : 0
+  const level = ratio > 0.95 ? 'error' : ratio > 0.8 ? 'warning' : 'ok'
+  return <span className="conversation-status__usage">
+    <ContextMeter ratio={ratio} level={level} />
+    <span>{usage.usedTokens.toLocaleString()} of {usage.windowTokens.toLocaleString()} tokens</span>
+  </span>
+}
+
+const STATUS_STRIP_EXIT_MS = 160
+
+/** One status strip above the composer. Keeps its last content mounted briefly so the exit can animate. */
+export function ChatStatusStrip({ open, tone, icon: Icon, spin = false, title, detail }: {
+  open: boolean
+  tone: 'info' | 'warning'
+  icon: LucideIcon
+  spin?: boolean
+  title: string
+  detail?: ReactNode
+}) {
+  const [present, setPresent] = useState(open)
+  if (open && !present) setPresent(true)
+  const lastShown = useRef<{ tone: 'info' | 'warning'; icon: LucideIcon; spin: boolean; title: string; detail?: ReactNode } | null>(null)
+  if (open) lastShown.current = { tone, icon: Icon, spin, title, detail }
+  useEffect(() => {
+    if (open || !present) return
+    const timer = window.setTimeout(() => setPresent(false), STATUS_STRIP_EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [open, present])
+  if (!present || !lastShown.current) return null
+  const shown = lastShown.current
+  const ShownIcon = shown.icon
+  return (
+    <div role="status" className="chat-status-strip" data-tone={shown.tone} data-state={open ? 'open' : 'closed'}>
+      <ShownIcon size={14} aria-hidden className={shown.spin ? 'chat-status-strip__spin' : undefined} />
+      <span className="chat-status-strip__title">{shown.title}</span>
+      {shown.detail && <span className="chat-status-strip__detail">{shown.detail}</span>}
+    </div>
+  )
+}
 
 export function statusLabel(runtime?: AcpBinding | CliBinding) {
   if (!runtime) return 'Stopped'

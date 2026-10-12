@@ -1,10 +1,10 @@
 import { FilePreviewDialog } from './FilePreviewDialog'
 import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { Columns2, FileText, Rows3, X } from 'lucide-react'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { IconButton } from '../ui'
+import { Button, IconButton, Overlay, Presence } from '../ui'
+import './review.css'
 import { UnifiedDiff } from './UnifiedDiff'
 import { getTopmostModal } from '../../utils/modalFocus'
 
@@ -82,36 +82,31 @@ export function RepositoryDiffDialog({
   }, [chatId, comparisonRef, file.binary, file.path, getDiff, vcsType])
 
 
-  return <>{createPortal(
-    <div
-      className="fixed inset-0 z-[1000] flex items-center justify-center p-2 sm:p-4"
-      style={{ zIndex, background: 'rgba(0, 0, 0, 0.48)', backdropFilter: 'blur(3px)' }}
-      onMouseDown={onClose}
-    >
+  return <>
+    <Overlay open zIndex={zIndex} onBackdropMouseDown={onClose}>
       <section
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={`Changes in ${file.path}`}
         tabIndex={-1}
-        className="flex h-[calc(100dvh-1rem)] w-full max-w-5xl flex-col overflow-hidden rounded-lg sm:h-auto sm:max-h-[88vh]"
-        style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', boxShadow: 'var(--elev-3)' }}
+        className="uam-rv-dialog flex h-[calc(100dvh-1rem)] w-full max-w-5xl sm:h-auto sm:max-h-[88vh]"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <header className="flex min-h-12 items-center gap-3 px-3 sm:px-4" style={{ borderBottom: '1px solid var(--border)' }}>
-          <FileText size={17} aria-hidden className="shrink-0" style={{ color: 'var(--accent)' }} />
+        <header className="uam-rv-dialog__header">
+          <FileText size={16} aria-hidden className="shrink-0" style={{ color: 'var(--accent)' }} />
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold" title={file.path} style={{ color: 'var(--text)' }}>{file.path}</div>
-            {(comparisonLabel || comparisonRef) && <div className="truncate text-xs" style={{ color: 'var(--text-2)' }}>{comparisonLabel || `Against ${comparisonRef}`}</div>}
-            {showFileStats && <div className="flex gap-3 font-mono text-[11px]">
+            {(comparisonLabel || comparisonRef) && <div className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{comparisonLabel || `Against ${comparisonRef}`}</div>}
+            {showFileStats && <div className="uam-rv-stat mt-0.5">
               <span style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
-              {!file.binary && <><span style={{ color: 'var(--green)' }}>+{file.additions}</span><span style={{ color: 'var(--red)' }}>-{file.deletions}</span></>}
+              {!file.binary && <><span style={{ color: 'var(--success)' }}>+{file.additions}</span><span style={{ color: 'var(--error)' }}>-{file.deletions}</span></>}
             </div>}
           </div>
-          <button type="button" className="shrink-0 text-xs" style={{ color: 'var(--accent)', background: 'transparent', border: 'none' }} onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</button>
-          {!file.binary && <div role="group" aria-label="Diff layout" className="flex items-center gap-1">
-            <button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} title="Unified diff view" className="p-1.5" style={{ color: layout === 'unified' ? 'var(--accent)' : 'var(--text-2)', background: 'transparent', border: 'none' }} onClick={() => chooseLayout('unified')}><Rows3 size={16} aria-hidden /></button>
-            <button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} title="Split diff view" className="p-1.5" style={{ color: layout === 'split' ? 'var(--accent)' : 'var(--text-2)', background: 'transparent', border: 'none' }} onClick={() => chooseLayout('split')}><Columns2 size={16} aria-hidden /></button>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setInspection({ chatId, path: sourcePath ?? file.path })}>Inspect file</Button>
+          {!file.binary && <div role="group" aria-label="Diff layout" className="uam-rv-segmented">
+            <button type="button" aria-label="Unified diff view" aria-pressed={layout === 'unified'} title="Unified diff view" onClick={() => chooseLayout('unified')}><Rows3 size={14} aria-hidden />Unified</button>
+            <button type="button" aria-label="Split diff view" aria-pressed={layout === 'split'} title="Split diff view" onClick={() => chooseLayout('split')}><Columns2 size={14} aria-hidden />Split</button>
           </div>}
           {diff && <CopyTextButton text={diff} label="Copy diff" title="Copy file diff" />}
           <IconButton icon={<X size={16} />} label="Close file changes" onClick={onClose} />
@@ -120,7 +115,7 @@ export function RepositoryDiffDialog({
           {file.binary ? (
             <div className="p-6 text-center text-sm" style={{ color: 'var(--text-2)' }}>Binary changes cannot be previewed.</div>
           ) : error ? (
-            <div role="alert" className="m-4 rounded-md p-3 text-sm" style={{ border: '1px solid var(--red)', color: 'var(--red)' }}>{error}</div>
+            <div role="alert" className="uam-rv-alert m-4" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{error}</div>
           ) : diff === null ? (
             <div role="status" className="p-6 text-center text-sm" style={{ color: 'var(--text-3)' }}>Loading file changes…</div>
           ) : diff.length === 0 ? (
@@ -130,7 +125,6 @@ export function RepositoryDiffDialog({
           )}
         </div>
       </section>
-    </div>,
-    document.body
-  )}{inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path) && <FilePreviewDialog zIndex={zIndex + 100} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} />}</>
+    </Overlay>
+  <Presence open={inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path)}>{inspection?.chatId === chatId && inspection.path === (sourcePath ?? file.path) && <FilePreviewDialog zIndex={zIndex + 100} chatId={chatId} reference={{ path: inspection.path }} onClose={() => setInspection(null)} />}</Presence></>
 }

@@ -1,0 +1,254 @@
+/* ── Right-rail panels: notifications, updates, model picker ──
+   Scoped .uam-np-*. Layout is Tailwind in the components; this file holds
+   hover/focus/glide states and motion that inline styles cannot express. */
+
+/* Section labels (Needs attention, Favorites, provider names). */
+.uam-np-group {
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Notification rows */
+.uam-np-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+  transition: background var(--dur-fast) var(--ease);
+}
+.uam-np-row:hover,
+.uam-np-row:focus-within { background: var(--surface-up); }
+.uam-np-row__icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  color: var(--info);
+  background: var(--info-dim);
+}
+.uam-np-row__icon[data-tone="warning"] { color: var(--warning); background: var(--warning-dim); }
+.uam-np-row__icon[data-tone="error"] { color: var(--error); background: var(--error-dim); }
+.uam-np-row__title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text);
+}
+.uam-np-row__title > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uam-np-row__detail {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.uam-np-row__meta { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.uam-np-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.uam-np-row__dismiss {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.uam-np-row:hover .uam-np-row__dismiss,
+.uam-np-row:focus-within .uam-np-row__dismiss { opacity: 1; }
+@media (hover: none) { .uam-np-row__dismiss { opacity: 1; } }
+
+/* Empty states */
+.uam-np-empty {
+  display: grid;
+  place-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-8) var(--sp-4);
+  text-align: center;
+  color: var(--text-3);
+}
+.uam-np-empty__icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--success);
+  background: var(--success-dim);
+}
+.uam-np-empty__title { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.uam-np-empty__text { font-size: var(--fs-xs); line-height: 1.5; }
+
+/* Update cards: current → available version pair */
+.uam-np-versions {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+.uam-np-version {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  background: var(--surface-high);
+  color: var(--text-2);
+}
+.uam-np-version[data-kind="next"] { color: var(--accent); background: var(--accent-dim); }
+
+/* ── Model picker ── */
+.uam-np-search {
+  position: relative;
+  margin-bottom: var(--sp-1);
+}
+.uam-np-search > svg {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  pointer-events: none;
+}
+.uam-np-search input {
+  width: 100%;
+  height: 30px;
+  padding: 0 var(--sp-2) 0 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.uam-np-search input::placeholder { color: var(--text-3); }
+.uam-np-search input:focus-visible { border-color: var(--accent); box-shadow: var(--focus-ring); }
+
+/* Provider rail: one indicator glides between entries. */
+.uam-np-rail { position: relative; }
+.uam-np-rail__glide {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 20px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  pointer-events: none;
+  transform: translateY(var(--np-glide-y, 0px));
+  transition: transform var(--dur-base) var(--ease-out-soft);
+}
+.uam-np-rail__button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 36px;
+  margin-bottom: 4px;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.uam-np-rail__button:hover:not(:disabled) { background: var(--surface-up); color: var(--text); }
+.uam-np-rail__button[aria-pressed="true"] { background: var(--surface-up); color: var(--text); }
+.uam-np-rail__button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-np-rail__button:disabled { cursor: default; }
+
+/* Model rows: fixed 52px so the list can window. */
+.uam-np-model {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 52px;
+  border-radius: var(--r-sm);
+  transition: background var(--dur-fast) var(--ease);
+}
+.uam-np-model__button {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: var(--sp-1) 36px var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  text-align: left;
+  color: var(--text-2);
+  outline: none;
+}
+.uam-np-model__button:disabled { cursor: default; opacity: 0.5; }
+.uam-np-model[data-selected="true"] { background: var(--accent-dim); }
+.uam-np-model[data-highlight="true"] { background: var(--surface-high); }
+.uam-np-model[data-highlight="true"] .uam-np-model__name { color: var(--text); }
+.uam-np-model__name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text);
+}
+.uam-np-model__name > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.uam-np-model__id {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 var(--sp-1);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  color: var(--text-3);
+  background: var(--surface-high);
+}
+.uam-np-model__detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-xs); color: var(--text-3); }
+.uam-np-model__check { flex: none; color: var(--accent); }
+.uam-np-model__fav {
+  position: absolute;
+  right: var(--sp-1);
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.uam-np-model:hover .uam-np-model__fav,
+.uam-np-model:focus-within .uam-np-model__fav,
+.uam-np-model[data-highlight="true"] .uam-np-model__fav,
+.uam-np-model__fav[aria-pressed="true"] { opacity: 1; }
+.uam-np-model__fav[aria-pressed="true"] { color: var(--accent); }
+.uam-np-model__fav:hover { background: var(--surface-up); color: var(--text); }
+.uam-np-model__fav:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+@media (hover: none) { .uam-np-model__fav { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-np-rail__glide,
+  .uam-np-row,
+  .uam-np-model,
+  .uam-np-model__fav,
+  .uam-np-rail__button,
+  .uam-np-row__dismiss { transition: none; }
+}

@@ -84,8 +84,8 @@ type ActivityStatus = { label: string; color: string; Icon: typeof CircleCheck }
 /** T3-style at-a-glance label for a card that is not running. */
 export function activityStatusLabel(status: DisplayedChatStatus): ActivityStatus | null {
   if (status?.type === 'attention') {
-    if (status.kind === 'error') return { label: 'Failed', color: 'var(--red)', Icon: CircleAlert }
-    if (status.kind === 'permission' || status.kind === 'command' || status.kind === 'file') return { label: 'Approval', color: 'var(--yellow)', Icon: ShieldQuestion }
+    if (status.kind === 'error') return { label: 'Failed', color: 'var(--error)', Icon: CircleAlert }
+    if (status.kind === 'permission' || status.kind === 'command' || status.kind === 'file') return { label: 'Approval', color: 'var(--warning)', Icon: ShieldQuestion }
     return { label: 'Input', color: 'var(--accent)', Icon: MessageCircleQuestion }
   }
   if (status?.type === 'done') return { label: 'Done', color: 'var(--success)', Icon: CircleCheck }
@@ -441,12 +441,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={selected}
-        className={`relative flex ${activityLayout ? 'gap-2 px-3 py-2' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
+        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
         style={{
-          // Running rows recede a touch so chats that need the user stand out.
+          // Running activity rows recede a touch so chats that need the user stand out.
           opacity: activityLayout && lifecycleStatus?.type === 'processing' && !isActive ? 0.95 : undefined,
-          background: selected ? 'var(--accent-dim)' : isActive ? 'var(--sidebar-item-active)' : 'transparent',
-          boxShadow: selected ? 'inset 0 0 0 1px var(--accent)' : 'none',
+          // One light accent tint for selected or active rows (never stacked), with a 2px edge bar when selected.
+          background: selected || isActive ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
+          boxShadow: selected ? 'inset 2px 0 0 var(--accent)' : 'none',
         }}
         onClick={(event) => {
           if (editing || onSessionClick?.(sessionId, event)) return
@@ -491,34 +492,32 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         }}
       >
         {activityLayout && !editing ? (
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <div className="flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-3)' }}>
-              <CustomIcon icon={activityFolderIcon} fallback={<FolderIcon size={13} aria-hidden />} />
-              <span className="flex min-w-0 flex-1 items-center gap-1" title={activityWorktree || undefined}>
-                <span className="truncate">{activityWorktree ? sourceWorkspaceName : activityFolderName || 'Unsorted'}</span>
-                {activityWorktree && <><GitBranch size={12} className="shrink-0" aria-hidden /><span className="truncate">{worktreeName}</span></>}
-              </span>
+          <div className="uam-sb-activity flex min-w-0 flex-1 flex-col gap-0.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="block min-w-0 flex-1 truncate text-[13px] leading-5" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
               {lifecycleStatus?.type === 'processing' ? (
-                <span className="inline-flex shrink-0 items-center gap-1 font-medium tabular-nums" style={{ color: 'var(--info)' }}>
-                  <CircleDashed size={13} className="uam-working-ring shrink-0" aria-hidden />
+                <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium tabular-nums" style={{ color: 'var(--info)' }}>
+                  <CircleDashed size={12} className="uam-working-ring shrink-0" aria-hidden />
                   <span role="status">Working</span>
                   {workingStartedAtMs !== null && <span aria-hidden><WorkingDuration startedAtMs={workingStartedAtMs} /></span>}
                 </span>
               ) : (
                 <>
+                  {/* Done overlays the status/time on hover so the row never reflows. */}
+                  <span className="relative flex shrink-0 items-center justify-end">
                   {activityStatus ? (
-                    <span className="inline-flex shrink-0 items-center gap-1 font-medium group-hover:hidden group-focus-within:hidden" style={{ color: activityStatus.color }}>
-                      <activityStatus.Icon size={13} className="shrink-0" aria-hidden />
+                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: activityStatus.color }}>
+                      <activityStatus.Icon size={12} className="shrink-0" aria-hidden />
                       <span role="status">{activityStatus.label}</span>
                     </span>
                   ) : (
-                    <span className="shrink-0 tabular-nums group-hover:hidden group-focus-within:hidden" title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
+                    <span className="shrink-0 text-[11px] tabular-nums transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
                   )}
                   {!isCompanionContext() && (
                     <button
                       type="button"
                       aria-label={`Mark ${sessionName} done`}
-                      className="hidden shrink-0 items-center gap-1 rounded px-1 group-hover:inline-flex group-focus-within:inline-flex hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+                      className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-1 rounded px-1 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
                       style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
                       onClick={(e) => {
                         e.stopPropagation()
@@ -531,23 +530,23 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                       Done
                     </button>
                   )}
+                  </span>
                 </>
               )}
             </div>
-            <span className="block truncate text-[13px]" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
-            <div className="flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-3)' }}>
-              {!activityWorktree && activityBranch ? (
-                <>
-                  <GitBranch size={12} className="shrink-0" aria-hidden />
-                  <span className="min-w-0 flex-1 truncate" title={activityBranch}>{activityBranch}</span>
-                </>
-              ) : <span className="flex-1" />}
+            <div className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4" style={{ color: 'var(--text-3)' }}>
+              <span className="flex min-w-0 flex-1 items-center gap-1" title={activityWorktree || undefined}>
+                <CustomIcon icon={activityFolderIcon} fallback={<FolderIcon size={12} aria-hidden />} />
+                <span className="truncate">{activityWorktree ? sourceWorkspaceName : activityFolderName || 'Unsorted'}</span>
+                {activityWorktree && <><GitBranch size={11} className="shrink-0" aria-hidden /><span className="truncate">{worktreeName}</span></>}
+                {!activityWorktree && activityBranch && <><GitBranch size={11} className="shrink-0" aria-hidden /><span className="truncate" title={activityBranch}>{activityBranch}</span></>}
+              </span>
               <span role="img" aria-label={activityHostLabel || (activityHostRemote ? 'Remote host' : 'This computer')} title={activityHostLabel} className="inline-flex shrink-0">
                 {activityHostRemote ? <Server size={12} aria-hidden /> : <Monitor size={12} aria-hidden />}
               </span>
               {sessionSummary.providerId && (
                 <span role="img" aria-label={`Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
-                  <ProviderLogo providerId={sessionSummary.providerId} size={13} />
+                  <ProviderLogo providerId={sessionSummary.providerId} size={12} />
                 </span>
               )}
             </div>
@@ -742,8 +741,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         >
           <button
             role="menuitem"
-            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
-            style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
+            className="uam-sb-menu-item"
+            
             onClick={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }}
           >
             <Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
@@ -751,42 +750,38 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </button>
           <button
             role="menuitem"
-            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
-            style={{ background: 'transparent', color: 'var(--text-2)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
-            onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text)'}
-            onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-2)'}
-            onClick={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }}
+            className="uam-sb-menu-item"
+                        onClick={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }}
           >
             <Pencil size={13} aria-hidden />
             Rename
             <kbd className="uam-menu-kbd">F2</kbd>
           </button>
           <button type="button" role="menuitem" disabled={generatingTitle}
-            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
+            className="uam-sb-menu-item"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: generatingTitle ? 'wait' : 'pointer', border: 'none', fontFamily: 'inherit' }}
             onClick={() => { void regenerateTitle() }}>
             <RefreshCw size={13} aria-hidden />{generatingTitle ? 'Generating title…' : 'Regenerate title'}
           </button>
           {generatingTitle && <button type="button" role="menuitem" disabled={cancellingTitle}
-            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm"
-            style={{ background: 'transparent', color: 'var(--text-2)', border: 'none', fontFamily: 'inherit' }}
+            className="uam-sb-menu-item"
+            
             onClick={() => { void cancelTitle() }}>{cancellingTitle ? 'Cancelling…' : 'Cancel title generation'}</button>}
-          {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--red)' : 'var(--text-2)' }}>{titleFeedback.text}</p>}
+          {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--error)' : 'var(--text-2)' }}>{titleFeedback.text}</p>}
           {(['name', 'id'] as const).map(kind => <button key={kind} type="button" role="menuitem" disabled={copying}
-            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
+            className="uam-sb-menu-item"
             style={{ background: 'transparent', color: 'var(--text-2)', cursor: copying ? 'wait' : 'pointer', border: 'none', fontFamily: 'inherit' }}
             onClick={() => { void copyChatDetail(kind) }}>
             <Copy size={13} aria-hidden />{kind === 'name' ? 'Copy chat name' : 'Copy chat ID'}
           </button>)}
-          {copyState && <p role={copyState === 'failed' ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: copyState === 'failed' ? 'var(--red)' : 'var(--text-2)' }}>
+          {copyState && <p role={copyState === 'failed' ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: copyState === 'failed' ? 'var(--error)' : 'var(--text-2)' }}>
             {copyState === 'failed' ? 'Could not copy. Try again.' : copyState === 'id' ? 'Chat ID copied.' : 'Chat name copied.'}
           </p>}
           <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={sessionSummary.snoozedUntilMs} />
           <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
             role="menuitem"
-            className="flex w-full items-center gap-2 text-left px-3 py-1.5 text-sm transition-colors duration-100"
-            style={{ background: 'transparent', color: 'var(--red)', cursor: 'pointer', border: 'none', fontFamily: 'inherit' }}
+            className="uam-sb-menu-item uam-sb-menu-item--danger"
             onClick={() => { setMenuPos(null); setDeleteError(''); setConfirmDelete(true) }}
           >
             <Trash2 size={13} aria-hidden />

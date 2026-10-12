@@ -22,7 +22,7 @@ beforeEach(async () => {
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
 })
 afterEach(async () => { await act(async () => root.unmount()); host.remove() })
-const button = (text: string) => [...host.querySelectorAll('button')].find(item => item.textContent?.trim() === text)!
+const button = (text: string) => [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === text || item.getAttribute('aria-label') === text)!
 async function click(text: string) { await act(async () => button(text).click()) }
 async function type(field: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
@@ -41,40 +41,40 @@ it('round-trips OpenCode-style JSON with the built-in UAM service and env refere
 })
 
 it('shows built-ins without delete buttons and deletes a user server only after save', async () => {
-  expect(host.textContent).toContain('UAM MCP service')
-  expect(host.textContent).toContain('UAM Computer Use')
-  expect(host.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
-  await click('Delete')
+  expect(document.body.textContent).toContain('UAM MCP service')
+  expect(document.body.textContent).toContain('UAM Computer Use')
+  expect(document.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
+  await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Delete playwright"]')!.click())
   expect(saveServers).not.toHaveBeenCalled()
   await click('Save')
   expect(saveServers).toHaveBeenCalledWith([])
 })
 
 it('adds a server through the form and blocks a relative program path', async () => {
-  await click('+ Add server')
+  await click('Add server')
   await click('Manual form')
-  const inputs = () => [...host.querySelectorAll('input:not([type=checkbox])')] as HTMLInputElement[]
+  const inputs = () => [...document.querySelectorAll('input:not([type=checkbox])')] as HTMLInputElement[]
   await type(inputs()[0], 'docs')
   await type(inputs()[1], 'docs-server')
   await click('Save')
-  expect(host.textContent).toContain('program path must be a full path')
+  expect(document.body.textContent).toContain('program path must be a full path')
   await type(inputs()[1], '/opt/docs/server')
   await click('+ Add argument')
-  await type(host.querySelector('input[aria-label="Argument 1"]') as HTMLInputElement, '--stdio')
+  await type(document.querySelector('input[aria-label="Argument 1"]') as HTMLInputElement, '--stdio')
   await click('Save')
   expect(saveServers.mock.calls[0][0][1]).toMatchObject({ name: 'docs', transport: 'stdio', command: '/opt/docs/server', args: ['--stdio'] })
 })
 
 it('edits in JSON, toggles the built-in UAM service and saves both', async () => {
   await click('JSON')
-  const area = host.querySelector('textarea[aria-label="MCP JSON"]') as HTMLTextAreaElement
+  const area = document.querySelector('textarea[aria-label="MCP JSON"]') as HTMLTextAreaElement
   await type(area, area.value.replace('"enabled": true\n    },\n    "playwright"', '"enabled": false\n    },\n    "playwright"'))
   await click('Save')
   expect(saveServers).toHaveBeenCalledWith([server])
   expect(saveCentral.mock.calls[0][0].uamControlEnabled).toBe(false)
   await type(area, '{ not json')
   await click('Form')
-  expect(host.textContent).toContain('not valid')
+  expect(document.body.textContent).toContain('not valid')
 })
 
 
@@ -89,25 +89,25 @@ it('imports additively and rejects conflicts without changing the source configu
 })
 
 it('previews an import without saving or disabling the built-in UAM service', async () => {
-  await click('+ Add server')
+  await click('Add server')
   await click('Import configuration')
-  await type(host.querySelector('textarea[aria-label="Import MCP configuration"]') as HTMLTextAreaElement, '{"mcp":{"docs":{"type":"remote","url":"https://example.com/mcp"},"uam-mcp":{"type":"builtin","enabled":false}}}')
+  await type(document.querySelector('textarea[aria-label="Import MCP configuration"]') as HTMLTextAreaElement, '{"mcp":{"docs":{"type":"remote","url":"https://example.com/mcp"},"uam-mcp":{"type":"builtin","enabled":false}}}')
   await click('Review import')
   expect(saveServers).not.toHaveBeenCalled()
-  expect(host.textContent).toContain('Imported into the draft')
+  expect(document.body.textContent).toContain('Imported into the draft')
   await click('Save')
   expect(saveServers.mock.calls[0][0]).toHaveLength(2)
   expect(saveCentral).not.toHaveBeenCalled()
 })
 
 it('starts guided setup with a named connection and saves only after completing details', async () => {
-  await click('+ Add server')
+  await click('Add server')
   await click('Step by step')
-  await type(host.querySelector('input[placeholder="playwright"]') as HTMLInputElement, 'docs')
+  await type(document.querySelector('input[placeholder="playwright"]') as HTMLInputElement, 'docs')
   await click('Next: connection details')
-  expect(host.textContent).toContain('Step 2 of 2')
+  expect(document.body.textContent).toContain('Step 2 of 2')
   expect(saveServers).not.toHaveBeenCalled()
-  await type(host.querySelector('input[placeholder="/usr/local/bin/npx"]') as HTMLInputElement, '/opt/docs/server')
+  await type(document.querySelector('input[placeholder="/usr/local/bin/npx"]') as HTMLInputElement, '/opt/docs/server')
   await click('Save')
   expect(saveServers.mock.calls[0][0][1]).toMatchObject({ name: 'docs', command: '/opt/docs/server' })
 })
@@ -123,7 +123,8 @@ it('round-trips same-name servers on different hosts without dropping either def
 it('preserves concurrent central instruction changes while saving MCP servers', async () => {
   let finish!: () => void
   saveServers.mockImplementationOnce(async servers => { await new Promise<void>(resolve => { finish = resolve }); useAppStore.setState({ mcpServers: servers }); return { ok: true } })
-  await act(async () => (host.querySelector('input[aria-label="UAM MCP service enabled"]') as HTMLInputElement).click())
+  await click('JSON')
+  await type(document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, toJsonText(useAppStore.getState().mcpServers, false))
   await click('Save')
   await act(async () => {
     useAppStore.setState({ centralProviderConfiguration: { ...useAppStore.getState().centralProviderConfiguration, instructions: 'New instructions' } })
@@ -135,20 +136,20 @@ it('preserves concurrent central instruction changes while saving MCP servers', 
 it.each(['import', 'json', 'manual'] as const)('preserves intentional empty arguments and order when saving through %s', async mode => {
   const args = ['--value', '', '--other', 'tail', '']
   if (mode === 'import') {
-    await click('+ Add server')
+    await click('Add server')
     await click('Import configuration')
-    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!, JSON.stringify({ mcp: { empty: { type: 'local', command: ['/opt/mcp/tool', ...args] } } }))
+    await type(document.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!, JSON.stringify({ mcp: { empty: { type: 'local', command: ['/opt/mcp/tool', ...args] } } }))
     await click('Review import')
   } else if (mode === 'json') {
     await click('JSON')
-    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, toJsonText([{ ...server, args }], true))
+    await type(document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, toJsonText([{ ...server, args }], true))
   } else {
-    await click('+ Add server'); await click('Manual form')
-    const inputs = [...host.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')]
+    await click('Add server'); await click('Manual form')
+    const inputs = [...document.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')]
     await type(inputs[0], 'empty'); await type(inputs[1], '/opt/mcp/tool')
     for (const [index, arg] of args.entries()) {
       await click('+ Add argument')
-      await type(host.querySelector<HTMLInputElement>(`[aria-label="Argument ${index + 1}"]`)!, arg)
+      await type(document.querySelector<HTMLInputElement>(`[aria-label="Argument ${index + 1}"]`)!, arg)
     }
   }
   await click('Save')
@@ -172,9 +173,9 @@ it.each([
   { field: 'sse', value: 'false', error: 'sse must be boolean' },
 ])('shows a validation error without saving malformed JSON $field', async ({ field, value, error }) => {
   await click('JSON')
-  await type(host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, JSON.stringify({ mcp: { malformed: { type: 'remote', url: 'https://example.test/mcp', [field]: value } } }))
+  await type(document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, JSON.stringify({ mcp: { malformed: { type: 'remote', url: 'https://example.test/mcp', [field]: value } } }))
   await click('Save')
-  expect(host.textContent).toContain(error)
+  expect(document.body.textContent).toContain(error)
   expect(saveServers).not.toHaveBeenCalled()
   expect(saveCentral).not.toHaveBeenCalled()
 })
@@ -203,16 +204,16 @@ it('keeps supported root metadata, server scopes, SSE, literal secrets and whole
 it.each(['import', 'json'] as const)('keeps the draft and secrets unchanged after unsupported %s input', async mode => {
   const text = JSON.stringify({ mcp: { docs: { type: 'remote', url: 'https://example.test/mcp', oauth: { clientSecret: 'private-secret-value' } } } })
   if (mode === 'import') {
-    await click('+ Add server'); await click('Import configuration')
-    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!, text)
+    await click('Add server'); await click('Import configuration')
+    await type(document.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!, text)
     await click('Review import')
   } else {
     await click('JSON')
-    await type(host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, text)
+    await type(document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!, text)
     await click('Save')
   }
-  expect(host.querySelector('[role="status"]')?.textContent).toContain('OAuth settings need manual configuration')
-  expect(host.querySelector('[role="status"]')?.textContent).not.toContain('private-secret-value')
+  expect(document.querySelector('[role="status"]')?.textContent).toContain('OAuth settings need manual configuration')
+  expect(document.querySelector('[role="status"]')?.textContent).not.toContain('private-secret-value')
   expect(useAppStore.getState().mcpServers).toEqual([server])
   expect(saveServers).not.toHaveBeenCalled()
   expect(saveCentral).not.toHaveBeenCalled()
@@ -221,8 +222,8 @@ it.each(['import', 'json'] as const)('keeps the draft and secrets unchanged afte
 
 it('shows native source paths and warnings beside import controls and accepts a global directory', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, id: 'docs', name: 'docs' }], sources: ['/config/opencode/opencode.jsonc'], warnings: ['legacy: OAuth settings need manual configuration'], requiresReview: true } })
-  await click('+ Add server'); await click('Import configuration')
-  const section = host.querySelector('[aria-label="MCP setup"]')!
+  await click('Add server'); await click('Import configuration')
+  const section = document.querySelector('[aria-label="MCP setup"]')!
   expect(section.textContent).toContain('file or directory')
   await type(section.querySelector<HTMLInputElement>('input')!, '/config/opencode')
   await click("Read this computer's OpenCode configuration")
@@ -235,10 +236,10 @@ it('shows native source paths and warnings beside import controls and accepts a 
 
 it('clears a previous native preview on read failure and blocks stale review', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, name: 'docs' }], sources: ['/config/opencode.jsonc'], warnings: [] } }).mockResolvedValueOnce({ ok: false, error: 'No configuration exists in the selected directory.' })
-  await click('+ Add server'); await click('Import configuration'); await click("Read this computer's OpenCode configuration")
-  expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!.value).toContain('docs')
+  await click('Add server'); await click('Import configuration'); await click("Read this computer's OpenCode configuration")
+  expect(document.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!.value).toContain('docs')
   await click("Read this computer's OpenCode configuration")
-  const section = host.querySelector('[aria-label="MCP setup"]')!
+  const section = document.querySelector('[aria-label="MCP setup"]')!
   expect(section.querySelector('[role="status"]')?.textContent).toContain('No configuration exists')
   expect(section.textContent).not.toContain('/config/opencode.jsonc')
   expect(section.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('')
@@ -248,8 +249,8 @@ it('clears a previous native preview on read failure and blocks stale review', a
 
 it('distinguishes zero external servers and keeps warnings and source visible without a UAM-only preview', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['legacy: executable unavailable'], requiresReview: true } })
-  await click('+ Add server'); await click('Import configuration'); await click("Read this computer's OpenCode configuration")
-  const section = host.querySelector('[aria-label="MCP setup"]')!
+  await click('Add server'); await click('Import configuration'); await click("Read this computer's OpenCode configuration")
+  const section = document.querySelector('[aria-label="MCP setup"]')!
   expect(section.querySelector('[role="status"]')?.textContent).toContain('No external MCP servers found')
   expect(section.textContent).toContain('executable unavailable')
   expect(section.textContent).toContain('/config/opencode.jsonc')
@@ -260,32 +261,32 @@ it('distinguishes zero external servers and keeps warnings and source visible wi
 it.each([true, false])('shows Computer Use server build availability %s without a chat permission toggle', async enabled => {
   buildFeatures.COMPUTER_USE_ENABLED = enabled
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
-  expect(host.textContent).toContain(enabled ? 'Available in this build' : 'Unavailable in this build')
-  expect(host.querySelector('[aria-label="UAM Computer Use for current chat"]')).toBeNull()
-  expect(host.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
+  expect(document.body.textContent).toContain(enabled ? 'Available in this build' : 'Unavailable in this build')
+  expect(document.querySelector('[aria-label="UAM Computer Use for current chat"]')).toBeNull()
+  expect(document.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
 })
 
 it('keeps provider override identity when a server is renamed in the JSON editor', async () => {
   const override = { providerId: 'codex-cli', executionHostId: 'local', serverId: server.id, enabled: false }
   useAppStore.setState(state => ({ centralProviderConfiguration: { ...state.centralProviderConfiguration, mcpOverrides: [override] } }))
   await click('JSON')
-  const area = host.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
-  const document = JSON.parse(area.value)
-  expect(document.mcp.playwright.uamId).toBe(server.id)
-  document.mcp['renamed-playwright'] = document.mcp.playwright
-  delete document.mcp.playwright
-  await type(area, JSON.stringify(document))
+  const area = document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
+  const doc = JSON.parse(area.value)
+  expect(doc.mcp.playwright.uamId).toBe(server.id)
+  doc.mcp['renamed-playwright'] = doc.mcp.playwright
+  delete doc.mcp.playwright
+  await type(area, JSON.stringify(doc))
   await click('Save')
   expect(saveServers).toHaveBeenCalledWith([{ ...server, name: 'renamed-playwright' }])
   expect(useAppStore.getState().centralProviderConfiguration.mcpOverrides).toEqual([override])
 })
 
 it('keeps the known editor ID when workspace metadata changes and generates fresh imported IDs', () => {
-  const document = JSON.parse(toJsonText([server], true))
-  document.mcp.playwright.workspace = '/new-workspace'
-  document.mcp.playwright.name = 'renamed'
-  expect(fromJsonText(JSON.stringify(document), [server]).servers[0]).toMatchObject({ id: server.id, name: 'renamed', workspaceDirectory: '/new-workspace' })
-  const imported = mergeMcpImport(JSON.stringify(document), [server])
+  const doc = JSON.parse(toJsonText([server], true))
+  doc.mcp.playwright.workspace = '/new-workspace'
+  doc.mcp.playwright.name = 'renamed'
+  expect(fromJsonText(JSON.stringify(doc), [server]).servers[0]).toMatchObject({ id: server.id, name: 'renamed', workspaceDirectory: '/new-workspace' })
+  const imported = mergeMcpImport(JSON.stringify(doc), [server])
   expect(imported[0]).toEqual(server)
   expect(imported[1].id).not.toBe(server.id)
   expect(imported[1]).toMatchObject({ name: 'renamed', workspaceDirectory: '/new-workspace' })
@@ -313,40 +314,40 @@ it.each(['local', 'remote'])('rejects external %s definitions using the builtin 
 it('keeps skipped-server warnings through editing, review and save', async () => {
   const warning = 'legacy: OAuth settings need manual configuration'
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, id: 'docs', name: 'docs' }], sources: ['/config/opencode.jsonc'], warnings: [warning] } })
-  await click('+ Add server'); await click('Import configuration')
+  await click('Add server'); await click('Import configuration')
   await click("Read this computer's OpenCode configuration")
-  const area = host.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!
+  const area = document.querySelector<HTMLTextAreaElement>('[aria-label="Import MCP configuration"]')!
   await type(area, `${area.value}\n`)
-  expect(host.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
+  expect(document.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
   await click('Review import')
-  expect(host.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
+  expect(document.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
   await click('Save')
   expect(saveServers.mock.calls[0][0]).toHaveLength(2)
-  expect(host.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
+  expect(document.querySelector('[aria-label="Import warnings"]')?.textContent).toContain(warning)
 })
 
 it('clears earlier read warnings only on a new read or Cancel setup', async () => {
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['first: manual setup required'] } })
     .mockResolvedValueOnce({ ok: true, data: { servers: [], sources: ['/config/opencode.jsonc'], warnings: ['second: executable unavailable'] } })
-  await click('+ Add server'); await click('Import configuration')
+  await click('Add server'); await click('Import configuration')
   await click("Read this computer's OpenCode configuration")
-  expect(host.textContent).toContain('first: manual setup required')
+  expect(document.body.textContent).toContain('first: manual setup required')
   await click("Read this computer's OpenCode configuration")
-  expect(host.textContent).not.toContain('first: manual setup required')
-  expect(host.textContent).toContain('second: executable unavailable')
+  expect(document.body.textContent).not.toContain('first: manual setup required')
+  expect(document.body.textContent).toContain('second: executable unavailable')
   await click('Cancel setup')
-  expect(host.querySelector('[aria-label="Import warnings"]')).toBeNull()
+  expect(document.querySelector('[aria-label="Import warnings"]')).toBeNull()
 })
 
 it('explains why Save is disabled while server setup is incomplete', async () => {
-  await click('+ Add server'); await click('Import configuration')
+  await click('Add server'); await click('Import configuration')
   expect(button('Save').disabled).toBe(true)
   expect(button('Save').title).toBe('Finish or cancel setup before saving.')
-  expect(host.textContent).toContain('Finish or cancel setup before saving.')
+  expect(document.body.textContent).toContain('Finish or cancel setup before saving.')
 })
 
 
 it('identifies the OpenCode read action as local to this computer', async () => {
-  await click('+ Add server'); await click('Import configuration')
+  await click('Add server'); await click('Import configuration')
   expect(button("Read this computer's OpenCode configuration")).toBeDefined()
 })

@@ -22,6 +22,7 @@ import {
   ToolCallModal,
   ToolCallInlineRows,
 } from './ToolCallViews'
+import { ContextMeter } from './StatusHelpers'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, providerShortName } from '../../utils/providerMetadata'
 
 export function attachmentLabel(attachment: Attachment) {
@@ -531,8 +532,9 @@ export function CompactionSeparator({ summary, tokensBefore, tokensAfter }: { su
   const known = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value >= 0
   const counts = known(tokensBefore) && known(tokensAfter) ? `${tokensBefore.toLocaleString()} → ${tokensAfter.toLocaleString()} tokens` : undefined
   const reduction = counts && tokensBefore! > 0 && tokensAfter! <= tokensBefore! ? ` (${Math.round((1 - tokensAfter! / tokensBefore!) * 100)}% reduced)` : ''
+  const remaining = counts && tokensBefore! > 0 ? tokensAfter! / tokensBefore! : undefined
   return <details className="context-compaction">
-    <summary>Context compacted{counts && ` · ${counts}${reduction}`}</summary>
+    <summary>Context compacted{counts && ` · ${counts}${reduction}`}{remaining !== undefined && <ContextMeter ratio={remaining} />}</summary>
     <div>{summary.trim() ? <MarkdownContent content={summary} /> : 'The provider did not include a summary.'}</div>
   </details>
 }

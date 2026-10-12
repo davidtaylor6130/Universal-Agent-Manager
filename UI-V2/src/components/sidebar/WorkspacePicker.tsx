@@ -24,6 +24,15 @@ interface WorkspaceRow {
   groupId: string
 }
 
+/** Wraps query-token matches in a tinted span; plain text when there is no query. */
+function highlightMatches(text: string, tokens: string[]) {
+  if (!tokens.length) return text
+  const pattern = new RegExp(`(${tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'i')
+  return text.split(pattern).map((part, index) => index % 2
+    ? <span key={index} style={{ background: 'var(--accent-dim)', color: 'var(--text)', borderRadius: 2 }}>{part}</span>
+    : part)
+}
+
 /** Mirrors sidebar collection ownership without reading the store or changing durable folder identities. */
 export function WorkspacePicker({ folders, collections, executionHostId, value, onChange, remoteEmptyOption, disabled = false, label = 'Workspace' }: WorkspacePickerProps) {
   const [open, setOpen] = useState(false)
@@ -139,29 +148,29 @@ export function WorkspacePicker({ folders, collections, executionHostId, value, 
       <span className="truncate">{selected?.label ?? 'Choose workspace'}</span><ChevronDown size={14} aria-hidden />
     </button>
     {open && <ViewportMenu ref={menuRef} anchorRef={triggerRef} manageFocus={false} onRequestClose={() => close()} onKeyDown={onKeyDown}
-      className="p-1 text-white" style={{ minWidth: Math.max(triggerRef.current?.getBoundingClientRect().width ?? 0, 260), maxHeight: 320, background: '#000', border: '1px solid var(--border-bright)' }}>
+      className="p-1" style={{ minWidth: Math.max(triggerRef.current?.getBoundingClientRect().width ?? 0, 260), maxHeight: 320, background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)' }}>
       <input ref={searchRef} type="search" aria-label="Search workspaces" aria-controls={listId} aria-activedescendant={visible.length ? `${listId}-option-${activeIndex}` : undefined} value={query}
-        onChange={(event) => { setQuery(event.target.value); setActiveKey('') }} className="w-full bg-black px-2 py-1.5 text-sm text-white border-b border-[var(--border)]" placeholder="Search workspaces" />
+        onChange={(event) => { setQuery(event.target.value); setActiveKey('') }} className="w-full bg-transparent px-2 py-1.5 text-sm outline-none border-b border-[var(--border)]" style={{ color: 'var(--text)' }} placeholder="Search workspaces" />
       <div id={listId} role="listbox" aria-label={label}>
         {filtered.map((row, index) => {
           const optionIndex = optionIndexByKey.get(row.key) ?? -1
           const groupCollapsed = collapsed(row.groupId)
           return <div key={row.key}>
             {row.group && (index === 0 || filtered[index - 1].groupId !== row.groupId) && <button type="button" data-workspace-group={row.groupId} aria-expanded={!groupCollapsed}
-              className="flex w-full items-center gap-1 px-2 pt-2 pb-1 text-left text-xs font-medium" disabled={tokens.length > 0}
+              className="flex w-full items-center gap-1 px-2 pt-2 pb-1 text-left font-medium uppercase" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)', letterSpacing: '0.08em' }} disabled={tokens.length > 0}
               onMouseDown={(event) => event.preventDefault()} onClick={() => setDisclosureOverrides((current) => new Map(current).set(row.groupId, !groupCollapsed))}>
               {groupCollapsed ? <ChevronRight size={12} aria-hidden /> : <ChevronDown size={12} aria-hidden />}{row.group}
             </button>}
             {!groupCollapsed && <button type="button" role="option" id={`${listId}-option-${optionIndex}`} data-workspace-option-index={optionIndex} aria-selected={row.folderId === value} tabIndex={-1}
-              className="flex w-full items-center gap-2 px-2 py-1.5 text-left" style={{ background: optionIndex === activeIndex ? 'var(--sidebar-item-hover)' : undefined }}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left" style={{ color: optionIndex === activeIndex ? 'var(--text)' : 'var(--text-2)', background: optionIndex === activeIndex ? 'var(--accent-dim)' : 'transparent' }}
               onMouseEnter={() => setActiveKey(row.key)} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(row)}>
-              <span className="min-w-0 flex-1"><span className="block truncate text-sm">{row.label}</span>{row.path && <span className="block truncate text-xs" title={row.path}>{row.path}</span>}</span>
+              <span className="min-w-0 flex-1"><span className="block truncate text-sm">{highlightMatches(row.label, tokens)}</span>{row.path && <span className="block truncate font-mono text-xs" style={{ color: 'var(--text-3)' }} title={row.path}>{highlightMatches(row.path, tokens)}</span>}</span>
               {row.folderId === value && <Check size={13} aria-hidden />}
             </button>}
           </div>
         })}
       </div>
-      {filtered.length === 0 && <div role="status" className="px-2 py-2 text-xs">{query.trim() ? 'No matching workspaces' : 'No workspaces on this host'}</div>}
+      {filtered.length === 0 && <div role="status" className="px-2 py-2 text-xs" style={{ color: 'var(--text-3)' }}>{query.trim() ? `No workspaces match “${query.trim()}”` : 'No workspaces on this host'}</div>}
     </ViewportMenu>}
   </>
 }

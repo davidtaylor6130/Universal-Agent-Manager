@@ -136,7 +136,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
           </div>
 
           {error && (
-            <div id="remote-directory-error" role="alert" className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--red)', background: 'color-mix(in srgb, var(--red) 10%, var(--surface))', border: '1px solid color-mix(in srgb, var(--red) 35%, var(--border))' }}>
+            <div id="remote-directory-error" role="alert" className="flex items-center justify-between gap-2 rounded-lg px-3 py-2 text-xs" style={{ color: 'var(--error)', background: 'color-mix(in srgb, var(--error) 10%, var(--surface))', border: '1px solid color-mix(in srgb, var(--error) 35%, var(--border))' }}>
               <span className="min-w-0 break-words">{error}</span>
               <IconButton icon={<X size={14} />} label="Dismiss directory error" variant="danger" onClick={() => setError('')} />
             </div>
@@ -178,7 +178,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
               </>
             ) : null}
           </div>
-          {listing?.truncated && <p className="text-xs" style={{ color: 'var(--yellow)' }}>Showing the first 200 directories. Enter a more specific path to continue.</p>}
+          {listing?.truncated && <p className="text-xs" style={{ color: 'var(--warning)' }}>Showing the first 200 directories. Enter a more specific path to continue.</p>}
           <p className="text-xs" style={{ color: 'var(--text-3)' }}>Read-only: UAM lists directories but does not create, rename, or modify anything on this computer.</p>
         </div>
 

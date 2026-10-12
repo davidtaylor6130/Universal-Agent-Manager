@@ -5,8 +5,9 @@ import { useAppStore, type ShellAction } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, Notice, Switch } from '../ui'
+import { Button, IconButton, MenuSelect, Overlay, Presence, StatusDot, Switch } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
+import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
 function newAction(): ShellAction {
   const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -69,6 +70,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
   const [pendingDeleteActionId, setPendingDeleteActionId] = useState('')
+  const pendingDeleteAction = actions.find((action) => action.id === pendingDeleteActionId)
 
   useEffect(() => {
     if (!dirtyRef.current && !applyingRef.current) { setActions(savedActions); setAppliedActions(savedActions) }
@@ -113,172 +115,153 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   ].flatMap(path => { const parts = parseGroupPath(path); return parts.map((_, index) => parts.slice(0, index + 1).join(' / ')) }))).filter(Boolean).sort()
   const toolbar = <div className="flex items-center gap-2">
     {dirty && <StatusIndicator issues={['Unsaved shell action changes']} />}
-    <Button size="sm" leadingIcon={<Plus size={14} />} aria-label="Add shell action" disabled={applying} onClick={() => setActions(current => [newAction(), ...current])}>Add action</Button>
     <Button size="sm" variant="primary" leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty} onClick={() => void apply()}>Save</Button>
   </div>
 
   return (
-    <div className="space-y-4">
+    <div className="grid gap-6">
       {toolbarTarget ? createPortal(toolbar, toolbarTarget) : toolbar}
-      {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50" onClick={event => { if (event.target === event.currentTarget && !applying) setPendingExit(null) }}>
-        <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}} onKeyDown={event => { if(event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if(!applying) setPendingExit(null) } }}>
-          <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
-          {error && <p role="alert" className="text-xs" style={{color:'var(--red)'}}>{error}</p>}
-          <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if(await apply()) { const next=pendingExit; setPendingExit(null); next() } }}>Save and leave</Button></div>
-        </div>
-      </div>}
-      {newGroupActionId && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
-        <form role="dialog" aria-modal="true" aria-label="New shell action group" className="rounded-xl p-5 space-y-4 w-80" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}} onKeyDown={event => { if(event.key==='Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if(!parseGroupPath(newGroupName).length) return; update(newGroupActionId,{groupPath:parseGroupPath(newGroupName)}); setNewGroupActionId('') }}>
-          <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New group</h3><IconButton icon={<X size={16}/>} label="Close new group" onClick={() => setNewGroupActionId('')} /></div>
-          <input autoFocus aria-label="Group name" placeholder="Group name" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} className="w-full rounded-md px-3 py-2 text-sm" style={{background:'var(--bg)',color:'var(--text)',border:'1px solid var(--border)'}} />
-          <Button type="submit" variant="primary" block disabled={!parseGroupPath(newGroupName).length}>Create group</Button>
-        </form>
-      </div>}
-      {actions.length === 0 && (
-        <div className="uam-settings-empty">
-          <FolderTree size={22} aria-hidden />
-          <div className="text-sm font-medium" style={{ color: 'var(--text-2)' }}>No shell actions yet</div>
-          <div className="text-xs">Add an action to start a chat from Finder or Explorer with a preset prompt.</div>
-          <Button size="sm" leadingIcon={<Plus size={14} />} disabled={applying} onClick={() => setActions(current => [newAction(), ...current])}>Add action</Button>
-        </div>
-      )}
-      {actions.map((action) => {
-        const providerId = action.providerId || defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID
-        const provider = providers.find((candidate) => candidate.id === providerId) ?? providers[0]
-        const modelOptions = buildModelOptions(undefined, action.modelId, provider, providerId)
-        const expanded = expandedActions[action.id] ?? true
-        return (
-        <fieldset disabled={applying} key={action.id} className="overflow-hidden rounded-xl transition-opacity duration-150" style={{ border: '1px solid var(--border)', opacity: action.enabled ? 1 : 0.58 }}>
-          <legend className="sr-only">Shell action {action.label}</legend>
-          <div className="flex items-center gap-2 px-3 py-2" style={{ background: 'var(--surface-up)', borderBottom: expanded ? '1px solid var(--border)' : 0 }}>
-            <IconButton size="sm" variant="solid" icon={<ChevronRight size={14} className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--text)' }}>{action.label || 'Untitled action'}</span>
-            {JSON.stringify(action) !== JSON.stringify(appliedActions.find(item => item.id === action.id)) && <StatusIndicator issues={['This action has unsaved changes']} />}
-            <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
-            <IconButton icon={<Trash2 size={15} />} label={`Remove ${action.label}`} variant="solid" className="hover:!text-[var(--red)]" onClick={() => setPendingDeleteActionId(action.id)} />
+      <Presence open={Boolean(pendingExit)}>
+        <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!applying) setPendingExit(null) }}>
+          <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) setPendingExit(null) } }}>
+            <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
+            {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
+            <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next?.() } }}>Save and leave</Button></div>
           </div>
-          {pendingDeleteActionId === action.id && (
-            <div className="p-3">
-              <Notice
-                tone="warning"
-                title="Delete shell action?"
-                dismissLabel={`Dismiss delete ${action.label} warning`}
-                onDismiss={() => setPendingDeleteActionId('')}
-                actions={(
-                  <>
-                    <Button size="sm" onClick={() => setPendingDeleteActionId('')}>Cancel</Button>
-                    <Button size="sm" variant="danger" onClick={() => {
-                      setActions((current) => current.filter((item) => item.id !== action.id))
-                      setPendingDeleteActionId('')
-                    }}>Delete action</Button>
-                  </>
-                )}
-              >
-                Delete “{action.label}”? This change takes effect when you save.
-              </Notice>
-            </div>
-          )}
-          {expanded && <div className="grid gap-3 p-4 sm:grid-cols-2">
-          <div className="flex gap-3 items-center">
-            <label className="grid gap-1 flex-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              <input
-                aria-label={`Label for ${action.label}`}
-                placeholder="Action name"
-                value={action.label}
-                onChange={(event) => update(action.id, { label: event.target.value })}
-                className="rounded-md px-3 py-2 text-sm"
-                style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
-              />
-            </label>
-          </div>
-
-          <MenuSelect label={`Group for ${action.label}`} value={groupPathText(action)} onChange={value => {
-            if(value==='__new__') { setNewGroupActionId(action.id); setNewGroupName('') }
-            else update(action.id,{groupPath:parseGroupPath(value)})
-          }} options={[{value:'',label:'No group',icon:<FolderTree size={15}/>},...groupOptions.map(group => ({value:group,label:group,icon:<FolderTree size={15}/> })),{value:'__new__',label:'New group…',icon:<Plus size={15}/> }]} />
-
-          <div className="grid sm:grid-cols-2 gap-3 sm:col-span-2">
-            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              <MenuSelect
-                label={`Provider for ${action.label}`}
-                value={action.providerId}
-                onChange={(value) => update(action.id, { providerId: value, modelId: '' })}
-                options={[
-                  { value: '', label: 'New chat default', description: 'Use the provider selected in Chat defaults.' },
-                  ...providers.map((candidate) => ({
-                    value: candidate.id,
-                    label: candidate.shortName || candidate.name,
-                    description: providerRuntimeDescription(candidate, candidate.id),
-                    icon: <ProviderLogo providerId={candidate.id} />,
-                  })),
-                ]}
-              />
-            </div>
-            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              <MenuSelect
-                label={`Model for ${action.label}`}
-                value={action.modelId}
-                onChange={(value) => update(action.id, { modelId: value })}
-                options={[
-                  { value: '', label: 'Provider default', description: 'Use the saved default for this provider.' },
-                  ...modelOptions.filter((option) => option.id).map((option) => ({
-                    value: option.id,
-                    label: option.label,
-                    description: option.detail,
-                  })),
-                ]}
-              />
+        </Overlay>
+      </Presence>
+      <Presence open={Boolean(newGroupActionId)}>
+        <Overlay open zIndex={80}>
+          <form role="dialog" aria-modal="true" aria-label="New shell action group" className="uam-mcp-dialog w-80" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if (!parseGroupPath(newGroupName).length) return; update(newGroupActionId, { groupPath: parseGroupPath(newGroupName) }); setNewGroupActionId('') }}>
+            <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New group</h3><IconButton icon={<X size={16} />} label="Close new group" onClick={() => setNewGroupActionId('')} /></div>
+            <input autoFocus aria-label="Group name" placeholder="Group name" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} className="uam-field w-full" />
+            <Button type="submit" variant="primary" block disabled={!parseGroupPath(newGroupName).length}>Create group</Button>
+          </form>
+        </Overlay>
+      </Presence>
+      <Presence open={Boolean(pendingDeleteAction)}>
+        <Overlay open zIndex={80} onBackdropMouseDown={() => setPendingDeleteActionId('')}>
+          <div role="alertdialog" aria-modal="true" aria-label="Delete shell action" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setPendingDeleteActionId('') } }}>
+            <h3 className="text-sm font-semibold">Delete shell action?</h3>
+            <p className="text-xs" style={{ color: 'var(--text-2)' }}>Delete “{pendingDeleteAction?.label}”? This change takes effect when you save.</p>
+            <div className="flex justify-end gap-2">
+              <Button autoFocus onClick={() => setPendingDeleteActionId('')}>Cancel</Button>
+              <Button variant="danger" onClick={() => {
+                const id = pendingDeleteActionId
+                setActions((current) => current.filter((item) => item.id !== id))
+                setPendingDeleteActionId('')
+              }}>Delete action</Button>
             </div>
           </div>
+        </Overlay>
+      </Presence>
 
-          <div className="grid sm:grid-cols-2 gap-3 sm:col-span-2">
-            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              <MenuSelect
-                value={action.openWorkspace ? 'workspace' : 'skill'}
-                label={`Action for ${action.label}`}
-                onChange={(value) => update(action.id, { openWorkspace: value === 'workspace' })}
-                options={[
-                  { value: 'workspace', label: 'Open as Workspace', description: 'Start a chat with the selected items.', icon: <FolderOpen size={15} /> },
-                  { value: 'skill', label: 'Run skill', description: 'Apply a skill to the selection.', icon: <Sparkles size={15} /> },
-                ]}
-              />
-            </div>
-            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              <MenuSelect
-                label={`Input type for ${action.label}`}
-                value={action.acceptsFiles && action.acceptsFolders ? 'both' : action.acceptsFolders ? 'folders' : 'files'}
-                onChange={(value) => update(action.id, {
-                  acceptsFiles: value !== 'folders',
-                  acceptsFolders: value !== 'files',
-                })}
-                options={[
-                  { value: 'both', label: 'Files and folders', icon: <Files size={15} /> },
-                  { value: 'files', label: 'Files only', icon: <File size={15} /> },
-                  { value: 'folders', label: 'Folders only', icon: <Folder size={15} /> },
-                ]}
-              />
-            </div>
-          </div>
-
-          {!action.openWorkspace && (
-            <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
-              <MenuSelect
-                label={`Skill for ${action.label}`}
-                value={action.skillPath}
-                onChange={(value) => update(action.id, { skillPath: value })}
-                options={[
-                  { value: '', label: 'Select a skill', icon: <BookOpen size={15} /> },
-                  ...markdownEntries.map((entry) => ({ value: entry.filePath, label: entry.title, icon: <BookOpen size={15} /> })),
-                ]}
-              />
-            </div>
-          )}
-          </div>}
+      <SettingsSection title="Actions" description="Right-click files or folders in Finder or Explorer to start a chat with a preset prompt or a skill."
+        actions={<Button size="sm" leadingIcon={<Plus size={14} />} aria-label="Add shell action" disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); setActions(current => [action, ...current]) }}>Add action</Button>}>
+        {actions.length === 0 && <SettingRow title="No shell actions yet" description="Add an action to start a chat from Finder or Explorer with a preset prompt." />}
+        <fieldset disabled={applying} style={{ display: 'contents', border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+        <legend className="sr-only">Shell actions</legend>
+        {actions.map((action) => {
+          const providerId = action.providerId || defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID
+          const provider = providers.find((candidate) => candidate.id === providerId) ?? providers[0]
+          const modelOptions = buildModelOptions(undefined, action.modelId, provider, providerId)
+          const expanded = expandedActions[action.id] ?? false
+          const changed = JSON.stringify(action) !== JSON.stringify(appliedActions.find(item => item.id === action.id))
+          const summary = [action.openWorkspace ? 'Open as workspace' : 'Run skill', action.acceptsFiles && action.acceptsFolders ? 'files and folders' : action.acceptsFolders ? 'folders only' : 'files only', provider?.shortName || provider?.name || providerId].join(' · ')
+          return <SettingRow key={action.id} icon={<FolderTree size={15} aria-hidden />}
+            title={action.label || 'Untitled action'}
+            description={<span className="uam-prov-detail">{summary}</span>}
+            status={changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
+            control={<>
+              <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
+              <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
+              <IconButton size="sm" variant="danger" icon={<Trash2 size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
+            </>}>
+            {expanded && <div className="uam-central-editor grid gap-3 sm:grid-cols-2">
+              <SettingsField label="Name">
+                <input aria-label={`Label for ${action.label}`} placeholder="Action name" value={action.label} onChange={(event) => update(action.id, { label: event.target.value })} className="uam-field w-full" />
+              </SettingsField>
+              <SettingsField label="Group">
+                <MenuSelect label={`Group for ${action.label}`} value={groupPathText(action)} onChange={value => {
+                  if (value === '__new__') { setNewGroupActionId(action.id); setNewGroupName('') }
+                  else update(action.id, { groupPath: parseGroupPath(value) })
+                }} options={[{ value: '', label: 'No group', icon: <FolderTree size={15} /> }, ...groupOptions.map(group => ({ value: group, label: group, icon: <FolderTree size={15} /> })), { value: '__new__', label: 'New group…', icon: <Plus size={15} /> }]} />
+              </SettingsField>
+              <SettingsField label="Provider">
+                <MenuSelect
+                  label={`Provider for ${action.label}`}
+                  value={action.providerId}
+                  onChange={(value) => update(action.id, { providerId: value, modelId: '' })}
+                  options={[
+                    { value: '', label: 'New chat default', description: 'Use the provider selected in Chat defaults.' },
+                    ...providers.map((candidate) => ({
+                      value: candidate.id,
+                      label: candidate.shortName || candidate.name,
+                      description: providerRuntimeDescription(candidate, candidate.id),
+                      icon: <ProviderLogo providerId={candidate.id} />,
+                    })),
+                  ]}
+                />
+              </SettingsField>
+              <SettingsField label="Model">
+                <MenuSelect
+                  label={`Model for ${action.label}`}
+                  value={action.modelId}
+                  onChange={(value) => update(action.id, { modelId: value })}
+                  options={[
+                    { value: '', label: 'Provider default', description: 'Use the saved default for this provider.' },
+                    ...modelOptions.filter((option) => option.id).map((option) => ({
+                      value: option.id,
+                      label: option.label,
+                      description: option.detail,
+                    })),
+                  ]}
+                />
+              </SettingsField>
+              <SettingsField label="When run">
+                <MenuSelect
+                  value={action.openWorkspace ? 'workspace' : 'skill'}
+                  label={`Action for ${action.label}`}
+                  onChange={(value) => update(action.id, { openWorkspace: value === 'workspace' })}
+                  options={[
+                    { value: 'workspace', label: 'Open as Workspace', description: 'Start a chat with the selected items.', icon: <FolderOpen size={15} /> },
+                    { value: 'skill', label: 'Run skill', description: 'Apply a skill to the selection.', icon: <Sparkles size={15} /> },
+                  ]}
+                />
+              </SettingsField>
+              <SettingsField label="Accepts">
+                <MenuSelect
+                  label={`Input type for ${action.label}`}
+                  value={action.acceptsFiles && action.acceptsFolders ? 'both' : action.acceptsFolders ? 'folders' : 'files'}
+                  onChange={(value) => update(action.id, {
+                    acceptsFiles: value !== 'folders',
+                    acceptsFolders: value !== 'files',
+                  })}
+                  options={[
+                    { value: 'both', label: 'Files and folders', icon: <Files size={15} /> },
+                    { value: 'files', label: 'Files only', icon: <File size={15} /> },
+                    { value: 'folders', label: 'Folders only', icon: <Folder size={15} /> },
+                  ]}
+                />
+              </SettingsField>
+              {!action.openWorkspace && <div className="sm:col-span-2"><SettingsField label="Skill">
+                <MenuSelect
+                  label={`Skill for ${action.label}`}
+                  value={action.skillPath}
+                  onChange={(value) => update(action.id, { skillPath: value })}
+                  options={[
+                    { value: '', label: 'Select a skill', icon: <BookOpen size={15} /> },
+                    ...markdownEntries.map((entry) => ({ value: entry.filePath, label: entry.title, icon: <BookOpen size={15} /> })),
+                  ]}
+                />
+              </SettingsField></div>}
+            </div>}
+          </SettingRow>
+        })}
         </fieldset>
-        )
-      })}
+      </SettingsSection>
 
-      {(error || notification) && <div role="status" className="flex items-center justify-between gap-2 text-xs" style={{ color: error ? 'var(--red)' : 'var(--text-2)' }}><span>{error || notification}</span><IconButton icon={<X size={14}/>} label="Dismiss shell action message" onClick={() => {setError(''); void useAppStore.getState().dismissShellActionNotification()}} /></div>}
+      {(error || notification) && <div role="status" className="flex items-center justify-between gap-2 text-xs" style={{ color: error ? 'var(--error)' : 'var(--text-2)' }}><span>{error || notification}</span><IconButton icon={<X size={14} />} label="Dismiss shell action message" onClick={() => { setError(''); void useAppStore.getState().dismissShellActionNotification() }} /></div>}
     </div>
   )
 })

@@ -1,14 +1,41 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RotateCw } from 'lucide-react'
+import { ChevronRight, RotateCw } from 'lucide-react'
 import type { ChatFileChangeReceipt, ChatFileChangeReceiptsResponse } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
-import { Button } from '../ui'
+import { Button, Presence } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
+import '../shared/review.css'
 
 function receiptStatus(receipt: ChatFileChangeReceipt): string {
   if (receipt.destinationPath) return 'R'
   const operation = typeof receipt.kind === 'string' ? receipt.kind : receipt.kind.type
   return operation === 'delete' ? 'D' : operation === 'add' ? 'A' : operation === 'update' ? 'M' : '?'
+}
+
+/** Same colour rule as the workspace changed-files list. */
+function statusColor(status: string): string {
+  return status === 'A' || status === '?' ? 'var(--success)' : status === 'D' ? 'var(--error)' : status === 'R' ? 'var(--info)' : 'var(--warning)'
+}
+
+function patchStats(patch: string): { additions: number; deletions: number } {
+  const lines = patch.split('\n')
+  return {
+    additions: lines.filter((line) => line.startsWith('+') && !line.startsWith('+++')).length,
+    deletions: lines.filter((line) => line.startsWith('-') && !line.startsWith('---')).length,
+  }
+}
+
+function baseName(path: string): string {
+  return path.split(/[\\/]/).pop() || path
+}
+
+function ChangeBar({ additions, deletions, max }: { additions: number; deletions: number; max: number }) {
+  return <span className="uam-rv-bar" aria-hidden>
+    <span className="uam-rv-bar__fill" style={{ width: `${((additions + deletions) / max) * 100}%` }}>
+      <span className="uam-rv-bar__add" style={{ flexGrow: additions }} />
+      <span className="uam-rv-bar__del" style={{ flexGrow: deletions }} />
+    </span>
+  </span>
 }
 
 function readableReceiptTime(value: string): string {
@@ -62,6 +89,7 @@ export function RecordedChatEdits({ chatId, workspaceDirectory, workspaceWorktre
     return () => { generation.current += 1 }
   }, [refresh])
   const recordedDiff = useCallback(async () => selected?.patch ?? '', [selected])
+  const maxChange = receipts.reduce((max, item) => { const stats = patchStats(item.patch); return Math.max(max, stats.additions + stats.deletions) }, 1)
   return <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
     <div className="mb-3 flex items-center gap-2 text-xs">
       <span className="min-w-0 flex-1">Completed Codex edits. Read-only saved changes.</span>
@@ -73,21 +101,40 @@ export function RecordedChatEdits({ chatId, workspaceDirectory, workspaceWorktre
     </div> : <>
       {receipts.length === 0 && <p role="status" className="text-xs">No recorded completed Codex edits. Shell changes and other providers are not attributed.</p>}
       {omitted > 0 && <p role="status" className="mb-2 text-xs">{omitted} saved edit{omitted === 1 ? '' : 's'} could not be shown within supported limits.</p>}
-      <div className="min-h-0 overflow-auto">{receipts.map((receipt, index) => <button
-        key={`${receipt.messageIndex}:${receipt.toolCallId}:${index}`} type="button"
-        className="uam-choice-button flex w-full flex-col gap-1 py-2 text-left text-xs"
-        style={{ borderBottom: '1px solid var(--border)', color: 'var(--text)' }}
-        aria-label={`Review recorded edit ${index + 1}: ${receipt.path}`}
-        title={`Tool ${receipt.toolCallId}`}
-        onClick={() => setSelected(receipt)}
-      >
-        <span className="break-all">{receipt.path}{receipt.destinationPath ? ` → ${receipt.destinationPath}` : ''}</span>
-        <span style={{ color: 'var(--text-3)' }}>Message {receipt.messageIndex + 1}{receipt.messageCreatedAt ? <> · <time dateTime={receipt.messageCreatedAt} title={receipt.messageCreatedAt}>{readableReceiptTime(receipt.messageCreatedAt)}</time></> : ''}</span>
-      </button>)}</div>
+      <div className="min-h-0 overflow-auto">{receipts.map((receipt, index) => {
+        const stats = patchStats(receipt.patch)
+        const cut = Math.max(receipt.path.lastIndexOf('/'), receipt.path.lastIndexOf('\\'))
+        const dir = cut > 0 ? receipt.path.slice(0, cut) : ''
+        const name = receipt.destinationPath ? `${baseName(receipt.path)} → ${baseName(receipt.destinationPath)}` : baseName(receipt.path)
+        return <div key={`${receipt.messageIndex}:${receipt.toolCallId}:${index}`} className="uam-rv-file group" style={{ color: 'var(--text-2)' }}>
+          <button
+            type="button"
+            className="uam-rv-file__open"
+            aria-label={`Review recorded edit ${index + 1}: ${receipt.path}`}
+            title={`${receipt.path}${receipt.destinationPath ? ` → ${receipt.destinationPath}` : ''} · Tool ${receipt.toolCallId}`}
+            onClick={() => setSelected(receipt)}
+          >
+            <span className="uam-rv-file__status" style={{ color: statusColor(receiptStatus(receipt)) }}>{receiptStatus(receipt)}</span>
+            <span className="uam-rv-file__path">
+              <span className="uam-rv-file__name">{name}</span>
+              {dir && <span className="uam-rv-file__dir">{dir}</span>}
+            </span>
+            <span className="uam-rv-file__stat">
+              <span className="uam-rv-stat">
+                <ChangeBar additions={stats.additions} deletions={stats.deletions} max={maxChange} />
+                <span className="uam-rv-stat__add" style={{ color: 'var(--success)' }}>+{stats.additions}</span>
+                <span className="uam-rv-stat__del" style={{ color: 'var(--error)' }}>-{stats.deletions}</span>
+              </span>
+            </span>
+            <span className="sr-only">Message {receipt.messageIndex + 1}{receipt.messageCreatedAt ? <> · <time dateTime={receipt.messageCreatedAt} title={receipt.messageCreatedAt}>{readableReceiptTime(receipt.messageCreatedAt)}</time></> : ''}</span>
+            <ChevronRight size={13} aria-hidden className="uam-rv-file__chevron" style={{ color: 'var(--text-3)' }} />
+          </button>
+        </div>
+      })}</div>
     </>}
-    {selected && <RepositoryDiffDialog chatId={chatId} vcsType="git" sourcePath={selected.destinationPath || selected.path} comparisonLabel="Recorded agent edit" file={{ path: `Recorded edit: ${selected.path}`, status: receiptStatus(selected), staged: false, binary: false,
+    <Presence open={Boolean(selected)}>{selected && <RepositoryDiffDialog chatId={chatId} vcsType="git" sourcePath={selected.destinationPath || selected.path} comparisonLabel="Recorded agent edit" file={{ path: `Recorded edit: ${selected.path}`, status: receiptStatus(selected), staged: false, binary: false,
       additions: selected.patch.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).length,
       deletions: selected.patch.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length,
-    }} getDiff={recordedDiff} onClose={() => setSelected(null)} />}
+    }} getDiff={recordedDiff} onClose={() => setSelected(null)} />}</Presence>
   </div>
 }

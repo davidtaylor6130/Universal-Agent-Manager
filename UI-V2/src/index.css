@@ -1572,8 +1572,11 @@ summary,
 .uam-switch input { position: absolute; opacity: 0; pointer-events: none; }
 .uam-switch__track { position: relative; width: 34px; height: 19px; flex: 0 0 auto; border-radius: 999px; background: var(--surface-high); border: 1px solid var(--border-bright); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .uam-switch__thumb { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--text-3); box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform 160ms var(--ease), background 160ms var(--ease); }
-.uam-switch input:checked + .uam-switch__track { background: var(--accent); border-color: var(--accent); }
-.uam-switch input:checked + .uam-switch__track .uam-switch__thumb { transform: translateX(15px); background: white; }
+/* On is neutral (high-contrast ink); accent is reserved for important switches via .uam-switch--accent. */
+.uam-switch input:checked + .uam-switch__track { background: var(--text); border-color: var(--text); }
+.uam-switch input:checked + .uam-switch__track .uam-switch__thumb { transform: translateX(15px); background: var(--bg); }
+.uam-switch--accent input:checked + .uam-switch__track { background: var(--accent); border-color: var(--accent); }
+.uam-switch--accent input:checked + .uam-switch__track .uam-switch__thumb { background: white; }
 .uam-switch input:focus-visible + .uam-switch__track { box-shadow: var(--focus-ring); }
 .uam-switch input:disabled + .uam-switch__track, .uam-switch input:disabled ~ .uam-switch__label { opacity: .45; }
 .uam-switch__label { font-size: var(--fs-sm); transition: color var(--dur-fast) var(--ease); }
@@ -1635,7 +1638,7 @@ summary,
   font-family: var(--font-sans);
   font-size: var(--fs-sm);
   line-height: 1.35;
-  z-index: 60;
+  z-index: 2000;
   animation: uam-tooltip-in var(--dur-fast) var(--ease);
 }
 .uam-tooltip__kbd {
@@ -1701,10 +1704,12 @@ summary,
 /* Shared workflow controls follow the active UAM theme. */
 .uam-status-indicator { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; flex-shrink:0; cursor:help; }
 .uam-status-count { font-size:11px; font-weight:700; border:1px solid currentColor; border-radius:50%; width:18px; height:18px; display:grid; place-items:center; }
-.uam-selection-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(76px,1fr)); gap:8px; }
-.uam-selection-option { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; min-width:0; padding:16px 8px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:12px; transition:background-color 150ms,border-color 150ms; }
+.uam-selection-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(68px,1fr)); gap:6px; }
+.uam-selection-option { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; min-width:0; padding:10px 3px; background:var(--surface); color:var(--text-2); border:1px solid var(--border); border-radius:var(--r-md); cursor:pointer; font-size:11px; letter-spacing:-.01em; transition:background-color var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
+.uam-selection-option:active:not(:disabled) { transform:scale(.97); }
+.uam-selection-option:focus-visible { outline:none; box-shadow:var(--focus-ring); }
 .uam-selection-option:hover { background:var(--surface-up); }
-.uam-selection-option[aria-pressed="true"] { background:var(--accent-dim); border-color:var(--accent); }
+.uam-selection-option[aria-pressed="true"] { background:color-mix(in srgb, var(--accent) 8%, var(--surface)); border-color:color-mix(in srgb, var(--accent) 70%, transparent); color:var(--text); }
 .uam-selection-option:disabled { opacity:.5; cursor:not-allowed; }
 .uam-selection-icon { display:flex; height:24px; align-items:center; justify-content:center; }
 .uam-selection-status { position:absolute; top:2px; right:2px; }
@@ -1883,6 +1888,12 @@ button.uam-commit-check { cursor: pointer; }
    width (clipped), so the chat area eases over rather than jumping. */
 .uam-shell-panel { animation: uam-panel-grow var(--dur-enter) var(--ease-out-soft) backwards; }
 .uam-shell-panel[data-state="closed"] { animation: uam-panel-shrink var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+/* Content slides with the panel edge instead of squashing while the width animates. */
+.uam-shell-panel { overflow: hidden; }
+.uam-shell-panel > * { animation: uam-panel-content-in var(--dur-enter) var(--ease-out-soft) backwards; }
+.uam-shell-panel[data-state="closed"] > * { animation: uam-panel-content-out var(--dur-exit) var(--ease) forwards; }
+@keyframes uam-panel-content-in { from { transform: translateX(24px); opacity: 0; } }
+@keyframes uam-panel-content-out { to { transform: translateX(24px); opacity: 0; } }
 .uam-shell-panel > * { width: 100%; min-width: var(--panel-w, auto); }
 .uam-shell-panel--right { align-items: flex-end; }
 @keyframes uam-panel-grow { from { width: 0; flex-basis: 0; opacity: 0; } }
@@ -1962,7 +1973,7 @@ button.uam-commit-check { cursor: pointer; }
   background: var(--surface);
 }
 .uam-settings-page { animation: uam-reveal-in var(--dur-enter) var(--ease-out-soft) backwards; }
-.uam-settings-page--narrow > * { max-width: 800px; margin-inline: auto; }
+.uam-settings-page--narrow > * { max-width: none; }
 
 /* ── Memory library ─────────────────────────────────────────── */
 .uam-memory-card {
@@ -2140,6 +2151,8 @@ button.uam-commit-check { cursor: pointer; }
 .uam-settings-nav-item svg { color: var(--text-3); transition: color var(--dur-fast) var(--ease); }
 .uam-settings-nav-item:hover { background: var(--sidebar-item-hover); color: var(--text); }
 .uam-settings-nav-item[data-active="true"] { background: var(--accent-dim); color: var(--text); }
+.uam-settings-nav .uam-settings-nav-item { z-index: 1; }
+.uam-settings-nav .uam-settings-nav-item[data-active="true"] { background: transparent; }
 .uam-settings-nav-item[data-active="true"] svg { color: var(--accent); }
 .uam-settings-nav-item[data-active="true"]::before {
   content: '';

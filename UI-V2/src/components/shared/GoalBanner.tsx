@@ -3,8 +3,9 @@ import type { FormEvent, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Target, MoreHorizontal, Check, Pause, Play, Trash2, Pencil, X, ChevronRight } from 'lucide-react'
 import type { Goal } from '../../types/goal'
-import { StatusDot, Tooltip, ViewportMenu, type StatusTone } from '../ui'
+import { Button, StatusDot, Tooltip, ViewportMenu, usePresence, type StatusTone } from '../ui'
 import { getTopmostModal, trapModalTab } from '../../utils/modalFocus'
+import './GoalBanner.css'
 
 interface GoalBannerProps {
   goal: Goal
@@ -22,8 +23,8 @@ interface GoalBannerProps {
 
 function statusTone(status: Goal['status']): StatusTone {
   switch (status) {
-    case 'active': return 'success'
-    case 'complete': return 'info'
+    case 'active': return 'info'
+    case 'complete': return 'success'
     case 'blocked': return 'error'
     case 'paused': return 'warning'
   }
@@ -194,11 +195,14 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
   const menuId = useId()
+  const menuPresence = usePresence(menuOpen)
   const budgetDisplay = goal.tokenBudget ? `${goal.tokensUsed ?? 0}/${goal.tokenBudget}` : null
   const blockerDisplay = goal.status === 'blocked' && goal.lastBlocker ? goal.lastBlocker : ''
 	const blockerLabel = blockerKindLabel(goal)
 	const blockerAction = blockerDisplay ? blockerNextAction(goal) : ''
   const tone = statusTone(goal.status)
+  const budgetPercent = goal.tokenBudget ? Math.min(100, ((goal.tokensUsed ?? 0) / goal.tokenBudget) * 100) : 0
+  const budgetLevel = budgetPercent > 95 ? 'error' : budgetPercent > 80 ? 'warning' : 'normal'
   const completedCount = goal.completedItems?.length ?? 0
   const totalItems = completedCount + (goal.remainingItems?.length ?? 0)
   const isComplete = goal.status === 'complete'
@@ -225,16 +229,13 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
 
   return (
     <div
-      className="uam-goal-banner flex items-center gap-2.5 px-4 py-2 text-sm"
+      className="uam-goal-banner flex items-center gap-2 px-3 py-2 text-sm"
       style={{ background: 'var(--surface)', borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)' }}
     >
       <div className="flex flex-shrink-0 flex-col items-center gap-1">
         <div className="flex items-center gap-1.5">
           <Target size={15} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden />
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
-            style={{ background: `var(--${tone}-dim)`, color: `var(--${tone})` }}
-          >
+          <span className="uam-goal-pill" data-tone={tone}>
             <StatusDot tone={tone} pulse={goal.status === 'active'} size={7} />
             {statusLabel(goal.status)}
           </span>
@@ -282,19 +283,31 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
       <div className="uam-goal-banner__progress flex flex-shrink-0 items-center gap-1.5 text-xs" style={{ color: 'var(--text-3)' }}>
         {goal.pendingContinuation ? <span>Queued after current turn</span> : turnRunning && goal.status === 'paused' ? <span>Current turn will finish</span> : null}
         <progress
+          className="uam-goal-progress"
           aria-label="Goal progress"
           aria-valuetext={isComplete ? 'Goal complete' : totalItems > 0 ? `${completedCount} of ${totalItems} planned steps complete` : progressLabel}
           max={isComplete ? 1 : Math.max(totalItems, 1)}
           value={isComplete ? 1 : totalItems > 0 ? completedCount : undefined}
-          className="h-1.5 w-16"
         />
         <span className="whitespace-nowrap">{progressLabel}</span>
       </div>
 
-      {budgetDisplay && (
+      {budgetDisplay && goal.tokenBudget && (
         <Tooltip label="Tokens used / budget">
-          <span className="uam-goal-banner__secondary text-xs font-mono flex-shrink-0" style={{ color: 'var(--text-3)' }}>{budgetDisplay}</span>
+          <span className="uam-goal-banner__secondary flex flex-shrink-0 items-center gap-1.5 text-xs" style={{ color: 'var(--text-3)' }}>
+            <span aria-hidden className="uam-goal-meter" data-level={budgetLevel}>
+              <span style={{ width: `${budgetPercent}%` }} />
+            </span>
+            <span className="font-mono">{budgetDisplay}</span>
+          </span>
         </Tooltip>
+      )}
+
+      {goal.status === 'active' && onPause && (
+        <Button type="button" size="sm" variant="secondary" disabled={resumePending} onClick={onPause}>Pause</Button>
+      )}
+      {(goal.status === 'paused' || goal.status === 'blocked') && onResume && (
+        <Button type="button" size="sm" variant="secondary" disabled={resumePending} onClick={onResume}>{resumePending ? 'Resuming…' : 'Resume'}</Button>
       )}
 
       {/* All goal actions consolidated into one overflow menu */}
@@ -307,14 +320,14 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
             aria-haspopup="menu"
             aria-expanded={menuOpen}
             aria-controls={menuOpen ? menuId : undefined}
-            className="flex items-center justify-center rounded-md transition-colors duration-100"
-            style={{ width: 28, height: 26, border: '1px solid var(--border)', background: menuOpen ? 'var(--surface-up)' : 'transparent', color: 'var(--text-2)', cursor: 'pointer' }}
+            className="uam-goal-action"
+            data-open={menuOpen || undefined}
             onClick={() => setMenuOpen((v) => !v)}
           >
             <MoreHorizontal size={15} aria-hidden />
           </button>
         </Tooltip>
-        {menuOpen && (
+        {menuPresence.mounted && (
           <ViewportMenu
             ref={popupRef}
             anchorRef={triggerRef}
@@ -322,9 +335,9 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
             id={menuId}
             role="menu"
             aria-label="Goal actions"
+            data-state={menuPresence.closing ? 'closed' : 'open'}
             onRequestClose={() => setMenuOpen(false)}
-            className="rounded-md py-1 animate-fade-in"
-            style={{ minWidth: 150, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
+            className="uam-goal-menu"
           >
             {goal.status === 'active' && (
               <MenuItem disabled={resumePending} icon={<Check size={14} aria-hidden />} label="Mark complete" onClick={() => { setMenuOpen(false); onComplete() }} />

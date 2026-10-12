@@ -2,7 +2,7 @@ import { ExecutionRoutingDialog } from '../modals/ExecutionRoutingDialog'
 import { canRouteAutomatically } from '../../types/executionRouting'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { FolderPlus, Monitor, RefreshCw, SquareTerminal, X } from 'lucide-react'
+import { FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Provider } from '../../types/provider'
@@ -291,10 +291,10 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         aria-modal="true"
         aria-label="New chat"
         tabIndex={-1}
-        className="flex max-h-[calc(100vh-32px)] w-full max-w-lg flex-col overflow-hidden mx-4 animate-slide-in"
+        className="flex max-h-[calc(100vh-32px)] w-full max-w-lg flex-col overflow-hidden mx-4"
         style={{
           background: 'var(--surface)',
-          borderRadius: 10,
+          borderRadius: 'var(--r-lg)',
           border: '1px solid var(--border-bright)',
           boxShadow: 'var(--elev-3)',
         }}
@@ -330,11 +330,11 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
                 color: 'var(--text)',
                 fontFamily: 'inherit',
               }}
-              onFocus={(e) => { e.target.style.borderColor = 'var(--accent)' }}
-              onBlur={(e) => { e.target.style.borderColor = 'var(--border)' }}
             />
           </div>
 
+          <section aria-label="Workspace" className="space-y-4">
+          <h3 className="-mb-2 font-medium uppercase" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)', letterSpacing: '0.08em' }}>Workspace</h3>
           <div>
           <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Runs on</div>
           <SelectionGrid
@@ -351,8 +351,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) setRoutingMode('automatic'); else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
           </div>
-          {SSH_ENABLED && <Button variant="ghost" size="sm" disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button>}
-          {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{hostIssue}</p>}
+          {SSH_ENABLED && <div className="-mt-2 flex justify-end"><Button variant="ghost" size="sm" leadingIcon={<Route size={13} />} disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button></div>}
+          {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{hostIssue}</p>}
 
           {/* Folder */}
           {folders.some((folder) => (folder.executionHostId || 'local') === executionHostId) && (
@@ -419,7 +419,10 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               {creatingWorkspace ? 'Choosing…' : 'Choose workspace'}
             </Button>
           </div>}
-          {workspaceError && <p id="new-chat-workspace-error" role="alert" className="text-xs" style={{ color: 'var(--red)' }}>{workspaceError}</p>}
+          {workspaceError && <p id="new-chat-workspace-error" role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{workspaceError}</p>}
+          </section>
+          <section aria-label="Provider and model" className="space-y-4">
+          <h3 className="-mb-2 font-medium uppercase" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)', letterSpacing: '0.08em' }}>Provider and model</h3>
           <div>
           <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Provider</div>
           <SelectionGrid
@@ -438,7 +441,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             onChange={chooseProvider}
           />
           </div>
-          {availability.issues.length > 0 && <p role={structuredCreationBlocked && terminalCreationBlocked ? 'alert' : undefined} className="text-xs" style={{ color: structuredCreationBlocked && terminalCreationBlocked ? 'var(--red)' : 'var(--text-2)' }}>{availability.issues[availability.issues.length - 1]}</p>}
+          {availability.issues.length > 0 && <p role={structuredCreationBlocked && terminalCreationBlocked ? 'alert' : undefined} className="text-xs" style={{ color: structuredCreationBlocked && terminalCreationBlocked ? 'var(--error)' : 'var(--text-2)' }}>{availability.issues[availability.issues.length - 1]}</p>}
           {terminalFallback && <p role="status" className="flex items-center gap-2 text-xs" style={{ color: 'var(--text)' }}><SquareTerminal size={14} aria-hidden />Creates a terminal chat. Structured chat is unavailable.</p>}
 
           <div role="group" aria-label="Model and reasoning" className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-3 items-start">
@@ -458,11 +461,14 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
               }}
             /></div>
-            <StatusIndicator issues={cachedAcp?.modelRefreshError ? [cachedAcp.modelRefreshError] : cachedAcp?.modelsLoading ? ['Discovering models.'] : []} okLabel="Model options available" />
+            <IconButton
+              label={cachedAcp?.modelsLoading ? isRemote ? 'Discovering remote models…' : 'Discovering models…' : isRemote ? 'Discover remote models' : 'Refresh models'}
+              icon={<RefreshCw size={14} style={cachedAcp?.modelsLoading ? { animation: 'uam-status-spin 0.9s linear infinite' } : undefined} />}
+              disabled={routingMode === 'automatic' || !canCreate || structuredCreationBlocked || Boolean(cachedAcp?.modelsLoading)}
+              onClick={requestModelDiscovery}
+            />
             </div>
-			  <Button className="mt-2" variant="secondary" size="sm" leadingIcon={<RefreshCw size={13} />} disabled={routingMode === 'automatic' || !canCreate || structuredCreationBlocked || Boolean(cachedAcp?.modelsLoading)} onClick={requestModelDiscovery}>
-				{cachedAcp?.modelsLoading ? isRemote ? 'Discovering remote models…' : 'Discovering models…' : isRemote ? 'Discover remote models' : 'Refresh models'}
-			  </Button>
+            <StatusIndicator issues={cachedAcp?.modelRefreshError ? [cachedAcp.modelRefreshError] : cachedAcp?.modelsLoading ? ['Discovering models.'] : []} okLabel="Model options available" />
             {cachedAcp?.modelRefreshError && (
               <Notice
                 key={`${providerId}\n${executionHostId}\n${workspaceKey(selectedWorkspace)}\n${cachedAcp.modelRefreshError}`}
@@ -490,6 +496,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 			</div>
 		  )}
           </div>
+          </section>
         </div>
 
         {remoteBrowserOpen && selectedExecutionHost && (
@@ -505,20 +512,20 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         )}
 
         {/* Footer */}
-        {chatError && <div role="alert" className="px-5 pt-3 text-xs" style={{ color: 'var(--red)' }}>{chatError}</div>}
+        {chatError && <div role="alert" className="px-5 pt-3 text-xs" style={{ color: 'var(--error)' }}>{chatError}</div>}
         <div
           className="flex shrink-0 items-center justify-end gap-2 px-5 py-4"
           style={{ borderTop: '1px solid var(--border)' }}
         >
+          <Button variant="ghost" size="md" disabled={creatingChat} onClick={requestClose}>Cancel</Button>
           <Button
-            block
             variant="primary"
             size="md"
             onClick={() => void handleCreate()}
             disabled={creatingChat || !canCreate || (companion ? structuredCreationBlocked : structuredCreationBlocked && terminalCreationBlocked)}
             aria-busy={creatingChat || undefined}
           >
-            {creatingChat ? 'Creating…' : 'Create'}
+            {creatingChat ? 'Creating…' : 'Create chat'}
           </Button>
         </div>
       {routingOpen && <ExecutionRoutingDialog onClose={() => setRoutingOpen(false)} />}

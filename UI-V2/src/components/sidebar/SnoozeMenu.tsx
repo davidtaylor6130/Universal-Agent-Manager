@@ -40,22 +40,21 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0 }: { chatId: string;
     } catch { setFeedback({ error: true, text: 'Could not save. Try again.' }) }
     finally { setSaving(false) }
   }
-  const style = { background: 'transparent', color: 'var(--text-2)', border: 'none', fontFamily: 'inherit' }
-  const buttonClass = 'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm disabled:opacity-50 hover:bg-[var(--surface-hover)]'
+    const buttonClass = 'uam-sb-menu-item'
   return <>
-    <button type="button" role="menuitem" className={buttonClass} style={style} disabled={saving || (!snoozed && blocked)}
+    <button type="button" role="menuitem" className={buttonClass} disabled={saving || (!snoozed && blocked)}
       aria-expanded={!snoozed ? expanded : undefined} title={!snoozed && blocked ? 'Respond to pending requests or queued messages first.' : undefined}
       onClick={() => { if (snoozed) void update(0); else setExpanded((value) => !value) }}>
       <Clock size={13} aria-hidden />{saving ? 'Saving…' : snoozed ? 'Wake chat' : 'Snooze'}
     </button>
     {snoozed && <p className="px-3 py-1 text-xs" style={{ color: 'var(--text-2)' }}>Until {new Date(untilMs).toLocaleString()}</p>}
-    {expanded && !snoozed && <div role="group" aria-label="Wake time">
-      {snoozePresets().map((preset) => <button key={preset.label} type="button" role="menuitem" className={buttonClass} style={style} disabled={saving || blocked}
+    {expanded && !snoozed && <div role="group" aria-label="Wake time" className="uam-reveal">
+      {snoozePresets().map((preset) => <button key={preset.label} type="button" role="menuitem" className={buttonClass} disabled={saving || blocked}
         onClick={() => { void update(preset.until) }}>{preset.label}<span className="ml-auto text-xs">{new Date(preset.until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span></button>)}
       <div className="px-3 py-1.5"><label className="text-xs">Custom wake time<input aria-label="Custom wake time" type="datetime-local" value={custom} disabled={saving || blocked} onChange={(event) => setCustom(event.target.value)}
         className="mt-1 block w-full text-xs" style={{ background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border)' }} /></label>
-        <button type="button" className={buttonClass} style={style} disabled={saving || blocked || !custom} onClick={() => { void update(new Date(custom).getTime()) }}>Set wake time</button></div>
+        <button type="button" className={buttonClass} disabled={saving || blocked || !custom} onClick={() => { void update(new Date(custom).getTime()) }}>Set wake time</button></div>
     </div>}
-    {feedback && <p role={feedback.error ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: feedback.error ? 'var(--red)' : 'var(--text-2)' }}>{feedback.text}</p>}
+    {feedback && <p role={feedback.error ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: feedback.error ? 'var(--error)' : 'var(--text-2)' }}>{feedback.text}</p>}
   </>
 }

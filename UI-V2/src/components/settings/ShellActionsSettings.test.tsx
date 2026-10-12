@@ -51,6 +51,8 @@ describe('ShellActionsSettings', () => {
     await act(async () => { root.render(<ShellActionsSettings />) })
 
     expect(host.textContent).not.toContain('Finder / Explorer actions')
+    expect(host.querySelector('input[aria-label="Label for Review Selection"]')).toBeNull()
+    act(() => (host.querySelector('button[aria-label="Expand Review Selection"]') as HTMLButtonElement).click())
     expect(host.textContent).toContain('Review skill')
     const label = host.querySelector('input[aria-label="Label for Review Selection"]') as HTMLInputElement
     const groupPath = host.querySelector('button[aria-label="Group for Review Selection"]') as HTMLInputElement
@@ -98,8 +100,8 @@ describe('ShellActionsSettings', () => {
 
     const remove = host.querySelector('button[aria-label="Remove Review résumé"]') as HTMLButtonElement
     act(() => remove.click())
-    expect(host.textContent).toContain('Delete “Review résumé”?')
-    const confirmDelete = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Delete action')
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain('Delete “Review résumé”?')
+    const confirmDelete = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === 'Delete action')
     act(() => confirmDelete?.click())
     expect(host.textContent).not.toContain('Review résumé')
 
@@ -141,10 +143,10 @@ describe('ShellActionsSettings', () => {
     await act(async () => {root.render(<ShellActionsSettings ref={ref}/> )})
     act(() => (host.querySelector('[aria-label="Add shell action"]') as HTMLButtonElement).click())
     act(() => ref.current?.requestLeave(leave))
-    const save = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent==='Save and leave')!
+    const save = () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent==='Save and leave')!
     await act(async () => {save().click()})
     expect(leave).not.toHaveBeenCalled()
-    expect(host.querySelector('[aria-label="Unsaved shell actions"]')).not.toBeNull()
+    expect(document.body.querySelector('[aria-label="Unsaved shell actions"]')).not.toBeNull()
     expect(host.textContent).toContain('New action')
     await act(async () => {save().click()})
     expect(leave).toHaveBeenCalledOnce()

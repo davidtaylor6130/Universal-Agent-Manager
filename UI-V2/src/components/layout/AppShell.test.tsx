@@ -298,7 +298,7 @@ describe('AppShell', () => {
       expect(editor.value).toBe('[{"name":"draft"}]')
       expect(draft.value).toBe('Unsent chat')
       act(() => settings.click())
-      expect(host.querySelector('[aria-label="Discard unsaved MCP changes"]')).toBeTruthy()
+      expect(document.body.querySelector('[aria-label="Discard unsaved MCP changes"]')).toBeTruthy()
     } finally { act(() => root.unmount()); host.remove() }
   })
 
@@ -321,7 +321,7 @@ describe('AppShell', () => {
     setSettingsOpen.mockClear()
     act(() => settings.click())
     expect(setSettingsOpen).not.toHaveBeenCalled()
-    const confirmation = host.querySelector('[aria-label="Discard unsaved MCP changes"]')!
+    const confirmation = document.body.querySelector('[aria-label="Discard unsaved MCP changes"]')!
     expect(confirmation).toBeTruthy()
     const buttons = confirmation.querySelectorAll<HTMLButtonElement>('button')
     buttons[buttons.length - 1].focus()
@@ -329,11 +329,11 @@ describe('AppShell', () => {
     act(() => buttons[buttons.length - 1].dispatchEvent(tab))
     expect(tab.defaultPrevented).toBe(true)
     expect(document.activeElement).toBe(buttons[0])
-    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Keep editing')!.click())
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Keep editing')!.click())
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
     expect(setSettingsOpen).not.toHaveBeenCalled()
     expect(editor.value).toBe('[{"name":"draft"}]')
-    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard changes')!.click())
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Discard changes')!.click())
     expect(setSettingsOpen).toHaveBeenCalledExactlyOnceWith(false)
     expect(host.querySelector('[aria-label="Settings workspace"]')).toBeNull()
     act(() => root.unmount())

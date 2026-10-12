@@ -238,8 +238,8 @@ describe('SettingsModal memory settings', () => {
     const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Agent preferences')?.parentElement
     for (const label of ['Central Setup', 'Agents', 'Skills', 'Memory Settings', 'Memory Store', 'Shell Actions']) expect(group?.querySelector(`[aria-label="${label}"]`)).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat Defaults"]')?.click())
-    expect(host.querySelector('[aria-label="New Chat Defaults"]')).toBeTruthy()
-    expect(host.querySelector('[aria-label="AI Permission Reviewer"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="New chats"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="AI permission reviewer"]')).toBeTruthy()
     expect(host.querySelector('[aria-label="Show Codex chat defaults"]')).toBeNull()
     act(() => root.unmount()); host.remove()
   })
@@ -250,13 +250,13 @@ describe('SettingsModal memory settings', () => {
     useAppStore.setState(state => ({ executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: 'Lab', installedVersion: '8.0' }] } }))
     const { host, root } = renderModal()
     openProviderSection(host, 'Codex')
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
     act(() => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'Download latest')!.click())
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeNull()
-    expect(host.textContent).toContain('CLI installation on Lab')
+    expect(host.textContent).toContain('Installation on Lab')
     expect(host.textContent).toContain('8.0')
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
     expect(useAppStore.getState().refreshCliProviderVersion).toHaveBeenCalledWith('codex-cli', 'ssh-lab')
@@ -272,9 +272,9 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Overview"]')!.click())
     act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
-    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Provider connection overview"] button')).find(button => button.textContent === 'Codex')!.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Provider connection overview"] button')).find(button => button.querySelector('.uam-prov-provider__name')?.textContent === 'Codex')!.click())
     expect(host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')?.getAttribute('aria-selected')).toBe('true')
-    expect(host.textContent).toContain('CLI installation on Lab')
+    expect(host.textContent).toContain('Installation on Lab')
     expect(host.textContent).toContain('8.0')
     act(() => root.unmount()); host.remove()
   })
@@ -288,7 +288,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openProviderSection(host, 'Codex')
     act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
     act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent === 'Download latest')!.click())
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')?.textContent).toContain('Install Codex latest on Lab using npm?')
@@ -305,7 +305,7 @@ describe('SettingsModal memory settings', () => {
     }))
     const { host, root } = renderModal()
     openProviderSection(host, 'Codex')
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!.click())
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
     expect(host.textContent).toContain('Version check could not start.')
     act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
@@ -358,11 +358,11 @@ describe('SettingsModal memory settings', () => {
     await act(async () => { preview?.click() })
 
     expect(actions.filter(action => action !== 'getProviderMcpStatus')).toEqual(['previewRemoteHost'])
-    expect(host.textContent).toContain('Install helper on AI desktop?')
-    expect(host.textContent).toContain('detects Ubuntu/Linux or Windows')
-    expect(host.textContent).toContain('Unsupported systems stop before anything is copied')
-    expect(host.textContent).toContain('Check remote platform')
-    const install = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))
+    expect(document.body.textContent).toContain('Install helper on AI desktop?')
+    expect(document.body.textContent).toContain('detects Ubuntu/Linux or Windows')
+    expect(document.body.textContent).toContain('Unsupported systems stop before anything is copied')
+    expect(document.body.textContent).toContain('Check remote platform')
+    const install = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))
     await act(async () => { install?.click() })
     expect(actions).toEqual(['previewRemoteHost', 'installRemoteHost'])
 
@@ -393,11 +393,11 @@ describe('SettingsModal memory settings', () => {
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
     })
     await act(async () => {
-      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
 
-    expect(host.textContent).not.toContain('Install helper on colima?')
-    expect(host.textContent).toContain('This UAM build does not contain a runner for linux/s390x.')
+    expect(document.body.textContent).not.toContain('Install helper on colima?')
+    expect(document.body.textContent).toContain('This UAM build does not contain a runner for linux/s390x.')
 
     act(() => root.unmount())
     host.remove()
@@ -425,16 +425,16 @@ describe('SettingsModal memory settings', () => {
       alias.dispatchEvent(new Event('input', { bubbles: true }))
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
     })
-    const customChoice = host.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1]
+    const customChoice = document.body.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1]
     act(() => customChoice.click())
-    const directory = host.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
+    const directory = document.body.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, 'helpers/uam')
       directory.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    expect(host.textContent).toContain(`~/helpers/uam/${packageVersion}`)
+    expect(document.body.textContent).toContain(`~/helpers/uam/${packageVersion}`)
     await act(async () => {
-      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
     expect(installPayload).toMatchObject({ runnerDirectory: 'helpers/uam' })
 
@@ -464,8 +464,8 @@ describe('SettingsModal memory settings', () => {
       alias.dispatchEvent(new Event('input', { bubbles: true }))
       Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
     })
-    act(() => host.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1].click())
-    const directory = host.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
+    act(() => document.body.querySelectorAll<HTMLInputElement>('input[name="remote-helper-location"]')[1].click())
+    const directory = document.body.querySelector('input[aria-label="Remote helper folder"]') as HTMLInputElement
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(directory, '../outside')
       directory.dispatchEvent(new Event('input', { bubbles: true }))
@@ -474,13 +474,13 @@ describe('SettingsModal memory settings', () => {
       directory.select()
       directory.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    const install = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install')) as HTMLButtonElement
+    const install = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install')) as HTMLButtonElement
     expect(install.disabled).toBe(true)
 		expect(directory.value).toBe('../outside')
     expect(directory.closest('label')).toBeNull()
     expect(directory.selectionStart).toBe(0)
     expect(directory.selectionEnd).toBe('../outside'.length)
-		expect(host.textContent).toContain('Remove the .. segment; the helper must stay under the remote home directory.')
+		expect(document.body.textContent).toContain('Remove the .. segment; the helper must stay under the remote home directory.')
     expect(actions.filter(action => action !== 'getProviderMcpStatus')).toEqual(['previewRemoteHost'])
 
     act(() => root.unmount())
@@ -828,7 +828,7 @@ describe('SettingsModal memory settings', () => {
   it('does not render native selects in settings', () => {
     const { host, root } = renderModal()
 
-    expect(host.querySelectorAll('select')).toHaveLength(0)
+    expect(Array.from(host.querySelectorAll('select')).filter(select => !select.id.startsWith('typography-'))).toHaveLength(0)
     expect(host.textContent).toContain('Appearance')
     expect(host.textContent).toContain('Overview')
     expect(host.textContent).toContain('Memory Settings')
@@ -843,18 +843,14 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('changes themes through the in-app menu', () => {
+  it('changes themes from the swatch grid', () => {
     const { host, root } = renderModal()
-    const themeButton = host.querySelector('button[aria-label="Theme"]') as HTMLButtonElement | null
+    const lightTile = host.querySelector('[role="radio"][aria-label="Light"]') as HTMLButtonElement | null
+    expect(lightTile).toBeTruthy()
 
-    act(() => themeButton?.click())
-    expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeTruthy()
-
-    const lightOption = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Light')) as HTMLButtonElement | undefined
-    act(() => lightOption?.click())
+    act(() => lightTile?.click())
 
     expect(useAppStore.getState().setTheme).toHaveBeenCalledWith('light')
-    expect(document.body.querySelector('[role="listbox"][aria-label="Theme"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -957,19 +953,12 @@ describe('SettingsModal memory settings', () => {
 
     openCliVersionSection(host)
 
-    expect(host.textContent).toContain('CLI installation on this computer')
+    expect(host.textContent).toContain('Installation on this computer')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
-    expect(host.querySelector('#codex-cli-cli-version-panel')).toBeNull()
-
-    const codexCliToggle = host.querySelector(
-      'button[aria-label="Show Codex CLI version settings"]'
-    ) as HTMLButtonElement | null
-    expect(codexCliToggle).toBeTruthy()
-
-    act(() => {
-      codexCliToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    // Provider pages show the installation panel flat, without a disclosure toggle.
+    expect(host.querySelector('#codex-cli-cli-version-panel')).toBeTruthy()
+    expect(host.querySelector('button[aria-label="Show Codex CLI version settings"]')).toBeNull()
 
     expect(host.textContent).toContain('0.123.0')
     expect(host.querySelector('button[aria-label="Refresh Codex CLI version"]')?.textContent).toBe('')
@@ -999,7 +988,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
 
     openCliVersionSection(host)
-    act(() => (host.querySelector('button[aria-label="Show Codex CLI version settings"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Show Codex CLI version settings"]') as HTMLButtonElement | null)?.click())
 
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Refresh Codex CLI version"]')?.disabled).toBe(true)
     expect(host.querySelector<HTMLButtonElement>('button[aria-label="Download Codex CLI"]')?.disabled).toBe(true)
@@ -1081,14 +1070,8 @@ describe('SettingsModal memory settings', () => {
     expect(host.querySelector('button[title="Codex default permissions"]')).toBeNull()
 
     openProviderSection(host, 'Codex')
-    const codexDefaultsToggle = host.querySelector(
-      'button[aria-label="Show Codex chat defaults"]'
-    ) as HTMLButtonElement | null
-    expect(codexDefaultsToggle).toBeTruthy()
-
-    act(() => {
-      codexDefaultsToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    // Provider pages show defaults flat, without a disclosure toggle.
+    expect(host.querySelector('button[aria-label="Show Codex chat defaults"]')).toBeNull()
 
     expect(host.textContent).toContain('Reasoning')
     expect(host.querySelector('[aria-label="AI Permission Reviewer"]')).toBeNull()
@@ -1129,7 +1112,7 @@ describe('SettingsModal memory settings', () => {
     openProviderSection(host, 'Codex')
     const refresh = host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex models"]')!
     expect(refresh).toBeTruthy()
-    expect(host.querySelector('#codex-cli-defaults-panel')).toBeNull()
+    expect(host.querySelector('#codex-cli-defaults-panel')).toBeTruthy()
     act(() => refresh.click())
     expect(useAppStore.getState().discoverProviderModels).toHaveBeenCalled()
     openProviderSection(host, 'Codex')
@@ -1263,7 +1246,7 @@ describe('SettingsModal memory settings', () => {
     const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
     act(() => defaults.click())
     openProviderSection(host, 'Codex')
-    act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement | null)?.click())
     act(() => (host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement).click())
 	expect(discoverProviderModels).toHaveBeenCalledWith('chat-model-cache', 'codex-cli', '/tmp/project')
 
@@ -1289,7 +1272,7 @@ describe('SettingsModal memory settings', () => {
 	  const defaults = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Chat Defaults')) as HTMLButtonElement
 	  act(() => defaults.click())
 	  openProviderSection(host, 'Codex')
-	  act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement).click())
+	  act(() => (host.querySelector('button[aria-label="Show Codex chat defaults"]') as HTMLButtonElement | null)?.click())
 	  const refresh = host.querySelector('button[aria-label="Refresh Codex models"]') as HTMLButtonElement
 	  expect(refresh.disabled).toBe(false)
 	  act(() => refresh.click())
@@ -1303,7 +1286,7 @@ describe('SettingsModal memory settings', () => {
 
     openMemorySettingsSection(host)
 
-    expect(host.querySelector('[aria-label="Memory Workers"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Memory workers"]')).toBeTruthy()
     expect(host.textContent).toContain('Gemini chats')
     expect(host.textContent).toContain('Default')
     expect(host.textContent).not.toContain('CLI default')
@@ -1338,7 +1321,7 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     openEditorsSection(host)
 
-    expect(host.querySelector('[aria-label="Workspace Editors"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="File types"]')).toBeTruthy()
     expect(host.querySelector('select[aria-label="Codex default model"]')).toBeNull()
     expect(host.textContent).toContain('C++')
     expect(host.textContent).not.toContain('8 extensions open in VS Code')
@@ -1954,7 +1937,7 @@ describe('SettingsModal memory settings', () => {
     expect(save).toHaveBeenCalledWith(expect.objectContaining({editorFileAssociations:[expect.objectContaining({id:'cpp',name:'Native sources'})]}))
     expect(host.textContent).toContain('Editor settings could not be saved.')
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
-    expect(host.querySelector('[aria-label="Unsaved editor changes"]')).toBeTruthy()
+    expect(document.body.querySelector('[aria-label="Unsaved editor changes"]')).toBeTruthy()
     expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
     act(() => root.unmount()); host.remove()
   })
@@ -1967,12 +1950,9 @@ describe('SettingsModal memory settings', () => {
     useAppStore.setState({providers,cliVersionManager:{providers:providers.map(provider => ({...template,providerId:provider.id,...(provider.id === 'codex-cli' ? {status:'known-incompatible' as const,message:'Structured chat is incompatible.',lastInstallStatus:'failed' as const} : {})}))}})
     const {host,root} = renderModal()
     openCliVersionSection(host)
-    expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(1)
-    expect(host.querySelector('[aria-label="Refresh Codex CLI version"]')).toBeNull()
-    const toggle = host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')!
-    expect(toggle.previousElementSibling?.getAttribute('role')).toBe('img')
-    expect(toggle.previousElementSibling?.textContent).toBe('2')
-    act(() => toggle.click())
+    // Provider pages show their single provider flat: no disclosure toggle, issues badge in the status bar.
+    expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(0)
+    expect(host.querySelector('.uam-provider-flat__bar [role="img"]')?.textContent).toBe('2')
     expect(host.querySelector('#codex-cli-cli-version-panel [aria-label="Refresh Codex CLI version"]')).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
     act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent === 'Download latest')!.click())
@@ -1988,7 +1968,7 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add theme"]')!.click())
     expect(host.querySelector('[aria-label="Settings pages"]')).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')!.click())
-    const confirmation = host.querySelector('[aria-label="Unsaved theme changes"]')!
+    const confirmation = document.body.querySelector('[aria-label="Unsaved theme changes"]')!
     expect(confirmation).toBeTruthy()
     await act(async () => Array.from(confirmation.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Save theme')!.click())
     expect(host.textContent).toContain('Theme could not be saved.')

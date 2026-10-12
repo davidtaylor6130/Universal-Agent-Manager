@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, RotateCw, Sparkles, X } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Circle, GitBranch, GitCommitHorizontal, LoaderCircle, PanelRightClose, RotateCw, Sparkles } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect } from '../ui'
+import { Button, IconButton, MenuSelect, Presence } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
+import '../shared/review.css'
+
+/** Stacked add/remove bar; width is relative to the largest change in the list. */
+function ChangeBar({ additions, deletions, max }: { additions: number; deletions: number; max: number }) {
+  return <span className="uam-rv-bar" aria-hidden>
+    <span className="uam-rv-bar__fill" style={{ width: `${((additions + deletions) / max) * 100}%` }}>
+      <span className="uam-rv-bar__add" style={{ flexGrow: additions }} />
+      <span className="uam-rv-bar__del" style={{ flexGrow: deletions }} />
+    </span>
+  </span>
+}
 
 function emptyStatus(workspaceDirectory = ''): VcsCommitStatus {
   return {
@@ -21,7 +32,7 @@ function emptyStatus(workspaceDirectory = ''): VcsCommitStatus {
 
 function statusColor(status: string) {
   const code = status.trim().charAt(0)
-  return code === 'A' || code === '?' ? 'var(--green)' : code === 'D' ? 'var(--red)' : code === 'R' ? 'var(--blue)' : 'var(--yellow)'
+  return code === 'A' || code === '?' ? 'var(--success)' : code === 'D' ? 'var(--error)' : code === 'R' ? 'var(--info)' : 'var(--warning)'
 }
 
 export function VcsCommitPanel() {
@@ -116,6 +127,7 @@ export function VcsCommitPanel() {
   const selectedFileSet = useMemo(() => new Set(selectedFiles), [selectedFiles])
   const allSelected = status.changedFiles.length > 0 && status.changedFiles.every((file) => selectedFileSet.has(file.path))
   const lineStatsReady = status.lineStatsReady !== false
+  const maxChange = Math.max(1, ...status.changedFiles.map((file) => file.additions + file.deletions))
 
   const toggleFile = (path: string) => {
     setSelectedFiles((current) =>
@@ -174,10 +186,10 @@ export function VcsCommitPanel() {
   }
 
   return (
-    <aside aria-label="Commit" className="flex min-h-0 flex-1 flex-col overflow-hidden" style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}>
-      <div className="flex h-12 flex-shrink-0 items-center gap-2 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
+    <aside aria-label="Commit" className="uam-rv-dialog flex min-h-0 flex-1 flex-col overflow-hidden" style={{ borderRadius: 0, border: 0, borderLeft: '1px solid var(--border)', boxShadow: 'none' }}>
+      <div className="uam-rv-dialog__header" style={{ minHeight: 48 }}>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Commit</div>
+          <div className="uam-rv-title">Commit</div>
           <div className="truncate text-xs" title={status.workspaceDirectory} style={{ color: 'var(--text-3)' }}>{status.workspaceDirectory.split(/[\\/]/).filter(Boolean).pop() || 'No workspace selected'}</div>
         </div>
         <IconButton
@@ -187,15 +199,17 @@ export function VcsCommitPanel() {
           onClick={() => { void refresh(selectedVcsType, true) }}
         />
         <IconButton
-          icon={<X size={16} />}
+          icon={<PanelRightClose size={16} aria-hidden />}
           label="Close commit panel"
+          tooltip="Hide panel"
+          tooltipSide="bottom"
           onClick={() => setCommitPanelOpen(false)}
         />
       </div>
 
-      <div role="group" aria-label="Change review scope" className="flex shrink-0 gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-        <button type="button" className="uam-choice-button text-xs" aria-pressed={reviewScope === 'workspace'} style={{ color: reviewScope === 'workspace' ? 'var(--text)' : 'var(--text-3)', borderBottom: reviewScope === 'workspace' ? '2px solid var(--accent)' : '2px solid transparent' }} onClick={() => { setReviewScope('workspace'); setDiffSelection(null) }}>Workspace</button>
-        <button type="button" className="uam-choice-button text-xs" aria-pressed={reviewScope === 'recorded'} style={{ color: reviewScope === 'recorded' ? 'var(--text)' : 'var(--text-3)', borderBottom: reviewScope === 'recorded' ? '2px solid var(--accent)' : '2px solid transparent' }} onClick={() => { setReviewScope('recorded'); setDiffSelection(null) }}>Recorded chat edits</button>
+      <div role="group" aria-label="Change review scope" className="flex shrink-0 gap-3 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'workspace'} onClick={() => { setReviewScope('workspace'); setDiffSelection(null) }}>Workspace</button>
+        <button type="button" className="uam-rv-tab" aria-pressed={reviewScope === 'recorded'} onClick={() => { setReviewScope('recorded'); setDiffSelection(null) }}>Recorded chat edits</button>
       </div>
       {reviewScope === 'recorded' ? (
         activeSessionId && session ? (
@@ -210,11 +224,11 @@ export function VcsCommitPanel() {
       ) : <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="shrink-0 px-3 pt-3">
           {(status.warning || status.error || notice) && (
-            <div role="status" className="mb-3 rounded-md px-3 py-2 text-xs" style={{ background: notice === 'Commit created.' ? 'var(--success-dim)' : status.error || notice ? 'var(--error-dim)' : 'var(--warning-dim)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+            <div role="status" className="uam-rv-alert mb-3" style={{ background: notice === 'Commit created.' ? 'var(--success-dim)' : status.error || notice ? 'var(--error-dim)' : 'var(--warning-dim)', border: '1px solid var(--border)', color: 'var(--text)' }}>
               {notice || status.error || status.warning}
             </div>
           )}
-          {commitOutput && <details className="mb-3 text-xs"><summary className="cursor-pointer">Command output</summary><pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words">{commitOutput}</pre></details>}
+          {commitOutput && <details className="mb-3 text-xs"><summary className="cursor-pointer" style={{ color: 'var(--text-3)' }}>Command output</summary><pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]" style={{ color: 'var(--text-2)' }}>{commitOutput}</pre></details>}
           <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
             {status.vcsTypes.length > 1 ? (
               <MenuSelect
@@ -226,8 +240,8 @@ export function VcsCommitPanel() {
             ) : (
               <span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold" style={{ background: 'var(--surface-up)', color: 'var(--text-2)' }}>{status.available ? status.activeVcsType.toUpperCase() : 'NONE'}</span>
             )}
-            <GitBranch size={13} aria-hidden style={{ color: 'var(--accent)' }} />
-            <span className="min-w-0 truncate font-medium" style={{ color: 'var(--text)' }}>{status.branchOrRevision || '-'}</span>
+            <GitBranch size={13} aria-hidden style={{ color: 'var(--text-3)' }} />
+            <span className="min-w-0 truncate font-mono" style={{ color: 'var(--text)' }}>{status.branchOrRevision || '-'}</span>
           </div>
         </div>
 
@@ -239,13 +253,13 @@ export function VcsCommitPanel() {
             aria-checked={allSelected}
             disabled={status.changedFiles.length === 0}
             onClick={toggleAllFiles}
-            className="uam-icon-button"
+            className="uam-rv-check-btn"
           >
             {allSelected ? <CheckCircle2 size={16} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={16} aria-hidden />}
           </button>
           <span className="min-w-0 flex-1 font-medium">{loading ? 'Refreshing changes' : `${status.changedFiles.length} changed file${status.changedFiles.length === 1 ? '' : 's'}`}</span>
           {(loading || (!lineStatsReady && status.changedFiles.length > 0)) && <LoaderCircle size={13} aria-label="Loading VCS status" />}
-          <span>{selectedFiles.length} selected</span>
+          <span style={{ color: 'var(--text-3)' }}>{selectedFiles.length} selected</span>
         </div>
         <div className="mx-3 min-h-0 flex-1 overflow-y-auto">
           {status.changedFiles.length === 0 ? (
@@ -253,18 +267,14 @@ export function VcsCommitPanel() {
           ) : status.changedFiles.map((file) => {
             const selected = selectedFileSet.has(file.path)
             return (
-              <div
-                key={file.path}
-                className="group flex w-full items-center gap-1 text-xs"
-                style={{ color: selected ? 'var(--text)' : 'var(--text-2)', borderBottom: '1px solid var(--border)' }}
-              >
+              <div key={file.path} className="uam-rv-file group" data-selected={selected} style={{ color: selected ? 'var(--text)' : 'var(--text-2)' }}>
                 <button
                   type="button"
                   role="checkbox"
                   aria-checked={selected}
                   aria-label={`${selected ? 'Deselect' : 'Select'} ${file.path}`}
                   onClick={() => toggleFile(file.path)}
-                  className="uam-icon-button shrink-0"
+                  className="uam-rv-check-btn"
                 >
                   {selected ? <CheckCircle2 size={15} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={15} aria-hidden style={{ color: 'var(--text-3)' }} />}
                 </button>
@@ -272,22 +282,28 @@ export function VcsCommitPanel() {
                   type="button"
                   aria-label={`Review changes to ${file.path}`}
                   onClick={() => { if (activeSessionId) setDiffSelection({ file, chatId: activeSessionId, workspaceDirectory: session?.workspaceDirectory, workspaceWorktreeDirectory: session?.workspaceWorktreeDirectory, executionHostId: session?.executionHostId }) }}
-                  className="uam-choice-button flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-2 text-left"
-                  style={{ background: 'transparent', color: 'inherit' }}
+                  className="uam-rv-file__open"
+                  style={{ color: 'inherit' }}
                 >
-                  <span className="w-6 flex-shrink-0 text-center font-mono text-[11px] font-semibold" style={{ color: statusColor(file.status) }}>{file.status.trim() || 'M'}</span>
-                  <span className="min-w-0 flex-1 truncate" title={file.path}>{file.path.split('/').pop()}<span className="ml-1.5" style={{ color: 'var(--text-3)' }}>{file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''}</span></span>
-                  {!lineStatsReady ? (
-                    <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>...</span>
-                  ) : file.binary ? (
-                    <span className="flex-shrink-0 font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>BIN</span>
-                  ) : (
-                    <span className="flex flex-shrink-0 items-center gap-2 font-mono text-[11px]">
-                      <span style={{ color: 'var(--green)' }}>+{file.additions}</span>
-                      <span style={{ color: 'var(--red)' }}>-{file.deletions}</span>
-                    </span>
-                  )}
-                  <ChevronRight size={13} aria-hidden className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100" style={{ color: 'var(--text-3)' }} />
+                  <span className="uam-rv-file__status" style={{ color: statusColor(file.status) }}>{file.status.trim() || 'M'}</span>
+                  <span className="uam-rv-file__path" title={file.path}>
+                    <span className="uam-rv-file__name">{file.path.split('/').pop()}</span>
+                    {file.path.includes('/') && <span className="uam-rv-file__dir">{file.path.slice(0, file.path.lastIndexOf('/'))}</span>}
+                  </span>
+                  <span className="uam-rv-file__stat">
+                    {!lineStatsReady ? (
+                      <span className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>...</span>
+                    ) : file.binary ? (
+                      <span className="font-mono text-[11px]" style={{ color: 'var(--text-3)' }}>BIN</span>
+                    ) : (
+                      <span className="uam-rv-stat">
+                        <ChangeBar additions={file.additions} deletions={file.deletions} max={maxChange} />
+                        <span className="uam-rv-stat__add" style={{ color: 'var(--success)' }}>+{file.additions}</span>
+                        <span className="uam-rv-stat__del" style={{ color: 'var(--error)' }}>-{file.deletions}</span>
+                      </span>
+                    )}
+                  </span>
+                  <ChevronRight size={13} aria-hidden className="uam-rv-file__chevron" style={{ color: 'var(--text-3)' }} />
                 </button>
               </div>
             )
@@ -297,8 +313,7 @@ export function VcsCommitPanel() {
         <div className="shrink-0 p-3" style={{ borderTop: '1px solid var(--border)' }}>
           <div className="mb-2 flex items-center gap-2">
             <input
-              className="min-w-0 flex-1 rounded-md px-2 py-2 text-sm"
-              style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+              className="uam-rv-field min-w-0 flex-1"
               placeholder="Summary"
               aria-label="Commit summary"
               value={title}
@@ -312,8 +327,7 @@ export function VcsCommitPanel() {
             />
           </div>
           <textarea
-            className="mb-2 h-16 w-full resize-none rounded-md p-2 text-sm"
-            style={{ background: 'var(--bg)', border: '1px solid var(--border)', color: 'var(--text)' }}
+            className="uam-rv-field mb-2 h-16 w-full resize-none"
             placeholder="Description"
             aria-label="Commit description"
             value={description}
@@ -324,7 +338,7 @@ export function VcsCommitPanel() {
           </Button>
         </div>
       </div>}
-      {reviewScope === 'workspace' && diffSelection && diffSelection.chatId === activeSessionId && diffSelection.workspaceDirectory === session?.workspaceDirectory && diffSelection.workspaceWorktreeDirectory === session?.workspaceWorktreeDirectory && diffSelection.executionHostId === session?.executionHostId && (
+      {(() => { const diffOpen = Boolean(reviewScope === 'workspace' && diffSelection && diffSelection.chatId === activeSessionId && diffSelection.workspaceDirectory === session?.workspaceDirectory && diffSelection.workspaceWorktreeDirectory === session?.workspaceWorktreeDirectory && diffSelection.executionHostId === session?.executionHostId); return <Presence open={diffOpen}>{diffOpen && diffSelection && (
         <RepositoryDiffDialog
           chatId={diffSelection.chatId}
           file={diffSelection.file}
@@ -333,7 +347,7 @@ export function VcsCommitPanel() {
           getDiff={getVcsFileDiff}
           onClose={() => setDiffSelection(null)}
         />
-      )}
+      )}</Presence> })()}
     </aside>
   )
 }

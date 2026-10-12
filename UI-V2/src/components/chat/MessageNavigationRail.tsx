@@ -55,13 +55,12 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
   const index = Math.max(0, Math.min(count - 1, previewIndex ?? currentUserIndex))
   const message = messages[indices[index] - startIndex]
   const label = `${!userMessageIndices && startIndex > 0 ? 'Loaded user' : 'User'} message ${index + 1} of ${count}`
-  const preview = message ? message.content.slice(0, 160) : 'Open this message'
+  const preview = message ? message.content.slice(0, 160) : null
   return <div className="absolute left-0 top-4 z-10 flex w-5 items-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
     <div role="slider" tabIndex={busy ? -1 : 0} aria-label="Navigate user messages" aria-orientation="vertical"
       aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={label} aria-disabled={busy}
       className="relative w-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
       style={{ height: Math.max(1, count - 1) * 4, maxHeight: '100%' }}
-      title={`${label}\n${preview}`}
       onMouseMove={(event) => {
         const rect = event.currentTarget.getBoundingClientRect()
         setPreviewIndex(messageIndexAtPointer(count, rect.top, rect.height, event.clientY))
@@ -93,6 +92,15 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none transition-transform duration-150 motion-reduce:transition-none" style={{ position: 'absolute', top: `${neighbor / (count - 1) * 100}%`, left: 6, width: 24, height: 1, background: 'var(--text-3)', transformOrigin: 'left', transform: `scaleX(${Math.abs(distance) === 1 ? 2 / 3 : 5 / 12})` }} />
       })}
       <span aria-hidden data-rail-target={index} className="pointer-events-none transition-transform duration-150 motion-reduce:transition-none" style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 6, width: 24, height: 3, background: 'var(--accent)', transformOrigin: 'left', transform: `scaleX(${previewIndex === null ? 11 / 24 : 1})` }} />
+      {previewIndex !== null && <div className="conversation-rail-preview" aria-hidden style={{ top: `${count === 1 ? 50 : index / (count - 1) * 100}%` }}>
+        <div className="conversation-rail-preview__label">{label}</div>
+        {preview !== null
+          ? <div className="conversation-rail-preview__text">{preview}</div>
+          : <>
+            <div className="conversation-rail-preview__title">Not loaded yet</div>
+            <div className="conversation-rail-preview__hint">Scroll up or click to load this part of the chat.</div>
+          </>}
+      </div>}
     </div>
   </div>
 }

@@ -1,19 +1,358 @@
-.uam-usage-model-row.uam-btn {
+/* Usage workspace: pictures first. Bars carry the data; exact numbers sit beside or inside them. */
+
+/* Provider identity: one colour per provider, defined once here and mapped in UsagePage.tsx.
+   Token types use a neutral ramp so they never read as a provider. */
+.uam-usage {
+  --usage-claude: #d97757;
+  --usage-codex: var(--text-2);
+  --usage-gemini: #4285f4;
+  --usage-opencode: #1fb88a;
+  --usage-copilot: #a371f7;
+  --usage-antigravity: #22d3ee;
+  --usage-tok-input: var(--text-2);
+  --usage-tok-cache: color-mix(in srgb, var(--text-2) 75%, var(--surface));
+  --usage-tok-cache-write: color-mix(in srgb, var(--text-2) 40%, var(--surface));
+  --usage-tok-output: var(--text);
+  --usage-tok-reasoning: color-mix(in srgb, var(--text) 45%, var(--surface));
+}
+
+@keyframes uam-usage-grow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+@keyframes uam-usage-grow-x {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes uam-usage-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.uam-usage-muted { color: var(--text-3); }
+
+.uam-usage-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.uam-usage-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.uam-usage-empty {
+  padding: var(--sp-6) 0;
+  text-align: center;
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+}
+
+.uam-usage-swatch {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--c);
+}
+
+/* Header status: one muted icon; details live in its tooltip and a screen-reader list. */
+.uam-usage-status {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out-soft), color var(--dur-fast) var(--ease-out-soft);
+}
+.uam-usage-status:hover { background: var(--surface-high); color: var(--text-2); }
+.uam-usage-status.is-attention { color: var(--warning); }
+.uam-usage-status:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-usage-status-tip { display: grid; gap: 2px; max-width: 26rem; }
+
+/* Stacked bar: token mix, spend and per-model shares. Labels sit inside wide segments. */
+.uam-usage-stack {
   display: flex;
   width: 100%;
+  height: 14px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--surface-up);
+}
+.uam-usage-stack > span {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--c);
+  transform-origin: 0 50%;
+  animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both;
+}
+.uam-usage-stack-label {
+  padding: 0 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--bg);
+}
+
+.uam-usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+.uam-usage-tile {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.uam-usage-tile:first-child { grid-column: 1 / -1; }
+.uam-usage-tile-value { font-size: var(--fs-lg); font-weight: 600; }
+.uam-usage-tile:first-child .uam-usage-tile-value { font-size: var(--fs-2xl); }
+
+/* Provider toggles: a single row across the top of the page. On = filled + coloured dot; off = dimmed + hollow dot. */
+.uam-usage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.uam-usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition:
+    opacity var(--dur-base) var(--ease-out-soft),
+    background-color var(--dur-base) var(--ease-out-soft),
+    border-color var(--dur-base) var(--ease-out-soft),
+    transform var(--dur-fast) var(--ease-out-soft);
+}
+.uam-usage-chip:hover { background: var(--surface-high); }
+.uam-usage-chip:active { transform: scale(0.98); }
+.uam-usage-chip[aria-pressed="true"] { background: var(--surface-up); border-color: var(--border-bright); }
+.uam-usage-chip.is-off { opacity: 0.45; }
+.uam-usage-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-usage-chip-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--c);
+  transition: background-color var(--dur-base) var(--ease-out-soft), box-shadow var(--dur-base) var(--ease-out-soft);
+}
+.uam-usage-chip.is-off .uam-usage-chip-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--c); }
+.uam-usage-chip-name { font-weight: 500; }
+.uam-usage-chip-value { color: var(--text-3); }
+
+.uam-usage-chart {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr);
+  gap: var(--sp-2);
+  height: 15rem;
+  padding-top: 1.5rem; /* room for hover values above the plot */
+}
+.uam-usage-axis {
+  display: flex;
+  flex-direction: column;
   justify-content: space-between;
-  gap: 16px;
-  padding: 12px 0;
+  text-align: right;
+  color: var(--text-3);
+}
+.uam-usage-plot {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+  border-bottom: 1px solid var(--border);
+  background:
+    linear-gradient(var(--border), var(--border)) 0 0 / 100% 1px no-repeat,
+    linear-gradient(var(--border), var(--border)) 0 50% / 100% 1px no-repeat;
+}
+.uam-usage-col {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  border-radius: var(--r-sm);
+}
+.uam-usage-col:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-usage-col-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 1px;
+  width: 100%;
+  transform-origin: 50% 100%;
+  animation: uam-usage-grow var(--dur-base) var(--ease-out-soft) both;
+  animation-delay: calc(var(--i, 0) * 18ms);
+}
+.uam-usage-band {
+  width: 100%;
+  min-height: 0;
+  border-radius: 2px;
+  background: var(--c);
+}
+/* Tooltip sits just above the column's stack (--h). Columns near either end align to that edge so
+   they never run off the chart; a column whose stack is tall moves the tooltip to the plot top. */
+.uam-usage-col-tip {
+  position: absolute;
+  bottom: calc(var(--h, 0%) + 6px);
+  left: 50%;
+  z-index: 2;
+  display: grid;
+  gap: 3px;
+  min-width: 9rem;
+  padding: 6px 8px;
+  white-space: nowrap;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-sm);
+  background: var(--surface-high);
+  box-shadow: var(--elev-2);
+  font-size: var(--fs-xs);
+  color: var(--text);
+  opacity: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out-soft);
+}
+.uam-usage-col.is-start .uam-usage-col-tip { left: 0; transform: none; }
+.uam-usage-col.is-end .uam-usage-col-tip { left: auto; right: 0; transform: none; }
+.uam-usage-col.is-high .uam-usage-col-tip { bottom: auto; top: 2px; }
+.uam-usage-col:hover .uam-usage-col-tip,
+.uam-usage-col:focus-visible .uam-usage-col-tip { opacity: 1; }
+.uam-usage-tip-head { color: var(--text-2); }
+.uam-usage-tip-head b { font-weight: 600; color: var(--text); }
+.uam-usage-tip-row { display: flex; align-items: center; gap: 6px; }
+.uam-usage-tip-row .uam-usage-muted { margin-left: auto; padding-left: 12px; }
+
+/* One compact legend: swatch, name, value. */
+.uam-usage-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-2);
+}
+.uam-usage-key-item { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Token mix by provider: name, full-width bar with labels inside, total on the right. */
+.uam-usage-mixrow {
+  display: grid;
+  grid-template-columns: minmax(7rem, 9rem) minmax(0, 1fr) 4.5rem;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.uam-usage-model-row.uam-btn {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 16px;
+  width: 100%;
+  padding: 10px 0;
   text-align: left;
 }
+.uam-usage-model-bar { grid-column: 1 / -1; display: block; }
+
+.uam-usage-skeleton {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: var(--sp-3);
+  animation: uam-usage-fade var(--dur-base) var(--ease-out-soft) both;
+}
+.uam-usage-skel-tile,
+.uam-usage-skel-chart {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.uam-usage-skel-tile { height: 4.5rem; }
+.uam-usage-skel-chart { grid-column: 1 / -1; height: 15rem; }
+
 .uam-usage-price-input {
   padding: 8px;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   background: var(--surface);
   color: var(--text);
 }
 .uam-usage-price-input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-usage-col-stack,
+  .uam-usage-stack > span,
+  .uam-usage-skeleton,
+  .uam-limits-card,
+  .uam-limits-tokens[open] > :not(summary) {
+    animation: none;
+  }
+  .uam-usage-chip,
+  .uam-usage-chip-dot,
+  .uam-usage-status,
+  .uam-usage-col-tip,
+  .uam-usage-meter > span {
+    transition: none;
+  }
+  .uam-usage-meter > span { animation: none; }
+}
+
+/* Allowance and context meters: threshold colour set inline; fill grows in on mount. */
+.uam-usage-meter {
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--r-full);
+  background: var(--surface-up);
+}
+.uam-usage-meter > span {
+  display: block;
+  height: 100%;
+  transform-origin: 0 50%;
+  animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both;
+}
+
+/* Limits: one card per provider, always the same structure; unreadable windows stay as empty tracks. */
+.uam-limits-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--sp-3); }
+.uam-limits-card { display: grid; gap: var(--sp-4); align-content: start; padding: var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); animation: uam-usage-fade var(--dur-enter) var(--ease-out-soft) both; }
+.uam-limits-card__head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.uam-limits-chip { font-size: var(--fs-xs); padding: 1px 7px; border-radius: var(--r-full); background: var(--surface-high); color: var(--text-2); text-transform: capitalize; }
+.uam-limits-updated { margin-left: auto; font-size: var(--fs-xs); color: var(--text-3); }
+.uam-limits-label { font-size: var(--fs-sm); color: var(--text-2); }
+.uam-limits-pct { font-weight: 600; }
+.uam-limits-tokens { border-top: 1px solid var(--border); padding-top: var(--sp-3); }
+.uam-limits-tokens > summary { display: flex; justify-content: space-between; cursor: pointer; list-style: none; border-radius: var(--r-sm); }
+.uam-limits-tokens > summary::-webkit-details-marker { display: none; }
+.uam-limits-tokens > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-limits-tokens[open] > summary { margin-bottom: var(--sp-3); }
+.uam-limits-tokens[open] > :not(summary) { animation: uam-usage-fade var(--dur-base) var(--ease-out-soft) both; }
+.uam-limits-tokens > div + div { margin-top: var(--sp-2); }

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button } from '../ui'
+import { Button, StatusDot, type StatusTone } from '../ui'
+import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import './provider-settings.css'
 
 interface PermissionState {
   platform: string
@@ -62,27 +64,18 @@ export function PermissionsSettings() {
       { id: 'accessibility', label: 'Accessibility', purpose: 'Computer Use', status: computer ? computer.accessibility ? 'allowed' : 'denied' : undefined, helper: true },
     ] : []),
   ]
-  return <section className="space-y-4 text-xs">
-    <div className="flex items-center justify-between gap-3">
-      <h3 className="font-semibold" style={{ color: 'var(--text)' }}>App permissions</h3>
-      <Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>Refresh</Button>
-    </div>
-    <div className="overflow-x-auto">
-      <table className="w-full text-left">
-        <thead style={{ color: 'var(--text-2)' }}><tr>
-          <th className="py-2 font-medium">Permission</th><th className="py-2 font-medium">Status</th><th className="py-2 font-medium text-right">Actions</th>
-        </tr></thead>
-        <tbody>{rows.map((row) => <tr key={row.id} style={{ borderTop: '1px solid var(--border)' }}>
-          <td className="py-3 pr-3"><div style={{ color: 'var(--text)' }}>{row.label}</div><div className="mt-1" style={{ color: 'var(--text-3)' }}>{row.purpose}</div></td>
-          <td className="py-3 pr-3" style={{ color: row.status === 'allowed' ? 'var(--green)' : row.status === 'denied' ? 'var(--red)' : 'var(--text-2)' }}>{row.status ? labels[row.status] ?? 'Not checked' : 'Not checked'}</td>
-          <td className="py-3"><div className="flex justify-end gap-2">
-            {row.status !== 'allowed' && <Button size="sm" variant="secondary" disabled={busy || permissions?.platform !== 'macos' || row.status === 'restricted' || row.status === 'unsupported'} onClick={() => void act(row.id, row.helper, true)}>Request</Button>}
-            <Button size="sm" variant="ghost" disabled={busy || permissions?.platform !== 'macos'} onClick={() => void act(row.id, row.helper, false)}>System settings</Button>
-          </div></td>
-        </tr>)}</tbody>
-      </table>
-    </div>
-    {MOBILE_COMPANION_ENABLED && <p style={{ color: 'var(--text-2)' }}>macOS does not expose the saved Local Network decision. Check it in System Settings.</p>}
-    {message && <p role="status" style={{ color: 'var(--text-2)' }}>{message}</p>}
-  </section>
+  const toneFor = (status?: string): StatusTone => status === 'allowed' ? 'success' : status === 'denied' || status === 'restricted' ? 'error' : status === 'system_managed' ? 'warning' : 'neutral'
+  return <div className="grid gap-6">
+    <SettingsSection title="App permissions" description="macOS asks for these when a feature needs them. Change them here or in System Settings."
+      actions={<Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>Refresh</Button>}>
+      {rows.map((row) => <SettingRow key={row.id} title={row.label} description={row.purpose}
+        status={<span className="uam-prov-status" data-tone={toneFor(row.status)}><StatusDot tone={toneFor(row.status)}/>{row.status ? labels[row.status] ?? 'Not checked' : busy ? 'Checking…' : 'Not checked'}</span>}
+        control={<>
+          {row.status !== 'allowed' && <Button size="sm" variant="secondary" disabled={busy || permissions?.platform !== 'macos' || row.status === 'restricted' || row.status === 'unsupported'} onClick={() => void act(row.id, row.helper, true)}>Request</Button>}
+          <Button size="sm" variant="ghost" disabled={busy || permissions?.platform !== 'macos'} onClick={() => void act(row.id, row.helper, false)}>System settings</Button>
+        </>} />)}
+      {MOBILE_COMPANION_ENABLED && <SettingRow title="Local Network decision" description="macOS does not expose the saved decision. Check it in System Settings." />}
+      {message && <SettingRow title="Last action" description={<span role="status">{message}</span>} />}
+    </SettingsSection>
+  </div>
 }

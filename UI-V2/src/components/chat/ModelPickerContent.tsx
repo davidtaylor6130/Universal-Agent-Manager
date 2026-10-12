@@ -1,11 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Star } from 'lucide-react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Check, Search, Star } from 'lucide-react'
 import type { Provider } from '../../types/provider'
 import type { ProviderModelCatalog } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
 import { useModelPickerStore } from '../../store/modelPickerStore'
 import { COPILOT_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import '../layout/panels.css'
 import { buildModelOptions, searchModelOptions, type ModelOption } from './modelOptions'
 
 const ROW_HEIGHT = 52
@@ -49,6 +50,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   const listRef = useRef<HTMLDivElement>(null)
   const rowRefs = useRef(new Map<number, HTMLButtonElement>())
   const railRefs = useRef(new Map<string, HTMLButtonElement>())
+  const [glideY, setGlideY] = useState(0)
   const pendingFocus = useRef(false)
   const requestedCatalogs = useRef(new Set<string>())
   const optionsByProvider = useMemo(() => new Map(providers.map((provider) => {
@@ -72,11 +74,17 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   const loading = selectedProvider === providerId ? activeLoading : catalog?.modelsLoading
   const error = selectedProvider === providerId ? activeError : catalog?.modelRefreshError
   const disabled = (option: PickerModel) => Boolean(option.disabled || modelDisabled || (option.providerId !== providerId && !canChangeProvider))
-  const virtual = models.length > 60
+  // Favourites group under provider headers, so they render unwindowed (small lists); flat provider lists window.
+  const grouped = selectedProvider === 'favorites'
+  const virtual = !grouped && models.length > 60
   const first = virtual ? Math.max(0, Math.min(models.length - 1, Math.floor(scrollTop / ROW_HEIGHT) - 4)) : 0
   const last = virtual ? Math.min(models.length, first + Math.ceil(LIST_HEIGHT / ROW_HEIGHT) + 8) : models.length
 
   useEffect(() => { searchRef.current?.focus() }, [])
+  useLayoutEffect(() => {
+    const button = railRefs.current.get(selectedProvider)
+    if (button) setGlideY(button.offsetTop + (button.offsetHeight - 20) / 2)
+  }, [selectedProvider, providers])
   useLayoutEffect(() => {
     if (!pendingFocus.current) return
     pendingFocus.current = false
@@ -97,12 +105,14 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   const choose = (option: PickerModel | undefined) => { if (option && !disabled(option)) onSelect(option.providerId, option.id) }
   const focusModel = (index: number) => {
     pendingFocus.current = true
-    const list = listRef.current
-    let top = list?.scrollTop ?? 0
-    if (index * ROW_HEIGHT < top) top = index * ROW_HEIGHT
-    else if ((index + 1) * ROW_HEIGHT > top + LIST_HEIGHT) top = (index + 1) * ROW_HEIGHT - LIST_HEIGHT
-    if (list) list.scrollTop = top
-    setScrollTop(top)
+    if (virtual) {
+      const list = listRef.current
+      let top = list?.scrollTop ?? 0
+      if (index * ROW_HEIGHT < top) top = index * ROW_HEIGHT
+      else if ((index + 1) * ROW_HEIGHT > top + LIST_HEIGHT) top = (index + 1) * ROW_HEIGHT - LIST_HEIGHT
+      if (list) list.scrollTop = top
+      setScrollTop(top)
+    }
     setHighlight(index)
     rowRefs.current.get(index)?.focus()
   }
@@ -133,9 +143,10 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
       : selectable[(position + (event.key === 'ArrowDown' ? 1 : -1) + selectable.length) % selectable.length])
   }
 
-  return <div className="flex min-h-[300px]" onKeyDown={onKeyDown}>
+  const providerLabel = (id: string) => id === 'favorites' ? 'Favourites' : providerShortName(providers.find((provider) => provider.id === id), id)
+  return <div className="uam-model-picker flex min-h-[300px]" onKeyDown={onKeyDown}>
     <div role="toolbar" aria-label="Providers" aria-orientation="vertical" data-model-picker-sidebar="true"
-      className="w-11 shrink-0 overflow-x-hidden overflow-y-auto border-r p-1" style={{ borderColor: 'var(--border)', background: 'var(--surface-high)' }}
+      className="uam-np-rail w-11 shrink-0 overflow-x-hidden overflow-y-auto border-r p-1" style={{ borderColor: 'var(--border)', background: 'var(--surface-high)', '--np-glide-y': `${glideY}px` } as React.CSSProperties}
       onKeyDown={(event) => {
         if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
         if (event.key === 'ArrowRight') { event.preventDefault(); searchRef.current?.focus(); return }
@@ -147,42 +158,61 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
         selectProvider(id)
         railRefs.current.get(id)?.focus()
       }}>
+      <span aria-hidden className="uam-np-rail__glide" />
       {[{ id: 'favorites', label: 'Favorites' }, ...providers.map((provider) => ({ id: provider.id, label: providerShortName(provider, provider.id) }))].map((entry) => <button
         key={entry.id} ref={(element) => { if (element) railRefs.current.set(entry.id, element); else railRefs.current.delete(entry.id) }}
         type="button" aria-label={entry.label} title={entry.label} aria-pressed={entry.id === selectedProvider}
         disabled={entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider}
         tabIndex={entry.id === selectedProvider ? 0 : -1}
         onClick={() => selectProvider(entry.id)}
-        className="relative mb-1 flex h-9 w-full items-center justify-center rounded-md hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
-        style={{ color: 'var(--text)', opacity: entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider ? 0.4 : 1 }}>
-        {entry.id === 'favorites' ? <Star size={19} fill="currentColor" aria-hidden /> : <ProviderLogo providerId={entry.id} size={20} />}
-        {entry.id === selectedProvider && <span aria-hidden className="absolute -right-1 h-5 w-[3px] rounded-l" style={{ background: 'var(--accent)' }} />}
+        className="uam-np-rail__button"
+        style={{ opacity: entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider ? 0.4 : 1 }}>
+        {entry.id === 'favorites' ? <Star size={18} fill="currentColor" aria-hidden /> : <ProviderLogo providerId={entry.id} size={20} />}
       </button>)}
     </div>
     <div className="min-w-0 flex-1 p-1">
-      <input ref={searchRef} type="search" aria-label="Search models" placeholder="Search models…" value={query}
-        onChange={(event) => { setQuery(event.target.value); setHighlight(0); setScrollTop(0); if (listRef.current) listRef.current.scrollTop = 0 }}
-        className="uam-model-search w-full px-2 py-2" style={{ background: 'transparent', color: 'var(--text)', border: 'none', borderBottom: '1px solid var(--border)', marginBottom: 4 }} />
+      <div className="uam-np-search">
+        <Search size={13} aria-hidden />
+        <input ref={searchRef} type="search" aria-label="Search models" placeholder="Search models…" value={query}
+          onChange={(event) => { setQuery(event.target.value); setHighlight(0); setScrollTop(0); if (listRef.current) listRef.current.scrollTop = 0 }} />
+      </div>
+      {!grouped && <div className="uam-np-group">{providerLabel(selectedProvider)}</div>}
       {loading && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
       {error && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--yellow)' }}>{error}</div>}
       <div ref={listRef} data-testid="model-options" style={{ maxHeight: LIST_HEIGHT, overflowY: 'auto' }} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
-        {models.length === 0 && <div role="status" className="px-2 py-3 text-sm">{selectedProvider === 'favorites' && !query ? 'Star a model to add it here' : 'No matching models'}</div>}
+        {models.length === 0 && (
+          <div role="status" className="uam-np-empty">
+            <span className="uam-np-empty__icon">{grouped && !query ? <Star size={16} aria-hidden /> : <Search size={16} aria-hidden />}</span>
+            <span className="uam-np-empty__title">{grouped && !query ? 'No favourites yet' : 'No matching models'}</span>
+            <span className="uam-np-empty__text">{grouped && !query ? 'Star a model to add it here' : query ? `Nothing matches “${query}”. Try a shorter search.` : 'This provider has no models to show.'}</span>
+          </div>
+        )}
         {virtual && <div aria-hidden style={{ height: first * ROW_HEIGHT }} />}
         {models.slice(first, last).map((option, offset) => {
           const index = first + offset
           const selected = option.providerId === providerId && option.id === currentModelId
           const favorite = favorites.some((entry) => entry.providerId === option.providerId && entry.modelId === option.id)
-          return <div key={JSON.stringify([option.providerId, option.id])} className="relative flex items-center" style={{ height: ROW_HEIGHT }}>
-            <button ref={(element) => { if (element) rowRefs.current.set(index, element); else rowRefs.current.delete(index) }} type="button" role="menuitemradio" aria-checked={selected}
-              disabled={disabled(option)} tabIndex={index === highlight ? 0 : -1} onFocus={() => setHighlight(index)} onMouseEnter={() => setHighlight(index)} onClick={() => choose(option)}
-              className={`uam-menu-select__option grid h-full w-full gap-0.5 overflow-hidden rounded-md py-2 pl-2 pr-9 text-left${selected ? ' is-selected' : ''}`}
-              style={{ color: selected ? 'var(--text)' : 'var(--text-2)', boxShadow: index === highlight ? 'inset 0 0 0 1px var(--accent)' : 'none', opacity: disabled(option) ? 0.5 : 1 }}>
-              <span className="flex items-center gap-2">{selectedProvider === 'favorites' && <ProviderLogo providerId={option.providerId} />}<span className="flex-1 truncate">{option.label}</span>{selected && <span aria-hidden style={{ color: 'var(--accent)', fontSize: 10 }}>●</span>}</span>
-              {!(option.providerId === COPILOT_CLI_PROVIDER_ID && option.detail.trim().toLowerCase() === option.label.trim().toLowerCase()) && <span className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{option.detail}</span>}
-            </button>
-            <button type="button" aria-label={`${favorite ? 'Unfavorite' : 'Favorite'} ${option.label}`} aria-pressed={favorite} title={favorite ? 'Remove favorite' : 'Add favorite'}
-              onClick={() => toggleFavorite(option.providerId, option.id)} className="absolute right-1 flex h-7 w-7 items-center justify-center rounded hover:bg-white/10" style={{ color: favorite ? 'var(--accent)' : 'var(--text-3)' }}><Star size={13} fill={favorite ? 'currentColor' : 'none'} aria-hidden /></button>
-          </div>
+          const sectionStart = grouped && (index === 0 || models[index - 1].providerId !== option.providerId)
+          const highlighted = index === highlight
+          return <Fragment key={JSON.stringify([option.providerId, option.id])}>
+            {sectionStart && <div className="uam-np-group" role="presentation">{providerLabel(option.providerId)}</div>}
+            <div className="uam-np-model" data-selected={selected} data-highlight={highlighted} style={{ height: ROW_HEIGHT }}>
+              <button ref={(element) => { if (element) rowRefs.current.set(index, element); else rowRefs.current.delete(index) }} type="button" role="menuitemradio" aria-checked={selected}
+                disabled={disabled(option)} tabIndex={highlighted ? 0 : -1} onFocus={() => setHighlight(index)} onMouseEnter={() => setHighlight(index)} onClick={() => choose(option)}
+                className="uam-np-model__button" style={{ opacity: disabled(option) ? 0.5 : 1 }}>
+                <span className="uam-np-model__name">
+                  <span>{option.label}</span>
+                  {option.id && option.id !== option.label && <code className="uam-np-model__id">{option.id}</code>}
+                  {selected && <Check size={14} aria-hidden className="uam-np-model__check" />}
+                </span>
+                {!(option.providerId === COPILOT_CLI_PROVIDER_ID && option.detail.trim().toLowerCase() === option.label.trim().toLowerCase()) && <span className="uam-np-model__detail">{option.detail}</span>}
+              </button>
+              <button type="button" aria-label={`${favorite ? 'Unfavorite' : 'Favorite'} ${option.label}`} aria-pressed={favorite} title={favorite ? 'Remove favorite' : 'Add favorite'}
+                onClick={() => toggleFavorite(option.providerId, option.id)} className="uam-np-model__fav">
+                <Star size={14} fill={favorite ? 'currentColor' : 'none'} aria-hidden />
+              </button>
+            </div>
+          </Fragment>
         })}
         {virtual && <div aria-hidden style={{ height: (models.length - last) * ROW_HEIGHT }} />}
       </div>

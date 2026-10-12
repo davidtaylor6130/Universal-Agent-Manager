@@ -1,0 +1,94 @@
+/* Goal token meter lives in the goal banner; colour steps up at 80% and 95%. */
+.uam-goal-meter {
+  display: inline-block;
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--surface-high);
+  overflow: hidden;
+}
+.uam-goal-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--dur-base) var(--ease-out-soft), background var(--dur-fast) var(--ease);
+}
+.uam-goal-meter[data-level="warning"] > span { background: var(--warning); }
+.uam-goal-meter[data-level="error"] > span { background: var(--error); }
+
+/* Goal status pill: one tone per state, all from status tokens. */
+.uam-goal-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  background: var(--surface-up);
+  color: var(--text-2);
+}
+.uam-goal-pill[data-tone="info"] { background: var(--info-dim); color: var(--info); }
+.uam-goal-pill[data-tone="success"] { background: var(--success-dim); color: var(--success); }
+.uam-goal-pill[data-tone="warning"] { background: var(--warning-dim); color: var(--warning); }
+.uam-goal-pill[data-tone="error"] { background: var(--error-dim); color: var(--error); }
+
+/* Secondary icon button for the goal actions overflow menu. */
+.uam-goal-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.uam-goal-action:hover,
+.uam-goal-action[data-open] { background: var(--surface-up); color: var(--text); }
+.uam-goal-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+.uam-goal-progress {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 64px;
+  height: 4px;
+  border: 0;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-high);
+}
+.uam-goal-progress::-webkit-progress-bar { background: var(--surface-high); border-radius: 999px; }
+.uam-goal-progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 999px;
+  transition: inline-size var(--dur-base) var(--ease-out-soft);
+}
+.uam-goal-progress::-moz-progress-bar { background: var(--accent); border-radius: 999px; }
+
+/* Overflow menu pops in from the trigger and fades out faster than it enters. */
+.uam-goal-menu {
+  min-width: 160px;
+  padding: var(--sp-1) 0;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-md);
+  background: var(--surface-up);
+  box-shadow: var(--elev-2);
+}
+.uam-goal-menu[data-state="closed"] {
+  animation: uam-goal-menu-out var(--dur-exit) var(--ease) forwards;
+  pointer-events: none;
+}
+@keyframes uam-goal-menu-out {
+  to { opacity: 0; transform: translateY(-4px) scale(0.98); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-goal-menu[data-state="closed"] { animation: none; }
+  .uam-goal-progress::-webkit-progress-value,
+  .uam-goal-action { transition: none; }
+}

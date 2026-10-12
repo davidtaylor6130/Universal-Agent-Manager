@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { Presence } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import type { WorkspaceFilePreview } from '../../types/filePreview'
 import { workspaceRelativeFilePath, type FileReference } from '../../utils/fileReferences'
@@ -36,9 +37,9 @@ export function FileInspectionProvider({ chatId, children }: { chatId: string; c
   }
   return <FileInspectionContext.Provider value={open}>
     {children}
-    {selection?.chatId === chatId && <FilePreviewDialog chatId={chatId} reference={selection.reference} onClose={close} onShowChanges={showChanges} />}
-    {changes?.chatId === chatId && changes.context === context && <RepositoryDiffDialog chatId={chatId} file={changes.file} vcsType={changes.type} comparisonRef={changes.comparisonRef}
+    <Presence open={selection?.chatId === chatId}>{selection?.chatId === chatId && <FilePreviewDialog chatId={chatId} reference={selection.reference} onClose={close} onShowChanges={showChanges} />}</Presence>
+    <Presence open={changes?.chatId === chatId && changes.context === context}>{changes?.chatId === chatId && changes.context === context && <RepositoryDiffDialog chatId={chatId} file={changes.file} vcsType={changes.type} comparisonRef={changes.comparisonRef}
       showFileStats={false} comparisonLabel={changes.comparisonRef ? `Against ${changes.comparisonRef}` : 'Working tree changes'} zIndex={1200}
-      getDiff={useAppStore.getState().getVcsFileDiff} onClose={() => setChanges(null)} />}
+      getDiff={useAppStore.getState().getVcsFileDiff} onClose={() => setChanges(null)} />}</Presence>
   </FileInspectionContext.Provider>
 }

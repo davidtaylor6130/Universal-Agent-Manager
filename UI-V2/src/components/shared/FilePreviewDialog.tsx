@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { FileText, RefreshCw, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
@@ -7,7 +6,8 @@ import type { WorkspaceFilePreview } from '../../types/filePreview'
 import type { FileReference } from '../../utils/fileReferences'
 import { getTopmostModal } from '../../utils/modalFocus'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { IconButton } from '../ui'
+import { Button, IconButton, Overlay } from '../ui'
+import './review.css'
 
 const ROW_HEIGHT = 20
 
@@ -65,39 +65,38 @@ export function FilePreviewDialog({ chatId, reference, onClose, onShowChanges, z
   const start = Math.max(0, Math.floor(viewport.top / ROW_HEIGHT) - 12)
   const end = Math.min(lines.length, Math.ceil((viewport.top + viewport.height) / ROW_HEIGHT) + 12)
   const width = useMemo(() => lines.reduce((longest, line) => Math.max(longest, line.length), 40), [lines])
-  return createPortal(<div className="fixed inset-0 z-[1100] flex items-center justify-center p-2 sm:p-4" style={{ zIndex, background: 'rgba(0,0,0,.6)' }} onMouseDown={onClose}>
+  return <Overlay open zIndex={zIndex} onBackdropMouseDown={onClose}>
     <section ref={dialogRef} role="dialog" aria-modal="true" aria-label={`Inspect ${reference.path}`} tabIndex={-1}
-      className="flex h-[85vh] w-full max-w-5xl flex-col overflow-hidden" style={{ background: '#000', border: '1px solid var(--border-bright)' }} onMouseDown={(event) => event.stopPropagation()}>
-      <header className="flex min-h-12 items-center gap-3 px-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <FileText size={17} aria-hidden style={{ color: 'var(--accent)' }} />
-        <div className="min-w-0 flex-1"><div className="truncate text-sm" title={reference.path} style={{ color: 'var(--text)' }}>{file?.path ?? reference.path}</div>
-          {file && <div className="truncate text-xs" title={`${file.executionHostId}: ${file.workspace}`} style={{ color: 'var(--text-2)' }}>{file.executionHostId} · {file.workspace}</div>}</div>
-        {onShowChanges && <button type="button" className="text-xs" disabled={changesLoading} style={{ color: 'var(--accent)', background: 'transparent', border: 'none' }} onClick={() => {
+      className="uam-rv-dialog flex h-[85vh] w-full max-w-5xl" onMouseDown={(event) => event.stopPropagation()}>
+      <header className="uam-rv-dialog__header">
+        <FileText size={16} aria-hidden style={{ color: 'var(--accent)' }} />
+        <div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold" title={reference.path} style={{ color: 'var(--text)' }}>{file?.path ?? reference.path}</div>
+          {file && <div className="truncate text-xs" title={`${file.executionHostId}: ${file.workspace}`} style={{ color: 'var(--text-3)' }}>{file.executionHostId} · {file.workspace}</div>}</div>
+        {onShowChanges && <Button type="button" size="sm" variant="ghost" disabled={changesLoading} onClick={() => {
           setChangesLoading(true); setChangesError('')
           void onShowChanges(file).catch((reason) => setChangesError(reason instanceof Error ? reason.message : 'Could not load changes.')).finally(() => setChangesLoading(false))
-        }}>{changesLoading ? 'Loading changes…' : 'Changes'}</button>}
+        }}>{changesLoading ? 'Loading changes…' : 'Changes'}</Button>}
         {file && <CopyTextButton text={file.text} label="Copy file" title="Copy file contents" />}
         <IconButton icon={<RefreshCw size={15} />} label="Reload file" onClick={() => setRefresh((value) => value + 1)} />
         <IconButton icon={<X size={16} />} label="Close file inspection" onClick={onClose} />
       </header>
       {file && reference.line !== undefined && reference.line > lines.length && <p role="status" className="px-3 py-1 text-xs" style={{ color: 'var(--text-2)' }}>Line {reference.line} is past the end of this file.</p>}
-      {changesError && <p role="alert" className="px-3 py-2 text-sm" style={{ color: 'var(--red)' }}>{changesError}</p>}
-      {error ? <div role="alert" className="p-4 text-sm" style={{ color: 'var(--red)' }}>{error}</div> : !file ? <div role="status" className="p-4 text-sm" style={{ color: 'var(--text-2)' }}>Loading file…</div> :
-        <div ref={viewportRef} role="region" aria-label={`Source of ${file.path}`} tabIndex={0} className="min-h-0 flex-1 overflow-auto"
-          style={{ color: 'var(--text)', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-code, 12px)' }}
+      {changesError && <p role="alert" className="uam-rv-alert mx-3 my-2" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{changesError}</p>}
+      {error ? <div role="alert" className="uam-rv-alert m-4" style={{ background: 'var(--error-dim)', color: 'var(--error)' }}>{error}</div> : !file ? <div role="status" className="p-4 text-sm" style={{ color: 'var(--text-2)' }}>Loading file…</div> :
+        <div ref={viewportRef} role="region" aria-label={`Source of ${file.path}`} tabIndex={0} className="uam-rv-diff min-h-0 flex-1 overflow-auto"
           onScroll={(event) => setViewport({ top: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}>
           <div style={{ height: lines.length * ROW_HEIGHT, minWidth: `calc(${width}ch + 70px)`, position: 'relative' }}>
             <div style={{ position: 'absolute', top: start * ROW_HEIGHT, width: '100%' }}>
               {lines.slice(start, end).map((line, offset) => {
                 const number = start + offset + 1
                 const selected = reference.line !== undefined && number >= reference.line && number <= (reference.endLine ?? reference.line)
-                return <div key={number} data-source-line={number} style={{ display: 'flex', height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px`, whiteSpace: 'pre', background: selected ? 'var(--accent-dim)' : 'transparent' }}>
-                  <span aria-label="Line number" style={{ width: 52, paddingRight: 12, flexShrink: 0, textAlign: 'right', color: 'var(--text-2)', userSelect: 'none' }}>{number}</span><span style={{ paddingRight: 12, tabSize: 4 }}>{line || ' '}</span>
+                return <div key={number} data-source-line={number} className="uam-rv-diff-row" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px`, background: selected ? 'var(--accent-dim)' : undefined }}>
+                  <span aria-label="Line number" className="uam-rv-gutter" style={{ width: 52 }}>{number}</span><span className="uam-rv-diff-text" style={{ tabSize: 4 }}>{line || ' '}</span>
                 </div>
               })}
             </div>
           </div>
         </div>}
     </section>
-  </div>, document.body)
+  </Overlay>
 }
