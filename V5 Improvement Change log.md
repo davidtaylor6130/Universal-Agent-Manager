@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Providers and review | Bugfix | Review Queue Task Ownership | Completed review tasks leave the vector before advancing queues, retaining newly started workers for the next poll. | Claude Review; Un-Reviewed; Not User Tested |
 | Performance | Bugfix | Failed Save Admission Revocation | Failed save receipts retire undelivered input and record its failure before reporting rejection. | Claude Review; Un-Reviewed; Not User Tested |
 | Performance | Bugfix | Asynchronous Save State Feedback | Save receipts report changed processing and errors to the conditional frontend state update. | Claude Review; Un-Reviewed; Not User Tested |
 | Providers and review | Code Only | Host Scoped Provider Availability | Persisted native provider switches block new host-scoped work while preserving accepted queues and existing runtime attachment. | Partial Implementation; Un-Reviewed; Claude Review; Not User Tested |
@@ -991,3 +992,7 @@ Native picker verification allocation: coordinator `chat-1791755529536-1b146e` o
 Native picker continuation verification: the ignored-first-cancel fixture reproduced the original two-second watchdog failure; the modal-stop fallback passes all 14 picker scenarios and the Release app/test build, with pending Claude and user acceptance retained and detailed integration receipts in `.UAM/AINotes/v5-swarm-plan.md`.
 
 Local delivery continuation verification: one immutable request remains held across its owned delivery snapshot, cancellation and changed turn, configuration or goal commands cannot release it, and failed synchronous acknowledgements retire admission before rejection; the Release app/test build, 29 affected cases plus the quota continuation fixture, all 1596 expected core cases and all 19 gates pass, while queue, retry, steering, remote, live crash and acceptance work remain open.
+
+Permission queue continuation allocation: coordinator `chat-1791755529536-1b146e` owns `src/common/runtime/acp/acp_permission_handlers.cpp` and the private review-queue fixture in `tests/core_tests.cpp` in `build/v5-bug-fix-swarm`; the existing Broken AI Review row remains In Progress while task ownership is made stable across queue advancement, without real reviewer model calls.
+
+Permission queue continuation verification: the private reallocation fixture reproduced a bus-error crash before the fix; owned task removal and a bounded initial poll pass nine focused cases, the Release application/test build, all 1597 expected core cases and 19 gates, while the broader Broken AI Review flow and all existing acceptance flags remain open.

@@ -529,30 +529,35 @@ void StopPermissionReviewTasks(AppState& app, std::string_view chat_id, std::str
 bool PollPermissionReviewTasks(AppState& app)
 {
 	bool changed = false;
-	for (auto it = app.permission_review_tasks.begin(); it != app.permission_review_tasks.end();)
+	std::size_t index = 0;
+	for (std::size_t remaining = app.permission_review_tasks.size(); remaining > 0; --remaining)
 	{
-		if (it->state == nullptr || !it->state->completed.load())
+		if (index >= app.permission_review_tasks.size()) break;
+		if (app.permission_review_tasks[index].state == nullptr || !app.permission_review_tasks[index].state->completed.load())
 		{
-			++it;
+			++index;
 			continue;
 		}
-		StopAsyncPermissionReviewTask(*it);
-		const ProcessExecutionResult result = it->state->result;
-		AcpSessionState* session = FindAcpSessionForChat(app, it->chat_id);
-		ChatSession* chat = ChatDomainService().FindChatById(app, it->chat_id);
-		if (session != nullptr && chat != nullptr && session->running && session->pending_permission.request_id_json == it->request_id_json && ParentPermissionReviewAllowed(*session, *chat))
+		// Queue advancement can append another worker; retain no vector reference across it.
+		AsyncPermissionReviewTask task = std::move(app.permission_review_tasks[index]);
+		app.permission_review_tasks.erase(app.permission_review_tasks.begin() + static_cast<std::ptrdiff_t>(index));
+		StopAsyncPermissionReviewTask(task);
+		const ProcessExecutionResult result = task.state->result;
+		AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id);
+		ChatSession* chat = ChatDomainService().FindChatById(app, task.chat_id);
+		if (session != nullptr && chat != nullptr && session->running && session->pending_permission.request_id_json == task.request_id_json && ParentPermissionReviewAllowed(*session, *chat))
 		{
-			const auto decision = result.ok && !result.output_truncated ? ParsePermissionReviewWorkerOutput(it->state->provider_id, result.output) : std::nullopt;
+			const auto decision = result.ok && !result.output_truncated ? ParsePermissionReviewWorkerOutput(task.state->provider_id, result.output) : std::nullopt;
 			if (!decision)
 			{
 				const std::string reason = "AI Review could not make a valid decision; the request remains for the user.";
 				PersistPermissionReviewDiagnostic(*chat, *session, "error", reason);
-				AppendAcpDiagnostic(*session, "permission_review", result.timed_out ? "timeout" : result.canceled ? "canceled" : "invalid_result", "", it->request_id_json, false, 0, reason);
+				AppendAcpDiagnostic(*session, "permission_review", result.timed_out ? "timeout" : result.canceled ? "canceled" : "invalid_result", "", task.request_id_json, false, 0, reason);
 			}
 			else if (decision->decision == "uncertain")
 			{
 				PersistPermissionReviewDiagnostic(*chat, *session, decision->decision, decision->reason);
-				AppendAcpDiagnostic(*session, "permission_review", "uncertain", "", it->request_id_json, false, 0, decision->reason);
+				AppendAcpDiagnostic(*session, "permission_review", "uncertain", "", task.request_id_json, false, 0, decision->reason);
 			}
 			else
 			{
@@ -561,23 +566,22 @@ bool PollPermissionReviewTasks(AppState& app)
 				std::string response_error;
 				const bool sent = approve && option_id.empty()
 				    ? false
-				    : SendPermissionResponse(*session, it->request_id_json, option_id, !approve && option_id.empty(), &response_error);
+				    : SendPermissionResponse(*session, task.request_id_json, option_id, !approve && option_id.empty(), &response_error);
 				if (sent)
 				{
 					PersistPermissionReviewDiagnostic(*chat, *session, decision->decision, decision->reason);
-					AppendAcpDiagnostic(*session, "permission_review", approve ? "approved_once" : "denied", "", it->request_id_json, false, 0, decision->reason);
+					AppendAcpDiagnostic(*session, "permission_review", approve ? "approved_once" : "denied", "", task.request_id_json, false, 0, decision->reason);
 					AdvanceAcpPermissionQueue(app, *session, *chat, &response_error);
 				}
 				else
 				{
 					const std::string reason = "AI Review could not safely send its decision; the request remains for the user.";
 					PersistPermissionReviewDiagnostic(*chat, *session, "error", reason);
-					AppendAcpDiagnostic(*session, "permission_review", approve ? "missing_allow_once" : "response_failed", "", it->request_id_json, false, 0, reason);
+					AppendAcpDiagnostic(*session, "permission_review", approve ? "missing_allow_once" : "response_failed", "", task.request_id_json, false, 0, reason);
 				}
 			}
 			changed = true;
 		}
-		it = app.permission_review_tasks.erase(it);
 	}
 	return changed;
 }

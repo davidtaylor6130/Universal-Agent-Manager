@@ -103,6 +103,80 @@ private:
 };
 }
 
+UAM_TEST(PermissionReviewQueueAdvanceKeepsNewWorkerOwned)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI
+	TempDir temp("uam-review-queue-ownership");
+	const fs::path shim = temp.root / "gemini";
+	const fs::path marker = temp.root / "private-review-marker";
+	UAM_ASSERT(uam::io::WriteTextFile(shim,
+	    "#!/bin/sh\nprintf 'private-stub\\n' > \"$UAM_TEST_REVIEW_VECTOR_MARKER\"\n"
+	    "printf '%s\\n' '{\"response\":\"{\\\"decision\\\":\\\"uncertain\\\",\\\"reason\\\":\\\"Controlled fixture.\\\"}\"}'\n"));
+	fs::permissions(shim, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or(""));
+	ScopedEnvVar reviewer_marker("UAM_TEST_REVIEW_VECTOR_MARKER", marker.string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	app.settings.permission_reviewer_provider_id = "gemini-cli";
+	app.settings.permission_reviewer_model_id = "private-fake-model";
+	ChatSession chat;
+	chat.id = "review-vector";
+	chat.provider_id = "gemini-cli";
+	chat.command_safety_tier = "aiReview";
+	chat.approval_mode = "manual";
+	app.chats.push_back(chat);
+	std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = chat.provider_id;
+	owned->running = true;
+	owned->processing = true;
+	owned->waiting_for_permission = true;
+	owned->current_mode_id = "default";
+	owned->pending_permission.request_id_json = "7";
+	owned->pending_permission.options = {{"allow-once", "Allow once", "allow_once"}};
+	uam::AcpPendingPermissionState next;
+	next.request_id_json = "8";
+	next.title = "Inspect the private fixture";
+	next.kind = "read";
+	next.content = "Read the controlled fixture only.";
+	next.provider_input_json = "{}";
+	next.options = {{"allow-once", "Allow once", "allow_once"}};
+	owned->queued_permissions.push_back(next);
+	uam::AcpSessionState& session = *owned;
+	app.acp_sessions.push_back(std::move(owned));
+	ManualCompactionWriter transport(session);
+	struct Cleanup
+	{
+		uam::AppState& app;
+		~Cleanup() { uam::acp_detail::StopPermissionReviewTasks(app); }
+	} cleanup{app};
+	uam::AsyncPermissionReviewTask completed;
+	completed.chat_id = chat.id;
+	completed.request_id_json = "7";
+	completed.state = std::make_shared<AsyncProcessTaskState>();
+	completed.state->result.ok = true;
+	completed.state->result.output = R"({"decision":"approve","reason":"Controlled fixture only."})";
+	completed.state->completed = true;
+	app.permission_review_tasks.reserve(1);
+	app.permission_review_tasks.push_back(std::move(completed));
+	UAM_ASSERT_EQ(app.permission_review_tasks.capacity(), std::size_t{1});
+	UAM_ASSERT(uam::acp_detail::PollPermissionReviewTasks(app));
+	UAM_ASSERT_EQ(session.pending_permission.request_id_json, std::string("8"));
+	UAM_ASSERT_EQ(app.permission_review_tasks.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.permission_review_tasks.front().request_id_json, std::string("8"));
+	UAM_ASSERT(app.permission_review_tasks.front().worker != nullptr);
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!app.permission_review_tasks.front().state->completed.load() && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::yield();
+	UAM_ASSERT(app.permission_review_tasks.front().state->completed.load());
+	UAM_ASSERT(fs::exists(marker));
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	UAM_ASSERT(transport.captured.find("\"id\":7") != std::string::npos);
+	UAM_ASSERT(transport.captured.find("\"id\":8") == std::string::npos);
+#endif
+}
+
 UAM_TEST(ManualCompactionSendsNativeRequestAndPreservesConversationAndGoal)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
