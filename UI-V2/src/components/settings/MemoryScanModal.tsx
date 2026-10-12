@@ -3,6 +3,7 @@ import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { Button, IconButton, Notice, useOverlayState } from '../ui'
+import { SettingsLoading } from './SettingsPrimitives'
 
 export function MemoryScanModal() {
   const overlayState = useOverlayState()
@@ -108,9 +109,7 @@ export function MemoryScanModal() {
           )}
 
           {memoryScanLoading ? (
-            <div role="status" aria-busy="true" className="uam-memory-state">
-              <p className="text-sm" style={{ color: 'var(--text-3)' }}>Loading eligible chats…</p>
-            </div>
+            <SettingsLoading label="Loading eligible chats" rows={3} />
           ) : memoryScanCandidates.length === 0 ? (
             <div
               className="rounded-xl p-6 text-sm"

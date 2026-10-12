@@ -1,4 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { SettingsLoading } from './SettingsPrimitives'
+import './stores.css'
 import { ChevronDown, ExternalLink, FolderOpen, Library, Plus, RefreshCw, Search, SearchX, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -332,9 +334,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           <p className="text-xs" style={{ color: 'var(--text-3)' }}>{memoryLibraryError}</p>
           <div><Button size="sm" onClick={() => void openAllMemoryLibrary()}>Try again</Button></div>
         </div>
-      : <div role="status" aria-busy="true" className="uam-memory-state">
-          <p className="text-sm" style={{ color: 'var(--text-3)' }}>Loading memory library…</p>
-        </div>
+      : <SettingsLoading label="Loading memory library" rows={3} />
   }
 
   const isAllMemory = memoryLibraryScope.scopeType === 'all'
@@ -444,7 +444,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           />
         </div>}
 
-        <div className="grid grid-cols-[192px_minmax(0,1fr)] flex-1 min-h-0">
+        <div className="grid grid-cols-[208px_minmax(0,1fr)] flex-1 min-h-0">
           <aside
             className="p-3 space-y-4 overflow-y-auto overflow-x-hidden min-w-0"
             style={{
@@ -454,7 +454,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
           >
             {groupedEntries.length > 0 && (
               <nav aria-label="Memory locations" className="grid gap-1 min-w-0">
-                <div className="px-2 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--text-3)' }}>Locations</div>
+                <div className="uam-set-section__title px-2" style={{ color: 'var(--text-3)' }}>Locations</div>
                 {groupedEntries.filter((location) => location.key === 'global').map((location) => {
                   const active = location.key === selectedLocation?.key
                   return (
@@ -500,7 +500,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 })}
                 {isAllMemory && groupedEntries.some((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))) && (
                   <div className="mt-1">
-                    <div className="px-2 py-1 text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
+                    <div className="uam-set-section__title uam-store-truncate px-2 py-1" title="Unassigned workspaces" style={{ color: 'var(--text-3)' }}>Unassigned workspaces</div>
                     {groupedEntries.filter((location) => location.key.startsWith('folder:') && !groupedFolderIds.has(location.key.slice(7))).map((location) => {
                       const active = location.key === selectedLocation?.key
                       return <button key={location.key} type="button" aria-current={active ? 'page' : undefined} onClick={() => setSelectedLocationKey(location.key)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors duration-150" style={{ background: active ? 'var(--accent-dim)' : 'transparent', color: active ? 'var(--text)' : 'var(--text-2)', border: 0 }}><FolderOpen size={13} aria-hidden style={{ color: active ? 'var(--accent)' : 'var(--text-3)' }} /><span className="min-w-0 flex-1 truncate text-xs">{location.label}</span><span className="text-xs tabular-nums" style={{ color: 'var(--text-3)' }}>{location.count}</span></button>
@@ -514,7 +514,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
 
           <div className="p-5 md:p-6 overflow-y-auto min-h-0">
             <div className="flex items-center gap-2 mb-4">
-              <label className="uam-search-field flex min-w-0 flex-1 items-center gap-2 rounded-md px-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
+              <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 rounded-md px-3" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
               <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
               <input
                 aria-label="Search memory library"
@@ -548,23 +548,19 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
             )}
 
             {memoryLibraryLoading ? (
-              <div role="status" aria-busy="true" className="uam-memory-state">
-                <p className="text-sm" style={{ color: 'var(--text-3)' }}>Loading memory library…</p>
-              </div>
+              <SettingsLoading label="Loading memory library" rows={4} />
             ) : !selectedLocation || selectedLocation.entries.length === 0 ? (
-              <div
-                className="rounded-xl p-8 text-center flex flex-col items-center gap-2 animate-fade-in"
-                style={{ background: 'var(--surface-up)', border: '1px solid var(--border)', color: 'var(--text-3)' }}
-              >
+              memoryLibraryError ? null : <div className="uam-store-card uam-store-empty">
                 {hasSearchQuery
-                  ? <SearchX size={24} strokeWidth={1.5} aria-hidden />
-                  : <FolderOpen size={24} strokeWidth={1.5} aria-hidden />}
-                <div className="text-sm font-medium" style={{ color: 'var(--text-2)' }}>
-                  {memoryLibraryError ? 'Memories are unavailable' : hasSearchQuery ? 'No memory matches this search' : 'No memory saved here yet'}
+                  ? <SearchX size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
+                  : <FolderOpen size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />}
+                <div className="uam-store-empty__title">
+                  {hasSearchQuery ? 'No memory matches this search' : 'No memory saved here yet'}
                 </div>
-                <div className="text-xs">
-                  {memoryLibraryError ? 'Try again above, then refresh the library.' : hasSearchQuery ? 'Try another term or clear the search.' : 'Add a memory to make it available to future chats.'}
+                <div className="uam-store-empty__desc">
+                  {hasSearchQuery ? 'Try another term or clear the search.' : 'Add a memory to make it available to future chats.'}
                 </div>
+                {!hasSearchQuery && <div className="uam-store-empty__action"><Button variant="primary" size="sm" onClick={() => {setLocalError(''); setIsAdding(true)}}>Add memory</Button></div>}
               </div>
             ) : selectedLocation ? (
               <div key={selectedLocation.key} className="space-y-4 animate-fade-in">
@@ -575,7 +571,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
                 {selectedLocation.categories.map(({ category, entries }) => (
                           <section key={`${selectedLocation.key}:${category}`}>
                             <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="text-xs font-semibold uppercase tracking-[0.06em]" style={{ color: 'var(--text-3)' }}>
+                              <div className="uam-set-section__title" style={{ color: 'var(--text-3)' }}>
                                 {memoryCategoryLabel(category)}
                               </div>
                               <div className="text-[11px] tabular-nums rounded-full px-2 py-0.5" style={{ background: 'var(--surface-up)', color: 'var(--text-3)' }}>

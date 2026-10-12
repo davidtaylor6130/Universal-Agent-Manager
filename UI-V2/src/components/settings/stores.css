@@ -1,0 +1,34 @@
+/* Skills and Memory Store pages: shared search, empty-state and preview patterns. */
+
+/* Search uses a quiet field; the accent ring only appears for keyboard focus. */
+.uam-search-field.uam-store-search:focus-within { box-shadow: none; }
+.uam-search-field.uam-store-search:has(input:focus-visible) { box-shadow: var(--focus-ring); }
+
+/* Centred empty state (no folder, no skills, no selection, no memories). */
+.uam-store-empty {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: var(--sp-2);
+  min-height: 0;
+  padding: var(--sp-6) var(--sp-4);
+  text-align: center;
+  color: var(--text-3);
+}
+.uam-store-empty__icon { color: var(--text-3); opacity: .85; }
+.uam-store-empty__title { font-size: var(--fs-md); font-weight: var(--fw-medium); color: var(--text-2); }
+.uam-store-empty__desc { max-width: 38ch; font-size: var(--fs-sm); line-height: 1.5; color: var(--text-3); }
+.uam-store-empty__action { margin-top: var(--sp-2); }
+.uam-store-card { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface-up); }
+
+/* Add is the one primary action only while the library is empty. */
+.uam-iconbtn.uam-store-add--primary { background: var(--accent); border-color: transparent; color: var(--bg); }
+.uam-iconbtn.uam-store-add--primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--text)); color: var(--bg); }
+
+/* Long sidebar and folder labels: one line, full text on hover. */
+.uam-store-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+.uam-store-path { font-family: var(--font-mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+
+/* Preview body: readable measure, comfortable leading. */
+.uam-store-markdown { max-width: 68ch; font-size: var(--fs-base); line-height: 1.6; color: var(--text); }

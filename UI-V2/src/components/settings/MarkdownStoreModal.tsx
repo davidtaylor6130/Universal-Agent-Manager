@@ -2,13 +2,16 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, IconButton, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
+import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { SelectionGrid } from '../shared/SelectionGrid'
+import { SettingRow, SettingsLoading } from './SettingsPrimitives'
 import { normalizeCliProviderIdAlias, providerMetadataForId, SUPPORTED_TEXT_WORKER_PROVIDER_IDS } from '../../utils/providerMetadata'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../../types/markdownStore'
-import { ChevronRight, Download, ExternalLink, FileInput, Folder, FolderInput, FolderOpen, Paperclip, Pencil, Pin, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { ChevronRight, Download, ExternalLink, FileInput, FileText, Folder, FolderInput, FolderOpen, Paperclip, Pencil, Pin, Plus, RefreshCw, Search, X } from 'lucide-react'
+import './stores.css'
 
 const EMPTY_DRAFT: MarkdownStoreDraft = { title: '', maker: '', review: '', body: '', group: '' }
 const PROVIDER_OPTIONS = SUPPORTED_TEXT_WORKER_PROVIDER_IDS.map((id) => ({
@@ -68,6 +71,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const editorTriggerRef = useRef<HTMLElement | null>(null)
   const addTriggerRef = useRef<HTMLButtonElement | null>(null)
   const childOpen = Boolean(editing || addView || imports.length)
+  const openAddChoices = () => { editorTriggerRef.current = addTriggerRef.current; resetError(); setImportNotice(''); setAddView('choose') }
   const previousChildOpenRef = useRef(false)
   const visibleError = error || operationError
 
@@ -171,7 +175,8 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     if (!embedded) return
     let mounted = true
     setRefreshing(true)
-    void runAction(refresh, 'Could not load Skills.').then(() => { if (mounted) setRefreshing(false) })
+    // Strict-mode double mount supersedes the first request (returns false); the store already carries real load errors.
+    void refresh().catch(() => false).then(() => { if (mounted) setRefreshing(false) })
     return () => { mounted = false }
   }, [embedded, refresh])
 
@@ -188,6 +193,12 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     })
   }, [entries, filter, search])
   const selected = filtered.find((entry) => entry.filePath === selectedPath) ?? filtered[0] ?? null
+  const filterOptions: MenuSelectOption[] = [
+    { value: 'all', label: 'All entries' },
+    { value: 'favorites', label: 'Pinned' },
+    ...groups.map((group) => ({ value: `group:${group}`, label: `Group: ${group}` })),
+    ...sourceProviders.map((provider) => ({ value: `source:${provider}`, label: `Source: ${provider}` })),
+  ]
 
   function beginNew() {
     ++importPreviewRequestRef.current
@@ -306,52 +317,86 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     }
   }
 
-  const resultsView = importResults.length > 0 && <div role="status" className="shrink-0 max-h-24 overflow-y-auto flex items-start gap-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}><div className="min-w-0 flex-1">{importResults.map((result, index) => <div key={`${result.sourcePath}-${index}`} style={{ color: result.status === 'error' ? 'var(--red)' : undefined }}>{result.status}: {result.message}</div>)}</div><IconButton size="sm" icon={<X size={13} />} label="Dismiss import results" onClick={() => setImportResults([])} /></div>
+  const resultsView = importResults.length > 0 && <div role="status" className="shrink-0 max-h-24 overflow-y-auto flex items-start gap-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}><div className="min-w-0 flex-1">{importResults.map((result, index) => <div key={`${result.sourcePath}-${index}`} style={{ color: result.status === 'error' ? 'var(--error)' : undefined }}>{result.status}: {result.message}</div>)}</div><IconButton size="sm" icon={<X size={13} />} label="Dismiss import results" onClick={() => setImportResults([])} /></div>
 
   return <>
     <div className={embedded ? 'h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden' : 'uam-overlay fixed inset-0 z-50 flex items-center justify-center p-4'} data-state={embedded ? undefined : overlayState} style={embedded ? undefined : { background: 'rgba(0,0,0,.55)' }}>
       <div ref={libraryRef} role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-hidden={childOpen || undefined} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)', ...(embedded ? {} : { border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }) }}>
         {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close Skills" onClick={close} /></div>}
-        <div className={`shrink-0 flex flex-wrap items-center gap-2 py-3${embedded ? '' : ' px-5'}`} style={{ borderBottom: '1px solid var(--border)' }}>
-          <label className="uam-search-field flex min-w-0 flex-1 items-center gap-2 px-2.5" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)' }}>
-            <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
-            <input type="search" aria-label="Search Skills" autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search skills" className="min-w-0 flex-1 text-sm" style={{ border: 0, background: 'transparent', color: 'var(--text)', padding: '8px 0', outline: 'none', boxShadow: 'none' }} />
-          </label>
-          <select aria-label="Filter Skills" value={filter} onChange={(event) => setFilter(event.target.value)} className="uam-field uam-field--select">
-            <option value="all">All entries</option><option value="favorites">Pinned</option>
-            {groups.map((group) => <option key={group} value={`group:${group}`}>Group: {group}</option>)}
-            {sourceProviders.map((provider) => <option key={provider} value={`source:${provider}`}>Source: {provider}</option>)}
-          </select>
-          <IconButton icon={<RefreshCw size={15} />} label="Refresh Skills" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not refresh Skills.'); setRefreshing(false) }} />
-          <IconButton ref={addTriggerRef} icon={<Plus size={16} />} label="Add skill" disabled={!markdownStoreDirectory} onClick={() => { editorTriggerRef.current = addTriggerRef.current; resetError(); setImportNotice(''); setAddView('choose') }} />
+        <div className={`shrink-0 pt-3${embedded ? '' : ' px-5'}`}>
+          <div className="uam-set-card">
+            <SettingRow
+              icon={<FolderOpen size={15} aria-hidden />}
+              title="Skills folder"
+              description={markdownStoreDirectory ? <span className="uam-store-path">{markdownStoreDirectory}</span> : 'Not set'}
+              control={<Button variant="secondary" size="sm" onClick={() => void chooseDirectory()}>Change…</Button>}
+            />
+          </div>
         </div>
-        {!markdownStoreDirectory && <div role="status" className="shrink-0 flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-xs"><span>Choose a Skills folder before creating or importing entries.</span><Button variant="primary" size="sm" onClick={() => void chooseDirectory()}>Choose folder</Button></div>}
-        {!childOpen && visibleError && <div role="alert" className="shrink-0 max-h-24 overflow-y-auto px-3 py-2 text-xs" style={{ color: 'var(--red)' }}>{visibleError}</div>}
+        <div className={`shrink-0 flex flex-wrap items-center gap-2 py-3${embedded ? '' : ' px-5'}`} style={{ borderBottom: '1px solid var(--border)' }}>
+          <label className="uam-search-field uam-store-search flex min-w-0 flex-1 items-center gap-2 px-2.5" style={{ border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg)', height: 32 }}>
+            <Search size={14} aria-hidden style={{ color: 'var(--text-3)' }} />
+            <input type="search" aria-label="Search Skills" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search skills" className="min-w-0 flex-1 text-sm" style={{ border: 0, background: 'transparent', color: 'var(--text)', padding: 0, outline: 'none', boxShadow: 'none' }} />
+          </label>
+          <div className="w-40 shrink-0">
+            <MenuSelect label="Filter Skills" value={filter} onChange={setFilter} options={filterOptions} />
+          </div>
+          <IconButton icon={<RefreshCw size={15} />} label="Refresh Skills" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not refresh Skills.'); setRefreshing(false) }} />
+          <IconButton ref={addTriggerRef} className={markdownStoreDirectory && !entries.length ? 'uam-store-add--primary' : undefined} icon={<Plus size={16} />} label="Add skill" disabled={!markdownStoreDirectory} onClick={openAddChoices} />
+        </div>
+        {!childOpen && visibleError && <div className={`shrink-0 pt-3${embedded ? '' : ' px-5'}`}><Notice tone="error" dismissLabel="Dismiss Skills error" onDismiss={resetError}
+          actions={markdownStoreDirectory ? <Button size="sm" variant="ghost" disabled={loading || refreshing} onClick={async () => { setRefreshing(true); await runAction(refresh, 'Could not load Skills.'); setRefreshing(false) }}>Retry</Button> : undefined}>
+          {visibleError}
+        </Notice></div>}
         {!imports.length && resultsView}
-        <div className={`flex-1 min-h-0 grid grid-rows-[minmax(0,1fr)_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(220px,.8fr)_minmax(0,1.2fr)] gap-4 py-4${embedded ? '' : ' px-5'}`}>
-          <div aria-label="Skill folders" className="min-h-0 overflow-y-auto">
-            {loading ? <p role="status" className="text-sm">Loading Skills...</p> : filtered.length === 0 ? <p role="status" className="text-sm">{search.trim() || filter !== 'all' ? 'No entries match this view' : 'No skills yet'}</p> : <SkillFolders key={`${filter}:${search.trim()}`} entries={filtered} selectedPath={selected?.filePath ?? ''} onSelect={setSelectedPath} onPin={(entry) => void runAction(() => setFavorite(entry, !entry.favorite), 'Could not update the pinned skill.')} />}
+        {!markdownStoreDirectory ? <div className="flex-1 min-h-0 flex flex-col py-4">
+          <div className="uam-store-card uam-store-empty flex-1">
+            <FolderOpen size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
+            <div className="uam-store-empty__title">Choose a Skills folder</div>
+            <div className="uam-store-empty__desc">Skills are plain Markdown files kept in one folder. Pick where yours should live.</div>
+            <div className="uam-store-empty__action"><Button variant="primary" size="sm" onClick={() => void chooseDirectory()}>Choose folder</Button></div>
+          </div>
+        </div> : <div className={`flex-1 min-h-0 grid grid-rows-[minmax(0,1fr)_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(220px,.8fr)_minmax(0,1.2fr)] gap-4 py-4${embedded ? '' : ' px-5'}`}>
+          <div className="min-h-0 flex flex-col">
+            <div className="uam-set-section__title shrink-0 px-1 pb-2">Library</div>
+            <div aria-label="Skill folders" className="min-h-0 flex-1 overflow-y-auto">
+              {loading ? <SettingsLoading label="Loading skills" rows={5} /> : filtered.length === 0 ? (search.trim() || filter !== 'all'
+                ? <p className="px-1 text-sm" style={{ color: 'var(--text-2)' }}>No skills match this view.</p>
+                : visibleError ? null
+                : <div className="uam-store-empty">
+                  <FileText size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
+                  <div className="uam-store-empty__title">No skills yet</div>
+                  <div className="uam-store-empty__desc">Create one, or import from a provider or file.</div>
+                  <div className="uam-store-empty__action"><Button size="sm" onClick={openAddChoices}>Add skill</Button></div>
+                </div>) : <SkillFolders key={`${filter}:${search.trim()}`} entries={filtered} selectedPath={selected?.filePath ?? ''} onSelect={setSelectedPath} onPin={(entry) => void runAction(() => setFavorite(entry, !entry.favorite), 'Could not update the pinned skill.')} />}
+            </div>
           </div>
           <section aria-label="Skill preview" className="uam-skill-preview flex flex-col min-w-0 min-h-0 overflow-hidden">
             {selected ? <>
-              <div className="shrink-0 flex flex-wrap items-center justify-between gap-2 px-3 py-2" style={{ borderBottom: '1px solid var(--border)' }}>
-                <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{selected.title}</h3>
+              <div className="shrink-0 flex items-center justify-between gap-2 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-sm font-semibold">{selected.title}</h3>
+                  <div className="truncate text-xs" style={{ color: 'var(--text-3)' }}>{[selected.maker, selected.group, selected.sourceProvider && providerMetadataForId(normalizeCliProviderIdAlias(selected.sourceProvider)).name].filter(Boolean).join(' · ')}</div>
+                </div>
                 <div className="flex shrink-0 gap-1">
-                  <IconButton icon={<Pencil size={15} />} label={`Edit ${selected.title} in app`} onClick={() => beginEdit(selected)} />
-                  <IconButton icon={<Paperclip size={15} />} label="Attach to message" disabled={!activeSessionId} onClick={() => attach(selected)} />
-                  <IconButton icon={<ExternalLink size={15} />} label="Open in external editor" onClick={() => void runAction(() => editEntry(selected), 'Could not open the external editor.')} />
-                  <IconButton icon={<FolderOpen size={15} />} label="Reveal file" onClick={() => void runAction(() => revealEntry(selected), 'Could not reveal the skill file.')} />
+                  <IconButton size="sm" icon={<Pencil size={14} />} label={`Edit ${selected.title} in app`} onClick={() => beginEdit(selected)} />
+                  <IconButton size="sm" icon={<Paperclip size={14} />} label="Attach to message" disabled={!activeSessionId} onClick={() => attach(selected)} />
+                  <IconButton size="sm" icon={<ExternalLink size={14} />} label="Open in external editor" onClick={() => void runAction(() => editEntry(selected), 'Could not open the external editor.')} />
+                  <IconButton size="sm" icon={<FolderOpen size={14} />} label="Reveal file" onClick={() => void runAction(() => revealEntry(selected), 'Could not reveal the skill file.')} />
                 </div>
               </div>
-              <div key={selected.filePath} className="uam-reveal flex-1 min-h-0 overflow-auto px-4 py-3" style={{ overflowWrap: 'anywhere' }}><MarkdownContent content={selected.body ?? selected.preview} /></div>
-            </> : <p className="m-auto p-6 text-sm" style={{ color: 'var(--text-3)' }}>Select a skill to preview it.</p>}
+              <div key={selected.filePath} className="uam-reveal flex-1 min-h-0 overflow-auto px-5 py-4" style={{ overflowWrap: 'anywhere' }}><div className="uam-store-markdown"><MarkdownContent content={selected.body ?? selected.preview} /></div></div>
+            </> : <div className="uam-store-empty flex-1">
+              <FileText size={24} strokeWidth={1.5} aria-hidden className="uam-store-empty__icon" />
+              <div className="text-sm">Select a skill to preview it.</div>
+            </div>}
           </section>
-        </div>
+        </div>}
       </div>
     </div>
     {childOpen && createPortal(<div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.55)' }}>
       <div ref={childDialogRef} role="dialog" aria-modal="true" aria-label={editing ? editing === 'new' ? 'Create skill' : 'Edit skill' : imports.length ? 'Import skills' : addView === 'provider' ? 'Import from provider' : 'Add skill'} tabIndex={-1} className={`flex flex-col max-h-[calc(100vh-2rem)] w-full ${editing || imports.length ? 'max-w-3xl' : 'max-w-xl'} min-h-0 overflow-y-auto rounded-xl p-4 gap-3`} style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', color: 'var(--text)', boxShadow: 'var(--elev-3)' }}>
-        {visibleError && <div role="alert" className="shrink-0 text-xs" style={{ color: 'var(--red)' }}>{visibleError}</div>}
+        {visibleError && <div role="alert" className="shrink-0 text-xs" style={{ color: 'var(--error)' }}>{visibleError}</div>}
         {editing ? <>
           <fieldset disabled={submitting || Boolean(confirmation)} className="grid min-w-0 gap-3" style={{ border: 0, padding: 0, margin: 0 }}>
             <div className="flex items-center justify-between"><strong className="text-sm">{editing === 'new' ? 'New entry' : 'Edit entry'}</strong><Button variant="secondary" size="sm" onClick={() => setShowEditorPreview((value) => !value)}>{showEditorPreview ? 'Edit Markdown' : 'Preview Markdown'}</Button></div>
@@ -374,7 +419,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           <div data-import-candidates className="grid min-h-0 gap-2 overflow-y-auto">{imports.map((candidate) => <div key={candidate.id} className="flex flex-wrap items-start gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
             <label className="flex min-w-0 flex-1 items-start gap-2">
               <input type="checkbox" disabled={!candidate.supported || importing} checked={candidate.supported && selectedImports.has(candidate.id)} onChange={(event) => setSelectedImports((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next })} />
-              <span className="min-w-0 flex-1"><strong style={{ color: 'var(--text)' }}>{candidate.title || candidate.sourcePath.split(/[\\/]/).pop()}</strong><span className="block truncate" title={candidate.sourcePath} style={{ color: 'var(--text-3)' }}>{candidate.sourcePath}</span>{candidate.validationError && <span className="block" style={{ color: 'var(--red)' }}>{candidate.validationError}</span>}</span>
+              <span className="min-w-0 flex-1"><strong style={{ color: 'var(--text)' }}>{candidate.title || candidate.sourcePath.split(/[\\/]/).pop()}</strong><span className="block truncate" title={candidate.sourcePath} style={{ color: 'var(--text-3)' }}>{candidate.sourcePath}</span>{candidate.validationError && <span className="block" style={{ color: 'var(--error)' }}>{candidate.validationError}</span>}</span>
             </label>
             {candidate.collisionPath && <select disabled={importing} aria-label={`Collision action for ${candidate.title}`} value={conflicts[candidate.id] ?? 'skip'} onChange={(event) => setConflicts({ ...conflicts, [candidate.id]: event.target.value as MarkdownStoreConflictAction })} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 5, color: 'var(--text)', padding: 4 }}><option value="skip">Skip existing</option><option value="replace">Replace existing</option><option value="separate">Keep separate</option></select>}
           </div>)}</div>
@@ -422,7 +467,7 @@ function SkillFolders({ entries, selectedPath, onSelect, onPin }: { entries: Mar
       </details>)}
       {node.entries.map((entry) => <div key={entry.filePath} className="uam-skill-row" data-selected={entry.filePath === selectedPath}>
         <button type="button" aria-current={entry.filePath === selectedPath ? 'true' : undefined} onClick={() => onSelect(entry.filePath)} className="min-w-0 flex-1 text-left" style={{ background: 'transparent', border: 0, color: 'var(--text)', padding: 0 }}>
-          <div className="flex min-w-0 items-baseline gap-1.5"><span className="text-sm truncate">{entry.title}</span>{entry.commandName && <code className="uam-skill-row__command">/{entry.commandName}</code>}</div>
+          <div className="flex min-w-0 items-center gap-1.5"><span className="shrink-0 inline-flex" aria-hidden style={{ color: 'var(--text-3)' }}>{entry.sourceProvider ? <ProviderLogo providerId={normalizeCliProviderIdAlias(entry.sourceProvider)} size={13} /> : <FileText size={13} />}</span><span className="text-sm truncate">{entry.title}</span>{entry.commandName && <code className="uam-skill-row__command">/{entry.commandName}</code>}</div>
           <div className="text-xs truncate" style={{ color: 'var(--text-3)' }}>{[entry.maker, entry.review || entry.preview].filter(Boolean).join(' · ')}</div>
         </button>
         <IconButton size="sm" icon={<Pin size={14} fill={entry.favorite ? 'currentColor' : 'none'} />} active={Boolean(entry.favorite)} label={`${entry.favorite ? 'Unpin' : 'Pin'} ${entry.title}`} onClick={() => onPin(entry)} />

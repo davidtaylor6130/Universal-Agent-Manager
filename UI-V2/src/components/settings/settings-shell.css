@@ -165,7 +165,7 @@
 .uam-set-row__control { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; max-width: 55%; }
 .uam-set-row__control > select, .uam-set-row__control > .uam-menu-select, .uam-set-row__control > input:not([type="checkbox"]) { min-width: 220px; }
 .uam-set-row__extra { margin-top: var(--sp-3); }
-.uam-set-field { display: grid; gap: 6px; }
+.uam-set-field { display: grid; gap: 6px; align-content: start; }
 .uam-set-field__label { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: var(--text-2); }
 .uam-set-field__hint { font-size: var(--fs-xs); color: var(--text-3); }
 @container (max-width: 560px) { .uam-set-row__main { flex-wrap: wrap; } .uam-set-row__control { max-width: none; width: 100%; } }
