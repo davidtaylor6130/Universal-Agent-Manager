@@ -398,6 +398,14 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | History and performance | Graphical | History Loading Shimmer Decision | Decide whether history-loading skeletons should use a one-shot shimmer given the no-idle-animation rule. | Open; Claude Review; Not User Tested | Unassigned |
 | Graphical review | Misc | Harness Unreachable UI States | Live-check the undo toast, MCP warning banner, goal chip, goals popup, loading skeleton, subagent and compaction rows that the fake backend could not reach. | Open; Claude Review; Not User Tested | Unassigned |
 | Build and evidence | Misc | Usage History Bridge Docs | Add the getUsageHistory bridge action to the CLAUDE.md action table. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Usage and accounting | Performance | All Time Usage Window | Extend the usage collector and bridge beyond the fixed 1/7/30/90-day windows so the dashboard can offer an All time range. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Memory and skills | Misc | Automatic Provider Agent Import | Let the Agents page import agents directly from a chosen provider's native configuration without asking for a Markdown file path. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Providers and MCP | Bugfix | Computer Use Disable Setting | Add a persisted setting and action so built-in Computer Use can be turned off, then replace its status-only rows with a real switch. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Providers and MCP | Misc | UAM MCP Always On Enforcement | Decide whether per-provider UAM MCP overrides and the JSON editor's enabled:false should remain now that the interface presents the service as always on. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Settings and motion | Graphical | Remaining Settings Native Selects | Move typography, Computer Use backend and memory worker pickers onto the shared menu select and update their tests. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Settings and motion | Graphical | Settings Dialogs On Overlay | Move Central Setup agent editing, Shell Actions dialogs and Skills child dialogs onto the shared overlay with exit motion. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Memory and skills | Bugfix | Superseded Store Refresh Result | Return success for superseded markdown-store refreshes so callers cannot report a false load failure. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Workspaces and deletion | Graphical | File Type Editor Labels | Show which editor each file-type group opens in directly on its row. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Deferred ideas | Misc | T3 PR Workflow | Keep T3-inspired pull-request, branch and GitHub-provider workflows plus auto-settling at the very end of the backlog for later design and implementation. | Open; Claude Review; Not User Tested | Unassigned |
 
 Scope recorded 2026-10-11: these are David’s requested work and reported regressions, pending investigation rather than newly verified defects or completed changes. Existing implementation records remain intact. Mobile overhaul and mobile chat-width work are deferred at David’s request; the historical physical-device acceptance gate remains recorded. SSH computer use stays disabled as the current security policy, with any future support outside this change request. Performance limits require explicit values before acceptance and must include application processing and default animation completion.
@@ -424,6 +432,20 @@ Branch `claude/v5-ui-ux-sweep` from `uam/v5-improvements` at `061b107e`. Scope: 
 | `6dac63b8` | Settings | Remote host switches, CLI update progress, Central Setup choices and page motion. |
 
 **Main Application Icon** and **Live Performance Acceptance** keep **Claude Review** because they require the packaged Dock icon and live interaction timing. Larger UI findings from the sweep are recorded below as Unassigned incomplete work.
+
+
+### Wave 3 — David's review feedback (2026-10-12)
+
+Settings were rebuilt on one shared language (`SettingsPrimitives`: uppercase section label, bordered card, title/description rows with the control on the right, label-above fields, animated loading), modelled on the MCP Servers page. Pages are centred and fluid, the nav highlight glides as a whole pill, switches are neutral with accent reserved for important switches, Typography merged into Appearance, Editors and file explorer merged, provider pages are flat in install → defaults → MCP order, MCP add-server opens a dialog and the UAM MCP service is shown as always on. Outside settings: one-line native import rows with failure counts and live progress, usage estimated-only cost with fixed provider colours and no hatching, a status strip above the composer for timeout, compaction and subagent waits, a history skeleton matching the current layout, rail "not loaded yet" hints, provider filter icons, a hideable review panel and tooltips above every overlay. Frontend verification: 97 files, 1,452 of 1,452 Vitest tests, `tsc --noEmit` clean, `npm run build` passing.
+
+| Commit | Surface | Summary |
+|---|---|---|
+| `4bd89456` | Mixed (UAM checkpoint) | UAM's automatic turn checkpoint captured in-progress wave 3 import, transcript, review, sidebar and settings-foundation edits. |
+| `7ab62ebb` | Import | One-line rows, select-all count, single Import action, hidden single-page paging and failure counts. |
+| `712da333` | Transcript | Status strip, matching history skeleton and rail load hints. |
+| `20723015` | Usage | Provider chips and colours, estimated-only cost, inline token bars and readable empty limits. |
+| `034e8c67` | Settings | Shared settings language, neutral switches, centred fluid pages, MCP add dialog and always-on UAM MCP. |
+| `b8fd1d67` | Settings | General pages, provider pages, agents, remote hosts, skills and memory store in the shared language. |
 
 ## Historical alpha82 commit inventory
 
