@@ -34,7 +34,7 @@ namespace uam::usage
 		std::string fingerprint;
 		if (m_exportAccounting)
 		{
-			const std::optional<std::vector<AccountingRecord>> records = m_store.ReadRecords(generated_ms, error, cancelled);
+			const std::optional<std::vector<AccountingRecord>> records = m_store.ReadLifetimeRecords(generated_ms, error, cancelled);
 			if (!records) return false;
 			std::vector<const Record*> references;
 			nlohmann::json rows = nlohmann::json::array();
@@ -44,13 +44,20 @@ namespace uam::usage
 				references.push_back(&entry.record);
 				rows.push_back(EncodeAccountingRecord(entry));
 			}
-			ledger = Ledger::Create(references, generated_ms);
-			std::string bytes = nlohmann::json({{"version", 1}, {"asOfMs", generated_ms}, {"metadata", metadata}, {"facts", std::move(rows)}}).dump();
+			ledger = Ledger::Create(references, generated_ms, LedgerRange::AllRecorded);
+			std::string bytes = nlohmann::json({{"version", 2}, {"range", "all-recorded"}, {"asOfMs", generated_ms}, {"metadata", metadata}, {"facts", std::move(rows)}}).dump();
 			if (bytes.size() > 64 * 1024 * 1024) { error = "Usage accounting exceeds its transfer limit."; return false; }
 			fingerprint = hashing::Hex64Padded(hashing::Fnv1a64(bytes));
 			accounting = std::make_shared<const std::string>(std::move(bytes));
 		}
-		else ledger = m_store.Read(generated_ms, error, cancelled);
+		else
+		{
+			const std::optional<std::vector<AccountingRecord>> records = m_store.ReadLifetimeRecords(generated_ms, error, cancelled);
+			if (!records) return false;
+			std::vector<const Record*> references;
+			for (const AccountingRecord& entry : *records) references.push_back(&entry.record);
+			ledger = Ledger::Create(references, generated_ms, LedgerRange::AllRecorded);
+		}
 		if (!ledger) { if (error.empty()) error = "Usage accounting totals exceed supported limits."; return false; }
 		const std::shared_ptr<const Ledger> published = std::make_shared<const Ledger>(std::move(*ledger));
 		const std::string encoded = published->Encode().dump();
@@ -85,7 +92,7 @@ namespace uam::usage
 			while (!cancelled())
 			{
 				const std::int64_t as_of = Now();
-				const std::int64_t start = std::max<std::int64_t>(0, as_of / 86400000 * 86400000 - 89LL * 86400000);
+				const std::int64_t start = 0;
 				const std::string refresh_id = "collector-" + std::to_string(++generation);
 				std::string error;
 				{
@@ -166,7 +173,7 @@ namespace uam::usage
 
 	nlohmann::json Collector::Query(int days, const std::map<ModelKey, ModelPrices>& prices) const
 	{
-		if (days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
+		if (days != 0 && days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
 		std::shared_ptr<const Ledger> ledger;
 		nlohmann::json result;
 		{
@@ -179,12 +186,14 @@ namespace uam::usage
 
 	nlohmann::json Collector::Render(const Ledger& selected, nlohmann::json result, int days, const std::map<ModelKey, ModelPrices>& prices) const
 	{
-		if (days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
+		if (days != 0 && days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
 		std::shared_ptr<const RateCatalog> catalog;
 		ModelAliases aliases;
 		{
 			std::lock_guard<std::mutex> lock(m_mutex); catalog = m_catalog; aliases = m_aliases; result["pricing"] = m_pricingMetadata;
 		}
+		if (days == 0 && !selected.IncludesLifetime()) return {{"error", "All Time accounting is unavailable in this rolling snapshot."}};
+		if (days == 0) result["historyCoverage"] = {{"kind", "recorded-and-available-history"}, {"previouslyPrunedReceiptsMayBeMissing", true}};
 		const Ledger* ledger = &selected;
 		const std::int64_t start = ledger->WindowStart(days), end = ledger->GeneratedMs();
 		std::optional<Summary> summary = ledger->Query(start, end);

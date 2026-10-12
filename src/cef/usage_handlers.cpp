@@ -19,8 +19,9 @@ void UamQueryHandler::HandleGetUsageHistory(CefRefPtr<CefBrowser> /*browser*/, c
 	if (request.execution_host_id != uam::usage::kAllMachinesHostId && !uam::execution_hosts::Find(m_app.settings.execution_hosts, request.execution_host_id)) { cb->Failure(404, "Usage machine is no longer configured."); return; }
 	if (!m_usageHistory || m_usageHistory->DataRoot() != m_app.data_root) { cb->Failure(409, "Usage storage changed. Restart UAM to collect the selected data root."); return; }
 	const nlohmann::json* days_value = uam::nlohmann_json::FindField(payload, "windowDays");
-	if (!days_value || !days_value->is_number_integer() || (*days_value != 1 && *days_value != 7 && *days_value != 30 && *days_value != 90)) { cb->Failure(400, "Choose a valid usage period."); return; }
+	if (!days_value || !days_value->is_number_integer() || (*days_value != 0 && *days_value != 1 && *days_value != 7 && *days_value != 30 && *days_value != 90)) { cb->Failure(400, "Choose a valid usage period."); return; }
 	const int days = days_value->get<int>();
+	if (days == 0 && request.start_ms != 0) { cb->Failure(400, "All Time accounting must start at the beginning."); return; }
 	RefreshUsageTargets();
 	const std::shared_ptr<uam::usage::MultiHostHistory> history = m_usageHistory;
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;

@@ -253,3 +253,22 @@ UAM_TEST(UsageCopilotHistoryServiceReadsOnlyAccountingEventLogs)
 	UAM_ASSERT_EQ(result["totals"]["unpricedTokens"].get<int>(), 120);
 	UAM_ASSERT_EQ(service.Refresh("fresh", start, start + 86400000)["bytesRead"].get<int>(), 0);
 }
+
+UAM_TEST(UsageLifetimeRequestRequiresExplicitBeginningAndPreservesRollingBounds)
+{
+	uam::usage::HistoryRequest request;
+	std::string error;
+	nlohmann::json payload{{"refreshId", "lifetime"}, {"executionHostId", "local"}, {"startMs", 0}, {"endMs", 180LL * 86400000}, {"windowDays", 0}};
+	UAM_ASSERT(uam::usage::ParseHistoryRequest(payload, request, error));
+	UAM_ASSERT_EQ(request.start_ms, 0LL);
+	for (const int mutation : {0, 1, 2, 3})
+	{
+		nlohmann::json invalid = payload;
+		if (mutation == 0) invalid.erase("windowDays");
+		if (mutation == 1) invalid["windowDays"] = 90;
+		if (mutation == 2) { invalid["startMs"] = 86400000; invalid["endMs"] = 2LL * 86400000; }
+		if (mutation == 3) invalid["endMs"] = uam::usage::kMaxExactTokenCount + 1;
+		UAM_ASSERT(!uam::usage::ParseHistoryRequest(invalid, request, error));
+		UAM_ASSERT_EQ(request.refresh_id, std::string("lifetime"));
+	}
+}

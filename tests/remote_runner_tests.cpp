@@ -3,6 +3,7 @@
 #include "remote/runner_startup.h"
 #include "test_harness.h"
 #include "common/utils/base64.h"
+#include "common/utils/hash_utils.h"
 #include "common/usage/usage_collector.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
@@ -79,6 +80,14 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 			          {"stderrBase64", uam::base64::Encode(command_poll_count == 1 ? "warning\n" : "")},
 			          {"stdoutCursor", std::uint64_t(command_poll_count == 1 ? 6 : 11)},
 			          {"stderrCursor", std::uint64_t{8}}};
+		}
+		else if (mode == "usage-snapshot" && type == "usage.accounting")
+		{
+			const std::string wire = uam::env::GetNonEmptyString("UAM_TEST_USAGE_SNAPSHOT").value_or("{}");
+			const std::size_t offset = request.value("offset", std::size_t{0});
+			const std::string_view chunk = std::string_view(wire).substr(std::min(offset, wire.size()), 512 * 1024);
+			result = {{"dataBase64", uam::base64::Encode(chunk)}, {"offset", offset}, {"totalBytes", wire.size()},
+			    {"fingerprint", uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(wire))}};
 		}
 		else if (type == "process.write")
 		{
@@ -4386,6 +4395,12 @@ UAM_TEST(RemoteUsageAccountingRunnerClientReassemblesDurableFactsInsideBoundedFr
 		record.tokens.input = 12; record.tokens.output = 3;
 		records.push_back(std::move(record));
 	}
+	uam::usage::Record old_native;
+	old_native.provider_id = uam::provider_ids::kCodexCli; old_native.model_id = "test-model";
+	old_native.session_id = "old-session"; old_native.dedupe_key = "old-native-receipt";
+	old_native.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 180LL * 86400000;
+	old_native.tokens.input = 8;
+	records.push_back(old_native);
 	for (int index = 0; index < 4; ++index)
 	{
 		uam::usage::AntigravityUsageCandidate candidate;
@@ -4419,7 +4434,9 @@ UAM_TEST(RemoteUsageAccountingRunnerClientReassemblesDurableFactsInsideBoundedFr
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	} while (std::chrono::steady_clock::now() < deadline);
 	UAM_ASSERT(snapshot.contains("facts"));
-	UAM_ASSERT_EQ(snapshot["facts"].size(), std::size_t{104});
+	UAM_ASSERT_EQ(snapshot["facts"].size(), std::size_t{105});
+	UAM_ASSERT_EQ(snapshot["version"], nlohmann::json(2));
+	UAM_ASSERT_EQ(snapshot["range"], nlohmann::json("all-recorded"));
 	UAM_ASSERT(snapshot.dump().size() > 1024 * 1024);
 	std::vector<uam::usage::AccountingRecord> transferred;
 	for (const nlohmann::json& row : snapshot["facts"]) { const std::optional<uam::usage::AccountingRecord> record = uam::usage::DecodeAccountingRecord(row); UAM_ASSERT(record); transferred.push_back(*record); }
@@ -4428,6 +4445,9 @@ UAM_TEST(RemoteUsageAccountingRunnerClientReassemblesDurableFactsInsideBoundedFr
 	const std::int64_t as_of = snapshot["asOfMs"].get<std::int64_t>();
 	const std::optional<uam::usage::Ledger> ledger = uam::usage::Ledger::Create(accounting,as_of); UAM_ASSERT(ledger);
 	UAM_ASSERT_EQ(ledger->Query(ledger->WindowStart(7),as_of)->total.tokens.Total(),1500LL);
+	const std::optional<uam::usage::Ledger> lifetime = uam::usage::Ledger::Create(accounting, as_of, uam::usage::LedgerRange::AllRecorded);
+	UAM_ASSERT(lifetime);
+	UAM_ASSERT_EQ(lifetime->Query(0, as_of)->total.tokens.Total(), 1512LL);
 	UAM_ASSERT(uam::usage::DecodeAccountingRecord(snapshot["facts"][0]));
 	const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 	std::stop_source cancellation; cancellation.request_stop();
@@ -4445,4 +4465,40 @@ UAM_TEST(RemoteUsageAccountingRequestRejectsInvalidOffsetsAndSnapshotFingerprint
 	for (const nlohmann::json& value : {nlohmann::json(-1), nlohmann::json("0"), nlohmann::json(64 * 1024 * 1024 + 1)})
 		UAM_ASSERT(!state.HandleProcessRequest({{"id", "offset"}, {"type", "usage.accounting"}, {"offset", value}}).value("ok", true));
 	UAM_ASSERT(!state.HandleProcessRequest({{"id", "snapshot"}, {"type", "usage.accounting"}, {"fingerprint", 42}}).value("ok", true));
+}
+
+UAM_TEST(RemoteUsageClientValidatesLifetimeScopeAndKeepsLegacyRollingReceipts)
+{
+	TempDir temp("uam-usage-client-scopes");
+	ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", (temp.root / "requests.jsonl").string());
+	ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", "usage-snapshot");
+	uam::usage::Record record;
+	record.provider_id = uam::provider_ids::kCodexCli; record.model_id = "test-model";
+	record.dedupe_key = "old-native"; record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 180LL * 86400000; record.tokens.input = 8;
+	const std::string identity = nlohmann::json::array({"native", record.provider_id, record.dedupe_key}).dump();
+	const nlohmann::json valid{{"version", 2}, {"range", "all-recorded"}, {"asOfMs", uam::time::SystemEpochMillisecondsNow()}, {"metadata", uam::usage::EmptyHistoryMetadata()},
+	    {"facts", nlohmann::json::array({uam::usage::EncodeAccountingRecord({identity, record})})}};
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	for (const int scenario : {0, 1, 2, 3, 4, 5, 6})
+	{
+		nlohmann::json wire = valid;
+		if (scenario == 1) wire.erase("range");
+		if (scenario == 2) wire["range"] = "rolling";
+		if (scenario == 3) wire["version"] = 1;
+		if (scenario == 4) { wire["version"] = 1; wire.erase("range"); }
+		if (scenario == 5)
+		{
+			wire["version"] = 1; wire.erase("range");
+			wire["facts"][0][1] = uam::time::SystemEpochMillisecondsNow() - 3000;
+		}
+		if (scenario == 6) wire["facts"].push_back(wire["facts"][0]);
+		ScopedEnvVar snapshot_env("UAM_TEST_USAGE_SNAPSHOT", wire.dump());
+		uam::remote::RunnerClient client(service, {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"});
+		nlohmann::json result;
+		std::string error;
+		const bool accepted = client.ReadUsageAccounting(result, &error);
+		UAM_ASSERT_EQ(accepted, scenario == 0 || scenario == 5);
+		if (accepted) { UAM_ASSERT_EQ(result, wire); UAM_ASSERT(error.empty()); }
+		else { UAM_ASSERT(!error.empty()); UAM_ASSERT(!result.contains("facts")); }
+	}
 }

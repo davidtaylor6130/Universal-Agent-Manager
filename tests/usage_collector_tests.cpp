@@ -167,9 +167,40 @@ UAM_TEST(UsageCollectorExportsCachedAccountingWithoutProviderIoAndRejectsOtherSn
 	std::string bytes;
 	UAM_ASSERT(uam::base64::Decode(first["dataBase64"].get<std::string>(), bytes));
 	const nlohmann::json document = nlohmann::json::parse(bytes);
-	UAM_ASSERT_EQ(document["version"], nlohmann::json(1));
+	UAM_ASSERT_EQ(document["version"], nlohmann::json(2));
+	UAM_ASSERT_EQ(document["range"], nlohmann::json("all-recorded"));
 	UAM_ASSERT_EQ(document["facts"].size(), std::size_t{1});
 	const std::optional<uam::usage::AccountingRecord> fact = uam::usage::DecodeAccountingRecord(document["facts"][0]);
 	UAM_ASSERT(fact); UAM_ASSERT(!fact->record.dedupe_key.empty());
 	UAM_ASSERT_EQ(fact->record.tokens.Total(), 15LL);
+}
+
+UAM_TEST(UsageCollectorBackfillsOldReceiptsAndKeepsLifetimeQueriesOffProviderFiles)
+{
+	TempDir temp("uam-usage-lifetime-collector");
+	const fs::path provider = temp.root / "provider", data = temp.root / "data";
+	fs::create_directories(provider);
+	const fs::path transcript = provider / "old-session.jsonl";
+	const std::string timestamp = uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(std::time(nullptr) - 180LL * 86400), uam::time::kIsoUtcTimestampFormat);
+	const std::string line = nlohmann::json({{"type", "assistant"}, {"timestamp", timestamp}, {"sessionId", "old-session"}, {"requestId", "old-receipt"},
+	    {"message", {{"id", "old-receipt"}, {"model", "claude-sonnet"}, {"usage", {{"input_tokens", 12}, {"output_tokens", 3}}}}}}).dump() + "\n";
+	UAM_ASSERT(uam::io::WriteTextFile(transcript, line));
+	{
+		uam::usage::Collector collector(data, {{uam::provider_ids::kClaudeCli, {provider}}}, {}, true);
+		UAM_ASSERT(WaitForAccounting(collector).contains("asOfMs"));
+		const nlohmann::json all = collector.Query(0);
+		UAM_ASSERT(all.contains("totals"));
+		UAM_ASSERT_EQ(all["startMs"], nlohmann::json(0));
+		UAM_ASSERT_EQ(all["windowDays"], nlohmann::json(0));
+		UAM_ASSERT_EQ(all["totals"]["totalTokens"].get<int>(), 15);
+		UAM_ASSERT_EQ(all["historyCoverage"]["kind"], nlohmann::json("recorded-and-available-history"));
+		UAM_ASSERT(all["historyCoverage"]["previouslyPrunedReceiptsMayBeMissing"].get<bool>());
+		UAM_ASSERT_EQ(collector.Query(90)["totals"]["totalTokens"].get<int>(), 0);
+		UAM_ASSERT(fs::remove(transcript));
+		UAM_ASSERT_EQ(collector.Query(0)["totals"]["totalTokens"].get<int>(), 15);
+	}
+	uam::usage::Collector restarted(data, {{uam::provider_ids::kClaudeCli, {provider}}}, {}, true);
+	UAM_ASSERT(WaitForAccounting(restarted).contains("asOfMs"));
+	UAM_ASSERT_EQ(restarted.Query(0)["totals"]["totalTokens"].get<int>(), 15);
+	UAM_ASSERT_EQ(restarted.Query(0)["filesTotal"].get<int>(), 0);
 }

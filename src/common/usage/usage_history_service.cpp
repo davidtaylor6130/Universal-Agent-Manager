@@ -69,9 +69,12 @@ namespace uam::usage
 		const std::string_view host = nlohmann_json::StringViewOrEmpty(payload, "executionHostId");
 		if (!host.empty()) parsed.execution_host_id = std::string(host);
 		const std::optional<std::int64_t> start = EpochField(payload, "startMs"), end = EpochField(payload, "endMs");
-		if (parsed.refresh_id.empty() || parsed.refresh_id.size() > 160 || parsed.execution_host_id.size() > 160 || !start || !end || *end <= *start || *end - *start > 90LL * 86400000)
+		const nlohmann::json* window = nlohmann_json::FindField(payload, "windowDays");
+		const bool lifetime = window && window->is_number_integer() && *window == 0;
+		if (parsed.refresh_id.empty() || parsed.refresh_id.size() > 160 || parsed.execution_host_id.size() > 160 || !start || !end || *end <= *start ||
+		    (lifetime && *start != 0) || (*end - *start > 90LL * 86400000 && !lifetime))
 		{
-			error = "Choose a valid usage window of up to 90 days.";
+			error = "Choose a valid usage window or request All Time from the beginning.";
 			return false;
 		}
 		parsed.start_ms = *start; parsed.end_ms = *end;
@@ -299,7 +302,7 @@ namespace uam::usage
 				if (records[index].timestamp_ms >= end_ms) { position = index; break; }
 			return true;
 		};
-		if (refresh_id.empty() || refresh_id.size() > 160 || start_ms < 0 || end_ms <= start_ms || end_ms - start_ms > 90LL * 86400000)
+		if (refresh_id.empty() || refresh_id.size() > 160 || start_ms < 0 || end_ms <= start_ms || end_ms > kMaxExactTokenCount || (end_ms - start_ms > 90LL * 86400000 && !(sink && start_ms == 0)))
 			return {{"error", "Choose a valid usage window of up to 90 days."}};
 		if (m_resolveLocalSources)
 		{

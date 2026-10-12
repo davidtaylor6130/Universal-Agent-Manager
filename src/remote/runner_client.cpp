@@ -948,11 +948,14 @@ namespace uam::remote
 			return false;
 		}
 		snapshot = nlohmann::json::parse(text, nullptr, false);
-		if (!snapshot.is_object() || !snapshot.contains("version") || snapshot["version"] != 1 || !snapshot.contains("asOfMs") || !snapshot["asOfMs"].is_number_integer() || snapshot["asOfMs"] <= 0 || snapshot["asOfMs"] >= uam::usage::kMaxExactTokenCount ||
+		if (!snapshot.is_object() || !snapshot.contains("version") || (snapshot["version"] != 1 && snapshot["version"] != 2) || !snapshot.contains("asOfMs") || !snapshot["asOfMs"].is_number_integer() || snapshot["asOfMs"] <= 0 || snapshot["asOfMs"] >= uam::usage::kMaxExactTokenCount ||
 		    !snapshot.contains("metadata") || !snapshot["metadata"].is_object() || !snapshot.contains("facts") || !snapshot["facts"].is_array() || snapshot["facts"].size() > 500000)
 		{ if (error_out) *error_out = "The runner returned incompatible usage accounting."; snapshot = {}; return false; }
+		const bool lifetime = snapshot["version"] == 2;
+		if ((lifetime && (!snapshot.contains("range") || snapshot["range"] != "all-recorded")) || (!lifetime && snapshot.contains("range")))
+		{ if (error_out) *error_out = "The runner returned incompatible usage accounting scope."; snapshot = {}; return false; }
 		const std::int64_t as_of = snapshot["asOfMs"].get<std::int64_t>();
-		const std::int64_t start = std::max<std::int64_t>(0, as_of / 86400000 * 86400000 - 89LL * 86400000);
+		const std::int64_t start = lifetime ? 0 : std::max<std::int64_t>(0, as_of / 86400000 * 86400000 - 89LL * 86400000);
 		std::unordered_set<std::string> identities;
 		for (const nlohmann::json& row : snapshot["facts"])
 		{

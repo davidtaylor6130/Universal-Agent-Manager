@@ -48,15 +48,22 @@ namespace uam::usage
 			nlohmann::json metadata;
 			std::int64_t as_of = 0;
 			std::size_t bytes = 0;
+			bool lifetime = false;
 		};
 		std::optional<Data> Decode(const nlohmann::json& document)
 		{
-			if (!document.is_object() || !document.contains("version") || document["version"] != 1 ||
+			if (!document.is_object() || !document.contains("version") || (document["version"] != 1 && document["version"] != 2) ||
 			    !document.contains("asOfMs") || !document["asOfMs"].is_number_integer() || document["asOfMs"] <= 0 || document["asOfMs"] > Now() ||
 			    !document.contains("metadata") || !document["metadata"].is_object() || !document.contains("facts") || !document["facts"].is_array() || document["facts"].size() > 500000) return std::nullopt;
 			Data data;
+			if (document["version"] == 2)
+			{
+				if (!document.contains("range") || document["range"] != "all-recorded") return std::nullopt;
+				data.lifetime = true;
+			}
+			else if (document.contains("range")) return std::nullopt;
 			data.as_of = document["asOfMs"].get<std::int64_t>(); data.metadata = document["metadata"];
-			const std::int64_t start = std::max<std::int64_t>(0, data.as_of / 86400000 * 86400000 - 89LL * 86400000);
+			const std::int64_t start = data.lifetime ? 0 : std::max<std::int64_t>(0, data.as_of / 86400000 * 86400000 - 89LL * 86400000);
 			if (!data.metadata.contains("complete") || !data.metadata["complete"].is_boolean() || !data.metadata.contains("listingLimited") || !data.metadata["listingLimited"].is_boolean()) return std::nullopt;
 			for (const char* key : {"filesChecked", "filesTotal", "bytesRead"})
 				if (!data.metadata.contains(key) || !data.metadata[key].is_number_integer() || data.metadata[key] < 0 || data.metadata[key] > kMaxExactTokenCount) return std::nullopt;
@@ -82,7 +89,7 @@ namespace uam::usage
 		{
 			std::vector<const Record*> references;
 			for (const AccountingRecord& entry : data.records) references.push_back(&entry.record);
-			std::optional<Ledger> ledger = Ledger::Create(references, Now());
+			std::optional<Ledger> ledger = Ledger::Create(references, Now(), data.lifetime ? LedgerRange::AllRecorded : LedgerRange::Rolling90Days);
 			return ledger ? std::make_shared<const Ledger>(std::move(*ledger)) : nullptr;
 		}
 		nlohmann::json Coverage(const ExecutionHost& host, const Data* data, std::string_view error, bool cached, bool loading)
@@ -128,7 +135,7 @@ namespace uam::usage
 
 	nlohmann::json MultiHostHistory::Query(std::string_view host_id, int days, const std::map<ModelKey, ModelPrices>& prices) const
 	{
-		if (days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
+		if (days != 0 && days != 1 && days != 7 && days != 30 && days != 90) return {{"error", "Choose a valid usage period."}};
 		if (host_id == "local") return m_local->Query(days, prices);
 		View view;
 		{
@@ -237,8 +244,10 @@ namespace uam::usage
 					nlohmann::json metadata = EmptyHistoryMetadata(kAllMachinesHostId), coverage = nlohmann::json::array();
 					metadata["complete"] = local.has_value() && local_error.empty(); metadata["collecting"] = local_collecting; metadata["collectionError"] = local_error;
 					std::vector<const Record*> combined;
+					bool lifetime = local && local->lifetime;
 					const std::function<void(const Data&)> append = [&](const Data& data)
 					{
+						lifetime = lifetime && data.lifetime;
 						for (const AccountingRecord& fact : data.records) combined.push_back(&fact.record);
 						metadata["complete"] = metadata["complete"].get<bool>() && data.metadata["complete"].get<bool>();
 						metadata["listingLimited"] = metadata["listingLimited"].get<bool>() || data.metadata["listingLimited"].get<bool>();
@@ -269,7 +278,7 @@ namespace uam::usage
 						views.emplace(host.id, std::move(view));
 					}
 					View total;
-					std::optional<Ledger> all = valid_totals && (local || !combined.empty()) && combined.size() <= 500000 && cache_bytes <= kMaximumBytes ? Ledger::Create(combined, Now()) : std::nullopt;
+					std::optional<Ledger> all = valid_totals && (local || !combined.empty()) && combined.size() <= 500000 && cache_bytes <= kMaximumBytes ? Ledger::Create(combined, Now(), lifetime ? LedgerRange::AllRecorded : LedgerRange::Rolling90Days) : std::nullopt;
 					if (all) total.ledger = std::make_shared<const Ledger>(std::move(*all));
 					else if (local || !combined.empty()) metadata["collectionError"] = "Combined usage exceeds its supported accounting limit.";
 					total.metadata = std::move(metadata); total.coverage = std::move(coverage); views.emplace(std::string(kAllMachinesHostId), std::move(total));

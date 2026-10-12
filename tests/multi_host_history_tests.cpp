@@ -201,3 +201,30 @@ UAM_TEST(UsageMultiHostRetainsAntigravityTimeWitnessesOutsideTheAccountingWindow
 	const nlohmann::json restored = WaitUsage(offline,"peer",[](const nlohmann::json& value) { return value.contains("coverage") && value["coverage"][0]["status"]=="cached" && !value.value("collecting",true); });
 	UAM_ASSERT_EQ(restored["totals"]["totalTokens"].get<int>(),0);
 }
+
+UAM_TEST(UsageMultiHostLifetimeDeduplicatesOldReceiptsAndRejectsLegacyScope)
+{
+	TempDir temp("uam-usage-lifetime-peers");
+	std::atomic<int> calls{0};
+	nlohmann::json lifetime = UsageSnapshot("codex-cli", "old-mirrored-receipt", UsageNow() - 180LL * 86400000);
+	lifetime["version"] = 2;
+	lifetime["range"] = "all-recorded";
+	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), {UsageHost("one"), UsageHost("two")},
+	    [&](const ExecutionHost&, std::stop_token, std::string&) -> std::optional<nlohmann::json> { ++calls; return lifetime; });
+	const nlohmann::json rolling = WaitUsage(history, "*", [](const nlohmann::json& value) { return value.contains("totals") && value.value("complete", false) && !value.value("collecting", true); });
+	UAM_ASSERT(rolling.contains("totals"));
+	UAM_ASSERT_EQ(rolling["totals"]["totalTokens"].get<int>(), 0);
+	const nlohmann::json all = history.Query("*", 0);
+	UAM_ASSERT(all.contains("totals"));
+	UAM_ASSERT_EQ(all["totals"]["totalTokens"].get<int>(), 15);
+	UAM_ASSERT_EQ(all["duplicates"].get<int>(), 1);
+	UAM_ASSERT_EQ(history.Query("one", 0)["totals"]["totalTokens"].get<int>(), 15);
+	UAM_ASSERT_EQ(calls.load(), 2);
+	const nlohmann::json legacy = UsageSnapshot("codex-cli", "recent-legacy-receipt");
+	uam::usage::MultiHostHistory old_runner(temp.root / "legacy", EmptyLocal(temp.root / "legacy"), {UsageHost("legacy")},
+	    [&](const ExecutionHost&, std::stop_token, std::string&) -> std::optional<nlohmann::json> { return legacy; });
+	UAM_ASSERT(WaitUsage(old_runner, "legacy", [](const nlohmann::json& value) { return value.contains("totals"); }).contains("totals"));
+	UAM_ASSERT(old_runner.Query("legacy", 0).contains("error"));
+	UAM_ASSERT(old_runner.Query("*", 0).contains("error"));
+	UAM_ASSERT_EQ(old_runner.Query("legacy", 7)["totals"]["totalTokens"].get<int>(), 15);
+}
