@@ -1,6 +1,6 @@
-import { LoaderCircle } from 'lucide-react'
 import type { AcpBinding } from '../../store/cpp/types'
 import { ChatStatusStrip } from './StatusHelpers'
+import { AgentsScene } from './StatusScenes'
 
 const ACTIVE = new Set(['pending', 'running', 'in_progress', 'inProgress'])
 
@@ -13,5 +13,9 @@ export function isWaitingOnSubagents(binding?: AcpBinding): boolean {
 }
 
 export function SubagentWaitStatus({ binding }: { binding?: AcpBinding }) {
-  return <ChatStatusStrip open={isWaitingOnSubagents(binding)} tone="info" icon={LoaderCircle} spin title="Waiting on subagents" />
+  const children = binding?.toolCalls.filter((tool) => tool.isSubAgent) ?? []
+  const working = children.filter((tool) => ACTIVE.has(tool.status)).length
+  const idle = children.length - working
+  const title = working > 1 ? `Waiting on ${working} subagents` : 'Waiting on subagents'
+  return <ChatStatusStrip open={isWaitingOnSubagents(binding)} tone="agents" scene={<AgentsScene working={working} idle={idle} />} title={title} />
 }

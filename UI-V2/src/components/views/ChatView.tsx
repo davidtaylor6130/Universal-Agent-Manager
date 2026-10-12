@@ -17,6 +17,7 @@ import type { Goal } from '../../types/goal'
 import { GoalBanner } from '../shared/GoalBanner'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
+import { CompactingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, ContextUsageStatus, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
@@ -2754,8 +2755,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" icon={AlertTriangle} title={stoppedStatusLabel} />
-            <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" icon={LoaderCircle} spin title="Compacting context…"
+            <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} />
+            <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context"
               detail={acp?.providerUsage?.contextUsage ? <ContextUsageStatus usage={acp.providerUsage.contextUsage} /> : undefined} />
             <SubagentWaitStatus binding={acp} />
             {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (

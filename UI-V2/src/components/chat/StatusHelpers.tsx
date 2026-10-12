@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Check, Circle, CircleCheck, CircleX, Clock3, Copy, LoaderCircle } from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
 import type { ReactNode } from 'react'
+import type { LucideIcon } from 'lucide-react'
 import type { AcpBinding, AcpToolCall, CliBinding } from '../../store/useAppStore'
 import type { AcpContextUsage } from '../../store/cpp/types'
 import { copyTextToClipboard } from '../../utils/copySelection'
@@ -26,21 +26,50 @@ export function ContextUsageStatus({ usage }: { usage: AcpContextUsage }) {
   </span>
 }
 
-const STATUS_STRIP_EXIT_MS = 160
+const STATUS_STRIP_EXIT_MS = 200
 
-/** One status strip above the composer. Keeps its last content mounted briefly so the exit can animate. */
-export function ChatStatusStrip({ open, tone, icon: Icon, spin = false, title, detail }: {
+function formatElapsed(seconds: number) {
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
+}
+
+/** Seconds since the strip opened, ticking once a second only while it is visible. */
+function useElapsedSeconds(open: boolean) {
+  const startedAt = useRef<number | null>(null)
+  const [, setTick] = useState(0)
+  if (open && startedAt.current === null) startedAt.current = Date.now()
+  if (!open) startedAt.current = null
+  useEffect(() => {
+    if (!open) return
+    const timer = window.setInterval(() => setTick((value) => value + 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [open])
+  return startedAt.current === null ? 0 : Math.max(0, Math.floor((Date.now() - startedAt.current) / 1000))
+}
+
+export type ChatStatusTone = 'info' | 'agents' | 'warning'
+
+/**
+ * One centred status divider above the composer, styled like the compacted-context line in the transcript:
+ * a hairline either side of a tiny illustrated scene, the title and a live elapsed timer.
+ * Keeps its last content mounted briefly so the exit can animate.
+ */
+export function ChatStatusStrip({ open, tone, scene, title, detail }: {
   open: boolean
-  tone: 'info' | 'warning'
-  icon: LucideIcon
-  spin?: boolean
+  tone: ChatStatusTone
+  scene: ReactNode
   title: string
   detail?: ReactNode
 }) {
   const [present, setPresent] = useState(open)
   if (open && !present) setPresent(true)
-  const lastShown = useRef<{ tone: 'info' | 'warning'; icon: LucideIcon; spin: boolean; title: string; detail?: ReactNode } | null>(null)
-  if (open) lastShown.current = { tone, icon: Icon, spin, title, detail }
+  const lastShown = useRef<{ tone: ChatStatusTone; scene: ReactNode; title: string; detail?: ReactNode } | null>(null)
+  if (open) lastShown.current = { tone, scene, title, detail }
+  const elapsed = useElapsedSeconds(open)
+  const frozenElapsed = useRef(0)
+  if (open) frozenElapsed.current = elapsed
   useEffect(() => {
     if (open || !present) return
     const timer = window.setTimeout(() => setPresent(false), STATUS_STRIP_EXIT_MS)
@@ -48,12 +77,14 @@ export function ChatStatusStrip({ open, tone, icon: Icon, spin = false, title, d
   }, [open, present])
   if (!present || !lastShown.current) return null
   const shown = lastShown.current
-  const ShownIcon = shown.icon
   return (
     <div role="status" className="chat-status-strip" data-tone={shown.tone} data-state={open ? 'open' : 'closed'}>
-      <ShownIcon size={14} aria-hidden className={shown.spin ? 'chat-status-strip__spin' : undefined} />
-      <span className="chat-status-strip__title">{shown.title}</span>
-      {shown.detail && <span className="chat-status-strip__detail">{shown.detail}</span>}
+      <span className="chat-status-strip__pill">
+        <span className="chat-status-strip__scene">{shown.scene}</span>
+        <span className="chat-status-strip__title">{shown.title}</span>
+        <span className="chat-status-strip__time" aria-label={`for ${formatElapsed(frozenElapsed.current)}`}>{formatElapsed(frozenElapsed.current)}</span>
+        {shown.detail && <span className="chat-status-strip__detail">{shown.detail}</span>}
+      </span>
     </div>
   )
 }
