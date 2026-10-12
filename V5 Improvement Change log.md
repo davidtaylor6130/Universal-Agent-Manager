@@ -318,13 +318,15 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Permissions and review | Performance | Background Permission Feedback | Native permission waiting timestamps and owned reviewer results save in the background while isolated decisions retain one-time and manual-only gates. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Runtime durability | Bugfix | Queue Control Save Acknowledgement | Native queue-control handlers defer success until owned save completion and report failed persistence without interrupting delivered input. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Remote settings | Bugfix | Uncached Remote CLI Rows | Configured hosts receive unknown scoped provider policy rows while stale connection observations remain excluded. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
-| Runtime durability | Performance | Owned Native Steering | Local native controls stage an immutable request behind complete scoped admission while assistant output continues. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
+| Runtime durability | Performance | Owned Native Steering | Local native controls wait for complete scoped durable admission while assistant output continues and retain unsent intent after failure or cancellation. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Runtime durability | Performance | Idle Local Admission | Explicit idle local sends use complete background queue admission while compatibility checks or automatic routing are pending. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Runtime durability | Performance | Pending First Prompt Queue | Local follow-up input uses a complete background admission snapshot until the first provider request is delivered. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Runtime durability | Performance | Owned Same Session Retry | Healthy local retries stage the original message and owned save acknowledgements before provider delivery. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Runtime durability | Performance | Atomic Local Queue Dispatch | Ordinary local dispatch retires its queued entry with the unsent user message before asynchronous staged delivery. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Performance | Performance | Busy Queue Admission Durability | Ordinary local busy-turn queue admission saves asynchronously and holds failed intent without interrupting delivered output. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
-| Remaining performance | Performance | Asynchronous Send Durability | Ordinary local admission, delivery, queue dispatch, retries and idle or pending-first-prompt follow-ups save asynchronously while steering, remote and force barriers remain synchronous. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
+| Remaining performance | Performance | Asynchronous Send Durability | Ordinary local admission, delivery, queue dispatch, retries and idle or pending-first-prompt follow-ups save asynchronously while remote, quota, small-model and force barriers remain scoped follow-up work. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
+
+| Integration | Bugfix | Main Branch Reconciliation | Main safeguards and context-reference or numeric-field changes are reconciled with V5 layouts and pass all 1485 expected frontend tests. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
@@ -343,6 +345,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Integration | Bugfix | Main Ancestry Reconciliation | Review and user-test the reconciled main safeguards and preserved V5 workflows after build and exact frontend inventory verification. | Implementation Verified; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Settings Interaction Latency | Investigate reported 500-to-1000-ms settings, configured-host and theme interactions against the 250-ms ceiling. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Remote settings | Bugfix | Changed Host Save Only | Enable Save Host only when there are valid changes to save. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Settings and motion | Bugfix | Restore Selection Dash | Restore the simple selection dash in place of the curved tinted selection indicator. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
@@ -404,7 +407,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Memory and skills | Graphical | Skills Memory Settings Review | Redesign Skills and align Memory Store with that layout while preserving the accepted memory settings and shell actions. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Navigation and interface | Graphical | Collapsed Shell Actions | Show shell actions collapsed by default with an explicit expansion control. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Side chats | Misc | Temporary Side Chat Context | Verify side chats use temporary conversation context for a quick message rather than silently creating Git branches or worktrees. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
-| Side chats | Bugfix | Chat History Error Investigation | Investigate bulk native-history import stopping after a few chats and failing again on retry, preserving already imported chats and pending candidates. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
+| Side chats | Bugfix | Chat History Error Investigation | Investigate partial import and retry failures plus verified rejection of valid Codex rollouts from 68 MiB to 1 GiB, preserving imported chats and pending candidates. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Side chats | Graphical | Side Chat Composer Controls | Replace the top banner with a small right-composer side-chat and return control opposite VCS controls and provide a dismiss action that ends the temporary interaction. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Usage and accounting | Graphical | Usage Experience Improvements | Review usage totals, provider coverage, estimated cost presentation and cached background behavior against the requested T3-inspired experience. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Memory and skills | Graphical | Memory Policy Dropdown | Offer Off, Read Only, Strict Creation, Balanced Creation, Remember Everything and Default with creation and prompt insertion honoring the selected policy. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
@@ -451,7 +454,12 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Notifications | Misc | Update Release Note Excerpts | Carry a release-note excerpt in the update catalogue so update cards can show what changed. | Open; Un-Reviewed; Not User Tested | Unassigned |
 | Providers and MCP | Misc | Model Context And Size Metadata | Add context-window and size fields to model metadata so the model picker can show them as badges. | Open; Un-Reviewed; Not User Tested | Unassigned |
 | Settings and motion | Code Only | Menu Select Id Support | Let the shared menu select accept an id so settings labels can reference it directly. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Notifications | Code Only | Remove Organization Undo | Remove the organization undo toast and its store and backend undo payloads for workspace, collection, reference and resource reorders and moves, routing any failure to the notification system instead; agreed with David 2026-10-12 as the only undo in the app. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Notifications | Graphical | Single Notification System | Route every app-wide message through the notifications panel plus one shared transient alert surface, replacing the separate collection-move failure toast and bottom-right upgrade notice so no feature builds its own popup; agreed with David 2026-10-12. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Build and evidence | Misc | System Design Documentation | Add T3-style repository documentation: a docs map, one page per system (purpose, data flow, invariants, file ownership, performance budgets, tests and how to change it safely), the UI design language and settings rules, and decision records starting with single notifications and undo removal, referenced from AGENTS.md and CLAUDE.md and updated with code changes; agreed with David 2026-10-12. | Open; Un-Reviewed; Not User Tested | Unassigned |
 | Deferred ideas | Misc | T3 PR Workflow | Keep T3-inspired pull-request, branch and GitHub-provider workflows plus auto-settling at the very end of the backlog for later design and implementation. | Open; Claude Review; Not User Tested | Unassigned |
+
+Scope recorded 2026-10-12: David agreed to remove the organization undo toast, consolidate app-wide messages into one notification system and add system design documentation; automatic UI regression guards were considered and declined as impractical to test reliably.
 
 Scope recorded 2026-10-11: these are David’s requested work and reported regressions, pending investigation rather than newly verified defects or completed changes. Existing implementation records remain intact. Mobile overhaul and mobile chat-width work are deferred at David’s request; the historical physical-device acceptance gate remains recorded. SSH computer use stays disabled as the current security policy, with any future support outside this change request. Performance limits require explicit values before acceptance and must include application processing and default animation completion.
 
@@ -486,6 +494,21 @@ Allocation recorded 2026-10-11. David authorized execution on 2026-10-11 after c
 | P6 Usage and persisted presentation | gpt-6.1-sol | Compaction Before After Values; All Time Usage Range; Chat Icon Picker | Daily accounting, honest compaction metrics and persisted icon metadata; Claude owns charts, picker, chips and navigation components. |
 | P7 Remote runtime and maintenance | gpt-6.1-sol | Remote Ownership Refusals; Current Helper Activation; Elevated Provider Update Acceptance; Interactive Sudo Update Support; Runner Startup Acceptance; Concurrent Two Host Acceptance; Missing Incident Evidence | Remote runner, shutdown ownership, update and startup services; isolated tests first; production helper activation and live remote maintenance require explicit target authorization. |
 | P8 Platform and provider acceptance | gpt-6.1-sol | Six Provider Live Matrix; Provider Policy Gates; Independent Reviewer Availability; Current Windows Application Acceptance; Image And Cleanup Acceptance | Isolated provider matrix, Windows build and runtime receipts, image/cleanup acceptance and resource gates; runs after affected packets integrate; no historical Un-Reviewed audit. |
+
+### Active phase execution
+
+UAM ownership remains **chat-1791755529536-1b146e** for coordinator-reserved tasks; Codex executor IDs below are collaboration IDs, not invented UAM chat IDs. All eight phases remain within the active Codex goal, and no phase is Complete solely because tests pass. Workers use isolated worktrees and publish scoped changes for verified integration.
+
+| Phase | Codex executor | Worktree | Exclusive current scope | Execution state |
+|---|---|---|---|---|
+| P1 Performance and durability | /root/phase1_performance | /tmp/uam-v5-phase1-performance-20261012 | themeStorage.ts and themeStorage.test.ts idempotent document updates, plus interaction/paging investigation; main UI merge and P3 import repository APIs remain excluded. | Assigned; In Progress |
+| P2 Permissions and MCP | Queued for available runtime slot | Not created yet | Permission/review paths; coordinate ACP and settings ownership first. | Queued |
+| P3 Provider and child lifecycle | /root/phase3_lifecycle | /tmp/uam-v5-phase3-lifecycle-20261012 | Native history import services, startup import tests and native import paging or staging additions in chat_repository; new test registration only in CMake. | Assigned; In Progress |
+| P4 Provider configuration and memory | /root/phase4_configuration | /tmp/uam-v5-phase4-configuration-20261012 | Provider MCP status/tests and native dictation restoration: voice settings parser, AppSettings fields, settings serialization, dictation CEF routes and platform interfaces; main UI merge excluded. | Assigned; In Progress |
+| P5 Workspaces and safe retention | Queued for available runtime slot | Not created yet | Worktree and retention requirements; native import repository ownership coordinated with P3. | Queued |
+| P6 Usage and persisted presentation | /root/phase6_usage | /tmp/uam-v5-phase6-usage-20261012 | Usage stores, ledgers, collectors, source scanners and tests plus runner usage-accounting transport only; repository and shared model headers require handoff. | Assigned; In Progress |
+| P7 Remote runtime and maintenance | Queued for available runtime slot | Not created yet | Remote lifecycle/maintenance excluding P6-owned usage-accounting transport. | Queued |
+| P8 Platform and provider acceptance | Queued for available runtime slot | Not created yet | Full provider/platform matrix and evidence after applicable implementation; actual live resource gates remain explicit. | Queued |
 
 Outside the 48-row coordinator reservation:
 
