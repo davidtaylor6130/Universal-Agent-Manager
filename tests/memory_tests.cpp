@@ -1,8 +1,64 @@
 #include "test_harness.h"
 #include <future>
 #include "common/provider/provider_text_worker.h"
+#include "common/memory/memory_levels.h"
 
 using namespace uam_test;
+
+UAM_TEST(ReadOnlyMemoryPolicyRetainsRecallAndRejectsExtractionAdmission)
+{
+	TempDir temp("uam-read-only-memory");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+	chat.workspace_directory = (temp.root / "workspace").string();
+	fs::create_directories(chat.workspace_directory);
+	chat.messages.push_back({MessageRole::User, "Remember this durable project preference.", "now"});
+	app.chats.push_back(chat);
+	const std::string output = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Project preference","memory":"Prefer Allman brace style in this project.","evidence":"User said: Please remember that this project uses Allman braces.","confidence":"high"}]})";
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), chat.workspace_directory, output, -1, &error));
+	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats.front(), "Continue");
+	UAM_ASSERT(recall.find("Prefer Allman brace style") != std::string::npos);
+	app.chats.front().memory_level = "readOnly";
+	UAM_ASSERT_EQ(uam::memory_levels::Normalize("readOnly"), std::string("readOnly"));
+	UAM_ASSERT(uam::memory_levels::IsEnabled("readOnly"));
+	UAM_ASSERT_EQ(MemoryService::BuildRecallPreface(app, app.chats.front(), "Continue"), recall);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value() && saved->memory_level == "readOnly" && saved->memory_enabled);
+	UAM_ASSERT(MemoryService::ListManualScanCandidates(app).empty());
+	int queued = 0;
+	UAM_ASSERT(!MemoryService::QueueManualScan(app, {chat.id}, &queued, &error));
+	UAM_ASSERT_EQ(queued, 0);
+	UAM_ASSERT(app.memory_extraction_queue.empty() && app.memory_extraction_tasks.empty());
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT(app.memory_idle_started_at_by_chat_id.empty());
+	UAM_ASSERT(app.memory_extraction_queue.empty() && app.memory_extraction_tasks.empty());
+}
+
+UAM_TEST(ReadOnlyMemoryPolicyBlocksPreparedAndNewWorkerOutput)
+{
+	TempDir temp("uam-read-only-memory-publication");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+	chat.workspace_directory = (temp.root / "workspace").string();
+	fs::create_directories(chat.workspace_directory);
+	chat.messages.push_back({MessageRole::User, "Remember this durable preference.", "now"});
+	const std::string output = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Unpublished preference","memory":"Remember that critical fixes must include tests.","evidence":"User said: Remember that critical fixes must include tests.","confidence":"high"}]})";
+	std::string error;
+	const std::shared_ptr<PreparedMemoryOutput> prepared = MemoryService::PrepareWorkerOutput(app.data_root, chat, chat.workspace_directory, output, -1, &error);
+	UAM_ASSERT(prepared != nullptr);
+	chat.memory_level = "readOnly";
+	UAM_ASSERT(!MemoryService::PublishPreparedWorkerOutput(app, chat, chat.workspace_directory, prepared, &error));
+	const fs::path entry = fs::path(chat.workspace_directory) / ".UAM" / "Lessons" / "User_Lessons" / "unpublished-preference.md";
+	UAM_ASSERT(!fs::exists(entry));
+	UAM_ASSERT_EQ(chat.memory_last_processed_message_count, 0);
+	UAM_ASSERT(MemoryService::PrepareWorkerOutput(app.data_root, chat, chat.workspace_directory, output, -1, &error) == nullptr);
+	UAM_ASSERT(!MemoryService::ApplyWorkerOutput(app, chat, chat.workspace_directory, output, -1, &error));
+	UAM_ASSERT(!fs::exists(entry));
+}
 
 UAM_TEST(MemoryWorkerInputExcludesUnusedWarmPayloadsWithoutChangingPrompts)
 {

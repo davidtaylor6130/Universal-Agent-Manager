@@ -327,7 +327,7 @@ namespace
 	bool MemoryScanEligible(const ChatSession& chat)
 	{
 		return !chat.imported_read_only &&
-		       MemoryEnabled(chat) && MessageCount(chat) > 0;
+		       uam::memory_levels::AllowsCreation(MemoryLevel(chat)) && MessageCount(chat) > 0;
 	}
 
 	bool HasUnprocessedMessages(const ChatSession& chat)
@@ -830,6 +830,11 @@ namespace
 	    const ChatSession& chat, const fs::path& workspace_root, const nlohmann::json& parsed,
 	    int processed_message_count, std::string* error_out, std::stop_token stop_token)
 	{
+		if (!uam::memory_levels::AllowsCreation(MemoryLevel(chat)))
+		{
+			SetError(error_out, "Memory creation is disabled for this chat.");
+			return nullptr;
+		}
 		std::shared_ptr<PreparedMemoryOutput> prepared = std::make_shared<PreparedMemoryOutput>();
 		prepared->data_root = data_root;
 		prepared->workspace_root = workspace_root;
@@ -1777,7 +1782,7 @@ bool MemoryService::PublishPreparedWorkerOutput(uam::AppState& app, ChatSession&
     const fs::path& workspace_root, const std::shared_ptr<PreparedMemoryOutput>& prepared,
     std::string* error_out, bool refresh_counts_async)
 {
-	if (!prepared || prepared->consumed || prepared->stop_token.stop_requested() || prepared->data_root != app.data_root || prepared->chat_id != chat.id ||
+	if (!uam::memory_levels::AllowsCreation(MemoryLevel(chat)) || !prepared || prepared->consumed || prepared->stop_token.stop_requested() || prepared->data_root != app.data_root || prepared->chat_id != chat.id ||
 	    prepared->folder_id != chat.folder_id || prepared->execution_host_id != chat.execution_host_id ||
 	    prepared->workspace_directory != chat.workspace_directory ||
 	    prepared->memory_level != MemoryLevel(chat) ||
