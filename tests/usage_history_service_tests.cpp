@@ -1,5 +1,8 @@
 #include "test_harness.h"
 #include "common/usage/usage_history_service.h"
+#include "common/usage/usage_store.h"
+#include <fstream>
+#include <sqlite3.h>
 
 using namespace uam_test;
 
@@ -271,4 +274,77 @@ UAM_TEST(UsageLifetimeRequestRequiresExplicitBeginningAndPreservesRollingBounds)
 		UAM_ASSERT(!uam::usage::ParseHistoryRequest(invalid, request, error));
 		UAM_ASSERT_EQ(request.refresh_id, std::string("lifetime"));
 	}
+}
+
+UAM_TEST(UsageHistoryStreamingDrainsBatchesWithoutReusingUnidentifiedSourceOrdinals)
+{
+	TempDir temp("uam-history-streaming"); const fs::path transcript = temp.root / "session.jsonl";
+	std::ofstream output(transcript, std::ios::binary);
+	for (int index = 0; index < 9001; ++index) output << HistoryLine(""); output.close();
+	uam::usage::HistoryService history({{uam::provider_ids::kClaudeCli, {temp.root}}});
+	uam::usage::Store store(temp.root / "accounting");
+	std::size_t emitted = 0, expected_base = 0;
+	const uam::usage::StreamingAccountingSink sink = [&](const std::string& source, const std::vector<uam::usage::Record>& records, std::size_t position, std::size_t base, std::string& error)
+	{
+		UAM_ASSERT_EQ(position, std::size_t{0}); UAM_ASSERT_EQ(base, expected_base);
+		std::vector<uam::usage::SourceRecord> batch;
+		for (std::size_t index = position; index < records.size(); ++index)
+		{
+			batch.push_back({&records[index], source, base + index});
+			if (batch.size() == 2048) { UAM_ASSERT(store.Import(batch, error)); batch.clear(); }
+		}
+		if (!batch.empty() && !store.Import(batch, error)) return false;
+		emitted += records.size(); expected_base += records.size(); return true;
+	};
+	const std::int64_t end = *uam::usage::TimestampMilliseconds("2026-10-12T12:00:00Z"); nlohmann::json progress;
+	for (int batch = 0; batch < 30; ++batch) { progress = history.CollectStream("first", 0, end, sink); UAM_ASSERT(!progress.contains("error")); if (progress.value("complete", false)) break; }
+	UAM_ASSERT(progress.value("complete", false)); UAM_ASSERT_EQ(emitted, std::size_t{9001});
+	UAM_ASSERT(history.CollectStream("unchanged", 0, end, sink).value("complete", false)); UAM_ASSERT_EQ(emitted, std::size_t{9001});
+	std::string error; const std::optional<uam::usage::Ledger> ledger = store.ReadLifetimeLedger(end, error); UAM_ASSERT(ledger);
+	UAM_ASSERT_EQ(ledger->Query(0, end)->total.records, std::size_t{9001});
+}
+
+UAM_TEST(UsageGeminiStreamingProjectsLargeSnapshotsAndSessionIdentityAfterMessages)
+{
+	TempDir temp("uam-gemini-streaming"); const fs::path chats = temp.root / "chats"; fs::create_directories(chats);
+	const fs::path transcript = chats / "session-large.json";
+	std::ofstream output(transcript, std::ios::binary); output << "{\"messages\":[";
+	for (int index = 0; index < 5000; ++index)
+	{
+		if (index) output << ',';
+		output << nlohmann::json({{"type", "gemini"}, {"id", std::to_string(index)}, {"model", "gemini-test"}, {"timestamp", "2026-10-10T12:00:00Z"}, {"content", std::string(8192, 'c')}, {"tokens", {{"input", 10}, {"cached", 2}, {"output", 3}, {"thoughts", 1}, {"tool", 0}, {"total", 14}}}}).dump();
+	}
+	output << "],\"sessionId\":\"late-session\"}"; output.close(); UAM_ASSERT(fs::file_size(transcript) > 32 * 1024 * 1024);
+	uam::usage::HistoryService history({{uam::provider_ids::kGeminiCli, {temp.root}}}); std::size_t count = 0; std::int64_t tokens = 0;
+	const uam::usage::StreamingAccountingSink sink = [&](const std::string&, const std::vector<uam::usage::Record>& records, std::size_t, std::size_t, std::string&)
+	{
+		UAM_ASSERT(records.size() <= 2048);
+		for (const uam::usage::Record& record : records) { UAM_ASSERT_EQ(record.session_id, std::string("late-session")); tokens += record.tokens.Total(); ++count; }
+		return true;
+	};
+	const std::int64_t end = *uam::usage::TimestampMilliseconds("2026-10-12T12:00:00Z");
+	const nlohmann::json progress = history.CollectStream("large", 0, end, sink); UAM_ASSERT(!progress.contains("error")); UAM_ASSERT(progress.value("complete", false)); UAM_ASSERT_EQ(count, std::size_t{5000}); UAM_ASSERT_EQ(tokens, 70000LL);
+	UAM_ASSERT(history.CollectStream("unchanged", 0, end, sink).value("complete", false)); UAM_ASSERT_EQ(count, std::size_t{5000});
+}
+
+
+UAM_TEST(UsageOpenCodeStreamingRetainsFutureReceiptsAcrossUnchangedDatabaseRefreshes)
+{
+	TempDir temp("uam-opencode-streamed-future"); const fs::path path = temp.root / "opencode.db";
+	sqlite3* raw = nullptr; UAM_ASSERT_EQ(sqlite3_open(path.string().c_str(), &raw), SQLITE_OK);
+	UAM_ASSERT_EQ(sqlite3_exec(raw, "CREATE TABLE session(id TEXT PRIMARY KEY,time_created INTEGER); INSERT INTO session VALUES('session',1000); CREATE TABLE session_message(id TEXT,session_id TEXT,time_created INTEGER,type TEXT,data TEXT)", nullptr, nullptr, nullptr), SQLITE_OK);
+	const std::string message = nlohmann::json({{"role", "assistant"}, {"providerID", "native"}, {"modelID", "model"}, {"tokens", {{"input", 7}, {"output", 3}, {"reasoning", 0}, {"cache", {{"read", 0}, {"write", 0}}}}}}).dump();
+	sqlite3_stmt* statement = nullptr; UAM_ASSERT_EQ(sqlite3_prepare_v2(raw, "INSERT INTO session_message VALUES('message','session',3000,'assistant',?1)", -1, &statement, nullptr), SQLITE_OK);
+	sqlite3_bind_text(statement, 1, message.c_str(), -1, SQLITE_TRANSIENT); UAM_ASSERT_EQ(sqlite3_step(statement), SQLITE_DONE); sqlite3_finalize(statement); sqlite3_close(raw);
+	uam::usage::HistoryService history({{"opencode-cli", {}, {path}}}); uam::usage::Store store(temp.root / "accounting"); std::string error;
+	const uam::usage::StreamingAccountingSink sink = [&](const std::string& source, const std::vector<uam::usage::Record>& records, std::size_t position, std::size_t base, std::string& import_error)
+	{
+		std::vector<uam::usage::SourceRecord> batch; for (std::size_t index = position; index < records.size(); ++index) batch.push_back({&records[index], source, base + index});
+		return store.Import(batch, import_error);
+	};
+	nlohmann::json progress;
+	for (int batch = 0; batch < 8; ++batch) { progress = history.CollectStream("before", 0, 2000, sink); UAM_ASSERT(!progress.contains("error")); if (progress.value("complete", false)) break; }
+	UAM_ASSERT(progress.value("complete", false)); UAM_ASSERT_EQ(store.ReadLifetimeLedger(2000, error)->Query(0, 2000)->total.tokens.Total(), 0LL);
+	progress = history.CollectStream("after", 0, 4000, sink); UAM_ASSERT(progress.value("complete", false)); UAM_ASSERT_EQ(progress["bytesRead"].get<std::size_t>(), std::size_t{0});
+	UAM_ASSERT_EQ(store.ReadLifetimeLedger(4000, error)->Query(0, 4000)->total.tokens.Total(), 10LL);
 }

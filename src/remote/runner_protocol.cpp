@@ -170,6 +170,7 @@ namespace uam::remote
 			                          {"contextRead", state != nullptr},
 			                          {"workspaceFileRead", state != nullptr},
 			                          {"usageAccounting", state != nullptr},
+			                          {"usageAccountingStream", state != nullptr},
 		                          {"projectMemory", state != nullptr},
 		                          {"isolatedTextWorkers", state != nullptr},
 			                          {"runnerStartup", state != nullptr},

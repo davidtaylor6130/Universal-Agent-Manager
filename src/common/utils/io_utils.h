@@ -528,16 +528,31 @@ namespace uam::io
 	inline bool WriteAndSyncAtomicTemp(const std::filesystem::path& temp_path,
 	    const AtomicTempProducer& produce, const AtomicWriteStageHook& hook, AtomicWriteResult& result)
 	{
+		bool file_closed = false;
 #if defined(_WIN32)
 		std::filesystem::path native_path;
 		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
 		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
 		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
-		const auto close_file = [&]() { CloseHandle(file); };
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = CloseHandle(file) != 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(GetLastError());
+			return closed;
+		};
 #else
 		const int file = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
 		if (file < 0) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(errno); return false; }
-		const auto close_file = [&]() { close(file); };
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = close(file) == 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(errno);
+			return closed;
+		};
 #endif
 		try
 		{
@@ -582,8 +597,8 @@ namespace uam::io
 #endif
 			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(errno);
 #endif
-			close_file();
-			return synced && ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
+			const bool closed = close_file();
+			return synced && closed && ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
 		}
 		catch (...) { close_file(); throw; }
 	}

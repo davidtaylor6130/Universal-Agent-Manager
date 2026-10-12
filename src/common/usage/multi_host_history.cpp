@@ -9,6 +9,7 @@
 #include "remote/runner_client.h"
 #include <unordered_set>
 #include <stdexcept>
+#include <atomic>
 
 namespace uam::usage
 {
@@ -30,21 +31,24 @@ namespace uam::usage
 				if (!execution_hosts::SameConnection(left[index], right[index]) || left[index].label != right[index].label) return false;
 			return true;
 		}
-		RemoteAccountingFetcher DefaultFetcher()
+		RemoteAccountingFetcher DefaultFetcher(const std::filesystem::path& data_root)
 		{
-			return [](const ExecutionHost& host, std::stop_token stop, std::string& error) -> std::optional<nlohmann::json>
+			return [data_root](const ExecutionHost& host, std::stop_token stop, std::string& error) -> std::optional<nlohmann::json>
 			{
 				if (host.runner_version.empty() || host.runner_protocol_version < 2)
 				{ error = "Install this machine's UAM runner to collect usage."; return std::nullopt; }
 				remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
 				    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
 				nlohmann::json snapshot;
-				return client.ReadUsageAccounting(snapshot, &error, stop) ? std::optional<nlohmann::json>{std::move(snapshot)} : std::nullopt;
+				const std::filesystem::path path = data_root / "usage" / "remote" / Scope(host) / "snapshot-v3.jsonl";
+				if (!client.ReadUsageAccountingFile(path, snapshot, &error, stop)) return std::nullopt;
+				return snapshot.is_object() ? std::optional<nlohmann::json>{std::move(snapshot)} : std::optional<nlohmann::json>{{{"receiptSnapshotPath", paths::Utf8PathString(path)}}};
 			};
 		}
 		struct Data
 		{
 			std::vector<AccountingRecord> records;
+			std::shared_ptr<const ReceiptSnapshot> receipts;
 			nlohmann::json metadata;
 			std::int64_t as_of = 0;
 			std::size_t bytes = 0;
@@ -85,13 +89,73 @@ namespace uam::usage
 			if (data.bytes > kMaximumBytes) return std::nullopt;
 			return data;
 		}
-		std::shared_ptr<const Ledger> MakeLedger(const Data& data)
+		std::optional<Data> DecodeReceipts(std::shared_ptr<const ReceiptSnapshot> snapshot, bool pin = false)
 		{
-			std::vector<const Record*> references;
-			for (const AccountingRecord& entry : data.records) references.push_back(&entry.record);
-			std::optional<Ledger> ledger = Ledger::Create(references, Now(), data.lifetime ? LedgerRange::AllRecorded : LedgerRange::Rolling90Days);
+			if (!snapshot) return std::nullopt;
+			if (pin)
+			{
+				// Cache publication atomically replaces its name; retain the prior inode for a last-good view.
+				const std::filesystem::path path = io::MakeTempWritePath(snapshot->path.parent_path() / "receipt-view");
+				std::error_code error; std::filesystem::create_hard_link(snapshot->path, path, error);
+				if (error) { error.clear(); std::filesystem::copy_file(snapshot->path, path, std::filesystem::copy_options::none, error); }
+				if (error) return std::nullopt;
+				std::shared_ptr<ReceiptSnapshot> pinned = std::make_shared<ReceiptSnapshot>();
+				pinned->path = path; pinned->metadata = snapshot->metadata; pinned->as_of = snapshot->as_of; pinned->bytes = snapshot->bytes; pinned->fingerprint = snapshot->fingerprint; pinned->lifetime = snapshot->lifetime; pinned->owned = true;
+				snapshot = std::move(pinned);
+			}
+			std::optional<Data> data = Decode({{"version", snapshot->lifetime ? 2 : 1}, {"asOfMs", snapshot->as_of}, {"metadata", snapshot->metadata}, {"facts", nlohmann::json::array()}, {"range", snapshot->lifetime ? "all-recorded" : ""}});
+			if (!snapshot->lifetime)
+			{
+				nlohmann::json header{{"version", 1}, {"asOfMs", snapshot->as_of}, {"metadata", snapshot->metadata}, {"facts", nlohmann::json::array()}};
+				data = Decode(header);
+			}
+			if (data) { data->receipts = snapshot; data->bytes = 0; }
+			return data;
+		}
+		std::shared_ptr<const Ledger> MakeLedger(const std::vector<const Data*>& inputs, const std::filesystem::path& data_root, std::string& error, const std::function<bool()>& cancelled)
+		{
+			static std::atomic<std::uint64_t> next{0};
+			const std::filesystem::path scratch = data_root / "usage" / ("combined-" + std::to_string(Now()) + "-" + std::to_string(++next));
+			struct Cleanup
+			{
+				std::filesystem::path path;
+				~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+			} cleanup{scratch};
+			if (paths::IsLinkOrReparsePointNoThrow(data_root / "usage") || paths::IsLinkOrReparsePointNoThrow(scratch)) { error = "Usage scratch storage is invalid."; return {}; }
+			Store store(scratch);
+			bool lifetime = true;
+			for (std::size_t index = 0; index < inputs.size(); ++index)
+			{
+				const Data& data = *inputs[index]; lifetime = lifetime && data.lifetime;
+				std::vector<AccountingRecord> batch;
+				const std::string scope = "source-" + std::to_string(index);
+				const std::function<bool(const AccountingRecord&)> append = [&](const AccountingRecord& entry)
+				{
+					if (cancelled && cancelled()) return false;
+					batch.push_back(entry);
+					if (batch.size() < 2048) return true;
+					if (!store.ImportAccounting(batch, scope, error, cancelled)) return false;
+					batch.clear(); return true;
+				};
+				if (data.receipts)
+				{ if (!data.receipts->Visit(append, error, cancelled)) return {}; }
+				else for (const AccountingRecord& entry : data.records) if (!append(entry)) return {};
+				if (!batch.empty() && !store.ImportAccounting(batch, scope, error, cancelled)) return {};
+			}
+			std::optional<Ledger> ledger = store.ReadLifetimeLedger(Now(), error, cancelled);
+			if (ledger && !lifetime)
+			{
+				// Legacy peers provide rolling coverage only; never advertise complete lifetime from them.
+				nlohmann::json encoded = ledger->Encode(); encoded["version"] = 1; encoded.erase("range");
+				const std::int64_t cutoff = ledger->WindowStart(90);
+				nlohmann::json rows = nlohmann::json::array();
+				for (nlohmann::json& row : encoded["rows"]) if (row[5] >= cutoff) rows.push_back(std::move(row));
+				encoded["rows"] = std::move(rows);
+				ledger = Ledger::Decode(encoded);
+			}
 			return ledger ? std::make_shared<const Ledger>(std::move(*ledger)) : nullptr;
 		}
+
 		nlohmann::json Coverage(const ExecutionHost& host, const Data* data, std::string_view error, bool cached, bool loading)
 		{
 			return {{"executionHostId", host.id}, {"label", host.label}, {"status", data ? cached ? "cached" : loading ? "loading" : "ready" : loading ? "loading" : "unavailable"},
@@ -100,7 +164,7 @@ namespace uam::usage
 	}
 
 	MultiHostHistory::MultiHostHistory(std::filesystem::path data_root, std::vector<ExecutionHost> hosts)
-	    : MultiHostHistory(data_root, std::make_shared<Collector>(data_root, true), std::move(hosts), DefaultFetcher()) {}
+	    : MultiHostHistory(data_root, std::make_shared<Collector>(data_root, true), std::move(hosts), DefaultFetcher(data_root)) {}
 
 	MultiHostHistory::MultiHostHistory(std::filesystem::path data_root, std::shared_ptr<Collector> local, std::vector<ExecutionHost> hosts, RemoteAccountingFetcher fetch)
 	    : m_dataRoot(std::move(data_root)), m_local(std::move(local)), m_fetch(std::move(fetch))
@@ -164,7 +228,7 @@ namespace uam::usage
 			std::chrono::steady_clock::time_point due{};
 		};
 		std::map<std::string, Peer> peers;
-		std::shared_ptr<const std::string> local_bytes;
+		std::shared_ptr<const ReceiptSnapshot> local_bytes;
 		std::optional<Data> local;
 		bool changed = true;
 		std::uint64_t published_generation = 0;
@@ -180,14 +244,15 @@ namespace uam::usage
 				std::uint64_t generation;
 				{ std::lock_guard<std::mutex> lock(m_mutex); hosts = m_hosts; scope_stop = m_scopeStop; generation = m_generation; }
 				std::stop_callback cancel(stop, [scope_stop]() { scope_stop->request_stop(); });
-				const std::shared_ptr<const std::string> bytes = m_local->AccountingSnapshot();
+				const std::shared_ptr<const ReceiptSnapshot> bytes = m_local->Receipts();
 				const std::pair<bool, std::string> local_status = m_local->CollectionStatus();
 				if (local_status.first != local_collecting || local_status.second != local_error)
 				{ local_collecting = local_status.first; local_error = local_status.second; changed = true; }
 				if (bytes && bytes != local_bytes)
 				{
-					std::optional<Data> decoded = Decode(nlohmann::json::parse(*bytes, nullptr, false));
+					std::optional<Data> decoded = DecodeReceipts(bytes);
 					if (decoded) { local = std::move(decoded); local_bytes = bytes; changed = true; }
+					else { local_error = "Local accounting metadata is invalid."; changed = true; }
 				}
 				if (generation != published_generation)
 					for (std::pair<const std::string, Peer>& peer : peers) peer.second.due = {};
@@ -220,9 +285,16 @@ namespace uam::usage
 					{
 						if (peer.data) cache_bytes -= peer.data->bytes;
 						peer = {}; peer.scope = scope;
+						const std::filesystem::path receipt_path = m_dataRoot / "usage" / "remote" / scope / "snapshot-v3.jsonl";
+						std::string receipt_error;
+						if (!paths::IsLinkOrReparsePointNoThrow(m_dataRoot / "usage") && !paths::IsLinkOrReparsePointNoThrow(m_dataRoot / "usage" / "remote") && !paths::IsLinkOrReparsePointNoThrow(receipt_path.parent_path()) && !paths::IsLinkOrReparsePointNoThrow(receipt_path))
+						{
+							std::optional<Data> decoded = DecodeReceipts(ReadReceiptSnapshot(receipt_path, receipt_error, [&]() { return stop.stop_requested(); }), true);
+							if (decoded) { peer.data = std::move(decoded); peer.cached = true; }
+						}
 						const std::filesystem::path path = m_dataRoot / "usage" / "remote" / scope / "snapshot-v1.json";
 						std::string saved;
-						if (!paths::IsLinkOrReparsePointNoThrow(m_dataRoot / "usage") && !paths::IsLinkOrReparsePointNoThrow(m_dataRoot / "usage" / "remote") && !paths::IsLinkOrReparsePointNoThrow(path.parent_path()) && !paths::IsLinkOrReparsePointNoThrow(path) && io::TryReadTextFile(path, saved, kMaximumBytes))
+						if (!peer.data && !paths::IsLinkOrReparsePointNoThrow(m_dataRoot / "usage") && !paths::IsLinkOrReparsePointNoThrow(m_dataRoot / "usage" / "remote") && !paths::IsLinkOrReparsePointNoThrow(path.parent_path()) && !paths::IsLinkOrReparsePointNoThrow(path) && io::TryReadTextFile(path, saved, kMaximumBytes))
 						{
 							std::optional<Data> decoded = Decode(nlohmann::json::parse(saved, nullptr, false));
 							if (decoded && decoded->bytes <= kMaximumBytes - std::min(kMaximumBytes, cache_bytes))
@@ -243,12 +315,12 @@ namespace uam::usage
 					};
 					nlohmann::json metadata = EmptyHistoryMetadata(kAllMachinesHostId), coverage = nlohmann::json::array();
 					metadata["complete"] = local.has_value() && local_error.empty(); metadata["collecting"] = local_collecting; metadata["collectionError"] = local_error;
-					std::vector<const Record*> combined;
+					std::vector<const Data*> combined;
 					bool lifetime = local && local->lifetime;
 					const std::function<void(const Data&)> append = [&](const Data& data)
 					{
 						lifetime = lifetime && data.lifetime;
-						for (const AccountingRecord& fact : data.records) combined.push_back(&fact.record);
+						combined.push_back(&data);
 						metadata["complete"] = metadata["complete"].get<bool>() && data.metadata["complete"].get<bool>();
 						metadata["listingLimited"] = metadata["listingLimited"].get<bool>() || data.metadata["listingLimited"].get<bool>();
 						for (const char* key : {"filesChecked", "filesTotal", "bytesRead"}) add_count(metadata[key], data.metadata[key]);
@@ -271,16 +343,17 @@ namespace uam::usage
 						View view;
 						view.metadata = data ? data->metadata : EmptyHistoryMetadata(host.id); view.metadata["version"] = 3; view.metadata["executionHostId"] = host.id;
 						view.metadata["collecting"] = peer.loading; view.metadata["collectionError"] = strings::SafeLine(peer.error, 1024); view.coverage = nlohmann::json::array({row});
-						if (data) { view.ledger = MakeLedger(*data); append(*data); }
+						if (data) { std::string ledger_error; view.ledger = MakeLedger({data}, m_dataRoot, ledger_error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); }); if (!view.ledger) view.metadata["collectionError"] = ledger_error; append(*data); }
 						else metadata["complete"] = false;
 						if (peer.cached || !peer.error.empty()) metadata["complete"] = false;
 						metadata["collecting"] = metadata["collecting"].get<bool>() || peer.loading;
 						views.emplace(host.id, std::move(view));
 					}
 					View total;
-					std::optional<Ledger> all = valid_totals && (local || !combined.empty()) && combined.size() <= 500000 && cache_bytes <= kMaximumBytes ? Ledger::Create(combined, Now(), lifetime ? LedgerRange::AllRecorded : LedgerRange::Rolling90Days) : std::nullopt;
-					if (all) total.ledger = std::make_shared<const Ledger>(std::move(*all));
-					else if (local || !combined.empty()) metadata["collectionError"] = "Combined usage exceeds its supported accounting limit.";
+					std::string ledger_error;
+					if (valid_totals && !combined.empty()) total.ledger = MakeLedger(combined, m_dataRoot, ledger_error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); });
+					if (!total.ledger && !combined.empty()) metadata["collectionError"] = ledger_error.empty() ? "Could not combine usage accounting." : ledger_error;
+
 					total.metadata = std::move(metadata); total.coverage = std::move(coverage); views.emplace(std::string(kAllMachinesHostId), std::move(total));
 					{ std::lock_guard<std::mutex> lock(m_mutex); if (generation == m_generation && !stop.stop_requested()) m_views = std::move(views); }
 					changed = false; published_generation = generation; published_interval = Now() / 30000;
@@ -303,6 +376,17 @@ namespace uam::usage
 						if (!document->contains("collectionError") || (*document)["collectionError"].is_string())
 						{ error = document->value("collectionError", ""); peer.loading = error.empty(); }
 						else error = "This machine returned invalid usage progress.";
+					}
+					else if (document && document->is_object() && document->contains("receiptSnapshotPath"))
+					{
+						const std::filesystem::path expected = m_dataRoot / "usage" / "remote" / peer.scope / "snapshot-v3.jsonl";
+						if ((*document)["receiptSnapshotPath"] != paths::Utf8PathString(expected)) error = "This machine returned invalid receipt storage.";
+						else
+						{
+							std::optional<Data> decoded = DecodeReceipts(ReadReceiptSnapshot(expected, error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); }), true);
+							if (decoded) { peer.data = std::move(decoded); peer.cached = false; }
+							else if (error.empty()) error = "This machine returned invalid accounting metadata.";
+						}
 					}
 					else if (document)
 					{

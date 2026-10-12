@@ -2,6 +2,7 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/base64.h"
 #include "common/utils/hash_utils.h"
+#include <fstream>
 
 namespace uam::usage
 {
@@ -29,43 +30,38 @@ namespace uam::usage
 
 	bool Collector::Publish(std::int64_t generated_ms, const nlohmann::json& metadata, std::string& error, const std::function<bool()>& cancelled)
 	{
-		std::optional<Ledger> ledger;
+		nlohmann::json published_metadata = metadata;
+		published_metadata["complete"] = metadata.value("complete", false) && !metadata.value("listingLimited", false);
+		for (const nlohmann::json& provider : metadata["providers"])
+			for (const char* key : {"errors", "invalidLines", "oversizedLines", "pendingLines"}) if (provider.value(key, std::int64_t{0}) > 0) published_metadata["complete"] = false;
+		std::optional<Ledger> ledger = m_store.ReadLifetimeLedger(generated_ms, error, cancelled);
+		if (!ledger) return false;
+		std::shared_ptr<const ReceiptSnapshot> receipts;
 		std::shared_ptr<const std::string> accounting;
 		std::string fingerprint;
 		if (m_exportAccounting)
 		{
-			const std::optional<std::vector<AccountingRecord>> records = m_store.ReadLifetimeRecords(generated_ms, error, cancelled);
-			if (!records) return false;
-			std::vector<const Record*> references;
-			nlohmann::json rows = nlohmann::json::array();
-			for (const AccountingRecord& entry : *records)
+			receipts = m_store.WriteReceiptSnapshot(generated_ms, published_metadata, error, cancelled);
+			if (!receipts) return false;
+			// Legacy clients retain their bounded document format; large histories use streamed receipts.
+			if (receipts->bytes <= 64 * 1024 * 1024)
 			{
-				if (cancelled()) return false;
-				references.push_back(&entry.record);
-				rows.push_back(EncodeAccountingRecord(entry));
+				nlohmann::json rows = nlohmann::json::array();
+				if (!receipts->Visit([&](const AccountingRecord& entry) { rows.push_back(EncodeAccountingRecord(entry)); return true; }, error, cancelled)) return false;
+				std::string bytes = nlohmann::json({{"version", 2}, {"range", "all-recorded"}, {"asOfMs", generated_ms}, {"metadata", published_metadata}, {"facts", std::move(rows)}}).dump();
+				if (bytes.size() <= 64 * 1024 * 1024)
+				{ fingerprint = hashing::Hex64Padded(hashing::Fnv1a64(bytes)); accounting = std::make_shared<const std::string>(std::move(bytes)); }
 			}
-			ledger = Ledger::Create(references, generated_ms, LedgerRange::AllRecorded);
-			std::string bytes = nlohmann::json({{"version", 2}, {"range", "all-recorded"}, {"asOfMs", generated_ms}, {"metadata", metadata}, {"facts", std::move(rows)}}).dump();
-			if (bytes.size() > 64 * 1024 * 1024) { error = "Usage accounting exceeds its transfer limit."; return false; }
-			fingerprint = hashing::Hex64Padded(hashing::Fnv1a64(bytes));
-			accounting = std::make_shared<const std::string>(std::move(bytes));
 		}
-		else
-		{
-			const std::optional<std::vector<AccountingRecord>> records = m_store.ReadLifetimeRecords(generated_ms, error, cancelled);
-			if (!records) return false;
-			std::vector<const Record*> references;
-			for (const AccountingRecord& entry : *records) references.push_back(&entry.record);
-			ledger = Ledger::Create(references, generated_ms, LedgerRange::AllRecorded);
-		}
+
 		if (!ledger) { if (error.empty()) error = "Usage accounting totals exceed supported limits."; return false; }
 		const std::shared_ptr<const Ledger> published = std::make_shared<const Ledger>(std::move(*ledger));
 		const std::string encoded = published->Encode().dump();
-		if (encoded.size() > 64 * 1024 * 1024) { error = "Usage snapshot exceeds its storage limit."; return false; }
+		// The durable receipt index can rebuild unusually large cohort snapshots after restart.
 		if (cancelled()) return false;
-		if (!io::AtomicWriteFile(m_dataRoot / "usage" / "snapshot-v1.json", encoded)) { error = "Could not save the usage snapshot."; return false; }
+		if (encoded.size() <= 64 * 1024 * 1024 && !io::AtomicWriteFile(m_dataRoot / "usage" / "snapshot-v1.json", encoded)) { error = "Could not save the usage snapshot."; return false; }
 		std::lock_guard<std::mutex> lock(m_mutex);
-		m_ledger = published; m_accountingBytes = std::move(accounting); m_accountingFingerprint = std::move(fingerprint); m_metadata = metadata; m_metadata["version"] = 3; m_error.clear();
+		m_ledger = published; m_receipts = std::move(receipts); m_accountingBytes = std::move(accounting); m_accountingFingerprint = std::move(fingerprint); m_metadata = published_metadata; m_metadata["version"] = 3; m_error.clear();
 		return true;
 	}
 
@@ -98,14 +94,14 @@ namespace uam::usage
 				{
 					std::lock_guard<std::mutex> lock(m_mutex); m_collecting = true;
 				}
-				const AccountingSink sink = [&](const std::string& source, const std::vector<Record>& records, std::size_t position, std::string& import_error)
+				const StreamingAccountingSink sink = [&](const std::string& source, const std::vector<Record>& records, std::size_t position, std::size_t base, std::string& import_error)
 				{
 					std::vector<SourceRecord> batch;
 					for (std::size_t index = position; index < records.size(); ++index)
 					{
 						if (cancelled()) return false;
-						if (records[index].provider_id != provider_ids::kAntigravityCli && (records[index].timestamp_ms < start || records[index].timestamp_ms >= as_of)) continue;
-						batch.push_back({&records[index], source, index});
+						if (records[index].timestamp_ms < start) continue;
+						batch.push_back({&records[index], source, base + index});
 						if (batch.size() == 2048)
 						{
 							if (!m_store.Import(batch, import_error, cancelled)) return false;
@@ -118,7 +114,7 @@ namespace uam::usage
 				std::chrono::steady_clock::time_point last_publish = std::chrono::steady_clock::now();
 				do
 				{
-					progress = m_history.Collect(refresh_id, start, as_of, sink, cancelled);
+					progress = m_history.CollectStream(refresh_id, start, as_of, sink, cancelled);
 					if (progress.contains("error")) { error = progress["error"].get<std::string>(); break; }
 					if (progress.value("cancelled", false) || cancelled()) return;
 					if (progress.value("complete", false) || std::chrono::steady_clock::now() - last_publish >= std::chrono::seconds(5))
@@ -151,7 +147,7 @@ namespace uam::usage
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
 			if (!m_exportAccounting) return {{"error", "Accounting export is unavailable for this collector."}};
-			if (!m_accountingBytes) return {{"pending", true}, {"collectionError", m_error}};
+			if (!m_accountingBytes) return m_receipts ? nlohmann::json{{"error", "Update the usage client to load streamed lifetime receipts."}} : nlohmann::json{{"pending", true}, {"collectionError", m_error}};
 			bytes = m_accountingBytes; current_fingerprint = m_accountingFingerprint;
 		}
 		if ((!fingerprint.empty() && fingerprint != current_fingerprint) || offset > bytes->size()) return {{"error", "Usage accounting changed while loading. Try again."}};
@@ -163,6 +159,44 @@ namespace uam::usage
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 		return m_accountingBytes;
+	}
+
+	std::shared_ptr<const ReceiptSnapshot> Collector::Receipts() const
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+		return m_receipts;
+	}
+
+	nlohmann::json Collector::ExportReceipts(std::uint64_t offset, std::string_view fingerprint) const
+	{
+		std::shared_ptr<const ReceiptSnapshot> snapshot;
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			if (!m_exportAccounting) return {{"error", "Accounting export is unavailable for this collector."}};
+			const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+			std::erase_if(m_receiptExports, [now](const std::pair<const std::string, std::pair<std::shared_ptr<const ReceiptSnapshot>, std::chrono::steady_clock::time_point>>& entry) { return entry.second.second <= now; });
+			if (fingerprint.empty())
+			{
+				if (offset != 0) return {{"error", "Choose the accounting snapshot before loading receipts."}};
+				snapshot = m_receipts;
+				if (!snapshot) return {{"pending", true}, {"collectionError", m_error}};
+				if (!m_receiptExports.contains(snapshot->fingerprint) && m_receiptExports.size() >= 32) return {{"error", "Accounting export is busy. Try again shortly."}};
+				m_receiptExports[snapshot->fingerprint] = {snapshot, now + std::chrono::minutes(2)};
+			}
+			else
+			{
+				const std::map<std::string, std::pair<std::shared_ptr<const ReceiptSnapshot>, std::chrono::steady_clock::time_point>>::iterator found = m_receiptExports.find(std::string(fingerprint));
+				if (found == m_receiptExports.end()) return {{"error", "Usage accounting snapshot expired. Try again."}};
+				snapshot = found->second.first; found->second.second = now + std::chrono::minutes(2);
+			}
+		}
+		if (offset > snapshot->bytes) return {{"error", "Choose a valid accounting receipt offset."}};
+
+		std::ifstream input(snapshot->path, std::ios::binary); input.seekg(static_cast<std::streamoff>(offset));
+		std::string chunk(static_cast<std::size_t>(std::min<std::uint64_t>(512 * 1024, snapshot->bytes - offset)), '\0');
+		input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+		if (!input || static_cast<std::size_t>(input.gcount()) != chunk.size()) return {{"error", "Could not read accounting receipts."}};
+		return {{"format", "jsonl-v3"}, {"dataBase64", base64::Encode(chunk)}, {"offset", offset}, {"totalBytes", snapshot->bytes}, {"fingerprint", snapshot->fingerprint}};
 	}
 
 	std::pair<bool, std::string> Collector::CollectionStatus() const
@@ -179,6 +213,7 @@ namespace uam::usage
 		{
 			std::lock_guard<std::mutex> lock(m_mutex); ledger = m_ledger; result = m_metadata;
 			result["collecting"] = m_collecting; result["collectionError"] = m_error;
+			if (!m_error.empty()) result["complete"] = false;
 		}
 		if (!ledger) return {{"pending", true}, {"collectionError", result["collectionError"]}};
 		return Render(*ledger, std::move(result), days, prices);

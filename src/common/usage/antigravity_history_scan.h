@@ -6,13 +6,13 @@
 
 namespace uam::usage
 {
-	/// <summary>Owns a bounded read-only SQLite snapshot across worker batches; publishes only completed scans.</summary>
+	/// <summary>Owns a read-only SQLite snapshot across bounded worker batches; streams receipts or publishes completed legacy caches.</summary>
 	class AntigravityHistoryScan
 	{
 	public:
 		AntigravityHistoryScan();
 		~AntigravityHistoryScan();
-		ScanResult Refresh(const std::filesystem::path& path, const std::function<bool()>& cancelled = {});
+		ScanResult Refresh(const std::filesystem::path& path, const std::function<bool()>& cancelled = {}, const std::function<bool(const std::vector<Record>&, std::string&)>& sink = {});
 		const std::vector<AntigravityUsageCandidate>& Candidates() const { return m_candidates; }
 		std::size_t InvalidRows() const { return m_invalidRows; }
 	private:

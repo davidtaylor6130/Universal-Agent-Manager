@@ -36,7 +36,7 @@ namespace uam::usage
 	void OpenCodeHistoryScan::Reset()
 	{
 		m_path.clear(); m_startMs = -1; m_endMs = -1;
-		m_table = 0; m_sawTable = false; m_cursor = 0; m_invalidRows = 0; m_suppressedCopies = 0; m_records.clear();
+		m_table = 0; m_sawTable = false; m_cursor = 0; m_invalidRows = 0; m_suppressedCopies = 0; m_records.clear(); m_recordBase = 0;
 	}
 
 	ScanResult OpenCodeHistoryScan::Refresh(const std::filesystem::path& path, std::int64_t start_ms, std::int64_t end_ms, const std::function<bool()>& cancelled)

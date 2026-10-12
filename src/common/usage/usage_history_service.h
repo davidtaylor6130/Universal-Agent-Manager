@@ -7,6 +7,7 @@
 
 namespace uam::usage
 {
+	using StreamingAccountingSink = std::function<bool(const std::string&, const std::vector<Record>&, std::size_t, std::size_t, std::string&)>;
 	using AccountingSink = std::function<bool(const std::string&, const std::vector<Record>&, std::size_t, std::string&)>;
 	nlohmann::json EmptyHistoryMetadata(std::string_view host_id = "local");
 	void ApplyUsageSummary(nlohmann::json& result, const Summary& summary, std::int64_t start_ms, std::int64_t end_ms);
@@ -38,8 +39,10 @@ namespace uam::usage
 
 		nlohmann::json Collect(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const AccountingSink& sink, const std::function<bool()>& cancelled = {});
 
+		nlohmann::json CollectStream(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const StreamingAccountingSink& sink, const std::function<bool()>& cancelled = {});
+
 	private:
-		nlohmann::json RefreshImpl(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, const std::function<bool()>& cancelled, const AccountingSink& sink);
+		nlohmann::json RefreshImpl(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, const std::function<bool()>& cancelled, const AccountingSink& sink, const StreamingAccountingSink& stream = {});
 		std::map<std::pair<std::string, std::filesystem::path>, std::size_t> m_accountedPositions;
 		bool Enumerate(const std::function<bool()>& cancelled);
 		std::vector<HistorySource> m_sources;
