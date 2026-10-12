@@ -215,3 +215,37 @@ UAM_TEST(UsageLedgerStorageSizeGrowsWithDailyCohortsAndRecentEvents)
 	UAM_ASSERT_EQ(ledger->Query(ledger->WindowStart(30), kAsOf)->total.records, std::size_t(15000));
 	std::cout << "[ledger-size] events=" << records.size() << " rows=" << ledger->Rows() << " bytes=" << bytes << '\n';
 }
+
+UAM_TEST(UsageLifetimeLedgerRetainsOldCohortsAndRequiresExplicitSnapshotScope)
+{
+	const uam::usage::Record old = LedgerEvent(180, "old-native"), recent = LedgerEvent(0, "recent-native");
+	uam::usage::Record copy = old;
+	copy.timestamp_ms = recent.timestamp_ms;
+	const std::vector<const uam::usage::Record*> records{&old, &recent, &copy};
+	const std::optional<uam::usage::Ledger> rolling = uam::usage::Ledger::Create(records, kAsOf);
+	const std::optional<uam::usage::Ledger> lifetime = uam::usage::Ledger::Create(records, kAsOf, uam::usage::LedgerRange::AllRecorded);
+	UAM_ASSERT(rolling && lifetime);
+	UAM_ASSERT_EQ(rolling->WindowStart(0), -1LL);
+	UAM_ASSERT(!rolling->Query(0, kAsOf));
+	UAM_ASSERT_EQ(lifetime->WindowStart(0), 0LL);
+	UAM_ASSERT_EQ(lifetime->Query(0, kAsOf)->total.records, std::size_t{2});
+	UAM_ASSERT_EQ(lifetime->Query(lifetime->WindowStart(90), kAsOf)->total.records, std::size_t{1});
+	const nlohmann::json payload = lifetime->Encode();
+	UAM_ASSERT_EQ(payload["version"], nlohmann::json(2));
+	UAM_ASSERT_EQ(payload["range"], nlohmann::json("all-recorded"));
+	const std::optional<uam::usage::Ledger> restored = uam::usage::Ledger::Decode(payload);
+	UAM_ASSERT(restored && restored->IncludesLifetime());
+	SameTotals(restored->Query(0, kAsOf)->total, lifetime->Query(0, kAsOf)->total);
+	for (const int mutation : {0, 1, 2, 3})
+	{
+		nlohmann::json invalid = payload;
+		if (mutation == 0) invalid.erase("range");
+		if (mutation == 1) invalid["range"] = "90-days";
+		if (mutation == 2) invalid["version"] = 1;
+		if (mutation == 3) invalid["rows"][0][5] = -1;
+		UAM_ASSERT(!uam::usage::Ledger::Decode(invalid));
+	}
+	const std::optional<uam::usage::Ledger> legacy = uam::usage::Ledger::Decode(rolling->Encode());
+	UAM_ASSERT(legacy && !legacy->IncludesLifetime());
+	UAM_ASSERT(!legacy->Query(0, kAsOf));
+}

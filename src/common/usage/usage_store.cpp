@@ -167,19 +167,33 @@ namespace uam::usage
 
 	std::optional<std::vector<AccountingRecord>> Store::ReadRecords(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled) const
 	{
+		return ReadRecordsImpl(generated_ms, error, cancelled, false);
+	}
+
+	std::optional<std::vector<AccountingRecord>> Store::ReadLifetimeRecords(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled) const
+	{
+		return ReadRecordsImpl(generated_ms, error, cancelled, true);
+	}
+
+	std::optional<std::vector<AccountingRecord>> Store::ReadRecordsImpl(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled, bool lifetime) const
+	{
 		error.clear();
 		if (generated_ms <= 0 || generated_ms > kMaxExactTokenCount) { error = "Usage collection time is invalid."; return std::nullopt; }
 		if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return std::nullopt; }
 		Database database = Open(m_path, error);
 		if (!database) return std::nullopt;
 		sqlite3_progress_handler(database.get(), 1000, Stop, const_cast<std::function<bool()>*>(&cancelled));
-		const std::int64_t start = std::max<std::int64_t>(0, generated_ms / 86400000 * 86400000 - 89LL * 86400000);
+		const std::int64_t retention_start = std::max<std::int64_t>(0, generated_ms / 86400000 * 86400000 - 89LL * 86400000);
+		const std::int64_t start = lifetime ? 0 : retention_start;
 		const std::string alias_lower = "[\"native\",\"antigravity-cli\",";
 		std::string alias_upper = alias_lower; ++alias_upper.back();
 		// Resolve aliases before pruning: an old reliable timestamp can suppress a recently stamped copy.
 		if (sqlite3_exec(database.get(), "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) { error = "Usage storage is busy."; return std::nullopt; }
 		sqlite3_stmt* raw = nullptr;
-		if (sqlite3_prepare_v2(database.get(), "SELECT identity,created,data FROM facts WHERE (created>=?1 AND created<?2) OR (identity>=?3 AND identity<?4) UNION ALL SELECT identity,created,data FROM archived_facts WHERE identity>=?3 AND identity<?4 ORDER BY created LIMIT 500001", -1, &raw, nullptr) != SQLITE_OK)
+		// Separate predicates keep rolling reads on the archive identity index instead of scanning lifetime facts.
+		const std::string query = std::string("SELECT identity,created,data FROM facts WHERE (created>=?1 AND created<?2) OR (identity>=?3 AND identity<?4) UNION ALL SELECT identity,created,data FROM archived_facts WHERE ") +
+		    (lifetime ? "created<?2 OR (identity>=?3 AND identity<?4)" : "identity>=?3 AND identity<?4") + " ORDER BY created LIMIT 500001";
+		if (sqlite3_prepare_v2(database.get(), query.c_str(), -1, &raw, nullptr) != SQLITE_OK)
 		{ error = "Could not read usage accounting."; return std::nullopt; }
 		Statement statement(raw, sqlite3_finalize);
 		sqlite3_bind_int64(statement.get(), 1, start); sqlite3_bind_int64(statement.get(), 2, generated_ms);
@@ -239,14 +253,14 @@ namespace uam::usage
 		if (sqlite3_prepare_v2(database.get(), "INSERT INTO archived_facts(identity,created,data) SELECT identity,created,data FROM facts WHERE created<?1 ON CONFLICT(identity) DO UPDATE SET created=excluded.created,data=excluded.data WHERE excluded.created<=archived_facts.created", -1, &archive_raw, nullptr) != SQLITE_OK)
 		{ error = "Could not prepare accounting archival."; return std::nullopt; }
 		Statement archive(archive_raw, sqlite3_finalize);
-		sqlite3_bind_int64(archive.get(), 1, start);
+		sqlite3_bind_int64(archive.get(), 1, retention_start);
 		if (sqlite3_step(archive.get()) != SQLITE_DONE) { error = "Could not archive usage accounting."; return std::nullopt; }
 		archive.reset();
 		sqlite3_stmt* prune_raw = nullptr;
 		if (sqlite3_prepare_v2(database.get(), "DELETE FROM facts WHERE created<?1", -1, &prune_raw, nullptr) != SQLITE_OK)
 		{ error = "Could not maintain usage retention."; return std::nullopt; }
 		Statement prune(prune_raw, sqlite3_finalize);
-		sqlite3_bind_int64(prune.get(), 1, start);
+		sqlite3_bind_int64(prune.get(), 1, retention_start);
 		if (sqlite3_step(prune.get()) != SQLITE_DONE) { error = "Could not maintain usage retention."; return std::nullopt; }
 		prune.reset();
 		std::vector<AccountingRecord> retained;

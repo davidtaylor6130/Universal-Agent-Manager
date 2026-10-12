@@ -31,9 +31,12 @@ namespace uam::usage
 		bool Import(const std::vector<SourceRecord>& records, std::string& error, const std::function<bool()>& cancelled = {}) const;
 		std::optional<Ledger> Read(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled = {}) const;
 		std::optional<std::vector<AccountingRecord>> ReadRecords(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled = {}) const;
+		/// <summary>Reads bounded canonical archived and recent receipts before any daily aggregation.</summary>
+		std::optional<std::vector<AccountingRecord>> ReadLifetimeRecords(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled = {}) const;
 		const std::filesystem::path& Path() const { return m_path; }
 
 	private:
+		std::optional<std::vector<AccountingRecord>> ReadRecordsImpl(std::int64_t generated_ms, std::string& error, const std::function<bool()>& cancelled, bool lifetime) const;
 		std::filesystem::path m_path;
 	};
 }

@@ -47,9 +47,9 @@ namespace uam::usage
 		}
 	}
 
-	std::optional<Ledger> Ledger::Create(const std::vector<const Record*>& input_records, std::int64_t generated_ms)
+	std::optional<Ledger> Ledger::Create(const std::vector<const Record*>& input_records, std::int64_t generated_ms, LedgerRange range)
 	{
-		if (generated_ms <= 0 || generated_ms > kMaxExactTokenCount || input_records.size() > kMaxRows) return std::nullopt;
+		if ((range != LedgerRange::Rolling90Days && range != LedgerRange::AllRecorded) || generated_ms <= 0 || generated_ms > kMaxExactTokenCount || input_records.size() > kMaxRows) return std::nullopt;
 		std::vector<const Record*> records;
 		std::vector<AntigravityUsageCandidate> candidates;
 		std::size_t alias_bytes = 0;
@@ -77,8 +77,9 @@ namespace uam::usage
 		if (!checked) return std::nullopt;
 		Ledger ledger;
 		ledger.m_generatedMs = generated_ms;
+		ledger.m_range = range;
 		ledger.m_duplicates = checked->duplicates + candidates.size() - merged->size();
-		const std::int64_t start = ledger.WindowStart(90), cutoff = ledger.WindowStart(1);
+		const std::int64_t start = ledger.IncludesLifetime() ? 0 : ledger.WindowStart(90), cutoff = ledger.WindowStart(1);
 		std::map<std::pair<std::string, std::string>, std::size_t> originals;
 		for (std::size_t index = 0; index < records.size(); ++index)
 		{
@@ -128,6 +129,7 @@ namespace uam::usage
 
 	std::int64_t Ledger::WindowStart(int days) const
 	{
+		if (days == 0) return IncludesLifetime() ? 0 : -1;
 		if (days == 1) return std::max<std::int64_t>(0, m_generatedMs - kDayMs);
 		if (days != 7 && days != 30 && days != 90) return -1;
 		return std::max<std::int64_t>(0, m_generatedMs / kDayMs * kDayMs - (days - 1LL) * kDayMs);
@@ -136,7 +138,7 @@ namespace uam::usage
 	std::optional<Summary> Ledger::Query(std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices) const
 	{
 		const std::int64_t cutoff = WindowStart(1);
-		if (start_ms < WindowStart(90) || end_ms > m_generatedMs || (start_ms < cutoff && start_ms % kDayMs != 0) || (end_ms < cutoff && end_ms % kDayMs != 0)) return std::nullopt;
+		if (start_ms < (IncludesLifetime() ? 0 : WindowStart(90)) || end_ms > m_generatedMs || (start_ms < cutoff && start_ms % kDayMs != 0) || (end_ms < cutoff && end_ms % kDayMs != 0)) return std::nullopt;
 		std::optional<Summary> summary = Aggregate(m_records, start_ms, end_ms, prices);
 		if (summary) summary->duplicates += m_duplicates;
 		return summary;
@@ -151,18 +153,26 @@ namespace uam::usage
 			    record.reported_cost_usd ? nlohmann::json(*record.reported_cost_usd) : nlohmann::json(nullptr),
 			    record.estimated_cost_usd ? nlohmann::json(*record.estimated_cost_usd) : nlohmann::json(nullptr), record.record_count,
 			    record.unidentified_records ? nlohmann::json(*record.unidentified_records) : nlohmann::json(nullptr)}));
-		return {{"version", 1}, {"generatedMs", m_generatedMs}, {"duplicates", m_duplicates}, {"rows", std::move(rows)}};
+		nlohmann::json payload{{"version", IncludesLifetime() ? 2 : 1}, {"generatedMs", m_generatedMs}, {"duplicates", m_duplicates}, {"rows", std::move(rows)}};
+		if (IncludesLifetime()) payload["range"] = "all-recorded";
+		return payload;
 	}
 
 	std::optional<Ledger> Ledger::Decode(const nlohmann::json& payload)
 	{
-		if (!payload.is_object() || !payload.contains("version") || payload["version"] != 1 || !payload.contains("generatedMs") || !payload.contains("duplicates") ||
+		if (!payload.is_object() || !payload.contains("version") || (payload["version"] != 1 && payload["version"] != 2) || !payload.contains("generatedMs") || !payload.contains("duplicates") ||
 		    !payload.contains("rows") || !payload["rows"].is_array() || payload["rows"].size() > kMaxRows) return std::nullopt;
 		Ledger ledger;
+		if (payload["version"] == 2)
+		{
+			if (!payload.contains("range") || payload["range"] != "all-recorded") return std::nullopt;
+			ledger.m_range = LedgerRange::AllRecorded;
+		}
+		else if (payload.contains("range")) return std::nullopt;
 		std::int64_t duplicates = 0;
 		if (!Count(payload["generatedMs"], ledger.m_generatedMs) || ledger.m_generatedMs <= 0 || !Count(payload["duplicates"], duplicates)) return std::nullopt;
 		ledger.m_duplicates = static_cast<std::size_t>(duplicates);
-		const std::int64_t start = ledger.WindowStart(90), cutoff = ledger.WindowStart(1);
+		const std::int64_t start = ledger.IncludesLifetime() ? 0 : ledger.WindowStart(90), cutoff = ledger.WindowStart(1);
 		std::set<CohortKey> cohorts;
 		std::set<std::pair<std::string, std::string>> recent_identities;
 		for (const nlohmann::json& row : payload["rows"])

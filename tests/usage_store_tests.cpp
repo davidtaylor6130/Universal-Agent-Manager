@@ -285,3 +285,23 @@ UAM_TEST(UsageAccountingCodecRejectsMalformedIdentitiesCountsAndCosts)
 		UAM_ASSERT(!uam::usage::DecodeAccountingRecord(row));
 	}
 }
+
+UAM_TEST(UsageLifetimeReadCombinesArchiveAndRecentReceiptsAcrossRestart)
+{
+	TempDir temp("uam-usage-lifetime-read");
+	uam::usage::Store store(temp.root);
+	std::string error;
+	uam::usage::Record old = StoreEvent("lifetime-old"), recent = StoreEvent("lifetime-recent"), future = StoreEvent("lifetime-future");
+	old.timestamp_ms = kStoreAsOf - 180LL * 86400000;
+	future.timestamp_ms = kStoreAsOf + 86400000;
+	UAM_ASSERT(store.Import({{&old, "source", 0}, {&recent, "source", 1}, {&future, "source", 2}}, error));
+	UAM_ASSERT_EQ(store.ReadRecords(kStoreAsOf, error)->size(), std::size_t{1});
+	const std::optional<std::vector<uam::usage::AccountingRecord>> lifetime = uam::usage::Store(temp.root).ReadLifetimeRecords(kStoreAsOf, error);
+	UAM_ASSERT(lifetime);
+	UAM_ASSERT_EQ(lifetime->size(), std::size_t{2});
+	UAM_ASSERT_EQ((*lifetime)[0].record.dedupe_key, old.dedupe_key);
+	UAM_ASSERT_EQ((*lifetime)[1].record.dedupe_key, recent.dedupe_key);
+	UAM_ASSERT(!store.ReadLifetimeRecords(kStoreAsOf, error, [] { return true; }));
+	UAM_ASSERT_EQ(store.ReadRecords(kStoreAsOf, error)->size(), std::size_t{1});
+	UAM_ASSERT_EQ(store.ReadLifetimeRecords(kStoreAsOf + 2LL * 86400000, error)->size(), std::size_t{3});
+}
