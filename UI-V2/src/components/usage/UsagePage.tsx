@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { ArrowLeft, Info, RefreshCw, SlidersHorizontal } from 'lucide-react'
 import { useUsageHistory } from '../../hooks/useUsageHistory'
 import { ALL_MACHINES_HOST_ID, EMPTY_USAGE_TOTALS, sumProviderUsage, USAGE_PROVIDERS, USAGE_WINDOWS, formatUsageCost, formatUsageCount, usageCost, usageWindow, type UsageProviderId, type UsageMetric, type UsageModel, type UsagePriceOverride, type UsageTotals, type UsageWindowDays } from '../../services/usageHistory'
@@ -171,6 +171,25 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   // Re-keying the plot replays the grow-in animation when the metric, period or provider filter changes.
   const plotKey = [metric, days, hostId, [...hiddenProviders].sort().join(',')].join('|')
   const axisValue = (value: number) => metric === 'cost' ? money(value) : formatUsageCount(value)
+  // Tokens stack by token type (per-day split from the provider rows); cost stacks by provider.
+  type Band = { key: string; label: string; color: string; value: number; text: string }
+  const providerBands = (period: (typeof periods)[number]): Band[] => period.bands.map(band => ({ key: band.providerId, label: providerLabel(band.providerId), color: providerColor[band.providerId], value: numeric(band), text: amount(band) }))
+  const tokenBands = (period: (typeof periods)[number]): Band[] => TOKEN_SEGMENTS.map(segment => { const value = segment.value(period); return { key: segment.key, label: segment.label, color: segment.color, value, text: `${formatUsageCount(value)} · ${percentOf(value, period.totalTokens)}` } })
+  const columnSummary = (period: (typeof periods)[number]) => {
+    const providers = providerBands(period).filter(band => band.value > 0).map(band => `${band.label} ${band.text}`)
+    const tokens = metric === 'tokens' ? tokenBands(period).filter(band => band.value > 0).map(band => `${band.label} ${formatUsageCount(band.value)}`) : []
+    return [`${tipLabel(period.startMs)}: ${amount(period)}`, providers.length ? providers.join(', ') : 'No usage', tokens.length ? tokens.join(', ') : ''].filter(Boolean).join('. ')
+  }
+  /** Arrow keys (and Home/End) move focus between daily columns; each column shows the same tooltip on focus. */
+  const moveColumnFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    const columns = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('.uam-usage-col'))
+    const current = columns.indexOf(document.activeElement as HTMLElement)
+    if (current < 0) return
+    event.preventDefault()
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? columns.length - 1 : Math.min(columns.length - 1, Math.max(0, current + (event.key === 'ArrowRight' ? 1 : -1)))
+    columns[next].focus()
+  }
   const tipLabel = (startMs: number) => new Date(startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', timeZone: 'UTC' })
   const noCostData = metric === 'cost' && totals.totalTokens > 0 && totals.reportedCostTokens + totals.estimatedCostTokens === 0
   const hasReported = totals.reportedCostUsd > 0
@@ -242,12 +261,23 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               <h2 className="text-sm font-medium">{hourly ? 'Hourly' : 'Daily'} {metric === 'cost' ? 'estimated cost' : 'tokens'}</h2>
               <div className="uam-usage-chart">
                 <div className="uam-usage-axis text-xs tabular-nums" aria-hidden><span>{axisValue(peak)}</span><span>{axisValue(peak / 2)}</span><span>0</span></div>
-                <div key={plotKey} role="img" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'estimated costs, unpriced tokens excluded' : 'tokens'} from loaded history`} className="uam-usage-plot" style={{ gap: periods.length > 31 ? 1 : 4 }}>
+                <div key={plotKey} role="group" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'estimated costs, unpriced tokens excluded' : 'tokens'} from loaded history. Use arrow keys to move between columns.`} className="uam-usage-plot" style={{ gap: periods.length > 31 ? 1 : 4 }} onKeyDown={moveColumnFocus}>
                   {metric === 'cost' && peak === 0 && totals.unpricedTokens > 0 && <span className="absolute inset-0 flex items-center justify-center text-xs">No priced usage in this range.</span>}
-                  {periods.map((period, index) => <div key={period.startMs} className="uam-usage-col" style={{ '--i': Math.min(index, 40) } as CSSProperties} title={`${new Date(period.startMs).toLocaleString()} · ${amount(period)}`}>
-                    <div className="uam-usage-col-stack" style={{ height: `${peak ? numeric(period) / peak * 100 : 0}%`, minHeight: numeric(period) > 0 ? 2 : 0 }}>{period.bands.map(band => <div key={band.providerId} className="uam-usage-band" title={`${providerLabel(band.providerId)} · ${amount(band)}`} style={{ height: `${numeric(period) ? numeric(band) / numeric(period) * 100 : 0}%`, '--c': providerColor[band.providerId] } as CSSProperties} />)}</div>
-                    <span className="uam-usage-col-tip" aria-hidden>{tipLabel(period.startMs)} · {amount(period)}</span>
-                  </div>)}
+                  {periods.map((period, index) => {
+                    const total = numeric(period)
+                    const pct = peak ? total / peak * 100 : 0
+                    const edge = index < periods.length * 0.2 ? 'is-start' : index >= periods.length * 0.8 ? 'is-end' : ''
+                    const bands = (metric === 'tokens' ? tokenBands(period) : providerBands(period)).filter(band => band.value > 0)
+                    const tipRows = metric === 'tokens' ? [...bands, ...providerBands(period).filter(band => band.value > 0).map(band => ({ ...band, text: `${formatUsageCount(band.value)} tokens` }))] : bands
+                    return <div key={period.startMs} role="img" tabIndex={index === periods.length - 1 ? 0 : -1} aria-label={columnSummary(period)} className={cx('uam-usage-col', edge, pct > 55 && 'is-high')} style={{ '--i': Math.min(index, 40), '--h': `${pct}%` } as CSSProperties}>
+                      <div className="uam-usage-col-stack" style={{ height: `${pct}%`, minHeight: total > 0 ? 2 : 0 }}>{bands.map(band => <div key={band.key} className="uam-usage-band" data-seg={band.key} style={{ height: `${total ? band.value / total * 100 : 0}%`, '--c': band.color } as CSSProperties} />)}</div>
+                      <span className="uam-usage-col-tip" aria-hidden>
+                        <span className="uam-usage-tip-head">{tipLabel(period.startMs)} · <b>{amount(period)}</b></span>
+                        {tipRows.map(row => <span key={row.key} className="uam-usage-tip-row"><i className="uam-usage-swatch" style={{ '--c': row.color } as CSSProperties} />{row.label}<span className="tabular-nums uam-usage-muted">{row.text}</span></span>)}
+                        {tipRows.length === 0 && <span className="uam-usage-muted">No usage</span>}
+                      </span>
+                    </div>
+                  })}
                 </div>
               </div>
               <p className="text-xs uam-usage-muted">{new Date(data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ' · Daily buckets use UTC' : ''}</p>

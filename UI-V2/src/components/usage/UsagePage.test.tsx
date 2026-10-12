@@ -126,28 +126,37 @@ describe('UsagePage', () => {
         days: [{ ...combined, startMs }], hours: [], providerDays: ['codex-cli', 'claude-cli'].map(providerId => ({ ...total, startMs, providerId })), providerHours: [] }))
     }
     const host = document.createElement('div'), root = createRoot(host)
+    document.body.appendChild(host)
     try {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
       act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Tokens')!.click())
       expect(host.textContent).toContain('2 sessions')
       expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(2)
-      const chart = () => host.querySelector('[role="img"]')!
-      expect(chart().querySelectorAll('[title="Codex · 17"], [title="Claude · 17"]')).toHaveLength(2)
+      const chart = () => host.querySelector('.uam-usage-plot')!
+      const columns = () => Array.from(chart().querySelectorAll<HTMLElement>('.uam-usage-col')).map(column => column.getAttribute('aria-label')).join('|')
+      expect(chart().querySelectorAll('[data-seg="input"]')).toHaveLength(1)
+      expect(columns()).toContain('Codex 17, Claude 17')
       const codex = host.querySelector<HTMLButtonElement>('[aria-label="Include Codex usage"]')!
       act(() => codex.click())
       expect(codex.getAttribute('aria-pressed')).toBe('false')
       expect(host.textContent).toContain('1 sessions')
       expect(host.querySelector('[aria-label="Inspect Codex test-model standard"]')).toBeNull()
-      expect(chart().querySelector('[title="Codex · 17"]')).toBeNull()
-      expect(chart().querySelector('[title="Claude · 17"]')).not.toBeNull()
+      expect(columns()).not.toContain('Codex')
+      expect(columns()).toContain('Claude 17')
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Include Claude usage"]')!.click())
       expect(host.textContent).toContain('0 sessions')
-      expect(chart().querySelectorAll('[title="Claude · 17"]')).toHaveLength(0)
+      expect(columns()).not.toContain('Claude')
       expect(requests).toBe(1)
       act(() => codex.click())
       expect(host.querySelectorAll('[aria-label^="Inspect"]')).toHaveLength(1)
-      expect(chart().querySelector('[title="Codex · 17"]')).not.toBeNull()
-    } finally { act(() => root.unmount()) }
+      expect(columns()).toContain('Codex 17')
+      const cols = chart().querySelectorAll<HTMLElement>('.uam-usage-col')
+      act(() => cols[0].focus())
+      act(() => { cols[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })) })
+      expect(document.activeElement).toBe(cols[1])
+      act(() => { cols[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })) })
+      expect(document.activeElement).toBe(cols[cols.length - 1])
+    } finally { act(() => root.unmount()); host.remove() }
   })
   it('rejects malformed saved prices without treating missing fields as zero', () => {
     const price = { providerId: 'codex-cli', modelId: 'test-model', speed: 'standard', inputPerMillion: 0, cachedInputPerMillion: null, cacheWritePerMillion: null, outputPerMillion: 1 }

@@ -201,7 +201,9 @@
   flex: 1 1 0;
   min-width: 0;
   height: 100%;
+  border-radius: var(--r-sm);
 }
+.uam-usage-col:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .uam-usage-col-stack {
   display: flex;
   flex-direction: column-reverse;
@@ -217,13 +219,17 @@
   border-radius: 2px;
   background: var(--c);
 }
+/* Tooltip sits just above the column's stack (--h). Columns near either end align to that edge so
+   they never run off the chart; a column whose stack is tall moves the tooltip to the plot top. */
 .uam-usage-col-tip {
   position: absolute;
-  bottom: 100%;
+  bottom: calc(var(--h, 0%) + 6px);
   left: 50%;
-  z-index: 1;
-  margin-bottom: 4px;
-  padding: 2px 6px;
+  z-index: 2;
+  display: grid;
+  gap: 3px;
+  min-width: 9rem;
+  padding: 6px 8px;
   white-space: nowrap;
   border: 1px solid var(--border-bright);
   border-radius: var(--r-sm);
@@ -236,7 +242,15 @@
   pointer-events: none;
   transition: opacity var(--dur-fast) var(--ease-out-soft);
 }
-.uam-usage-col:hover .uam-usage-col-tip { opacity: 1; }
+.uam-usage-col.is-start .uam-usage-col-tip { left: 0; transform: none; }
+.uam-usage-col.is-end .uam-usage-col-tip { left: auto; right: 0; transform: none; }
+.uam-usage-col.is-high .uam-usage-col-tip { bottom: auto; top: 2px; }
+.uam-usage-col:hover .uam-usage-col-tip,
+.uam-usage-col:focus-visible .uam-usage-col-tip { opacity: 1; }
+.uam-usage-tip-head { color: var(--text-2); }
+.uam-usage-tip-head b { font-weight: 600; color: var(--text); }
+.uam-usage-tip-row { display: flex; align-items: center; gap: 6px; }
+.uam-usage-tip-row .uam-usage-muted { margin-left: auto; padding-left: 12px; }
 
 /* One compact legend: swatch, name, value. */
 .uam-usage-key {
