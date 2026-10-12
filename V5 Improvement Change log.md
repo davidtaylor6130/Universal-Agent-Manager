@@ -283,7 +283,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Platform and diagnostics | Bugfix | MSVC SQLite Compatibility | SQLite integration builds correctly with MSVC. | Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Bugfix | ES2020 Sidebar Compatibility | Sidebar code remains compatible with the configured JavaScript target. | Claude UI Reviewed; Not User Tested |
 | Platform and diagnostics | Bugfix | Fresh Ninja Builds | Fresh Ninja UI builds preserve the expected output layout. | Un-Reviewed; Not User Tested |
-| Platform and diagnostics | Bugfix | macOS Quit Routing | Application Quit runs through CEF shutdown and handles picker cancellation and repeated requests. | Un-Reviewed; Not User Tested |
+| Platform and diagnostics | Bugfix | macOS Quit Routing | Quit exits an owned picker modal loop before deferring CEF closure, including ignored cancellation and repeated requests. | Claude Review; Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Bugfix | Caps Lock Quit | Command-Q works with Caps Lock enabled. | Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Bugfix | Reaped Exit Status | macOS retains process exit status while remaining output is drained. | Un-Reviewed; Not User Tested |
 | Platform and diagnostics | Performance | Background Diagnostic Logging | Diagnostic logging uses a bounded background worker. | Un-Reviewed; Not User Tested |
@@ -325,7 +325,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
-| Platform and diagnostics | Bugfix | macOS Quit Routing | Investigate intermittent folder-picker Quit cancellation without weakening the existing watchdog. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
+| Platform and diagnostics | Bugfix | macOS Quit Routing | Review and user-test native picker Quit cancellation, including early and repeated requests. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Bugfix | Failed Save Admission Revocation | A synchronous save failure must retire pending admission before rejecting its acknowledgement. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Bugfix | Asynchronous Save State Feedback | Review and user-test frontend error and processing updates after asynchronous save completion. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Asynchronous Send Durability | Move the remaining pre-dispatch durable save off the GUI thread while preserving admission, ordering and crash recovery. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
@@ -986,3 +986,5 @@ Delivery-marker continuation allocation: coordinator `chat-1791755529536-1b146e`
 Quota continuation fixture ownership: coordinator `chat-1791755529536-1b146e` owns the affected owner-poll loop in `tests/claude_projection_tests.cpp` for this delivery continuation; warm, cold, queued and goal cases must preserve the one-instruction and no-replay assertions.
 
 Native picker verification allocation: coordinator `chat-1791755529536-1b146e` owns the narrow folder-picker termination failure in `tests/macos_application_tests.mm` and `src/common/platform/platform_application_macos.mm` in `build/v5-bug-fix-swarm`; the 1596 core cases pass, while the full-run native picker watchdog failure and its isolated passing rerun remain recorded for investigation.
+
+Native picker continuation verification: the ignored-first-cancel fixture reproduced the original two-second watchdog failure; the modal-stop fallback passes all 14 picker scenarios and the Release app/test build, with pending Claude and user acceptance retained and detailed integration receipts in `.UAM/AINotes/v5-swarm-plan.md`.

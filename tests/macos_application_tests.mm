@@ -2,10 +2,25 @@
 #include "cef/uam_cef_security.h"
 
 #import <AppKit/AppKit.h>
+#import <objc/runtime.h>
 
 #include "include/cef_application_mac.h"
 #include <cstdio>
 #include <string_view>
+
+static IMP s_originalPanelCancel = nullptr;
+static bool s_ignoredInitialCancel = false;
+
+/// <summary>Simulates a panel which has not yet accepted its first cancellation request.</summary>
+static void IgnoreInitialPanelCancel(id panel, SEL selector, id sender)
+{
+	if (!s_ignoredInitialCancel)
+	{
+		s_ignoredInitialCancel = true;
+		return;
+	}
+	reinterpret_cast<void (*)(id, SEL, id)>(s_originalPanelCancel)(panel, selector, sender);
+}
 
 @interface UamCloseProbeWindow : NSWindow
 @property(nonatomic, assign) BOOL closeRequested;
@@ -43,7 +58,7 @@ int main(int argc, char* argv[])
 		const bool picker_probe = argc == 2 && std::string_view(argv[1]).find("--picker-") == 0;
 		if (!terminate_probe && !picker_probe)
 		{
-			for (NSString* argument in @[@"--picker-folder-terminate", @"--picker-file-terminate", @"--picker-folder-keyboard", @"--picker-file-keyboard", @"--picker-folder-caps-keyboard", @"--picker-file-caps-keyboard", @"--picker-folder-repeat-terminate", @"--picker-file-repeat-terminate", @"--picker-folder-repeat-keyboard", @"--picker-file-repeat-keyboard", @"--picker-folder-cancel", @"--picker-file-cancel"])
+			for (NSString* argument in @[@"--picker-folder-terminate", @"--picker-file-terminate", @"--picker-folder-delayed-terminate", @"--picker-file-delayed-terminate", @"--picker-folder-keyboard", @"--picker-file-keyboard", @"--picker-folder-caps-keyboard", @"--picker-file-caps-keyboard", @"--picker-folder-repeat-terminate", @"--picker-file-repeat-terminate", @"--picker-folder-repeat-keyboard", @"--picker-file-repeat-keyboard", @"--picker-folder-cancel", @"--picker-file-cancel"])
 			{
 				NSTask* task = [[NSTask alloc] init];
 				task.launchPath = [NSString stringWithUTF8String:argv[0]];
@@ -108,12 +123,23 @@ int main(int argc, char* argv[])
 			const bool keyboard = std::string_view(argv[1]).find("keyboard") != std::string_view::npos;
 			const bool cancel = std::string_view(argv[1]).find("cancel") != std::string_view::npos;
 			const bool repeat = std::string_view(argv[1]).find("repeat") != std::string_view::npos;
+			const bool delayed_cancel = std::string_view(argv[1]).find("delayed") != std::string_view::npos;
 			__block BOOL saw_picker = NO;
 			__block BOOL timed_out = NO;
 			__block BOOL closed_inside_modal = NO;
 			NSTimer* request = [NSTimer timerWithTimeInterval:0.1 repeats:NO block:^(NSTimer*)
 			{
 				saw_picker = [application.modalWindow isKindOfClass:[NSOpenPanel class]];
+				if (delayed_cancel && saw_picker)
+				{
+					const Class panel_class = object_getClass(application.modalWindow);
+					const Method cancel_method = class_getInstanceMethod(panel_class, @selector(cancel:));
+					if (cancel_method != nullptr)
+					{
+						s_originalPanelCancel = method_getImplementation(cancel_method);
+						class_replaceMethod(panel_class, @selector(cancel:), reinterpret_cast<IMP>(IgnoreInitialPanelCancel), method_getTypeEncoding(cancel_method));
+					}
+				}
 				if (cancel) [(NSOpenPanel*)application.modalWindow cancel:nil];
 				else if (keyboard) [application postEvent:quit atStart:NO];
 				else [application terminate:nil];
@@ -141,6 +167,7 @@ int main(int argc, char* argv[])
 			const bool accepted = uam::platform::BrowsePath(directory, std::filesystem::temp_directory_path(), &selected, &error);
 			[request invalidate];
 			[watchdog invalidate];
+			if (delayed_cancel && !s_ignoredInitialCancel) return 21;
 			if (repeat)
 			{
 				// A second Quit can arrive in the query callback before default-mode close.

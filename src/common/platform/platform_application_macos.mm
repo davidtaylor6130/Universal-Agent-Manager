@@ -39,7 +39,10 @@
 	if ([[self modalWindow] isKindOfClass:[NSOpenPanel class]])
 	{
 		pickerQuitPending_ = YES;
-		[(NSOpenPanel*)[self modalWindow] cancel:sender];
+		NSOpenPanel* panel = (NSOpenPanel*)[self modalWindow];
+		[panel cancel:sender];
+		// Cancellation can arrive before the panel accepts actions; still unwind its owned loop.
+		if ([self modalWindow] == panel) [self stopModalWithCode:NSModalResponseCancel];
 		// Unwind BrowsePath and its CEF query callback before closing the browser.
 		[self performSelector:@selector(completePickerQuit:) withObject:nil afterDelay:0];
 		return;
@@ -178,7 +181,9 @@ namespace uam::platform
 				NSString* initial = [NSString stringWithUTF8String:initial_path.c_str()];
 				if (initial != nil) panel.directoryURL = [NSURL fileURLWithPath:initial];
 			}
-			if ([panel runModal] != NSModalResponseOK) return false;
+			const NSModalResponse response = [panel runModal];
+			[panel orderOut:nil];
+			if (response != NSModalResponseOK) return false;
 			const char* selected = panel.URL.fileSystemRepresentation;
 			if (selected == nullptr || *selected == '\0')
 			{
