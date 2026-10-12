@@ -56,6 +56,10 @@ class ChatRepository
   public:
 	/// <summary>Serializes and syncs temporary files on a worker without changing saved chat files.</summary>
 	static std::shared_ptr<PreparedChatSave> PrepareChatSave(const std::filesystem::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision = {});
+	using ImportMessageProducer = std::function<bool(const std::function<bool(const Message&)>&, ChatSession&)>;
+	/// <summary>Stages complete imported messages one at a time without a whole-transcript JSON allocation.</summary>
+	static std::shared_ptr<PreparedChatSave> PrepareImportedChatSave(const std::filesystem::path& data_root,
+	    ChatSession& metadata, const ImportMessageProducer& produce);
 	/// <summary>Captures primary-file metadata without reading transcript bodies; missing files have a stable revision.</summary>
 	static std::optional<std::string> ChatStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	static std::optional<std::string> ChatSummaryStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);

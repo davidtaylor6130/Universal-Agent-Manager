@@ -697,3 +697,268 @@ UAM_TEST(DeletionWaitsForStartupImportPublicationBeforeCapturingTargets)
 	UAM_ASSERT(app.chats.empty());
 	UAM_ASSERT(ChatRepository::LoadLocalChats(app.data_root).empty());
 }
+
+
+UAM_TEST(StartupNativePartialPublicationKeepsFailedCandidatesRetryable)
+{
+	TempDir temp("uam-startup-partial-retry");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(temp.root / "workspace", "good"),
+	    StartupHistory(temp.root / "workspace", "failed")}));
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	const fs::path blocked = AppPaths::UamChatFilePath(app.data_root, "failed");
+	fs::create_directories(blocked);
+	std::ofstream(blocked / "keep") << "private obstruction";
+	std::string error;
+	UAM_ASSERT(service.Decide(app, ready.generation, {}, {}, &error, "known", true));
+	WaitForStartup(service, app);
+	const uam::StartupNativeImportSnapshot partial = service.Snapshot();
+	UAM_ASSERT_EQ(partial.imported_count, 1);
+	UAM_ASSERT_EQ(partial.total_count, std::size_t{1});
+	UAM_ASSERT_EQ(partial.candidates.front().native_session_id, std::string("failed"));
+	UAM_ASSERT(!partial.errors.empty());
+	UAM_ASSERT(ChatRepository::LoadLocalChat(app.data_root, "good").has_value());
+	fs::remove_all(blocked);
+	UAM_ASSERT(service.Decide(app, partial.generation, {partial.candidates.front().candidate_id}, {}, &error));
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().imported_count, 2);
+	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{0});
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{2});
+	UAM_ASSERT(ChatRepository::LoadLocalChat(app.data_root, "failed").has_value());
+}
+
+UAM_TEST(CodexStreamingImportPreservesLargeSourceAndAllLocalMessages)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-streaming-import");
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	const fs::path rollout = temp.root / "codex" / "sessions" / "rollout-private.jsonl";
+	fs::create_directories(rollout.parent_path());
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const std::string id = "11111111-1111-4111-8111-111111111111";
+	{
+		std::ofstream records(rollout, std::ios::binary);
+		records << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", app.folders.front().directory}}}}.dump() << '\n';
+		const std::string ignored = nlohmann::json{{"type", "event_msg"}, {"payload", {{"type", "private_fixture"}, {"text", std::string(65536, 'x')}}}}.dump() + "\n";
+		for (int index = 0; index < 1025; ++index) records << ignored;
+		for (int index = 0; index < 10002; ++index)
+		{
+			records << nlohmann::json{{"type", "response_item"}, {"payload", {{"type", "message"},
+			    {"role", index == 0 ? "user" : "assistant"}, {"content", nlohmann::json::array({{{"type", "text"}, {"text", "private message " + std::to_string(index)}}})}}}}.dump() << '\n';
+		}
+	}
+	UAM_ASSERT(fs::file_size(rollout) > 64U * 1024U * 1024U);
+	const ChatHistorySyncService::LocalHistoryDiscovery discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(app.folders.front());
+	UAM_ASSERT(discovery.result.success);
+	UAM_ASSERT_EQ(discovery.codex_rollouts.size(), std::size_t{1});
+	UAM_ASSERT(discovery.codex_rollouts.front().first.messages.empty());
+	UAM_ASSERT(!discovery.codex_rollouts.front().first.messages_loaded);
+	for (const int mode : {0, 1, 2})
+	{
+		app.data_root = temp.root / ("data-" + std::to_string(mode));
+		app.chats.clear();
+		if (mode == 2)
+		{
+			uam::StartupNativeImportService service([discovery](const uam::StartupNativeImportScanRequest&, std::stop_token) { return discovery; });
+			service.Initialize(app);
+			WaitForStartup(service, app);
+			const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+			UAM_ASSERT_EQ(ready.total_count, std::size_t{1});
+			std::string error;
+			UAM_ASSERT(service.Decide(app, ready.generation, {}, {}, &error, "known", true));
+			WaitForStartup(service, app);
+			UAM_ASSERT_EQ(service.Snapshot().imported_count, 1);
+			UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{0});
+		}
+		else
+		{
+			const ChatHistorySyncService::ImportResult imported = mode == 0
+			    ? ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, "known")
+			    : ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, app.folders.front(), discovery, true);
+			UAM_ASSERT(imported.success);
+			UAM_ASSERT_EQ(imported.imported_count, 1);
+		}
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->messages.size(), std::size_t{10002});
+		UAM_ASSERT_EQ(saved->messages.front().content, std::string("private message 0"));
+		UAM_ASSERT_EQ(saved->messages.back().content, std::string("private message 10001"));
+		const std::optional<ChatSession> summary = ChatRepository::LoadLocalChatSummaryReadOnly(app.data_root, id);
+		UAM_ASSERT(summary.has_value());
+		UAM_ASSERT_EQ(summary->persisted_message_count, std::size_t{10002});
+		UAM_ASSERT_EQ(summary->persisted_messages_digest, saved->persisted_messages_digest);
+	}
+
+#endif
+}
+
+UAM_TEST(StreamedImportedStorageRetainsCompleteContentBeyondOrdinaryJsonBudget)
+{
+	TempDir temp("uam-streamed-storage-budget");
+	ChatSession metadata;
+	metadata.id = "private-streamed-import";
+	metadata.provider_id = "codex-cli";
+	metadata.title = "Complete private import";
+	Message message{MessageRole::User, std::string(2 * 1024 * 1024, 'q')};
+	const std::size_t count = 130;
+	const std::shared_ptr<PreparedChatSave> staged = ChatRepository::PrepareImportedChatSave(temp.root, metadata,
+	    [&](const std::function<bool(const Message&)>& emit, ChatSession& final_metadata)
+	{
+		for (std::size_t index = 0; index < count; ++index)
+			if (!emit(message)) return false;
+		final_metadata.updated_at = "2026-10-12T20:00:00Z";
+		return true;
+	});
+	UAM_ASSERT(staged != nullptr);
+	UAM_ASSERT(metadata.messages.empty());
+	UAM_ASSERT(!metadata.messages_loaded);
+	UAM_ASSERT_EQ(metadata.persisted_message_count, count);
+	UAM_ASSERT(fs::file_size(staged->primary_temp) > 256U * 1024U * 1024U);
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, metadata.id)));
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(staged, true, &metadata));
+	const std::optional<ChatSession> summary = ChatRepository::LoadLocalChatSummaryReadOnly(temp.root, metadata.id);
+	UAM_ASSERT(summary.has_value());
+	UAM_ASSERT_EQ(summary->persisted_message_count, count);
+	UAM_ASSERT_EQ(summary->persisted_messages_digest, std::string("2026-10-12T20:00:00Z:130"));
+	std::ifstream saved(AppPaths::UamChatFilePath(temp.root, metadata.id), std::ios::binary);
+	std::array<char, 65536> buffer;
+	std::size_t complete_contents = 0;
+	std::size_t run = 0;
+	while (saved.read(buffer.data(), buffer.size()) || saved.gcount() > 0)
+	{
+		for (std::streamsize index = 0; index < saved.gcount(); ++index)
+		{
+			if (buffer[static_cast<std::size_t>(index)] == 'q') ++run;
+			else if (run > 0)
+			{
+				if (run == message.content.size()) ++complete_contents;
+				else UAM_ASSERT(run < 64);
+				run = 0;
+			}
+		}
+	}
+	UAM_ASSERT_EQ(complete_contents, count);
+}
+
+UAM_TEST(StreamedImportedStorageAbortAndRevisionGuardsPreserveExistingFiles)
+{
+	for (const bool change_primary : {false, true})
+	{
+		TempDir temp("uam-streamed-storage-guards");
+		ChatSession metadata;
+		metadata.id = "private-import";
+		metadata.title = "Approved metadata";
+		const std::shared_ptr<PreparedChatSave> staged = ChatRepository::PrepareImportedChatSave(temp.root, metadata,
+		    [&](const std::function<bool(const Message&)>& emit, ChatSession&)
+		{
+			if (!emit(Message{MessageRole::User, "complete imported message"})) return false;
+			if (change_primary)
+			{
+				ChatSession owner = metadata;
+				owner.title = "Newer owned chat";
+				owner.messages.push_back({MessageRole::User, "newer private content"});
+				UAM_ASSERT(ChatRepository::SaveChat(temp.root, owner));
+				return true;
+			}
+			return false;
+		});
+		UAM_ASSERT(staged == nullptr);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, metadata.id);
+		if (change_primary)
+		{
+			UAM_ASSERT(saved.has_value());
+			UAM_ASSERT_EQ(saved->title, std::string("Newer owned chat"));
+			UAM_ASSERT_EQ(saved->messages.front().content, std::string("newer private content"));
+		}
+		else UAM_ASSERT(!saved.has_value());
+		for (const fs::directory_entry& entry : fs::recursive_directory_iterator(temp.root))
+			UAM_ASSERT(entry.path().filename().string().find(".tmp.") == std::string::npos);
+	}
+}
+
+UAM_TEST(CodexStreamedCallAssociationsMatchCompleteNativeHydration)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-streamed-call-parity");
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const std::string id = "11111111-1111-4111-8111-111111111111";
+	const fs::path rollout = temp.root / "codex" / "sessions" / ("rollout-" + id + ".jsonl");
+	fs::create_directories(rollout.parent_path());
+	const auto output = [](const std::string& content)
+	{
+		return nlohmann::json{{"type", "response_item"}, {"timestamp", "2026-10-12T20:00:05Z"},
+		    {"payload", {{"type", "function_call_output"}, {"call_id", "call-1"}, {"output", content}}}};
+	};
+	const std::vector<nlohmann::json> records = {
+	    {{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", app.folders.front().directory}, {"timestamp", "2026-10-12T20:00:00Z"}}}},
+	    output("ignored output before its call"),
+	    {{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"},
+	        {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "Inspect complete UTF8: café\nsecond line"}}})}}}},
+	    {{"type", "response_item"}, {"payload", {{"type", "function_call"}, {"name", "spawn_agent"}, {"call_id", "call-1"}, {"arguments", "{}"}}}},
+	    output(nlohmann::json{{"agent_id", "22222222-2222-4222-8222-222222222222"}, {"nickname", "private child"}}.dump()),
+	    {{"type", "response_item"}, {"payload", {{"type", "function_call"}, {"name", "duplicate ignored"}, {"call_id", "call-1"}, {"arguments", "{}"}}}},
+	    {{"type", "response_item"}, {"payload", {{"type", "reasoning"}, {"summary", nlohmann::json::array({{{"type", "summary_text"}, {"text", "Retained thought"}}})}}}},
+	    output("last complete output without identity"),
+	    {{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "assistant"},
+	        {"content", nlohmann::json::array({{{"type", "output_text"}, {"text", "Complete final response"}}})}}}}
+	};
+	{
+		std::ofstream source(rollout, std::ios::binary);
+		for (const nlohmann::json& record : records) source << record.dump() << '\n';
+	}
+	ChatSession identity;
+	identity.native_session_id = id;
+	identity.workspace_directory = app.folders.front().directory;
+	const std::optional<ChatSession> complete = ChatHistorySyncService().LoadLocalCodexChildChat(identity);
+	UAM_ASSERT(complete.has_value());
+	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, "known");
+	UAM_ASSERT(result.success);
+	UAM_ASSERT_EQ(result.imported_count, 1);
+	const std::optional<ChatSession> imported = ChatRepository::LoadLocalChat(app.data_root, id);
+	UAM_ASSERT(imported.has_value());
+	UAM_ASSERT_EQ(imported->messages, complete->messages);
+	UAM_ASSERT_EQ(imported->updated_at, complete->updated_at);
+	UAM_ASSERT_EQ(imported->title, complete->title);
+	UAM_ASSERT_EQ(imported->messages[1].tool_calls.front().sub_agent_title, std::string("private child"));
+#endif
+}
+
+UAM_TEST(StreamedAtomicWriterDoesNotCloseReusedHandlesAfterSyncHookThrows)
+{
+	TempDir temp("uam-streamed-atomic-hook");
+	const fs::path staged = temp.root / "private.tmp";
+	std::ofstream replacement;
+	bool rejected = false;
+	uam::io::AtomicWriteResult result;
+	const uam::io::AtomicTempProducer produce = [](const std::function<bool(std::string_view)>& append)
+	{
+		return append("complete private content");
+	};
+	try
+	{
+		uam::io::WriteAndSyncAtomicTemp(staged, produce, [&](uam::io::AtomicWriteStage stage)
+		{
+			if (stage == uam::io::AtomicWriteStage::AfterFileSync)
+			{
+				replacement.open(temp.root / "replacement", std::ios::binary);
+				throw std::runtime_error("private hook failure");
+			}
+			return true;
+		}, result);
+	}
+	catch (const std::runtime_error&) { rejected = true; }
+	UAM_ASSERT(rejected);
+	replacement << "replacement remains open";
+	replacement.flush();
+	UAM_ASSERT(replacement.good());
+}

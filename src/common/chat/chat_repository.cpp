@@ -2347,6 +2347,77 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path
 	return prepared;
 }
 
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareImportedChatSave(const std::filesystem::path& data_root,
+    ChatSession& metadata, const ImportMessageProducer& produce)
+try
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(metadata.id) || !metadata.messages.empty()) return nullptr;
+	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
+	prepared->primary_path = AppPaths::UamChatFilePath(data_root, metadata.id);
+	prepared->primary_temp = uam::io::MakeTempWritePath(prepared->primary_path);
+	prepared->expected_storage_revision = ChatStorageRevision(data_root, metadata.id).value_or("unreadable");
+	if (!uam::paths::CreateDirectoriesNoThrow(prepared->primary_path.parent_path())) return nullptr;
+	std::shared_ptr<PreparedChatSave> base;
+	std::size_t message_count = 0;
+	const uam::io::AtomicTempProducer writer = [&](const std::function<bool(std::string_view)>& append)
+	{
+		if (!append("{\"messages\":[")) return false;
+		const std::function<bool(const Message&)> emit = [&](const Message& message)
+		{
+			if (message_count > 0 && !append(",")) return false;
+			// A complete message is the serialization unit; aggregate transcript size is unrestricted.
+			if (!append(SerializeJson(MessageToJson(message)))) return false;
+			++message_count;
+			return true;
+		};
+		const std::string approved_id = metadata.id;
+		if (!produce(emit, metadata) || metadata.id != approved_id || !metadata.messages.empty()) return false;
+		ApplyChatTimestampFallbacks(metadata, false);
+		ChatSession empty = metadata;
+		empty.messages_loaded = true;
+		base = PrepareChatSave(data_root, empty, prepared->expected_storage_revision);
+		if (!base) return false;
+		std::string fields;
+		if (!uam::io::TryReadTextFile(base->primary_temp, fields, 4 * 1024 * 1024)) return false;
+		const std::size_t opening = fields.find('{');
+		if (opening == std::string::npos || !append("],")) return false;
+		return append(std::string_view(fields).substr(opening + 1));
+	};
+	uam::io::AtomicWriteResult write_result;
+	if (!uam::io::WriteAndSyncAtomicTemp(prepared->primary_temp, writer, {}, write_result) || !base) return nullptr;
+	std::error_code size_error;
+	const std::uintmax_t primary_size = fs::file_size(prepared->primary_temp, size_error);
+	std::string summary_text;
+	if (size_error || !uam::io::TryReadTextFile(base->summary_temp, summary_text, 4 * 1024 * 1024)) return nullptr;
+	std::optional<JsonValue> summary = ParseJson(summary_text);
+	if (!summary || summary->type != JsonValue::Type::Object) return nullptr;
+	metadata.messages_loaded = false;
+	metadata.persisted_message_count = message_count;
+	metadata.persisted_messages_digest = SummaryDigest(metadata, message_count);
+	uam::json::SetNumber(*summary, kChatPersistedMessageCountField, static_cast<double>(message_count));
+	uam::json::SetString(*summary, kChatPersistedMessagesDigestField, metadata.persisted_messages_digest);
+	uam::json::SetNumber(*summary, kChatSummarySourceSizeField, static_cast<double>(primary_size));
+	prepared->summary_path = base->summary_path;
+	prepared->summary_temp = uam::io::MakeTempWritePath(prepared->summary_path);
+	prepared->preserve_backup = base->preserve_backup;
+	prepared->chat_id = base->chat_id;
+	prepared->queue_path = base->queue_path;
+	prepared->expected_queue_revision = base->expected_queue_revision;
+	prepared->queue_storage_revision = base->queue_storage_revision;
+	prepared->published_queue_full_revision = base->published_queue_full_revision;
+	if (!uam::io::WriteAndSyncAtomicTemp(prepared->summary_temp, SerializeJson(*summary, 4 * 1024 * 1024), {}, write_result)) return nullptr;
+	const std::optional<std::string> revision = StorageRevision(prepared->primary_temp);
+	if (!revision) return nullptr;
+	prepared->primary_revision = *revision;
+	if (ChatStorageRevision(data_root, metadata.id) != prepared->expected_storage_revision) return nullptr;
+	return prepared;
+}
+catch (const std::exception& error)
+{
+	uam::diagnostics::Write(std::string("Imported chat staging rejected: ") + error.what());
+	return nullptr;
+}
+
 bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat, const std::function<bool()>& still_owned)
 {
 	if (!prepared) return false;

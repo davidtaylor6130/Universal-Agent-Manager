@@ -522,6 +522,87 @@ namespace uam::io
 #endif
 
 	/// <summary>Publishes an already synced temporary file with the normal atomic backup contract.</summary>
+	using AtomicTempProducer = std::function<bool(const std::function<bool(std::string_view)>&)>;
+
+	/// <summary>Produces a complete private temporary file in bounded chunks and syncs it before publication.</summary>
+	inline bool WriteAndSyncAtomicTemp(const std::filesystem::path& temp_path,
+	    const AtomicTempProducer& produce, const AtomicWriteStageHook& hook, AtomicWriteResult& result)
+	{
+		bool file_closed = false;
+#if defined(_WIN32)
+		std::filesystem::path native_path;
+		if (!NativeFilePath(temp_path, native_path, result.error)) return false;
+		HANDLE file = CreateFileW(native_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		if (file == INVALID_HANDLE_VALUE) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError()); return false; }
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = CloseHandle(file) != 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(GetLastError());
+			return closed;
+		};
+#else
+		const int file = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+		if (file < 0) { result.error = "Failed to create temporary file: " + AtomicWriteSystemError(errno); return false; }
+		const auto close_file = [&]()
+		{
+			if (file_closed) return true;
+			file_closed = true;
+			const bool closed = close(file) == 0;
+			if (!closed && result.error.empty()) result.error = "Failed to close temporary file: " + AtomicWriteSystemError(errno);
+			return closed;
+		};
+#endif
+		try
+		{
+			if (!ContinueAtomicWrite(hook, AtomicWriteStage::AfterCreate, result)) { close_file(); return false; }
+			bool writing_started = false;
+			const std::function<bool(std::string_view)> append = [&](std::string_view chunk)
+			{
+				if (!writing_started)
+				{
+					writing_started = true;
+					if (!ContinueAtomicWrite(hook, AtomicWriteStage::DuringWrite, result)) return false;
+				}
+				std::size_t offset = 0;
+				while (offset < chunk.size())
+				{
+					const std::size_t count = std::min<std::size_t>(chunk.size() - offset, 1024U * 1024U);
+#if defined(_WIN32)
+					DWORD written = 0;
+					if (!WriteFile(file, chunk.data() + offset, static_cast<DWORD>(count), &written, nullptr) || written == 0)
+					{
+						result.error = "Failed to write temporary file: " + AtomicWriteSystemError(GetLastError()); return false;
+					}
+#else
+					const ssize_t written = write(file, chunk.data() + offset, count);
+					if (written < 0 && errno == EINTR) continue;
+					if (written <= 0) { result.error = "Failed to write temporary file: " + AtomicWriteSystemError(errno); return false; }
+#endif
+					offset += static_cast<std::size_t>(written);
+				}
+				return true;
+			};
+			if (!produce(append) || (!writing_started && !ContinueAtomicWrite(hook, AtomicWriteStage::DuringWrite, result)) ||
+			    !ContinueAtomicWrite(hook, AtomicWriteStage::AfterFlush, result)) { close_file(); return false; }
+#if defined(_WIN32)
+			const bool synced = FlushFileBuffers(file) != 0;
+			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(GetLastError());
+#else
+#if defined(__APPLE__)
+			const bool synced = fcntl(file, F_FULLFSYNC) == 0 || fsync(file) == 0;
+#else
+			const bool synced = fsync(file) == 0;
+#endif
+			if (!synced) result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(errno);
+#endif
+			const bool closed = close_file();
+			return synced && closed && ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
+		}
+		catch (...) { close_file(); throw; }
+	}
+
 	inline AtomicWriteResult CommitSyncedAtomicTemp(const std::filesystem::path& path,
 	    const std::filesystem::path& temp_path, bool preserve_backup = false,
 	    const AtomicWriteStageHook& hook = {}, bool sync_directory = true)
