@@ -174,3 +174,16 @@ it('ignores structurally identical pushes and unrelated settings while retaining
   await click('Refresh provider connections')
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('Save failed, retry this change.')
 })
+
+it('collapses many server columns into one count chip whose popover holds each switch', async () => {
+  const extra = ['Search', 'Files', 'Git'].map((name, index) => ({ ...server, id: `s${index}`, name }))
+  useAppStore.setState({ mcpServers: [server, ...extra] })
+  await render('codex-cli')
+  expect(host.querySelector('[aria-label="Codex Docs"]')).toBeNull()
+  expect(host.textContent).toContain('MCP servers')
+  const chip = host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!
+  expect(chip.textContent).toContain('1 of 4 on')
+  await act(async () => chip.click())
+  expect(document.body.querySelector('[aria-label="Codex Docs"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(document.body.querySelector('[aria-label="Codex Git (unknown)"]')).not.toBeNull()
+})

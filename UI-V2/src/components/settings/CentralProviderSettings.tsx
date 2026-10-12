@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Bot, FileText, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, MenuSelect } from '../ui'
+import { Button, IconButton, MenuSelect, Overlay, Presence } from '../ui'
 import { SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 
@@ -100,8 +100,7 @@ export function CentralProviderSettings() {
     const path = await useAppStore.getState().browseProviderAgentImport(instructionFiles[instructionFiles.length - 1] ?? '')
     if (path && !instructionFiles.includes(path)) setInstructionFiles([...instructionFiles, path])
   }
-  const editingNew = editing?.isNew ? editing.draft : null
-  const agentRows = [...agents, ...(editingNew ? [editingNew] : [])]
+  const closeEditor = () => { if (!busy) setEditing(null) }
 
   if (!agentsLoaded) return <SettingsLoading label="Loading agents" rows={3} />
 
@@ -137,59 +136,79 @@ export function CentralProviderSettings() {
     </SettingsSection>
 
     <div className="flex items-center justify-end gap-3">
-      {message && <span role="status" className="uam-set-section__desc mr-auto">{message}</span>}
+      {message && !editing && <span role="status" className="uam-set-section__desc mr-auto">{message}</span>}
       <Button size="sm" variant="primary" loading={busy} onClick={() => void saveDefaults()}>Save</Button>
     </div>
 
-    <SettingsSection title="Agent store" description="Saved to the UAM agent store and installed for every provider. Use the pencil to edit an agent."
-      actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy || Boolean(editing)} onClick={() => setEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
+    <SettingsSection title="Agent store" description="Saved to the UAM agent store and installed for every provider. Built-in agents are read only."
+      actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
       {agentErrors.map(error => <SettingRow key={error} title="Some agents could not be read" description={<span style={{ color: 'var(--error)' }}>{error}</span>} />)}
-      {agents.length === 0 && !editingNew && <SettingRow title="No agents yet" description="Add an agent to give every provider a specialised helper." />}
-      {agentRows.map((agent, index) => {
-        const isOpen = editing ? (editing.isNew ? index === agents.length : editing.draft.id === agent.id) : false
-        const draft = isOpen && editing ? editing.draft : agent
-        const set = (change: Partial<Agent>) => editing && setEditing({ ...editing, draft: { ...editing.draft, ...change } })
-        const usedAs = USED_AS.find(option => option.value === draft.mode)
-        const name = agent.id || 'new agent'
-        return <SettingRow key={isOpen && editing?.isNew ? 'new' : agent.id} icon={<Bot size={15} aria-hidden />}
-          title={draft.id || 'New agent'}
+      {agents.length === 0 && <SettingRow title="No agents yet" description="Add an agent to give every provider a specialised helper." />}
+      {agents.map(agent => {
+        const usedAs = USED_AS.find(option => option.value === agent.mode)
+        return <SettingRow key={agent.id} icon={<Bot size={15} aria-hidden />}
+          title={agent.id}
           description={agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'}
           status={usedAs?.label}
           control={<>
-            <IconButton size="sm" aria-expanded={isOpen} icon={<Pencil size={14} />} label={isOpen ? `Close ${name}` : `Edit ${name}`} disabled={busy || (Boolean(editing) && !isOpen)} onClick={() => setEditing(isOpen ? null : { draft: { ...agent }, isNew: false })} />
-            {!agent.builtIn && !(isOpen && editing?.isNew) && <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => void deleteAgent(agent.id)} />}
-          </>}>
-          {isOpen && <div className="uam-central-editor uam-prov-enter">
-            <SettingsField label="Name" hint="Lowercase letters, numbers, - or _. Cannot be changed after saving.">
-              <input className={field} aria-label="Agent name" value={draft.id} placeholder="reviewer" disabled={busy || agent.builtIn || !editing?.isNew} onChange={event => set({ id: event.currentTarget.value })} />
-            </SettingsField>
-            <SettingsField label="Description">
-              <input className={field} aria-label="Agent description" value={draft.description} placeholder="Reviews diffs for bugs" disabled={busy || agent.builtIn} onChange={event => set({ description: event.currentTarget.value })} />
-            </SettingsField>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <SettingsField label="Used as">
-                <MenuSelect label="Used as" value={draft.mode} disabled={busy || agent.builtIn} options={USED_AS.map(option => ({ value: option.value, label: option.label, description: option.detail }))} onChange={mode => set({ mode })} />
-              </SettingsField>
-              <SettingsField label="Workspace access">
-                <MenuSelect label="Workspace access" value={draft.workspaceAccess} disabled={busy || agent.builtIn} options={[{ value: 'write', label: 'Read and write' }, { value: 'read', label: 'Read only' }]} onChange={workspaceAccess => set({ workspaceAccess })} />
-              </SettingsField>
-            </div>
-            <SettingsField label="Skills for this agent">
-              <div className="grid gap-2">
-                {draft.skills.length > 0 && <ChipList label="this agent" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || agent.builtIn} />}
-                <ChipAdd label="skill" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || agent.builtIn} />
-              </div>
-            </SettingsField>
-            <SettingsField label="Instructions">
-              <textarea className={field} rows={10} value={draft.instructions} disabled={busy || agent.builtIn} onChange={event => set({ instructions: event.currentTarget.value })} />
-            </SettingsField>
-            {!agent.builtIn && <div className="flex justify-end gap-2">
-              <Button size="sm" disabled={busy} onClick={() => setEditing(null)}>Cancel</Button>
-              <Button size="sm" variant="primary" loading={busy} onClick={() => void saveAgent()}>Save agent</Button>
-            </div>}
-          </div>}
-        </SettingRow>
+            <IconButton size="sm" icon={<Pencil size={14} />} label={agent.builtIn ? `View ${agent.id}` : `Edit ${agent.id}`} disabled={busy} onClick={() => setEditing({ draft: { ...agent }, isNew: false })} />
+            {!agent.builtIn && <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => void deleteAgent(agent.id)} />}
+          </>} />
       })}
     </SettingsSection>
+
+    <Presence open={editing !== null}>
+      <Overlay open zIndex={60} onBackdropMouseDown={closeEditor}>
+        {editing && (() => {
+          const { draft, isNew } = editing
+          const builtIn = draft.builtIn
+          const set = (change: Partial<Agent>) => setEditing(current => current && { ...current, draft: { ...current.draft, ...change } })
+          return <div role="dialog" aria-modal="true" aria-label={isNew ? 'New agent' : `Edit ${draft.id}`} tabIndex={-1} className="uam-mcp-dialog uam-central-dialog"
+            onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeEditor() } }}>
+            <header className="uam-central-dialog__head">
+              <div className="min-w-0">
+                <strong className="text-sm">{isNew ? 'New agent' : builtIn ? draft.id : `Edit ${draft.id}`}</strong>
+                <p className="uam-prov-sub">{builtIn ? 'Built in. You can view its settings but not change them.' : 'Agents are installed for every provider. Changes apply to new chats.'}</p>
+              </div>
+              <IconButton size="sm" icon={<X size={14} />} label="Close agent editor" disabled={busy} onClick={closeEditor} />
+            </header>
+            <div className="uam-central-dialog__body">
+              <SettingsField label="Name" hint="Lowercase letters, numbers, - or _. Cannot be changed after saving.">
+                <input className={field} aria-label="Agent name" value={draft.id} placeholder="reviewer" disabled={busy || builtIn || !isNew} onChange={event => set({ id: event.currentTarget.value })} />
+              </SettingsField>
+              <SettingsField label="Description">
+                <input className={field} aria-label="Agent description" value={draft.description} placeholder="Reviews diffs for bugs" disabled={busy || builtIn} onChange={event => set({ description: event.currentTarget.value })} />
+              </SettingsField>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <SettingsField label="Used as">
+                  <MenuSelect label="Used as" value={draft.mode} disabled={busy || builtIn} options={USED_AS.map(option => ({ value: option.value, label: option.label, description: option.detail }))} onChange={mode => set({ mode })} />
+                </SettingsField>
+                <SettingsField label="Workspace access">
+                  <MenuSelect label="Workspace access" value={draft.workspaceAccess} disabled={busy || builtIn} options={[{ value: 'write', label: 'Read and write' }, { value: 'read', label: 'Read only' }]} onChange={workspaceAccess => set({ workspaceAccess })} />
+                </SettingsField>
+              </div>
+              <SettingsField label="Skills for this agent">
+                <div className="grid gap-2">
+                  {draft.skills.length > 0 && <ChipList label="this agent" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || builtIn} />}
+                  <ChipAdd label="skill" values={draft.skills} options={skillOptions} onChange={skills => set({ skills })} disabled={busy || builtIn} />
+                </div>
+              </SettingsField>
+              <SettingsField label="Instructions">
+                <textarea className={field} rows={10} style={{ minHeight: 160, height: "auto", resize: "vertical", fontFamily: "var(--font-mono)", fontSize: "var(--fs-sm)" }} value={draft.instructions} disabled={busy || builtIn} onChange={event => set({ instructions: event.currentTarget.value })} />
+              </SettingsField>
+            </div>
+            <footer className="uam-central-dialog__foot">
+              {message && <span role="status" className="uam-set-section__desc mr-auto">{message}</span>}
+              {builtIn
+                ? <Button size="sm" onClick={closeEditor}>Close</Button>
+                : <>
+                  <Button size="sm" disabled={busy} onClick={closeEditor}>Cancel</Button>
+                  <Button size="sm" variant="primary" loading={busy} onClick={() => void saveAgent()}>Save agent</Button>
+                </>}
+            </footer>
+          </div>
+        })()}
+      </Overlay>
+    </Presence>
   </div>
 }

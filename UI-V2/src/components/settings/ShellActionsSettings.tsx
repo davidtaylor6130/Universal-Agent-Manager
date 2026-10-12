@@ -5,7 +5,7 @@ import { useAppStore, type ShellAction } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'
-import { Button, IconButton, MenuSelect, Notice, StatusDot, Switch } from '../ui'
+import { Button, IconButton, MenuSelect, Overlay, Presence, StatusDot, Switch } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 
@@ -70,6 +70,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
   const [pendingDeleteActionId, setPendingDeleteActionId] = useState('')
+  const pendingDeleteAction = actions.find((action) => action.id === pendingDeleteActionId)
 
   useEffect(() => {
     if (!dirtyRef.current && !applyingRef.current) { setActions(savedActions); setAppliedActions(savedActions) }
@@ -120,23 +121,43 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   return (
     <div className="grid gap-6">
       {toolbarTarget ? createPortal(toolbar, toolbarTarget) : toolbar}
-      {pendingExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50" onClick={event => { if (event.target === event.currentTarget && !applying) setPendingExit(null) }}>
-        <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) setPendingExit(null) } }}>
-          <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
-          {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
-          <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next() } }}>Save and leave</Button></div>
-        </div>
-      </div>}
-      {newGroupActionId && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center bg-black/50">
-        <form role="dialog" aria-modal="true" aria-label="New shell action group" className="uam-mcp-dialog w-80" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if (!parseGroupPath(newGroupName).length) return; update(newGroupActionId, { groupPath: parseGroupPath(newGroupName) }); setNewGroupActionId('') }}>
-          <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New group</h3><IconButton icon={<X size={16} />} label="Close new group" onClick={() => setNewGroupActionId('')} /></div>
-          <input autoFocus aria-label="Group name" placeholder="Group name" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} className="uam-field w-full" />
-          <Button type="submit" variant="primary" block disabled={!parseGroupPath(newGroupName).length}>Create group</Button>
-        </form>
-      </div>}
+      <Presence open={Boolean(pendingExit)}>
+        <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!applying) setPendingExit(null) }}>
+          <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) setPendingExit(null) } }}>
+            <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
+            {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
+            <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next() } }}>Save and leave</Button></div>
+          </div>
+        </Overlay>
+      </Presence>
+      <Presence open={Boolean(newGroupActionId)}>
+        <Overlay open zIndex={80}>
+          <form role="dialog" aria-modal="true" aria-label="New shell action group" className="uam-mcp-dialog w-80" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setNewGroupActionId('') } }} onSubmit={event => { event.preventDefault(); if (!parseGroupPath(newGroupName).length) return; update(newGroupActionId, { groupPath: parseGroupPath(newGroupName) }); setNewGroupActionId('') }}>
+            <div className="flex items-center justify-between"><h3 className="text-sm font-semibold">New group</h3><IconButton icon={<X size={16} />} label="Close new group" onClick={() => setNewGroupActionId('')} /></div>
+            <input autoFocus aria-label="Group name" placeholder="Group name" value={newGroupName} onChange={event => setNewGroupName(event.target.value)} className="uam-field w-full" />
+            <Button type="submit" variant="primary" block disabled={!parseGroupPath(newGroupName).length}>Create group</Button>
+          </form>
+        </Overlay>
+      </Presence>
+      <Presence open={Boolean(pendingDeleteAction)}>
+        <Overlay open zIndex={80} onBackdropMouseDown={() => setPendingDeleteActionId('')}>
+          <div role="alertdialog" aria-modal="true" aria-label="Delete shell action" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setPendingDeleteActionId('') } }}>
+            <h3 className="text-sm font-semibold">Delete shell action?</h3>
+            <p className="text-xs" style={{ color: 'var(--text-2)' }}>Delete “{pendingDeleteAction?.label}”? This change takes effect when you save.</p>
+            <div className="flex justify-end gap-2">
+              <Button autoFocus onClick={() => setPendingDeleteActionId('')}>Cancel</Button>
+              <Button variant="danger" onClick={() => {
+                const id = pendingDeleteActionId
+                setActions((current) => current.filter((item) => item.id !== id))
+                setPendingDeleteActionId('')
+              }}>Delete action</Button>
+            </div>
+          </div>
+        </Overlay>
+      </Presence>
 
       <SettingsSection title="Actions" description="Right-click files or folders in Finder or Explorer to start a chat with a preset prompt or a skill."
-        actions={<Button size="sm" leadingIcon={<Plus size={14} />} aria-label="Add shell action" disabled={applying} onClick={() => setActions(current => [newAction(), ...current])}>Add action</Button>}>
+        actions={<Button size="sm" leadingIcon={<Plus size={14} />} aria-label="Add shell action" disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); setActions(current => [action, ...current]) }}>Add action</Button>}>
         {actions.length === 0 && <SettingRow title="No shell actions yet" description="Add an action to start a chat from Finder or Explorer with a preset prompt." />}
         <fieldset disabled={applying} style={{ display: 'contents', border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <legend className="sr-only">Shell actions</legend>
@@ -144,7 +165,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           const providerId = action.providerId || defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID
           const provider = providers.find((candidate) => candidate.id === providerId) ?? providers[0]
           const modelOptions = buildModelOptions(undefined, action.modelId, provider, providerId)
-          const expanded = expandedActions[action.id] ?? true
+          const expanded = expandedActions[action.id] ?? false
           const changed = JSON.stringify(action) !== JSON.stringify(appliedActions.find(item => item.id === action.id))
           const summary = [action.openWorkspace ? 'Open as workspace' : 'Run skill', action.acceptsFiles && action.acceptsFolders ? 'files and folders' : action.acceptsFolders ? 'folders only' : 'files only', provider?.shortName || provider?.name || providerId].join(' · ')
           return <SettingRow key={action.id} icon={<FolderTree size={15} aria-hidden />}
@@ -156,25 +177,6 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
               <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
               <IconButton size="sm" variant="danger" icon={<Trash2 size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
             </>}>
-            {pendingDeleteActionId === action.id && <div className="pb-2">
-              <Notice
-                tone="warning"
-                title="Delete shell action?"
-                dismissLabel={`Dismiss delete ${action.label} warning`}
-                onDismiss={() => setPendingDeleteActionId('')}
-                actions={(
-                  <>
-                    <Button size="sm" onClick={() => setPendingDeleteActionId('')}>Cancel</Button>
-                    <Button size="sm" variant="danger" onClick={() => {
-                      setActions((current) => current.filter((item) => item.id !== action.id))
-                      setPendingDeleteActionId('')
-                    }}>Delete action</Button>
-                  </>
-                )}
-              >
-                Delete “{action.label}”? This change takes effect when you save.
-              </Notice>
-            </div>}
             {expanded && <div className="uam-central-editor grid gap-3 sm:grid-cols-2">
               <SettingsField label="Name">
                 <input aria-label={`Label for ${action.label}`} placeholder="Action name" value={action.label} onChange={(event) => update(action.id, { label: event.target.value })} className="uam-field w-full" />

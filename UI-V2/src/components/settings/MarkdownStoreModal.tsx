@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, Overlay, Presence, useOverlayState } from '../ui'
 import type { MenuSelectOption } from '../ui'
 import { MarkdownContent } from '../markdown/Markdown'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -320,7 +319,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const resultsView = importResults.length > 0 && <div role="status" className="shrink-0 max-h-24 overflow-y-auto flex items-start gap-2 py-2 text-xs" style={{ color: 'var(--text-2)' }}><div className="min-w-0 flex-1">{importResults.map((result, index) => <div key={`${result.sourcePath}-${index}`} style={{ color: result.status === 'error' ? 'var(--error)' : undefined }}>{result.status}: {result.message}</div>)}</div><IconButton size="sm" icon={<X size={13} />} label="Dismiss import results" onClick={() => setImportResults([])} /></div>
 
   return <>
-    <div className={embedded ? 'h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden' : 'uam-overlay fixed inset-0 z-50 flex items-center justify-center p-4'} data-state={embedded ? undefined : overlayState} style={embedded ? undefined : { background: 'rgba(0,0,0,.55)' }}>
+    <div className={embedded ? 'h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden' : 'uam-overlay uam-overlay--dim fixed inset-0 z-50 flex items-center justify-center p-4'} data-state={embedded ? undefined : overlayState}>
       <div ref={libraryRef} role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-hidden={childOpen || undefined} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)', ...(embedded ? {} : { border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }) }}>
         {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close Skills" onClick={close} /></div>}
         <div className={`shrink-0 pt-3${embedded ? '' : ' px-5'}`}>
@@ -394,7 +393,8 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
         </div>}
       </div>
     </div>
-    {childOpen && createPortal(<div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,.55)' }}>
+    <Presence open={childOpen}>
+    <Overlay open zIndex={60}>
       <div ref={childDialogRef} role="dialog" aria-modal="true" aria-label={editing ? editing === 'new' ? 'Create skill' : 'Edit skill' : imports.length ? 'Import skills' : addView === 'provider' ? 'Import from provider' : 'Add skill'} tabIndex={-1} className={`flex flex-col max-h-[calc(100vh-2rem)] w-full ${editing || imports.length ? 'max-w-3xl' : 'max-w-xl'} min-h-0 overflow-y-auto rounded-xl p-4 gap-3`} style={{ border: '1px solid var(--border-bright)', background: 'var(--surface)', color: 'var(--text)', boxShadow: 'var(--elev-3)' }}>
         {visibleError && <div role="alert" className="shrink-0 text-xs" style={{ color: 'var(--error)' }}>{visibleError}</div>}
         {editing ? <>
@@ -440,7 +440,8 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
           {(previewing || importNotice) && !visibleError && <p role="status" className="text-xs">{previewing ? 'Reading skills...' : importNotice}</p>}
         </>}
       </div>
-    </div>, document.body)}
+    </Overlay>
+    </Presence>
   </>
 }
 
@@ -470,7 +471,7 @@ function SkillFolders({ entries, selectedPath, onSelect, onPin }: { entries: Mar
           <div className="flex min-w-0 items-center gap-1.5"><span className="shrink-0 inline-flex" aria-hidden style={{ color: 'var(--text-3)' }}>{entry.sourceProvider ? <ProviderLogo providerId={normalizeCliProviderIdAlias(entry.sourceProvider)} size={13} /> : <FileText size={13} />}</span><span className="text-sm truncate">{entry.title}</span>{entry.commandName && <code className="uam-skill-row__command">/{entry.commandName}</code>}</div>
           <div className="text-xs truncate" style={{ color: 'var(--text-3)' }}>{[entry.maker, entry.review || entry.preview].filter(Boolean).join(' · ')}</div>
         </button>
-        <IconButton size="sm" icon={<Pin size={14} fill={entry.favorite ? 'currentColor' : 'none'} />} active={Boolean(entry.favorite)} label={`${entry.favorite ? 'Unpin' : 'Pin'} ${entry.title}`} onClick={() => onPin(entry)} />
+        <IconButton size="sm" className="uam-skill-pin" icon={<Pin size={14} fill={entry.favorite ? 'currentColor' : 'none'} />} active={Boolean(entry.favorite)} label={`${entry.favorite ? 'Unpin' : 'Pin'} ${entry.title}`} onClick={() => onPin(entry)} />
       </div>)}
     </>
   }

@@ -410,9 +410,8 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
   return (
     <div
       ref={libraryRef}
-      className={embedded ? "h-full min-h-0" : "uam-overlay fixed inset-0 z-50 flex items-center justify-center"}
+      className={embedded ? "h-full min-h-0" : "uam-overlay uam-overlay--dim fixed inset-0 z-50 flex items-center justify-center"}
       data-state={embedded ? undefined : overlayState}
-      style={embedded ? undefined : { background: 'rgba(0,0,0,0.55)' }}
       onClick={(event) => {
         if (!embedded && event.target === event.currentTarget) requestClose()
       }}
@@ -726,8 +725,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
 
       {pendingDelete && (
         <div
-          className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center"
-          style={{ background: 'rgba(0,0,0,0.25)' }}
+          className="uam-overlay uam-overlay--dim fixed inset-0 z-[60] flex items-center justify-center"
           onClick={(event) => {
             if (event.target === event.currentTarget) setPendingDeleteEntryId(null)
           }}
@@ -775,8 +773,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
 
       {pendingMassDeleteEntryIds && (
         <div
-          className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center"
-          style={{ background: 'rgba(0,0,0,0.25)' }}
+          className="uam-overlay uam-overlay--dim fixed inset-0 z-[60] flex items-center justify-center"
           onClick={(event) => {
             if (event.target === event.currentTarget) setPendingMassDeleteEntryIds(null)
           }}

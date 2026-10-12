@@ -32,3 +32,7 @@
 
 /* Preview body: readable measure, comfortable leading. */
 .uam-store-markdown { max-width: 68ch; font-size: var(--fs-base); line-height: 1.6; color: var(--text); }
+
+/* Pinned skill: a quiet filled pin; the accent appears only on hover or focus. */
+.uam-iconbtn.uam-skill-pin.is-active { background: transparent; color: var(--text-2); }
+.uam-iconbtn.uam-skill-pin.is-active:hover:not(:disabled) { color: var(--accent); }
