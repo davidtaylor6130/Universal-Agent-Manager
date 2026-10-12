@@ -12,6 +12,87 @@
 
 using namespace uam_test;
 
+UAM_TEST(PermissionReviewPromptPreservesCompleteProviderInput)
+{
+	uam::AcpPendingPermissionState pending;
+	pending.title = "Execute command";
+	pending.kind = "execute";
+	pending.content = "  git status  \n";
+	pending.provider_request_method = "item/commandExecution/requestApproval";
+	pending.provider_request_kind = "codex-command";
+	const nlohmann::json native = {{"command", "git status"}, {"cwd", "/fixture"}, {"additionalPermissions", {{"network", {{"enabled", true}}}}}};
+	pending.codex_approval_payload_json = native.dump();
+	pending.provider_input_json = nlohmann::json{{"file_path", "/fixture/file"}, {"content", "Full input"}}.dump();
+	const std::string prompt = uam::acp_detail::BuildPermissionReviewPrompt(pending);
+	UAM_ASSERT(!prompt.empty() && prompt.size() <= 16 * 1024);
+	const std::size_t marker = prompt.find("Request:\n");
+	UAM_ASSERT(marker != std::string::npos);
+	const nlohmann::json request = nlohmann::json::parse(prompt.substr(marker + 9));
+	UAM_ASSERT_EQ(request["title"], nlohmann::json(pending.title));
+	UAM_ASSERT_EQ(request["kind"], nlohmann::json(pending.kind));
+	UAM_ASSERT_EQ(request["content"], nlohmann::json(pending.content));
+	UAM_ASSERT_EQ(request["providerMethod"], nlohmann::json(pending.provider_request_method));
+	UAM_ASSERT_EQ(request["providerRequestKind"], nlohmann::json(pending.provider_request_kind));
+	UAM_ASSERT_EQ(request["codexApprovalPayload"], native);
+	UAM_ASSERT_EQ(request["providerInput"], nlohmann::json::parse(pending.provider_input_json));
+}
+
+UAM_TEST(PermissionReviewPromptRejectsOversizeEscapedAndMalformedInput)
+{
+	uam::AcpPendingPermissionState pending;
+	pending.title = "Execute command";
+	pending.kind = "execute";
+	for (const std::string content : {std::string(12 * 1024 + 1, 'x'), std::string(10 * 1024, '\n')})
+	{
+		pending.content = content;
+		UAM_ASSERT(uam::acp_detail::BuildPermissionReviewPrompt(pending).empty());
+	}
+	pending.content = "git status";
+	pending.title = std::string(1025, 'x');
+	UAM_ASSERT(uam::acp_detail::BuildPermissionReviewPrompt(pending).empty());
+	pending.title = "Execute command";
+	pending.kind = std::string(257, 'x');
+	UAM_ASSERT(uam::acp_detail::BuildPermissionReviewPrompt(pending).empty());
+	pending.kind = "execute";
+	pending.provider_input_json = "{broken";
+	UAM_ASSERT(uam::acp_detail::BuildPermissionReviewPrompt(pending).empty());
+	pending.provider_input_json.clear();
+	pending.codex_approval_payload_json = "[]";
+	UAM_ASSERT(uam::acp_detail::BuildPermissionReviewPrompt(pending).empty());
+}
+
+UAM_TEST(PermissionReviewUnreviewableAndSensitiveProviderInputsStayManual)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	for (const bool sensitive : {false, true})
+	{
+		TempDir temp("uam-review-input-gate");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "review-input-gate";
+		chat.provider_id = "opencode-cli";
+		chat.command_safety_tier = "aiReview";
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.running = true;
+		session.pending_permission.request_id_json = "72";
+		session.pending_permission.kind = "execute";
+		session.pending_permission.content = sensitive ? "git status" : std::string(10 * 1024, '\n');
+		if (sensitive) session.pending_permission.provider_input_json = R"({"password":"fixture-private"})";
+		UAM_ASSERT(!uam::acp_detail::TryAutoApprovePendingPermission(app, session, chat));
+		UAM_ASSERT(session.waiting_for_permission);
+		UAM_ASSERT_EQ(session.pending_permission.request_id_json, std::string("72"));
+		UAM_ASSERT(app.permission_review_tasks.empty());
+		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [sensitive](const uam::AcpDiagnosticEntryState& entry)
+		{
+			return entry.reason == (sensitive ? "sensitive_input" : "input_not_reviewable");
+		}));
+	}
+#endif
+}
+
 UAM_TEST(CodexWriterOwnershipProtectsBusyAliasesAcrossWorkspaces)
 {
 	uam::AppState app;

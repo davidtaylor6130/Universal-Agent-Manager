@@ -134,6 +134,8 @@ struct PermissionReviewDecision
 	std::string reason;
 };
 std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_view output);
+/// <summary>Return a complete bounded review request, or an empty prompt when safe review is unavailable.</summary>
+std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending);
 bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPendingPermissionState pending);
 void AdvanceAcpPermissionQueue(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);

@@ -21,6 +21,7 @@
 #include "common/utils/time_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <map>
 #include <optional>
@@ -45,16 +46,6 @@ namespace
 		return uam::sensitive::LooksSensitiveText(result) ? "Reviewer reason was hidden because it looked sensitive." : result;
 	}
 
-	std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending)
-	{
-		nlohmann::json request = {
-		    {"title", CapDiagnosticString(uam::strings::Trim(pending.title), 1024)},
-		    {"kind", CapDiagnosticString(uam::strings::Trim(pending.kind), 256)},
-		    {"content", CapDiagnosticString(uam::strings::Trim(pending.content), 12 * 1024)},
-		};
-		std::string prompt = "Review this single provider permission request. Return exactly one JSON object and no prose or markdown: {\"decision\":\"approve|deny|uncertain\",\"reason\":\"short reason\"}. Approve only when the shown operation is clearly safe and intended. Deny clearly unsafe or destructive operations. Use uncertain for missing context. Request:\n" + request.dump();
-		return CapDiagnosticString(prompt, kPermissionReviewInputLimit);
-	}
 
 	bool HasPermissionReviewTask(const AppState& app, std::string_view chat_id, std::string_view request_id_json)
 	{
@@ -84,6 +75,19 @@ namespace
 			return false;
 		}
 
+		const std::string prompt = BuildPermissionReviewPrompt(session.pending_permission);
+		if (prompt.empty())
+		{
+			AppendAcpDiagnostic(session, "permission_review", "input_not_reviewable", "", session.pending_permission.request_id_json, false, 0,
+			    "AI Review could not read the complete request. Review it manually.");
+			return false;
+		}
+		if (uam::sensitive::LooksSensitiveText(prompt))
+		{
+			AppendAcpDiagnostic(session, "permission_review", "sensitive_input", "", session.pending_permission.request_id_json, false, 0, "AI Review left this request for the user because its content looked sensitive.");
+			return false;
+		}
+
 		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(app.settings.permission_reviewer_provider_id);
 		const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, provider_id);
 		if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
@@ -92,14 +96,6 @@ namespace
 			return false;
 		}
 
-		const std::string normalized_input = session.pending_permission.title + "\n" + session.pending_permission.kind + "\n" + session.pending_permission.content;
-		if (uam::sensitive::LooksSensitiveText(normalized_input))
-		{
-			AppendAcpDiagnostic(session, "permission_review", "sensitive_input", "", session.pending_permission.request_id_json, false, 0, "AI Review left this request for the user because its content looked sensitive.");
-			return false;
-		}
-
-		const std::string prompt = BuildPermissionReviewPrompt(session.pending_permission);
 		std::string launch_error;
 		ProviderWorkerInvocation invocation = BuildProviderWorkerInvocation(app, *provider, app.settings, prompt, app.settings.permission_reviewer_model_id, ProviderWorkerPathMode::BasePath, &launch_error);
 		if (invocation.Empty())
@@ -139,6 +135,33 @@ namespace
 			       uam::command_safety::RiskLevel::Allowed;
 		}
 		return false;
+	}
+}
+
+std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending)
+{
+	if (pending.title.size() > 1024 || pending.kind.size() > 256 || pending.content.size() > 12 * 1024 ||
+	    pending.provider_request_method.size() > 256 || pending.provider_request_kind.size() > 256 ||
+	    pending.provider_input_json.size() > 12 * 1024 || pending.codex_approval_payload_json.size() > 12 * 1024) return {};
+	try
+	{
+		nlohmann::json request = {{"title", pending.title}, {"kind", pending.kind}, {"content", pending.content},
+		    {"providerMethod", pending.provider_request_method}, {"providerRequestKind", pending.provider_request_kind}};
+		const std::array<std::pair<const char*, const std::string*>, 2> originals{{
+		    {"providerInput", &pending.provider_input_json}, {"codexApprovalPayload", &pending.codex_approval_payload_json}}};
+		for (const std::pair<const char*, const std::string*>& original : originals)
+		{
+			if (original.second->empty()) continue;
+			nlohmann::json payload = nlohmann::json::parse(*original.second, nullptr, false);
+			if (!payload.is_object()) return {};
+			request[original.first] = std::move(payload);
+		}
+		const std::string prompt = "Review this single provider permission request. Return exactly one JSON object and no prose or markdown: {\"decision\":\"approve|deny|uncertain\",\"reason\":\"short reason\"}. Approve only when the shown operation is clearly safe and intended. Deny clearly unsafe or destructive operations. Use uncertain for missing context. Request:\n" + request.dump();
+		return prompt.size() <= kPermissionReviewInputLimit ? prompt : std::string{};
+	}
+	catch (const nlohmann::json::exception&)
+	{
+		return {};
 	}
 }
 
