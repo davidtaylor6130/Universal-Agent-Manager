@@ -810,3 +810,101 @@ UAM_TEST(AcpCanceledStagedRetryPreservesOneUnsentOriginalMessage)
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
 	UAM_ASSERT(saved.has_value() && saved->messages.size() == 1 && saved->messages.front().acp_prompt_not_sent);
 }
+
+UAM_TEST(AcpPendingFirstPromptQueueReturnsWithinInputBudgetWithCompleteOwnedAdmission)
+{
+	for (const bool staged_delivery : {false, true})
+	{
+		PromptFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First still-undelivered input", &error));
+		if (staged_delivery)
+		{
+			AwaitSave(app);
+			UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+			UAM_ASSERT(session.pending_prompt_delivery != nullptr);
+		}
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+		const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared != nullptr);
+		std::promise<void> entered;
+		std::future<void> locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		const bool queued = uam::SendAcpPrompt(app, chat.id, "Follow-up before first delivery", &error);
+		const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+		publication.join();
+		UAM_ASSERT(queued);
+		UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		std::optional<bool> acknowledgement;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+		AwaitSave(app);
+		UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->messages.size(), std::size_t{2});
+		UAM_ASSERT_EQ(saved->messages.back().content, std::string("First still-undelivered input"));
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Follow-up before first delivery"));
+		AwaitDelivery(app, session);
+		UAM_ASSERT(session.prompt_request_id != 0);
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Follow-up before first delivery"));
+	}
+}
+
+UAM_TEST(AcpFailedPendingFirstPromptQueueAdmissionPreservesBothUndeliveredIntents)
+{
+	for (const bool staged_delivery : {false, true})
+	{
+		PromptFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First pending failure intent", &error));
+		if (staged_delivery)
+		{
+			AwaitSave(app);
+			UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+			UAM_ASSERT(session.pending_prompt_delivery != nullptr);
+		}
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retained follow-up failure intent", &error));
+		std::optional<bool> acknowledgement;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+		fs::remove_all(app.data_root);
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "private failed pending admission storage"));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(acknowledgement.has_value() && !*acknowledgement);
+		UAM_ASSERT(!session.processing && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+		UAM_ASSERT(chat.messages.back().interrupted && chat.messages.back().acp_prompt_not_sent);
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("First pending failure intent"));
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Retained follow-up failure intent"));
+		UAM_ASSERT(session.queue_held && chat.acp_queue_held);
+		fs::remove(app.data_root);
+		AwaitSave(app);
+		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, chat));
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	}
+}

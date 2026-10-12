@@ -90,6 +90,7 @@ namespace uam
 {
 	bool FinalizeActiveAcpTurnAsInterrupted(ChatSession& chat, AcpSessionState& session);
 	static bool HasPendingQueuedAdmissionSave(const AppState& app, const std::string& chat_id);
+	static void RequireQueuedAdmissionFullSave(AppState& app, const std::string& chat_id);
 
 	namespace
 	{
@@ -240,7 +241,7 @@ namespace uam
 			}
 			chat.acp_queue_held = session.queue_held;
 			if (queue_only && chat.execution_host_id == execution_hosts::kLocalHostId &&
-			    session.processing && session.prompt_request_id != 0 && !chat.small_model_mode)
+			    session.processing && (session.prompt_request_id != 0 || !session.queued_prompt.empty()) && !chat.small_model_mode)
 			{
 				const std::filesystem::path root = app.data_root;
 				const std::string chat_id = chat.id, provider_id = chat.provider_id, host_id = chat.execution_host_id;
@@ -256,11 +257,14 @@ namespace uam
 					const bool retained = std::ranges::any_of(owner->queued_user_prompts, [&queue_ids](const AcpQueuedUserPromptState& prompt)
 					{ return std::ranges::find(queue_ids, prompt.id) != queue_ids.end(); });
 					if (!retained) return;
-					// Hold the new queue without interrupting the already delivered provider turn.
+					// Preserve retained input; failed full admission separately rejects any undelivered first turn.
 					owner->queue_held = owner_chat->acp_queue_held = true;
 					app.status_line = "Queued prompts could not be saved.";
 					acp_detail::AppendAcpDiagnostic(*owner, "persistence", "queued_history_save_failed", "", "", false, 0, app.status_line);
 				}, true);
+				// A queue journal alone cannot acknowledge an unsaved first message or delivery marker.
+				if (session.prompt_request_id == 0)
+					RequireQueuedAdmissionFullSave(app, chat_id);
 				return true;
 			}
 			if (queue_only)
@@ -4861,6 +4865,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 		double due_at = 0.0;
 		~PendingChatSaveTask() { publication_owned->store(false, std::memory_order_release); queue_owned->store(false, std::memory_order_release); }
 	};
+
+	/** Requires the complete transcript for queued admission before the first provider write. */
+	static void RequireQueuedAdmissionFullSave(AppState& app, const std::string& chat_id)
+	{
+		const std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>>::iterator found = app.pending_chat_save_tasks.find(chat_id);
+		if (found != app.pending_chat_save_tasks.end() && found->second)
+			found->second->queue_full_save_required = true;
+	}
 
 	static bool HasPendingQueuedAdmissionSave(const AppState& app, const std::string& chat_id)
 	{
