@@ -5959,22 +5959,32 @@ UAM_TEST(SettingsStorePersistsAndClampsActiveTurnInactivityTimeout)
 	UAM_ASSERT_EQ(loaded.acp_setup_inactivity_timeout_seconds, uam::settings::kMaxAcpSetupInactivityTimeoutSeconds);
 }
 
-UAM_TEST(LegacyVoiceInputSettingsAreIgnored)
+UAM_TEST(LegacyVoiceInputSettingsAreRestored)
 {
 	TempDir temp("uam-voice-settings");
 	const fs::path settings_file = temp.root / "settings.txt";
 	UAM_ASSERT(uam::io::WriteTextFile(settings_file,
-		"voice_input_mode=server\nvoice_input_server_base_url=https%3A%2F%2Fvoice.example.test\n"
-		"voice_input_server_endpoint=%2Fv1%2Faudio%2Ftranscriptions\nvoice_input_server_model=whisper-large-v3\n"
+		"voice_input_mode=server\nvoice_input_server_base_url=" + uam::EncodeLineValue("https://voice.example.test") + "\n"
+		"voice_input_server_endpoint=" + uam::EncodeLineValue("/v1/audio/transcriptions") + "\nvoice_input_server_model=whisper-large-v3\n"
 		"voice_input_api_key_env=UAM_VOICE_API_KEY\nsettings_complete=1\n"));
 
 	AppSettings loaded;
-	SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT(SettingsStore::Load(settings_file, loaded).loaded);
 	const nlohmann::json frontend = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
-	UAM_ASSERT(!frontend.contains("voiceInputMode"));
-	UAM_ASSERT(!frontend.contains("voiceInputServerBaseUrl"));
+	UAM_ASSERT_EQ(frontend["voiceInputMode"].get<std::string>(), std::string("server"));
+	UAM_ASSERT_EQ(frontend["voiceInputServerBaseUrl"].get<std::string>(), std::string("https://voice.example.test"));
+	UAM_ASSERT_EQ(frontend["voiceInputServerEndpoint"].get<std::string>(), std::string("/v1/audio/transcriptions"));
+	UAM_ASSERT_EQ(frontend["voiceInputServerModel"].get<std::string>(), std::string("whisper-large-v3"));
+	UAM_ASSERT_EQ(frontend["voiceInputApiKeyEnv"].get<std::string>(), std::string("UAM_VOICE_API_KEY"));
 	UAM_ASSERT(SettingsStore::Save(settings_file, loaded));
-	UAM_ASSERT(ReadFile(settings_file).find("voice_input_") == std::string::npos);
+	AppSettings reloaded;
+	UAM_ASSERT(SettingsStore::Load(settings_file, reloaded).loaded);
+	UAM_ASSERT_EQ(uam::settings_frontend_json::SerializeCommonSettingsFields(reloaded), frontend);
+	const AppSettings defaults;
+	UAM_ASSERT_EQ(defaults.voice_input_mode, std::string("system"));
+	UAM_ASSERT_EQ(defaults.voice_input_server_endpoint, std::string("/v1/audio/transcriptions"));
+	UAM_ASSERT_EQ(defaults.voice_input_server_model, std::string("whisper-1"));
+	UAM_ASSERT_EQ(defaults.voice_input_api_key_env, std::string("OPENAI_API_KEY"));
 }
 
 UAM_TEST(SettingsStorePersistsProviderChatDefaults)

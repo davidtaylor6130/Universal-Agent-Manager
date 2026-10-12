@@ -1270,6 +1270,7 @@ if(UAM_BUILD_TESTS)
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
     tests/provider_mcp_settings_tests.cpp
+    tests/voice_input_tests.cpp
     tests/provider_availability_tests.cpp
     tests/async_prompt_durability_tests.cpp
     tests/uam_control_transport_tests.cpp

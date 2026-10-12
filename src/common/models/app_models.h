@@ -639,6 +639,12 @@ struct ProviderAvailabilityOverride
 
 struct AppSettings
 {
+	std::string voice_input_mode = "system";
+	std::string voice_input_server_base_url = "https://api.openai.com";
+	std::string voice_input_server_endpoint = "/v1/audio/transcriptions";
+	std::string voice_input_server_model = "whisper-1";
+	std::string voice_input_api_key_env = "OPENAI_API_KEY";
+
 	bool computer_use_allowlist_enabled = false;
 	std::vector<ComputerUseApplicationRule> computer_use_allowed_applications;
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();

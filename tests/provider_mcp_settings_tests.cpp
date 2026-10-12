@@ -309,6 +309,8 @@ UAM_TEST(ProviderMcpAvailabilityKeepsAllSixProvidersAndHostSessionIdentitySepara
 		UAM_ASSERT_EQ(status().size(), std::size_t{1});
 		UAM_ASSERT_EQ(status().front()["providerId"].get<std::string>(), std::string(provider));
 		UAM_ASSERT_EQ(status().front()["activeSessionCount"].get<std::size_t>(), std::size_t{0});
+		session.process_execution_host_id.clear();
+		UAM_ASSERT_EQ(status().front()["activeSessionCount"].get<std::size_t>(), std::size_t{0});
 		session.process_execution_host_id = chat.execution_host_id;
 		session.model_discovery_only = true;
 		UAM_ASSERT_EQ(status().front()["activeSessionCount"].get<std::size_t>(), std::size_t{0});
@@ -322,6 +324,32 @@ UAM_TEST(ProviderMcpAvailabilityKeepsAllSixProvidersAndHostSessionIdentitySepara
 		catch (const std::exception&) { rejected = true; }
 		UAM_ASSERT(rejected);
 	}
+}
+
+UAM_TEST(ProviderMcpAdditionalServerCountsHonorProviderHostAndWorkspaceOverrides)
+{
+	uam::AppState app;
+	McpServerConfiguration global{.id = "global", .name = "global", .transport = "http", .url = "https://fixture.test/mcp"};
+	McpServerConfiguration opt_in = global; opt_in.id = "opt-in"; opt_in.name = "opt-in"; opt_in.enabled = false;
+	McpServerConfiguration remote = global; remote.id = "remote"; remote.name = "remote"; remote.execution_host_id = "fixture-host";
+	McpServerConfiguration workspace = global; workspace.id = "workspace"; workspace.name = "workspace"; workspace.workspace_directory = "/fixture/workspace";
+	app.settings.mcp_servers = {global, opt_in, remote, workspace};
+	app.settings.central_provider_configuration.mcp_overrides = {
+	    {"codex-cli", "local", "global", false}, {"codex-cli", "local", "opt-in", true},
+	    {"opencode-cli", "local", "global", false}, {"codex-cli", "fixture-host", "remote", false}};
+	const auto count = [&](const std::string& provider, const std::string& host, const std::string& directory)
+	{
+		const nlohmann::json result = uam::provider_mcp_settings::Status(app, host, directory);
+		for (const nlohmann::json& row : result["providers"])
+			if (row["providerId"] == provider) return row["additionalServerCount"].get<std::size_t>();
+		return std::size_t{999};
+	};
+	UAM_ASSERT_EQ(count("codex-cli", "local", ""), std::size_t{1});
+	UAM_ASSERT_EQ(count("opencode-cli", "local", ""), std::size_t{0});
+	UAM_ASSERT_EQ(count("claude-cli", "local", ""), std::size_t{1});
+	UAM_ASSERT_EQ(count("codex-cli", "local", "/fixture/workspace"), std::size_t{2});
+	UAM_ASSERT_EQ(count("codex-cli", "fixture-host", ""), std::size_t{1});
+	UAM_ASSERT_EQ(count("opencode-cli", "fixture-host", ""), std::size_t{2});
 }
 
 UAM_TEST(ProviderMcpTerminalAvailabilityRejectsForeignHostStoppedAndOptedOutConnections)

@@ -1,3 +1,4 @@
+#include "common/config/voice_input_settings.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
 
@@ -60,6 +61,11 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kWindowWidthKey = "window_width";
 	constexpr std::string_view kWindowHeightKey = "window_height";
 	constexpr std::string_view kWindowMaximizedKey = "window_maximized";
+	constexpr std::string_view kVoiceInputModeKey = "voice_input_mode";
+	constexpr std::string_view kVoiceInputServerBaseUrlKey = "voice_input_server_base_url";
+	constexpr std::string_view kVoiceInputServerEndpointKey = "voice_input_server_endpoint";
+	constexpr std::string_view kVoiceInputServerModelKey = "voice_input_server_model";
+	constexpr std::string_view kVoiceInputApiKeyEnvKey = "voice_input_api_key_env";
 	constexpr std::string_view kMemoryEnabledDefaultKey = "memory_enabled_default";
 	constexpr std::string_view kMemoryLevelDefaultKey = "memory_level_default";
 	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
@@ -518,6 +524,12 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 	void ClampSettings(AppSettings& settings)
 	{
+		settings.voice_input_mode = uam::voice_input::NormalizeMode(settings.voice_input_mode);
+		settings.voice_input_server_base_url = uam::strings::Trim(settings.voice_input_server_base_url);
+		settings.voice_input_server_endpoint = uam::strings::Trim(settings.voice_input_server_endpoint);
+		settings.voice_input_server_model = uam::strings::Trim(settings.voice_input_server_model);
+		settings.voice_input_api_key_env = uam::strings::Trim(settings.voice_input_api_key_env);
+
 		settings.active_provider_id = uam::strings::NonEmptyOrFallback(NormalizeProviderId(settings.active_provider_id), provider_build_config::FirstEnabledProviderId());
 		settings.default_new_chat_provider_id = uam::strings::NonEmptyOrFallback(
 		    NormalizeProviderId(settings.default_new_chat_provider_id), settings.active_provider_id);
@@ -599,6 +611,11 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kWindowWidthKey, normalized.window_width);
 	WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
 	WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
+	WriteEncodedSetting(lines, kVoiceInputModeKey, normalized.voice_input_mode);
+	WriteEncodedSetting(lines, kVoiceInputServerBaseUrlKey, normalized.voice_input_server_base_url);
+	WriteEncodedSetting(lines, kVoiceInputServerEndpointKey, normalized.voice_input_server_endpoint);
+	WriteEncodedSetting(lines, kVoiceInputServerModelKey, normalized.voice_input_server_model);
+	WriteEncodedSetting(lines, kVoiceInputApiKeyEnvKey, normalized.voice_input_api_key_env);
 	WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
 	WriteEncodedSetting(lines, kMemoryLevelDefaultKey, normalized.memory_level_default);
 	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
@@ -768,6 +785,26 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kWindowMaximizedKey)
 		{
 			settings.window_maximized = uam::parse::BoolOr(value, settings.window_maximized);
+		}
+		else if (key == kVoiceInputModeKey)
+		{
+			settings.voice_input_mode = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerBaseUrlKey)
+		{
+			settings.voice_input_server_base_url = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerEndpointKey)
+		{
+			settings.voice_input_server_endpoint = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerModelKey)
+		{
+			settings.voice_input_server_model = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputApiKeyEnvKey)
+		{
+			settings.voice_input_api_key_env = uam::DecodeLineValue(value);
 		}
 		else if (key == kMemoryEnabledDefaultKey)
 		{
