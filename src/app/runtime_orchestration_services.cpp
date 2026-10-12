@@ -47,6 +47,9 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
+#include <array>
+#include <sqlite3.h>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -69,8 +72,6 @@ namespace
 	constexpr std::size_t kRemoteOpenCodeMaxMessages = 10000;
 	constexpr std::size_t kRemoteCodexMaxSessions = 200;
 	constexpr std::size_t kRemoteCodexMaxMessages = 10000;
-	// ponytail: 64 MiB rollout ceiling; larger sessions need paged history loading.
-	constexpr std::size_t kLocalCodexMaxFileBytes = 64U * 1024U * 1024U;
 
 	enum class CodexRpcReadResult
 	{
@@ -740,30 +741,182 @@ namespace
 		return text;
 	}
 
-	std::optional<ChatSession> LoadCodexRolloutChat(const fs::path& rollout_file, const ChatFolder& folder, bool* malformed_out = nullptr, bool include_subagents = false, std::stop_token stop_token = {}, bool metadata_only = false)
+	class CodexImportCallIndex
+	{
+	public:
+		CodexImportCallIndex(const fs::path& source) : m_database(nullptr, sqlite3_close), m_records(source, std::ios::binary)
+		{
+			sqlite3* raw = nullptr;
+			const int opened = sqlite3_open_v2("", &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_PRIVATECACHE, nullptr);
+			m_database.reset(raw);
+			if (!m_records || opened != SQLITE_OK || sqlite3_exec(raw, "PRAGMA cache_size=-2048; PRAGMA journal_mode=OFF; CREATE TABLE outputs(id TEXT, ordinal INTEGER, offset INTEGER, bytes INTEGER, PRIMARY KEY(id,ordinal)); CREATE TABLE calls(id TEXT PRIMARY KEY);", nullptr, nullptr, nullptr) != SQLITE_OK)
+				throw std::runtime_error("Could not stage Codex call associations.");
+		}
+		void RecordOutput(std::string_view id, std::size_t ordinal, std::uintmax_t offset, std::size_t bytes)
+		{
+			Statement statement = Prepare("INSERT OR REPLACE INTO outputs VALUES(?1,?2,?3,?4)");
+			Bind(statement.get(), 1, id);
+			if (sqlite3_bind_int64(statement.get(), 2, static_cast<sqlite3_int64>(ordinal)) != SQLITE_OK) Fail();
+			if (sqlite3_bind_int64(statement.get(), 3, static_cast<sqlite3_int64>(offset)) != SQLITE_OK ||
+			    sqlite3_bind_int64(statement.get(), 4, static_cast<sqlite3_int64>(bytes)) != SQLITE_OK) Fail();
+			if (sqlite3_step(statement.get()) != SQLITE_DONE) Fail();
+		}
+		bool AddCall(std::string_view id)
+		{
+			Statement statement = Prepare("INSERT OR IGNORE INTO calls VALUES(?1)");
+			Bind(statement.get(), 1, id);
+			if (sqlite3_step(statement.get()) != SQLITE_DONE) Fail();
+			return sqlite3_changes(m_database.get()) > 0;
+		}
+		bool HasCall(std::string_view id)
+		{
+			Statement statement = Prepare("SELECT 1 FROM calls WHERE id=?1");
+			Bind(statement.get(), 1, id);
+			const int step = sqlite3_step(statement.get());
+			if (step != SQLITE_ROW && step != SQLITE_DONE) Fail();
+			return step == SQLITE_ROW;
+		}
+		void VisitOutputs(std::string_view id, std::size_t call_ordinal,
+		    const std::function<void(const nlohmann::json&)>& visit)
+		{
+			Statement statement = Prepare("SELECT offset,bytes FROM outputs WHERE id=?1 AND ordinal>?2 ORDER BY ordinal");
+			Bind(statement.get(), 1, id);
+			if (sqlite3_bind_int64(statement.get(), 2, static_cast<sqlite3_int64>(call_ordinal)) != SQLITE_OK) Fail();
+			for (;;)
+			{
+				const int step = sqlite3_step(statement.get());
+				if (step == SQLITE_DONE) return;
+				if (step != SQLITE_ROW) Fail();
+				const std::streamoff offset = static_cast<std::streamoff>(sqlite3_column_int64(statement.get(), 0));
+				const std::size_t bytes = static_cast<std::size_t>(sqlite3_column_int64(statement.get(), 1));
+				std::string text(bytes, '\0');
+				m_records.clear();
+				m_records.seekg(offset);
+				m_records.read(text.data(), static_cast<std::streamsize>(bytes));
+				if (m_records.gcount() != static_cast<std::streamsize>(bytes)) Fail();
+				visit(nlohmann::json::parse(text));
+			}
+		}
+	private:
+		using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+		[[noreturn]] static void Fail() { throw std::runtime_error("Could not read or write Codex call associations."); }
+		Statement Prepare(const char* sql)
+		{
+			sqlite3_stmt* raw = nullptr;
+			const int status = sqlite3_prepare_v2(m_database.get(), sql, -1, &raw, nullptr);
+			Statement statement(raw, sqlite3_finalize);
+			if (status != SQLITE_OK) Fail();
+			return statement;
+		}
+		static void Bind(sqlite3_stmt* statement, int parameter, std::string_view text)
+		{
+			if (sqlite3_bind_text64(statement, parameter, text.data(), text.size(), SQLITE_TRANSIENT, SQLITE_UTF8) != SQLITE_OK) Fail();
+		}
+		std::unique_ptr<sqlite3, decltype(&sqlite3_close)> m_database;
+		std::ifstream m_records;
+	};
+
+	bool VisitCodexRolloutRecords(std::ifstream& records, std::uintmax_t snapshot_bytes,
+	    const std::function<bool(const std::string&)>& visit, std::stop_token stop_token)
+	{
+		std::array<char, 64 * 1024> buffer;
+		std::string line;
+		std::uintmax_t remaining = snapshot_bytes;
+		bool reading = true;
+		while (reading && remaining > 0 && !stop_token.stop_requested())
+		{
+			const std::streamsize requested = static_cast<std::streamsize>(std::min<std::uintmax_t>(remaining, buffer.size()));
+			records.read(buffer.data(), requested);
+			const std::streamsize received = records.gcount();
+			if (received != requested) return false;
+			remaining -= static_cast<std::uintmax_t>(received);
+			std::size_t start = 0;
+			for (std::size_t offset = 0; offset < static_cast<std::size_t>(received); ++offset)
+			{
+				if (buffer[offset] != '\n') continue;
+				line.append(buffer.data() + start, offset - start);
+				if (!visit(line)) { reading = false; break; }
+				line.clear();
+				start = offset + 1;
+			}
+			if (reading) line.append(buffer.data() + start, static_cast<std::size_t>(received) - start);
+		}
+		if (reading && !line.empty() && !stop_token.stop_requested()) visit(line);
+		return !records.bad();
+	}
+
+	std::optional<ChatSession> LoadCodexRolloutChat(const fs::path& rollout_file, const ChatFolder& folder, bool* malformed_out = nullptr, bool include_subagents = false, std::stop_token stop_token = {}, bool metadata_only = false, const std::function<bool(const Message&)>& emit = {})
 	{
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli);
 		if (malformed_out != nullptr) *malformed_out = false;
-		// Bound reads even if a running CLI appends to the rollout during import.
+		// Snapshot the byte boundary so a live append cannot keep an import running indefinitely.
 		std::error_code size_error;
-		std::string rollout_text;
-		if (fs::file_size(rollout_file, size_error) > kLocalCodexMaxFileBytes || size_error ||
-		    !uam::io::TryReadTextFile(rollout_file, rollout_text, kLocalCodexMaxFileBytes))
+		const std::uintmax_t snapshot_bytes = fs::file_size(rollout_file, size_error);
+		std::ifstream records(rollout_file, std::ios::binary);
+		if (size_error || !records)
 		{
 			if (malformed_out != nullptr) *malformed_out = true;
 			return std::nullopt;
 		}
-		std::istringstream records(std::move(rollout_text));
 		ChatSession chat;
 		bool metadata_seen = false;
 		bool include = false;
 		bool has_user_message = false;
 		bool parse_error = false;
 		std::unordered_map<std::string, std::size_t> tool_messages;
+		std::unique_ptr<CodexImportCallIndex> call_index;
+		std::size_t message_count = 0;
+		std::size_t ordinal = 0;
+		std::string first_user_title;
+		const auto add_message = [&](Message message)
+		{
+			if (first_user_title.empty() && message.role == MessageRole::User) first_user_title = uam::BuildImportedChatTitle(std::vector<Message>{message}, chat.created_at);
+			if (emit)
+			{
+				if (!emit(message)) { parse_error = true; return; }
+			}
+			else chat.messages.push_back(std::move(message));
+			++message_count;
+		};
+		std::error_code modified_error;
+		const fs::file_time_type source_modified = fs::last_write_time(rollout_file, modified_error);
+		if (emit)
+		{
+			call_index = std::make_unique<CodexImportCallIndex>(rollout_file);
+			std::uintmax_t record_offset = 0;
+			const bool indexed = VisitCodexRolloutRecords(records, snapshot_bytes, [&](const std::string& line)
+			{
+				++ordinal;
+				const std::uintmax_t offset = record_offset;
+				record_offset += line.size() + 1;
+				if (uam::strings::TrimAsciiView(line).empty()) return true;
+				try
+				{
+					const nlohmann::json record = nlohmann::json::parse(line);
+					const auto payload = record.find("payload");
+					if (uam::nlohmann_json::TrimmedStringViewOrEmpty(record, "type") != "response_item" || payload == record.end() || !payload->is_object()) return true;
+					const std::string_view type = uam::nlohmann_json::TrimmedStringViewOrEmpty(*payload, "type");
+					if (type == "function_call_output" || type == "custom_tool_call_output")
+						call_index->RecordOutput(uam::nlohmann_json::StringViewOrEmpty(*payload, "call_id"), ordinal, offset, line.size());
+					return true;
+				}
+				catch (const nlohmann::json::exception&) { parse_error = true; return false; }
+			}, stop_token);
+			if (!indexed || parse_error || stop_token.stop_requested())
+			{
+				if (malformed_out != nullptr) *malformed_out = !indexed || parse_error;
+				return std::nullopt;
+			}
+			records.clear();
+			records.seekg(0);
+			ordinal = 0;
+		}
+
 
 		const auto visit = [&](const std::string& line)
 		    {
 			    if (stop_token.stop_requested()) return false;
+			    ++ordinal;
 			    if (uam::strings::TrimAsciiView(line).empty()) return true;
 			    try
 			    {
@@ -821,9 +974,9 @@ namespace
 					    {
 						    call_id = uam::nlohmann_json::StringViewOrEmpty(payload, "id");
 						    // Built-in records can omit both IDs; retain an addressable row in the transcript.
-						    if (call_id.empty()) call_id = "rollout-tool-" + std::to_string(chat.messages.size());
+						    if (call_id.empty()) call_id = "rollout-tool-" + std::to_string(message_count);
 					    }
-					    if (call_id.empty() || tool_messages.contains(call_id)) return true;
+					    if (call_id.empty() || (call_index ? !call_index->AddCall(call_id) : tool_messages.contains(call_id))) return true;
 					    ToolCall tool;
 					    tool.id = call_id;
 					    if (builtin_tool)
@@ -841,6 +994,17 @@ namespace
 						    tool.status = "pending";
 					    }
 					    runtime.ApplyNativeToolMetadata(tool, payload);
+					    if (call_index)
+					    {
+						    call_index->VisitOutputs(call_id, ordinal, [&](const nlohmann::json& output_record)
+						    {
+							    const nlohmann::json& output_payload = output_record.at("payload");
+							    const nlohmann::json& output = output_payload.at("output");
+							    tool.result_text = output.is_string() ? output.get<std::string>() : output.dump();
+							    tool.status = "completed";
+							    runtime.ApplyNativeToolMetadata(tool, output_payload);
+						    });
+					    }
 					    Message message;
 					    message.role = MessageRole::Assistant;
 					    message.provider = uam::provider_ids::kCodexCli;
@@ -848,12 +1012,21 @@ namespace
 					    message.blocks.push_back({"tool_call", "", call_id, ""});
 					    message.tool_calls.push_back(std::move(tool));
 					    if (!message.created_at.empty()) chat.updated_at = message.created_at;
-					    tool_messages.emplace(call_id, chat.messages.size());
-					    chat.messages.push_back(std::move(message));
-					    return true;
+					    if (!call_index) tool_messages.emplace(call_id, chat.messages.size());
+					    add_message(std::move(message));
+					    return !parse_error;
 				    }
 				    if (item_type == "function_call_output" || item_type == "custom_tool_call_output")
 				    {
+					    if (call_index)
+					    {
+						    if (call_index->HasCall(uam::nlohmann_json::StringViewOrEmpty(payload, "call_id")))
+						    {
+							    const std::string_view timestamp = uam::nlohmann_json::TrimmedStringViewOrEmpty(record, "timestamp");
+							    if (!timestamp.empty()) chat.updated_at = timestamp;
+						    }
+						    return true;
+					    }
 					    const auto found = tool_messages.find(std::string{uam::nlohmann_json::StringViewOrEmpty(payload, "call_id")});
 					    if (found == tool_messages.end()) return true;
 					    ToolCall& tool = chat.messages[found->second].tool_calls.front();
@@ -884,8 +1057,8 @@ namespace
 					    if (message.thoughts.empty()) return true;
 					    message.blocks.push_back({"thought", message.thoughts, "", ""});
 					    if (!message.created_at.empty()) chat.updated_at = message.created_at;
-					    chat.messages.push_back(std::move(message));
-					    return true;
+					    add_message(std::move(message));
+					    return !parse_error;
 				    }
 				    if (item_type != "message") return true;
 
@@ -911,21 +1084,18 @@ namespace
 				    {
 					    chat.updated_at = message.created_at;
 				    }
-				    chat.messages.push_back(std::move(message));
+				    add_message(std::move(message));
 			    }
 			    catch (const nlohmann::json::exception&)
 			    {
 				    parse_error = true;
 				    return false;
 			    }
-			    return true;
+			    return !parse_error;
 			};
-		std::string line;
-		while (std::getline(records, line) && visit(line))
-		{
-			if (chat.messages.size() > kRemoteCodexMaxMessages) { parse_error = true; break; }
-		}
-		const bool read_success = !records.bad();
+		const bool read_success = VisitCodexRolloutRecords(records, snapshot_bytes, visit, stop_token);
+		if (emit && (modified_error || fs::file_size(rollout_file, size_error) != snapshot_bytes || size_error ||
+		    fs::last_write_time(rollout_file, modified_error) != source_modified || modified_error)) parse_error = true;
 		if (malformed_out != nullptr) *malformed_out = !read_success || parse_error;
 
 		if (stop_token.stop_requested()) return std::nullopt;
@@ -933,8 +1103,38 @@ namespace
 		{
 			return std::nullopt;
 		}
-		chat.title = uam::BuildImportedChatTitle(chat.messages, chat.created_at);
+		if (emit)
+		{
+			chat.title = first_user_title.empty() ? uam::BuildImportedChatTitle({}, chat.created_at) : first_user_title;
+			chat.messages_loaded = false;
+			chat.persisted_message_count = message_count;
+			chat.persisted_messages_digest = chat.updated_at + ":" + std::to_string(message_count);
+		}
+		else chat.title = uam::BuildImportedChatTitle(chat.messages, chat.created_at);
 		return chat;
+	}
+
+	std::shared_ptr<PreparedChatSave> PrepareCodexRolloutImport(const fs::path& root, const fs::path& rollout,
+	    ChatSession& metadata, bool* malformed = nullptr, std::string_view native_title = {})
+	{
+		const ChatSession identity = metadata;
+		return ChatRepository::PrepareImportedChatSave(root, metadata,
+		    [&](const std::function<bool(const Message&)>& emit, ChatSession& final_metadata)
+		{
+			ChatFolder source;
+			source.directory = identity.workspace_directory;
+			std::optional<ChatSession> loaded = LoadCodexRolloutChat(rollout, source, malformed, false, {}, false, emit);
+			if (!loaded || loaded->native_session_id != identity.native_session_id ||
+			    !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(loaded->workspace_directory), uam::paths::PathFromUtf8(identity.workspace_directory)) ||
+			    !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(identity.workspace_directory), uam::paths::PathFromUtf8(loaded->workspace_directory))) return false;
+			loaded->id = identity.id;
+			loaded->folder_id = identity.folder_id;
+			loaded->branch_root_chat_id = identity.branch_root_chat_id;
+			loaded->execution_host_id = identity.execution_host_id;
+			if (!native_title.empty()) loaded->title = native_title;
+			final_metadata = std::move(*loaded);
+			return true;
+		});
 	}
 
 	bool IsUamMemoryWorkerNativeChat(const ChatSession& chat)
@@ -1664,7 +1864,15 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 				continue;
 			}
 			bool malformed = false;
-			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed);
+			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, {}, true);
+			if (chat)
+			{
+				if (import_index.existing_id_by_native_key.contains(chat_identity::NativeIdentityKeyForHistoryImport(*chat)))
+					chat = LoadCodexRolloutChat(it->path(), folder, &malformed);
+				else
+					// Preserve direct-import eligibility and counts without retaining the transcript.
+					chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, {}, false, [](const Message&) { return true; });
+			}
 			if (malformed) result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + ".");
 			if (!chat)
 			{
@@ -1675,7 +1883,16 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 			if (name != session_names.end() && !uam::IsInjectedChatTitle(name->second)) chat->title = name->second;
 			++result.total_count;
 			const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, *chat, "");
-			if (native_key && SaveImportedNativeChat(app, import_index, *chat, *native_key, it->path().parent_path(), false))
+			bool saved = false;
+			if (native_key && !chat->messages_loaded)
+			{
+				const std::string_view title = name != session_names.end() && !uam::IsInjectedChatTitle(name->second) ? std::string_view(name->second) : std::string_view{};
+				const std::shared_ptr<PreparedChatSave> prepared = PrepareCodexRolloutImport(app.data_root, it->path(), *chat, &malformed, title);
+				saved = prepared && ChatRepository::PublishPreparedChatSave(prepared);
+				if (saved) TrackImportedNativeChat(import_index, *chat, *native_key);
+			}
+			else if (native_key) saved = SaveImportedNativeChat(app, import_index, *chat, *native_key, it->path().parent_path(), false);
+			if (saved)
 			{
 				++result.imported_count;
 			}
@@ -1716,7 +1933,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			if (!uam::paths::IsRegularFileEntryNoThrow(*it) || it->path().extension() != ".jsonl") continue;
 			bool malformed = false;
 			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, stop_token, true);
-			if (malformed) discovery.result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + " (unreadable, invalid, or over 64 MiB).");
+			if (malformed) discovery.result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + " (unreadable or invalid).");
 			if (chat) discovery.codex_rollouts.emplace_back(std::move(*chat), it->path());
 		}
 		if (error) discovery.result.Fail("Could not finish scanning Codex history: " + error.message());
@@ -2066,10 +2283,14 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 	for (std::size_t index = 0; index < discovery.chats.size() + discovery.codex_rollouts.size(); ++index)
 	{
 		std::optional<ChatSession> rollout;
+		fs::path rollout_file;
 		if (index >= discovery.chats.size())
 		{
 			bool malformed = false;
-			rollout = LoadCodexRolloutChat(discovery.codex_rollouts[index - discovery.chats.size()].second, folder, &malformed);
+			rollout_file = discovery.codex_rollouts[index - discovery.chats.size()].second;
+			rollout = LoadCodexRolloutChat(rollout_file, folder, &malformed, false, {}, true);
+			if (rollout && import_index.existing_id_by_native_key.contains(chat_identity::NativeIdentityKeyForHistoryImport(*rollout)))
+				rollout = LoadCodexRolloutChat(rollout_file, folder, &malformed);
 			if (malformed) result.Fail("Codex history is unreadable, invalid, or exceeds import limits.");
 			if (!rollout) continue;
 		}
@@ -2110,7 +2331,15 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			if (app.folders.size() > prior_folder_count) generated_folder_id = chat.folder_id;
 		}
 		if (const ChatSession* live = ChatDomainService().FindChatById(app, chat.id)) OverlayLocalChatState(*live, chat);
-		if (SaveImportedNativeChat(app, import_index, chat, *native_key, {}, false))
+		bool saved = false;
+		if (!rollout_file.empty() && !chat.messages_loaded)
+		{
+			const std::shared_ptr<PreparedChatSave> prepared = PrepareCodexRolloutImport(app.data_root, rollout_file, chat);
+			saved = prepared && ChatRepository::PublishPreparedChatSave(prepared);
+			if (saved) TrackImportedNativeChat(import_index, chat, *native_key);
+		}
+		else saved = SaveImportedNativeChat(app, import_index, chat, *native_key, {}, false);
+		if (saved)
 		{
 			++result.imported_count;
 			if (ChatSession* live = ChatDomainService().FindChatById(app, chat.id))
@@ -2476,6 +2705,13 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 				}
 				if (!candidate.codex_rollout.empty())
 				{
+					if (!candidate.expected_live && !candidate.retain_messages)
+					{
+						bool malformed = false;
+						candidate.files = PrepareCodexRolloutImport(root, candidate.codex_rollout, candidate.chat, &malformed);
+						if (!candidate.files) candidate.error = "Failed to stage complete Codex history " + candidate.chat.native_session_id + "; retry after its source and storage are available.";
+						continue;
+					}
 					ChatFolder source;
 					source.directory = candidate.chat.workspace_directory;
 					bool malformed = false;

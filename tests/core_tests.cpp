@@ -22003,8 +22003,12 @@ UAM_TEST(CodexHistoryDiscoveryDefersBodiesAndBoundsChangedSources)
 	UAM_ASSERT_EQ(complete->messages.size(), static_cast<std::size_t>(10000));
 	UAM_ASSERT(uam::io::WriteTextFile(limit_file, transcript + message));
 	std::string limit_error;
-	UAM_ASSERT(!ChatHistorySyncService().LoadLocalCodexChildChat(limit_chat, &limit_error));
-	UAM_ASSERT(!limit_error.empty());
+	const std::optional<ChatSession> extended = ChatHistorySyncService().LoadLocalCodexChildChat(limit_chat, &limit_error);
+	UAM_ASSERT(extended.has_value());
+	UAM_ASSERT_EQ(extended->messages.size(), static_cast<std::size_t>(10001));
+	UAM_ASSERT_EQ(extended->messages.front().content, std::string("bounded"));
+	UAM_ASSERT_EQ(extended->messages.back().content, std::string("bounded"));
+	UAM_ASSERT(limit_error.empty());
 	ChatHistorySyncService::LocalHistoryDiscovery canceled;
 	canceled.codex_rollouts.emplace_back(ChatSession{}, oversized);
 	canceled.CancelPending();
