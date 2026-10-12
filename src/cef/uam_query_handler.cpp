@@ -267,6 +267,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"steerCliTerminal", &UamQueryHandler::HandleSteerCliTerminal},
 		{"resizeCliTerminal", &UamQueryHandler::HandleResizeCli},
 		{"writeCliInput", &UamQueryHandler::HandleWriteCliInput},
+		{"setVoiceInputSettings", &UamQueryHandler::HandleSetVoiceInputSettings},
 		{"startDictation", &UamQueryHandler::HandleStartDictation},
 		{"stopDictation", &UamQueryHandler::HandleStopDictation},
 		{"stageChatAttachments", &UamQueryHandler::HandleStageChatAttachments},

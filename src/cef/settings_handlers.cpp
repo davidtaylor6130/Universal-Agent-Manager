@@ -1,3 +1,4 @@
+#include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
 #include "common/config/settings_store.h"
 #include "common/config/provider_availability.h"
@@ -984,6 +985,38 @@ void UamQueryHandler::HandleSetProviderAvailability(CefRefPtr<CefBrowser> browse
 	{
 		m_app.settings = previous;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Could not save provider availability."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetVoiceInputSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	AppSettings next = m_app.settings;
+	next.voice_input_mode = uam::voice_input::NormalizeMode(payload.value("mode", next.voice_input_mode));
+	next.voice_input_server_base_url = uam::strings::Trim(payload.value("serverBaseUrl", next.voice_input_server_base_url));
+	next.voice_input_server_endpoint = uam::strings::Trim(payload.value("serverEndpoint", next.voice_input_server_endpoint));
+	next.voice_input_server_model = uam::strings::Trim(payload.value("serverModel", next.voice_input_server_model));
+	next.voice_input_api_key_env = uam::strings::Trim(payload.value("apiKeyEnv", next.voice_input_api_key_env));
+
+	if (next.voice_input_mode == uam::voice_input::kServerMode)
+	{
+		std::string error;
+		if (!uam::voice_input::ValidateServerSettings(next.voice_input_server_base_url, next.voice_input_server_endpoint,
+		                                                    next.voice_input_server_model, next.voice_input_api_key_env, &error))
+		{
+			cb->Failure(400, error);
+			return;
+		}
+	}
+
+	const AppSettings previous = m_app.settings;
+	m_app.settings = std::move(next);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist voice input settings."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);

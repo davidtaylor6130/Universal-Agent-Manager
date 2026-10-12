@@ -163,6 +163,10 @@ struct DictationEvent
 
 struct DictationOptions
 {
+	std::string mode = "system";
+	std::string server_url;
+	std::string server_model;
+	std::string server_api_key;
 	std::string locale;
 	std::string dictation_id;
 };

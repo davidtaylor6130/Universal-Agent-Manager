@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/config/voice_input_settings.h"
+
 #include "common/config/central_provider_configuration.h"
 
 #include "common/memory/memory_levels.h"
@@ -107,6 +109,20 @@ namespace uam::settings_frontend_json
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
 		settings_json["gitEnabled"] = settings.git_enabled;
 		settings_json["svnEnabled"] = settings.svn_enabled;
+		settings_json["voiceInputMode"] = uam::voice_input::NormalizeMode(settings.voice_input_mode);
+		settings_json["voiceInputServerBaseUrl"] = uam::strings::Trim(settings.voice_input_server_base_url);
+		settings_json["voiceInputServerEndpoint"] = uam::strings::Trim(settings.voice_input_server_endpoint);
+		settings_json["voiceInputServerModel"] = uam::strings::Trim(settings.voice_input_server_model);
+		settings_json["voiceInputApiKeyEnv"] = uam::strings::Trim(settings.voice_input_api_key_env);
+		settings_json["voiceInputCapabilities"] = {
+		    {"system", {{"supported", true}, {"reason", ""}}},
+		    {"local", {{"supported", false}, {"reason", "Local AI transcription is coming soon."}}},
+#if defined(__APPLE__)
+		    {"server", {{"supported", true}, {"reason", ""}}},
+#else
+		    {"server", {{"supported", false}, {"reason", "Server transcription audio capture is not available on this platform yet."}}},
+#endif
+		};
 		settings_json["memoryEnabledDefault"] = settings.memory_enabled_default;
 		settings_json["memoryLevelDefault"] = uam::memory_levels::Normalize(settings.memory_level_default, settings.memory_enabled_default);
 		settings_json["memoryIdleDelaySeconds"] = std::clamp(settings.memory_idle_delay_seconds, uam::settings::kMinMemoryIdleDelaySeconds, uam::settings::kMaxMemoryIdleDelaySeconds);
