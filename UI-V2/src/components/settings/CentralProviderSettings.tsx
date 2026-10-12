@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { Bot, FileText, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, MenuSelect, Overlay, Presence } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Overlay, Presence } from '../ui'
 import { SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
+import { UnsavedChangesDialog } from './UnsavedChangesDialog'
+
+const AGENT_NAME = /^[a-z0-9][a-z0-9_-]*$/
+const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
 type Agent = { id: string; description: string; mode: string; workspaceAccess: string; skills: string[]; delegates: string[]; instructions: string; builtIn: boolean }
 const blankAgent = (): Agent => ({ id: '', description: '', mode: 'primary', workspaceAccess: 'write', skills: [], delegates: [], instructions: '', builtIn: false })
@@ -44,7 +48,8 @@ function ChipAdd({ label, values, options, onChange, disabled }: { label: string
 }
 
 /** Shared instructions, default agent, default skills and agents, and the agent store. Installed natively at every provider launch, local and SSH. */
-export function CentralProviderSettings() {
+export interface CentralProviderSettingsHandle { requestLeave(next: () => void): void }
+export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>(function CentralProviderSettings(_props, ref) {
   const saved = useAppStore(state => state.centralProviderConfiguration)
   const skills = useAppStore(state => state.markdownStoreEntries)
   const [instructionFiles, setInstructionFiles] = useState(saved.instructionFiles ?? [])
@@ -56,7 +61,10 @@ export function CentralProviderSettings() {
   const [agentErrors, setAgentErrors] = useState<string[]>([])
   const [editing, setEditing] = useState<{ draft: Agent; isNew: boolean } | null>(null)
   const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null)
+  const [pendingExit, setPendingExit] = useState<{ next: () => void; scope: 'all' | 'agent' } | null>(null)
+  const editingOriginal = useRef<Agent | null>(null)
 
   const loadAgents = useCallback(async () => {
     const response = await sendToCEF<{ agents: Agent[]; errors: string[] }>({ action: 'listAgentDefinitions', payload: {} })
@@ -66,28 +74,55 @@ export function CentralProviderSettings() {
   }, [])
   useEffect(() => { void loadAgents(); void useAppStore.getState().refreshMarkdownStore() }, [loadAgents])
 
+  // Success notes fade after a few seconds; errors stay until the next action.
+  useEffect(() => {
+    if (message?.tone !== 'ok') return
+    const timer = window.setTimeout(() => setMessage(null), 4000)
+    return () => window.clearTimeout(timer)
+  }, [message])
+
   const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string) => {
-    setBusy(true); setMessage('')
-    try { const result = await action(); setMessage(result.ok ? success : result.error || 'Could not save.'); return result.ok }
-    catch { setMessage('Could not save. Try again.'); return false }
+    setBusy(true); setMessage(null)
+    try { const result = await action(); setMessage(result.ok ? { tone: 'ok', text: success } : { tone: 'error', text: result.error || 'Could not save.' }); return result.ok }
+    catch { setMessage({ tone: 'error', text: 'Could not save. Try again.' }); return false }
     finally { setBusy(false) }
   }
+  const startEditing = (next: { draft: Agent; isNew: boolean } | null) => { editingOriginal.current = next ? { ...next.draft } : null; setEditing(next); setMessage(null) }
+  const draftId = editing ? editing.draft.id.trim().toLowerCase() : ''
+  const nameError = !editing?.isNew ? '' : !draftId ? 'Enter a name.' : !AGENT_NAME.test(draftId) ? 'Use lowercase letters, numbers, - or _.' : agents.some(agent => agent.id === draftId) ? `An agent named ${draftId} already exists.` : ''
+  const agentDirty = Boolean(editing && !same(editing.draft, editingOriginal.current))
   const saveAgent = async () => {
-    if (!editing) return
-    const draft = { ...editing.draft, id: editing.draft.id.trim().toLowerCase(), description: editing.draft.description.trim() }
-    if (editing.isNew && agents.some(agent => agent.id === draft.id)) { setMessage(`An agent named ${draft.id} already exists.`); return }
-    if (await run(() => sendToCEF({ action: 'saveAgentDefinition', payload: draft }), `Agent ${draft.id} saved.`)) { setEditing(null); await loadAgents() }
+    if (!editing || nameError) return false
+    const draft = { ...editing.draft, id: draftId, description: editing.draft.description.trim() }
+    if (!await run(() => sendToCEF({ action: 'saveAgentDefinition', payload: draft }), `Agent ${draft.id} saved.`)) return false
+    startEditing(null); setMessage({ tone: 'ok', text: `Agent ${draft.id} saved.` }); await loadAgents()
+    return true
   }
   const deleteAgent = async (id: string) => {
     if (await run(() => sendToCEF({ action: 'deleteAgentDefinition', payload: { id } }), `Agent ${id} deleted.`)) {
-      if (editing?.draft.id === id) setEditing(null)
+      if (editing?.draft.id === id) startEditing(null)
+      setPendingDelete(null)
       await loadAgents()
     }
   }
+  const defaultsDirty = !same(instructionFiles, saved.instructionFiles) || !same(defaultSkills, saved.defaultSkills ?? []) || !same(defaultAgents, saved.defaultAgents ?? []) || defaultAgentId !== saved.defaultAgentId
   const saveDefaults = () => run(() => {
     const store = useAppStore.getState()
     return store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, enabled: true, instructionFiles, defaultSkills, defaultAgents, defaultAgentId })
-  }, 'Saved. New chats and restarted chats get this setup on every provider, locally and over SSH.')
+  }, 'Saved. New and restarted chats get this setup.')
+  const undoDefaults = () => { setInstructionFiles(saved.instructionFiles); setDefaultSkills(saved.defaultSkills ?? []); setDefaultAgents(saved.defaultAgents ?? []); setDefaultAgentId(saved.defaultAgentId); setMessage(null) }
+  const dirty = defaultsDirty || agentDirty
+  useImperativeHandle(ref, () => ({ requestLeave(next) {
+    if (busy) return
+    if (dirty) setPendingExit({ next, scope: 'all' })
+    else next()
+  } }))
+  useEffect(() => {
+    if (!dirty) return
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [dirty])
   const primaryAgents = agents.filter(agent => agent.mode !== 'subagent')
   const skillName = (entry: typeof skills[number]) => entry.commandName || entry.title
   const skillOptions: Option[] = skills.map(entry => ({ value: skillName(entry), label: entry.title, group: entry.group || 'Ungrouped' }))
@@ -100,11 +135,24 @@ export function CentralProviderSettings() {
     const path = await useAppStore.getState().browseProviderAgentImport(instructionFiles[instructionFiles.length - 1] ?? '')
     if (path && !instructionFiles.includes(path)) setInstructionFiles([...instructionFiles, path])
   }
-  const closeEditor = () => { if (!busy) setEditing(null) }
+  const closeEditor = () => { if (busy) return; if (agentDirty) setPendingExit({ next: () => startEditing(null), scope: 'agent' }); else startEditing(null) }
 
   if (!agentsLoaded) return <SettingsLoading label="Loading agents" rows={3} />
 
+  const leaveDialog = pendingExit && <UnsavedChangesDialog
+    title={pendingExit.scope === 'agent' ? 'Save agent changes?' : 'Save central setup changes?'}
+    busy={busy} error={message?.tone === 'error' ? message.text : undefined}
+    onStay={() => setPendingExit(null)}
+    onDiscard={() => { if (pendingExit.scope === 'all') undoDefaults(); startEditing(null); const next = pendingExit.next; setPendingExit(null); next() }}
+    onSave={!nameError ? async () => {
+      if (pendingExit.scope === 'all' && defaultsDirty && !await saveDefaults()) return
+      if (agentDirty && !await saveAgent()) return
+      const next = pendingExit.next; setPendingExit(null); next()
+    } : undefined}
+  />
   return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
+    {leaveDialog}
+    <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} error={message?.tone === 'error' ? message.text : undefined} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
     <SettingsSection title="Shared instructions" description="AGENTS.md files on this computer. Their contents go to every agent on every provider, not into your messages."
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
       {instructionFiles.length === 0 && <SettingRow title="No instruction files" description="Choose an AGENTS.md file to share its instructions with every agent." />}
@@ -136,12 +184,12 @@ export function CentralProviderSettings() {
     </SettingsSection>
 
     <div className="flex items-center justify-end gap-3">
-      {message && !editing && <span role="status" className="uam-set-section__desc mr-auto">{message}</span>}
+      {message && !editing && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
       <Button size="sm" variant="primary" loading={busy} onClick={() => void saveDefaults()}>Save</Button>
     </div>
 
     <SettingsSection title="Agent store" description="Saved to the UAM agent store and installed for every provider. Built-in agents are read only."
-      actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => setEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
+      actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
       {agentErrors.map(error => <SettingRow key={error} title="Some agents could not be read" description={<span style={{ color: 'var(--error)' }}>{error}</span>} />)}
       {agents.length === 0 && <SettingRow title="No agents yet" description="Add an agent to give every provider a specialised helper." />}
       {agents.map(agent => {
@@ -151,8 +199,8 @@ export function CentralProviderSettings() {
           description={agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'}
           status={usedAs?.label}
           control={<>
-            <IconButton size="sm" icon={<Pencil size={14} />} label={agent.builtIn ? `View ${agent.id}` : `Edit ${agent.id}`} disabled={busy} onClick={() => setEditing({ draft: { ...agent }, isNew: false })} />
-            {!agent.builtIn && <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => void deleteAgent(agent.id)} />}
+            <IconButton size="sm" icon={<Pencil size={14} />} label={agent.builtIn ? `View ${agent.id}` : `Edit ${agent.id}`} disabled={busy} onClick={() => startEditing({ draft: { ...agent }, isNew: false })} />
+            {!agent.builtIn && <IconButton variant="danger" size="sm" icon={<Trash2 size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
           </>} />
       })}
     </SettingsSection>
@@ -198,7 +246,7 @@ export function CentralProviderSettings() {
               </SettingsField>
             </div>
             <footer className="uam-central-dialog__foot">
-              {message && <span role="status" className="uam-set-section__desc mr-auto">{message}</span>}
+              {message && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
               {builtIn
                 ? <Button size="sm" onClick={closeEditor}>Close</Button>
                 : <>
@@ -211,4 +259,4 @@ export function CentralProviderSettings() {
       </Overlay>
     </Presence>
   </div>
-}
+})

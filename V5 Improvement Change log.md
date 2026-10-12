@@ -325,6 +325,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Runtime durability | Performance | Atomic Local Queue Dispatch | Ordinary local dispatch retires its queued entry with the unsent user message before asynchronous staged delivery. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Performance | Performance | Busy Queue Admission Durability | Ordinary local busy-turn queue admission saves asynchronously and holds failed intent without interrupting delivered output. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Remaining performance | Performance | Asynchronous Send Durability | Ordinary local admission, delivery, queue dispatch, retries and idle or pending-first-prompt follow-ups save asynchronously while remote, quota, small-model and force barriers remain scoped follow-up work. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
+| Integration | Bugfix | Main Branch Reconciliation | Main safeguards and context-reference or numeric-field changes are reconciled with V5 layouts and pass all 1485 expected frontend tests. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
@@ -343,7 +344,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
-| Integration | Bugfix | Main Ancestry Reconciliation | Reconcile missing main commits b5e93e11 and 8ff405bf with newer V5 behavior in isolated worktree /tmp/uam-v5-main-reconcile-20261012 before verified integration. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
+| Integration | Bugfix | Main Ancestry Reconciliation | Review and user-test the reconciled main safeguards and preserved V5 workflows after build and exact frontend inventory verification. | Implementation Verified; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Settings Interaction Latency | Investigate reported 500-to-1000-ms settings, configured-host and theme interactions against the 250-ms ceiling. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Remote settings | Bugfix | Changed Host Save Only | Enable Save Host only when there are valid changes to save. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Settings and motion | Bugfix | Restore Selection Dash | Restore the simple selection dash in place of the curved tinted selection indicator. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |

@@ -1,3 +1,4 @@
+import type { ContextReference } from '../types/contextReference'
 import type { WorkspaceFilePreview } from '../types/filePreview'
 import type { StartupNativeImportStatus } from '../types/startupNativeImports'
 import type { ExecutionRoutingSettings, RoutingReservation } from '../types/executionRouting'
@@ -296,6 +297,7 @@ export interface AppState {
   setCliBinding: (sessionId: string, binding: Partial<CliBinding>) => void
 
   // ACP actions
+  stageChatContextReference: (sessionId: string, reference: ContextReference) => boolean
   stageChatAttachments: (sessionId: string, items: ChatAttachmentInput[]) => Promise<Attachment[]>
   sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
   removeQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>

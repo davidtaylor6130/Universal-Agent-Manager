@@ -1,3 +1,4 @@
+import { formatContextReferences, sanitizeContextReferences } from '../../utils/contextReferences'
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
@@ -536,6 +537,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const cliVersionManager = useAppStore((s) => s.cliVersionManager)
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
+  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+    const references = sanitizeContextReferences(readChatComposerDraft(chatId).references)
+    const context = formatContextReferences(references)
+    const submittedText = context ? `${text}\n\n${context}` : text
+    const accepted = await (steerNow !== undefined ? sendAcpPrompt(chatId, submittedText, attachments, steerNow)
+      : attachments !== undefined ? sendAcpPrompt(chatId, submittedText, attachments) : sendAcpPrompt(chatId, submittedText))
+    if (accepted && references.length > 0 && useAppStore.getState().sessions.some((candidate) => candidate.id === chatId)) {
+      const sentIds = new Set(references.map((reference) => reference.id))
+      const current = readChatComposerDraft(chatId)
+      writeChatComposerDraft(chatId, { ...current, references: (current.references ?? []).filter((reference) => !sentIds.has(reference.id)) })
+    }
+    return accepted
+  }, [sendAcpPrompt])
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
@@ -1250,8 +1264,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     let ok = false
     try {
       ok = await (steerNow
-        ? sendAcpPrompt(session.id, prompt, readyAttachments, true)
-        : sendAcpPrompt(session.id, prompt, readyAttachments))
+        ? sendComposerPrompt(session.id, prompt, readyAttachments, true)
+        : sendComposerPrompt(session.id, prompt, readyAttachments))
     } catch {
       ok = false
     }

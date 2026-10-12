@@ -3,8 +3,10 @@ import { TypographySettings } from './TypographySettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { ProviderConnections } from './ProviderConnections'
-import { CentralProviderSettings } from './CentralProviderSettings'
+import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
+import { UnsavedChangesDialog } from './UnsavedChangesDialog'
+import { NumberField } from './NumberField'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
@@ -42,7 +44,7 @@ import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, ViewportMenu, motionAllowed } from '../ui'
+import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, ViewportMenu, motionAllowed } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -202,7 +204,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   'cli-version': 'Installed provider CLIs and their versions.',
   agents: 'Favourites, the cycle shortcut and importing agents from other tools.',
   'remote-hosts': 'Computers that can run workspaces over SSH.',
-  'central-configuration': 'Instructions and skills installed when providers launch locally or over SSH.',
+  'central-configuration': 'Instructions, skills and agents every provider gets, locally and over SSH.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
   'computer-use': 'Which apps agents may see and control.',
   vcs: 'Enable Git and SVN integrations.',
@@ -224,7 +226,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   vcs: 'git svn source control version control worktrees checkpoints commits revisions',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity typography font fonts size text code monospace terminal message input',
   defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
-  agents: 'agents instructions import providers codex gemini claude copilot opencode',
+  agents: 'agents agent store create edit delete helpers subagents instructions import providers codex gemini claude copilot opencode',
   'cli-version': 'installed recommended latest download update version codex gemini claude copilot opencode',
   'remote-hosts': 'computers ssh connections hosts runners servers install',
   phone: 'phone mobile companion token url remote access',
@@ -400,7 +402,7 @@ function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expan
       {leadingIcon ?? (providerId ? <ProviderLogo providerId={providerId}/> : null)}
       {/* Clicking the name also toggles; the chevron stays the keyboard control. */}
       <span className="min-w-0 flex-1 cursor-pointer select-none truncate text-sm" onClick={onToggle}>{title}</span>
-      {actions}
+      {actions && <span className="uam-disclosure-row__actions">{actions}</span>}
       {togglePosition === 'right' && chevron}
     </div>
     {progress}
@@ -580,6 +582,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }, [selectedSection, visibleSettingsGroups.length])
   const memoryRef = useRef<MemoryLibraryHandle>(null)
   const shellRef = useRef<ShellActionsHandle>(null)
+  const centralRef = useRef<CentralProviderSettingsHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
@@ -590,6 +593,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [themeSaving, setThemeSaving] = useState(false)
   const [themeExit, setThemeExit] = useState<(() => void) | null>(null)
   const [discardExit, setDiscardExit] = useState<(() => void) | null>(null)
+  const [pendingHostRemoval, setPendingHostRemoval] = useState<ExecutionHost | null>(null)
   const [cliActionError, setCliActionError] = useState<Record<string, string>>({})
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [themeMessage, setThemeMessage] = useState('')
@@ -614,6 +618,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const requestSectionExit = (next: () => void) => {
     if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
+    else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
+    else if (selectedSection === 'mcp-servers' && mcpDraftDirty) { setDiscardExit(() => next); setConfirmDiscard(true) }
     else next()
   }
   const editorDirty = editorAssociationsDraft.some(item => {
@@ -630,8 +636,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const requestClose = () => {
     if (mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
-      if (editorDirty) { setEditorExit(() => () => { setRawEditorNames({}); setRawExtensions({}); if (mcpDraftDirty) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) } else setSettingsOpen(false) }); return }
-      if (mcpDraftDirty) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) }
+      // MCP edits were already confirmed by requestSectionExit while on the MCP page.
+      const mcpPending = mcpDraftDirty && selectedSection !== 'mcp-servers'
+      if (editorDirty) { setEditorExit(() => () => { setRawEditorNames({}); setRawExtensions({}); if (mcpPending) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) } else setSettingsOpen(false) }); return }
+      if (mcpPending) { setDiscardExit(() => () => setSettingsOpen(false)); setConfirmDiscard(true) }
       else setSettingsOpen(false)
     }))
   }
@@ -1147,8 +1155,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         value={themeDraft.name}
                         maxLength={64}
                         onChange={(event) => setThemeDraft({ ...themeDraft, name: event.target.value })}
-                        className="px-2 py-1.5"
-                        style={{ border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg)', color: 'var(--text)' }}
+                        className="uam-field w-full"
                       />
                     </label>
                     <fieldset className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
@@ -1195,8 +1202,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             aria-invalid={!THEME_COLOR_PATTERN.test(themeDraft.colors[key])}
                             aria-describedby={!THEME_COLOR_PATTERN.test(themeDraft.colors[key]) ? 'theme-color-format-error' : undefined}
                             onChange={(event) => setThemeDraft({ ...themeDraft, colors: { ...themeDraft.colors, [key]: event.target.value } })}
-                            className="w-20 rounded px-2 py-1 font-mono uppercase transition-colors duration-150 focus:outline-none"
-                            style={{ border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)' }}
+                            className="uam-field w-24 font-mono uppercase"
                           />
                         </span>
                       </label>
@@ -1213,7 +1219,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>}
                   <div className="flex gap-2">
                     {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
-                    {themeStep < 2 ? <Button size="sm" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <Button size="sm" variant="primary" disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={() => void saveThemeDraft()}>Save theme</Button>}
+                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <Button size="sm" variant="primary" disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={() => void saveThemeDraft()}>Save theme</Button>}
                     <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
                   </div>
                 </div>
@@ -1898,8 +1904,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             New {pendingDefaultYolo.providerName} chats will automatically approve computer use, commands, file changes, and every other permission request.
                           </Notice>
                         )}
-                        <details>
-                          <summary className="cursor-pointer py-2">Advanced</summary>
+                        <details className="uam-skill-folder">
+                          <summary className="uam-skill-folder__summary" style={{ fontSize: 'var(--fs-sm)' }}><ChevronRight size={13} aria-hidden className="uam-skill-folder__chevron" />Advanced</summary>
                           <div className="grid gap-3">
                         <div className="grid gap-1">
                           <div>Feature preference</div>
@@ -2323,6 +2329,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
+      const statusColor = (status?: string) => status === 'ready' ? 'var(--green)' : status === 'error' ? 'var(--red)' : 'var(--text-3)'
       return (
         <div className="space-y-4">
           <details className="text-xs" style={{ color: 'var(--text-3)' }}>
@@ -2388,7 +2395,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 control={(
                   <div className="flex items-center gap-1">
                     <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={remoteBusy} onClick={() => void previewRemoteHost(host)} />
-                    <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={remoteBusy} onClick={() => void removeRemoteHost(host)} />
+                    <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={remoteBusy} onClick={() => setPendingHostRemoval(host)} />
                   </div>
                 )}
               >
@@ -2683,6 +2690,18 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
+    if (selectedSection === 'markdown-store' && !markdownStoreDirectory) return <div className="mx-auto w-full" style={{maxWidth:800}}>
+      <SectionCard title="Skills folder">
+        <div className="grid gap-3 text-xs" style={{color:'var(--text-2)'}}>
+          <p>Skills are Markdown files in a folder you choose. Pick one to start creating and importing skills.</p>
+          <div><Button size="sm" variant="primary" leadingIcon={<FolderOpen size={14} aria-hidden/>} onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) void setMarkdownStoreDirectory(selected) })}>Choose folder…</Button></div>
+          <div className="flex items-center gap-2">
+            <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Or type a folder path" className="uam-field min-w-0 flex-1"/>
+            <Button size="sm" disabled={!markdownStoreDraftDirectory.trim()} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}>Use path</Button>
+          </div>
+        </div>
+      </SectionCard>
+    </div>
     if (selectedSection === 'markdown-store') return <div className="h-full min-h-0 flex flex-col gap-3">
       <details className="uam-skill-folder shrink-0 order-last">
         <summary className="uam-skill-folder__summary" style={{fontSize:'var(--fs-xs)',color:'var(--text-3)'}}><ChevronRight size={12} className="uam-skill-folder__chevron" aria-hidden/><span>Enter folder path manually</span></summary>
@@ -2856,7 +2875,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       return <ShellActionsSettings ref={shellRef}/>
     }
 
-    if (selectedSection === 'central-configuration') return <CentralProviderSettings />
+    if (selectedSection === 'central-configuration') return <CentralProviderSettings ref={centralRef} />
 
     if (selectedSection === 'mcp-servers') return <McpServerSetup onBusyChange={setMcpSaving} onDirtyChange={setMcpDraftDirty} />
 
@@ -3083,6 +3102,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </Overlay>}
       </Presence>
+      <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={remoteBusy}
+        onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
+        This removes the saved host configuration. Any helper files on that machine are left untouched.
+      </ConfirmDialog>
     </div>
   )
 })

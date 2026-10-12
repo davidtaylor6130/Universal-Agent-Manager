@@ -1,3 +1,6 @@
+import type { ContextReference } from '../../types/contextReference'
+import { sanitizeContextReferences, CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
+import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { filePreviewResponse } from '../../types/filePreview'
 import { canRouteAutomatically } from '../../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch'
@@ -2255,6 +2258,25 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           cliTranscriptBySessionId: nextTranscripts,
         }
       }),
+
+    stageChatContextReference: (sessionId: string, reference: ContextReference): boolean => {
+      if (!get().sessions.some((session) => session.id === sessionId)) return false
+      const validated = sanitizeContextReferences([reference])[0]
+      const source = get().sessions.find((session) => session.id === reference.sourceChatId)
+      if (!validated || !source || (source.executionHostId || 'local') !== validated.executionHostId ||
+        (source.workspaceWorktreeDirectory || source.workspaceDirectory || '') !== validated.workspaceDirectory) return false
+      if (validated.kind === 'message') {
+        const index = validated.sourceMessageIndex! - (get().historyStartIndexBySessionId[source.id] ?? 0)
+        const message = get().messages[source.id]?.[index]
+        if (!message || message.isStreaming || (validated.sourceMessageId && message.id !== validated.sourceMessageId) || !message.content.includes(validated.text)) return false
+      }
+      if (validated.kind === 'terminal' && get().cliBindingBySessionId[source.id]?.terminalId !== validated.terminalId) return false
+      const draft = readChatComposerDraft(sessionId)
+      const references = draft.references ?? []
+      if (references.length >= CONTEXT_REFERENCE_MAX_COUNT || references.some((item) => item.id === validated.id)) return false
+      writeChatComposerDraft(sessionId, { ...draft, references: [...references, validated] })
+      return true
+    },
 
     stageChatAttachments: async (sessionId: string, items: ChatAttachmentInput[]): Promise<Attachment[]> => {
       if (items.length === 0) return []
