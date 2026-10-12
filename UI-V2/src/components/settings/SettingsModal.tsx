@@ -33,6 +33,7 @@ import {
   resolveDocumentTheme,
   type CustomTheme,
   type ThemeColors,
+  type BuiltInTheme,
   type StoredTheme,
 } from '../../utils/themeStorage'
 import type { Provider } from '../../types/provider'
@@ -41,7 +42,7 @@ import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
-import { Button, IconButton, MenuSelect, Notice, StatusDot, Switch, ViewportMenu } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, ViewportMenu, motionAllowed } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
@@ -199,7 +200,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   defaults: 'Default provider and permission reviewer for new chats.',
   'voice-input': 'Dictation for the message box.',
   'cli-version': 'Installed provider CLIs and their versions.',
-  agents: 'Agent favourites and the shortcut that cycles between them.',
+  agents: 'Favourites, the cycle shortcut and importing agents from other tools.',
   'remote-hosts': 'Computers that can run workspaces over SSH.',
   'central-configuration': 'Instructions and skills installed when providers launch locally or over SSH.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
@@ -269,6 +270,52 @@ const THEME_COLOR_FIELDS: Array<{ key: keyof ThemeColors; label: string }> = [
   { key: 'error', label: 'Error' },
 ]
 const THEME_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/
+// Shared surface for settings dialogs: title, body, then actions right-aligned with the primary last.
+const SETTINGS_DIALOG_STYLE = { background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }
+
+const PAGE_EXIT_MS = 120
+/**
+ * Cross-fades settings pages. The previous page stays mounted for its 120ms fade-out
+ * (not remounted, so its effects do not re-run); the new page fades in via .uam-settings-page.
+ */
+function SettingsPageSwap({ pageKey, className, children }: { pageKey: string; className: string; children: ReactNode }) {
+  const [shownKey, setShownKey] = useState(pageKey)
+  const [leaving, setLeaving] = useState<{ key: string; node: ReactNode } | null>(null)
+  const committed = useRef({ key: pageKey, node: children })
+  if (shownKey !== pageKey) {
+    setShownKey(pageKey)
+    if (motionAllowed()) setLeaving(committed.current)
+  }
+  useEffect(() => { committed.current = { key: pageKey, node: children } })
+  useEffect(() => {
+    if (!leaving) return
+    const timer = window.setTimeout(() => setLeaving(null), PAGE_EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [leaving])
+  return (
+    // One keyed array so the outgoing page keeps its instance (same key) instead of remounting.
+    <div className="uam-settings-swap">
+      {[
+        leaving && <div key={leaving.key} aria-hidden className={`${className} uam-settings-page--leaving`}>{leaving.node}</div>,
+        <div key={pageKey} className={className}>{children}</div>,
+      ]}
+    </div>
+  )
+}
+// Preview colours for the theme grid: background, surface, text and accent from each palette in index.css.
+type ThemeSwatch = { background: string; surface: string; accent: string; text: string }
+const BUILT_IN_THEME_SWATCHES: Record<BuiltInTheme, ThemeSwatch> = {
+  focus: { background: '#0b0c0f', surface: '#111318', accent: '#cf7538', text: '#f2f4f7' },
+  dark: { background: '#0f1117', surface: '#12141b', accent: '#ff6a00', text: '#eef1f7' },
+  light: { background: '#f7f8fa', surface: '#ffffff', accent: '#ff6a00', text: '#141820' },
+  // Follows the OS: split preview of the light and dark palettes.
+  system: { background: 'linear-gradient(135deg, #f7f8fa 50%, #0f1117 50%)', surface: 'linear-gradient(135deg, #ffffff 50%, #12141b 50%)', accent: '#ff6a00', text: 'linear-gradient(135deg, #141820 50%, #eef1f7 50%)' },
+  midnight: { background: '#0b1020', surface: '#11182b', accent: '#60a5fa', text: '#e6eefc' },
+  paper: { background: '#f8f7f1', surface: '#fffef9', accent: '#0f766e', text: '#26302a' },
+  dusk: { background: '#211c2d', surface: '#292239', accent: '#c4a7ff', text: '#f1eafd' },
+  aurora: { background: '#09252c', surface: '#0d3038', accent: '#f472b6', text: '#e1fff7' },
+  contrast: { background: '#000000', surface: '#111111', accent: '#00ffff', text: '#ffffff' },
+}
 
 function customThemeId(name: string, themes: CustomTheme[]) {
   const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'theme'
@@ -1353,7 +1400,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return <div className="grid gap-0">
       <SettingsSection title="Control method" description="How agents control apps in the active chat.">
         <SettingRow
-          htmlFor="computer-use-backend-settings"
           title="Computer Use backend"
           description={activeSession
             ? activeSession.computerUseEnabled
@@ -1361,25 +1407,26 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               : 'Applies to the active local chat. Target approval still appears only when the AI requests a target.'
             : 'Open a local chat to choose its Computer Use backend.'}
           control={
-            <select
-              id="computer-use-backend-settings"
-              value={activeComputerUseBackend}
-              disabled={!activeSession || activeSession.computerUseEnabled || computerUseBusy}
-              onChange={(event) => {
-                if (!activeSession) return
-                setComputerUseBusy(true)
-                setComputerUseMessage('')
-                void setSessionComputerUseBackend(activeSession.id, event.target.value as ComputerUseBackend).then((result) => {
-                  if (!result.ok) setComputerUseMessage(result.error || 'Could not change the Computer Use backend.')
-                }).finally(() => setComputerUseBusy(false))
-              }}
-              className="uam-field uam-field--select"
-              style={{ width: 220 }}
-            >
-              <option value="auto">Automatic (recommended)</option>
-              <option value="provider" disabled={!activeComputerUseProviderAvailable}>Provider built-in</option>
-              <option value="uam">UAM controlled</option>
-            </select>
+            <div id="computer-use-backend-settings" style={{ width: 220 }}>
+              <MenuSelect
+                label="Computer Use backend"
+                value={activeComputerUseBackend}
+                disabled={!activeSession || activeSession.computerUseEnabled || computerUseBusy}
+                options={[
+                  { value: 'auto', label: 'Automatic (recommended)' },
+                  { value: 'provider', label: 'Provider built-in', disabled: !activeComputerUseProviderAvailable },
+                  { value: 'uam', label: 'UAM controlled' },
+                ]}
+                onChange={(value) => {
+                  if (!activeSession) return
+                  setComputerUseBusy(true)
+                  setComputerUseMessage('')
+                  void setSessionComputerUseBackend(activeSession.id, value as ComputerUseBackend).then((result) => {
+                    if (!result.ok) setComputerUseMessage(result.error || 'Could not change the Computer Use backend.')
+                  }).finally(() => setComputerUseBusy(false))
+                }}
+              />
+            </div>
           }
         />
         <SettingRow
@@ -1468,9 +1515,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
-      const themeOptions: Array<{ value: StoredTheme; label: string }> = [
-        ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label })),
-        ...customThemes.map((customTheme) => ({ value: customTheme.id, label: customTheme.name })),
+      const themeChoices: Array<{ value: StoredTheme; label: string; swatch: ThemeSwatch }> = [
+        ...BUILT_IN_THEMES.map(({ id, label }) => ({ value: id, label, swatch: BUILT_IN_THEME_SWATCHES[id] })),
+        ...customThemes.map((customTheme) => ({
+          value: customTheme.id,
+          label: customTheme.name,
+          swatch: { background: customTheme.colors.background, surface: customTheme.colors.surface, accent: customTheme.colors.accent, text: customTheme.colors.text },
+        })),
       ]
       return (
         <div className="grid gap-0">
@@ -1478,19 +1529,38 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <SettingRow
               title="Colour theme"
               description="Applies to every window straight away."
-              control={
-                <MenuSelect
-                  label="Theme"
-                  value={theme}
-                  options={themeOptions}
-                  onChange={(value) => {
-                    setThemeDraft(null)
-                    setTheme(value as StoredTheme)
-                    setThemeMessage('')
-                  }}
-                />
-              }
-            />
+            >
+              <div role="radiogroup" aria-label="Colour theme" className="uam-theme-grid">
+                {themeChoices.map((choice) => {
+                  const selected = choice.value === theme
+                  return (
+                    <button
+                      key={choice.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      aria-label={choice.label}
+                      title={choice.label}
+                      data-selected={selected || undefined}
+                      onClick={() => {
+                        setThemeDraft(null)
+                        setTheme(choice.value)
+                        setThemeMessage('')
+                      }}
+                      className="uam-theme-tile"
+                    >
+                      <span aria-hidden className="uam-theme-tile__preview" style={{ background: choice.swatch.background }}>
+                        <span className="uam-theme-tile__surface" style={{ background: choice.swatch.surface }}>
+                          <span className="uam-theme-tile__line" style={{ background: choice.swatch.text }} />
+                          <span className="uam-theme-tile__dot" style={{ background: choice.swatch.accent }} />
+                        </span>
+                      </span>
+                      <span className="uam-theme-tile__label">{choice.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </SettingRow>
             <SettingRow
               title="Manage themes"
               description="Add, copy, edit or delete a theme. Import or export one as a JSON file."
@@ -2441,12 +2511,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           aria-haspopup="listbox"
                           aria-expanded={openMemoryMenu === providerMenuId}
                           onClick={() => setOpenMemoryMenu(openMemoryMenu === providerMenuId ? null : providerMenuId)}
-                          className="uam-settings-trigger"
+                          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
                         >
-                          <span className="inline-flex items-center gap-2">
+                          <span className="flex min-w-0 items-center gap-2 truncate">
                             <ProviderLogo providerId={binding.workerProviderId} />
-                            <span>{providerDisplayName(workerProvider, binding.workerProviderId)}</span>
+                            <span className="truncate">{providerDisplayName(workerProvider, binding.workerProviderId)}</span>
                           </span>
+                          <ChevronDown className={openMemoryMenu === providerMenuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
                         </button>
                         {openMemoryMenu === providerMenuId && (
                           <ViewportMenu
@@ -2502,9 +2573,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           aria-haspopup="listbox"
                           aria-expanded={openMemoryMenu === modelMenuId}
                           onClick={() => setOpenMemoryMenu(openMemoryMenu === modelMenuId ? null : modelMenuId)}
-                          className="uam-settings-trigger"
+                          className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
                         >
-                          {selectedMemoryModelLabel(modelOptions, binding.workerModelId)}
+                          <span className="truncate">{selectedMemoryModelLabel(modelOptions, binding.workerModelId)}</span>
+                          <ChevronDown className={openMemoryMenu === modelMenuId ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
                         </button>
                         {openMemoryMenu === modelMenuId && (
                           <ViewportMenu
@@ -2697,7 +2769,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     icon={<IconButton size="sm" icon={<ChevronRight size={14} style={{ transform: expanded ? 'rotate(90deg)' : undefined, transition: 'transform var(--dur-fast) var(--ease)' }} />} label={`${expanded ? 'Hide' : 'Show'} ${groupName} editor group`} aria-expanded={expanded} aria-controls={panelId} onClick={() => toggleEditorGroup(association.id)} />}
                     title={groupName}
                     description={<span className="font-mono">{extensionsText(association) || 'No extensions set'}</span>}
-                    control={<IconButton icon={<Trash2 size={14}/>} label={`Delete ${groupName} editor group`} variant="danger" size="sm" disabled={editorSaving || editorAssociationsDraft.length <= 1} onClick={() => setPendingDelete({kind:'editor',id:association.id,name:groupName})}/>}
+                    control={<div className="flex items-center gap-2">
+                      <span className="text-xs" style={{ color: 'var(--text-3)' }}>Opens in {editorPresetLabel(association.editorPresetId)}</span>
+                      <IconButton icon={<Trash2 size={14}/>} label={`Delete ${groupName} editor group`} variant="danger" size="sm" disabled={editorSaving || editorAssociationsDraft.length <= 1} onClick={() => setPendingDelete({kind:'editor',id:association.id,name:groupName})}/>
+                    </div>}
                   >
                     {expanded && <div id={panelId} className="uam-reveal grid grid-cols-3 gap-2">
                       <label className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
@@ -2889,87 +2964,107 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
                   </div>
                 </div>
-                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}<div key={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</div></div>
-                  return <div className="uam-settings-scroll"><div className="uam-settings-frame">{header}<div key={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</div></div></div>
+                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div>
+                  return <div className="uam-settings-scroll"><div className="uam-settings-frame">{header}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
               </>}
             </div>
           </div>
         </div>
       </div>
-      {editorExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'color-mix(in srgb, var(--bg) 60%, transparent)'}}>
-        <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved editor changes" className="max-w-md p-5 space-y-4 rounded-xl" style={{background:'var(--surface)',border:'1px solid var(--border)'}}>
-          <h2 className="text-sm font-semibold">Save editor changes?</h2>
-          {editorError && <p role="alert" className="text-xs">{editorError}</p>}
-          <div className="flex gap-2"><Button autoFocus disabled={editorSaving} onClick={() => setEditorExit(null)}>Stay</Button><Button disabled={editorSaving} onClick={() => { const next=editorExit; setEditorExit(null); next() }}>Discard</Button><Button disabled={editorSaving} onClick={async () => {
-            const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
-            if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave() }
-          }}>Save</Button></div>
-        </div>
-      </div>}
-      {themeExit && <div className="uam-overlay fixed inset-0 z-[80] flex items-center justify-center p-4" style={{background:'color-mix(in srgb, var(--bg) 60%, transparent)'}}>
-        <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="max-w-md rounded-xl p-5 space-y-4" style={{background:'var(--surface)',border:'1px solid var(--border)'}}>
-          <h2 className="text-sm font-semibold">Save theme changes?</h2>
-          <div className="flex gap-2"><Button autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button><Button disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button><Button disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button></div>
-          {themeMessage && <p role="status" className="text-xs">{themeMessage}</p>}
-        </div>
-      </div>}
-      {remotePreview && (
-		<div className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'color-mix(in srgb, var(--bg) 60%, transparent)' }} onClick={(event) => { if (event.target === event.currentTarget && !remoteBusy) setRemotePreview(null) }}>
-		  <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-			<div className="px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
-			  <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
-			  <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>SSH alias: <code>{remotePreview.host.sshAlias}</code></div>
-			</div>
-			<div className="grid gap-4 p-5 text-sm" style={{ color: 'var(--text-2)' }}>
-			  <p>UAM uses your existing OpenSSH authentication, detects Ubuntu/Linux or Windows, copies the matching helper, verifies its SHA-256 checksum, and starts it. Unsupported systems stop before anything is copied.</p>
-			  <fieldset className="grid gap-2">
-				<legend className="mb-1 text-xs font-medium" style={{ color: 'var(--text)' }}>Install location</legend>
-				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--border)' : 'var(--accent)'}` }}>
-				  <input type="radio" name="remote-helper-location" checked={!remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(false)} />
-				  <span><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Recommended private location</span><span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></span>
-				</label>
-				<div className="rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
-				  <label className="flex cursor-pointer items-start gap-2">
-					<input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
-					<span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
-				  </label>
-				  <div className="ml-6">
-					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="uam-field mt-2 w-full font-mono" style={remoteDirectoryValidation ? { borderColor: 'var(--error)' } : undefined} />
-					<span id="remote-helper-folder-help" className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
-					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span>}
-					{remoteCustomDirectory && !remoteDirectoryValidation && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
-				  </div>
-				</div>
-			  </fieldset>
-			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
-			</div>
-			<div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-			  <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
-			  <Button size="sm" variant="primary" aria-busy={remoteBusy || undefined} disabled={remoteBusy || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
-			</div>
-		  </div>
-		</div>
-	  )}
-      {confirmDiscard && (
-        <div className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'color-mix(in srgb, var(--bg) 60%, transparent)' }}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Discard MCP changes?</div>
-            <p className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>The MCP server configuration has unsaved changes.</p>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
+      <Presence open={Boolean(editorExit)}>
+        {editorExit && <Overlay open zIndex={80}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved editor changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save editor changes?</div>
+            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
+              <p>Your file type changes have not been saved.</p>
+              {editorError && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{editorError}</p>}
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5">
+              <Button size="sm" disabled={editorSaving} onClick={() => { const next=editorExit; setEditorExit(null); next() }}>Discard</Button>
+              <Button size="sm" autoFocus disabled={editorSaving} onClick={() => setEditorExit(null)}>Stay</Button>
+              <Button size="sm" variant="primary" disabled={editorSaving} onClick={async () => {
+                const next = editorAssociationsDraft.map(item => ({...item,name:rawEditorNames[item.id]?.trim() ?? item.name,extensions:rawExtensions[item.id] === undefined ? item.extensions : parseExtensions(rawExtensions[item.id])}))
+                if (await saveEditorSettings(next)) { const leave=editorExit; setEditorExit(null); leave() }
+              }}>Save</Button>
+            </div>
+          </div>
+        </Overlay>}
+      </Presence>
+      <Presence open={Boolean(themeExit)}>
+        {themeExit && <Overlay open zIndex={80}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Unsaved theme changes" className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Save theme changes?</div>
+            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
+              <p>Your theme edits have not been saved.</p>
+              {themeMessage && <p role="status" className="text-xs">{themeMessage}</p>}
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5">
+              <Button size="sm" disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button>
+              <Button size="sm" autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button>
+              <Button size="sm" variant="primary" disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button>
+            </div>
+          </div>
+        </Overlay>}
+      </Presence>
+      <Presence open={Boolean(remotePreview)}>
+        {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => { if (!remoteBusy) setRemotePreview(null) }}>
+          <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5">
+              <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
+              <div className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>SSH alias: <code>{remotePreview.host.sshAlias}</code></div>
+            </div>
+            <div className="grid gap-4 px-5 pt-4 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
+  			  <p>UAM uses your existing OpenSSH authentication, detects Ubuntu/Linux or Windows, copies the matching helper, verifies its SHA-256 checksum, and starts it. Unsupported systems stop before anything is copied.</p>
+  			  <fieldset className="grid gap-2">
+  				<legend className="mb-1 text-xs font-medium" style={{ color: 'var(--text)' }}>Install location</legend>
+  				<label className="flex cursor-pointer items-start gap-2 rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--border)' : 'var(--accent)'}` }}>
+  				  <input type="radio" name="remote-helper-location" checked={!remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(false)} />
+  				  <span><span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Recommended private location</span><span className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Linux: ~/.local/share/uam/runner/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\.uam\runner\{appVersion.replace(/^v/i, '')}</span></span>
+  				</label>
+  				<div className="rounded-lg p-3" style={{ border: `1px solid ${remoteCustomDirectory ? 'var(--accent)' : 'var(--border)'}` }}>
+  				  <label className="flex cursor-pointer items-start gap-2">
+  					<input type="radio" name="remote-helper-location" checked={remoteCustomDirectory} onChange={() => setRemoteCustomDirectory(true)} />
+  					<span className="block text-xs font-medium" style={{ color: 'var(--text)' }}>Custom folder under the remote home directory</span>
+  				  </label>
+  				  <div className="ml-6">
+  					<input aria-label="Remote helper folder" aria-invalid={remoteCustomDirectory && Boolean(remoteDirectoryValidation)} aria-describedby={remoteDirectoryValidation ? 'remote-helper-folder-help remote-helper-folder-error' : 'remote-helper-folder-help'} value={remoteDirectory} disabled={!remoteCustomDirectory} onChange={(event) => setRemoteDirectory(event.currentTarget.value)} placeholder="uam-helper" spellCheck={false} className="uam-field mt-2 w-full font-mono" style={remoteDirectoryValidation ? { borderColor: 'var(--error)' } : undefined} />
+  					<span id="remote-helper-folder-help" className="mt-1 block text-[11px]" style={{ color: 'var(--text-3)' }}>Relative path only. Use letters, numbers, dots, dashes, underscores, and /.</span>
+  					{remoteDirectoryValidation && <span id="remote-helper-folder-error" role="alert" className="mt-1 block text-[11px]" style={{ color: 'var(--error)' }}>{remoteDirectoryValidation}</span>}
+  					{remoteCustomDirectory && !remoteDirectoryValidation && <span className="mt-1 block break-all font-mono text-[11px]" style={{ color: 'var(--accent)' }}>Linux: ~/{remoteDirectory.trim()}/{appVersion.replace(/^v/i, '')}<br />Windows: %USERPROFILE%\{remoteDirectory.trim().replace(/\//g, '\\')}\{appVersion.replace(/^v/i, '')}</span>}
+  				  </div>
+  				</div>
+  			  </fieldset>
+  			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[11px]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5">
+              <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
+              <Button size="sm" variant="primary" aria-busy={remoteBusy || undefined} disabled={remoteBusy || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
+            </div>
+          </div>
+        </Overlay>}
+      </Presence>
+      <Presence open={confirmDiscard}>
+        {confirmDiscard && <Overlay open zIndex={70}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label="Discard unsaved MCP changes" className="w-full max-w-sm rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Discard MCP changes?</div>
+            <p className="px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>The MCP server configuration has unsaved changes.</p>
+            <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" onClick={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}>Keep editing</Button>
               <Button size="sm" variant="danger" onClick={() => { setMcpDraftDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>Discard changes</Button>
             </div>
           </div>
-        </div>
-      )}
-      {pendingDelete && (
-        <div className="uam-overlay fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: 'color-mix(in srgb, var(--bg) 60%, transparent)' }} onClick={(event) => { if (event.target === event.currentTarget) setPendingDelete(null) }}>
-          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl animate-slide-in" style={{ background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}>
-            <div className="px-5 py-4 text-sm font-semibold" style={{ color: 'var(--text)', borderBottom: '1px solid var(--border)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
-            <div className="p-5 text-sm" style={{ color: 'var(--text-2)' }}>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</div>
-            <div className="flex justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
-              {(pendingDelete.kind === 'theme' ? themeMessage : editorError) && <span role="status" className="text-xs">{pendingDelete.kind === 'theme' ? themeMessage : editorError}</span>}
+        </Overlay>}
+      </Presence>
+      <Presence open={Boolean(pendingDelete)}>
+        {pendingDelete && <Overlay open zIndex={60} onBackdropMouseDown={() => setPendingDelete(null)}>
+          <div role="alertdialog" aria-modal="true" data-settings-owned-overlay aria-label={`Delete ${pendingDelete.name}`} className="w-full max-w-md rounded-xl" style={SETTINGS_DIALOG_STYLE}>
+            <div className="px-5 pt-5 text-sm font-semibold" style={{ color: 'var(--text)' }}>Delete {pendingDelete.kind === 'theme' ? 'theme' : 'editor group'}?</div>
+            <div className="grid gap-3 px-5 pt-1.5 pb-5 text-sm" style={{ color: 'var(--text-2)' }}>
+              <p>“{pendingDelete.name}” will be permanently deleted. This cannot be undone or restored.</p>
+              {(pendingDelete.kind === 'theme' ? themeMessage : editorError) && <p role="status" className="text-xs">{pendingDelete.kind === 'theme' ? themeMessage : editorError}</p>}
+            </div>
+            <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" disabled={themeSaving || editorSaving} onClick={() => setPendingDelete(null)}>Cancel</Button>
               <Button size="sm" variant="danger" disabled={themeSaving || editorSaving} onClick={async () => {
                 const deleted = pendingDelete.kind === 'theme' ? await removeSelectedTheme() : await saveEditorSettings(editorAssociationsDraft.filter(item => item.id !== pendingDelete.id))
@@ -2977,8 +3072,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }}>Delete permanently</Button>
             </div>
           </div>
-        </div>
-      )}
+        </Overlay>}
+      </Presence>
     </div>
   )
 })

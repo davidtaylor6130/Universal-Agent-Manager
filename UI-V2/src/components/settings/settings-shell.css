@@ -185,3 +185,24 @@
 .uam-provider-flat { display: grid; gap: var(--sp-3); padding: var(--sp-4); }
 .uam-provider-flat__bar { display: flex; align-items: center; gap: var(--sp-2); min-height: 28px; }
 .uam-provider-flat__body { display: grid; gap: var(--sp-3); }
+
+/* Settings page cross-fade (SettingsPageSwap): the outgoing page fades out over 120ms; the layout never moves. */
+.uam-settings-swap { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.uam-settings-swap > .uam-settings-page { flex: 1 1 auto; min-height: 0; }
+.uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { position: absolute; inset: 0; pointer-events: none; animation: uam-settings-leave 120ms var(--ease) forwards; }
+@keyframes uam-settings-leave { to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .uam-settings-swap > .uam-settings-page.uam-settings-page--leaving { display: none; } }
+
+/* Appearance: theme swatch grid. Tiles preview each theme's background, surface, text and accent. */
+.uam-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: var(--sp-2); width: 100%; padding-block: var(--sp-1); }
+.uam-theme-tile { display: grid; gap: 6px; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-up); color: var(--text-2); text-align: left; cursor: pointer; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.uam-theme-tile:hover { border-color: var(--border-bright); }
+.uam-theme-tile:active { transform: scale(.98); }
+.uam-theme-tile:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-theme-tile[data-selected] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--accent); color: var(--text); }
+.uam-theme-tile__preview { display: block; height: 46px; padding: 6px; border-radius: var(--r-sm); border: 1px solid var(--border); overflow: hidden; }
+.uam-theme-tile__surface { display: flex; align-items: center; gap: 5px; height: 100%; padding: 0 6px; border-radius: 3px; }
+.uam-theme-tile__line { display: block; flex: 1; max-width: 56%; height: 4px; border-radius: 2px; }
+.uam-theme-tile__dot { display: block; flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.uam-theme-tile__label { overflow: hidden; font-size: var(--fs-xs); font-weight: var(--fw-medium); text-overflow: ellipsis; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .uam-theme-tile { transition: none; } }
