@@ -499,7 +499,7 @@ UAM ownership remains **chat-1791755529536-1b146e** for coordinator-reserved tas
 
 | Phase | Codex executor | Worktree | Exclusive current scope | Execution state |
 |---|---|---|---|---|
-| P1 Performance and durability | Coordinator, phase worker queued | build/v5-bug-fix-swarm | Current ACP steering and main integration stay with coordinator until tested handoff. | Implementation and verification running |
+| P1 Performance and durability | /root/phase1_performance | /tmp/uam-v5-phase1-performance-20261012 | Settings interaction latency and detached history paging investigation; coordinator retains main UI merge until tested handoff, P3 retains import repository APIs. | Assigned; In Progress |
 | P2 Permissions and MCP | Queued for available runtime slot | Not created yet | Permission/review paths; coordinate ACP and settings ownership first. | Queued |
 | P3 Provider and child lifecycle | /root/phase3_lifecycle | /tmp/uam-v5-phase3-lifecycle-20261012 | Native history import services, startup import tests and native import paging or staging additions in chat_repository; new test registration only in CMake. | Assigned; In Progress |
 | P4 Provider configuration and memory | /root/phase4_configuration | /tmp/uam-v5-phase4-configuration-20261012 | Provider MCP status/tests and native dictation restoration: voice settings parser, AppSettings fields, settings serialization, dictation CEF routes and platform interfaces; main UI merge excluded. | Assigned; In Progress |
