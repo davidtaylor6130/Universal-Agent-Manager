@@ -488,6 +488,21 @@ Allocation recorded 2026-10-11. David authorized execution on 2026-10-11 after c
 | P7 Remote runtime and maintenance | gpt-6.1-sol | Remote Ownership Refusals; Current Helper Activation; Elevated Provider Update Acceptance; Interactive Sudo Update Support; Runner Startup Acceptance; Concurrent Two Host Acceptance; Missing Incident Evidence | Remote runner, shutdown ownership, update and startup services; isolated tests first; production helper activation and live remote maintenance require explicit target authorization. |
 | P8 Platform and provider acceptance | gpt-6.1-sol | Six Provider Live Matrix; Provider Policy Gates; Independent Reviewer Availability; Current Windows Application Acceptance; Image And Cleanup Acceptance | Isolated provider matrix, Windows build and runtime receipts, image/cleanup acceptance and resource gates; runs after affected packets integrate; no historical Un-Reviewed audit. |
 
+### Active phase execution
+
+UAM ownership remains **chat-1791755529536-1b146e** for coordinator-reserved tasks; Codex executor IDs below are collaboration IDs, not invented UAM chat IDs. All eight phases remain within the active Codex goal, and no phase is Complete solely because tests pass. Workers use isolated worktrees and publish scoped changes for verified integration.
+
+| Phase | Codex executor | Worktree | Exclusive current scope | Execution state |
+|---|---|---|---|---|
+| P1 Performance and durability | Coordinator, phase worker queued | build/v5-bug-fix-swarm | Current ACP steering and main integration stay with coordinator until tested handoff. | Implementation and verification running |
+| P2 Permissions and MCP | Queued for available runtime slot | Not created yet | Permission/review paths; coordinate ACP and settings ownership first. | Queued |
+| P3 Provider and child lifecycle | /root/phase3_lifecycle | /tmp/uam-v5-phase3-lifecycle-20261012 | Native history import services, startup import tests and native import paging or staging additions in chat_repository; new test registration only in CMake. | Assigned; In Progress |
+| P4 Provider configuration and memory | /root/phase4_configuration | /tmp/uam-v5-phase4-configuration-20261012 | Provider MCP settings status and tests, then nonoverlapping native configuration and memory requirements; main UI merge excluded. | Assigned; In Progress |
+| P5 Workspaces and safe retention | Queued for available runtime slot | Not created yet | Worktree and retention requirements; native import repository ownership coordinated with P3. | Queued |
+| P6 Usage and persisted presentation | /root/phase6_usage | /tmp/uam-v5-phase6-usage-20261012 | Usage stores, ledgers, collectors, source scanners and tests plus runner usage-accounting transport only; repository and shared model headers require handoff. | Assigned; In Progress |
+| P7 Remote runtime and maintenance | Queued for available runtime slot | Not created yet | Remote lifecycle/maintenance excluding P6-owned usage-accounting transport. | Queued |
+| P8 Platform and provider acceptance | Queued for available runtime slot | Not created yet | Full provider/platform matrix and evidence after applicable implementation; actual live resource gates remain explicit. | Queued |
+
 Outside the 48-row coordinator reservation:
 
 - **Animation Smoothness Acceptance**: Claude UI implementation/review.
