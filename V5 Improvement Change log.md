@@ -325,6 +325,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Platform and diagnostics | Bugfix | macOS Quit Routing | Investigate intermittent folder-picker Quit cancellation without weakening the existing watchdog. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Bugfix | Failed Save Admission Revocation | A synchronous save failure must retire pending admission before rejecting its acknowledgement. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Bugfix | Asynchronous Save State Feedback | Review and user-test frontend error and processing updates after asynchronous save completion. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Asynchronous Send Durability | Move the remaining pre-dispatch durable save off the GUI thread while preserving admission, ordering and crash recovery. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
@@ -981,3 +982,7 @@ Save-feedback continuation allocation: coordinator `chat-1791755529536-1b146e` o
 Durability admission verification: Release app/test builds, all 22 affected cases, all 1589 expected native cases and 19 CTest gates pass, plus 227 frontend store cases; six new regressions cover pending feedback, complete unsaved history, deletion ownership, storage failure and reentrant receipts, while pending acceptance and remaining synchronous barriers are preserved in the Incomplete Work table.
 
 Delivery-marker continuation allocation: coordinator `chat-1791755529536-1b146e` reserves the existing ACP lifecycle/state declarations and `tests/async_prompt_durability_tests.cpp` in `build/v5-bug-fix-swarm` for an immutable local request held across the asynchronous delivery-intent save; request-ID stability, cancellation, stale ownership and failure rollback must be verified before integration, and the original durability item retains In Progress and all acceptance flags.
+
+Quota continuation fixture ownership: coordinator `chat-1791755529536-1b146e` owns the affected owner-poll loop in `tests/claude_projection_tests.cpp` for this delivery continuation; warm, cold, queued and goal cases must preserve the one-instruction and no-replay assertions.
+
+Native picker verification allocation: coordinator `chat-1791755529536-1b146e` owns the narrow folder-picker termination failure in `tests/macos_application_tests.mm` and `src/common/platform/platform_application_macos.mm` in `build/v5-bug-fix-swarm`; the 1596 core cases pass, while the full-run native picker watchdog failure and its isolated passing rerun remain recorded for investigation.
