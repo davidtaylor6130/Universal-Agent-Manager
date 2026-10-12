@@ -181,3 +181,7 @@
 .uam-set-body--flat { padding: 0; }
 .uam-set-body > .uam-set-row { padding-block: 0; }
 .uam-set-body > .uam-set-row + .uam-set-row { padding-top: 14px; }
+/* Provider pages: one provider shown flat (no disclosure), status bar on top. */
+.uam-provider-flat { display: grid; gap: var(--sp-3); padding: var(--sp-4); }
+.uam-provider-flat__bar { display: flex; align-items: center; gap: var(--sp-2); min-height: 28px; }
+.uam-provider-flat__body { display: grid; gap: var(--sp-3); }

@@ -57,7 +57,7 @@ it('updates a provider server override only after successful verified backend re
 it('keeps failed changes visible and reports their error beside controls', async () => {
   await render('codex-cli')
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Cannot save provider MCP configuration.' })
-  await click('Codex UAM MCP')
+  await click('Codex Shared setup')
   expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('Cannot save provider MCP configuration.')
 })
@@ -84,7 +84,7 @@ it('rejects stale host replies and wrong-host mutation replies', async () => {
   await act(async () => finish({ ok: true, data: old }))
   expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: old })
-  await click('Codex UAM MCP')
+  await click('Codex Shared setup')
   expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')
   expect(host.querySelector('[role="alert"]')).not.toBeNull()
 })
@@ -92,7 +92,7 @@ it('rejects stale host replies and wrong-host mutation replies', async () => {
 it('treats runtime structured support as authoritative for Antigravity and never chat permission as build availability', async () => {
   useAppStore.setState({ providers: [{ id: 'antigravity-cli', supportsStructured: true }] as ReturnType<typeof useAppStore.getState>['providers'] })
   await render('antigravity-cli')
-  expect(host.querySelector('[aria-label="Antigravity UAM MCP"]')).not.toHaveProperty('disabled', true)
+  expect(host.querySelector('[aria-label="Antigravity UAM MCP"]')).toHaveProperty('disabled', true)
   expect(host.querySelector('[aria-label="Antigravity Computer Use"]')?.getAttribute('aria-checked')).toBe('true')
   expect(host.querySelector('[aria-label="Antigravity Computer Use"]')).toHaveProperty('disabled', true)
 })
@@ -140,7 +140,7 @@ it.each(['loading', 'failed lookup'])('shows unknown controls instead of disable
     const control = host.querySelector<HTMLButtonElement>(`[aria-label="Codex ${label} (unknown)"]`)
     expect(control).not.toBeNull()
     expect(control?.getAttribute('aria-checked')).toBe('mixed')
-    expect(control?.classList.contains(label === 'Computer Use' ? 'uam-prov-avail' : 'uam-prov-switch')).toBe(true)
+    expect(control?.classList.contains(label === 'Computer Use' || label === 'UAM MCP' ? 'uam-prov-avail' : 'uam-prov-switch')).toBe(true)
     expect(control?.disabled).toBe(true)
     expect(control?.title).not.toContain('Off')
   }
@@ -148,10 +148,10 @@ it.each(['loading', 'failed lookup'])('shows unknown controls instead of disable
 
 it('retains disabled red controls when their false value is verified', async () => {
   const disabled = status()
-  disabled.providers.find(row => row.providerId === 'codex-cli')!.uamControlEnabled = false
+  disabled.providers.find(row => row.providerId === 'codex-cli')!.sharedSetupEnabled = false
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: disabled })
   await render('codex-cli')
-  const control = host.querySelector<HTMLButtonElement>('[aria-label="Codex UAM MCP"]')!
+  const control = host.querySelector<HTMLButtonElement>('[aria-label="Codex Shared setup"]')!
   expect(control.getAttribute('aria-checked')).toBe('false')
   expect(control.title).toBe('Off. Click to turn on.')
   expect(control.disabled).toBe(false)
@@ -161,7 +161,7 @@ it('ignores structurally identical pushes and unrelated settings while retaining
   useAppStore.setState({ providers: [{ id: 'codex-cli', supportsStructured: true }] as ReturnType<typeof useAppStore.getState>['providers'] })
   await render('codex-cli')
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Save failed, retry this change.' })
-  await click('Codex UAM MCP')
+  await click('Codex Shared setup')
   const requests = vi.mocked(sendToCEF).mock.calls.length
   await act(async () => useAppStore.setState(state => ({
     centralProviderConfiguration: { ...state.centralProviderConfiguration, instructions: 'Updated unrelated instructions',

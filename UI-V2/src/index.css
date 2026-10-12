@@ -1638,7 +1638,7 @@ summary,
   font-family: var(--font-sans);
   font-size: var(--fs-sm);
   line-height: 1.35;
-  z-index: 60;
+  z-index: 2000;
   animation: uam-tooltip-in var(--dur-fast) var(--ease);
 }
 .uam-tooltip__kbd {

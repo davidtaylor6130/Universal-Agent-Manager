@@ -218,3 +218,57 @@
 .uam-prov-spin { animation: uam-prov-spin 900ms linear infinite; }
 @keyframes uam-prov-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .uam-prov-spin { animation: none; } }
+
+/* Overview matrix fits the card: headers wrap to two lines, glyph columns stay narrow, provider column stays sticky. */
+.uam-prov-th { white-space: normal; line-height: 1.25; vertical-align: bottom; min-width: 56px; max-width: 88px; }
+.uam-prov-th--provider { min-width: 168px; max-width: none; }
+.uam-prov-provider-cell { min-width: 168px; }
+.uam-prov-glyph-cell { width: 1%; text-align: center; }
+
+/* MCP setup dialog (Overlay) and the optional advanced disclosure inside a server row. */
+.uam-mcp-dialog {
+  display: grid;
+  gap: var(--sp-3);
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  padding: var(--sp-5);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--elev-3);
+}
+.uam-mcp-dialog:focus { outline: none; }
+.uam-mcp-advanced > summary { color: var(--text-2); border-radius: var(--r-sm); }
+.uam-mcp-advanced > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* Central setup: removable chips for default skills and agents. */
+.uam-central-chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.uam-central-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 24px;
+  padding: 0 2px 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-up);
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+.uam-central-editor { display: grid; gap: var(--sp-3); padding-block: var(--sp-3); border-top: 1px solid var(--border); }
+.uam-central-editor .uam-set-field { gap: 4px; }
+.uam-central-editor textarea.uam-field { font-family: var(--font-mono); font-size: var(--fs-xs); }
+.uam-central-choice { display: grid; gap: var(--sp-2); }
+
+/* Add-server chooser: descriptive option cards. */
+.uam-prov-option { display: flex; align-items: center; gap: var(--sp-3); width: 100%; padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease); }
+.uam-prov-option:hover { background: var(--surface-up); border-color: var(--border-bright); }
+.uam-prov-option:active { transform: scale(.99); }
+.uam-prov-option:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-prov-option__icon { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-md); background: var(--surface-high); color: var(--text-2); flex-shrink: 0; }
+.uam-prov-option__label { font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--text); }
+.uam-prov-option__detail { font-size: var(--fs-xs); color: var(--text-3); }
+.uam-prov-option__chevron { margin-left: auto; color: var(--text-3); transition: transform var(--dur-fast) var(--ease); }
+.uam-prov-option:hover .uam-prov-option__chevron { transform: translateX(2px); }
