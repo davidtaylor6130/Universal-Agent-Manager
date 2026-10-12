@@ -382,19 +382,19 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Composer and queue | Graphical | Centered New Chat Composer | Require a Claude model to implement a composer centered in an empty new chat that animates to the bottom after the first message, with reduced-motion support and preserved focus and draft. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Navigation and interface | Graphical | Chat Icon Picker | Allow selecting and persisting a chat icon from a broad, varied library and include an associated page icon or image when available with a fallback when it cannot load. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | AI performance | Misc | Context Pollution Report | Prepare the low-priority report on memory recall, resumed history, skills, instructions and handoff context without attributing model latency to unmeasured context growth. | Open; Un-Reviewed; Not User Tested | Unassigned |
-| Usage and accounting | Graphical | Usage Chart Keyboard Access | Make usage chart columns keyboard focusable with readable values or provide an accessible table alternative. | Open; Un-Reviewed; Not User Tested | Unassigned |
-| Usage and accounting | Graphical | Usage Chart Token Split | Show the input, cache, output and reasoning split within each token chart column rather than only per provider. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Usage and accounting | Graphical | Usage Chart Keyboard Access | Make usage chart columns keyboard focusable with readable values or provide an accessible table alternative. | Resolved in `0123b279`; Claude UI Reviewed; Not User Tested | Unassigned |
+| Usage and accounting | Graphical | Usage Chart Token Split | Show the input, cache, output and reasoning split within each token chart column rather than only per provider. | Resolved in `0123b279`; Claude UI Reviewed; Not User Tested | Unassigned |
 | Usage and accounting | Misc | Usage Test Timeout Flakiness | Stabilise AppShell usage tests that can exceed the default timeout under parallel load. | Open; Un-Reviewed; Not User Tested | Unassigned |
 | Workspaces and deletion | Graphical | Determinate Deletion Progress | Report per-item deletion progress from the backend so the indeterminate deletion bar can show real completion. | Open; Un-Reviewed; Not User Tested | Unassigned |
 | Remote settings | Bugfix | Per Host Busy State | Scope remote host busy and progress state to the host being changed instead of every configured host. | Open; Un-Reviewed; Not User Tested | Unassigned |
 | Remote settings | Bugfix | Startup State Contradiction | Expose applied runner-startup state separately so the status line cannot contradict the saved switch. | Open; Un-Reviewed; Not User Tested | Unassigned |
-| Providers and MCP | Graphical | Wide MCP Matrix Layout | Replace the horizontally scrolling provider-by-server matrix with a per-server or grouped layout when many MCP servers exist. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
-| Settings and motion | Graphical | Settings Page Exit Crossfade | Add an exit-aware page wrapper so settings pages cross-fade instead of only animating in. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Providers and MCP | Graphical | Wide MCP Matrix Layout | Replace the horizontally scrolling provider-by-server matrix with a per-server or grouped layout when many MCP servers exist. | Resolved in `41331441`; Claude UI Reviewed; Not User Tested | Unassigned |
+| Settings and motion | Graphical | Settings Page Exit Crossfade | Add an exit-aware page wrapper so settings pages cross-fade instead of only animating in. | Resolved in `f72a3af4`; Claude UI Reviewed; Not User Tested | Unassigned |
 | Settings and motion | Graphical | Central Setup Visual Consistency | Align Central Setup native selects, file picker and unboxed sections with the shared settings field and section style. | Resolved in `034e8c67`; Claude UI Reviewed; Not User Tested | Unassigned |
-| Appearance | Graphical | Theme Swatch Picker | Show theme choices as visual swatches instead of a text-only select. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
-| Settings and motion | Graphical | Remaining Inline Modal Scrims | Move memory scan, memory library and markdown store modal scrims and remaining inline colours onto shared overlay tokens. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
-| Composer and queue | Graphical | Queue Drag Reordering | Add drag-to-reorder for queued prompts alongside the existing move controls. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
-| Composer and queue | Graphical | Edit Strip Duplicate Cancel | Remove the duplicated Cancel control between the editing-message strip and the composer footer. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Appearance | Graphical | Theme Swatch Picker | Show theme choices as visual swatches instead of a text-only select. | Resolved in `f72a3af4`; Claude UI Reviewed; Not User Tested | Unassigned |
+| Settings and motion | Graphical | Remaining Inline Modal Scrims | Move memory scan, memory library and markdown store modal scrims and remaining inline colours onto shared overlay tokens. | Resolved in `41331441`; Claude UI Reviewed; Not User Tested | Unassigned |
+| Composer and queue | Graphical | Queue Drag Reordering | Add drag-to-reorder for queued prompts alongside the existing move controls. | Resolved in `33db0f3f`; Claude UI Reviewed; Not User Tested | Unassigned |
+| Composer and queue | Graphical | Edit Strip Duplicate Cancel | Remove the duplicated Cancel control between the editing-message strip and the composer footer. | Resolved in `33db0f3f`; Claude UI Reviewed; Not User Tested | Unassigned |
 | History and performance | Graphical | History Loading Shimmer Decision | Decide whether history-loading skeletons should use a one-shot shimmer given the no-idle-animation rule. | Open; Claude Review; Not User Tested | Unassigned |
 | Graphical review | Misc | Harness Unreachable UI States | Live-check the undo toast, MCP warning banner, goal chip, goals popup, loading skeleton, subagent and compaction rows that the fake backend could not reach. | Open; Claude Review; Not User Tested | Unassigned |
 | Build and evidence | Misc | Usage History Bridge Docs | Add the getUsageHistory bridge action to the CLAUDE.md action table. | Open; Un-Reviewed; Not User Tested | Unassigned |
@@ -402,10 +402,14 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Memory and skills | Misc | Automatic Provider Agent Import | Let the Agents page import agents directly from a chosen provider's native configuration without asking for a Markdown file path. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Providers and MCP | Bugfix | Computer Use Disable Setting | Add a persisted setting and action so built-in Computer Use can be turned off, then replace its status-only rows with a real switch. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Providers and MCP | Misc | UAM MCP Always On Enforcement | Decide whether per-provider UAM MCP overrides and the JSON editor's enabled:false should remain now that the interface presents the service as always on. | Open; Un-Reviewed; Not User Tested | Unassigned |
-| Settings and motion | Graphical | Remaining Settings Native Selects | Move typography, Computer Use backend and memory worker pickers onto the shared menu select and update their tests. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
-| Settings and motion | Graphical | Settings Dialogs On Overlay | Move Central Setup agent editing, Shell Actions dialogs and Skills child dialogs onto the shared overlay with exit motion. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Settings and motion | Graphical | Remaining Settings Native Selects | Move typography, Computer Use backend and memory worker pickers onto the shared menu select and update their tests. | Resolved in `f72a3af4 / 41331441`; Claude UI Reviewed; Not User Tested | Unassigned |
+| Settings and motion | Graphical | Settings Dialogs On Overlay | Move Central Setup agent editing, Shell Actions dialogs and Skills child dialogs onto the shared overlay with exit motion. | Resolved in `f72a3af4 / 41331441`; Claude UI Reviewed; Not User Tested | Unassigned |
 | Memory and skills | Bugfix | Superseded Store Refresh Result | Return success for superseded markdown-store refreshes so callers cannot report a false load failure. | Open; Un-Reviewed; Not User Tested | Unassigned |
-| Workspaces and deletion | Graphical | File Type Editor Labels | Show which editor each file-type group opens in directly on its row. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
+| Workspaces and deletion | Graphical | File Type Editor Labels | Show which editor each file-type group opens in directly on its row. | Resolved in `f72a3af4`; Claude UI Reviewed; Not User Tested | Unassigned |
+| Notifications | Misc | Notification Timestamps | Add timestamps to notifications so the panel can group by Today/Earlier and show relative times. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Notifications | Misc | Update Release Note Excerpts | Carry a release-note excerpt in the update catalogue so update cards can show what changed. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Providers and MCP | Misc | Model Context And Size Metadata | Add context-window and size fields to model metadata so the model picker can show them as badges. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Settings and motion | Code Only | Menu Select Id Support | Let the shared menu select accept an id so settings labels can reference it directly. | Open; Un-Reviewed; Not User Tested | Unassigned |
 | Deferred ideas | Misc | T3 PR Workflow | Keep T3-inspired pull-request, branch and GitHub-provider workflows plus auto-settling at the very end of the backlog for later design and implementation. | Open; Claude Review; Not User Tested | Unassigned |
 
 Scope recorded 2026-10-11: these are David’s requested work and reported regressions, pending investigation rather than newly verified defects or completed changes. Existing implementation records remain intact. Mobile overhaul and mobile chat-width work are deferred at David’s request; the historical physical-device acceptance gate remains recorded. SSH computer use stays disabled as the current security policy, with any future support outside this change request. Performance limits require explicit values before acceptance and must include application processing and default animation completion.
@@ -446,6 +450,19 @@ Settings were rebuilt on one shared language (`SettingsPrimitives`: uppercase se
 | `20723015` | Usage | Provider chips and colours, estimated-only cost, inline token bars and readable empty limits. |
 | `034e8c67` | Settings | Shared settings language, neutral switches, centred fluid pages, MCP add dialog and always-on UAM MCP. |
 | `b8fd1d67` | Settings | General pages, provider pages, agents, remote hosts, skills and memory store in the shared language. |
+
+
+### Wave 4 — remaining UI and motion items (2026-10-12)
+
+Finished the remaining presentation-only follow-ups: keyboard-navigable usage chart with token-type stacking, notifications and updates panels, refined model picker with a gliding provider rail, theme swatch grid with arrow-key navigation, every settings dialog on the shared animated overlay, settings page cross-fade, file-type editor labels, typography and Computer Use pickers on the shared menu select, modal Central Setup agent editor, collapsed shell action rows, Skills child-dialog motion and quiet pins, memory scan rows, a many-server MCP popover in the provider overview, queue drag reordering, goal status pills, recorded-edit rows on the changed-files grid and a single editing Cancel. Frontend verification: 97 files, 1,455 of 1,455 Vitest tests, strict `npm run build` passing.
+
+| Commit | Surface | Summary |
+|---|---|---|
+| `0123b279` | Usage | Keyboard-navigable chart, token-type stacking and edge-aware tooltips. |
+| `b1b17290` | Panels | Notifications and updates panels and refined model picker. |
+| `f72a3af4` | Settings | Theme swatches, animated settings dialogs, page cross-fade and editor labels. |
+| `33db0f3f` | Chat | Queue drag reorder, goal status pills, recorded edit rows and single edit cancel. |
+| `41331441` | Settings | Collapsed shell actions, modal agent editor, MCP popover, quiet pins and memory scan rows. |
 
 ## Historical alpha82 commit inventory
 
