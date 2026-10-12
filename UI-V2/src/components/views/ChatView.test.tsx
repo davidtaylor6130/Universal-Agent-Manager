@@ -4058,7 +4058,7 @@ describe('ChatView', () => {
 
     act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
     expect(document.activeElement?.textContent).toContain('Model 1')
-    expect((document.activeElement as HTMLElement).style.boxShadow).toContain('inset')
+    expect((document.activeElement as HTMLElement).closest('[data-highlight]')?.getAttribute('data-highlight')).toBe('true')
     act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(setSessionModel).toHaveBeenCalledWith('chat-1', 'model-1')
     expect(document.activeElement).toBe(trigger)

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowDown, ArrowUp, CornerUpRight, Pencil, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, CornerUpRight, GripVertical, Pencil, X } from 'lucide-react'
 import type { AcpQueuedPrompt } from '../../store/cpp/types'
 import { Button, IconButton, StatusDot, motionAllowed } from '../ui'
 import { EXIT_MS } from '../ui/Overlay'
@@ -51,6 +51,25 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
   }, [leaving])
   const rows = prompts.map((prompt, index) => ({ prompt, index, leaving: false }))
   for (const item of leaving) rows.splice(Math.min(item.index, rows.length), 0, { ...item, leaving: true })
+  const [drag, setDrag] = useState<{ from: number; over: number } | null>(null)
+  const canDrag = reorderable && !blocked && !held && !editing
+  // FLIP: when the queue order changes (drag, drop or up/down), rows slide from their old offset to the new one.
+  const listRef = useRef<HTMLDivElement>(null)
+  const layoutRef = useRef<{ order: string; tops: Map<string, number> }>({ order: '', tops: new Map() })
+  useLayoutEffect(() => {
+    const rowEls = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-queue-id]') ?? [])
+    const order = rowEls.map((row) => row.dataset.queueId).join('\n')
+    const tops = new Map(rowEls.map((row) => [row.dataset.queueId!, row.getBoundingClientRect().top]))
+    const previous = layoutRef.current
+    if (previous.order && order !== previous.order && motionAllowed() && typeof HTMLElement.prototype.animate === 'function') {
+      for (const row of rowEls) {
+        const before = previous.tops.get(row.dataset.queueId!)
+        const dy = before === undefined ? 0 : before - tops.get(row.dataset.queueId!)!
+        if (dy) row.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }], { duration: 180, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+      }
+    }
+    layoutRef.current = { order, tops }
+  })
 
   async function run(operation: () => Promise<boolean>, failure: string, finish?: () => void) {
     if (blocked || pendingRef.current) return
@@ -68,13 +87,16 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
     }
   }
 
-  function move(index: number, direction: number) {
+  function reorder(from: number, to: number) {
     const expected = prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))
     const ordered = expected.map((prompt) => prompt.id)
-    const previous = ordered[index]
-    ordered[index] = ordered[index + direction]
-    ordered[index + direction] = previous
+    const [moved] = ordered.splice(from, 1)
+    ordered.splice(to, 0, moved)
     void run(() => onReorder(expected, ordered), 'Queue changed or could not be reordered. Try again.')
+  }
+
+  function move(index: number, direction: number) {
+    reorder(index, index + direction)
   }
 
   if (prompts.length === 0 && !editing && leaving.length === 0) return null
@@ -101,12 +123,35 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
       </span>
       <Button type="button" size="sm" variant="secondary" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'Queue changed or could not be resumed. Your queued prompts are kept.')}>Resume queue</Button>
     </div>}
-    <div className="uam-queue-list">{rows.map(({ prompt, index, leaving: exiting }) => exiting
+    <div className="uam-queue-list" ref={listRef}>{rows.map(({ prompt, index, leaving: exiting }) => exiting
       ? <div key={`leaving-${prompt.id}`} className="uam-queue-row uam-queued-prompt" data-leaving="" aria-hidden>
         <div className="uam-queue-row__main"><span className="uam-queue-row__text">{prompt.text}</span></div>
       </div>
-      : <div key={prompt.id ?? `legacy-${index}`} className="uam-queue-row uam-queued-prompt" data-held={held || undefined}>
+      : <div
+        key={prompt.id ?? `legacy-${index}`}
+        className={['uam-queue-row uam-queued-prompt', drag?.from === index && 'is-dragging', drag && drag.from !== index && drag.over === index && (drag.over > drag.from ? 'is-drop-after' : 'is-drop-before')].filter(Boolean).join(' ')}
+        data-queue-id={prompt.id}
+        data-held={held || undefined}
+        draggable={canDrag || undefined}
+        onDragStart={canDrag ? (event) => {
+          event.dataTransfer.effectAllowed = 'move'
+          event.dataTransfer.setData('text/plain', prompt.id!)
+          setDrag({ from: index, over: index })
+        } : undefined}
+        onDragOver={drag ? (event) => {
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'move'
+          if (drag.over !== index) setDrag({ ...drag, over: index })
+        } : undefined}
+        onDrop={drag ? (event) => {
+          event.preventDefault()
+          setDrag(null)
+          if (drag.from !== index) reorder(drag.from, index)
+        } : undefined}
+        onDragEnd={() => setDrag(null)}
+      >
       <div className="uam-queue-row__main">
+        <span className="uam-queue-row__grip" aria-hidden title={canDrag ? 'Drag to reorder' : undefined} data-disabled={canDrag ? undefined : ''}><GripVertical size={13} /></span>
         <span className="uam-queue-row__label">Queued{prompts.length > 1 ? ` ${index + 1}` : ''}</span>
         <span className="uam-queue-row__text">{prompt.text}</span>
         <div className="uam-queue-row__actions">

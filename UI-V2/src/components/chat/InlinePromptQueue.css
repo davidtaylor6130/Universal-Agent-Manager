@@ -25,6 +25,17 @@
 }
 .uam-queue-row:last-child { border-bottom: 0; }
 .uam-queue-row__main { display: flex; align-items: center; gap: var(--sp-2); min-height: 26px; }
+.uam-queue-row[draggable="true"] { cursor: grab; }
+.uam-queue-row.is-dragging { opacity: 0.45; }
+.uam-queue-row.is-drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.uam-queue-row.is-drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.uam-queue-row__grip {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-3);
+  opacity: 0.7;
+}
+.uam-queue-row__grip[data-disabled] { opacity: 0.3; }
 .uam-queue-row__label {
   flex-shrink: 0;
   font-size: var(--fs-xs);

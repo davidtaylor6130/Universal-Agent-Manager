@@ -159,6 +159,26 @@ describe('inline queued prompts', () => {
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be reordered')
     expect(button('Move queued prompt up').disabled).toBe(true)
   })
+  it('drags a queued row onto another and submits the same expected snapshot as the buttons', async () => {
+    const dragEvent = (type: string, target: Element) => {
+      const event = new Event(type, { bubbles: true, cancelable: true })
+      Object.defineProperty(event, 'dataTransfer', { value: { effectAllowed: '', dropEffect: '', setData: vi.fn() } })
+      act(() => { target.dispatchEvent(event) })
+    }
+    const rowA = host.querySelector('[data-queue-id="a"]')!
+    const rowB = host.querySelector('[data-queue-id="b"]')!
+    expect(rowA.getAttribute('draggable')).toBe('true')
+    dragEvent('dragstart', rowA)
+    dragEvent('dragover', rowB)
+    dragEvent('drop', rowB)
+    await act(async () => {})
+    expect(props.onReorder).toHaveBeenCalledWith([{ id: 'a', revision: 1 }, { id: 'b', revision: 1 }], ['b', 'a'])
+  })
+  it('does not allow dragging a held queue', () => {
+    props.held = true
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    expect(host.querySelector('[data-queue-id="a"]')!.getAttribute('draggable')).toBeNull()
+  })
   it('retains text when a queued item changes or dispatches during editing', async () => {
     await click(button('Edit queued prompt'))
     editText('Unsent queue edit')

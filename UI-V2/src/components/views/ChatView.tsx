@@ -3161,7 +3161,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     <IconButton icon={<X size={14} />} label={`Remove ${attachment.name} from edited message`} disabled={branchingMessageIndex !== null} onClick={() => removeEditingAttachment(attachment.id)} />
                   </div>
                 ))}
-                <Button type="button" size="sm" variant="ghost" disabled={branchingMessageIndex !== null} onClick={cancelEditingMessage}>Cancel</Button>
                 <Button type="button" size="sm" variant="primary" loading={branchingMessageIndex !== null} disabled={(!editingMessageText.trim() && editingMessageAttachments.length === 0) || !canChangeProvider} onClick={() => void submit()}>Save to new branch</Button>
               </div>
             )}
