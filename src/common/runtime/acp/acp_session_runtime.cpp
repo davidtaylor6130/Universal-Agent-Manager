@@ -94,6 +94,8 @@ namespace uam
 
 	namespace
 	{
+		bool CanDeferLocalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+
 		using namespace acp_detail;
 
 		bool RemoteSourceCleanupPending(const AcpSessionState& session, const ChatSession& chat)
@@ -218,7 +220,7 @@ namespace uam
 		}
 
 		bool PersistQueuedPromptOutbox(AppState& app, const AcpSessionState& session,
-		                               ChatSession& chat, std::string* error_out = nullptr, bool queue_only = false)
+		                               ChatSession& chat, std::string* error_out = nullptr, bool queue_only = false, bool defer_idle_admission = false)
 		{
 			if (chat.acp_queue_storage_error || app.worktree_operation_chat_ids.contains(chat.id))
 			{
@@ -240,8 +242,9 @@ namespace uam
 				chat.acp_dispatched_queued_prompt_count = 1;
 			}
 			chat.acp_queue_held = session.queue_held;
-			if (queue_only && chat.execution_host_id == execution_hosts::kLocalHostId &&
-			    session.processing && (session.prompt_request_id != 0 || !session.queued_prompt.empty()) && !chat.small_model_mode)
+			const bool idle_admission = defer_idle_admission && !session.processing && CanDeferLocalPromptAdmission(app, session, chat);
+			if (chat.execution_host_id == execution_hosts::kLocalHostId && !chat.small_model_mode &&
+			    (idle_admission || (queue_only && session.processing && (session.prompt_request_id != 0 || !session.queued_prompt.empty()))))
 			{
 				const std::filesystem::path root = app.data_root;
 				const std::string chat_id = chat.id, provider_id = chat.provider_id, host_id = chat.execution_host_id;
@@ -263,7 +266,7 @@ namespace uam
 					acp_detail::AppendAcpDiagnostic(*owner, "persistence", "queued_history_save_failed", "", "", false, 0, app.status_line);
 				}, true);
 				// A queue journal alone cannot acknowledge an unsaved first message or delivery marker.
-				if (session.prompt_request_id == 0)
+				if (idle_admission || (session.prompt_request_id == 0 && !session.queued_prompt.empty()))
 					RequireQueuedAdmissionFullSave(app, chat_id);
 				return true;
 			}
@@ -1985,7 +1988,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						return false;
 					}
 					session.queued_user_prompts.push_back(std::move(queued));
-					if (!PersistQueuedPromptOutbox(app, session, chat, error_out))
+					if (!PersistQueuedPromptOutbox(app, session, chat, error_out, false, true))
 					{
 						session.queued_user_prompts.pop_back();
 						chat.acp_queued_prompts.assign(
@@ -2024,7 +2027,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			session.queued_user_prompts.push_back(std::move(queued));
 			if (restart_remote_cancellation) chat.remote_restart_pending = true;
-			if (!PersistQueuedPromptOutbox(app, session, chat, error_out, !restart_remote_cancellation && !chat.small_model_mode))
+			if (!PersistQueuedPromptOutbox(app, session, chat, error_out, !restart_remote_cancellation && !chat.small_model_mode, !session.processing && !restart_remote_cancellation))
 			{
 				session.queued_user_prompts = previous_queue;
 				chat.acp_queued_prompts = previous_outbox;
@@ -2054,7 +2057,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    session.prompt_request_id == 0 && session.queued_prompt.empty() &&
 			    !session.remote_stop_pending && !session.remote_stop_unconfirmed)
 			{
-				// The new message is durable already; a failed dispatch keeps it queued once.
+				// Owned admission gates dispatch; a failed dispatch keeps retained input queued once.
 				(void)DrainNextQueuedAcpUserPrompt(app, session, chat);
 			}
 			if (!session.running && !session.queue_held &&

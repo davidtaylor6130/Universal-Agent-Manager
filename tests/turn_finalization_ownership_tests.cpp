@@ -149,6 +149,13 @@ UAM_TEST(AsyncCheckpointKeepsNewQueuedIntentDurableAndRetriesOwnedMetadataBefore
 	UAM_ASSERT(captured.empty());
 	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, current, app.chats.front()));
 	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+	const std::chrono::steady_clock::time_point admission_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < admission_deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
 	UAM_ASSERT(uam::io::WriteTextFile(fs::path(snapshot.chats.front().workspace_worktree_directory) / "file.txt", "after\n"));
 	const uam::GitTurnCheckpointResult result = uam::GitWorktreeService().CreateTurnCheckpoint(snapshot, snapshot.chats.front(), 1, {}, false);
 	UAM_ASSERT(result.ok && result.changed);

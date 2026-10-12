@@ -8563,7 +8563,12 @@ UAM_TEST(AcpSendAfterTurnFailureResumesPreservedUserQueue)
 		const bool write_failure = route == "codex-write-failure";
 		if (write_failure) PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(session);
 		const bool accepted = uam::SendAcpPrompt(app, stored_chat.id, "Continue after failure", &error);
-		if (!write_failure && !retrying) AwaitPromptAdmission(app, session, stored_chat);
+		if (!write_failure && !retrying)
+		{
+			AwaitChatSave(app, stored_chat);
+			(void)uam::DrainNextQueuedAcpUserPrompt(app, session, stored_chat);
+			AwaitPromptAdmission(app, session, stored_chat);
+		}
 		const bool resumed = session.processing;
 		const bool transport_stopped = !session.running;
 		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);

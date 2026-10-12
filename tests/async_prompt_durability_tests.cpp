@@ -976,3 +976,105 @@ UAM_TEST(AcpQueuedControlReceiptsWaitForOwnedStorageWithoutInterruptingDelivered
 		}
 	}
 }
+
+UAM_TEST(AcpIdleDeferredAdmissionReturnsWithinInputBudgetAndSavesCompleteHistory)
+{
+	for (const bool compatibility_pending : {false, true})
+	{
+		PromptFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		fixture.process.StopStdioProcess(session, true);
+		fixture.process.CloseStdioProcessHandles(session);
+		session.running = session.processing = session.session_ready = false;
+		if (compatibility_pending)
+		{
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			chat.provider_id = session.provider_id = "opencode-cli";
+			session.protocol_kind = "opencode-acp";
+			app.runtime_cli_versions_by_provider_id[chat.provider_id] = {};
+		}
+		else chat.routing_mode = "automatic";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+		UAM_ASSERT(prepared != nullptr);
+		chat.messages.push_back({.role = MessageRole::Assistant, .content = "Latest unsaved idle transcript"});
+		std::promise<void> entered;
+		std::future<void> locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		std::string error;
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		const bool accepted = uam::SendAcpPrompt(app, chat.id, "Idle deferred input", &error);
+		const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+		publication.join();
+		UAM_ASSERT(accepted);
+		UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+		UAM_ASSERT(!session.processing && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, chat));
+		std::optional<bool> acknowledgement;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+		UAM_ASSERT(!acknowledgement.has_value());
+		AwaitSave(app);
+		UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->messages, chat.messages);
+		UAM_ASSERT_EQ(saved->messages.back().content, std::string("Latest unsaved idle transcript"));
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Idle deferred input"));
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	}
+}
+
+UAM_TEST(AcpFailedIdleDeferredAdmissionHoldsCapturedIntentWithoutProviderLaunch)
+{
+	for (const bool compatibility_pending : {false, true})
+	{
+		PromptFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		fixture.process.StopStdioProcess(session, true);
+		fixture.process.CloseStdioProcessHandles(session);
+		session.running = session.processing = session.session_ready = false;
+		if (compatibility_pending)
+		{
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			chat.provider_id = session.provider_id = "opencode-cli";
+			session.protocol_kind = "opencode-acp";
+			app.runtime_cli_versions_by_provider_id[chat.provider_id] = {};
+		}
+		else chat.routing_mode = "automatic";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retained idle failure input", &error));
+		std::optional<bool> acknowledgement;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+		fs::remove_all(app.data_root);
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "private failed idle admission storage"));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(acknowledgement.has_value() && !*acknowledgement);
+		UAM_ASSERT(session.queue_held && chat.acp_queue_held);
+		UAM_ASSERT(!session.running && !session.processing && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Retained idle failure input"));
+		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, chat));
+	}
+}
