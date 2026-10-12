@@ -241,6 +241,10 @@ Workspace-local memories are stored at `<workspace>/.codex/memories/`.
 
 See `docs/security-enterprise.md` for the enterprise checklist and known gaps.
 
+## UI Design
+
+React/UI changes follow `docs/ui/design-language.md`; settings pages also follow `docs/ui/settings.md`. Update those documents with any deliberate design change.
+
 ## Common Gotchas
 
 1. `UI-V2/dist/` in the source tree is not the packaged output. CMake writes the build-tree frontend bundle and copies it into the native app.

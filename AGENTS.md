@@ -94,6 +94,10 @@ ctest --test-dir Builds/tests -C Debug --output-on-failure
 
 Tests use a custom framework in `tests/core_tests.cpp`, a CMake platform ifdef guard, and Vitest for `UI-V2`.
 
+## UI Design
+
+React/UI changes follow `docs/ui/design-language.md`; settings pages also follow `docs/ui/settings.md`. Update those documents with any deliberate design change.
+
 ## Code Style
 
 - Brace style: Allman
