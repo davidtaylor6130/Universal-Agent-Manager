@@ -1,4 +1,4 @@
-import { Button } from '../ui'
+import { Button, MenuSelect } from '../ui'
 import { MONO_FONTS, SANS_FONTS, useTypographyStore, type TypographyPreferences } from '../../store/typographyStore'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
 
@@ -23,13 +23,13 @@ export function TypographySettings() {
           const family = (row.fonts as Record<string, { family: string }>)[selected].family
           const size = preferences[sizeKey] as number
           return (
-            <SettingRow key={row.id} title={row.label} description={row.detail} htmlFor={`typography-${row.id}-font`}
+            <SettingRow key={row.id} title={row.label} description={row.detail}
               control={<div className="flex items-center gap-2">
-                <select id={`typography-${row.id}-font`} aria-label={`${row.label} font`} value={selected}
-                  onChange={(event) => update({ [fontKey]: event.target.value })}
-                  className="uam-field uam-field--select" style={{ width: 170 }}>
-                  {Object.entries(row.fonts).map(([id, font]) => <option key={id} value={id}>{font.label}</option>)}
-                </select>
+                <div style={{ width: 170 }}>
+                  <MenuSelect label={`${row.label} font`} value={selected}
+                    options={Object.entries(row.fonts).map(([id, font]) => ({ value: id, label: font.label }))}
+                    onChange={(value) => update({ [fontKey]: value })} />
+                </div>
                 <input type="number" aria-label={`${row.label} font size`} title="Size in pixels" min={row.min} max={row.max} step={1}
                   value={size} onChange={(event) => { if (event.target.value) update({ [sizeKey]: event.target.valueAsNumber }) }}
                   className="uam-field" style={{ width: 64 }} />
