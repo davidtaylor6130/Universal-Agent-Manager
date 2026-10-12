@@ -141,21 +141,9 @@
 .conversation-skeleton__line--short { width: 46%; }
 
 /* One status strip above the composer for in-progress work and stops. Tone comes from the status dim tokens. */
-.chat-status-strip { display: flex; align-items: center; gap: var(--sp-2); width: fit-content; max-width: 100%; min-height: 26px; margin: 0 0 var(--sp-2); padding: var(--sp-1) var(--sp-3); border-radius: var(--r-md); background: var(--surface-up); color: var(--text); font-size: var(--fs-sm); line-height: 1.4; animation: chat-status-strip-in var(--dur-base) var(--ease-out-soft) backwards; }
-.chat-status-strip[data-state="closed"] { animation: chat-status-strip-out var(--dur-fast) var(--ease) forwards; pointer-events: none; }
-.chat-status-strip[data-tone="info"] { background: var(--info-dim); }
-.chat-status-strip[data-tone="info"] > svg { color: var(--info); }
-.chat-status-strip[data-tone="warning"] { background: var(--warning-dim); }
-.chat-status-strip[data-tone="warning"] > svg { color: var(--warning); }
-.chat-status-strip > svg { flex-shrink: 0; }
-.chat-status-strip__spin { animation: chat-status-strip-spin 1s linear infinite; }
-.chat-status-strip__title { min-width: 0; font-weight: 500; }
-.chat-status-strip__detail { display: inline-flex; align-items: center; min-width: 0; color: var(--text-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 
 @media (prefers-reduced-motion: reduce) {
-  .conversation-skeleton__bubble, .conversation-skeleton__line, .chat-status-strip__spin { animation: none; }
-  .chat-status-strip, .chat-status-strip[data-state="closed"] { animation: none; }
-  .chat-status-strip[data-state="closed"] { display: none; }
+  .conversation-skeleton__bubble, .conversation-skeleton__line { animation: none; }
 }
 
 /* Meter: a quantity shown as a bar, with exact numbers as text beside it. */
@@ -179,9 +167,6 @@
 @keyframes conversation-rail-in { from { opacity: 0; transform: translateY(-50%) translateX(-4px); } to { opacity: 1; transform: translateY(-50%); } }
 @keyframes conversation-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes conversation-skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
-@keyframes chat-status-strip-in { from { opacity: 0; transform: translateY(4px); } }
-@keyframes chat-status-strip-out { to { opacity: 0; transform: translateY(4px); } }
-@keyframes chat-status-strip-spin { to { transform: rotate(360deg); } }
 
 /* Goals popup and chip, edit-mode strip above the composer. */
 .conversation-goals-popup { border: 1px solid var(--border-bright); border-radius: var(--r-lg); background: var(--surface-up); color: var(--text); box-shadow: var(--elev-3); animation: conversation-pop-in var(--dur-base) var(--ease-out-soft) backwards; }
@@ -193,3 +178,87 @@
 .conversation-edit-strip { display: flex; align-items: center; gap: var(--sp-2); min-height: 28px; margin-bottom: var(--sp-1); padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3); border-radius: var(--r-md); background: var(--accent-dim); color: var(--text-2); font-size: var(--fs-sm); animation: conversation-pop-in var(--dur-fast) var(--ease-out-soft) backwards; }
 .conversation-edit-strip > svg { flex-shrink: 0; color: var(--accent); }
 @keyframes conversation-pop-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
+
+/* ── Chat status divider ─────────────────────────────────────
+   Centred like the compacted-context line: hairlines either side of a small tinted pill holding an
+   illustrated scene, the title and a live elapsed timer. One tint per state; springs in and out. */
+.chat-status-strip { --strip-tint: var(--info); display: flex; align-items: center; gap: 10px; width: 100%; margin: 0 0 var(--sp-2); color: var(--text-2); font-size: var(--fs-xs); animation: chat-status-in 420ms var(--ease-spring) backwards; }
+.chat-status-strip::before, .chat-status-strip::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--strip-tint) 35%, var(--border))); }
+.chat-status-strip::after { background: linear-gradient(90deg, color-mix(in srgb, var(--strip-tint) 35%, var(--border)), transparent); }
+.chat-status-strip[data-tone="agents"] { --strip-tint: var(--teal); }
+.chat-status-strip[data-tone="warning"] { --strip-tint: var(--warning); }
+.chat-status-strip[data-state="closed"] { animation: chat-status-out 200ms var(--ease) forwards; pointer-events: none; }
+.chat-status-strip__pill { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; padding: 3px 12px 3px 8px; border-radius: var(--r-full); background: color-mix(in srgb, var(--strip-tint) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--strip-tint) 22%, var(--border)); transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease); }
+.chat-status-strip__scene { display: inline-flex; color: var(--strip-tint); flex-shrink: 0; }
+.chat-status-strip__title { min-width: 0; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-status-strip__time { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.chat-status-strip__detail { display: inline-flex; align-items: center; min-width: 0; color: var(--text-3); font-variant-numeric: tabular-nums; }
+@keyframes chat-status-in { from { opacity: 0; transform: translateY(6px) scale(.94); } }
+@keyframes chat-status-out { to { opacity: 0; transform: translateY(4px) scale(.97); } }
+
+/* Scenes: strokes and fills follow currentColor (the state tint). */
+.status-scene { overflow: visible; }
+.status-scene line, .status-scene path { stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; fill: none; }
+.status-scene rect, .status-scene circle { fill: currentColor; }
+.status-scene text { fill: currentColor; font: 600 5px var(--font-sans); }
+
+/* Compacting: boxes slide along, get squashed under the press, slide on. Rollers turn. */
+.status-scene__belt { opacity: .7; }
+.status-scene__roller { fill: none !important; stroke: currentColor; stroke-width: .9; stroke-dasharray: 3.2 1.8; transform-box: fill-box; transform-origin: center; animation: scene-spin 1.2s linear infinite; }
+.status-scene__press { opacity: .9; transform-box: fill-box; animation: scene-press .6s var(--ease) infinite; }
+.status-scene__piston { opacity: .6; }
+.status-scene__box { opacity: 0; transform-box: fill-box; transform-origin: bottom center; animation: scene-box 1.8s linear infinite; }
+.status-scene__box--2 { animation-delay: -.6s; }
+.status-scene__box--3 { animation-delay: -1.2s; }
+@keyframes scene-spin { to { transform: rotate(360deg); } }
+/* Boxes arrive every 0.6s and sit under the press from 32% to 50% of that beat, so the press stamps each one. */
+@keyframes scene-press { 0%, 30% { transform: translateY(0); } 44%, 52% { transform: translateY(3px); } 70%, 100% { transform: translateY(0); } }
+@keyframes scene-box {
+  0% { opacity: 0; transform: translateX(0) scaleY(1); }
+  8% { opacity: .85; }
+  44% { transform: translateX(21px) scaleY(1); }
+  50% { transform: translateX(21px) scaleY(.45); }
+  92% { opacity: .85; transform: translateX(42px) scaleY(.45); }
+  100% { opacity: 0; transform: translateX(44px) scaleY(.45); }
+}
+
+/* Agents: heads bob and screens flicker while working; sleepers droop, eyes close, z's drift. */
+.status-agent__antenna-tip { animation: scene-blink 1.6s steps(1) infinite; animation-delay: var(--agent-delay, 0ms); }
+.status-agent__eye { fill: var(--surface) !important; }
+.status-agent__closed { stroke: var(--surface) !important; stroke-width: .8 !important; opacity: 0; }
+.status-agent__laptop rect { fill: currentColor; opacity: .55; }
+.status-agent__screen { fill: var(--surface) !important; opacity: 1 !important; animation: scene-screen 0.9s steps(2) infinite; animation-delay: var(--agent-delay, 0ms); }
+.status-agent__desk, .status-agent__leg, .status-scene__leg { opacity: .7; }
+.status-agent__body { transform-box: view-box; animation: scene-type .5s ease-in-out infinite alternate; animation-delay: var(--agent-delay, 0ms); }
+.status-agent__z { opacity: 0; }
+.status-agent--asleep { opacity: .62; }
+.status-agent--asleep .status-agent__body { animation: none; transform: translate(1px, 1.5px) rotate(8deg); transform-origin: 7px 14px; }
+.status-agent--asleep .status-agent__eye { opacity: 0; }
+.status-agent--asleep .status-agent__closed { opacity: 1; }
+.status-agent--asleep .status-agent__screen { animation: none; opacity: .25 !important; }
+.status-agent--asleep .status-agent__antenna-tip { animation: none; opacity: .4; }
+.status-agent--asleep .status-agent__z { animation: scene-z 2.4s ease-out infinite; animation-delay: var(--agent-delay, 0ms); }
+@keyframes scene-type { from { transform: translateY(0); } to { transform: translateY(-.8px); } }
+@keyframes scene-screen { 0% { opacity: 1; } 50% { opacity: .55; } }
+@keyframes scene-blink { 0%, 70% { opacity: 1; } 71%, 100% { opacity: .2; } }
+@keyframes scene-z { 0% { opacity: 0; transform: translate(0, 2px); } 30% { opacity: .9; } 100% { opacity: 0; transform: translate(4px, -5px); } }
+
+/* Sleeping in bed: the blanket breathes slowly and two z's drift up in turn. */
+.status-bed__headboard, .status-bed__pillow { opacity: .55; }
+.status-bed__blanket { fill: currentColor !important; opacity: .8; stroke: none; transform-box: fill-box; transform-origin: bottom center; animation: scene-breathe 3.2s ease-in-out infinite; }
+.status-bed__sleeper .status-agent__closed--on { opacity: 1; }
+.status-bed__frame { opacity: .7; }
+.status-bed__z { opacity: 0; animation: scene-z 3.2s ease-out infinite; }
+.status-bed__z--2 { animation-delay: 1.6s; font-size: 6.5px; }
+@keyframes scene-breathe { 0%, 100% { transform: scaleY(1); } 50% { transform: scaleY(1.18); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-status-strip, .chat-status-strip[data-state="closed"] { animation: none; }
+  .chat-status-strip[data-state="closed"] { display: none; }
+  .status-scene *, .status-scene { animation: none !important; }
+  .status-scene__box { opacity: .85; }
+  .status-scene__box--1 { transform: translateX(4px); }
+  .status-scene__box--2 { transform: translateX(21px) scaleY(.45); }
+  .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
+  .status-bed__z--1, .status-agent--asleep .status-agent__z { opacity: .8; }
+}
