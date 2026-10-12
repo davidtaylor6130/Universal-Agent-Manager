@@ -300,6 +300,7 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
+void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat);
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
 bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
                              const std::string& prompt, bool review_turn,

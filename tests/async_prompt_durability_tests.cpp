@@ -54,6 +54,26 @@ namespace
 			if (session != nullptr) { process.StopStdioProcess(*session, true); process.CloseStdioProcessHandles(*session); }
 		}
 	};
+	void AwaitSave(uam::AppState& app)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+	}
+	void AwaitDelivery(uam::AppState& app, uam::AcpSessionState& session)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (session.processing && session.prompt_request_id == 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+			std::this_thread::yield();
+		}
+	}
 }
 
 UAM_TEST(AcpSendReturnsPendingBeforeDurablePublicationAndProviderInput)
@@ -88,6 +108,7 @@ UAM_TEST(AcpSendReturnsPendingBeforeDurablePublicationAndProviderInput)
 	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
 	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
 	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, *session, app.chats.front()));
+	AwaitDelivery(app, *session);
 	UAM_ASSERT(session->prompt_request_id != 0);
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
 	UAM_ASSERT(saved.has_value());
@@ -126,7 +147,209 @@ UAM_TEST(AcpLargeUnsavedHistoryIsDurableBeforePromptDispatch)
 	UAM_ASSERT_EQ(saved->messages.back().content, std::string("Preserve unsaved history"));
 	UAM_ASSERT(saved->messages.back().acp_prompt_not_sent);
 	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, app.chats.front()));
+	AwaitDelivery(app, *fixture.session);
 	UAM_ASSERT(fixture.session->prompt_request_id != 0);
+}
+
+UAM_TEST(AcpDeliveryMarkerHoldsOneRequestUntilItsOwnedSaveReceipt)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "One immutable request", &error));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id) && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
+	const std::string admitted = ReadFile(fixture.saved_path);
+	const int request_id = session.next_request_id;
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT_EQ(ReadFile(fixture.saved_path), admitted);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
+	const int allocated_next_id = session.next_request_id;
+	UAM_ASSERT_EQ(allocated_next_id, request_id + 1);
+	for (int attempt = 0; attempt < 10; ++attempt)
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.next_request_id, allocated_next_id);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	while (app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id) && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(saved.has_value() && !saved->messages.back().acp_prompt_not_sent);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.prompt_request_id, request_id);
+	UAM_ASSERT_EQ(session.next_request_id, allocated_next_id);
+	const int delivered = session.prompt_request_id;
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.prompt_request_id, delivered);
+	UAM_ASSERT_EQ(session.next_request_id, allocated_next_id);
+}
+
+UAM_TEST(AcpCanceledStagedDeliveryRetainsUnsentIntentWithoutProviderPrompt)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Cancel before delivery", &error));
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT(session.pending_prompt_delivery != nullptr);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(uam::CancelAcpTurn(app, app.chats.front().id, &error));
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT(session.pending_prompt_delivery == nullptr);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)
+	    { return diagnostic.method == "session/prompt" && diagnostic.reason == "sent"; }));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(saved.has_value() && saved->messages.back().acp_prompt_not_sent);
+}
+
+UAM_TEST(AcpStagedDeliverySaveFailureRestoresUnsentRetryAffordance)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Retain failed delivery", &error));
+	AwaitSave(app);
+	const std::string admitted = ReadFile(fixture.saved_path);
+	app.data_root = fixture.temp.root / "blocked-marker";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Blocked storage"));
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT(session.pending_prompt_delivery != nullptr);
+	AwaitDelivery(app, session);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(!session.processing);
+	UAM_ASSERT(session.pending_prompt_delivery == nullptr);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	UAM_ASSERT(!session.last_error.empty());
+	UAM_ASSERT_EQ(ReadFile(fixture.saved_path), admitted);
+}
+
+UAM_TEST(AcpStagedReceiptCannotDeliverIntoANewerTurn)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Old turn intent", &error));
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	const int next_id = session.next_request_id;
+	++session.turn_serial;
+	session.queued_prompt = "New turn intent";
+	app.chats.front().messages.push_back({.role = MessageRole::User, .content = "New turn intent", .acp_prompt_not_sent = true});
+	session.turn_first_user_message_index = session.turn_user_message_index = 2;
+	uam::acp_detail::ScheduleChatSave(app, app.chats.front(), 0.0);
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT_EQ(session.next_request_id, next_id);
+	UAM_ASSERT(session.processing);
+	UAM_ASSERT_EQ(session.queued_prompt, std::string("New turn intent"));
+	UAM_ASSERT(app.chats.front().messages[1].acp_prompt_not_sent);
+	UAM_ASSERT(app.chats.front().messages[2].acp_prompt_not_sent);
+	UAM_ASSERT(session.pending_prompt_delivery == nullptr);
+}
+
+UAM_TEST(AcpStagedDeliveryRejectsChangedMemoryPolicy)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Respect changed context", &error));
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	app.chats.front().memory_level = "open";
+	app.chats.front().memory_enabled = true;
+	uam::acp_detail::ScheduleChatSave(app, app.chats.front(), 0.0);
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(!session.processing);
+	UAM_ASSERT(session.pending_prompt_delivery == nullptr);
+	UAM_ASSERT(session.last_error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	AwaitSave(app);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(saved.has_value() && saved->messages.back().acp_prompt_not_sent);
+}
+
+UAM_TEST(FailedSynchronousSaveRevokesPendingAdmissionBeforeRejectingItsReceipt)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Do not revive rejected admission", &error));
+	bool rejected = false;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [&session, &rejected](bool saved)
+	{
+		UAM_ASSERT(!saved);
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT(session.queued_prompt.empty());
+		rejected = true;
+	}));
+	const fs::path root = app.data_root;
+	app.data_root = fixture.temp.root / "blocked-synchronous-save";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Blocked storage"));
+	UAM_ASSERT(!uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+	UAM_ASSERT(rejected);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(!session.last_turn_error.empty());
+	app.data_root = root;
+	uam::acp_detail::ScheduleChatSave(app, app.chats.front(), 0.0);
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(!session.processing);
+}
+
+UAM_TEST(AcpGoalRevisionRetiresStagedPacketAndPreservesUnsentIntent)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Stop obsolete goal delivery", &error));
+	AwaitSave(app);
+	session.goal_turn_kind = "worker";
+	session.goal_command_revision = app.chats.front().goal_command_revision = "original-command";
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT(session.pending_prompt_delivery != nullptr);
+	app.chats.front().goal_command_revision = "new-command";
+	uam::acp_detail::ScheduleChatSave(app, app.chats.front(), 0.0);
+	AwaitSave(app);
+	const int next_id = session.next_request_id;
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT_EQ(session.next_request_id, next_id);
+	UAM_ASSERT(!session.processing);
+	UAM_ASSERT(session.pending_prompt_delivery == nullptr);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	AwaitSave(app);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(saved.has_value() && saved->messages.back().acp_prompt_not_sent);
 }
 
 UAM_TEST(PreparedChatSaveOwnershipPreventsMissingFileResurrection)

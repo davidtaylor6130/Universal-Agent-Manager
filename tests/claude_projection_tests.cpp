@@ -1346,6 +1346,7 @@ UAM_TEST(ClaudeQuotaNativeContinuationWritesOnlyOneNewInstructionAfterWarmOrCold
 		bool answered_init = false;
 		for (int attempt = 0; attempt < 300; ++attempt)
 		{
+			uam::FlushPendingChatSaves(fixture.app);
 			(void)uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60);
 			fixture.session = uam::FindAcpSessionForChat(fixture.app, "quota-boundary");
 			if (fixture.session != nullptr && fixture.session->initialize_request_id != 0 && !answered_init)

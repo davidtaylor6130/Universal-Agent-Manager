@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Performance | Bugfix | Failed Save Admission Revocation | Failed save receipts retire undelivered input and record its failure before reporting rejection. | Claude Review; Un-Reviewed; Not User Tested |
 | Performance | Bugfix | Asynchronous Save State Feedback | Save receipts report changed processing and errors to the conditional frontend state update. | Claude Review; Un-Reviewed; Not User Tested |
 | Providers and review | Code Only | Host Scoped Provider Availability | Persisted native provider switches block new host-scoped work while preserving accepted queues and existing runtime attachment. | Partial Implementation; Un-Reviewed; Claude Review; Not User Tested |
 | Providers and MCP | Code Only | Explicit Configuration Cache Refresh | OpenCode configuration remains cached until restart or explicit background refresh, retaining valid cached data on refresh failure. | Un-Reviewed; Claude Review; Not User Tested |
@@ -306,7 +307,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Remaining acceptance | Misc | Live Performance Acceptance | The reported opening target, periodic typing stalls and overall animation smoothness still need current live acceptance. | Claude Review; Not User Tested |
 | Remaining acceptance | Misc | Remote Ownership Refusals | Some remote services still refuse guarded Stop because they report owned processes. | Un-Reviewed; Not User Tested |
 | Remaining acceptance | Misc | Full Provider Acceptance | Remaining provider-policy, account, reviewer, physical-device and startup-session gates remain documented. | Un-Reviewed; Not User Tested |
-| Remaining performance | Performance | Asynchronous Send Durability | Ordinary send admission persists a complete owned snapshot asynchronously while queue, retry, steering and delivery barriers remain unfinished. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
+| Remaining performance | Performance | Asynchronous Send Durability | Ordinary local sends persist owned admission and delivery snapshots asynchronously while queue, retry, steering and remote barriers remain synchronous. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
@@ -326,7 +327,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
 | Platform and diagnostics | Bugfix | macOS Quit Routing | Review and user-test native picker Quit cancellation, including early and repeated requests. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
-| Performance | Bugfix | Failed Save Admission Revocation | A synchronous save failure must retire pending admission before rejecting its acknowledgement. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
+| Performance | Bugfix | Failed Save Admission Revocation | Review and user-test rejected admission and unsent retry intent after failed synchronous or background saves. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Bugfix | Asynchronous Save State Feedback | Review and user-test frontend error and processing updates after asynchronous save completion. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Asynchronous Send Durability | Move the remaining pre-dispatch durable save off the GUI thread while preserving admission, ordering and crash recovery. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Large Chat Opening Acceptance | Measure live CEF opening of the reported huge chat against David’s one-to-two-second target, verify history-loading feedback and fix remaining bottlenecks. | In Progress; Claude Review; Not User Tested | chat-1791755529536-1b146e |
@@ -988,3 +989,5 @@ Quota continuation fixture ownership: coordinator `chat-1791755529536-1b146e` ow
 Native picker verification allocation: coordinator `chat-1791755529536-1b146e` owns the narrow folder-picker termination failure in `tests/macos_application_tests.mm` and `src/common/platform/platform_application_macos.mm` in `build/v5-bug-fix-swarm`; the 1596 core cases pass, while the full-run native picker watchdog failure and its isolated passing rerun remain recorded for investigation.
 
 Native picker continuation verification: the ignored-first-cancel fixture reproduced the original two-second watchdog failure; the modal-stop fallback passes all 14 picker scenarios and the Release app/test build, with pending Claude and user acceptance retained and detailed integration receipts in `.UAM/AINotes/v5-swarm-plan.md`.
+
+Local delivery continuation verification: one immutable request remains held across its owned delivery snapshot, cancellation and changed turn, configuration or goal commands cannot release it, and failed synchronous acknowledgements retire admission before rejection; the Release app/test build, 29 affected cases plus the quota continuation fixture, all 1596 expected core cases and all 19 gates pass, while queue, retry, steering, remote, live crash and acceptance work remain open.

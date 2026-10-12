@@ -38,8 +38,39 @@
 #include <string_view>
 #include <vector>
 
+namespace uam
+{
+	struct PendingAcpPromptDelivery
+	{
+		nlohmann::json message;
+		std::string method;
+		int request_id = 0;
+		int turn_serial = 0;
+		std::filesystem::path data_root;
+		std::string provider_id;
+		std::string session_id;
+		std::string workspace;
+		std::string prompt;
+		std::string configuration;
+		std::vector<std::size_t> unsent_messages;
+		std::vector<std::pair<std::size_t, std::string>> user_messages;
+		std::optional<bool> saved;
+	};
+}
+
 namespace uam::acp_detail
 {
+
+static std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	return nlohmann::json::array({chat.model_id, chat.reasoning_effort, chat.service_tier, chat.service_tier_explicit,
+	    chat.approval_mode, chat.command_safety_tier, session.current_model_id,
+	    session.current_mode_id, session.goal_turn_model_id, session.active_uam_agent_id,
+	    session.active_uam_agent_definition_hash, chat.memory_level, chat.memory_enabled,
+	    app.settings.memory_recall_budget_bytes, chat.computer_use_enabled,
+	    chat.computer_use_backend, chat.computer_use_target_id,
+	    chat.computer_use_target_process_id, chat.computer_use_target_input_mode}).dump();
+}
 
 namespace
 {
@@ -319,6 +350,8 @@ bool SendInitialize(AcpSessionState& session, std::string* error_out)
 
 void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	RestorePendingPromptDelivery(session, chat);
+	session.defer_prompt_save = false;
 	const std::string quota_delivery_id = session.claude_quota_delivery_id;
 	if (!session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	InterruptUnconfirmedAcpSteers(app, session, chat);
@@ -1279,6 +1312,168 @@ static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSes
 }
 #endif
 
+/// <summary>Restores only the staged user bodies still owned by this transcript.</summary>
+void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat)
+{
+	const std::shared_ptr<PendingAcpPromptDelivery> packet = std::move(session.pending_prompt_delivery);
+	if (!packet) return;
+	for (const std::pair<std::size_t, std::string>& user : packet->user_messages)
+		if (user.first < chat.messages.size() && chat.messages[user.first].role == MessageRole::User &&
+		    chat.messages[user.first].content == user.second)
+			chat.messages[user.first].acp_prompt_not_sent = true;
+}
+
+/// <summary>Releases an already prepared packet after its durable barrier; never allocates another ID.</summary>
+static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
+                                  const nlohmann::json& msg, const std::string& method, int id,
+                                  const std::vector<std::size_t>& unsent_messages)
+{
+	const std::string prompt = session.queued_prompt;
+	if (!method.empty())
+	{
+		session.pending_request_methods[id] = method;
+		session.prompt_request_id = id;
+	}
+	const bool remote = chat.execution_host_id != uam::execution_hosts::kLocalHostId;
+	if (remote)
+	{
+		const bool staged_prompt = chat.acp_dispatched_queued_prompt_count == 1 &&
+		    !chat.acp_queued_prompts.empty() &&
+		    chat.acp_queued_prompts.front().prepared_for_delivery &&
+		    chat.acp_queued_prompts.front().text == prompt;
+		AcpQueuedUserPromptState staged_entry;
+		if (staged_prompt)
+		{
+			staged_entry = std::move(chat.acp_queued_prompts.front());
+			chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin());
+			chat.acp_dispatched_queued_prompt_count = 0;
+		}
+		AcpRemotePendingRequestState pending;
+		pending.request_id = id;
+		pending.method = method;
+		pending.turn_serial = session.turn_serial;
+		chat.remote_pending_requests.push_back(std::move(pending));
+		// Persist intent before the transport write. A process write can succeed even
+		// when the manager dies before observing its result; the durable marker makes
+		// restart choose reattach rather than issuing the prompt a second time.
+		chat.remote_turn_reconnect_pending = true;
+		chat.remote_restart_pending = false;
+		session.restart_after_remote_stop_cleanup = false;
+		if (session.remote_runner_protocol_version >= 3)
+		{
+			chat.remote_prompt_delivery_session_id = "acp-" + chat.id;
+			chat.remote_prompt_delivery_id =
+			    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+			if (chat.remote_prompt_delivery_id.empty())
+				chat.remote_prompt_delivery_id =
+				    uam::time::SteadyEpochNanosecondsTokenNow();
+			chat.remote_prompt_delivery_payload = msg.dump();
+			chat.remote_prompt_delivery_payload.push_back('\n');
+		}
+		if (!SaveChatQuietly(app, chat))
+		{
+			if (staged_prompt)
+			{
+				chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(),
+				                               std::move(staged_entry));
+				chat.acp_dispatched_queued_prompt_count = 1;
+			}
+			chat.remote_pending_requests.pop_back();
+			chat.remote_turn_reconnect_pending = false;
+			chat.remote_prompt_delivery_session_id.clear();
+			chat.remote_prompt_delivery_id.clear();
+			chat.remote_prompt_delivery_payload.clear();
+			session.pending_request_methods.erase(id);
+			session.prompt_request_id = 0;
+			session.last_error =
+			    "Prompt is waiting for its remote recovery marker to be saved.";
+			app.status_line = session.last_error;
+			AppendAcpDiagnostic(session, "persistence", "remote_turn_marker_save_failed",
+			                    "", "", false, 0, session.last_error);
+			ScheduleChatSave(app, chat, 0.0);
+			return true;
+		}
+	}
+
+	bool prompt_written = false;
+	if (remote && session.remote_runner_protocol_version >= 3)
+	{
+		const std::string delivery_line = uam::remote::BuildRemoteInputDeliveryLine(
+		    session.remote_output_delivery_token, chat.remote_prompt_delivery_id,
+		    chat.remote_prompt_delivery_payload);
+		std::string write_error;
+		prompt_written = !delivery_line.empty() &&
+		    PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
+		        session, delivery_line.data(), delivery_line.size(), &write_error);
+		if (!prompt_written)
+		{
+			session.last_error = write_error.empty()
+			    ? "Failed to queue the remote prompt for confirmed delivery."
+			    : "Failed to queue the remote prompt for confirmed delivery: " + write_error;
+		}
+	}
+	else
+	{
+		prompt_written = WriteAcpMessage(session, msg);
+	}
+	if (!prompt_written)
+	{
+		if (remote && session.remote_runner_protocol_version >= 3)
+		{
+			RecoverDisconnectedRemoteAcpTransport(
+			    app, session, chat,
+			    uam::strings::NonEmptyOrFallback(
+			        session.last_error, "Remote prompt transport disconnected."));
+			return true;
+		}
+		for (const std::size_t index : unsent_messages)
+		{
+			chat.messages[index].acp_prompt_not_sent = true;
+			chat.messages[index].interrupted = true;
+		}
+		session.pending_request_methods.erase(id);
+		session.prompt_request_id = 0;
+		CompletePromptTurn(session, kAcpLifecycleError);
+		InvalidateAcpTransport(app, session, chat, session.last_error);
+		return true;
+	}
+
+	// The delivery-intent save already persists local state unless delivery changes metadata.
+	bool local_delivery_save_needed = unsent_messages.empty();
+	if (session.active_uam_agent_execution_capability == "uam-prompt-injected" &&
+	    !session.active_uam_agent_instructions.empty())
+	{
+		const std::string definition_hash = chat.provider_id + ":" + session.active_uam_agent_definition_hash;
+		local_delivery_save_needed = local_delivery_save_needed || chat.last_prompt_agent_definition_hash != definition_hash;
+		chat.last_prompt_agent_definition_hash = definition_hash;
+		if (remote) ScheduleChatSave(app, chat, 0.0);
+	}
+	if (!chat.provider_handoff_context.empty())
+	{
+		local_delivery_save_needed = local_delivery_save_needed || chat.provider_handoff_session_id != session.session_id;
+		chat.provider_handoff_session_id = session.session_id;
+		if (remote) ScheduleChatSave(app, chat, 0.0);
+	}
+	session.queued_prompt.clear();
+	session.memory_recall_position.reset();
+	session.memory_recall_query.clear();
+	session.memory_recall_preparation.reset();
+	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
+	session.remote_context_preparation.reset();
+	session.claude_input_preparation.reset();
+	if (!remote && local_delivery_save_needed && session.defer_prompt_save)
+		ScheduleChatSave(app, chat, 0.0);
+	else if (!remote && local_delivery_save_needed && !SaveChatQuietly(app, chat))
+	{
+		session.last_error = "Prompt was delivered, but chat state could not be saved.";
+		app.status_line = session.last_error;
+		AppendAcpDiagnostic(session, "persistence", "remote_turn_marker_save_failed", "", "",
+		                    false, 0, session.last_error);
+		ScheduleChatSave(app, chat, 0.0);
+	}
+	return true;
+}
+
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
 	if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return false;
@@ -1324,6 +1519,8 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		const ChatSession* owner = ChatDomainService().FindChatById(app, uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id));
 		if (owner == nullptr || owner->goal_command_revision != session.goal_command_revision)
 		{
+			RestorePendingPromptDelivery(session, chat);
+			ScheduleChatSave(app, chat, 0.0);
 			session.queued_prompt.clear();
 			session.memory_recall_position.reset();
 			session.memory_recall_query.clear();
@@ -1365,6 +1562,34 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (SendStartupModelIfNeeded(session, chat))
 	{
 		return false;
+	}
+	if (session.pending_prompt_delivery)
+	{
+		const std::shared_ptr<PendingAcpPromptDelivery> packet = session.pending_prompt_delivery;
+		const bool same_turn = packet->turn_serial == session.turn_serial && packet->prompt == session.queued_prompt;
+		const bool same_users = std::ranges::all_of(packet->user_messages, [&chat](const std::pair<std::size_t, std::string>& user)
+		{
+			return user.first < chat.messages.size() && chat.messages[user.first].role == MessageRole::User &&
+			    chat.messages[user.first].content == user.second && !chat.messages[user.first].acp_prompt_not_sent;
+		});
+		const bool owned = same_turn && session.processing && !session.cancel_requested &&
+		    packet->data_root == app.data_root && packet->provider_id == session.provider_id &&
+		    packet->provider_id == chat.provider_id && packet->session_id == session.session_id &&
+		    packet->workspace == chat.workspace_directory && chat.execution_host_id == execution_hosts::kLocalHostId &&
+		    same_users && packet->configuration == PromptDeliveryConfiguration(app, session, chat);
+		if (!owned || (packet->saved.has_value() && !*packet->saved))
+		{
+			RestorePendingPromptDelivery(session, chat);
+			if (same_turn) FailAcpTurnOrSession(session, &chat, owned
+			    ? "Prompt is waiting for its delivery intent to be saved."
+			    : "Prompt ownership changed before delivery.");
+			ScheduleChatSave(app, chat, 0.0);
+			return true;
+		}
+		if (!packet->saved.has_value()) return false;
+		session.pending_prompt_delivery.reset();
+		return DeliverPreparedPrompt(app, session, chat, packet->message, packet->method,
+		                             packet->request_id, packet->unsent_messages);
 	}
 	if (paths::IsControllerLocalWorkspace(chat) && session.memory_recall_position.has_value() &&
 	    memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) && app.settings.memory_recall_budget_bytes > 0)
@@ -1563,153 +1788,38 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			user_message.acp_prompt_not_sent = false;
 		}
 	}
+	if (session.defer_prompt_save && chat.execution_host_id == execution_hosts::kLocalHostId)
+	{
+		std::shared_ptr<PendingAcpPromptDelivery> packet = std::make_shared<PendingAcpPromptDelivery>();
+		packet->message = std::move(msg);
+		packet->method = method;
+		packet->request_id = id;
+		packet->turn_serial = session.turn_serial;
+		packet->data_root = app.data_root;
+		packet->provider_id = session.provider_id;
+		packet->session_id = session.session_id;
+		packet->workspace = chat.workspace_directory;
+		packet->prompt = session.queued_prompt;
+		packet->configuration = PromptDeliveryConfiguration(app, session, chat);
+		packet->unsent_messages = unsent_messages;
+		for (const std::size_t index : unsent_messages)
+			packet->user_messages.emplace_back(index, chat.messages[index].content);
+		session.pending_prompt_delivery = packet;
+		ScheduleChatSave(app, chat, 0.0);
+		const std::weak_ptr<PendingAcpPromptDelivery> weak = packet;
+		(void)DeferChatSaveResult(app, chat.id, [weak](bool saved)
+		{
+			if (const std::shared_ptr<PendingAcpPromptDelivery> owned = weak.lock()) owned->saved = saved;
+		});
+		return true;
+	}
 	if (!unsent_messages.empty() && !SaveChatQuietly(app, chat))
 	{
 		for (const std::size_t index : unsent_messages) chat.messages[index].acp_prompt_not_sent = true;
 		session.last_error = "Prompt is waiting for its delivery intent to be saved.";
 		return true;
 	}
-	if (!method.empty())
-	{
-		session.pending_request_methods[id] = method;
-		session.prompt_request_id = id;
-	}
-	const bool remote = chat.execution_host_id != uam::execution_hosts::kLocalHostId;
-	if (remote)
-	{
-		const bool staged_prompt = chat.acp_dispatched_queued_prompt_count == 1 &&
-		    !chat.acp_queued_prompts.empty() &&
-		    chat.acp_queued_prompts.front().prepared_for_delivery &&
-		    chat.acp_queued_prompts.front().text == prompt;
-		AcpQueuedUserPromptState staged_entry;
-		if (staged_prompt)
-		{
-			staged_entry = std::move(chat.acp_queued_prompts.front());
-			chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin());
-			chat.acp_dispatched_queued_prompt_count = 0;
-		}
-		AcpRemotePendingRequestState pending;
-		pending.request_id = id;
-		pending.method = method;
-		pending.turn_serial = session.turn_serial;
-		chat.remote_pending_requests.push_back(std::move(pending));
-		// Persist intent before the transport write. A process write can succeed even
-		// when the manager dies before observing its result; the durable marker makes
-		// restart choose reattach rather than issuing the prompt a second time.
-		chat.remote_turn_reconnect_pending = true;
-		chat.remote_restart_pending = false;
-		session.restart_after_remote_stop_cleanup = false;
-		if (session.remote_runner_protocol_version >= 3)
-		{
-			chat.remote_prompt_delivery_session_id = "acp-" + chat.id;
-			chat.remote_prompt_delivery_id =
-			    PlatformServicesFactory::Instance().process_service.GenerateUuid();
-			if (chat.remote_prompt_delivery_id.empty())
-				chat.remote_prompt_delivery_id =
-				    uam::time::SteadyEpochNanosecondsTokenNow();
-			chat.remote_prompt_delivery_payload = msg.dump();
-			chat.remote_prompt_delivery_payload.push_back('\n');
-		}
-		if (!SaveChatQuietly(app, chat))
-		{
-			if (staged_prompt)
-			{
-				chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(),
-				                               std::move(staged_entry));
-				chat.acp_dispatched_queued_prompt_count = 1;
-			}
-			chat.remote_pending_requests.pop_back();
-			chat.remote_turn_reconnect_pending = false;
-			chat.remote_prompt_delivery_session_id.clear();
-			chat.remote_prompt_delivery_id.clear();
-			chat.remote_prompt_delivery_payload.clear();
-			session.pending_request_methods.erase(id);
-			session.prompt_request_id = 0;
-			session.last_error =
-			    "Prompt is waiting for its remote recovery marker to be saved.";
-			app.status_line = session.last_error;
-			AppendAcpDiagnostic(session, "persistence", "remote_turn_marker_save_failed",
-			                    "", "", false, 0, session.last_error);
-			ScheduleChatSave(app, chat, 0.0);
-			return true;
-		}
-	}
-
-	bool prompt_written = false;
-	if (remote && session.remote_runner_protocol_version >= 3)
-	{
-		const std::string delivery_line = uam::remote::BuildRemoteInputDeliveryLine(
-		    session.remote_output_delivery_token, chat.remote_prompt_delivery_id,
-		    chat.remote_prompt_delivery_payload);
-		std::string write_error;
-		prompt_written = !delivery_line.empty() &&
-		    PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
-		        session, delivery_line.data(), delivery_line.size(), &write_error);
-		if (!prompt_written)
-		{
-			session.last_error = write_error.empty()
-			    ? "Failed to queue the remote prompt for confirmed delivery."
-			    : "Failed to queue the remote prompt for confirmed delivery: " + write_error;
-		}
-	}
-	else
-	{
-		prompt_written = WriteAcpMessage(session, msg);
-	}
-	if (!prompt_written)
-	{
-		if (remote && session.remote_runner_protocol_version >= 3)
-		{
-			RecoverDisconnectedRemoteAcpTransport(
-			    app, session, chat,
-			    uam::strings::NonEmptyOrFallback(
-			        session.last_error, "Remote prompt transport disconnected."));
-			return true;
-		}
-		for (const std::size_t index : unsent_messages)
-		{
-			chat.messages[index].acp_prompt_not_sent = true;
-			chat.messages[index].interrupted = true;
-		}
-		session.pending_request_methods.erase(id);
-		session.prompt_request_id = 0;
-		CompletePromptTurn(session, kAcpLifecycleError);
-		InvalidateAcpTransport(app, session, chat, session.last_error);
-		return true;
-	}
-
-	// The delivery-intent save already persists local state unless delivery changes metadata.
-	bool local_delivery_save_needed = unsent_messages.empty();
-	if (session.active_uam_agent_execution_capability == "uam-prompt-injected" &&
-	    !session.active_uam_agent_instructions.empty())
-	{
-		const std::string definition_hash = chat.provider_id + ":" + session.active_uam_agent_definition_hash;
-		local_delivery_save_needed = local_delivery_save_needed || chat.last_prompt_agent_definition_hash != definition_hash;
-		chat.last_prompt_agent_definition_hash = definition_hash;
-		if (remote) ScheduleChatSave(app, chat, 0.0);
-	}
-	if (!chat.provider_handoff_context.empty())
-	{
-		local_delivery_save_needed = local_delivery_save_needed || chat.provider_handoff_session_id != session.session_id;
-		chat.provider_handoff_session_id = session.session_id;
-		if (remote) ScheduleChatSave(app, chat, 0.0);
-	}
-	session.queued_prompt.clear();
-	session.memory_recall_position.reset();
-	session.memory_recall_query.clear();
-	session.memory_recall_preparation.reset();
-	if (session.remote_context_preparation != nullptr) session.remote_context_preparation->cancel.request_stop();
-	session.remote_context_preparation.reset();
-	session.claude_input_preparation.reset();
-	if (!remote && local_delivery_save_needed && !SaveChatQuietly(app, chat))
-	{
-		session.last_error = "Prompt was delivered, but chat state could not be saved.";
-		app.status_line = session.last_error;
-		AppendAcpDiagnostic(session, "persistence", "remote_turn_marker_save_failed", "", "",
-		                    false, 0, session.last_error);
-		ScheduleChatSave(app, chat, 0.0);
-	}
-	return true;
+	return DeliverPreparedPrompt(app, session, chat, msg, method, id, unsent_messages);
 }
 
 void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, ChatSession& chat)
@@ -1874,6 +1984,8 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 		session.last_turn_error = lifecycle_state == kAcpLifecycleReady ? std::string{} : session.last_error;
 	}
 	session.prompt_request_id = 0;
+	session.pending_prompt_delivery.reset();
+	session.defer_prompt_save = false;
 	session.processing = false;
 	session.manual_compaction_pending = false;
 	session.context_compaction_in_progress = false;
@@ -1986,6 +2098,7 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	session.last_error = message;
 	if (chat != nullptr)
 	{
+		RestorePendingPromptDelivery(session, *chat);
 		// A failure before delivery retires the staged copy; the visible user message
 		// remains available for retry. Unconfirmed deliveries and later queued prompts stay intact.
 		if (session.prompt_request_id == 0 && !session.queued_prompt.empty() &&

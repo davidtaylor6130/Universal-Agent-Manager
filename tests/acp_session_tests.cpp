@@ -11625,6 +11625,13 @@ UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
 	app.chats.front().native_session_id = session.session_id;
 	AwaitPromptAdmission(app, session, app.chats.front());
 	UAM_ASSERT_EQ(app.chats.front().provider_handoff_session_id, session.session_id);
+	const std::chrono::steady_clock::time_point metadata_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (app.pending_chat_save_at_by_chat_id.contains(chat.id) && std::chrono::steady_clock::now() < metadata_deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
 	const std::optional<ChatSession> delivered = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(delivered.has_value());
 	UAM_ASSERT_EQ(delivered->provider_handoff_session_id, session.session_id);

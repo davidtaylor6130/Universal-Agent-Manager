@@ -18216,6 +18216,7 @@ UAM_TEST(ClaudeFollowupRestartsAndWritesPromptAfterSettingsChange)
 			UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), recovered_response.dump()));
 			for (int attempt = 0; attempt < 200; ++attempt)
 			{
+				uam::FlushPendingChatSaves(app);
 				(void)uam::PollAllAcpSessions(app);
 				(void)uam::io::TryReadTextFile(temp.root / "received.jsonl", received);
 				if (received.find("Recovery batch sentinel") != std::string::npos) break;

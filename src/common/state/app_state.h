@@ -94,6 +94,7 @@ namespace uam
 	};
 
 	struct AcpSessionState;
+	struct PendingAcpPromptDelivery;
 	struct ClaudeQuotaHistoryTask;
 	struct CliTerminalState : public platform::CliTerminalPlatformFields
 	{
@@ -645,6 +646,8 @@ namespace uam
 		std::string last_turn_error;
 		double turn_started_time_s = 0.0;
 		std::string queued_prompt;
+		bool defer_prompt_save = false;
+		std::shared_ptr<PendingAcpPromptDelivery> pending_prompt_delivery;
 		std::deque<AcpQueuedUserPromptState> queued_user_prompts;
 		bool queue_held = false;
 		std::shared_ptr<RemoteContextPreparation> remote_context_preparation;

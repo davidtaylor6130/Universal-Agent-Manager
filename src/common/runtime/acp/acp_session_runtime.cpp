@@ -1475,6 +1475,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(), std::move(pending));
 				chat.acp_dispatched_queued_prompt_count = 1;
 			}
+			session.defer_prompt_save = defer_durable_admission;
 			// Queue dispatch and retry keep their existing rollback contract until packet staging is asynchronous.
 			if (defer_durable_admission) ScheduleChatSave(app, chat, 0.0);
 			else if (!SaveChatQuietly(app, chat))
@@ -2875,6 +2876,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			return true;
 		}
+		const bool staged_delivery_canceled = session->pending_prompt_delivery != nullptr;
+		if (chat != nullptr) acp_detail::RestorePendingPromptDelivery(*session, *chat);
 		const bool native_child_work_only = session->provider_id == uam::provider_ids::kCodexCli &&
 		    !session->codex_live_background_thread_ids.empty() && !AcpSessionHasActiveTurn(*session);
 		if (session->remote_stop_pending)
@@ -2908,9 +2911,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->reconnect_pending = false;
 		session->reconnect_attempts = 0;
 		session->reconnect_not_before_time_s = 0.0;
-		bool chat_changed = false;
+		bool chat_changed = staged_delivery_canceled;
 		if (chat != nullptr)
 		{
+			if (staged_delivery_canceled)
+				for (int index = session->turn_first_user_message_index; index >= 0 && index <= session->turn_user_message_index && index < static_cast<int>(chat->messages.size()); ++index)
+					if (chat->messages[static_cast<std::size_t>(index)].role == MessageRole::User && chat->messages[static_cast<std::size_t>(index)].acp_prompt_not_sent)
+						chat->messages[static_cast<std::size_t>(index)].interrupted = true;
 			if (!preserve_queued_prompts && (!chat->acp_queued_prompts.empty() ||
 			    chat->acp_dispatched_queued_prompt_count != 0))
 			{
@@ -4826,10 +4833,33 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return true;
 	}
 
+	/// <summary>Rejects an undelivered admission before a failed durable receipt reaches its caller.</summary>
+	static void RejectPendingPromptSave(AppState& app, const std::string& chat_id)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (session != nullptr && chat != nullptr && session->prompt_request_id == 0 &&
+		    !session->queued_prompt.empty() && !chat->remote_turn_reconnect_pending && chat->remote_pending_requests.empty())
+		{
+			acp_detail::RestorePendingPromptDelivery(*session, *chat);
+			for (int index = session->turn_first_user_message_index; index >= 0 && index <= session->turn_user_message_index && index < static_cast<int>(chat->messages.size()); ++index)
+				if (chat->messages[static_cast<std::size_t>(index)].role == MessageRole::User && chat->messages[static_cast<std::size_t>(index)].acp_prompt_not_sent)
+					chat->messages[static_cast<std::size_t>(index)].interrupted = true;
+			session->last_error = "Prompt was not sent because chat history could not be saved.";
+			app.status_line = session->last_error;
+			if (!AcpSessionIsWaitingForInput(*session)) acp_detail::CompletePromptTurn(*session, acp_detail::kAcpLifecycleError);
+			else session->queued_prompt.clear();
+			session->goal_resume_suppressed = true;
+			if (!session->queued_user_prompts.empty()) session->queue_held = chat->acp_queue_held = true;
+			acp_detail::AppendAcpDiagnostic(*session, "persistence", "prompt_history_save_failed", "", "", false, 0, session->last_error);
+		}
+	}
+
 	void ResolvePendingChatSaveResults(AppState& app, const std::string& chat_id, bool saved)
 	{
 		const std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>>::iterator found = app.pending_chat_save_tasks.find(chat_id);
 		if (found == app.pending_chat_save_tasks.end() || !found->second) return;
+		if (!saved) RejectPendingPromptSave(app, chat_id);
 		std::vector<std::function<void(bool)>> completions = std::move(found->second->completions);
 		for (const std::function<void(bool)>& completion : completions)
 		{
@@ -4847,25 +4877,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			if (!task) return;
 			state_changed = true;
-			if (!saved)
-			{
-				AcpSessionState* session = FindAcpSessionForChat(app, task->chat_id);
-				ChatSession* chat = ChatDomainService().FindChatById(app, task->chat_id);
-				if (session != nullptr && chat != nullptr && session->prompt_request_id == 0 &&
-				    !session->queued_prompt.empty() && !chat->remote_turn_reconnect_pending && chat->remote_pending_requests.empty())
-				{
-					for (int index = session->turn_first_user_message_index; index >= 0 && index <= session->turn_user_message_index && index < static_cast<int>(chat->messages.size()); ++index)
-						if (chat->messages[static_cast<std::size_t>(index)].role == MessageRole::User && chat->messages[static_cast<std::size_t>(index)].acp_prompt_not_sent)
-							chat->messages[static_cast<std::size_t>(index)].interrupted = true;
-					if (!AcpSessionIsWaitingForInput(*session)) acp_detail::CompletePromptTurn(*session, acp_detail::kAcpLifecycleError);
-					else session->queued_prompt.clear();
-					session->goal_resume_suppressed = true;
-					if (!session->queued_user_prompts.empty()) session->queue_held = chat->acp_queue_held = true;
-					session->last_error = "Prompt was not sent because chat history could not be saved.";
-					app.status_line = session->last_error;
-					acp_detail::AppendAcpDiagnostic(*session, "persistence", "prompt_history_save_failed", "", "", false, 0, session->last_error);
-				}
-			}
+			if (!saved) RejectPendingPromptSave(app, task->chat_id);
 			for (std::function<void(bool)>& completion : task->completions)
 				acknowledgements.push_back([completion = std::move(completion), saved]() { completion(saved); });
 			task->completions.clear();
