@@ -27,7 +27,7 @@ namespace uam
 		explicit StartupModelDiscoveryService(LaunchFunction launch = {});
 		/// <summary>Captures registered scopes once; reopening a picker does not refill the startup queue.</summary>
 		void Initialize(AppState& app);
-		/// <summary>Starts at most two discovery processes; unavailable scopes wait without blocking ready scopes.</summary>
+		/// <summary>Refreshes each startup scope once even with a recent cache; starts at most two processes and lets unavailable scopes wait.</summary>
 		bool Poll(AppState& app);
 		static std::vector<ModelDiscoveryScope> CollectScopes(const AppState& app);
 

@@ -59,6 +59,47 @@ namespace
 	};
 }
 
+UAM_TEST(StartupModelDiscoveryRefreshesFreshCacheOncePerRestart)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.folders.resize(1);
+	const std::string workspace = fixture.app.folders.front().directory;
+	const nlohmann::json cached = nlohmann::json::array({{{"id", "cached-before-restart"}}});
+	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("codex-cli", cached, workspace));
+	fixture.app.provider_model_catalog->Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+	fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", workspace), cached);
+	UAM_ASSERT(fixture.app.provider_model_catalog->IsDiscoveryPending("codex-cli", workspace));
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	fixture.app.provider_model_catalog->RememberRefreshFailure("codex-cli", "isolated refresh failure", workspace);
+	fixture.app.acp_sessions.clear();
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", workspace), cached);
+	// A settings-requested retry remains available after the one startup attempt.
+	UAM_ASSERT(fixture.app.provider_model_catalog->BeginDiscovery("codex-cli", workspace));
+}
+
+UAM_TEST(StartupModelDiscoveryDoesNotDuplicateAnExplicitRefresh)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.folders.resize(1);
+	const std::string workspace = fixture.app.folders.front().directory;
+	UAM_ASSERT(fixture.app.provider_model_catalog->BeginDiscovery("codex-cli", workspace));
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT(fixture.launched.empty());
+	fixture.app.provider_model_catalog->RememberRefreshFailure("codex-cli", "explicit refresh failed", workspace);
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT(fixture.launched.empty());
+}
+
 UAM_TEST(StartupModelDiscoveryDeduplicatesRegisteredScopesWithoutProviderFolderProduct)
 {
 	StartupDiscoveryFixture fixture;
@@ -148,8 +189,11 @@ UAM_TEST(StartupModelDiscoveryKeepsFreshCacheAndAttemptsFailedLaunchOnlyOnce)
 	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "cached"}}}), workspace));
 	uam::StartupModelDiscoveryService fresh(fixture.Launcher());
 	fresh.Initialize(fixture.app);
+	UAM_ASSERT(fresh.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
 	UAM_ASSERT(!fresh.Poll(fixture.app));
-	UAM_ASSERT(fixture.launched.empty());
+	fixture.app.acp_sessions.clear();
+	fixture.app.provider_model_catalog->RememberRefreshFailure("codex-cli", "Fixture launch failure.", workspace);
 	fixture.app.folders.front().directory = fixture.temp.root.string();
 	int attempts = 0;
 	uam::StartupModelDiscoveryService failed([&](uam::AppState&, const std::string&, const std::string&, const std::string&, std::string* error) {

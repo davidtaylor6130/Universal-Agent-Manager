@@ -139,7 +139,9 @@ namespace uam
 				continue;
 			}
 			item = m_pending_scopes.erase(item);
-			if (!app.provider_model_catalog->BeginDiscoveryIfStale(scope.provider_id, scope.workspace_directory, scope.execution_host_id)) continue;
+			// Restart refreshes even a recent cache. Keep its choices visible while the
+			// startup scope is attempted once; an already pending explicit refresh owns it.
+			if (!app.provider_model_catalog->BeginDiscovery(scope.provider_id, scope.workspace_directory, scope.execution_host_id)) continue;
 			std::string error;
 			if (m_launch(app, scope.provider_id, scope.workspace_directory, scope.execution_host_id, &error))
 			{
