@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
 import { SessionItem } from './SessionItem'
+import { setPreferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -472,7 +473,7 @@ describe('SessionItem status icons', () => {
     expect(row.getAttribute('role')).toBe('button')
     expect(row.tabIndex).toBe(0)
     act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-    expect(setActiveSession).toHaveBeenCalledWith('chat-1')
+    expect(setActiveSession).toHaveBeenCalledWith('chat-branch')
 
     row.focus()
     act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true })))
@@ -909,6 +910,28 @@ describe('SessionItem status icons', () => {
     expect(readChatGridLayout().activeLeafId).toBe(leaves[1].id)
     expect(setActiveSession).not.toHaveBeenCalled()
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each(['fallback', 'active parent', 'preferred sibling', 'missing parent', 'cycle', 'parent cycle', 'foreign parent', 'preferred over active'] as const)('selects the deepest descendant with safe %s handling', (scenario) => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'depth-root', branchRootChatId: 'depth-root', messageCount: 100 }
+    const parent = { ...makeSession(), id: 'depth-parent', parentChatId: rootSession.id, branchRootChatId: rootSession.id, messageCount: 80 }
+    const sibling = { ...parent, id: 'depth-sibling', messageCount: 90 }
+    const deepest = { ...parent, id: 'depth-child', parentChatId: parent.id, messageCount: 2 }
+    const malformed = { ...deepest, id: 'depth-malformed', messageCount: 1000, parentChatId: scenario === 'cycle' ? 'depth-malformed' : scenario === 'parent cycle' ? 'cycle-parent' : scenario === 'foreign parent' ? 'foreign-parent' : 'absent-parent' }
+    const foreign = { ...parent, id: 'foreign-parent', parentChatId: deepest.id, branchRootChatId: 'another-root' }
+    const cycleParent = { ...malformed, id: 'cycle-parent', parentChatId: malformed.id }
+    if (scenario === 'preferred sibling' || scenario === 'preferred over active') setPreferredFamilyChat(rootSession.id, sibling.id)
+    useAppStore.setState({ sessions: [rootSession, parent, sibling, deepest, malformed, foreign, cycleParent], activeSessionId: scenario === 'active parent' || scenario === 'preferred over active' ? parent.id : 'unrelated', setActiveSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId={rootSession.id} session={rootSession} familySessionIds={[rootSession.id, parent.id, sibling.id, deepest.id, malformed.id, cycleParent.id]} />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-depth-root"]')!.click())
+    if (scenario === 'active parent') expect(setActiveSession).not.toHaveBeenCalled()
+    else expect(setActiveSession).toHaveBeenCalledWith(scenario === 'preferred sibling' || scenario === 'preferred over active' ? sibling.id : deepest.id)
     act(() => root.unmount())
     host.remove()
   })
