@@ -1,8 +1,9 @@
-import { ArrowUpCircle, Download, ExternalLink, RefreshCw, X } from 'lucide-react'
+import { ArrowUpCircle, CheckCircle2, Download, ExternalLink, RefreshCw, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { Button, IconButton } from '../ui'
 import { Notice } from '../ui/Notice'
+import './panels.css'
 
 export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: UpdateMonitor; onClose: () => void; closing?: boolean }) {
   const [installError, setInstallError] = useState('')
@@ -41,7 +42,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
           {installableUpdates.length > 0 && (
             <Button
               size="sm"
-              variant="primary"
+              variant="secondary"
               leadingIcon={<Download size={14} aria-hidden />}
               aria-label="Update everything"
               loading={updatingAll}
@@ -159,35 +160,32 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
         )}
 
         {monitor.updates.length === 0 ? monitor.checking ? (
-          <div role="status" className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
-            <RefreshCw size={24} />
-            <div className="text-sm" style={{ color: 'var(--text-2)' }}>Checking for updates…</div>
+          <div role="status" className="uam-np-empty">
+            <span className="uam-np-empty__icon" style={{ color: 'var(--text-2)', background: 'var(--surface-high)' }}><RefreshCw size={16} aria-hidden /></span>
+            <div className="uam-np-empty__title">Checking for updates…</div>
           </div>
         ) : checkFailure || monitor.hasProviderCheckErrors ? (
-          <div className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
-            <ArrowUpCircle size={24} />
-            <div className="text-sm" style={{ color: 'var(--text-2)' }}>Could not confirm update status</div>
-            <div className="text-xs">Try the check again when the update services are reachable.</div>
+          <div className="uam-np-empty">
+            <span className="uam-np-empty__icon" style={{ color: 'var(--warning)', background: 'var(--warning-dim)' }}><ArrowUpCircle size={16} aria-hidden /></span>
+            <div className="uam-np-empty__title">Could not confirm update status</div>
+            <div className="uam-np-empty__text">Try the check again when the update services are reachable.</div>
           </div>
         ) : monitor.hasCatalog ? (
-          <div className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
-            <ArrowUpCircle size={24} />
-            <div className="text-sm" style={{ color: 'var(--text-2)' }}>Everything is up to date</div>
-            <div className="text-xs">UAM and detected provider CLIs have no newer known release.</div>
+          <div className="uam-np-empty">
+            <span className="uam-np-empty__icon"><CheckCircle2 size={16} aria-hidden /></span>
+            <div className="uam-np-empty__title">Everything is up to date</div>
+            <div className="uam-np-empty__text">UAM and detected provider CLIs have no newer known release.</div>
           </div>
         ) : (
-          <div className="grid place-items-center gap-2 rounded-xl px-4 py-10 text-center" style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}>
-            <ArrowUpCircle size={24} />
-            <div className="text-sm" style={{ color: 'var(--text-2)' }}>Updates have not been checked</div>
-            <div className="text-xs">Run a check to compare UAM and detected provider versions.</div>
+          <div className="uam-np-empty">
+            <span className="uam-np-empty__icon" style={{ color: 'var(--text-2)', background: 'var(--surface-high)' }}><ArrowUpCircle size={16} aria-hidden /></span>
+            <div className="uam-np-empty__title">Updates have not been checked</div>
+            <div className="uam-np-empty__text">Run a check to compare UAM and detected provider versions.</div>
           </div>
         ) : (
           <div className="grid min-w-0 max-w-full gap-3">
-            <div
-              className="flex items-center gap-3 rounded-lg px-3 py-2.5"
-              style={{ background: 'var(--accent-dim)', border: '1px solid var(--border)' }}
-            >
-              <ArrowUpCircle size={18} aria-hidden style={{ color: 'var(--accent)' }} />
+            <div className="flex items-center gap-2 px-1">
+              <ArrowUpCircle size={16} aria-hidden style={{ color: 'var(--text-3)' }} />
               <div>
                 <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
                   {monitor.updates.length} update{monitor.updates.length === 1 ? '' : 's'} available
@@ -210,10 +208,10 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{update.name}</div>
-                      <div className="mt-1.5 flex items-center gap-2 text-[11px]">
-                        <span style={{ color: 'var(--text-3)' }}>Current <span className="font-mono">{update.currentVersion}</span></span>
-                        <span aria-hidden style={{ color: 'var(--text-3)' }}>→</span>
-                        <strong style={{ color: 'var(--text)' }}>Available <span className="font-mono">{update.latestVersion}</span></strong>
+                      <div className="uam-np-versions mt-2">
+                        <span>Current <span className="uam-np-version">{update.currentVersion}</span></span>
+                        <span aria-hidden>→</span>
+                        <span>Available <span className="uam-np-version" data-kind="next">{update.latestVersion}</span></span>
                       </div>
                     </div>
                     <IconButton
@@ -302,7 +300,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
 
       {monitor.updates.length > 0 && (
         <footer className="flex items-center justify-end p-3" style={{ borderTop: '1px solid var(--border)' }}>
-          <IconButton size="sm" icon={<X size={14} />} label="Dismiss all updates" onClick={monitor.dismissAll} />
+          <Button size="sm" variant="ghost" aria-label="Dismiss all updates" onClick={monitor.dismissAll}>Dismiss all</Button>
         </footer>
       )}
     </aside>

@@ -4,9 +4,10 @@ import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
 import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCircle2, Undo2, X, ChartNoAxesCombined } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, Undo2, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
+import './panels.css'
 
 /** GitHub mark (lucide dropped brand icons). */
 function GithubLogo({ size = 17 }: { size?: number }) {
@@ -356,6 +357,11 @@ function NotificationsPanel({
     }
   }
 
+  const groups = [
+    { label: 'Needs attention', items: notifications.filter((notification) => notification.failure || notification.warning) },
+    { label: 'Activity', items: notifications.filter((notification) => !notification.failure && !notification.warning) },
+  ].filter((group) => group.items.length > 0)
+
   return (
     <aside
       aria-label="Notifications"
@@ -364,23 +370,34 @@ function NotificationsPanel({
       className="uam-shell-panel uam-shell-panel--right flex h-full w-[360px] shrink-0 flex-col overflow-hidden"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)', '--panel-w': '360px' } as React.CSSProperties}
     >
-      <header className="flex items-center justify-between gap-3 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
-        <div ref={headingRef} tabIndex={-1} data-notifications-heading className="flex items-center gap-2 text-sm font-semibold outline-none" style={{ color: 'var(--text)' }}>
-          <Bell size={16} /> Notifications
+      <header className="flex items-center gap-1 px-4 py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+        <div ref={headingRef} tabIndex={-1} data-notifications-heading className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold outline-none" style={{ color: 'var(--text)' }}>
+          <Bell size={16} aria-hidden /> Notifications
+          {notifications.length > 0 && (
+            <span className="rounded-full px-1.5 text-[11px] font-medium leading-[18px] tabular-nums" style={{ background: 'var(--surface-high)', color: 'var(--text-2)' }}>{notifications.length}</span>
+          )}
         </div>
+        {notifications.length > 0 && (
+          <IconButton
+            icon={<CheckCheck size={16} />}
+            label="Mark all notifications as read"
+            onClick={() => {
+              notifications.forEach((notification) => onDismiss(notification.id))
+              headingRef.current?.focus()
+            }}
+          />
+        )}
         <IconButton icon={<X size={16} />} label="Close notifications" onClick={onClose} />
       </header>
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-2">
         {notifications.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-            <span className="flex h-10 w-10 items-center justify-center rounded-full" style={{ color: 'var(--success)', background: 'var(--success-dim)' }}>
-              <CheckCircle2 size={20} aria-hidden />
-            </span>
-            <strong className="text-sm" style={{ color: 'var(--text)' }}>You’re all caught up</strong>
-            <span className="text-xs leading-5" style={{ color: 'var(--text-3)' }}>Warnings and completed system actions will appear here.</span>
+          <div className="uam-np-empty h-full">
+            <span className="uam-np-empty__icon"><CheckCircle2 size={18} aria-hidden /></span>
+            <strong className="uam-np-empty__title">You’re all caught up</strong>
+            <span className="uam-np-empty__text">Warnings and completed system actions will appear here.</span>
           </div>
         ) : (
-          <div className="grid gap-3">
+          <div className="grid gap-1">
             {folderActionError && (
               <Notice
                 tone="warning"
@@ -416,45 +433,61 @@ function NotificationsPanel({
                 Remove “{confirmingFolder.name}” from Universal Agent Manager and delete {confirmingChats}? The directory on disk will not be deleted.
               </Notice>
             )}
-            {notifications.map((notification) => (
-              <Notice
-                key={notification.id}
-                tone={notification.failure ? 'error' : notification.warning ? 'warning' : 'info'}
-                title={notification.title}
-                dismissLabel={`Dismiss ${notification.title}`}
-                onDismiss={() => {
-                  onDismiss(notification.id)
-                  headingRef.current?.focus()
-                }}
-                actions={notification.actions && (
-                  <>
-                    {notification.actions.map((action) => {
-                      const actionId = `${notification.id}-${action.label}`
-                      return (
-                        <Button
-                          key={action.label}
-                          size="sm"
-                          variant={action.variant}
-                          loading={busyAction === actionId}
-                          disabled={Boolean(busyAction)}
-                          onClick={() => { void runAction(notification.id, action) }}
-                        >
-                          {action.label}
-                        </Button>
-                      )
-                    })}
-                  </>
-                )}
-              >
-                {notification.failure && (
-                  <div className="mb-1">
-                    <span style={{ color: 'var(--red)' }}>Error</span>{' · '}
-                    <time dateTime={notification.failure.time}>{new Date(notification.failure.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-                    <div>{notification.failure.message}</div>
-                  </div>
-                )}
-                <span style={{ color: 'var(--text-3)', overflowWrap: 'anywhere' }}>{notification.detail}</span>
-              </Notice>
+            {groups.map((group) => (
+              <Fragment key={group.label}>
+                <div className="uam-np-group">{group.label}</div>
+                {group.items.map((notification) => {
+                  const tone = notification.failure ? 'error' : notification.warning ? 'warning' : 'info'
+                  const ToneIcon = tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : Info
+                  return (
+                    <div key={notification.id} className="uam-np-row">
+                      <span className="uam-np-row__icon" data-tone={tone} aria-hidden><ToneIcon size={14} /></span>
+                      <div className="min-w-0">
+                        <div className="uam-np-row__title">
+                          <span>{notification.title}</span>
+                          <span className="uam-np-dot" aria-hidden />
+                        </div>
+                        {notification.failure && (
+                          <div className="uam-np-row__meta">
+                            <time dateTime={notification.failure.time}>{new Date(notification.failure.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+                          </div>
+                        )}
+                        {notification.failure && <div className="uam-np-row__detail" style={{ color: 'var(--text-2)' }}>{notification.failure.message}</div>}
+                        <div className="uam-np-row__detail" style={{ overflowWrap: 'anywhere' }}>{notification.detail}</div>
+                        {notification.actions && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {notification.actions.map((action) => {
+                              const actionId = `${notification.id}-${action.label}`
+                              return (
+                                <Button
+                                  key={action.label}
+                                  size="sm"
+                                  variant={action.variant}
+                                  loading={busyAction === actionId}
+                                  disabled={Boolean(busyAction)}
+                                  onClick={() => { void runAction(notification.id, action) }}
+                                >
+                                  {action.label}
+                                </Button>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      <IconButton
+                        size="sm"
+                        className="uam-np-row__dismiss"
+                        icon={<X size={14} />}
+                        label={`Dismiss ${notification.title}`}
+                        onClick={() => {
+                          onDismiss(notification.id)
+                          headingRef.current?.focus()
+                        }}
+                      />
+                    </div>
+                  )
+                })}
+              </Fragment>
             ))}
           </div>
         )}
