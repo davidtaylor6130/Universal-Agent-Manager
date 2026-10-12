@@ -1530,7 +1530,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               title="Colour theme"
               description="Applies to every window straight away."
             >
-              <div role="radiogroup" aria-label="Colour theme" className="uam-theme-grid">
+              <div role="radiogroup" aria-label="Colour theme" className="uam-theme-grid" onKeyDown={(event) => {
+                // Arrow keys move between theme tiles; Enter or Space applies the focused one.
+                const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0
+                if (!step) return
+                const tiles = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]'))
+                const index = tiles.indexOf(document.activeElement as HTMLElement)
+                if (index < 0) return
+                event.preventDefault()
+                tiles[(index + step + tiles.length) % tiles.length]?.focus()
+              }}>
                 {themeChoices.map((choice) => {
                   const selected = choice.value === theme
                   return (
