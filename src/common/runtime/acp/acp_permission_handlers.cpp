@@ -707,6 +707,9 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 	AcpPendingPermissionState pending;
 	pending.request_id_json = JsonRpcIdToStableString(JsonRpcIdOrNull(message));
 	pending.tool_call_id = JsonDiagnosticStringValue(tool_call, "toolCallId");
+	pending.provider_request_method = JsonDiagnosticStringValue(message, "method");
+	const nlohmann::json* raw_input = uam::nlohmann_json::FindField(tool_call, "rawInput");
+	pending.provider_input_json = (raw_input != nullptr ? *raw_input : tool_call).dump();
 	pending.title = JsonDiagnosticStringValueOr(tool_call, "title", "Permission required");
 	pending.kind = JsonDiagnosticStringValueOr(tool_call, "kind", uam::acp_tool_kinds::kOther);
 	pending.status = JsonDiagnosticStringValueOr(tool_call, "status", std::string(uam::acp_statuses::kPending));

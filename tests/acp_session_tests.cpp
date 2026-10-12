@@ -355,6 +355,71 @@ UAM_TEST(PermissionReviewUnreviewableAndSensitiveProviderInputsStayManual)
 #endif
 }
 
+UAM_TEST(GenericAcpPermissionRetainsOriginalReviewInputAndMethod)
+{
+	TempDir temp("uam-generic-review-provenance");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "generic-review-provenance";
+	chat.provider_id = "opencode-cli";
+	chat.command_safety_tier = "off";
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	const nlohmann::json input = {{"command", "git status"}, {"cwd", "/private-fixture"}, {"network", false}};
+	const nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 91}, {"method", "session/request_permission"},
+	    {"params", {{"toolCall", {{"toolCallId", "complete-input"}, {"title", "Inspect fixture"}, {"kind", "execute"}, {"rawInput", input}}}}}};
+	uam::acp_detail::HandlePermissionRequest(app, session, chat, frame);
+	UAM_ASSERT_EQ(session.pending_permission.content, std::string("git status"));
+	UAM_ASSERT_EQ(session.pending_permission.provider_request_method, std::string("session/request_permission"));
+	UAM_ASSERT_EQ(nlohmann::json::parse(session.pending_permission.provider_input_json), input);
+	const std::string prompt = uam::acp_detail::BuildPermissionReviewPrompt(session.pending_permission);
+	UAM_ASSERT(!prompt.empty());
+	const std::size_t marker = prompt.find("Request:\n");
+	UAM_ASSERT(marker != std::string::npos);
+	const nlohmann::json request = nlohmann::json::parse(prompt.substr(marker + 9));
+	UAM_ASSERT_EQ(request["providerInput"], input);
+	UAM_ASSERT_EQ(request["providerMethod"], frame["method"]);
+}
+
+UAM_TEST(GenericAcpMixedSecretAndUnreviewableInputsNeverLaunchReviewer)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	for (const std::string scenario : {"secret", "oversized", "escaped", "array", "string", "null"})
+	{
+		TempDir temp("uam-generic-review-gate");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "generic-review-gate";
+		chat.provider_id = "opencode-cli";
+		chat.command_safety_tier = "aiReview";
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.running = true;
+		nlohmann::json input = {{"command", "git status"}};
+		if (scenario == "secret") input["password"] = "fixture-private";
+		if (scenario == "oversized") input["context"] = std::string(12 * 1024, 'x');
+		if (scenario == "escaped") input["context"] = std::string(10 * 1024, '\n');
+		if (scenario == "array") input = nlohmann::json::array({"git status"});
+		if (scenario == "string") input = "git status";
+		if (scenario == "null") input = nullptr;
+		const nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 92}, {"method", "session/request_permission"},
+		    {"params", {{"toolCall", {{"toolCallId", "manual-input"}, {"title", "Inspect fixture"}, {"kind", "execute"}, {"rawInput", input}}}}}};
+		uam::acp_detail::HandlePermissionRequest(app, session, chat, frame);
+		UAM_ASSERT(session.waiting_for_permission);
+		UAM_ASSERT_EQ(session.pending_permission.request_id_json, std::string("92"));
+		UAM_ASSERT(app.permission_review_tasks.empty());
+		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [&scenario](const uam::AcpDiagnosticEntryState& entry)
+		{
+			return entry.reason == (scenario == "secret" ? "sensitive_input" : "input_not_reviewable");
+		}));
+	}
+#endif
+}
+
 UAM_TEST(CodexWriterOwnershipProtectsBusyAliasesAcrossWorkspaces)
 {
 	uam::AppState app;
