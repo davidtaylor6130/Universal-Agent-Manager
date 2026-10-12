@@ -15,6 +15,19 @@ using namespace uam_test;
 
 namespace
 {
+	/// <summary>Pumps private save receipts without starting real providers or changing timeout budgets.</summary>
+	void AwaitPromptAdmission(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (session.processing && session.prompt_request_id == 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(!session.processing || session.prompt_request_id != 0);
+	}
+
 	struct CodexNativeChildActivityFixture
 	{
 		TempDir temp{"uam-codex-native-child-activity"};
@@ -3480,6 +3493,7 @@ UAM_TEST(OpenCodePromptApiFailureAllowsTheNextPrompt)
 	app.acp_sessions.push_back(std::move(session));
 
 	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "First request", {}, {}, false, &error));
+	AwaitPromptAdmission(app, *raw_session, app.chats.front());
 	const int failed_request_id = raw_session->prompt_request_id;
 	UAM_ASSERT(failed_request_id != 0);
 	const std::string failed_response = nlohmann::json{
@@ -3495,6 +3509,7 @@ UAM_TEST(OpenCodePromptApiFailureAllowsTheNextPrompt)
 	UAM_ASSERT(raw_session->last_error.find("Cannot connect to API") != std::string::npos);
 
 	UAM_ASSERT(uam::SendAcpPrompt(app, raw_session->chat_id, "Second request", {}, {}, false, &error));
+	AwaitPromptAdmission(app, *raw_session, app.chats.front());
 	const int recovered_request_id = raw_session->prompt_request_id;
 	UAM_ASSERT(recovered_request_id != 0);
 	UAM_ASSERT(recovered_request_id != failed_request_id);
@@ -8957,10 +8972,15 @@ UAM_TEST(AcpPromptIsNotDeliveredWhenChatHistoryCannotBeSaved)
 	app.acp_sessions.push_back(std::move(session));
 
 	std::string error;
-	UAM_ASSERT(!uam::SendAcpPrompt(app, app.chats.front().id, "Do not deliver this.",
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Do not deliver this.",
 	                              {}, {}, false, &error));
-	UAM_ASSERT_EQ(error, std::string("Prompt was not sent because chat history could not be saved."));
-	UAM_ASSERT(app.chats.front().messages.empty());
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
+	AwaitPromptAdmission(app, *raw_session, app.chats.front());
+	UAM_ASSERT_EQ(raw_session->last_error, std::string("Prompt was not sent because chat history could not be saved."));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+	UAM_ASSERT(app.chats.front().messages.front().interrupted);
+	UAM_ASSERT(app.chats.front().messages.front().acp_prompt_not_sent);
 	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
 	UAM_ASSERT(raw_session->queued_prompt.empty());
 	UAM_ASSERT_EQ(raw_session->lifecycle_state, std::string("error"));
@@ -10861,6 +10881,7 @@ UAM_TEST(AcpQueuedTurnAppliesDeferredCodexModeAndModelBeforeNextPrompt)
 	app.acp_sessions.push_back(std::move(session));
 	std::string error;
 	(void)uam::SendAcpPrompt(app, "chat-deferred-controls", "Use the new controls", {}, {}, false, &error);
+	AwaitPromptAdmission(app, *raw_session, app.chats.front());
 	UAM_ASSERT_EQ(raw_session->current_mode_id, std::string("plan"));
 	UAM_ASSERT(app.chats.front().reasoning_effort.empty());
 	UAM_ASSERT_EQ(app.chats.front().service_tier, std::string("fast"));
@@ -11118,6 +11139,7 @@ UAM_TEST(AcpQueuedPromptWaitsForModeChangeAcknowledgement)
 	    app.chats.front(),
 	    R"({"jsonrpc":"2.0","id":1,"result":{}})"));
 	UAM_ASSERT_EQ(raw_session->current_mode_id, std::string("plan"));
+	AwaitPromptAdmission(app, *raw_session, app.chats.front());
 	UAM_ASSERT_EQ(raw_session->prompt_request_id, 2);
 	UAM_ASSERT_EQ(raw_session->pending_request_methods.at(2), std::string("session/prompt"));
 	UAM_ASSERT(raw_session->queued_prompt.empty());
@@ -11601,7 +11623,7 @@ UAM_TEST(ProviderSwitchHandoffReopensAndBuildsFirstPromptWithoutToolReplay)
 	session.session_setup_request_id = 0;
 	session.session_id = "6a6f0f3b-1a0b-4a9c-8a01-111111111111";
 	app.chats.front().native_session_id = session.session_id;
-	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front()));
+	AwaitPromptAdmission(app, session, app.chats.front());
 	UAM_ASSERT_EQ(app.chats.front().provider_handoff_session_id, session.session_id);
 	const std::optional<ChatSession> delivered = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(delivered.has_value());

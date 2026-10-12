@@ -437,7 +437,7 @@ void Application::PollTick()
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
-	uam::FlushPendingChatSaves(m_app);
+	const bool chat_saves_changed = uam::FlushPendingChatSaves(m_app);
 	const std::chrono::steady_clock::time_point runtimes_finished = std::chrono::steady_clock::now();
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app, TerminalUiVisible(m_browser));
 	const bool routing_changed = uam::PollExecutionRouting(m_app);
@@ -483,7 +483,7 @@ void Application::PollTick()
 	const std::chrono::steady_clock::time_point catalogs_finished = std::chrono::steady_clock::now();
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
-	const bool ui_relevant_state_changed = runtime_state_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
+	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
 		uam::PushDictationEvent(m_browser, event);

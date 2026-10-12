@@ -2347,12 +2347,13 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path
 	return prepared;
 }
 
-bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat)
+bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory, ChatSession* committed_chat, const std::function<bool()>& still_owned)
 {
 	if (!prepared) return false;
 	if (committed_chat != nullptr && !prepared->chat_id.empty() &&
 	    (committed_chat->id != prepared->chat_id || committed_chat->acp_queue_storage_revision != prepared->queue_storage_revision)) return false;
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
+	if (still_owned && !still_owned()) return false;
 	if (!prepared->queue_path.empty() && QueueJournalRevision(prepared->queue_path) != prepared->expected_queue_revision) return false;
 	if (!prepared->expected_storage_revision.empty() && StorageRevision(prepared->primary_path) != prepared->expected_storage_revision) return false;
 	if (!prepared->expected_summary_revision.empty() && StorageRevision(prepared->summary_path) != prepared->expected_summary_revision) return false;

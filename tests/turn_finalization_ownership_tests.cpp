@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "common/runtime/acp/acp_goal_loop.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include <future>
 #include <cstdio>
 #include "common/platform/async_byte_writer.h"
@@ -190,6 +191,14 @@ UAM_TEST(AsyncCheckpointKeepsNewQueuedIntentDurableAndRetriesOwnedMetadataBefore
 	UAM_ASSERT(current.processing);
 	UAM_ASSERT_EQ(current.turn_serial, 2);
 	UAM_ASSERT(current.queued_user_prompts.empty());
+	const std::chrono::steady_clock::time_point delivery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (current.prompt_request_id == 0 && current.processing && std::chrono::steady_clock::now() < delivery_deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, current, app.chats.front());
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(current.prompt_request_id != 0);
 	UAM_ASSERT(current.stdin_writer->Flush(std::chrono::seconds(1)));
 	UAM_ASSERT(captured.find("turn/start") != std::string::npos);
 	durable = ChatRepository::LoadLocalChats(app.data_root);

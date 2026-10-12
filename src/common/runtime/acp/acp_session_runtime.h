@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 #include "cef/cef_includes.h"
 #include "common/state/app_state.h"
@@ -76,7 +77,10 @@ bool ResolveAcpUserInput(AppState& app,
 	bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, std::string* error_out = nullptr);
 	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 	std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
-	void FlushPendingChatSaves(AppState& app, bool force = false);
+	bool FlushPendingChatSaves(AppState& app, bool force = false);
+	/// <summary>Defers an admission acknowledgement until the owning chat has a complete durable snapshot.</summary>
+	bool DeferChatSaveResult(AppState& app, const std::string& chat_id, std::function<void(bool)> completion);
+	void ResolvePendingChatSaveResults(AppState& app, const std::string& chat_id, bool saved);
 	void FinalizePendingAcpRemoteStopsForExit(AppState& app);
 	void FastStopAcpSessionsForExit(AppState& app);
 

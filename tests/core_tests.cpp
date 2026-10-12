@@ -51,6 +51,19 @@ UAM_TEST(AcpDiagnosticCapsPreserveUtf8AtEveryBoundary)
 
 namespace
 {
+/// <summary>Pumps private durability work until an admitted prompt reaches its transport.</summary>
+void AwaitDurablePromptDispatch(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat)
+{
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (session.prompt_request_id == 0 && session.processing && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(session.prompt_request_id != 0);
+}
+
 /// <summary>Captures native requests using a private descriptor, including assertion cleanup.</summary>
 class ManualCompactionWriter
 {
@@ -394,6 +407,7 @@ UAM_TEST(ManualCompactionRejectionDrainsQueuedUserFollowup)
 	app.chats.front().acp_queued_prompts.push_back(queued);
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(),
 	    nlohmann::json{{"id", request_id}, {"error", {{"code", -32601}, {"message", "Rejected compact"}}}}.dump()));
+	AwaitDurablePromptDispatch(app, session, app.chats.front());
 	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
 	UAM_ASSERT(!session.manual_compaction_pending);
 	UAM_ASSERT(session.queued_user_prompts.empty());
@@ -9010,6 +9024,7 @@ UAM_TEST(MessageBranchRetryDispatchesRegenerationWithoutDuplicatingPrompt)
 	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
 	const int model_change_request_id = raw_session->model_change_request_id;
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, *branch, nlohmann::json({{"jsonrpc", "2.0"}, {"id", model_change_request_id}, {"result", nlohmann::json::object()}}).dump()));
+	AwaitDurablePromptDispatch(app, *raw_session, *branch);
 	UAM_ASSERT(raw_session->prompt_request_id != 0);
 	UAM_ASSERT(!raw_session->diagnostics.empty());
 	UAM_ASSERT_EQ(raw_session->diagnostics.back().reason, std::string("sent"));
@@ -18159,6 +18174,7 @@ UAM_TEST(ClaudeFollowupRestartsAndWritesPromptAfterSettingsChange)
 		std::string received;
 		for (int attempt = 0; attempt < 200; ++attempt)
 		{
+			uam::FlushPendingChatSaves(app);
 			(void)uam::PollAllAcpSessions(app);
 			(void)uam::io::TryReadTextFile(temp.root / "received.jsonl", received);
 			if (received.find("Followup delivery sentinel") != std::string::npos) break;

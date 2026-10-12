@@ -1282,6 +1282,7 @@ static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSes
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
 	if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return false;
+	if (app.pending_chat_save_at_by_chat_id.contains(chat.id)) return false;
 	if (session.memory_recall_preparation != nullptr &&
 	    (!paths::IsControllerLocalWorkspace(chat) || !session.memory_recall_position.has_value() ||
 	     session.queued_prompt.empty() || !memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) ||
@@ -1767,6 +1768,7 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 		persisted->remote_delivered_stdout_cursor = 0;
 		persisted->remote_delivered_stderr_cursor = 0;
 	}
+	InvalidatePendingChatSave(app, chat.id);
 	const bool saved = ChatRepository::SaveChat(app.data_root, persisted == nullptr ? chat : *persisted);
 	if (saved)
 	{
@@ -1776,6 +1778,7 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 	{
 		ScheduleChatSave(app, *persisted, 1.0);
 	}
+	ResolvePendingChatSaveResults(app, chat.id, saved);
 	return saved;
 }
 
@@ -1793,6 +1796,8 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
 {
+	// A newer dirty state revokes publication of an older snapshot under the save lock.
+	InvalidatePendingChatSave(app, chat.id);
 	const double now = GetAppTimeSeconds();
 	const double due_at = now + delay_seconds;
 	app.pending_chat_save_at_by_chat_id[chat.id] = due_at;

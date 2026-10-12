@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Performance | Bugfix | Asynchronous Save State Feedback | Save receipts report changed processing and errors to the conditional frontend state update. | Claude Review; Un-Reviewed; Not User Tested |
 | Providers and review | Code Only | Host Scoped Provider Availability | Persisted native provider switches block new host-scoped work while preserving accepted queues and existing runtime attachment. | Partial Implementation; Un-Reviewed; Claude Review; Not User Tested |
 | Providers and MCP | Code Only | Explicit Configuration Cache Refresh | OpenCode configuration remains cached until restart or explicit background refresh, retaining valid cached data on refresh failure. | Un-Reviewed; Claude Review; Not User Tested |
 | Core correctness | Bugfix | Recovery State Reconciliation | Recovery-only changes now reach the frontend without requiring another chat field to change. | Claude UI Reviewed; Not User Tested |
@@ -305,7 +306,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Remaining acceptance | Misc | Live Performance Acceptance | The reported opening target, periodic typing stalls and overall animation smoothness still need current live acceptance. | Claude Review; Not User Tested |
 | Remaining acceptance | Misc | Remote Ownership Refusals | Some remote services still refuse guarded Stop because they report owned processes. | Un-Reviewed; Not User Tested |
 | Remaining acceptance | Misc | Full Provider Acceptance | Remaining provider-policy, account, reviewer, physical-device and startup-session gates remain documented. | Un-Reviewed; Not User Tested |
-| Remaining performance | Performance | Asynchronous Send Durability | Moving the complete pre-dispatch durable save off the GUI thread remains unfinished despite faster serialization. | Un-Reviewed; Not User Tested |
+| Remaining performance | Performance | Asynchronous Send Durability | Ordinary send admission persists a complete owned snapshot asynchronously while queue, retry, steering and delivery barriers remain unfinished. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
 
@@ -324,7 +325,8 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
-| Performance | Performance | Asynchronous Send Durability | Move the remaining pre-dispatch durable save off the GUI thread while preserving admission, ordering and crash recovery. | In Progress; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
+| Performance | Bugfix | Asynchronous Save State Feedback | Review and user-test frontend error and processing updates after asynchronous save completion. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
+| Performance | Performance | Asynchronous Send Durability | Move the remaining pre-dispatch durable save off the GUI thread while preserving admission, ordering and crash recovery. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Large Chat Opening Acceptance | Measure live CEF opening of the reported huge chat against David’s one-to-two-second target, verify history-loading feedback and fix remaining bottlenecks. | In Progress; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Typing And Sending Acceptance | Measure native typing stalls, sending, scrolling and concurrent streaming in the current app and correct remaining interaction delays. | In Progress; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Graphical review | Graphical | Animation Smoothness Acceptance | Compare T3 motion quality and implement fluid physical transitions, including the settings selection moving between tabs, while respecting reduced motion and avoiding idle repaint loops. | Open; Claude Review; Not User Tested | Unassigned |
@@ -966,3 +968,13 @@ Native provider availability verification: Release application/test builds, seve
 Startup catalogue verification: the Release app/test build, two focused regressions, all 1583 expected native cases and 19 CTest gates pass after removing periodic local config reads; broader startup timing, live and Claude acceptance remain pending, with receipts in `.UAM/AINotes/v5-swarm-plan.md`.
 
 Asynchronous send continuation: coordinator `chat-1791755529536-1b146e` reserves the ACP send/queue/steer lifecycle and polling files, native chat persistence and deletion guards, any required durable-save service/state declarations, `tests/async_prompt_durability_tests.cpp` and CMake registration in `build/v5-bug-fix-swarm`; the existing Asynchronous Send Durability row remains In Progress with pending acceptance flags.
+
+Claude integration receipt: this coordinator worktree fast-forwarded to local `uam/v5-improvements` at `25787be0`, retaining its uncommitted durability regression; all 1455 frontend unit and 19 serial timing tests, the production UI build and private native CEF app rebuild pass, with all existing acceptance flags preserved.
+
+Asynchronous send implementation progress: the warm-send regression reproduced foreground transcript persistence and provider input before return; owned background publication, ordinary-send gating and durable CEF acknowledgement are verified, while delivery-marker, queue, retry, steering and recovery conversion remain unfinished.
+
+Durability fixture continuation: coordinator `chat-1791755529536-1b146e` also owns `src/cef/acp_handlers.cpp`, the runtime acknowledgement header and the affected native compaction, branch-retry and Claude restart fixtures in `tests/core_tests.cpp`; acknowledgement/error timing requires Claude Review, and the full durability item remains unfinished.
+
+Save-feedback continuation allocation: coordinator `chat-1791755529536-1b146e` owns `src/app/application.cpp` and the shared save receipt declarations/tests in `build/v5-bug-fix-swarm`; source tracing found that save completion after runtime polling can change errors and processing state without entering the conditional frontend state push.
+
+Durability admission verification: Release app/test builds, all 22 affected cases, all 1589 expected native cases and 19 CTest gates pass, plus 227 frontend store cases; six new regressions cover pending feedback, complete unsaved history, deletion ownership, storage failure and reentrant receipts, while pending acceptance and remaining synchronous barriers are preserved in the Incomplete Work table.

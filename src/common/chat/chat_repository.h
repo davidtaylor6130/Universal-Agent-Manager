@@ -9,6 +9,7 @@
 #include <system_error>
 #include <stop_token>
 #include <vector>
+#include <functional>
 
 struct PreparedChatSave
 {
@@ -59,7 +60,7 @@ class ChatRepository
 	static std::optional<std::string> ChatStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	static std::optional<std::string> ChatSummaryStorageRevision(const std::filesystem::path& data_root, std::string_view chat_id);
 	/// <summary>Publishes prepared files after the caller validates current chat and deletion state.</summary>
-	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true, ChatSession* committed_chat = nullptr);
+	static bool PublishPreparedChatSave(const std::shared_ptr<PreparedChatSave>& prepared, bool sync_directory = true, ChatSession* committed_chat = nullptr, const std::function<bool()>& still_owned = {});
 	static std::string ChatMetadataFingerprint(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
