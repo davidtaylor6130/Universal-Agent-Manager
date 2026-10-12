@@ -325,6 +325,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Performance | Bugfix | Failed Save Admission Revocation | A synchronous save failure must retire pending admission before rejecting its acknowledgement. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Bugfix | Asynchronous Save State Feedback | Review and user-test frontend error and processing updates after asynchronous save completion. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Asynchronous Send Durability | Move the remaining pre-dispatch durable save off the GUI thread while preserving admission, ordering and crash recovery. | In Progress; Claude Review; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Large Chat Opening Acceptance | Measure live CEF opening of the reported huge chat against David’s one-to-two-second target, verify history-loading feedback and fix remaining bottlenecks. | In Progress; Claude Review; Not User Tested | chat-1791755529536-1b146e |
@@ -978,3 +979,5 @@ Durability fixture continuation: coordinator `chat-1791755529536-1b146e` also ow
 Save-feedback continuation allocation: coordinator `chat-1791755529536-1b146e` owns `src/app/application.cpp` and the shared save receipt declarations/tests in `build/v5-bug-fix-swarm`; source tracing found that save completion after runtime polling can change errors and processing state without entering the conditional frontend state push.
 
 Durability admission verification: Release app/test builds, all 22 affected cases, all 1589 expected native cases and 19 CTest gates pass, plus 227 frontend store cases; six new regressions cover pending feedback, complete unsaved history, deletion ownership, storage failure and reentrant receipts, while pending acceptance and remaining synchronous barriers are preserved in the Incomplete Work table.
+
+Delivery-marker continuation allocation: coordinator `chat-1791755529536-1b146e` reserves the existing ACP lifecycle/state declarations and `tests/async_prompt_durability_tests.cpp` in `build/v5-bug-fix-swarm` for an immutable local request held across the asynchronous delivery-intent save; request-ID stability, cancellation, stale ownership and failure rollback must be verified before integration, and the original durability item retains In Progress and all acceptance flags.
