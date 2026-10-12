@@ -908,3 +908,71 @@ UAM_TEST(AcpFailedPendingFirstPromptQueueAdmissionPreservesBothUndeliveredIntent
 		UAM_ASSERT_EQ(session.prompt_request_id, 0);
 	}
 }
+
+UAM_TEST(AcpQueuedControlReceiptsWaitForOwnedStorageWithoutInterruptingDeliveredTurn)
+{
+	for (const std::string operation : {"edit", "reorder", "remove", "resume"})
+	{
+		for (const bool save_fails : {false, true})
+		{
+			PromptFixture fixture;
+			uam::AppState& app = fixture.app;
+			uam::AcpSessionState& session = *fixture.session;
+			ChatSession& chat = app.chats.front();
+			session.processing = true;
+			session.prompt_request_id = 17;
+			std::string error;
+			UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First control intent", &error));
+			UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Second control intent", &error));
+			AwaitSave(app);
+			std::vector<std::pair<std::string, int>> expected;
+			for (const uam::AcpQueuedUserPromptState& prompt : session.queued_user_prompts)
+				expected.emplace_back(prompt.id, prompt.revision);
+			if (operation == "edit")
+				UAM_ASSERT(uam::EditQueuedAcpPrompt(app, chat.id, expected[0].first, expected[0].second, "Edited control intent", &error));
+			else if (operation == "reorder")
+				UAM_ASSERT(uam::ReorderQueuedAcpPrompts(app, chat.id, expected, {expected[1].first, expected[0].first}, &error));
+			else if (operation == "remove")
+				UAM_ASSERT(uam::RemoveQueuedAcpPrompt(app, chat.id, 0, &error, expected[0]));
+			else
+			{
+				session.queue_held = chat.acp_queue_held = true;
+				UAM_ASSERT(uam::acp_detail::SaveChatQuietly(app, chat));
+				UAM_ASSERT(uam::ResumeQueuedAcpPrompts(app, chat.id, expected, &error));
+			}
+			std::optional<bool> acknowledgement;
+			UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+			UAM_ASSERT(!acknowledgement.has_value());
+			if (save_fails)
+			{
+				fs::remove_all(app.data_root);
+				UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "private failed queue control storage"));
+			}
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(acknowledgement.has_value() && *acknowledgement == !save_fails);
+			UAM_ASSERT(session.processing && session.prompt_request_id == 17 && session.last_error.empty());
+			if (save_fails)
+			{
+				UAM_ASSERT(session.queue_held && chat.acp_queue_held);
+				fs::remove(app.data_root);
+			}
+			AwaitSave(app);
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(saved.has_value());
+			UAM_ASSERT_EQ(saved->messages, chat.messages);
+			UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), session.queued_user_prompts.size());
+			for (std::size_t index = 0; index < session.queued_user_prompts.size(); ++index)
+			{
+				UAM_ASSERT_EQ(saved->acp_queued_prompts[index].id, session.queued_user_prompts[index].id);
+				UAM_ASSERT_EQ(saved->acp_queued_prompts[index].text, session.queued_user_prompts[index].text);
+				UAM_ASSERT_EQ(saved->acp_queued_prompts[index].revision, session.queued_user_prompts[index].revision);
+			}
+			UAM_ASSERT_EQ(saved->acp_queue_held, session.queue_held);
+		}
+	}
+}

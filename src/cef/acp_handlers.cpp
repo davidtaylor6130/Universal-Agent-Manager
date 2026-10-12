@@ -669,6 +669,15 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
+	const std::weak_ptr<void> lifetime = m_asyncLifetime;
+	const std::filesystem::path data_root = m_app.data_root;
+	if (uam::DeferChatSaveResult(m_app, chat_id, [this, lifetime, data_root, browser, cb](bool saved)
+	{
+		if (lifetime.expired()) return;
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		if (saved && m_app.data_root == data_root) cb->Success("{}");
+		else cb->Failure(500, "Queued prompts could not be saved.");
+	})) return;
 	cb->Success("{}");
 }
 
@@ -699,6 +708,16 @@ void UamQueryHandler::HandleResumeQueuedAcpPrompts(CefRefPtr<CefBrowser> browser
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
+	const std::weak_ptr<void> lifetime = m_asyncLifetime;
+	const std::filesystem::path data_root = m_app.data_root;
+	const std::string chat_id = payload["chatId"].get<std::string>();
+	if (uam::DeferChatSaveResult(m_app, chat_id, [this, lifetime, data_root, browser, cb](bool saved)
+	{
+		if (lifetime.expired()) return;
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		if (saved && m_app.data_root == data_root) cb->Success("{}");
+		else cb->Failure(500, "Queued prompts could not be saved.");
+	})) return;
 	cb->Success("{}");
 }
 
