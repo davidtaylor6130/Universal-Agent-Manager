@@ -265,23 +265,42 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         : null
       const preferredChatId = preferredFamilyChat(branchRootId, familySessionIds) ?? activeFamilyChatId
       const preferredChat = preferredChatId ? sessions.find((candidate) => candidate.id === preferredChatId) : undefined
-      const compareLength = (a: Session, b: Session) =>
-        (a.messageCount ?? 0) - (b.messageCount ?? 0) ||
-        (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0) ||
-        b.id.localeCompare(a.id)
-      const familyIds = familySessionIds.length > 0 ? new Set(familySessionIds) : undefined
-      let longestChat: Session | undefined = preferredChat
-      if (!longestChat) {
+      let deepestChat: Session | undefined = preferredChat
+      if (!deepestChat) {
+        const familyIds = familySessionIds.length > 0 ? new Set(familySessionIds) : undefined
+        const family = new Map<string, Session>()
         for (const candidate of sessions) {
-          const isInFamily = familyIds
-            ? familyIds.has(candidate.id)
-            : (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId
-          if (isInFamily && (!longestChat || compareLength(candidate, longestChat) > 0)) {
-            longestChat = candidate
+          if (familyIds ? familyIds.has(candidate.id) : (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId) family.set(candidate.id, candidate)
+        }
+        const depths = new Map<string, number>([[branchRootId, 0]])
+        const depth = (chat: Session): number => {
+          const path: string[] = []
+          const visited = new Set<string>()
+          let current: Session | undefined = chat
+          while (current && !depths.has(current.id) && !visited.has(current.id)) {
+            visited.add(current.id)
+            path.push(current.id)
+            current = current.parentChatId ? family.get(current.parentChatId) : undefined
+          }
+          let value = current ? depths.get(current.id) ?? -1 : -1
+          for (let index = path.length - 1; index >= 0; index--) {
+            if (value >= 0) value++
+            depths.set(path[index], value)
+          }
+          return depths.get(chat.id) ?? -1
+        }
+        const compareDepth = (a: Session, b: Session) =>
+          depth(a) - depth(b) ||
+          (a.messageCount ?? 0) - (b.messageCount ?? 0) ||
+          (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0) ||
+          b.id.localeCompare(a.id)
+        for (const candidate of family.values()) {
+          if (!deepestChat || compareDepth(candidate, deepestChat) > 0) {
+            deepestChat = candidate
           }
         }
       }
-      const chatId = longestChat?.id ?? sessionId
+      const chatId = deepestChat?.id ?? sessionId
       activateExistingChatPane(chatId)
       if (state.activeSessionId !== chatId) setActiveSession(chatId)
       return
