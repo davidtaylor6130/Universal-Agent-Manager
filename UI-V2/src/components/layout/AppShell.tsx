@@ -4,7 +4,7 @@ import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
 import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
-import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, Undo2, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
 import './panels.css'
@@ -44,6 +44,10 @@ import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 import { focusActiveInput } from '../../utils/activeInputFocus'
+
+// These panels subscribe to their own state; shell navigation must not rerender their histories.
+const ChatPanel = memo(MainPanel)
+const ChatSidebar = memo(Sidebar)
 
 const SettingsModal = lazy(() => import('../settings/SettingsModal').then(({ SettingsModal }) => ({ default: SettingsModal })))
 const UsagePage = lazy(() => import('../usage/UsagePage').then(({ UsagePage }) => ({ default: UsagePage })))
@@ -842,7 +846,7 @@ export function AppShell() {
             data-state={sidebarPresence.closing ? 'closed' : 'open'}
             style={{ width: sidebarWidthPx, flex: `0 0 ${sidebarWidthPx}px`, background: 'var(--sidebar-bg)', '--panel-w': `${sidebarWidthPx}px` } as React.CSSProperties}
           >
-            <Sidebar />
+            <ChatSidebar />
           </aside>
           {!sidebarPresence.closing && <div
             role="separator"
@@ -861,7 +865,7 @@ export function AppShell() {
 
       <main className="min-w-0 flex-1 overflow-hidden flex flex-col" style={{ background: 'var(--bg)' }}>
         <ProviderMcpWarning />
-        <div className="min-h-0 flex-1"><MainPanel /></div>
+        <div className="min-h-0 flex-1"><ChatPanel /></div>
       </main>
       </div>
       {isSettingsOpen && <main hidden={usageOpen} style={usageOpen ? { display: 'none' } : undefined} className="min-w-0 min-h-0 flex-1 overflow-hidden" aria-label="Settings workspace"><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setSettingsOpen(false)}><Suspense fallback={<div className="uam-settings-scroll"><div className="uam-settings-frame" style={{ maxWidth: 720 }}><SettingsLoading rows={4} /><SettingsLoading rows={2} /></div></div>}><SettingsModal ref={settingsRef}/></Suspense></InterfaceErrorBoundary></main>}
