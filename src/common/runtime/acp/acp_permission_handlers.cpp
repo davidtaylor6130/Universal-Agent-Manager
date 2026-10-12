@@ -39,6 +39,20 @@ namespace
 	constexpr std::size_t kPermissionReviewReasonLimit = 512;
 	constexpr int kPermissionReviewTimeoutMs = 20'000;
 	constexpr std::size_t kMaxQueuedPermissions = 64;
+	bool PermissionFitsPlanCeiling(const AcpPendingPermissionState& pending);
+
+	/// <summary>Rechecks current review ownership and access before launch or delivery of an asynchronous verdict.</summary>
+	bool ParentPermissionReviewAllowed(const AcpSessionState& session, const ChatSession& chat)
+	{
+		if (uam::command_safety::ParseTier(chat.command_safety_tier) != uam::command_safety::Tier::AiReview ||
+		    session.pending_permission.request_id_json.empty() ||
+		    (session.provider_id == uam::provider_ids::kClaudeCli && session.current_mode_id == uam::approval_modes::kProviderAutoApprovalMode) ||
+		    (session.provider_id == uam::provider_ids::kCodexCli && session.codex_approvals_reviewer == "auto_review") ||
+		    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission)) return false;
+		return (!(session.goal_review_turn || session.active_uam_agent_workspace_access == "read" ||
+		          uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode) ||
+		        PermissionFitsPlanCeiling(session.pending_permission));
+	}
 
 	std::string PermissionReviewReasonForDiagnostic(std::string_view reason)
 	{
@@ -65,11 +79,7 @@ namespace
 
 	bool TryStartPermissionReview(AppState& app, AcpSessionState& session, const ChatSession& chat)
 	{
-		if (uam::command_safety::ParseTier(chat.command_safety_tier) != uam::command_safety::Tier::AiReview ||
-		    (session.provider_id == uam::provider_ids::kClaudeCli && session.current_mode_id == uam::approval_modes::kProviderAutoApprovalMode) ||
-		    (session.provider_id == uam::provider_ids::kCodexCli && session.codex_approvals_reviewer == "auto_review") ||
-		    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission) ||
-		    session.pending_permission.request_id_json.empty() ||
+		if (!ParentPermissionReviewAllowed(session, chat) ||
 		    HasPermissionReviewTask(app, chat.id, session.pending_permission.request_id_json))
 		{
 			return false;
@@ -530,7 +540,7 @@ bool PollPermissionReviewTasks(AppState& app)
 		const ProcessExecutionResult result = it->state->result;
 		AcpSessionState* session = FindAcpSessionForChat(app, it->chat_id);
 		ChatSession* chat = ChatDomainService().FindChatById(app, it->chat_id);
-		if (session != nullptr && chat != nullptr && session->running && session->pending_permission.request_id_json == it->request_id_json && uam::command_safety::ParseTier(chat->command_safety_tier) == uam::command_safety::Tier::AiReview)
+		if (session != nullptr && chat != nullptr && session->running && session->pending_permission.request_id_json == it->request_id_json && ParentPermissionReviewAllowed(*session, *chat))
 		{
 			const auto decision = result.ok && !result.output_truncated ? ParsePermissionReviewWorkerOutput(it->state->provider_id, result.output) : std::nullopt;
 			if (!decision)

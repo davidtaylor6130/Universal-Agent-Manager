@@ -12,6 +12,62 @@
 
 using namespace uam_test;
 
+UAM_TEST(PermissionReviewCompletionRechecksNativeOwnershipAndReadOnlyCeilings)
+{
+	for (const std::string scenario : {"plan", "read-agent", "goal-review", "claude-auto", "codex-auto"})
+	{
+		TempDir temp("uam-review-completion-ownership");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "review-completion";
+		chat.provider_id = scenario == "claude-auto" ? "claude-cli" : scenario == "codex-auto" ? "codex-cli" : "gemini-cli";
+		chat.command_safety_tier = "aiReview";
+		chat.approval_mode = scenario == "plan" ? "plan" : "default";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = scenario == "claude-auto" ? "claude-code-stream-json" : scenario == "codex-auto" ? "codex-app-server" : "gemini-acp";
+		session.current_mode_id = scenario == "claude-auto" ? "auto" : "default";
+		session.codex_approvals_reviewer = scenario == "codex-auto" ? "auto_review" : "";
+		session.active_uam_agent_workspace_access = scenario == "read-agent" ? "read" : "write";
+		session.goal_review_turn = scenario == "goal-review";
+		session.processing = true;
+		session.waiting_for_permission = true;
+		session.pending_permission.request_id_json = "7";
+		session.pending_permission.kind = "edit";
+		session.pending_permission.content = "Write example.txt";
+		session.pending_permission.provider_input_json = R"({"file_path":"example.txt","content":"changed"})";
+		session.pending_permission.options = {{"allow", "Allow once", "allow_once"}, {"deny", "Deny", "reject_once"}};
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+#if defined(_WIN32)
+		const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+		const std::vector<std::string> sink = {"/bin/sh", "-c", "exec /bin/cat >/dev/null"};
+#endif
+		std::string error;
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, sink, &error));
+		session.running = true;
+		app.acp_sessions.push_back(std::move(owned));
+		uam::AsyncPermissionReviewTask task;
+		task.chat_id = chat.id;
+		task.request_id_json = "7";
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->result.ok = true;
+		task.state->result.output = R"({"decision":"approve","reason":"Earlier review result"})";
+		task.state->completed = true;
+		app.permission_review_tasks.push_back(std::move(task));
+		(void)uam::acp_detail::PollPermissionReviewTasks(app);
+		const bool still_pending = session.waiting_for_permission && session.pending_permission.request_id_json == "7";
+		process.StopStdioProcess(session, true);
+		process.CloseStdioProcessHandles(session);
+		UAM_ASSERT_EQ(still_pending ? std::string{} : scenario, std::string{});
+		UAM_ASSERT(app.permission_review_tasks.empty());
+	}
+}
+
 UAM_TEST(PermissionReviewPromptPreservesCompleteProviderInput)
 {
 	uam::AcpPendingPermissionState pending;
