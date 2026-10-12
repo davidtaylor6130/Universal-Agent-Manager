@@ -1,3 +1,4 @@
+import { captureContextReference } from '../../utils/contextReferences'
 import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'

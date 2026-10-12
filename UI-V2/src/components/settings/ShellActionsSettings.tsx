@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { createPortal } from 'react-dom'
 import { BookOpen, Save, X, ChevronRight, File, Files, Folder, FolderOpen, FolderTree, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { useAppStore, type ShellAction } from '../../store/useAppStore'
+import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { DEFAULT_PROVIDER_ID, providerRuntimeDescription } from '../../utils/providerMetadata'
 import { buildModelOptions } from '../chat/modelOptions'
 import { ProviderLogo } from '../shared/ProviderLogo'

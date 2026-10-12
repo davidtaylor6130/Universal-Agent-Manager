@@ -500,6 +500,7 @@ describe('SettingsModal memory settings', () => {
 
     const remove = host.querySelector('button[aria-label="Remove Colima"]') as HTMLButtonElement
     await act(async () => { remove.click() })
+    await act(async () => { Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Remove host')!.click() })
 
     expect(host.textContent).toContain('Any helper files on that machine were left untouched.')
     expect(host.textContent).not.toContain('The remote helper was left installed.')
@@ -2020,8 +2021,8 @@ describe('SettingsModal memory settings', () => {
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Request Accessibility'))?.click())
     expect(host.textContent).toContain('Permission is not granted. Opened')
     expect(requests.some((request) => request.action === 'openComputerUseSystemSettings' && request.payload?.permission === 'accessibility')).toBe(true)
-    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Screen Recording') && (button.textContent?.includes('Request') || button.textContent?.includes('Re-request')))?.click())
-    expect(host.textContent).toContain('Screen Recording permission is already granted.')
+    // Granted permissions offer no request button.
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Request Screen Recording')).toBe(false)
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Refresh applications')?.click())
     expect(host.textContent).toContain('TextEdit')
     act(() => Array.from(host.querySelectorAll<HTMLLabelElement>('label')).find((label) => label.textContent?.includes('TextEdit'))?.querySelector<HTMLInputElement>('input')?.click())

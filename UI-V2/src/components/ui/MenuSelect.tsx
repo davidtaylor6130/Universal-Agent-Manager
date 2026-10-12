@@ -8,6 +8,7 @@ export interface MenuSelectOption {
   description?: string
   icon?: ReactNode
   disabled?: boolean
+  group?: string
 }
 
 export function MenuSelect({
@@ -16,12 +17,15 @@ export function MenuSelect({
   options,
   onChange,
   disabled = false,
+  placeholder,
 }: {
   label: string
   value: string
   options: MenuSelectOption[]
   onChange: (value: string) => void
   disabled?: boolean
+  /** Trigger text when no option matches value (for action pickers). */
+  placeholder?: string
 }) {
   const [open, setOpen] = useState(false)
   const [focusIndex, setFocusIndex] = useState(0)
@@ -30,8 +34,9 @@ export function MenuSelect({
   const listRef = useRef<HTMLDivElement>(null)
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const listId = useId()
-  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value))
-  const selected = options[selectedIndex]
+  const matchIndex = options.findIndex((option) => option.value === value)
+  const selectedIndex = Math.max(0, matchIndex)
+  const selected = matchIndex < 0 && placeholder !== undefined ? undefined : options[selectedIndex]
 
   useEffect(() => {
     if (!open) return
@@ -106,7 +111,7 @@ export function MenuSelect({
       >
         <span className="flex min-w-0 items-center gap-2 truncate">
           {selected?.icon && <span data-menu-select-icon aria-hidden className="shrink-0">{selected.icon}</span>}
-          <span className="truncate">{selected?.label ?? value}</span>
+          <span className="truncate" style={selected ? undefined : { color: 'var(--text-2)' }}>{selected?.label ?? placeholder ?? value}</span>
         </span>
         <ChevronDown className={open ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
       </button>
@@ -121,7 +126,8 @@ export function MenuSelect({
           className="rounded-md p-1"
           style={{ minWidth: triggerRef.current?.getBoundingClientRect().width, maxHeight: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
         >
-          {options.map((option, index) => (
+          {options.map((option, index) => [
+            option.group && option.group !== options[index - 1]?.group && <div key={`group:${option.group}`} role="presentation" className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-3)' }}>{option.group}</div>,
             <button
               key={option.value}
               ref={(element) => { optionRefs.current[index] = element }}
@@ -143,8 +149,8 @@ export function MenuSelect({
                 {option.description && <span className="block text-[11px]" style={{ color: 'var(--text-3)' }}>{option.description}</span>}
               </span>
               <Check size={13} aria-hidden className="mt-0.5 shrink-0" style={{ opacity: option.value === value ? 1 : 0 }} />
-            </button>
-          ))}
+            </button>,
+          ])}
         </ViewportMenu>
       )}
     </div>
