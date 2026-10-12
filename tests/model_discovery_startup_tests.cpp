@@ -593,3 +593,50 @@ UAM_TEST(ModelCatalogLateClaudeResponseCannotRepublishRemovedRemoteHost)
 
 #endif
 }
+
+UAM_TEST(OpenCodeExplicitConfigurationRefreshRetainsCacheOnFailureAndRetries)
+{
+	TempDir temp("uam-config-refresh-retry");
+	ScopedEnvVar config_home("XDG_CONFIG_HOME", temp.root.string());
+	ScopedEnvVar config_override("OPENCODE_CONFIG", "");
+	ScopedEnvVar disable_zen("UAM_DISABLE_OPENCODE_ZEN_REFRESH", "1");
+	const fs::path config = temp.root / "opencode" / "opencode.json";
+	UAM_ASSERT(uam::io::WriteTextFile(config, R"({"model":"cached/original"})"));
+	uam::ProviderModelCatalogService catalog;
+	catalog.Initialize(temp.root / "data");
+	const auto consume = [&catalog]()
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			if (catalog.Poll()) return true;
+			std::this_thread::yield();
+		}
+		return false;
+	};
+	UAM_ASSERT(uam::io::WriteTextFile(config, "malformed configuration"));
+	UAM_ASSERT(catalog.StartConfiguredOpenCodeRefresh());
+	UAM_ASSERT(consume());
+	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeDefaultModel(), std::string("cached/original"));
+	UAM_ASSERT(fs::remove(config));
+	UAM_ASSERT(fs::create_directory(config));
+	UAM_ASSERT(catalog.StartConfiguredOpenCodeRefresh());
+	UAM_ASSERT(consume());
+	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeDefaultModel(), std::string("cached/original"));
+	UAM_ASSERT(fs::remove(config));
+	UAM_ASSERT(uam::io::WriteTextFile(config, R"({"model":"explicit/reloaded"})"));
+	UAM_ASSERT(catalog.StartConfiguredOpenCodeRefresh());
+	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeDefaultModel(), std::string("cached/original"));
+	UAM_ASSERT(consume());
+	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeDefaultModel(), std::string("explicit/reloaded"));
+	UAM_ASSERT(catalog.StartConfiguredOpenCodeRefresh());
+	const fs::path second = temp.root / "second.json";
+	UAM_ASSERT(uam::io::WriteTextFile(second, R"({"model":"restart/current"})"));
+	ScopedEnvVar replacement("OPENCODE_CONFIG", second.string());
+	catalog.Initialize(temp.root / "second-data");
+	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeDefaultModel(), std::string("restart/current"));
+	UAM_ASSERT(!catalog.Poll());
+	UAM_ASSERT(uam::io::WriteTextFile(second, "malformed new owner"));
+	catalog.Initialize(temp.root / "third-data");
+	UAM_ASSERT(catalog.GetConfiguredOpenCodeDefaultModel().empty());
+}

@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
 | Providers and review | Code Only | Host Scoped Provider Availability | Persisted native provider switches block new host-scoped work while preserving accepted queues and existing runtime attachment. | Partial Implementation; Un-Reviewed; Claude Review; Not User Tested |
+| Providers and MCP | Code Only | Explicit Configuration Cache Refresh | OpenCode configuration remains cached until restart or explicit background refresh, retaining valid cached data on refresh failure. | Un-Reviewed; Claude Review; Not User Tested |
 | Core correctness | Bugfix | Recovery State Reconciliation | Recovery-only changes now reach the frontend without requiring another chat field to change. | Claude Review; Not User Tested |
 | Providers and subagents | Bugfix | Claude Parent Envelope Deduplication | Repeated native parent assistant envelope IDs no longer duplicate narration while distinct IDs and identity-free output remain separate. | Un-Reviewed; Claude Review; Not User Tested |
 | Providers and review | Misc | Claude Native Permission Translation | Structured Claude sessions use native auto/edit permissions while preserving Plan, avoiding duplicate parent review and retaining native residual prompts for user decisions. | Un-Reviewed; Claude Review; Not User Tested |
@@ -884,3 +885,5 @@ Provider availability native implementation and verification are in progress; fr
 Startup catalogue continuation: coordinator `chat-1791755529536-1b146e` reserves `src/app/provider_model_catalog_service.{cpp,h}`, `src/cef/acp_handlers.cpp` and the matching native catalogue tests in `build/v5-bug-fix-swarm` to replace periodic local configuration checks with startup and explicit background refresh; the existing Startup Model Catalogue Refresh row retains all pending acceptance flags.
 
 Native provider availability verification: Release application/test builds, seven focused cases, all 1582 expected native cases and 19 CTest gates pass; frontend controls, live acceptance and review remain open, with detailed receipts in `.UAM/AINotes/v5-swarm-plan.md`.
+
+Startup catalogue verification: the Release app/test build, two focused regressions, all 1583 expected native cases and 19 CTest gates pass after removing periodic local config reads; broader startup timing, live and Claude acceptance remain pending, with receipts in `.UAM/AINotes/v5-swarm-plan.md`.

@@ -1,4 +1,5 @@
 #include "provider_model_catalog_service.h"
+#include "common/utils/diagnostic_log.h"
 
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
@@ -181,6 +182,8 @@ ProviderModelCatalogService::ProviderModelCatalogService()
 void ProviderModelCatalogService::Initialize(const fs::path& data_root, const std::vector<ProviderProfile>& profiles, std::string_view configuration_context)
 {
 	std::lock_guard<std::mutex> lock(m_mutex);
+	m_configuration_worker.reset();
+	m_configuration_refresh.reset();
 	m_data_root = data_root;
 	m_catalog_key_by_provider_id.clear();
 	m_pending_discovery_provider_ids.clear();
@@ -205,10 +208,10 @@ void ProviderModelCatalogService::Initialize(const fs::path& data_root, const st
 	m_open_code_zen_free_models = ReadOpenCodeZenFreeModelsCache();
 
 	// Read opencode config once at startup.
+	m_configured_open_code_models = nlohmann::json::array();
+	m_configured_open_code_default_model.clear();
 	RefreshConfiguredOpenCodeModels();
 
-	m_open_code_config_fingerprint = OpenCodeConfigFingerprint();
-	m_next_open_code_config_check = std::chrono::steady_clock::now() + kOpenCodeConfigCheckInterval;
 }
 
 bool ProviderModelCatalogService::MaybeStartRefresh()
@@ -249,17 +252,17 @@ bool ProviderModelCatalogService::Poll()
 			updated = true;
 		}
 
-		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-		if (now >= m_next_open_code_config_check)
+		if (m_configuration_refresh != nullptr && m_configuration_refresh->completed.load(std::memory_order_acquire))
 		{
-			m_next_open_code_config_check = now + kOpenCodeConfigCheckInterval;
-			const std::string current_fingerprint = OpenCodeConfigFingerprint();
-			if (current_fingerprint != m_open_code_config_fingerprint)
+			updated = true;
+			if (m_configuration_refresh->snapshot)
 			{
-				m_open_code_config_fingerprint = current_fingerprint;
-				RefreshConfiguredOpenCodeModels();
-				updated = true;
+				m_configured_open_code_models = std::move(m_configuration_refresh->snapshot->models);
+				m_configured_open_code_default_model = std::move(m_configuration_refresh->snapshot->default_model);
 			}
+			else diagnostics::Write("OpenCode configuration refresh failed; cached models were retained.");
+			m_configuration_worker.reset();
+			m_configuration_refresh.reset();
 		}
 	}
 
@@ -698,18 +701,6 @@ std::vector<fs::path> ProviderModelCatalogService::OpenCodeConfigPaths() const
 	return paths;
 }
 
-std::string ProviderModelCatalogService::OpenCodeConfigFingerprint() const
-{
-	std::string fingerprint;
-	for (const fs::path& path : OpenCodeConfigPaths())
-	{
-		std::error_code error;
-		const auto mtime = fs::last_write_time(path, error);
-		fingerprint += path.generic_string() + ":" + (error ? "missing" : std::to_string(static_cast<std::int64_t>(mtime.time_since_epoch().count()))) + "\n";
-	}
-	return fingerprint;
-}
-
 nlohmann::json ProviderModelCatalogService::ReadOpenCodeZenFreeModelsCache() const
 {
 	const nlohmann::json cache = ReadJsonFile(OpenCodeZenFreeModelsCachePath());
@@ -777,14 +768,21 @@ std::optional<nlohmann::json> ProviderModelCatalogService::FetchOpenCodeZenModel
 	return root.is_object() ? std::optional<nlohmann::json>(root) : std::nullopt;
 }
 
-void ProviderModelCatalogService::RefreshConfiguredOpenCodeModels()
+std::optional<ProviderModelCatalogService::ConfiguredOpenCodeSnapshot> ProviderModelCatalogService::ReadConfiguredOpenCodeModels(const std::vector<fs::path>& paths, std::stop_token stop_token)
 {
 	nlohmann::json models_json = nlohmann::json::array();
 	std::string default_model_id;
 	std::unordered_set<std::string> seen_model_ids;
-	for (const fs::path& path : OpenCodeConfigPaths())
+	for (const fs::path& path : paths)
 	{
+		if (stop_token.stop_requested()) return std::nullopt;
+		std::error_code error;
+		const bool exists = fs::exists(path, error);
+		if (error) return std::nullopt;
+		if (!exists) continue;
+		if (!fs::is_regular_file(path, error) || error) return std::nullopt;
 		const nlohmann::json config = ReadJsonFile(path);
+		if (!config.is_object()) return std::nullopt;
 		const std::string configured = uam::nlohmann_json::TrimmedStringValue(config, {"model"});
 		if (!configured.empty()) default_model_id = configured;
 		const nlohmann::json* providers = uam::nlohmann_json::FindObjectField(config, "provider");
@@ -805,8 +803,35 @@ void ProviderModelCatalogService::RefreshConfiguredOpenCodeModels()
 		}
 	}
 
-	m_configured_open_code_models = std::move(models_json);
-	m_configured_open_code_default_model = std::move(default_model_id);
+	if (stop_token.stop_requested()) return std::nullopt;
+	return ConfiguredOpenCodeSnapshot{std::move(models_json), std::move(default_model_id)};
+}
+
+
+void ProviderModelCatalogService::RefreshConfiguredOpenCodeModels()
+{
+	const std::optional<ConfiguredOpenCodeSnapshot> snapshot = ReadConfiguredOpenCodeModels(OpenCodeConfigPaths());
+	if (snapshot)
+	{
+		m_configured_open_code_models = snapshot->models;
+		m_configured_open_code_default_model = snapshot->default_model;
+	}
+}
+
+bool ProviderModelCatalogService::StartConfiguredOpenCodeRefresh()
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	if (m_configuration_refresh != nullptr) return false;
+	const std::vector<fs::path> paths = OpenCodeConfigPaths();
+	const std::shared_ptr<ConfiguredOpenCodeRefresh> state = std::make_shared<ConfiguredOpenCodeRefresh>();
+	m_configuration_worker = std::make_unique<std::jthread>([paths, state](std::stop_token stop_token)
+	{
+		try { state->snapshot = ReadConfiguredOpenCodeModels(paths, stop_token); }
+		catch (...) { state->snapshot.reset(); }
+		state->completed.store(true, std::memory_order_release);
+	});
+	m_configuration_refresh = state;
+	return true;
 }
 
 

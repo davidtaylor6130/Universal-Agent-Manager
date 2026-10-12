@@ -6,6 +6,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
@@ -777,6 +778,12 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 	{
 		cb->Failure(500, "Provider model catalog is unavailable.");
 		return;
+	}
+	if (execution_host_id == uam::execution_hosts::kLocalHostId &&
+	    uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id) == uam::provider_ids::kOpenCodeCli &&
+	    uam::provider_availability::IsEnabled(m_app.settings, provider_id, execution_host_id))
+	{
+		(void)m_app.provider_model_catalog->StartConfiguredOpenCodeRefresh();
 	}
 	const bool should_start = m_app.provider_model_catalog->BeginDiscovery(
 	    provider_id, workspace_directory, execution_host_id);

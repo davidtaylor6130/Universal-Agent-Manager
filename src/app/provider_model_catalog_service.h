@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <thread>
+#include <atomic>
 
 #include <nlohmann/json.hpp>
 
@@ -40,8 +41,11 @@ class ProviderModelCatalogService
 	/// Returns true if a refresh was started, false if skipped (throttled/disabled/fixture).
 	bool MaybeStartRefresh();
 
-	/// Poll for completed refresh task; recheck OpenCode configuration at most once per second.
-	/// Returns true if models were updated.
+	/// Start an explicit background read of local OpenCode configuration, retaining the current cache.
+	bool StartConfiguredOpenCodeRefresh();
+
+	/// Poll completed refresh tasks without reading local configuration files.
+	/// Returns true when a refresh result was consumed.
 	bool Poll();
 
 	/// Get the current OpenCode Zen free models for the frontend (cached, no network).
@@ -117,16 +121,24 @@ class ProviderModelCatalogService
 	std::set<std::string> m_pending_discovery_provider_ids;
 	std::set<std::string> m_refresh_attempted_provider_ids;
 
-	// OpenCode config files fingerprint for cache invalidation.
-	std::string m_open_code_config_fingerprint;
+	struct ConfiguredOpenCodeSnapshot
+	{
+		nlohmann::json models = nlohmann::json::array();
+		std::string default_model;
+	};
+	struct ConfiguredOpenCodeRefresh
+	{
+		std::optional<ConfiguredOpenCodeSnapshot> snapshot;
+		std::atomic<bool> completed{false};
+	};
+	std::shared_ptr<ConfiguredOpenCodeRefresh> m_configuration_refresh;
+	std::unique_ptr<std::jthread> m_configuration_worker;
 
 	// Async refresh state (heap-allocated to avoid complete type issues in header).
 	std::unique_ptr<AsyncCommandTask> m_refresh_task;
 
 	// Throttling.
 	std::chrono::steady_clock::time_point m_last_refresh_attempt;
-	std::chrono::steady_clock::time_point m_next_open_code_config_check;
-	static constexpr auto kOpenCodeConfigCheckInterval = std::chrono::seconds(1);
 	static constexpr auto kOpenCodeZenRefreshInterval = std::chrono::minutes(10);
 
 	// Fixture/env constants.
@@ -140,7 +152,7 @@ class ProviderModelCatalogService
 	// Internal helpers.
 	std::filesystem::path OpenCodeZenFreeModelsCachePath() const;
 	std::vector<std::filesystem::path> OpenCodeConfigPaths() const;
-	std::string OpenCodeConfigFingerprint() const;
+	static std::optional<ConfiguredOpenCodeSnapshot> ReadConfiguredOpenCodeModels(const std::vector<std::filesystem::path>& paths, std::stop_token stop_token = {});
 	nlohmann::json ReadOpenCodeZenFreeModelsCache() const;
 	void WriteOpenCodeZenFreeModelsCache(const nlohmann::json& models) const;
 	std::optional<nlohmann::json> FetchOpenCodeZenModels(std::stop_token stop_token);

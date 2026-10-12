@@ -5430,7 +5430,20 @@ UAM_TEST(ProviderModelCatalogDropsConfiguredModelsWhenConfigIsDeleted)
 	for (int tick = 0; tick < 10; ++tick) UAM_ASSERT(!catalog.Poll());
 	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeModels().size(), static_cast<std::size_t>(1));
 	std::this_thread::sleep_for(std::chrono::milliseconds(1050));
-	UAM_ASSERT(catalog.Poll());
+	UAM_ASSERT(!catalog.Poll());
+	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeModels().size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeDefaultModel(), std::string("local/test-model"));
+	UAM_ASSERT(catalog.StartConfiguredOpenCodeRefresh());
+	UAM_ASSERT(!catalog.StartConfiguredOpenCodeRefresh());
+	UAM_ASSERT_EQ(catalog.GetConfiguredOpenCodeModels().size(), static_cast<std::size_t>(1));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	bool refreshed = false;
+	while (!refreshed && std::chrono::steady_clock::now() < deadline)
+	{
+		refreshed = catalog.Poll();
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(refreshed);
 	UAM_ASSERT(catalog.GetConfiguredOpenCodeModels().empty());
 	UAM_ASSERT(catalog.GetConfiguredOpenCodeDefaultModel().empty());
 
