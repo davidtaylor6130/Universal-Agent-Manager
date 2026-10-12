@@ -1288,7 +1288,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
-		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out, bool defer_durable_admission = false)
+		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out, bool defer_durable_admission = false, bool queued_dispatch = false)
 		{
 			if (chat.acp_queue_storage_error)
 			{
@@ -1483,6 +1483,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const std::vector<AcpQueuedUserPromptState> original_queued_prompts = chat.acp_queued_prompts;
 			const std::size_t original_dispatched_count = chat.acp_dispatched_queued_prompt_count;
 			AppendQueuedUserMessages(chat, session, batch);
+			if (queued_dispatch && chat.execution_host_id == execution_hosts::kLocalHostId)
+				chat.acp_dispatched_queued_prompt_count = batch.size();
 			if (chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
 			    !chat.remote_turn_reconnect_pending && !session.queued_prompt.empty())
 			{
@@ -1501,7 +1503,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				chat.acp_dispatched_queued_prompt_count = 1;
 			}
 			session.defer_prompt_save = defer_durable_admission;
-			// Queue dispatch and retry keep their existing rollback contract until packet staging is asynchronous.
+			// Deferred inputs stage owned durability; legacy quota, small-model and retry callers retain synchronous rollback.
 			if (defer_durable_admission) ScheduleChatSave(app, chat, 0.0);
 			else if (!SaveChatQuietly(app, chat))
 			{
@@ -2555,23 +2557,32 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 		}
 		if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return false;
-		// Each accepted queue entry owns one provider turn and one durable dispatch marker.
+		// Local admission atomically replaces one outbox entry with its unsent transcript message.
 		const std::deque<AcpQueuedUserPromptState> batch{session.queued_user_prompts.front()};
+		const bool local_dispatch = chat.execution_host_id == execution_hosts::kLocalHostId;
+		bool local_transport_usable = !session.running || !session.session_ready;
+#if defined(_WIN32)
+		local_transport_usable = local_transport_usable || session.stdin_write != INVALID_HANDLE_VALUE;
+#else
+		local_transport_usable = local_transport_usable || session.stdin_write_fd >= 0;
+#endif
+		const bool local_async = local_dispatch && local_transport_usable && !chat.small_model_mode && app.claude_quota_dispatch_id.empty();
 		std::string error;
 		chat.acp_queued_prompts.assign(
 		    session.queued_user_prompts.begin(), session.queued_user_prompts.end());
-		chat.acp_dispatched_queued_prompt_count = batch.size();
-		if (!acp_detail::SaveChatQuietly(app, chat))
+		chat.acp_dispatched_queued_prompt_count = local_dispatch ? 0 : batch.size();
+		if (!local_dispatch && !acp_detail::SaveChatQuietly(app, chat))
 		{
 			chat.acp_dispatched_queued_prompt_count = 0;
 			session.last_error = "Queued prompt is waiting for its dispatch marker to be saved.";
 			session.lifecycle_state = kAcpLifecycleError;
 			return false;
 		}
-		if (!StartAcpUserPromptBatch(app, session, chat, batch, &error))
+		if (!StartAcpUserPromptBatch(app, session, chat, batch, &error, local_async, true))
 		{
 			chat.acp_dispatched_queued_prompt_count = 0;
-			(void)acp_detail::SaveChatQuietly(app, chat);
+			if (local_async) acp_detail::ScheduleChatSave(app, chat, 0.0);
+			else (void)acp_detail::SaveChatQuietly(app, chat);
 			session.last_error = uam::strings::NonEmptyOrFallback(error, "Failed to deliver queued prompt.");
 			session.lifecycle_state = kAcpLifecycleError;
 			return false;
@@ -2583,7 +2594,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const bool awaiting_remote_delivery =
 		    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
 		    !chat.remote_turn_reconnect_pending && !session.queued_prompt.empty();
-		if (!awaiting_remote_delivery)
+		if (local_async)
+		{
+			chat.acp_dispatched_queued_prompt_count = 0;
+			chat.acp_queued_prompts.assign(session.queued_user_prompts.begin(), session.queued_user_prompts.end());
+			acp_detail::ScheduleChatSave(app, chat, 0.0);
+		}
+		else if (!awaiting_remote_delivery)
 		{
 			chat.acp_dispatched_queued_prompt_count = 0;
 			if (!PersistQueuedPromptOutbox(app, session, chat))

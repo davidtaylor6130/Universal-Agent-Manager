@@ -1397,6 +1397,7 @@ UAM_TEST(ClaudeQuotaNativeContinuationWritesOnlyOneNewInstructionAfterWarmOrCold
 			fixture.Send({{"type", "result"}, {"session_id", native_id}, {"subtype", "success"}, {"is_error", false}});
 			for (int attempt = 0; attempt < 200; ++attempt)
 			{
+				uam::FlushPendingChatSaves(fixture.app);
 				(void)uam::PollAllAcpSessions(fixture.app);
 				(void)uam::io::TryReadTextFile(fixture.temp.root / "received.jsonl", received);
 				if (received.find("FOLLOWUP-MUST-WAIT-FOR-CONTINUATION") != std::string::npos) break;

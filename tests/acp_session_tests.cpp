@@ -28,6 +28,17 @@ namespace
 		UAM_ASSERT(!session.processing || session.prompt_request_id != 0);
 	}
 
+	void AwaitChatSave(uam::AppState& app, const ChatSession& chat)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (app.pending_chat_save_at_by_chat_id.contains(chat.id) && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	}
+
 	struct CodexNativeChildActivityFixture
 	{
 		TempDir temp{"uam-codex-native-child-activity"};
@@ -8551,6 +8562,7 @@ UAM_TEST(AcpSendAfterTurnFailureResumesPreservedUserQueue)
 		const bool write_failure = route == "codex-write-failure";
 		if (write_failure) PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(session);
 		const bool accepted = uam::SendAcpPrompt(app, stored_chat.id, "Continue after failure", &error);
+		if (!write_failure && !retrying) AwaitPromptAdmission(app, session, stored_chat);
 		const bool resumed = session.processing;
 		const bool transport_stopped = !session.running;
 		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
@@ -8759,6 +8771,7 @@ UAM_TEST(AcpRecallPrefaceIsSentOncePerChatBeforeFollowup)
 	raw_session->running = true;
 	raw_session->session_ready = true;
 	raw_session->session_id = "recall-fixture";
+	AwaitChatSave(app, stored_chat);
 	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, stored_chat));
 	UAM_ASSERT(raw_session->memory_recall_preparation != nullptr);
 	const std::shared_ptr<uam::MemoryRecallPreparation> prepared = raw_session->memory_recall_preparation->state;
@@ -8769,6 +8782,7 @@ UAM_TEST(AcpRecallPrefaceIsSentOncePerChatBeforeFollowup)
 	std::string first_prompt = raw_session->queued_prompt;
 	first_prompt.insert(*raw_session->memory_recall_position, prepared->context);
 	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, stored_chat));
+	AwaitPromptAdmission(app, *raw_session, stored_chat);
 	raw_session->session_ready = false;
 	const auto first_count = [&first_prompt, &memory_sentinel]() {
 		std::size_t count = 0;
@@ -8854,7 +8868,9 @@ UAM_TEST(AcpUamAgentPromptContextRepeatsOnlyWhenDefinitionChanges)
 	raw_session->session_id = "fixture-agent-session";
 	const auto send_to_sink = [&]() {
 		raw_session->session_ready = true;
+		AwaitChatSave(app, stored_chat);
 		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, stored_chat));
+		AwaitPromptAdmission(app, *raw_session, stored_chat);
 		raw_session->session_ready = false;
 	};
 
@@ -8874,6 +8890,7 @@ UAM_TEST(AcpUamAgentPromptContextRepeatsOnlyWhenDefinitionChanges)
 	UAM_ASSERT(changed_prompt.find("UAM_AGENT_CONTEXT_TWO") != std::string::npos);
 	UAM_ASSERT(changed_prompt.find("UAM_AGENT_CONTEXT_ONE") == std::string::npos);
 	send_to_sink();
+	AwaitChatSave(app, stored_chat);
 	const std::optional<ChatSession> reloaded = ChatRepository::LoadLocalChat(
 	    app.data_root, stored_chat.id);
 	UAM_ASSERT(reloaded.has_value());
@@ -9112,6 +9129,7 @@ UAM_TEST(AcpResumeSetupContinuesPreservedQueuedPromptsInOrder)
 	    R"({"jsonrpc":"2.0","id":8,"result":{}})"));
 
 	UAM_ASSERT(raw_session->session_ready);
+	AwaitPromptAdmission(app, *raw_session, app.chats.front());
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.size(), std::size_t{1});
 	UAM_ASSERT_EQ(raw_session->queued_user_prompts.front().text, std::string("Second preserved prompt"));
 	UAM_ASSERT(raw_session->processing);
@@ -9124,6 +9142,7 @@ UAM_TEST(AcpResumeSetupContinuesPreservedQueuedPromptsInOrder)
 	(void)uam::PollAllAcpSessions(app);
 	UAM_ASSERT_EQ(raw_session->reconnect_attempts, 2);
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, *raw_session, app.chats.front(), "ready", nullptr);
+	AwaitPromptAdmission(app, *raw_session, app.chats.front());
 	UAM_ASSERT_EQ(raw_session->reconnect_attempts, 0);
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
