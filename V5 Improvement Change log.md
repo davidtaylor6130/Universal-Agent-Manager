@@ -326,7 +326,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Performance | Performance | Busy Queue Admission Durability | Ordinary local busy-turn queue admission saves asynchronously and holds failed intent without interrupting delivered output. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Remaining performance | Performance | Asynchronous Send Durability | Ordinary local admission, delivery, queue dispatch, retries and idle or pending-first-prompt follow-ups save asynchronously while remote, quota, small-model and force barriers remain scoped follow-up work. | Partial Implementation; Claude Review; Un-Reviewed; Not User Tested |
 | Integration | Bugfix | Main Branch Reconciliation | Main safeguards and context-reference or numeric-field changes are reconciled with V5 layouts and pass all 1485 expected frontend tests. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
-
+| Build and evidence | Bugfix | Ignore Dependency Symlinks | The frontend dependency ignore rule covers directories and symlinks so isolated verification links cannot enter commits. | Un-Reviewed; Not User Tested |
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.

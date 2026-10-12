@@ -32,7 +32,7 @@ id_ed25519
 /BuildsTest
 
 # React frontend generated output
-/UI-V2/node_modules/
+/UI-V2/node_modules
 /UI-V2/dist/
 /UI-V2/*.tsbuildinfo
 /UI-V2/.vite/
