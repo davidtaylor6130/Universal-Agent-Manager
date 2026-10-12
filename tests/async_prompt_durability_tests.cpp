@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/paths/app_paths.h"
+#include <future>
 
 using namespace uam_test;
 
@@ -457,4 +458,155 @@ UAM_TEST(AcpAsyncSendFailureRejectsAcknowledgementAndKeepsIntentUnsent)
 	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
 	UAM_ASSERT(app.chats.front().messages.back().interrupted);
 	UAM_ASSERT_EQ(ReadFile(fixture.saved_path), fixture.original);
+}
+
+UAM_TEST(AcpBusyQueueAdmissionReturnsWithinInputBudgetUnderStorageContention)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	session.processing = true;
+	session.prompt_request_id = 10;
+	session.next_request_id = 11;
+	session.queued_prompt = "Existing delivered turn";
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, app.chats.front());
+	UAM_ASSERT(prepared != nullptr);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool admitted = uam::SendAcpPrompt(app, app.chats.front().id, "Queued while history publication is busy", &error);
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(admitted);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(session.prompt_request_id, 10);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	session.processing = false;
+	session.prompt_request_id = 0;
+	session.queued_prompt.clear();
+	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, app.chats.front()));
+	UAM_ASSERT(!acknowledgement.has_value());
+	AwaitSave(app);
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages.size(), std::size_t{1});
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Queued while history publication is busy"));
+}
+
+UAM_TEST(AcpFailedBusyQueueSaveHoldsIntentWithoutInterruptingDeliveredTurn)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	session.processing = true;
+	session.prompt_request_id = 10;
+	session.queued_prompt = "Existing delivered turn";
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Queue intent survives storage failure", &error));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	fs::remove_all(app.data_root);
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "private blocked data root"));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(acknowledgement.has_value() && !*acknowledgement);
+	UAM_ASSERT(session.processing);
+	UAM_ASSERT_EQ(session.prompt_request_id, 10);
+	UAM_ASSERT_EQ(session.queued_prompt, std::string("Existing delivered turn"));
+	UAM_ASSERT(session.last_error.empty());
+	UAM_ASSERT(session.queue_held && app.chats.front().acp_queue_held);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Queue intent survives storage failure"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+}
+
+UAM_TEST(AcpBusyQueueSaveFailureDoesNotHoldRemovedOrChangedOwnerIntent)
+{
+	for (const bool changed_owner : {false, true})
+	{
+		PromptFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		session.processing = true;
+		session.prompt_request_id = 10;
+		session.queued_prompt = "Existing delivered turn";
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Old queue ownership", &error));
+		std::optional<bool> acknowledgement;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+		if (changed_owner)
+		{
+			app.chats.front().provider_id = "codex-cli";
+			session.provider_id = "codex-cli";
+		}
+		else
+		{
+			session.queued_user_prompts.clear();
+			app.chats.front().acp_queued_prompts.clear();
+		}
+		fs::remove_all(app.data_root);
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "private blocked data root"));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(acknowledgement.has_value() && !*acknowledgement);
+		UAM_ASSERT(session.processing);
+		UAM_ASSERT_EQ(session.prompt_request_id, 10);
+		UAM_ASSERT(!session.queue_held && !app.chats.front().acp_queue_held);
+		UAM_ASSERT(session.last_error.empty());
+	}
+}
+
+UAM_TEST(AcpBusyQueueAdmissionIsDurableWhileAssistantOutputContinues)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	session.processing = true;
+	session.prompt_request_id = 10;
+	session.queued_prompt = "Existing delivered turn";
+	app.chats.front().messages.push_back({.role = MessageRole::Assistant, .content = "Ongoing output"});
+	session.current_assistant_message_index = 1;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Durable queue during streaming", &error));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		app.chats.front().messages.back().content += ".";
+		uam::acp_detail::ScheduleChatSave(app, app.chats.front(), 0.5);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	UAM_ASSERT(session.processing);
+	UAM_ASSERT_EQ(session.prompt_request_id, 10);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Durable queue during streaming"));
 }

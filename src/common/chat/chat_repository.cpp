@@ -2378,12 +2378,23 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 	return SaveChatImpl(data_root, chat, false, skip_unchanged);
 }
 
-bool ChatRepository::SaveQueuedPromptOutbox(const fs::path& data_root, ChatSession& chat, bool* full_save_required)
+std::string ChatRepository::QueueStorageOwner(const ChatSession& chat)
+{
+	return QueueOwner(chat);
+}
+
+std::string ChatRepository::QueueAdmissionFingerprint(const ChatSession& chat)
+{
+	return QueueOwner(chat) + "\n" + QueuePayload(chat);
+}
+
+bool ChatRepository::SaveQueuedPromptOutbox(const fs::path& data_root, ChatSession& chat, bool* full_save_required, const std::function<bool()>& still_owned)
 try
 {
 	if (full_save_required != nullptr) *full_save_required = false;
 	if (!uam::chat_ids::IsSafeStorageChatId(chat.id) || chat.imported_read_only || chat.acp_queue_storage_error) return false;
 	std::unique_lock<std::mutex> lock(ChatSaveMutex());
+	if (still_owned && !still_owned()) return false;
 	const fs::path queue_path = QueueJournalPath(data_root, chat.id);
 	const std::optional<std::string> current = QueueJournalRevision(queue_path);
 	if (!current || (*current != "missing" && *current != chat.acp_queue_storage_revision)) return false;

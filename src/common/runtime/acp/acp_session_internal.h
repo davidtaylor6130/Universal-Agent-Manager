@@ -292,6 +292,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Save immediately, clear satisfied deferred writes, and retry failures for owned chats.</summary>
 bool SaveChatQuietly(AppState& app, const ChatSession& chat);
+void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id);
 /// <summary>Revokes a background publication before a newer synchronous command can replace its storage.</summary>
 void InvalidatePendingChatSave(AppState& app, std::string_view chat_id);
 void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, ChatSession& chat);

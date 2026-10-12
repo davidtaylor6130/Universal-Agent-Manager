@@ -8785,6 +8785,13 @@ UAM_TEST(AcpRecallPrefaceIsSentOncePerChatBeforeFollowup)
 
 	raw_session->processing = true;
 	UAM_ASSERT(uam::SendAcpPrompt(app, stored_chat.id, "Follow-up prompt", &error));
+	const std::chrono::steady_clock::time_point queued_save_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (app.pending_chat_save_at_by_chat_id.contains(stored_chat.id) && std::chrono::steady_clock::now() < queued_save_deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(stored_chat.id));
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(
 	    app, *raw_session, stored_chat, "ready", nullptr, false);
 	UAM_ASSERT(raw_session->queued_prompt.find("Second queued prompt") != std::string::npos);

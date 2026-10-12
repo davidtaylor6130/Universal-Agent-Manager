@@ -78,8 +78,8 @@ bool ResolveAcpUserInput(AppState& app,
 	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 	std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 	bool FlushPendingChatSaves(AppState& app, bool force = false);
-	/// <summary>Defers an admission acknowledgement until the owning chat has a complete durable snapshot.</summary>
-	bool DeferChatSaveResult(AppState& app, const std::string& chat_id, std::function<void(bool)> completion);
+	/// <summary>Defers an admission acknowledgement until the owning input is durable in its snapshot or queue journal.</summary>
+	bool DeferChatSaveResult(AppState& app, const std::string& chat_id, std::function<void(bool)> completion, bool queued_admission = false);
 	void ResolvePendingChatSaveResults(AppState& app, const std::string& chat_id, bool saved);
 	void FinalizePendingAcpRemoteStopsForExit(AppState& app);
 	void FastStopAcpSessionsForExit(AppState& app);

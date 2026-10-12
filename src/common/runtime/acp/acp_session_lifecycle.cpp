@@ -1878,6 +1878,7 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 		persisted->remote_delivered_stdout_cursor = 0;
 		persisted->remote_delivered_stderr_cursor = 0;
 	}
+	FinishPendingQueuedAdmissionSave(app, chat.id);
 	InvalidatePendingChatSave(app, chat.id);
 	const bool saved = ChatRepository::SaveChat(app.data_root, persisted == nullptr ? chat : *persisted);
 	if (saved)

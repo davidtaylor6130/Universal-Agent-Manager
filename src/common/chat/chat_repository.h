@@ -65,7 +65,10 @@ class ChatRepository
 	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
 	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
 	/// <summary>Durably saves future queued inputs without rewriting an already persisted transcript.</summary>
-	static bool SaveQueuedPromptOutbox(const std::filesystem::path& data_root, ChatSession& chat, bool* full_save_required = nullptr);
+	static bool SaveQueuedPromptOutbox(const std::filesystem::path& data_root, ChatSession& chat, bool* full_save_required = nullptr, const std::function<bool()>& still_owned = {});
+	/// <summary>Queue identity and payload comparisons exclude changing assistant output.</summary>
+	static std::string QueueStorageOwner(const ChatSession& chat);
+	static std::string QueueAdmissionFingerprint(const ChatSession& chat);
 	/// <summary>Persists selection time in the validated summary without rewriting an unchanged transcript.</summary>
 	/// <summary>Prepares selection metadata off-thread, preserving the primary transcript when its summary is current.</summary>
 	static std::shared_ptr<PreparedChatSave> PrepareLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& metadata);
