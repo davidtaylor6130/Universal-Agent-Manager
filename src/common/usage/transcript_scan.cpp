@@ -23,6 +23,70 @@ namespace uam::usage
 		}
 	}
 
+	namespace
+	{
+		class GeminiProjection : public nlohmann::json_sax<nlohmann::json>
+		{
+		public:
+			std::string session;
+			bool saw_messages = false;
+			const std::function<bool()>& cancelled;
+			std::function<bool(const nlohmann::json&)> message;
+			GeminiProjection(const std::function<bool()>& stop, std::function<bool(const nlohmann::json&)> sink = {}) : cancelled(stop), message(std::move(sink)) {}
+			bool null() override { return Scalar(nullptr); }
+			bool boolean(bool value) override { return Scalar(value); }
+			bool number_integer(number_integer_t value) override { return Scalar(value); }
+			bool number_unsigned(number_unsigned_t value) override { return Scalar(value); }
+			bool number_float(number_float_t value, const string_t&) override { return Scalar(value); }
+			bool string(string_t& value) override
+			{
+				if (m_depth == 1 && m_key == "sessionId") { if (value.size() <= 512) session = value; }
+				if ((m_depth == m_messageDepth || m_depth == m_tokensDepth) && value.size() > 8192 && (m_key == "id" || m_key == "model" || m_key == "timestamp")) return false;
+				return Scalar(value);
+			}
+			bool binary(binary_t&) override { return false; }
+			bool start_object(std::size_t) override
+			{
+				if (Stopped()) return false;
+				++m_depth;
+				if (m_arrayDepth && m_depth == m_arrayDepth + 1) { m_messageDepth = m_depth; m_value = nlohmann::json::object(); }
+				else if (m_messageDepth && m_depth == m_messageDepth + 1 && m_key == "tokens") { m_tokensDepth = m_depth; m_value["tokens"] = nlohmann::json::object(); }
+				return true;
+			}
+			bool key(string_t& value) override { if (Stopped()) return false; m_key = value; return true; }
+			bool end_object() override
+			{
+				if (m_depth == m_messageDepth)
+				{
+					if (message && !message(m_value)) return false;
+					m_value = nullptr; m_messageDepth = 0;
+				}
+				if (m_depth == m_tokensDepth) m_tokensDepth = 0;
+				--m_depth; return !Stopped();
+			}
+			bool start_array(std::size_t) override
+			{
+				++m_depth;
+				if (m_depth == 2 && m_key == "messages") { saw_messages = true; m_arrayDepth = m_depth; }
+				return !Stopped();
+			}
+			bool end_array() override { if (m_depth == m_arrayDepth) m_arrayDepth = 0; --m_depth; return !Stopped(); }
+			bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override { return false; }
+		private:
+			bool Stopped() const { return cancelled && cancelled(); }
+			bool Scalar(const nlohmann::json& value)
+			{
+				if (Stopped()) return false;
+				if (m_messageDepth && m_depth == m_messageDepth && (m_key == "type" || m_key == "id" || m_key == "timestamp" || m_key == "model")) m_value[m_key] = value;
+				else if (m_tokensDepth && m_depth == m_tokensDepth && (m_key == "input" || m_key == "cached" || m_key == "output" || m_key == "thoughts" || m_key == "tool" || m_key == "total")) m_value["tokens"][m_key] = value;
+				return true;
+			}
+			int m_depth = 0, m_arrayDepth = 0, m_messageDepth = 0, m_tokensDepth = 0;
+			std::string m_key;
+			nlohmann::json m_value;
+		};
+	}
+
 	TranscriptScan::TranscriptScan(std::string provider_id) : m_providerId(std::move(provider_id)) {}
 
 	void TranscriptScan::Reset()
@@ -39,7 +103,7 @@ namespace uam::usage
 		m_codexState = {};
 		m_copilotState = {};
 		m_geminiSessionId.clear();
-		m_records.clear();
+		m_records.clear(); m_recordBase = 0;
 	}
 
 	bool TranscriptScan::CommitLine(const ScanOptions& options)
@@ -176,7 +240,7 @@ namespace uam::usage
 		return result;
 	}
 
-	ScanResult TranscriptScan::Refresh(const std::filesystem::path& path, const ScanOptions& options, const std::function<bool()>& cancelled)
+	ScanResult TranscriptScan::Refresh(const std::filesystem::path& path, const ScanOptions& options, const std::function<bool()>& cancelled, const std::function<bool(const std::vector<Record>&, std::size_t, std::string&)>& snapshot_sink)
 	{
 		ScanResult result;
 		if (m_providerId != provider_ids::kCodexCli && m_providerId != provider_ids::kClaudeCli && m_providerId != provider_ids::kGeminiCli && m_providerId != provider_ids::kCopilotCli)
@@ -188,6 +252,42 @@ namespace uam::usage
 		    options.max_line_bytes > 8 * 1024 * 1024 || options.max_records == 0 || options.max_records > 100000)
 		{
 			result.error = "Invalid usage scan limits.";
+			return result;
+		}
+				if (m_providerId == provider_ids::kGeminiCli && path.extension() == ".json" && snapshot_sink)
+		{
+			std::error_code error;
+			const std::uintmax_t size = std::filesystem::file_size(path, error);
+			if (error) { result.error = "Could not inspect Gemini history."; return result; }
+			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, error);
+			if (error) { result.error = "Could not inspect Gemini history timestamp."; return result; }
+			if (m_path == path && size == m_seenSize && modified == m_lastWriteTime && m_readOffset == size) { result.complete = true; return result; }
+			Reset(); m_path = path; result.reset = true;
+			std::ifstream input;
+			if (!io::OpenReadFile(path, input)) { result.error = "Could not open Gemini history."; return result; }
+			GeminiProjection header(cancelled);
+			if (!nlohmann::json::sax_parse(input, &header) || header.session.empty() || !header.saw_messages)
+			{ result.cancelled = cancelled && cancelled(); if (!result.cancelled) result.error = "Gemini history is incomplete or invalid."; return result; }
+			input.clear(); input.seekg(0);
+			std::vector<Record> batch;
+			const std::function<bool()> flush = [&]()
+			{
+				if (batch.empty()) return true;
+				if (!snapshot_sink(batch, m_recordBase, result.error)) return false;
+				m_recordBase += batch.size(); batch.clear(); return true;
+			};
+			GeminiProjection projection(cancelled, [&](const nlohmann::json& message)
+			{
+				std::optional<Record> record = GeminiRecord(message, header.session);
+				if (record) batch.push_back(std::move(*record));
+				return batch.size() < 2048 || flush();
+			});
+			if (!nlohmann::json::sax_parse(input, &projection) || !flush())
+			{ result.cancelled = cancelled && cancelled(); if (!result.cancelled && result.error.empty()) result.error = "Gemini history is incomplete or invalid."; return result; }
+			const std::uintmax_t final_size = std::filesystem::file_size(path, error);
+			const std::filesystem::file_time_type final_modified = std::filesystem::last_write_time(path, error);
+			if (error || final_size != size || final_modified != modified) { result.error = "Gemini history changed during scanning. Refresh to retry."; return result; }
+			m_seenSize = size; m_lastWriteTime = modified; m_readOffset = size; result.bytes_read = size; result.complete = true;
 			return result;
 		}
 		if (m_providerId == provider_ids::kGeminiCli && path.extension() == ".json") return RefreshGeminiSnapshot(path, options, cancelled);
@@ -219,6 +319,11 @@ namespace uam::usage
 			Reset();
 			m_path = path;
 			result.reset = true;
+		}
+		if (m_recordLimitReached && options.stream_batches && m_records.empty())
+		{
+			m_recordLimitReached = false;
+			if (!CommitLine(options)) { result.error = "Usage receipt cannot fit in a scan batch."; return result; }
 		}
 		if (m_recordLimitReached)
 		{
@@ -257,11 +362,12 @@ namespace uam::usage
 				++cursor; ++m_readOffset; ++result.bytes_read;
 				if (!CommitLine(options))
 				{
-					result.error = "Usage transcript exceeds the cached-record limit; totals are incomplete.";
+					if (options.stream_batches) result.batch_full = true;
+					else result.error = "Usage transcript exceeds the cached-record limit; totals are incomplete.";
 					break;
 				}
 			}
-			if (!result.error.empty()) break;
+			if (!result.error.empty() || result.batch_full) break;
 		}
 		m_seenSize = size;
 		m_lastWriteTime = modified;

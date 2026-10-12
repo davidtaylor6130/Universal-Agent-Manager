@@ -204,3 +204,22 @@ UAM_TEST(UsageCollectorBackfillsOldReceiptsAndKeepsLifetimeQueriesOffProviderFil
 	UAM_ASSERT_EQ(restarted.Query(0)["totals"]["totalTokens"].get<int>(), 15);
 	UAM_ASSERT_EQ(restarted.Query(0)["filesTotal"].get<int>(), 0);
 }
+
+UAM_TEST(UsageCollectorStreamedExportKeepsItsLeasedSnapshotAcrossBackgroundPublication)
+{
+	TempDir temp("uam-usage-export-lease"); uam::usage::Store store(temp.root); std::string error;
+	uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "model"; record.session_id = "session"; record.dedupe_key = "first";
+	record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 180LL * 86400000; record.tokens.input = 1;
+	UAM_ASSERT(store.Import({{&record, "fixture", 0}}, error));
+	uam::usage::Collector collector(temp.root, std::vector<uam::usage::HistorySource>{}, uam::usage::RateFetcher{}, true);
+	UAM_ASSERT(WaitForAccounting(collector).contains("totals"));
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> original = collector.Receipts(); UAM_ASSERT(original);
+	const nlohmann::json first = collector.ExportReceipts(); UAM_ASSERT(first.contains("fingerprint"));
+	record.dedupe_key = "second"; UAM_ASSERT(store.Import({{&record, "fixture", 0}}, error));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(40);
+	while (collector.Receipts() == original && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(collector.Receipts() != original); UAM_ASSERT_EQ(collector.Query(0)["totals"]["totalTokens"].get<std::int64_t>(), 2LL);
+	const nlohmann::json leased = collector.ExportReceipts(0, first["fingerprint"].get<std::string>());
+	UAM_ASSERT(!leased.contains("error")); UAM_ASSERT_EQ(leased["fingerprint"], first["fingerprint"]); UAM_ASSERT_EQ(leased["totalBytes"], first["totalBytes"]); UAM_ASSERT_EQ(leased["dataBase64"], first["dataBase64"]);
+	UAM_ASSERT(collector.ExportReceipts(1).contains("error")); UAM_ASSERT(collector.ExportReceipts(original->bytes + 1, original->fingerprint).contains("error"));
+}

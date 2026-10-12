@@ -1,3 +1,5 @@
+#include <fstream>
+#include "common/utils/io_utils.h"
 #include "common/provider/provider_setup.h"
 #include "common/config/build_features.h"
 #include "remote/memory_protocol.h"
@@ -193,6 +195,7 @@ namespace uam::remote
 		m_contextRead = response["capabilities"].value("contextRead", false);
 		m_workspaceFileRead = response["capabilities"].value("workspaceFileRead", false);
 		m_usageAccounting = response["capabilities"].value("usageAccounting", false);
+		m_usageAccountingStream = response["capabilities"].value("usageAccountingStream", false);
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
 		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
 		m_runnerStartup = response["capabilities"].value("runnerStartup", false);
@@ -890,6 +893,81 @@ namespace uam::remote
 		return true;
 	}
 
+	bool RunnerClient::ReadUsageAccountingFile(const std::filesystem::path& path, nlohmann::json& progress, std::string* error_out, std::stop_token stop_token)
+	{
+		progress = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		std::string error;
+		std::filesystem::path temporary = path; temporary += ".download-" + Nonce();
+		struct Cleanup
+		{
+			std::filesystem::path path;
+			~Cleanup() { std::error_code ignored; std::filesystem::remove(path, ignored); }
+		} cleanup{temporary};
+		if (uam::paths::IsLinkOrReparsePointNoThrow(path.parent_path()) || uam::paths::IsLinkOrReparsePointNoThrow(path) || uam::paths::IsLinkOrReparsePointNoThrow(temporary) || !uam::paths::CreateDirectoriesNoThrow(path.parent_path()))
+		{ if (error_out) *error_out = "Could not prepare usage cache."; return false; }
+		uam::io::AtomicWriteResult staged_result;
+		const bool staged = uam::io::WriteAndSyncAtomicTemp(temporary, uam::io::AtomicTempProducer([&](const std::function<bool(std::string_view)>& append)
+		{
+		if (!m_usageAccountingStream)
+		{
+			nlohmann::json document;
+			if (!ReadUsageAccounting(document, error_out, stop_token)) return false;
+			if (document.value("pending", false)) { progress = std::move(document); return true; }
+			if (!append(nlohmann::json({{"version", 3}, {"range", document["version"] == 2 ? "all-recorded" : "rolling-90-days"}, {"asOfMs", document["asOfMs"]}, {"metadata", document["metadata"]}}).dump() + "\n")) return false;
+			for (const nlohmann::json& fact : document["facts"])
+			{
+				if (stop_token.stop_requested()) { if (error_out) *error_out = "Usage accounting loading was cancelled."; return false; }
+				if (!append(fact.dump() + "\n")) return false;
+			}
+		}
+		else
+		{
+			std::uint64_t offset = 0, total = 0, hash = uam::hashing::kFnv1a64OffsetBasis;
+			std::string fingerprint;
+			do
+			{
+				const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+				const std::function<bool()> interrupted = [stop_token, deadline]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline; };
+				nlohmann::json request{{"type", "usage.accounting"}, {"format", "jsonl-v3"}, {"offset", offset}};
+				if (!fingerprint.empty()) request["fingerprint"] = fingerprint;
+				nlohmann::json response;
+				if (!Request(request, response, error_out, interrupted)) return false;
+				const nlohmann::json result = response.value("result", nlohmann::json{});
+				if (result.is_object() && result.contains("pending"))
+				{
+					if (offset || result["pending"] != true || !result.contains("collectionError") || !result["collectionError"].is_string() || result["collectionError"].get_ref<const std::string&>().size() > 1024)
+					{ if (error_out) *error_out = "The runner returned invalid usage progress."; return false; }
+					progress = result; return true;
+				}
+				std::string chunk;
+				if (!result.is_object() || result.value("format", nlohmann::json{}) != "jsonl-v3" || !result.contains("totalBytes") || !result["totalBytes"].is_number_integer() || result["totalBytes"] <= 0 || result["totalBytes"] > uam::usage::kMaxExactTokenCount ||
+				    !result.contains("offset") || !result["offset"].is_number_integer() || result["offset"] != offset || !result.contains("fingerprint") || !result["fingerprint"].is_string() || result["fingerprint"].get_ref<const std::string&>().size() != 16 ||
+				    !result.contains("dataBase64") || !result["dataBase64"].is_string() || result["dataBase64"].get_ref<const std::string&>().size() > 699052 || !uam::base64::Decode(result["dataBase64"].get_ref<const std::string&>(), chunk))
+				{ if (error_out) *error_out = "The runner returned invalid streamed accounting."; return false; }
+				const std::uint64_t next_total = result["totalBytes"].get<std::uint64_t>();
+				if (offset > next_total || chunk.size() != std::min<std::uint64_t>(512 * 1024, next_total - offset) || (!fingerprint.empty() && (result["fingerprint"] != fingerprint || total != next_total)) || chunk.find('\0') != std::string::npos)
+				{ if (error_out) *error_out = "Usage accounting changed while loading. Try again."; return false; }
+				total = next_total; fingerprint = result["fingerprint"].get<std::string>();
+				if (!append(chunk)) { if (error_out) *error_out = "Could not save usage cache."; return false; }
+				uam::hashing::UpdateFnv1a64(hash, chunk); offset += chunk.size();
+			} while (offset < total);
+			if (uam::hashing::Hex64Padded(hash) != fingerprint) { if (error_out) *error_out = "The runner returned invalid accounting fingerprint."; return false; }
+		}
+		return true;
+		}), {}, staged_result);
+		if (!staged) { if (error_out && error_out->empty()) *error_out = "Could not save usage cache."; return false; }
+		if (progress.is_object()) return true;
+		const std::function<bool()> cancelled = [stop_token]() { return stop_token.stop_requested(); };
+		const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = uam::usage::ReadReceiptSnapshot(temporary, error, cancelled);
+		if (!snapshot || !snapshot->Visit([](const uam::usage::AccountingRecord&) { return true; }, error, cancelled))
+		{ if (error_out) *error_out = error; return false; }
+		if (cancelled()) { if (error_out) *error_out = "Usage accounting loading was cancelled."; return false; }
+		const uam::io::AtomicWriteResult published = uam::io::CommitSyncedAtomicTemp(path, temporary);
+		if (!published.success) { if (error_out) *error_out = "Could not publish usage cache."; return false; }
+		return true;
+	}
+
 	bool RunnerClient::ReadUsageAccounting(nlohmann::json& snapshot,
 	    std::string* error_out, std::stop_token stop_token)
 	{
@@ -1176,7 +1254,7 @@ namespace uam::remote
 		m_directoryBrowsing = false;
 		m_contextRead = false;
 		m_workspaceFileRead = false;
-		m_usageAccounting = false;
+		m_usageAccounting = false; m_usageAccountingStream = false;
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
 		m_runnerStartup = false;

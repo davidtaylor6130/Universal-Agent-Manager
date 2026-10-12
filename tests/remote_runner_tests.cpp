@@ -4502,3 +4502,47 @@ UAM_TEST(RemoteUsageClientValidatesLifetimeScopeAndKeepsLegacyRollingReceipts)
 		else { UAM_ASSERT(!error.empty()); UAM_ASSERT(!result.contains("facts")); }
 	}
 }
+
+UAM_TEST(RemoteUsageAccountingStreamsBeyondDocumentLimitAndCancellationPreservesCache)
+{
+	TempDir temp("uam-remote-usage-streamed");
+	ScopedEnvVar home("HOME", temp.root.string()), user_profile("USERPROFILE", temp.root.string());
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string()), claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", temp.root.string()), copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar xdg_data("XDG_DATA_HOME", (temp.root / "xdg").string()), antigravity_home("ANTIGRAVITY_DATA_DIR", (temp.root / "antigravity").string()), opencode_db("OPENCODE_DB", (temp.root / "missing.db").string());
+	uam::usage::Store store(temp.root / ".uam" / "runner-usage"); std::string error;
+	for (int batch_index = 0; batch_index < 3; ++batch_index)
+	{
+		std::vector<uam::usage::Record> records;
+		for (int index = 0; index < 1500; ++index)
+		{
+			uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "old-model"; record.session_id = std::string(8000, 's'); record.dedupe_key = std::string(8000, 'r') + std::to_string(batch_index * 1500 + index);
+			record.timestamp_ms = uam::time::SystemEpochMillisecondsNow() - 180LL * 86400000; record.tokens.input = 2; records.push_back(std::move(record));
+		}
+		std::vector<uam::usage::SourceRecord> references; for (const uam::usage::Record& record : records) references.push_back({&record, "fixture", 0}); UAM_ASSERT(store.Import(references, error));
+	}
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	    "uam-runner.exe";
+#else
+	    "uam-runner";
+#endif
+	uam::remote::RunnerClient client(service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+	const fs::path destination = temp.root / "download" / "receipts.jsonl"; nlohmann::json progress;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	do
+	{
+		UAM_ASSERT(client.ReadUsageAccountingFile(destination, progress, &error));
+		if (!progress.is_object()) break;
+		UAM_ASSERT(progress.value("pending", false)); UAM_ASSERT(progress.value("collectionError", "").empty()); std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	} while (std::chrono::steady_clock::now() < deadline);
+	UAM_ASSERT(!progress.is_object()); UAM_ASSERT(fs::file_size(destination) > 64 * 1024 * 1024);
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = uam::usage::ReadReceiptSnapshot(destination, error); UAM_ASSERT(snapshot); UAM_ASSERT(snapshot->lifetime);
+	std::size_t count = 0; std::int64_t tokens = 0;
+	UAM_ASSERT(snapshot->Visit([&](const uam::usage::AccountingRecord& entry) { ++count; tokens += entry.record.tokens.input; UAM_ASSERT(entry.record.timestamp_ms < snapshot->as_of - 90LL * 86400000); return true; }, error));
+	UAM_ASSERT_EQ(count, std::size_t{4500}); UAM_ASSERT_EQ(tokens, 9000LL);
+	std::stop_source cancellation; cancellation.request_stop(); UAM_ASSERT(!client.ReadUsageAccountingFile(destination, progress, &error, cancellation.get_token()));
+	UAM_ASSERT_EQ(uam::usage::ReadReceiptSnapshot(destination, error)->fingerprint, snapshot->fingerprint);
+	for (const fs::directory_entry& entry : fs::directory_iterator(destination.parent_path())) UAM_ASSERT(entry.path().filename().string().find(".download-") == std::string::npos);
+}

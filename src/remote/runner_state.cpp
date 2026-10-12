@@ -604,7 +604,8 @@ namespace uam::remote
 		const std::string type = request["type"].get<std::string>();
 		if (type == "usage.accounting")
 		{
-			if ((request.contains("offset") && (!request["offset"].is_number_integer() || request["offset"] < 0 || request["offset"] > 64 * 1024 * 1024)) ||
+			const bool streamed = request.value("format", nlohmann::json{}) == "jsonl-v3";
+			if ((request.contains("format") && !streamed) || (request.contains("offset") && (!request["offset"].is_number_integer() || request["offset"] < 0 || request["offset"] > (streamed ? uam::usage::kMaxExactTokenCount : 64 * 1024 * 1024))) ||
 			    (request.contains("fingerprint") && (!request["fingerprint"].is_string() || request["fingerprint"].get_ref<const std::string&>().size() != 16)))
 				return ProcessError(request, "invalid_request", "Choose a valid usage accounting offset and snapshot.");
 			if (!m_usageHistory)
@@ -616,7 +617,7 @@ namespace uam::remote
 			}
 			const std::shared_ptr<uam::usage::Collector> history = m_usageHistory;
 			state_lock.unlock();
-			nlohmann::json result = history->ExportAccounting(request.value("offset", std::size_t{0}), request.value("fingerprint", std::string{}));
+			nlohmann::json result = streamed ? history->ExportReceipts(request.value("offset", std::uint64_t{0}), request.value("fingerprint", std::string{})) : history->ExportAccounting(request.value("offset", std::size_t{0}), request.value("fingerprint", std::string{}));
 			if (result.contains("error")) return ProcessError(request, "usage_snapshot_changed", result["error"].get<std::string>());
 			return ProcessSuccess(request, std::move(result));
 		}

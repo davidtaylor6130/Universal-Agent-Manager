@@ -249,3 +249,24 @@ UAM_TEST(UsageLifetimeLedgerRetainsOldCohortsAndRequiresExplicitSnapshotScope)
 	UAM_ASSERT(legacy && !legacy->IncludesLifetime());
 	UAM_ASSERT(!legacy->Query(0, kAsOf));
 }
+
+UAM_TEST(UsageCanonicalStreamFoldsMoreThanHalfMillionLifetimeReceiptsWithoutDroppingCohorts)
+{
+	const std::int64_t now = 1800000000000LL;
+	std::size_t visited = 0;
+	const std::optional<uam::usage::Ledger> ledger = uam::usage::Ledger::CreateCanonical([&](const std::function<bool(const uam::usage::Record&)>& visitor)
+	{
+		uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "model"; record.timestamp_ms = now - 180LL * 86400000; record.tokens.input = 2;
+		for (std::size_t index = 0; index < 500001; ++index)
+		{
+			record.session_id = "session-" + std::to_string(index % 3); record.dedupe_key = "receipt-" + std::to_string(index);
+			if (!visitor(record)) return false;
+			++visited;
+		}
+		return true;
+	}, now);
+	UAM_ASSERT(ledger); UAM_ASSERT_EQ(visited, std::size_t{500001}); UAM_ASSERT_EQ(ledger->Rows(), std::size_t{3});
+	const std::optional<uam::usage::Summary> lifetime = ledger->Query(0, now);
+	UAM_ASSERT(lifetime); UAM_ASSERT_EQ(lifetime->total.records, std::size_t{500001}); UAM_ASSERT_EQ(lifetime->total.tokens.input, 1000002LL); UAM_ASSERT_EQ(lifetime->total.sessions, std::size_t{3});
+	UAM_ASSERT_EQ(ledger->Query(ledger->WindowStart(90), now)->total.tokens.input, 0LL);
+}

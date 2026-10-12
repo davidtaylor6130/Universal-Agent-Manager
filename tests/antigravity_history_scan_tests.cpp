@@ -173,3 +173,23 @@ UAM_TEST(UsageAntigravityHistoryRootsUseConfiguredDirectoriesAndNestedConversati
 	UAM_ASSERT(found!=sources.end()); UAM_ASSERT_EQ(found->directories.size(),std::size_t(2));
 	UAM_ASSERT_EQ(found->directories[0],nested); UAM_ASSERT_EQ(found->directories[1],temp.root/"alternate");
 }
+
+UAM_TEST(UsageAntigravityStreamingPassesTheOldRowLimitWithoutRetainingCandidateCaches)
+{
+	TempDir temp("uam-antigravity-streamed-large"); const fs::path path = temp.root / "conversation.db"; UsageDb database = CreateUsageDb(path);
+	UAM_ASSERT_EQ(sqlite3_exec(database.get(), "BEGIN", nullptr, nullptr, nullptr), SQLITE_OK);
+	const std::string blob = ProtoBytes(1, ProtoBytes(4, ProtoNumber(2, 1)));
+	sqlite3_stmt* raw = nullptr; UAM_ASSERT_EQ(sqlite3_prepare_v2(database.get(), "INSERT INTO gen_metadata VALUES(?1,?2)", -1, &raw, nullptr), SQLITE_OK);
+	for (int index = 0; index < 100001; ++index)
+	{
+		sqlite3_reset(raw); sqlite3_bind_int(raw, 1, index); sqlite3_bind_blob(raw, 2, blob.data(), static_cast<int>(blob.size()), SQLITE_TRANSIENT); UAM_ASSERT_EQ(sqlite3_step(raw), SQLITE_DONE);
+	}
+	sqlite3_finalize(raw); UAM_ASSERT_EQ(sqlite3_exec(database.get(), "COMMIT", nullptr, nullptr, nullptr), SQLITE_OK);
+	uam::usage::AntigravityHistoryScan scan; std::size_t emitted = 0;
+	const std::function<bool(const std::vector<uam::usage::Record>&, std::string&)> sink = [&](const std::vector<uam::usage::Record>& records, std::string&)
+	{ emitted += records.size(); UAM_ASSERT(records.size() <= 257); return true; };
+	uam::usage::ScanResult result;
+	for (int batch = 0; batch < 210; ++batch) { result = scan.Refresh(path, {}, sink); UAM_ASSERT(result.error.empty()); if (result.complete) break; }
+	UAM_ASSERT(result.complete); UAM_ASSERT_EQ(emitted, std::size_t{100001}); UAM_ASSERT(scan.Candidates().empty());
+	UAM_ASSERT(scan.Refresh(path, {}, sink).complete); UAM_ASSERT_EQ(emitted, std::size_t{100001});
+}
