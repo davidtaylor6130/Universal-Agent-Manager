@@ -205,13 +205,14 @@
 /* Compacting: boxes slide along, get squashed under the press, slide on. Rollers turn. */
 .status-scene__belt { opacity: .7; }
 .status-scene__roller { fill: none !important; stroke: currentColor; stroke-width: .9; stroke-dasharray: 3.2 1.8; transform-box: fill-box; transform-origin: center; animation: scene-spin 1.2s linear infinite; }
-.status-scene__press { opacity: .9; transform-box: fill-box; animation: scene-press 1.8s var(--ease) infinite; }
+.status-scene__press { opacity: .9; transform-box: fill-box; animation: scene-press .6s var(--ease) infinite; }
 .status-scene__piston { opacity: .6; }
 .status-scene__box { opacity: 0; transform-box: fill-box; transform-origin: bottom center; animation: scene-box 1.8s linear infinite; }
 .status-scene__box--2 { animation-delay: -.6s; }
 .status-scene__box--3 { animation-delay: -1.2s; }
 @keyframes scene-spin { to { transform: rotate(360deg); } }
-@keyframes scene-press { 0%, 38% { transform: translateY(0); } 48% { transform: translateY(3px); } 58%, 100% { transform: translateY(0); } }
+/* Boxes arrive every 0.6s and sit under the press from 32% to 50% of that beat, so the press stamps each one. */
+@keyframes scene-press { 0%, 30% { transform: translateY(0); } 44%, 52% { transform: translateY(3px); } 70%, 100% { transform: translateY(0); } }
 @keyframes scene-box {
   0% { opacity: 0; transform: translateX(0) scaleY(1); }
   8% { opacity: .85; }
