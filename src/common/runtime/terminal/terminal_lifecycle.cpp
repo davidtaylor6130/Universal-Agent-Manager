@@ -1,3 +1,4 @@
+#include "common/config/provider_availability.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
 
 #include "app/chat_domain_service.h"
@@ -454,6 +455,11 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 	if (const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id)))
 	{
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, *chat);
+		if (!provider_availability::IsEnabled(app.settings, provider.id, chat->execution_host_id))
+		{
+			if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
+			return false;
+		}
 		if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat->execution_host_id); !update_error.empty())
 		{
 			if (error_out != nullptr) *error_out = update_error;

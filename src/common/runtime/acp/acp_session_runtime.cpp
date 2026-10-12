@@ -1,3 +1,4 @@
+#include "common/config/provider_availability.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "app/execution_routing_integration.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -2396,6 +2397,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::string& workspace_directory, const std::string& execution_host_id,
 		std::string* error_out)
 	{
+		if (!provider_availability::IsEnabled(app.settings, provider_id, execution_host_id))
+		{
+			if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
+			return false;
+		}
 		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 		if (normalized_provider_id == uam::provider_ids::kAntigravityCli)
 		{
@@ -2519,6 +2525,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 		}
+		if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return false;
 		// Each accepted queue entry owns one provider turn and one durable dispatch marker.
 		const std::deque<AcpQueuedUserPromptState> batch{session.queued_user_prompts.front()};
 		std::string error;

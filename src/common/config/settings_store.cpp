@@ -7,6 +7,7 @@
 #include "common/config/line_value_codec.h"
 #include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
@@ -80,6 +81,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
 	constexpr std::string_view kMcpServersKey = "mcp_servers";
 	constexpr std::string_view kExecutionHostsKey = "execution_hosts";
+	constexpr std::string_view kProviderAvailabilityKey = "provider_availability";
 	constexpr std::string_view kExecutionRoutingKey = "execution_routing";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
@@ -135,6 +137,11 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 				ExecutionRoutingSettings routing;
 				std::string error;
 				if (!SettingsStore::ParseExecutionRoutingSettings(nlohmann::json::parse(uam::DecodeLineValue(value), nullptr, false), routing, error)) return false;
+			}
+			else if (key == kProviderAvailabilityKey)
+			{
+				std::vector<ProviderAvailabilityOverride> policy;
+				if (!uam::provider_availability::Parse(nlohmann::json::parse(uam::DecodeLineValue(value), nullptr, false), policy)) return false;
 			}
 			else if (key == kExecutionHostsKey)
 			{
@@ -526,6 +533,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
+		uam::provider_availability::Normalize(settings.provider_availability);
 		std::string routing_error;
 		ExecutionRoutingSettings validated_routing;
 		if (SettingsStore::ParseExecutionRoutingSettings(SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing), validated_routing, routing_error)) settings.execution_routing = std::move(validated_routing);
@@ -614,6 +622,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
 	WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
 	WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
+	WriteEncodedSetting(lines, kProviderAvailabilityKey, uam::provider_availability::Serialize(normalized.provider_availability).dump());
 	WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
 	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
@@ -849,6 +858,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		{
 			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
 			settings.mcp_servers = uam::mcp_server_config::Parse(parsed);
+		}
+		else if (key == kProviderAvailabilityKey)
+		{
+			(void)uam::provider_availability::Parse(nlohmann::json::parse(decoded_value, nullptr, false), settings.provider_availability);
 		}
 		else if (key == kExecutionHostsKey)
 		{

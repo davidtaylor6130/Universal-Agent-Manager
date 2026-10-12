@@ -185,6 +185,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
+		{"setProviderAvailability", &UamQueryHandler::HandleSetProviderAvailability},
 		{"setUpdateSettings", &UamQueryHandler::HandleSetUpdateSettings},
 		{"setProviderChatDefaults", &UamQueryHandler::HandleSetProviderChatDefaults},
 		{"setEditorSettings", &UamQueryHandler::HandleSetEditorSettings},

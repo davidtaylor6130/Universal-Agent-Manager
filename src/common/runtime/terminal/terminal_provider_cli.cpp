@@ -1,3 +1,4 @@
+#include "common/config/provider_availability.h"
 #include "app/uam_control_service.h"
 #include "app/provider_configuration_service.h"
 #include "common/config/central_provider_configuration.h"
@@ -93,6 +94,11 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	}
 
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	if (!provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
+	{
+		if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
+		return false;
+	}
 	if (const std::string update_error = ProviderCliLaunchBlockReason(app, provider.id, chat.execution_host_id); !update_error.empty())
 	{
 		if (error_out != nullptr) *error_out = update_error;

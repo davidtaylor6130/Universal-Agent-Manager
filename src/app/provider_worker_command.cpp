@@ -1,5 +1,6 @@
 #include "common/provider/provider_text_worker.h"
 #include "app/provider_worker_command.h"
+#include "common/config/provider_availability.h"
 
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
@@ -207,6 +208,11 @@ namespace uam
 		if (error_out != nullptr)
 		{
 			error_out->clear();
+		}
+		if (!remote_target && !provider_availability::IsEnabled(settings, profile.id))
+		{
+			SetError(error_out, provider_availability::DisabledReason());
+			return {};
 		}
 		if (const std::string update_error = remote_target ? std::string{} : ProviderCliLaunchBlockReason(app, profile.id); !update_error.empty())
 		{

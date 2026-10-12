@@ -1,5 +1,6 @@
 #include "app/execution_routing_integration.h"
 #include "common/config/settings_store.h"
+#include "common/config/provider_availability.h"
 #include <stdexcept>
 #include "common/config/central_provider_configuration.h"
 #include "cef/uam_query_handler.h"
@@ -955,6 +956,34 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	{
 		m_app.settings = previous;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Could not save VCS settings."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetProviderAvailability(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "enabled");
+	if (!enabled || !payload.contains("providerId") || !payload["providerId"].is_string() ||
+	    !payload.contains("executionHostId") || !payload["executionHostId"].is_string())
+	{
+		cb->Failure(400, "Provider availability requires a provider, host and enabled boolean.");
+		return;
+	}
+	const std::string provider_id = payload["providerId"].get<std::string>();
+	const std::string host_id = uam::provider_availability::HostId(payload["executionHostId"].get<std::string>());
+	const AppSettings previous = m_app.settings;
+	if (uam::execution_hosts::Find(m_app.settings.execution_hosts, host_id) == nullptr ||
+	    !uam::provider_availability::Set(m_app.settings, provider_id, host_id, *enabled))
+	{
+		cb->Failure(400, "Provider or execution host is unavailable.");
+		return;
+	}
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Could not save provider availability."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);

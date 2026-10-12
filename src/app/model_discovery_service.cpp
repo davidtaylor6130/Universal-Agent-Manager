@@ -2,6 +2,7 @@
 
 #include "app/provider_model_catalog_service.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
@@ -108,7 +109,7 @@ namespace uam
 			const std::map<std::string, ExecutionHost>::const_iterator captured_host = m_hosts.find(scope.execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
 			if (host == nullptr || captured_host == m_hosts.end() || !execution_hosts::SameConnection(*host, captured_host->second) ||
-			    provider == nullptr || !provider->supports_structured || !RegisteredWorkspace(app, scope))
+			    provider == nullptr || !provider->supports_structured || !RegisteredWorkspace(app, scope) || !provider_availability::IsEnabled(app.settings, scope.provider_id, scope.execution_host_id))
 			{
 				item = m_pending_scopes.erase(item);
 				continue;

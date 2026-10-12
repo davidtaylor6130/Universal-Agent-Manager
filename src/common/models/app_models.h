@@ -629,6 +629,14 @@ struct CentralProviderConfiguration
 	std::vector<std::string> default_agents;
 };
 
+/// <summary>A provider's independent runtime availability on one configured execution host.</summary>
+struct ProviderAvailabilityOverride
+{
+	std::string provider_id;
+	std::string execution_host_id;
+	bool enabled = true;
+};
+
 struct AppSettings
 {
 	bool computer_use_allowlist_enabled = false;
@@ -666,6 +674,7 @@ struct AppSettings
 	std::string permission_reviewer_model_id;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
+	std::vector<ProviderAvailabilityOverride> provider_availability;
 	std::string markdown_store_directory;
 	std::string default_editor_preset_id = "vscode";
 	std::string file_explorer_application;

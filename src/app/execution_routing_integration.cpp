@@ -1,4 +1,5 @@
 #include "execution_routing_integration.h"
+#include "common/config/provider_availability.h"
 
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
@@ -130,7 +131,7 @@ namespace uam
 			candidate.runner_ready = host.id == "local" || host.runner_status == "ready";
 			candidate.runner_compatible = host.id == "local" || (!host.runner_version.empty() && host.runner_protocol_version == remote::kRunnerProtocolVersion);
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host.id));
-			candidate.provider_supported = ProviderRuntime::IsRuntimeEnabled(*provider) && (terminal ? provider->supports_interactive : provider->supports_structured) &&
+			candidate.provider_supported = ProviderRuntime::IsRuntimeEnabled(*provider) && provider_availability::IsEnabled(app.settings, provider->id, host.id) && (terminal ? provider->supports_interactive : provider->supports_structured) &&
 			    version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.supported &&
 			    !version->second.installed_version.empty() && version->second.check_error.empty() && execution_hosts::SameConnection(host, version->second.execution_host) &&
 			    ProviderCliLaunchBlockReason(app, provider->id, host.id).empty();
@@ -161,7 +162,8 @@ namespace uam
 		{
 			ExecutionRoutingCandidate local;
 			local.host_id = "local";
-			local.runner_ready = local.runner_compatible = local.provider_supported = true;
+			local.runner_ready = local.runner_compatible = true;
+			local.provider_supported = provider_availability::IsEnabled(app.settings, provider->id, "local");
 			local.connection_identity = ExecutionRoutingConnectionIdentity(execution_hosts::LocalHost());
 			local.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider);
 			candidates.push_back(std::move(local));

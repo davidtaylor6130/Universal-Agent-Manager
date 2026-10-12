@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/execution_routing_service.h"
+#include "common/config/provider_availability.h"
 
 #include <barrier>
 
@@ -462,6 +463,20 @@ UAM_TEST(ExecutionRoutingUnavailableOrStaleProviderObservationCannotBeAdmitted)
 	version.execution_host = app.settings.execution_hosts.back();
 	app.execution_routing_retry_at_by_chat_id.clear();
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingDisabledProviderWaitsUntilHostReenabled)
+{
+	TempDir temp("uam-routing-provider-availability");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	UAM_ASSERT(uam::provider_availability::Set(app.settings, "codex", "remote", false));
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("local"));
+	UAM_ASSERT(uam::provider_availability::Set(app.settings, "codex", "remote", true));
+	app.execution_routing_retry_at_by_chat_id.clear();
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote"));
 }
 
 UAM_TEST(ExecutionRoutingUnknownRestartReservationRequiresDurableAcknowledgedRelease)

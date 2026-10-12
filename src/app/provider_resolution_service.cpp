@@ -1,4 +1,5 @@
 #include "provider_resolution_service.h"
+#include "common/config/provider_availability.h"
 
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
@@ -149,12 +150,12 @@ ProviderResolutionService::WorkerProviderSelection ProviderResolutionService::Wo
 	{
 		if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, worker_provider_id); profile != nullptr)
 		{
-			return {ProviderRuntimeRegistry::Resolve(*profile).SupportsTextWorkers() ? profile : nullptr, uam::strings::Trim(binding->worker_model_id)};
+			return {ProviderRuntimeRegistry::Resolve(*profile).SupportsTextWorkers() && uam::provider_availability::IsEnabled(app.settings, profile->id, chat.execution_host_id) ? profile : nullptr, uam::strings::Trim(binding->worker_model_id)};
 		}
 	}
 
 	const ProviderProfile* profile = ProviderForChat(app, chat);
-	return {profile != nullptr && ProviderRuntimeRegistry::Resolve(*profile).SupportsTextWorkers() ? profile : nullptr, ""};
+	return {profile != nullptr && ProviderRuntimeRegistry::Resolve(*profile).SupportsTextWorkers() && uam::provider_availability::IsEnabled(app.settings, profile->id, chat.execution_host_id) ? profile : nullptr, ""};
 }
 
 const ProviderProfile* ProviderResolutionService::WorkerProviderForChat(const uam::AppState& app, const ChatSession& chat) const
@@ -169,7 +170,7 @@ std::string ProviderResolutionService::WorkerModelForChat(const uam::AppState& a
 
 bool ProviderResolutionService::ChatProviderIsAvailable(const uam::AppState& app, const ChatSession& chat) const
 {
-	return ProviderForChatMatches(app, chat, [](const ProviderProfile& profile) { return ProviderRuntime::IsRuntimeEnabled(profile); });
+	return ProviderForChatMatches(app, chat, [&](const ProviderProfile& profile) { return ProviderRuntime::IsRuntimeEnabled(profile) && uam::provider_availability::IsEnabled(app.settings, profile.id, chat.execution_host_id); });
 }
 
 std::string ProviderResolutionService::ChatProviderUnavailableReason(const uam::AppState& app, const ChatSession& chat) const
@@ -180,6 +181,10 @@ std::string ProviderResolutionService::ChatProviderUnavailableReason(const uam::
 	}
 
 	const std::string preferred = CanonicalProviderId(chat.provider_id);
+	if (const ProviderProfile* profile = ProviderForChat(app, chat); profile != nullptr && ProviderRuntime::IsRuntimeEnabled(*profile) && !uam::provider_availability::IsEnabled(app.settings, profile->id, chat.execution_host_id))
+	{
+		return uam::provider_availability::DisabledReason();
+	}
 	if (preferred.empty())
 	{
 		return "No supported provider is available for this chat in the current build.";

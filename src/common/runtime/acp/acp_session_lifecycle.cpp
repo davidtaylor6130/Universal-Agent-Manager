@@ -1,3 +1,4 @@
+#include "common/config/provider_availability.h"
 #include "common/provider/provider_setup_input.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "app/execution_routing_integration.h"
@@ -608,6 +609,11 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (session.running)
 	{
 		return true;
+	}
+	if (!provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
+	{
+		if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
+		return false;
 	}
 	if (!session.goal_internal_session && !session.model_discovery_only && !PrepareCodexThreadForRuntimeLaunch(app, chat, error_out))
 	{
@@ -1275,6 +1281,7 @@ static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSes
 
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return false;
 	if (session.memory_recall_preparation != nullptr &&
 	    (!paths::IsControllerLocalWorkspace(chat) || !session.memory_recall_position.has_value() ||
 	     session.queued_prompt.empty() || !memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) ||

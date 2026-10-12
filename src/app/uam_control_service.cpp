@@ -1,3 +1,4 @@
+#include "common/config/provider_availability.h"
 #include "common/provider/provider_setup.h"
 #include <condition_variable>
 #include <mutex>
@@ -450,6 +451,7 @@ namespace uam
 				if (host == nullptr) reason = "Execution host unavailable.";
 				else if (host->transport == "ssh" && host->runner_status != "ready") reason = "Execution host is not ready.";
 				else if (host->transport == "ssh" && !execution_hosts::IsAbsoluteRemotePath(host->platform, workspace)) reason = "Remote workspace unavailable.";
+				else if (!provider_availability::IsEnabled(app.settings, id, host_id)) reason = provider_availability::DisabledReason();
 				else if (version == app.runtime_cli_versions_by_provider_id.end() || !version->second.checked) reason = "CLI compatibility has not been checked.";
 				else if (!execution_hosts::SameConnection(*host, version->second.execution_host)) reason = "CLI observation belongs to a different host configuration.";
 				else if (!version->second.supported || version->second.installed_version.empty() || !version->second.check_error.empty()) reason = "CLI is unavailable or incompatible.";

@@ -9,6 +9,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
 #include "common/models/app_models.h"
@@ -124,6 +125,7 @@ namespace uam::settings_frontend_json
 		settings_json["dismissedUpdateVersions"] = settings.dismissed_update_versions;
 		settings_json["defaultNewChatProviderId"] = uam::provider_ids::NormalizeCliProviderAliasOrSelf(settings.default_new_chat_provider_id);
 		settings_json["providerChatDefaults"] = SerializeProviderChatDefaults(settings.provider_chat_defaults);
+		settings_json["providerAvailability"] = provider_availability::Serialize(settings.provider_availability);
 		settings_json["fileExplorerApplication"] = settings.file_explorer_application;
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		settings_json["editorFileAssociations"] = SerializeEditorFileAssociations(settings.editor_file_associations);
