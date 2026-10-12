@@ -1305,7 +1305,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			if (chat.workspace_isolation_kind == uam::paths::kPendingGitWorktreeIsolationKind &&
-			    uam::paths::IsControllerLocalWorkspace(chat) && chat.agent_run_id.empty() && chat.goal_owner_chat_id.empty())
+			    uam::paths::IsControllerLocalWorkspace(chat) && chat.agent_run_id.empty() && chat.goal_owner_chat_id.empty() &&
+			    chat.temporary_parent_chat_id.empty())
 			{
 				// Model discovery may have opened an idle provider in the source directory.
 				// Restart it so the first prompt runs in the new worktree.

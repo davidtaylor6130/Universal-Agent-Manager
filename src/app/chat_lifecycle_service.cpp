@@ -1010,6 +1010,9 @@ bool uam::CreateTemporarySideChat(AppState& app, const std::string& parent_id, s
 	}
 	ChatSession side = ChatDomainService().CreateNewChat(parent->folder_id, parent->provider_id);
 	side.temporary_parent_chat_id = parent->id;
+	// Temporary conversations share the parent's current workspace without owning
+	// the ordinary new-chat request to create another branch/worktree on first send.
+	side.workspace_isolation_kind.clear();
 	side.title = "Side chat: " + parent->title;
 	side.execution_host_id = parent->execution_host_id;
 	side.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, *parent));

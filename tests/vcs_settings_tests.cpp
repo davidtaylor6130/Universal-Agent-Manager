@@ -6,6 +6,52 @@
 
 using namespace uam_test;
 
+UAM_TEST(TemporarySideChatNeverInheritsAutomaticWorktreeCreation)
+{
+	TempDir temp("uam-side-chat-workspace");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession parent = ChatDomainService().CreateNewChat("", "codex-cli");
+	parent.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	parent.workspace_directory = (temp.root / "source").string();
+	parent.workspace_source_directory = parent.workspace_directory;
+	parent.workspace_worktree_directory = (temp.root / "parent-worktree").string();
+	parent.workspace_branch_name = "build/parent";
+	fs::create_directories(parent.workspace_worktree_directory);
+	ChatDomainService().AddMessage(parent, MessageRole::User, "Keep using this workspace");
+	app.chats.push_back(parent);
+	std::string side_id;
+	UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &side_id));
+	const ChatSession* side = ChatDomainService().FindChatById(app, side_id);
+	UAM_ASSERT(side != nullptr);
+	UAM_ASSERT(side->workspace_isolation_kind.empty());
+	UAM_ASSERT(side->workspace_worktree_directory.empty());
+	UAM_ASSERT(side->workspace_branch_name.empty());
+	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, *side), fs::path(parent.workspace_worktree_directory));
+	UAM_ASSERT_EQ(app.chats.front().workspace_branch_name, parent.workspace_branch_name);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, side_id);
+	UAM_ASSERT(persisted.has_value() && persisted->workspace_isolation_kind.empty());
+	UAM_ASSERT(!fs::exists(app.data_root / "worktrees"));
+}
+
+UAM_TEST(PersistedTemporarySideChatSkipsFirstLaunchWorktreePreparation)
+{
+	TempDir temp("uam-side-chat-legacy-workspace");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession side = ChatDomainService().CreateNewChat("", "codex-cli");
+	side.temporary_parent_chat_id = "parent";
+	side.workspace_directory = (temp.root / "unavailable-parent-workspace").string();
+	const ChatSession before = side;
+	std::string error;
+	UAM_ASSERT(uam::GitWorktreeService().PrepareForFirstLaunch(app, side, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(side.workspace_directory, before.workspace_directory);
+	UAM_ASSERT_EQ(side.workspace_isolation_kind, before.workspace_isolation_kind);
+	UAM_ASSERT(side.workspace_worktree_directory.empty());
+	UAM_ASSERT(!fs::exists(app.data_root / "worktrees"));
+}
+
 UAM_TEST(VcsSettingsPersistAndDefaultExistingInstallationsToEnabled)
 {
 	TempDir temp("uam-vcs-settings");

@@ -800,7 +800,8 @@ namespace uam
 	{
 		if (chat.workspace_isolation_kind != uam::paths::kPendingGitWorktreeIsolationKind ||
 		    !uam::paths::IsControllerLocalWorkspace(chat) || chat.imported_read_only ||
-		    !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty()) return true;
+		    !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() ||
+		    !chat.temporary_parent_chat_id.empty()) return true;
 		if (!app.settings.git_enabled)
 		{
 			// Only an uncreated default is cleared; existing isolated paths remain owned.
