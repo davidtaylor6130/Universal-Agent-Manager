@@ -2755,7 +2755,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} />
+            <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
             <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context"
               detail={acp?.providerUsage?.contextUsage ? <ContextUsageStatus usage={acp.providerUsage.contextUsage} /> : undefined} />
             <SubagentWaitStatus binding={acp} />

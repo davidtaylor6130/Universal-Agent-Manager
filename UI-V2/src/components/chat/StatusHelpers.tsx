@@ -56,18 +56,24 @@ export type ChatStatusTone = 'info' | 'agents' | 'warning'
  * a hairline either side of a tiny illustrated scene, the title and a live elapsed timer.
  * Keeps its last content mounted briefly so the exit can animate.
  */
-export function ChatStatusStrip({ open, tone, scene, title, detail }: {
+export function ChatStatusStrip({ open, tone, scene, title, detail, timeMode = 'elapsed' }: {
   open: boolean
   tone: ChatStatusTone
   scene: ReactNode
   title: string
   detail?: ReactNode
+  /** 'elapsed' ticks while work runs; 'since' shows the clock time the state began (e.g. when it stopped). */
+  timeMode?: 'elapsed' | 'since'
 }) {
   const [present, setPresent] = useState(open)
   if (open && !present) setPresent(true)
   const lastShown = useRef<{ tone: ChatStatusTone; scene: ReactNode; title: string; detail?: ReactNode } | null>(null)
   if (open) lastShown.current = { tone, scene, title, detail }
-  const elapsed = useElapsedSeconds(open)
+  const elapsed = useElapsedSeconds(open && timeMode === 'elapsed')
+  // The provider reports no stop time, so 'since' records the moment the strip first appeared.
+  const since = useRef<number | null>(null)
+  if (open && since.current === null) since.current = Date.now()
+  if (!open && !present) since.current = null
   const frozenElapsed = useRef(0)
   if (open) frozenElapsed.current = elapsed
   useEffect(() => {
@@ -82,7 +88,9 @@ export function ChatStatusStrip({ open, tone, scene, title, detail }: {
       <span className="chat-status-strip__pill">
         <span className="chat-status-strip__scene">{shown.scene}</span>
         <span className="chat-status-strip__title">{shown.title}</span>
-        <span className="chat-status-strip__time" aria-label={`for ${formatElapsed(frozenElapsed.current)}`}>{formatElapsed(frozenElapsed.current)}</span>
+        {timeMode === 'since' && since.current !== null
+          ? <time className="chat-status-strip__time" dateTime={new Date(since.current).toISOString()}>since {new Date(since.current).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+          : <span className="chat-status-strip__time" aria-label={`for ${formatElapsed(frozenElapsed.current)}`}>{formatElapsed(frozenElapsed.current)}</span>}
         {shown.detail && <span className="chat-status-strip__detail">{shown.detail}</span>}
       </span>
     </div>
