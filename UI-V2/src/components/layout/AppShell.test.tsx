@@ -1,20 +1,26 @@
-import { act, Profiler } from 'react'
+import { act, Profiler, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 
-const { mainPanelRenderCount } = vi.hoisted(() => ({
+const { mainPanelRenderCount, sidebarRenderCount } = vi.hoisted(() => ({
   mainPanelRenderCount: { value: 0 },
+  sidebarRenderCount: { value: 0 },
 }))
 
 vi.mock('./Sidebar', () => ({
-  Sidebar: () => <div data-testid="sidebar">Sidebar</div>,
+  Sidebar: () => {
+    sidebarRenderCount.value += 1
+    const folderCount = useAppStore(state => state.folders.length)
+    return <div data-testid="sidebar">Sidebar {folderCount}</div>
+  },
 }))
 
 vi.mock('./MainPanel', () => ({
   MainPanel: () => {
     mainPanelRenderCount.value += 1
-    return <div data-testid="main-panel">Main panel<input aria-label="Chat draft" defaultValue=""/></div>
+    const activeSessionId = useAppStore(state => state.activeSessionId)
+    return <div data-testid="main-panel" data-session={activeSessionId}>Main panel<input aria-label="Chat draft" defaultValue=""/></div>
   },
 }))
 
@@ -24,6 +30,7 @@ import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+const defaultSetSettingsOpen = useAppStore.getState().setSettingsOpen
 const defaultUndoOrganization = useAppStore.getState().undoOrganization
 const localStorageValues = new Map<string, string>()
 Object.defineProperty(window, 'localStorage', {
@@ -40,6 +47,7 @@ describe('AppShell', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     mainPanelRenderCount.value = 0
+    sidebarRenderCount.value = 0
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1400 })
     window.localStorage.clear()
     useAppStore.setState({
@@ -229,6 +237,53 @@ describe('AppShell', () => {
     host.remove()
   })
 
+  it('does not open a standalone memory overlay when closing embedded memory settings', async () => {
+    const memoryModule = await import('../settings/MemoryLibraryModal')
+    const memoryComponent = memoryModule.MemoryLibraryModal as unknown as { render: (props: { embedded?: boolean }, ref: unknown) => ReactNode }
+    const originalRender = memoryComponent.render
+    const standaloneRender = vi.fn()
+    vi.spyOn(memoryComponent, 'render').mockImplementation((props, ref) => {
+      if (!props.embedded) standaloneRender()
+      return originalRender(props, ref)
+    })
+    useAppStore.setState({
+      setSettingsOpen: defaultSetSettingsOpen,
+      openAllMemoryLibrary: async () => {
+        useAppStore.setState({ memoryLibraryScope: { scopeType: 'all', folderId: '', label: 'All memory', rootPath: '' } })
+        return true
+      },
+      closeMemoryLibrary: () => useAppStore.setState({ memoryLibraryScope: null }),
+      refreshCustomThemes: vi.fn(async () => true),
+      memoryLibraryEntries: [],
+      memoryLibraryLoading: false,
+      memoryLibraryError: '',
+      mcpServers: [],
+    })
+    const host = document.createElement('div'), root = createRoot(host)
+    document.body.appendChild(host)
+    try {
+      await act(async () => {
+        useAppStore.setState({ memoryLibraryScope: { scopeType: 'all', folderId: '', label: 'All memory', rootPath: '' } })
+        root.render(<AppShell />)
+        await import('../settings/MemoryLibraryModal')
+      })
+      expect(standaloneRender).toHaveBeenCalled()
+      await act(async () => useAppStore.setState({ memoryLibraryScope: null }))
+      standaloneRender.mockClear()
+      await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!.click(); await import('../settings/SettingsModal') })
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Memory library"]')!.click())
+      expect(useAppStore.getState().memoryLibraryScope).not.toBeNull()
+      standaloneRender.mockClear()
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
+      expect(useAppStore.getState().isSettingsOpen).toBe(false)
+      expect(standaloneRender).not.toHaveBeenCalled()
+      expect(host.querySelector('[role="dialog"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('replaces the middle with grouped Settings while retaining chat state and working rails', async () => {
     useAppStore.setState({
       setSettingsOpen: vi.fn(open => useAppStore.setState({isSettingsOpen: open})),
@@ -242,6 +297,8 @@ describe('AppShell', () => {
     const draft = host.querySelector<HTMLInputElement>('[aria-label="Chat draft"]')!
     draft.value = 'Keep this draft'
     const sidebar = host.querySelector('[data-testid="sidebar"]')
+    const chatRendersBeforeNavigation = mainPanelRenderCount.value
+    const sidebarRendersBeforeNavigation = sidebarRenderCount.value
     const settings = host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!
     act(() => settings.click())
     act(() => settings.click())
@@ -268,6 +325,11 @@ describe('AppShell', () => {
     expect(host.querySelector('[aria-label="Chat draft"]')).toBe(draft)
     expect(draft.value).toBe('Keep this draft')
     expect(host.querySelector('[data-testid="sidebar"]')).toBe(sidebar)
+    expect(mainPanelRenderCount.value).toBe(chatRendersBeforeNavigation)
+    expect(sidebarRenderCount.value).toBe(sidebarRendersBeforeNavigation)
+    act(() => useAppStore.setState({ activeSessionId: 'new-selection', folders: [{ id: 'new-folder', name: 'New folder', directory: '/tmp/new-folder' }] }))
+    expect(host.querySelector('[data-testid="main-panel"]')!.getAttribute('data-session')).toBe('new-selection')
+    expect(host.querySelector('[data-testid="sidebar"]')!.textContent).toContain('Sidebar 1')
     act(() => root.unmount())
     host.remove()
   })

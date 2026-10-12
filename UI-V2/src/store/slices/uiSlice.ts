@@ -252,7 +252,11 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       isNewChatModalOpen: open,
       newChatFolderId: open ? (folderId ?? null) : null,
     }),
-    setSettingsOpen: (open: boolean) => set({ isSettingsOpen: open }),
+    setSettingsOpen: (open: boolean) => {
+      // Retire embedded memory before closing, so it cannot reappear as a standalone overlay.
+      if (!open && get().isSettingsOpen) get().closeMemoryLibrary()
+      set({ isSettingsOpen: open })
+    },
     setWorkingDisplayMode: (workingDisplayMode: 'compact' | 'verbose') => set((state: AppState) => {
       writeStoredAppShellLayout({ ...state, workingDisplayMode })
       return { workingDisplayMode }

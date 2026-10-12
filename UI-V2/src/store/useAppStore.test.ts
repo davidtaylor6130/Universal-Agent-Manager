@@ -6164,6 +6164,31 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().memoryLibraryLoading).toBe(false)
   })
 
+  it.each(['open', 'refresh'])('cancels a late embedded memory %s response before settings close', async (operation) => {
+    let finish: ((response: string) => void) | undefined
+    ensureTestWindow().cefQuery = vi.fn(({ onSuccess }) => { finish = onSuccess }) as TestWindow['cefQuery']
+    useAppStore.setState({ isSettingsOpen: true, memoryLibraryScope: { scopeType: 'all', folderId: '', label: 'All memory', rootPath: '' } })
+    const pending = operation === 'open' ? useAppStore.getState().openAllMemoryLibrary() : useAppStore.getState().refreshMemoryLibrary()
+    const closeSnapshots: Array<{ open: boolean; hasMemory: boolean }> = []
+    const unsubscribe = useAppStore.subscribe(state => closeSnapshots.push({ open: state.isSettingsOpen, hasMemory: Boolean(state.memoryLibraryScope) }))
+    try { useAppStore.getState().setSettingsOpen(false) } finally { unsubscribe() }
+    expect(closeSnapshots.some(state => !state.open && state.hasMemory)).toBe(false)
+    expect(useAppStore.getState().isSettingsOpen).toBe(false)
+    expect(useAppStore.getState().memoryLibraryScope).toBeNull()
+    finish?.(JSON.stringify({ scope: { scopeType: 'all', folderId: '', label: 'All memory', rootPath: '' }, entries: [] }))
+    await expect(pending).resolves.toBe(false)
+    expect(useAppStore.getState().memoryLibraryScope).toBeNull()
+    expect(useAppStore.getState().memoryLibraryLoading).toBe(false)
+  })
+
+  it('preserves explicit standalone memory when settings are already closed', () => {
+    const scope = { scopeType: 'all' as const, folderId: '', label: 'All memory', rootPath: '' }
+    useAppStore.setState({ isSettingsOpen: false, memoryLibraryScope: scope })
+    useAppStore.getState().setSettingsOpen(false)
+    expect(useAppStore.getState().memoryLibraryScope).toEqual(scope)
+    useAppStore.getState().closeMemoryLibrary()
+  })
+
   it('creates and deletes memory entries through the active scope', async () => {
     const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
     const testWindow = ensureTestWindow()
