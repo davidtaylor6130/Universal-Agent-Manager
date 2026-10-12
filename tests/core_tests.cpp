@@ -24,6 +24,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <future>
 #include <type_traits>
 
 #if defined(_WIN32)
@@ -174,6 +175,180 @@ UAM_TEST(PermissionReviewQueueAdvanceKeepsNewWorkerOwned)
 	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
 	UAM_ASSERT(transport.captured.find("\"id\":7") != std::string::npos);
 	UAM_ASSERT(transport.captured.find("\"id\":8") == std::string::npos);
+#endif
+}
+
+UAM_TEST(OpenCodePermissionFeedbackDoesNotWaitForInteractionTimestampStorage)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-opencode-permission-feedback");
+	const fs::path shim = temp.root / "gemini";
+	UAM_ASSERT(uam::io::WriteTextFile(shim,
+	    "#!/bin/sh\nprintf '%s\\n' '" +
+	    nlohmann::json{{"decision", "uncertain"}, {"reason", "Private fixture."}}.dump() + "'\n"));
+	fs::permissions(shim, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or(""));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+	app.settings.permission_reviewer_provider_id = "gemini-cli";
+	app.settings.permission_reviewer_model_id = "private-fake-model";
+	ChatSession chat;
+	chat.id = "opencode-permission-feedback";
+	chat.provider_id = "opencode-cli";
+	chat.workspace_directory = temp.root.string();
+	chat.command_safety_tier = "aiReview";
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = chat.provider_id;
+	owned->protocol_kind = "opencode-acp";
+	owned->running = owned->processing = owned->session_ready = true;
+	owned->current_mode_id = "default";
+	uam::AcpSessionState& session = *owned;
+	app.acp_sessions.push_back(std::move(owned));
+	ManualCompactionWriter transport(session);
+	struct Cleanup
+	{
+		uam::AppState& app;
+		~Cleanup() { uam::acp_detail::StopPermissionReviewTasks(app); }
+	} cleanup{app};
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, app.chats.front());
+	UAM_ASSERT(prepared != nullptr);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool handled = uam::ProcessAcpLineForTests(app, session, app.chats.front(), R"({"jsonrpc":"2.0","id":51,"method":"session/request_permission","params":{"toolCall":{"toolCallId":"private-read","title":"Read controlled fixture","kind":"read","status":"pending","rawInput":{"command":"cat private-fixture.txt"}},"options":[{"optionId":"once","name":"Allow once","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}})");
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(handled);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(250));
+	UAM_ASSERT(session.waiting_for_permission);
+	UAM_ASSERT_EQ(session.pending_permission.request_id_json, std::string("51"));
+	UAM_ASSERT_EQ(app.permission_review_tasks.size(), std::size_t{1});
+	UAM_ASSERT(app.permission_review_tasks.front().worker != nullptr);
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT(!session.interaction_at.empty());
+	UAM_ASSERT_EQ(saved->interaction_at, session.interaction_at);
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	UAM_ASSERT(transport.captured.empty());
+#endif
+}
+
+UAM_TEST(OpenCodePermissionReviewUsesIsolatedVerdictsAndPersistsOwnedResults)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	for (const std::string scenario : {"approve", "deny", "uncertain", "malformed", "doom", "sensitive"})
+	{
+		TempDir temp("uam-opencode-review-result");
+		const fs::path shim = temp.root / "gemini";
+		const fs::path marker = temp.root / "reviewer-ran";
+		const std::string verdict = scenario == "malformed" ? "invalid fixture result" :
+		    nlohmann::json{{"decision", scenario}, {"reason", "Private fixture verdict."}}.dump();
+		UAM_ASSERT(uam::io::WriteTextFile(shim,
+		    "#!/bin/sh\nprintf 'private-fixture\\n' > \"$UAM_TEST_OPENCODE_REVIEW_MARKER\"\nprintf '%s\\n' '" +
+		    verdict + "'\n"));
+		fs::permissions(shim, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+		ScopedEnvVar path("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or(""));
+		ScopedEnvVar review_marker("UAM_TEST_OPENCODE_REVIEW_MARKER", marker.string());
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = {ProviderProfileStore::DefaultGeminiProfile()};
+		app.settings.permission_reviewer_provider_id = "gemini-cli";
+		app.settings.permission_reviewer_model_id = "private-fake-model";
+		ChatSession chat;
+		chat.id = "opencode-review-result";
+		chat.provider_id = "opencode-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.command_safety_tier = "aiReview";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->protocol_kind = "opencode-acp";
+		owned->running = owned->processing = owned->session_ready = true;
+		owned->current_mode_id = "default";
+		uam::AcpSessionState& session = *owned;
+		app.acp_sessions.push_back(std::move(owned));
+		ManualCompactionWriter transport(session);
+		struct Cleanup
+		{
+			uam::AppState& app;
+			~Cleanup() { uam::acp_detail::StopPermissionReviewTasks(app); }
+		} cleanup{app};
+		nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 88}, {"method", "session/request_permission"},
+		    {"params", {{"toolCall", {{"toolCallId", "reviewed-tool"}, {"title", scenario == "doom" ? "doom_loop" : "Read controlled fixture"},
+		    {"kind", "read"}, {"status", "pending"}, {"rawInput", scenario == "sensitive" ?
+		    nlohmann::json{{"password", "fixture-private"}} : nlohmann::json{{"command", "cat private-fixture.txt"}}}}},
+		    {"options", nlohmann::json::array({{{"optionId", "once"}, {"name", "Allow once"}, {"kind", "allow_once"}},
+		    {{"optionId", "always"}, {"name", "Allow always"}, {"kind", "allow_always"}},
+		    {{"optionId", "reject"}, {"name", "Reject"}, {"kind", "reject_once"}}})}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), frame.dump()));
+		UAM_ASSERT(session.waiting_for_permission);
+		if (scenario == "doom" || scenario == "sensitive")
+		{
+			UAM_ASSERT(app.permission_review_tasks.empty());
+			UAM_ASSERT(!fs::exists(marker));
+			UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+			UAM_ASSERT(transport.captured.empty());
+			continue;
+		}
+		UAM_ASSERT_EQ(app.permission_review_tasks.size(), std::size_t{1});
+		// Complete the first wait snapshot before consuming the independent review result.
+		(void)uam::acp_detail::SyncAcpToolCallsToAssistantMessage(app.chats.front(), session, true);
+		UAM_ASSERT(uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!app.permission_review_tasks.front().state->completed.load() && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::yield();
+		UAM_ASSERT(app.permission_review_tasks.front().state->completed.load());
+		UAM_ASSERT(fs::exists(marker));
+		UAM_ASSERT(uam::acp_detail::PollPermissionReviewTasks(app));
+		UAM_ASSERT(app.permission_review_tasks.empty());
+		const std::chrono::steady_clock::time_point save_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < save_deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+		const bool decided = scenario == "approve" || scenario == "deny";
+		UAM_ASSERT_EQ(session.waiting_for_permission, !decided);
+		if (decided)
+		{
+			const nlohmann::json response = nlohmann::json::parse(transport.captured);
+			UAM_ASSERT_EQ(response["id"].get<int>(), 88);
+			UAM_ASSERT_EQ(response["result"]["outcome"]["optionId"].get<std::string>(), scenario == "approve" ? std::string("once") : std::string("reject"));
+		}
+		else UAM_ASSERT(transport.captured.empty());
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		bool persisted = false;
+		for (const Message& message : saved->messages)
+			for (const ToolCall& tool : message.tool_calls)
+				if (tool.id == "reviewed-tool")
+					persisted = uam::strings::Contains(tool.result_text, "AI Review (" + (scenario == "malformed" ? std::string("error") : scenario) + "):");
+		UAM_ASSERT(persisted);
+	}
 #endif
 }
 

@@ -453,8 +453,15 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 	if (session.waiting_for_permission)
 	{
 		BeginAcpPendingWait(session, kAcpLifecycleWaitingPermission);
-		if (uam::time::LatestInteractionTimestamp(chat.interaction_at, session.interaction_at) != chat.interaction_at && !SaveChatQuietly(app, chat))
-			ScheduleChatSave(app, chat, 0.0);
+		const std::string interaction_at = uam::time::LatestInteractionTimestamp(chat.interaction_at, session.interaction_at);
+		if (interaction_at != chat.interaction_at)
+		{
+			if (ChatSession* owner = ChatDomainService().FindChatById(app, chat.id); owner != nullptr)
+			{
+				owner->interaction_at = interaction_at;
+				ScheduleChatSave(app, *owner, 0.0);
+			}
+		}
 	}
 	else if (session.waiting_for_user_input)
 	{
@@ -580,6 +587,8 @@ bool PollPermissionReviewTasks(AppState& app)
 					AppendAcpDiagnostic(*session, "permission_review", approve ? "missing_allow_once" : "response_failed", "", task.request_id_json, false, 0, reason);
 				}
 			}
+			// Persist only the current owner's verdict, including uncertain or invalid review diagnostics.
+			ScheduleChatSave(app, *chat, 0.0);
 			changed = true;
 		}
 	}
