@@ -132,13 +132,13 @@ export function resolveDocumentTheme(theme: StoredTheme, customThemes: CustomThe
 export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme[] = []): void {
   if (typeof document !== 'undefined' && document.documentElement) {
     const root = document.documentElement
-    for (const property of Object.values(CUSTOM_CSS_PROPERTIES)) root.style.removeProperty(property)
-    for (const property of DERIVED_CSS_PROPERTIES) root.style.removeProperty(property)
+    const desiredProperties: Record<string, string> = {}
     const customTheme = customThemes.find((candidate) => candidate.id === theme)
-    root.setAttribute('data-theme', customTheme?.base ?? (theme === 'system' ? resolveDocumentTheme(theme) : theme))
+    const documentTheme = customTheme?.base ?? (theme === 'system' ? resolveDocumentTheme(theme) : theme)
+    if (root.getAttribute('data-theme') !== documentTheme) root.setAttribute('data-theme', documentTheme)
     if (customTheme) {
       for (const [key, property] of Object.entries(CUSTOM_CSS_PROPERTIES) as Array<[keyof ThemeColors, string]>) {
-        root.style.setProperty(property, customTheme.colors[key])
+        desiredProperties[property] = customTheme.colors[key]
       }
       const { background, surfaceUp, text, textMuted, accent, success, warning, error } = customTheme.colors
       const derived: Record<string, string> = {
@@ -160,7 +160,15 @@ export function applyDocumentTheme(theme: StoredTheme, customThemes: CustomTheme
         '--term-cursor': accent,
         '--term-selection': `color-mix(in srgb, ${accent} 28%, transparent)`,
       }
-      for (const [property, value] of Object.entries(derived)) root.style.setProperty(property, value)
+      Object.assign(desiredProperties, derived)
+    }
+    // State pushes reapply themes; unchanged colours must not invalidate the entire document.
+    for (const property of [...Object.values(CUSTOM_CSS_PROPERTIES), ...DERIVED_CSS_PROPERTIES]) {
+      const value = desiredProperties[property]
+      const current = root.style.getPropertyValue(property)
+      if (value === undefined) {
+        if (current) root.style.removeProperty(property)
+      } else if (current !== value) root.style.setProperty(property, value)
     }
   }
 }
