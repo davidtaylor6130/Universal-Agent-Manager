@@ -13491,6 +13491,110 @@ UAM_TEST(RemoteCliElevationSettingSurvivesSerializationAndDefaultsOff)
 	UAM_ASSERT(!loaded.back().cli_updates_as_admin);
 }
 
+UAM_TEST(ConfiguredRemoteCliRowsExposeUnknownScopedPoliciesBeforeAnyProbe)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ProviderProfile alias = app.provider_profiles.front();
+	alias.id = " GEMINI ";
+	app.provider_profiles.push_back(alias);
+	ExecutionHost first;
+	first.id = "remote-first";
+	first.transport = "ssh";
+	first.ssh_alias = "private-first";
+	first.platform = "linux";
+	ExecutionHost second = first;
+	second.id = "remote-second";
+	second.ssh_alias = "private-second";
+	second.platform = "windows";
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), first, second};
+	uam::CliProviderVersionState& local = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kGeminiCli];
+	local.checked = true;
+	local.installed_version = "private-local-only";
+	const nlohmann::json state = uam::StateSerializer::Serialize(app);
+	const nlohmann::json& manager = state["cliVersionManager"];
+	std::set<std::string> expected;
+	for (const nlohmann::json& provider : manager["providers"])
+		expected.insert(provider["providerId"].get<std::string>());
+	UAM_ASSERT_EQ(expected.size(), std::size_t{6});
+	UAM_ASSERT_EQ(manager["remoteProviders"].size(), expected.size() * 2);
+	std::map<std::string, std::set<std::string>> actual;
+	for (const nlohmann::json& provider : manager["remoteProviders"])
+	{
+		const std::string host_id = provider["executionHostId"].get<std::string>();
+		UAM_ASSERT(host_id == first.id || host_id == second.id);
+		UAM_ASSERT(actual[host_id].insert(provider["providerId"].get<std::string>()).second);
+		UAM_ASSERT_EQ(provider["status"].get<std::string>(), std::string("unknown"));
+		UAM_ASSERT(provider["installedVersion"].get<std::string>().empty());
+		UAM_ASSERT(!provider["running"].get<bool>());
+		UAM_ASSERT(provider["canInstall"].is_boolean());
+		UAM_ASSERT(provider["availableVersions"].is_array());
+		UAM_ASSERT(!provider["routingConnectionIdentity"].get<std::string>().empty());
+		UAM_ASSERT(provider["lastOutput"].get<std::string>().empty());
+	}
+	UAM_ASSERT_EQ(actual[first.id], expected);
+	UAM_ASSERT_EQ(actual[second.id], expected);
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(app)["cliVersionManager"], manager);
+	UAM_ASSERT(!app.runtime_cli_version_check_task.running);
+	UAM_ASSERT(app.runtime_cli_install_tasks.empty());
+	UAM_ASSERT_EQ(app.runtime_cli_versions_by_provider_id.size(), std::size_t{1});
+}
+
+UAM_TEST(RemoteCliRowsRejectOldConnectionsAndForeignMaintenanceObservations)
+{
+	uam::AppState app;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ExecutionHost old;
+	old.id = "remote-replaced";
+	old.transport = "ssh";
+	old.ssh_alias = "private-old";
+	old.platform = "linux";
+	ExecutionHost current = old;
+	current.ssh_alias = "private-current";
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), current};
+	const std::string key = CliProviderVersionStateKey(uam::provider_ids::kCodexCli, current.id);
+	uam::CliProviderVersionState& cached = app.runtime_cli_versions_by_provider_id[key];
+	cached.provider_id = uam::provider_ids::kCodexCli;
+	cached.execution_host = old;
+	cached.checked = true;
+	cached.installed_version = "private-old-version";
+	cached.raw_output = "private old output";
+	app.runtime_cli_version_provider_id = uam::provider_ids::kCodexCli;
+	app.runtime_cli_version_check_task.running = true;
+	app.runtime_cli_version_check_task.execution_host = old;
+	app.runtime_cli_version_check_task.command_preview = "private old check";
+	app.runtime_cli_install_tasks[key].running = true;
+	app.runtime_cli_install_tasks[key].execution_host = old;
+	app.runtime_cli_install_tasks[key].command_preview = "private old install";
+	app.pending_cli_updates[key] = {uam::provider_ids::kCodexCli, "private old target", old};
+	const auto codex_row = [&app]() -> nlohmann::json
+	{
+		const nlohmann::json rows = uam::StateSerializer::Serialize(app)["cliVersionManager"]["remoteProviders"];
+		for (const nlohmann::json& row : rows)
+			if (row["providerId"] == uam::provider_ids::kCodexCli) return row;
+		return nlohmann::json{};
+	};
+	nlohmann::json row = codex_row();
+	UAM_ASSERT(row.is_object());
+	UAM_ASSERT_EQ(row["status"].get<std::string>(), std::string("unknown"));
+	UAM_ASSERT(row["installedVersion"].get<std::string>().empty());
+	UAM_ASSERT(row["lastOutput"].get<std::string>().empty());
+	UAM_ASSERT(row["lastCommand"].get<std::string>().empty());
+	UAM_ASSERT(!row["running"].get<bool>());
+	cached.execution_host = current;
+	cached.installed_version = "0.149.0";
+	cached.raw_output = "private current output";
+	row = codex_row();
+	UAM_ASSERT_EQ(row["installedVersion"].get<std::string>(), std::string("0.149.0"));
+	UAM_ASSERT_EQ(row["lastOutput"].get<std::string>(), std::string("private current output"));
+	UAM_ASSERT(!row["running"].get<bool>());
+	cached.provider_id = uam::provider_ids::kOpenCodeCli;
+	row = codex_row();
+	UAM_ASSERT(row["installedVersion"].get<std::string>().empty());
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+	UAM_ASSERT(uam::StateSerializer::Serialize(app)["cliVersionManager"]["remoteProviders"].empty());
+}
+
 UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
 {
 	const ProviderCliCompatibilityService service;

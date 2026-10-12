@@ -1372,15 +1372,25 @@ namespace uam
 			return preferred_version;
 		}
 
+		/** Retains local compatibility while binding remote observations to the current connection. */
+		bool CliObservationMatchesHost(const ExecutionHost& observed, const ExecutionHost& current)
+		{
+			return current.id == execution_hosts::kLocalHostId
+			    ? observed.id == execution_hosts::kLocalHostId
+			    : execution_hosts::SameConnection(observed, current);
+		}
+
 		nlohmann::json SerializeCliVersionEntry(const AppState& app, const ProviderCliCompatibilityService& service, const std::string& provider_id, const ExecutionHost& execution_host = ExecutionHost{})
 		{
 			const bool check_running_for_provider = app.runtime_cli_version_check_task.running &&
 			                                        NormalizedCliVersionManagedProviderId(app.runtime_cli_version_provider_id) == provider_id &&
-			                                        app.runtime_cli_version_check_task.execution_host.id == execution_host.id;
+			                                        CliObservationMatchesHost(app.runtime_cli_version_check_task.execution_host, execution_host);
 			const auto install = app.runtime_cli_install_tasks.find(CliProviderVersionStateKey(provider_id, execution_host.id));
-			const bool install_running_for_provider = install != app.runtime_cli_install_tasks.end() && install->second.running;
+			const bool install_running_for_provider = install != app.runtime_cli_install_tasks.end() && install->second.running && CliObservationMatchesHost(install->second.execution_host, execution_host);
 			const auto state_it = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider_id, execution_host.id));
-			const bool has_provider_state = state_it != app.runtime_cli_versions_by_provider_id.end();
+			const bool has_provider_state = state_it != app.runtime_cli_versions_by_provider_id.end() &&
+			    CliObservationMatchesHost(state_it->second.execution_host, execution_host) &&
+			    (state_it->second.provider_id.empty() || NormalizedCliVersionManagedProviderId(state_it->second.provider_id) == provider_id);
 			const CliProviderVersionState provider_state = has_provider_state ? state_it->second : CliProviderVersionState{};
 			const std::string preferred_version = service.PreferredVersionForProvider(provider_id);
 			const std::string selected_version = SelectedCliVersionForFrontend(provider_state, preferred_version);
@@ -1430,7 +1440,11 @@ namespace uam
 			provider_json["status"] = status;
 			provider_json["message"] = provider_state.message;
 			provider_json["checkError"] = provider_state.check_error;
-			provider_json["running"] = check_running_for_provider || install_running_for_provider || app.pending_cli_updates.contains(CliProviderVersionStateKey(provider_id, execution_host.id));
+			const std::unordered_map<std::string, PendingCliUpdate>::const_iterator pending = app.pending_cli_updates.find(CliProviderVersionStateKey(provider_id, execution_host.id));
+			const bool update_pending_for_provider = pending != app.pending_cli_updates.end() &&
+			    CliObservationMatchesHost(pending->second.execution_host, execution_host) &&
+			    (pending->second.provider_id.empty() || NormalizedCliVersionManagedProviderId(pending->second.provider_id) == provider_id);
+			provider_json["running"] = check_running_for_provider || install_running_for_provider || update_pending_for_provider;
 			provider_json["blockingChatIds"] = ProviderCliBlockingChatIds(app, provider_id, execution_host.id);
 			provider_json["installMethod"] = provider_state.install_method;
 			provider_json["lastInstallStatus"] = provider_state.last_install_status;
@@ -1457,15 +1471,15 @@ namespace uam
 			}
 
 			nlohmann::json remote_providers = nlohmann::json::array();
-			for (const std::pair<const std::string, CliProviderVersionState>& entry : app.runtime_cli_versions_by_provider_id)
+			std::unordered_set<std::string> seen_host_ids;
+			for (const ExecutionHost& host : app.settings.execution_hosts)
 			{
-				const CliProviderVersionState& state = entry.second;
-				if (state.execution_host.id == execution_hosts::kLocalHostId || state.provider_id.empty()) continue;
-				const ExecutionHost* current_host = execution_hosts::Find(app.settings.execution_hosts, state.execution_host.id);
-				if (current_host == nullptr || !execution_hosts::SameConnection(*current_host, state.execution_host) ||
-				    NormalizedCliVersionManagedProviderId(state.provider_id).empty() ||
-				    ProviderRuntimeRegistry::ResolveById(state.provider_id).CliVersionPolicy() == nullptr) continue;
-				remote_providers.push_back(SerializeCliVersionEntry(app, service, state.provider_id, *current_host));
+				if (host.id == execution_hosts::kLocalHostId || host.transport != "ssh" ||
+				    !execution_hosts::IsPortableId(host.id) || !execution_hosts::IsSafeSshAlias(host.ssh_alias) ||
+				    !seen_host_ids.insert(host.id).second) continue;
+				// Curated policy is available before probing; installed state remains explicitly unknown.
+				for (const std::string& provider_id : seen_provider_ids)
+					remote_providers.push_back(SerializeCliVersionEntry(app, service, provider_id, host));
 			}
 			std::sort(remote_providers.begin(), remote_providers.end(), [](const nlohmann::json& left, const nlohmann::json& right)
 			{
