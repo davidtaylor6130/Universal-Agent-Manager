@@ -126,7 +126,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) setPendingExit(null) } }}>
             <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
             {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
-            <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next() } }}>Save and leave</Button></div>
+            <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next?.() } }}>Save and leave</Button></div>
           </div>
         </Overlay>
       </Presence>
