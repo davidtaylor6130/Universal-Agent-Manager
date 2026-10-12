@@ -887,3 +887,5 @@ Startup catalogue continuation: coordinator `chat-1791755529536-1b146e` reserves
 Native provider availability verification: Release application/test builds, seven focused cases, all 1582 expected native cases and 19 CTest gates pass; frontend controls, live acceptance and review remain open, with detailed receipts in `.UAM/AINotes/v5-swarm-plan.md`.
 
 Startup catalogue verification: the Release app/test build, two focused regressions, all 1583 expected native cases and 19 CTest gates pass after removing periodic local config reads; broader startup timing, live and Claude acceptance remain pending, with receipts in `.UAM/AINotes/v5-swarm-plan.md`.
+
+Asynchronous send continuation: coordinator `chat-1791755529536-1b146e` reserves the ACP send/queue/steer lifecycle and polling files, native chat persistence and deletion guards, any required durable-save service/state declarations, `tests/async_prompt_durability_tests.cpp` and CMake registration in `build/v5-bug-fix-swarm`; the existing Asynchronous Send Durability row remains In Progress with pending acceptance flags.
