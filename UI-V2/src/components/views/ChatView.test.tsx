@@ -719,7 +719,7 @@ describe('ChatView', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    for (const [label, value] of [['Permissions', 'Default'], ['Memory', 'Balanced'], ['Reasoning', 'High']]) {
+    for (const [label, value] of [['Permissions', 'Default'], ['Reasoning', 'High']]) {
       const button = host.querySelector<HTMLButtonElement>(`.uam-composer-status-chips [aria-label="${label}"]`)!
       expect(button.textContent).toContain(value)
       act(() => button.click())
@@ -728,9 +728,13 @@ describe('ChatView', () => {
       expect(setSessionCodexOptions).not.toHaveBeenCalled()
       expect(setSessionMemoryLevel).not.toHaveBeenCalled()
       expect(setSessionCommandSafetyTier).not.toHaveBeenCalled()
-      if (label === 'Memory') expect(menu.textContent).toContain('Use default')
       act(() => menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     }
+    const memoryToggle = host.querySelector<HTMLButtonElement>('.uam-composer-status-chips button[aria-pressed]')!
+    expect(memoryToggle.textContent).toContain('Memory On · Balanced')
+    act(() => memoryToggle.click())
+    expect(setSessionMemoryLevel).toHaveBeenCalledWith('chat-1', 'off')
+    expect(setSessionCodexOptions).not.toHaveBeenCalled()
     act(() => host.querySelector<HTMLButtonElement>('.uam-composer-status-chips [aria-label="Reasoning"]')!.click())
     act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true } } })))
     const low = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="Reasoning"] [role="option"]')).find((option) => option.textContent?.startsWith('Low'))!
@@ -5399,6 +5403,26 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('reads the repository branch for the composer tab once when the chat opens', async () => {
+    const getVcsCommitStatus = vi.fn(() => Promise.resolve({
+      available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project',
+      branchOrRevision: 'feature/composer', changedFiles: [], lineStatsReady: true, warning: '', error: '',
+    }))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceBranchName: '' } : session),
+      getVcsCommitStatus,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+    expect(getVcsCommitStatus).toHaveBeenCalledTimes(1)
+    expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-1', 'git', expect.objectContaining({ contextOnly: true, includeLineStats: false }))
+    expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('feature/composer')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('selects the per-chat memory level from options and /memory', async () => {
     const setSessionMemoryLevel = vi.fn((_id: string, level: 'off' | 'strict' | 'balanced' | 'open') => {
       useAppStore.setState((state) => ({ sessions: state.sessions.map((candidate) => candidate.id === 'chat-1' ? { ...candidate, memoryEnabled: level !== 'off', memoryLevel: level } : candidate) }))
@@ -5446,13 +5470,13 @@ describe('ChatView', () => {
     expect(setSessionMemoryLevel).toHaveBeenCalledWith('chat-1', 'balanced')
 
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    expect(host.querySelector('[data-mode-chip="Memory Balanced"] button')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Memory On"]')?.textContent).toContain('Balanced')
 
     act(() => { (document.body.querySelector('button[aria-label="Memory"]') as HTMLButtonElement).click() })
     const strict = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Strict')) as HTMLButtonElement
     act(() => strict.click())
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    expect(host.querySelector('[data-mode-chip="Memory Strict"] button')).toBeTruthy()
+    expect(host.querySelector('[data-mode-chip="Memory On"]')?.textContent).toContain('Strict')
 
     const textarea = host.querySelector('textarea') as HTMLTextAreaElement
     await act(async () => {
