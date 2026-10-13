@@ -633,6 +633,8 @@ export interface CppSettings {
   computerUseAllowedApplications?: ComputerUseAllowedApplication[]
   /** Backend supports importing agents from provider configuration. Hidden when absent or false. */
   providerAgentImport?: boolean
+  /** Backend accepts scopeExecutionHostId on settings saves. Hidden/disabled when absent or false. */
+  hostScopedSettings?: boolean
 }
 
 export interface ComputerUseAllowedApplication {

@@ -5,6 +5,7 @@ import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { Button, IconButton, Notice, Overlay, Presence, StatusDot, Switch, usePresence } from '../ui'
 import { SettingRow, SettingsSection } from './SettingsPrimitives'
+import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import './provider-settings.css'
 
 type Reference = McpServerConfiguration['environment'][number]
@@ -142,7 +143,7 @@ export function mergeMcpImport(text: string, previous: McpServerConfiguration[])
 }
 
 /** One list of MCP servers, edited as a form or as JSON, sent to every provider on launch (local and SSH). */
-export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: (busy: boolean) => void; onDirtyChange: (dirty: boolean) => void }) {
+export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHostId = SETTINGS_ALL_ENVIRONMENTS }: { onBusyChange: (busy: boolean) => void; onDirtyChange: (dirty: boolean) => void; scopeExecutionHostId?: string }) {
   const savedServers = useAppStore(state => state.mcpServers)
   const savedUam = useAppStore(state => state.centralProviderConfiguration.uamControlEnabled)
   const computerUseEnabled = useAppStore(state => state.computerUseEnabled)
@@ -205,7 +206,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange }: { onBusyChange: 
     setBusy(true); onBusyChange(true); setMessage('')
     try {
       const store = useAppStore.getState()
-      const result = await store.setMcpServers(next)
+      const result = await store.setMcpServers(next, scopeExecutionHostId)
       if (!result.ok) { setMessage(result.error || 'Could not save MCP servers.'); return }
       const currentStore = useAppStore.getState()
       if (nextUam !== currentStore.centralProviderConfiguration.uamControlEnabled) {

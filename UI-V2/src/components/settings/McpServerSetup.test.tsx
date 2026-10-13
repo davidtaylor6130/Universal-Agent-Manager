@@ -47,7 +47,7 @@ it('shows built-ins without delete buttons and deletes a user server only after 
   await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Delete playwright"]')!.click())
   expect(saveServers).not.toHaveBeenCalled()
   await click('Save')
-  expect(saveServers).toHaveBeenCalledWith([])
+  expect(saveServers).toHaveBeenCalledWith([], '*')
 })
 
 it('adds a server through the form and blocks a relative program path', async () => {
@@ -70,7 +70,7 @@ it('edits in JSON, toggles the built-in UAM service and saves both', async () =>
   const area = document.querySelector('textarea[aria-label="MCP JSON"]') as HTMLTextAreaElement
   await type(area, area.value.replace('"enabled": true\n    },\n    "playwright"', '"enabled": false\n    },\n    "playwright"'))
   await click('Save')
-  expect(saveServers).toHaveBeenCalledWith([server])
+  expect(saveServers).toHaveBeenCalledWith([server], '*')
   expect(saveCentral.mock.calls[0][0].uamControlEnabled).toBe(false)
   await type(area, '{ not json')
   await click('Form')
@@ -296,7 +296,7 @@ it('keeps provider override identity when a server is renamed in the JSON editor
   delete doc.mcp.playwright
   await type(area, JSON.stringify(doc))
   await click('Save')
-  expect(saveServers).toHaveBeenCalledWith([{ ...server, name: 'renamed-playwright' }])
+  expect(saveServers).toHaveBeenCalledWith([{ ...server, name: 'renamed-playwright' }], '*')
   expect(useAppStore.getState().centralProviderConfiguration.mcpOverrides).toEqual([override])
 })
 

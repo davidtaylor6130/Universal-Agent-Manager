@@ -146,6 +146,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     isNewChatModalOpen: false,
     newChatFolderId: null as string | null,
     isSettingsOpen: false,
+    settingsScopeHostId: '*',
     sidebarCollapsed: storedShellLayout.sidebarCollapsed,
     commitPanelOpen: storedShellLayout.commitPanelOpen,
     sidebarWidthPx: storedShellLayout.sidebarWidthPx,
@@ -252,6 +253,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       isNewChatModalOpen: open,
       newChatFolderId: open ? (folderId ?? null) : null,
     }),
+    setSettingsScopeHostId: (hostId: string) => set({ settingsScopeHostId: hostId || '*' }),
     setSettingsOpen: (open: boolean) => {
       // Retire embedded memory before closing, so it cannot reappear as a standalone overlay.
       if (!open && get().isSettingsOpen) get().closeMemoryLibrary()

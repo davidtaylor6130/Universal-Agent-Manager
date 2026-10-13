@@ -1117,10 +1117,10 @@ describe('SettingsModal memory settings', () => {
     const visibility = Array.from(section.querySelectorAll('details')).find((details) => details.querySelector('summary')?.textContent?.startsWith('Model visibility'))!
     expect(visibility).toBeTruthy()
     act(() => visibility.querySelector<HTMLInputElement>('input[aria-label="Show openai"]')!.click())
-    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }))
+    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenProviderIds: ['openai'] }) }) }), '*')
     const model = Array.from(visibility.querySelectorAll('label')).find((label) => label.textContent?.includes('Sonnet model'))!
     act(() => model.querySelector<HTMLInputElement>('input')!.click())
-    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenModelIds: ['anthropic/sonnet'] }) }) }))
+    expect(defaultsSetter).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'opencode-cli': expect.objectContaining({ hiddenModelIds: ['anthropic/sonnet'] }) }) }), '*')
     expect(useAppStore.getState().providerModelCatalogs[0].availableModels).toHaveLength(2)
     act(() => root.unmount())
     host.remove()
@@ -1190,7 +1190,7 @@ describe('SettingsModal memory settings', () => {
       providerChatDefaults: expect.objectContaining({
         'codex-cli': expect.objectContaining({ memoryLevel: 'open', memoryEnabled: true }),
       }),
-    }))
+    }), '*')
 
     const smallModelWorkflow = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Architect + worker off')) as HTMLButtonElement
     expect(smallModelWorkflow).toBeTruthy()
@@ -1199,7 +1199,7 @@ describe('SettingsModal memory settings', () => {
       providerChatDefaults: expect.objectContaining({
         'codex-cli': expect.objectContaining({ smallModelMode: true }),
       }),
-    }))
+    }), '*')
 
     act(() => {
       root.unmount()
@@ -1259,7 +1259,7 @@ describe('SettingsModal memory settings', () => {
       providerChatDefaults: expect.objectContaining({
         'codex-cli': expect.objectContaining({ serviceTier: 'fast' }),
       }),
-    }))
+    }), '*')
 
     act(() => root.unmount())
     host.remove()

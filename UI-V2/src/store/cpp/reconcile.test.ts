@@ -34,6 +34,14 @@ describe('providerAgentImport capability sanitization', () => {
   })
 })
 
+describe('hostScopedSettings capability sanitization', () => {
+  it('keeps only a real boolean and otherwise leaves the capability absent', () => {
+    expect(sanitizeCppSettings({ hostScopedSettings: true }).hostScopedSettings).toBe(true)
+    expect(sanitizeCppSettings({ hostScopedSettings: 'yes' }).hostScopedSettings).toBeUndefined()
+    expect(sanitizeCppSettings({}).hostScopedSettings).toBeUndefined()
+  })
+})
+
 const message: CppMessage = {
   role: 'user',
   content: 'Use the attached file.',
