@@ -4,7 +4,9 @@
 
 Universal Agent Manager (UAM) is a native desktop AI chat and agent application. The C++ backend owns provider runtimes, local persistence, process management, and the CEF window. The React frontend in `UI-V2/` is loaded from bundled files inside CEF and talks to C++ through `window.cefQuery` and `window.uamPush`.
 
-Five CLI provider runtimes are enabled by default: Gemini CLI, Codex CLI, Claude Code, OpenCode, and GitHub Copilot CLI. Each has a structured chat path through an ACP-style stdio runtime (Gemini ACP, Codex app-server, Claude stream-json, and generic ACP for OpenCode/Copilot) and an xterm.js CLI fallback path.
+System design pages and the repository documentation map are indexed in [docs/README.md](docs/README.md). Keep them aligned with the source, and preserve the UI contract in `docs/ui/design-language.md` and `docs/ui/settings.md`.
+
+UAM has structured chat routes for Gemini CLI, Codex CLI, Claude Code, OpenCode and GitHub Copilot through provider-specific stdio protocols (Gemini ACP, Codex app-server, Claude stream-json and generic ACP for OpenCode/Copilot). All six supported CLIs have an xterm.js terminal path; Antigravity is terminal-only.
 
 ## Architecture
 
