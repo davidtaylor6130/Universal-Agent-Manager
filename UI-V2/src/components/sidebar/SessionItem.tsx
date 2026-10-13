@@ -454,12 +454,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         data-testid={`session-row-${sessionId}`}
         data-session-id={sessionId}
         data-selected={selected}
-        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100`}
+        className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer transition-all duration-100${selected || isActive ? ' uam-sb-row--selected' : ''}`}
         style={{
           // Running activity rows recede a touch so chats that need the user stand out.
           opacity: activityLayout && lifecycleStatus?.type === 'processing' && !isActive ? 0.95 : undefined,
-          // One light accent tint for selected or active rows (never stacked), with a 2px edge bar when selected.
-          background: selected || isActive ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : 'transparent',
+          // Hover and selected backgrounds come from .uam-sb-row in sidebar.css so they share one box.
           boxShadow: selected ? 'inset 2px 0 0 var(--accent)' : 'none',
         }}
         onClick={(event) => {
@@ -490,12 +489,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             menuReturnFocusRef.current = event.currentTarget
             setMenuPos({ x: rect.left + 16, y: rect.bottom })
           }
-        }}
-        onMouseEnter={(e) => {
-          if (!isActive && !selected) e.currentTarget.style.background = 'var(--sidebar-item-hover)'
-        }}
-        onMouseLeave={(e) => {
-          if (!isActive && !selected) e.currentTarget.style.background = 'transparent'
         }}
         onContextMenu={(e) => {
           e.preventDefault()

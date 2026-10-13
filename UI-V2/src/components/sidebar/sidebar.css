@@ -33,6 +33,11 @@
 .uam-sb-row {
   animation: uam-sb-row-in var(--dur-base) var(--ease-out-soft) backwards;
 }
+/* Hover and selected share one box (same inset, radius and height from Tailwind classes on the row); only the paint differs. */
+.uam-sb-row:hover { background: var(--sidebar-item-hover); }
+/* One light accent tint for selected or active rows; a selected row keeps its tint while hovered. */
+.uam-sb-row--selected,
+.uam-sb-row--selected:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 @keyframes uam-sb-row-in {
   from { opacity: 0; transform: translateY(-3px); }
 }
