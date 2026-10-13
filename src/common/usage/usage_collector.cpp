@@ -231,7 +231,7 @@ namespace uam::usage
 		if (days == 0) result["historyCoverage"] = {{"kind", "recorded-and-available-history"}, {"previouslyPrunedReceiptsMayBeMissing", true}};
 		const Ledger* ledger = &selected;
 		const std::int64_t start = ledger->WindowStart(days), end = ledger->GeneratedMs();
-		std::optional<Summary> summary = ledger->Query(start, end);
+		std::optional<Summary> summary = ledger->Query(start, end, {}, days == 0);
 		if (!summary) return {{"error", "Usage totals exceed supported limits."}};
 		std::map<ModelKey, ModelPrices> resolved_prices;
 		std::map<ModelKey, ResolvedPrice> references;
@@ -243,9 +243,10 @@ namespace uam::usage
 				resolved_prices.emplace(model.first, reference->prices); references.emplace(model.first, *reference);
 			}
 		for (const std::pair<const ModelKey, ModelPrices>& price : prices) resolved_prices[price.first] = price.second;
-		if (!resolved_prices.empty()) summary = ledger->Query(start, end, resolved_prices);
+		if (!resolved_prices.empty()) summary = ledger->Query(start, end, resolved_prices, days == 0);
 		if (!summary) return {{"error", "Usage totals or prices exceed supported limits."}};
 		ApplyUsageSummary(result, *summary, start, end);
+		if (days == 0) { result["chartStartMs"] = summary->chart_start_ms; result["chartBucketMs"] = summary->chart_bucket_ms; }
 		for (nlohmann::json& row : result["models"])
 		{
 			const ModelKey key{row["providerId"].get<std::string>(), row["modelId"].get<std::string>(), row["speed"].get<std::string>()};

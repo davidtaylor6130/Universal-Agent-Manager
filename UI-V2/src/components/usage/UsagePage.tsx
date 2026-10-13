@@ -146,7 +146,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   const hourly = data ? data.endMs - data.startMs <= 86400000 : days === 1
   const periods = useMemo(() => {
     if (!data) return []
-    const width = hourly ? 3600000 : 86400000
+    const width = hourly ? 3600000 : data.chartBucketMs ?? 86400000
     const present = new Map<number, typeof data.providerDays>()
     for (const row of hourly ? data.providerHours : data.providerDays) {
       if (hiddenProviders.has(row.providerId)) continue
@@ -155,7 +155,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
       present.set(row.startMs, rows)
     }
     const result = []
-    for (let startMs = Math.floor(data.startMs / width) * width; startMs < data.endMs; startMs += width) {
+    for (let startMs = data.chartStartMs ?? Math.floor(data.startMs / width) * width; startMs < data.endMs; startMs += width) {
       const bands = present.get(startMs) ?? []
       result.push({ ...EMPTY_USAGE_TOTALS, ...sumProviderUsage(bands), startMs, bands })
     }
@@ -190,7 +190,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? columns.length - 1 : Math.min(columns.length - 1, Math.max(0, current + (event.key === 'ArrowRight' ? 1 : -1)))
     columns[next].focus()
   }
-  const tipLabel = (startMs: number) => new Date(startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', timeZone: 'UTC' })
+  const tipLabel = (startMs: number) => new Date(startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: days === 0 ? 'numeric' : undefined, month: 'short', day: 'numeric', timeZone: 'UTC' })
   const noCostData = metric === 'cost' && totals.totalTokens > 0 && totals.reportedCostTokens + totals.estimatedCostTokens === 0
   const hasReported = totals.reportedCostUsd > 0
   const coverageLabel = (status: string) => status === 'ready' ? 'Current' : status === 'cached' ? 'Cached' : status === 'loading' ? 'Loading' : 'Unavailable'
@@ -203,12 +203,13 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     metric === 'cost' && data.pricing?.error,
     metric === 'cost' && data.pricing?.aliasError,
     !data.complete && 'Partial history. Totals include available and cached records.',
+    data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing && 'All Time includes recorded and available history. Previously deleted receipts may be missing.',
     data.listingLimited && 'Some history is outside the scan limit. These totals are incomplete.',
     noCostData && 'No cost data for this range. Tokens were recorded, but no prices are known. Add model prices under Breakdown, or switch to Tokens.',
     !hiddenProviders.has('copilot-cli') && data.providers.some(provider => provider.providerId === 'copilot-cli' && provider.records > 0) && 'Copilot history is grouped by saved checkpoint time.',
     ...warnings.map(provider => `${providerLabel(provider.providerId)}: ${provider.errors} read errors, ${provider.invalidLines} invalid records, ${provider.oversizedLines} oversized records, ${provider.pendingLines} unfinished lines.`),
   ].filter((line): line is string => Boolean(line)) : []
-  const attention = Boolean(data && (!data.complete || data.listingLimited || warnings.length > 0 || noCostData || data.coverage?.some(machine => machine.status !== 'ready')))
+  const attention = Boolean(data && (!data.complete || data.listingLimited || data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing || warnings.length > 0 || noCostData || data.coverage?.some(machine => machine.status !== 'ready')))
   const statusLines = [...notes, ...coverage]
   return <main aria-label="Usage workspace" className="uam-usage flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }} onKeyDown={event => {
     if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('[aria-modal="true"]') && !editingPrice) { event.preventDefault(); onClose() }
@@ -280,7 +281,7 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
                   })}
                 </div>
               </div>
-              <p className="text-xs uam-usage-muted">{new Date(data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ' · Daily buckets use UTC' : ''}</p>
+              <p className="text-xs uam-usage-muted">{new Date(data.chartStartMs ?? data.startMs).toLocaleString()} to {new Date(data.endMs).toLocaleString()}{!hourly ? ` · ${data.chartBucketMs && data.chartBucketMs > 86400000 ? `${data.chartBucketMs / 86400000}-day` : 'Daily'} buckets use UTC` : ''}</p>
             </div>
           </section>
           <section className="grid gap-3"><div className="flex flex-wrap items-baseline justify-between gap-3"><h2 className="text-sm font-medium">Totals</h2>{metric === 'cost' && <p className="text-xs uam-usage-muted">Estimated cache savings: {totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCacheSavingsUsd) : 'Unknown'}</p>}</div>

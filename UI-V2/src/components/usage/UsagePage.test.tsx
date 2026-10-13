@@ -17,6 +17,34 @@ function storage() {
 }
 
 describe('UsagePage', () => {
+  it('requests All Time and renders bounded cohorts across the full retained date range', async () => {
+    storage()
+    const requests: { windowDays: number; startMs: number }[] = []
+    window.cefQuery = request => {
+      const { payload } = JSON.parse(request.request)
+      requests.push(payload)
+      const start = payload.windowDays === 0 ? Math.floor(payload.endMs / 86400000) * 86400000 - 999 * 86400000 : Math.floor(payload.startMs / 86400000) * 86400000
+      request.onSuccess(JSON.stringify({ version: 3, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs,
+        asOfMs: payload.endMs, windowDays: payload.windowDays, collecting: false, collectionError: '', totals: total, complete: true, listingLimited: false,
+        ...(payload.windowDays === 0 ? { chartStartMs: start, chartBucketMs: 12 * 86400000, historyCoverage: { kind: 'recorded-and-available-history', previouslyPrunedReceiptsMayBeMissing: true } } : {}),
+        filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 0, unidentifiedRecords: 0,
+        providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? total : blank), providerId, available: true, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
+        models: [], days: [{ ...total, startMs: start }], hours: [], providerDays: [{ ...total, providerId: 'codex-cli', startMs: start }], providerHours: [] }))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(row => row.textContent === 'All Time')!
+      await act(async () => button.click())
+      expect(requests.at(-1)?.windowDays).toBe(0); expect(requests.at(-1)?.startMs).toBe(0)
+      expect(button.getAttribute('aria-pressed')).toBe('true')
+      expect(host.querySelectorAll('.uam-usage-col').length).toBeLessThanOrEqual(90)
+      expect(host.textContent).toContain('12-day buckets use UTC')
+      expect(host.textContent).not.toContain('1970')
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+    } finally { act(() => root.unmount()) }
+  })
+
   it('prefills reference prices, exposes their source, and preserves explicit manual blanks and zero', async () => {
     storage()
     const reference = { kind: 'reference', referenceModel: 'qwen3.8-27b', source: 'https://example.com/qwen', verifiedDate: '2026-10-10', cacheFallback: true, speedFallback: true, inputPerMillion: 0.5, cachedInputPerMillion: 0.1, cacheWritePerMillion: 0.625, outputPerMillion: 3 }

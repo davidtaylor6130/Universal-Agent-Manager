@@ -15,7 +15,7 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
   const [refreshIndex, setRefreshIndex] = useState(0)
   const [state, setState] = useState<HistoryState>({ data: null, loading: true, error: '', scope: '', dataScope: '' })
   const priceKey = JSON.stringify(prices)
-  const scope = JSON.stringify([executionHostId, window.startMs, window.endMs, priceKey, refreshIndex])
+  const scope = JSON.stringify([executionHostId, window.startMs, window.endMs, window.days, priceKey, refreshIndex])
   const refresh = useCallback(() => setRefreshIndex(index => index + 1), [])
   useEffect(() => {
     if (!enabled) return

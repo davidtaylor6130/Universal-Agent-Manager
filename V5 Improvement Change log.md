@@ -347,6 +347,8 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Remote startup | Bugfix | Reversible Startup Registration | Failed Linux startup verification rolls back registration and unit files while unknown state refuses mutation and truthful applied state is preserved. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
+| Usage and accounting | Performance | Adaptive Lifetime Chart Projection | All Time usage covers the retained span with bounded whole-day chart cohorts and exact totals and distinct sessions. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.
@@ -440,7 +442,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Core correctness | Bugfix | Diagnostic UTF8 Boundary Safety | The shared byte-cap fix passes Unicode boundary and native-warning regressions plus full verification, with live and review acceptance pending. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Build and evidence | Misc | Native Build Capacity Failure | The timing-test rebuild recovered from transient disk exhaustion using two compiler jobs without deleting live data, with both builds, 1548 core tests and all 19 CTest gates subsequently passing while longer-term capacity remains a separate concern. | In Progress; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Usage and accounting | Bugfix | Usage Model Display Overflow | Exceptional lifetime histories with very many distinct models can exceed the two MiB display response despite bounded chart cohorts and require a lossless model-detail transport design. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
-| Usage and accounting | Graphical | All Time Usage Range | Streamed lifetime collection and peer transfer pass native verification while frontend integration, Claude UI review and user acceptance remain outstanding. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
+| Usage and accounting | Graphical | All Time Usage Range | All Time frontend selection and full-span adaptive projection pass frontend and native verification while Claude UI review and live user acceptance remain outstanding. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Appearance | Graphical | Appearance Contrast Diff Width | Add contrast and specific diff-colour controls plus Wide, Full and default Comfortable chat-width options with accessible themes. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Storage and retention | Graphical | Configurable Storage Cleanup | Restore the reported missing general cleanup settings and configure safe retention for worktrees, browser artifacts and logs. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Composer and queue | Graphical | Composer Draft In Progress | Add a composer indicator showing that a prompt is currently being drafted without implying that its unfinished contents have been sent to the AI. | Open; Un-Reviewed; Claude Review; Not User Tested | Unassigned |

@@ -5,7 +5,7 @@ export const ALL_MACHINES_HOST_ID = '*'
 export type UsageProviderId = typeof USAGE_PROVIDERS[number]
 export type UsageSpeed = 'standard' | 'fast' | 'ultrafast'
 export type UsageMetric = 'cost' | 'tokens' | 'limits'
-export type UsageWindowDays = 1 | 7 | 30 | 90
+export type UsageWindowDays = 0 | 1 | 7 | 30 | 90
 
 export interface UsageTotals {
   inputTokens: number
@@ -49,6 +49,9 @@ export interface UsageCoverage {
   error: string
 }
 export interface UsageHistory {
+  chartStartMs?: number
+  chartBucketMs?: number
+  historyCoverage?: { kind: 'recorded-and-available-history'; previouslyPrunedReceiptsMayBeMissing: boolean }
   coverage?: UsageCoverage[]
   version: 2 | 3
   asOfMs?: number
@@ -102,10 +105,10 @@ export interface UsagePricing {
 }
 export interface UsageWindow { startMs: number; endMs: number; days?: UsageWindowDays }
 export const USAGE_WINDOWS: { days: UsageWindowDays; label: string }[] = [
-  { days: 1, label: 'Past 24h' }, { days: 7, label: '7 days' }, { days: 30, label: '30 days' }, { days: 90, label: '90 days' },
+  { days: 1, label: 'Past 24h' }, { days: 7, label: '7 days' }, { days: 30, label: '30 days' }, { days: 90, label: '90 days' }, { days: 0, label: 'All Time' },
 ]
 export function usageWindow(days: UsageWindowDays, now = Date.now()): UsageWindow {
-  return { startMs: Math.max(0, days === 1 ? now - 86400000 : Math.floor(now / 86400000) * 86400000 - (days - 1) * 86400000), endMs: now, days }
+  return { startMs: Math.max(0, days === 0 ? 0 : days === 1 ? now - 86400000 : Math.floor(now / 86400000) * 86400000 - (days - 1) * 86400000), endMs: now, days }
 }
 
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -159,7 +162,7 @@ function periods(value: unknown, window: UsageWindow, width: number, limit: numb
   if (!Array.isArray(value) || value.length > limit) return false
   const seen = new Set<number>()
   return value.every(row => {
-    if (!totals(row) || !object(row) || !integer(row.startMs) || row.startMs % width !== 0 || row.startMs < Math.floor(window.startMs / width) * width || row.startMs >= window.endMs || seen.has(row.startMs)) return false
+    if (!totals(row) || !object(row) || !integer(row.startMs) || (row.startMs - Math.floor(window.startMs / 86400000) * 86400000) % width !== 0 || row.startMs < Math.floor(window.startMs / Math.min(width, 86400000)) * Math.min(width, 86400000) || row.startMs >= window.endMs || seen.has(row.startMs)) return false
     seen.add(row.startMs)
     return true
   })
@@ -168,7 +171,7 @@ function providerPeriods(value: unknown, window: UsageWindow, width: number, lim
   if (!Array.isArray(value) || value.length > limit * USAGE_PROVIDERS.length) return false
   const seen = new Set<string>()
   return value.every(row => {
-    if (!totals(row) || !object(row) || !provider(row.providerId) || !integer(row.startMs) || row.startMs % width !== 0 || row.startMs < Math.floor(window.startMs / width) * width || row.startMs >= window.endMs) return false
+    if (!totals(row) || !object(row) || !provider(row.providerId) || !integer(row.startMs) || (row.startMs - Math.floor(window.startMs / 86400000) * 86400000) % width !== 0 || row.startMs < Math.floor(window.startMs / Math.min(width, 86400000)) * Math.min(width, 86400000) || row.startMs >= window.endMs) return false
     const key = JSON.stringify([row.startMs, row.providerId])
     if (seen.has(key)) return false
     seen.add(key)
@@ -204,6 +207,16 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
     || (value.filesChecked as number) > (value.filesTotal as number)) throw new Error('Usage data is incomplete or invalid. Refresh to try again.')
   if (value.coverage !== undefined && !coverage(value.coverage, executionHostId)) throw new Error('Usage machine coverage is invalid. Refresh to try again.')
   if (value.pricing !== undefined && !pricing(value.pricing)) throw new Error('Usage pricing data is invalid. Refresh to try again.')
+  let chartWindow = window, chartWidth = 86400000
+  if (window.days === 0) {
+    if (value.version !== 3 || !integer(value.chartStartMs) || value.chartStartMs % 86400000 !== 0 || value.chartStartMs >= window.endMs
+      || !integer(value.chartBucketMs) || value.chartBucketMs < 86400000 || value.chartBucketMs % 86400000 !== 0
+      || Math.ceil((window.endMs - value.chartStartMs) / value.chartBucketMs) > 90
+      || !object(value.historyCoverage) || value.historyCoverage.kind !== 'recorded-and-available-history'
+      || typeof value.historyCoverage.previouslyPrunedReceiptsMayBeMissing !== 'boolean') throw new Error('Lifetime usage chart coverage is invalid. Refresh to try again.')
+    chartWindow = { ...window, startMs: value.chartStartMs }
+    chartWidth = value.chartBucketMs
+  } else if (value.chartStartMs !== undefined || value.chartBucketMs !== undefined) throw new Error('Usage chart range is invalid. Refresh to try again.')
   const seenProviders = new Set<string>(), seenModels = new Set<string>()
   if (!Array.isArray(value.providers) || value.providers.length !== USAGE_PROVIDERS.length || !value.providers.every(row => {
     if (!totals(row) || !object(row) || !provider(row.providerId) || seenProviders.has(row.providerId) || typeof row.available !== 'boolean'
@@ -217,8 +230,8 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
     if (seenModels.has(key)) return false
     seenModels.add(key)
     return true
-  }) || !periods(value.days, window, 86400000, 91) || !periods(value.hours, window, 3600000, 25)
-    || !providerPeriods(value.providerDays, window, 86400000, 91) || !providerPeriods(value.providerHours, window, 3600000, 25)) throw new Error('Usage breakdown data is invalid. Refresh to try again.')
+  }) || !periods(value.days, chartWindow, chartWidth, window.days === 0 ? 90 : 91) || !periods(value.hours, window, 3600000, 25)
+    || !providerPeriods(value.providerDays, chartWindow, chartWidth, window.days === 0 ? 90 : 91) || !providerPeriods(value.providerHours, window, 3600000, 25)) throw new Error('Usage breakdown data is invalid. Refresh to try again.')
   const parsed = value as unknown as UsageHistory
   if (!sameTotals(sumProviderUsage(parsed.providers), parsed.totals)) throw new Error('Usage provider totals do not match. Refresh to try again.')
   for (const [combined, providers] of [[parsed.days, parsed.providerDays], [parsed.hours, parsed.providerHours]] as const) {
@@ -226,6 +239,7 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
     for (const row of providers) buckets.set(row.startMs, [...(buckets.get(row.startMs) ?? []), row])
     if (buckets.size !== combined.length || !combined.every(row => sameTotals(sumProviderUsage(buckets.get(row.startMs) ?? []), row))) throw new Error('Usage period totals do not match. Refresh to try again.')
   }
+  if (window.days === 0 && !sameTotals({ ...sumProviderUsage(parsed.days), sessions: 0 }, { ...parsed.totals, sessions: 0 })) throw new Error('Lifetime chart totals do not match. Refresh to try again.')
   return parsed
 }
 

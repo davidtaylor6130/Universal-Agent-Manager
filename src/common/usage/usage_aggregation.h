@@ -34,10 +34,12 @@ namespace uam::usage
 
 	struct Summary
 	{
+		std::int64_t chart_start_ms = 0;
+		std::int64_t chart_bucket_ms = 86400000;
 		Totals total;
 		std::map<std::string, Totals> providers;
 		std::map<ModelKey, Totals> models;
-		// UTC bucket starts, converted to display timezone by the frontend.
+		// UTC bucket starts; chart_bucket_ms may span several whole days for lifetime charts.
 		std::map<std::int64_t, Totals> days;
 		std::map<std::int64_t, Totals> hours;
 		std::map<ProviderPeriodKey, Totals> provider_days;
@@ -46,10 +48,10 @@ namespace uam::usage
 		std::size_t unidentified_records = 0;
 	};
 
-	/// <summary>Aggregate a half-open time window with provider-scoped cross-file deduplication and explicit price provenance.</summary>
+	/// <summary>Aggregate a half-open window with exact provider-scoped sessions and optional whole-day chart cohorts.</summary>
 	std::optional<Summary> Aggregate(const std::vector<Record>& records, std::int64_t start_ms, std::int64_t end_ms,
-	                                 const std::map<ModelKey, ModelPrices>& prices = {});
+	                                 const std::map<ModelKey, ModelPrices>& prices = {}, std::int64_t chart_start_ms = 0, std::int64_t chart_bucket_ms = 86400000);
 	/// <summary>Aggregate worker-owned cached records without copying their strings and token data.</summary>
 	std::optional<Summary> AggregateReferences(const std::vector<const Record*>& records, std::int64_t start_ms, std::int64_t end_ms,
-	                                           const std::map<ModelKey, ModelPrices>& prices = {});
+	                                           const std::map<ModelKey, ModelPrices>& prices = {}, std::int64_t chart_start_ms = 0, std::int64_t chart_bucket_ms = 86400000);
 }

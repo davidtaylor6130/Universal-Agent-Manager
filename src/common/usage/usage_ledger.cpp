@@ -181,11 +181,20 @@ namespace uam::usage
 		return std::max<std::int64_t>(0, m_generatedMs / kDayMs * kDayMs - (days - 1LL) * kDayMs);
 	}
 
-	std::optional<Summary> Ledger::Query(std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices) const
+	std::optional<Summary> Ledger::Query(std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, bool bounded_chart) const
 	{
 		const std::int64_t cutoff = WindowStart(1);
 		if (start_ms < (IncludesLifetime() ? 0 : WindowStart(90)) || end_ms > m_generatedMs || (start_ms < cutoff && start_ms % kDayMs != 0) || (end_ms < cutoff && end_ms % kDayMs != 0)) return std::nullopt;
-		std::optional<Summary> summary = Aggregate(m_records, start_ms, end_ms, prices);
+		std::int64_t chart_start = start_ms / kDayMs * kDayMs, chart_width = kDayMs;
+		if (bounded_chart)
+		{
+			chart_start = (end_ms - 1) / kDayMs * kDayMs;
+			for (const Record& record : m_records)
+				if (record.timestamp_ms >= start_ms && record.timestamp_ms < end_ms) chart_start = std::min(chart_start, record.timestamp_ms / kDayMs * kDayMs);
+			const std::int64_t day_count = (end_ms - chart_start + kDayMs - 1) / kDayMs;
+			chart_width = std::max<std::int64_t>(1, (day_count + 89) / 90) * kDayMs;
+		}
+		std::optional<Summary> summary = Aggregate(m_records, start_ms, end_ms, prices, chart_start, chart_width);
 		if (summary) summary->duplicates += m_duplicates;
 		return summary;
 	}

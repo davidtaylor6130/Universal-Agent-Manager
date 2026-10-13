@@ -53,21 +53,23 @@ namespace uam::usage
 		}
 	}
 
-	std::optional<Summary> Aggregate(const std::vector<Record>& records, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices)
+	std::optional<Summary> Aggregate(const std::vector<Record>& records, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, std::int64_t chart_start_ms, std::int64_t chart_bucket_ms)
 	{
 		std::vector<const Record*> references;
 		references.reserve(records.size());
 		for (const Record& record : records) references.push_back(&record);
-		return AggregateReferences(references, start_ms, end_ms, prices);
+		return AggregateReferences(references, start_ms, end_ms, prices, chart_start_ms, chart_bucket_ms);
 	}
 
-	std::optional<Summary> AggregateReferences(const std::vector<const Record*>& records, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices)
+	std::optional<Summary> AggregateReferences(const std::vector<const Record*>& records, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, std::int64_t chart_start_ms, std::int64_t chart_bucket_ms)
 	{
-		if (start_ms < 0 || end_ms <= start_ms) return std::nullopt;
+		if (start_ms < 0 || end_ms <= start_ms || chart_start_ms < 0 || chart_start_ms % 86400000 != 0 || chart_bucket_ms < 86400000 || chart_bucket_ms % 86400000 != 0) return std::nullopt;
 		for (const Record* record : records) if (!record) return std::nullopt;
 		for (const std::pair<const ModelKey, ModelPrices>& price : prices)
 			if (!ValidPrices(price.second)) return std::nullopt;
 		Summary summary;
+		summary.chart_start_ms = chart_start_ms; summary.chart_bucket_ms = chart_bucket_ms;
+		const bool hourly = chart_bucket_ms == 86400000;
 		std::map<std::pair<std::string, std::string>, std::size_t> originals;
 		// Choose the earliest event before filtering; a copied fork can re-stamp old usage inside the requested window.
 		for (std::size_t index = 0; index < records.size(); ++index)
@@ -103,20 +105,21 @@ namespace uam::usage
 			const ModelKey model_key{record.provider_id, record.model_id, record.speed};
 			const std::map<ModelKey, ModelPrices>::const_iterator price = prices.find(model_key);
 			const ModelPrices* model_prices = price == prices.end() ? nullptr : &price->second;
-			const std::int64_t day = record.timestamp_ms / 86400000 * 86400000;
+			const std::int64_t day = chart_start_ms + (record.timestamp_ms - chart_start_ms) / chart_bucket_ms * chart_bucket_ms;
 			const std::int64_t hour = record.timestamp_ms / 3600000 * 3600000;
 			if (!Add(summary.total, record, model_prices) || !Add(summary.providers[record.provider_id], record, model_prices) ||
-			    !Add(summary.models[model_key], record, model_prices) || !Add(summary.days[day], record, model_prices) || !Add(summary.hours[hour], record, model_prices) ||
-			    !Add(summary.provider_days[{day, record.provider_id}], record, model_prices) || !Add(summary.provider_hours[{hour, record.provider_id}], record, model_prices)) return std::nullopt;
+			    !Add(summary.models[model_key], record, model_prices) || !Add(summary.days[day], record, model_prices) ||
+			    !Add(summary.provider_days[{day, record.provider_id}], record, model_prices)) return std::nullopt;
+			if (hourly && (!Add(summary.hours[hour], record, model_prices) || !Add(summary.provider_hours[{hour, record.provider_id}], record, model_prices))) return std::nullopt;
 			if (!record.session_id.empty())
 			{
 				sessions.insert({record.provider_id, record.session_id});
 				provider_sessions[record.provider_id].insert(record.session_id);
 				model_sessions[model_key].insert(record.session_id);
 				day_sessions[day].insert({record.provider_id, record.session_id});
-				hour_sessions[hour].insert({record.provider_id, record.session_id});
+				if (hourly) hour_sessions[hour].insert({record.provider_id, record.session_id});
 				provider_day_sessions[{day, record.provider_id}].insert(record.session_id);
-				provider_hour_sessions[{hour, record.provider_id}].insert(record.session_id);
+				if (hourly) provider_hour_sessions[{hour, record.provider_id}].insert(record.session_id);
 			}
 		}
 		summary.total.sessions = sessions.size();

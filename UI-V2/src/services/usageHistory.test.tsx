@@ -17,6 +17,19 @@ function history(overrides: Partial<UsageHistory> = {}): UsageHistory {
 afterEach(() => { delete window.cefQuery; vi.useRealTimers() })
 
 describe('usage history contract', () => {
+  it('accepts All Time adaptive cohorts with exact totals and rejects lost or malformed chart coverage', () => {
+    const asOf = 1000 * 86400000 + 1000
+    const range = usageWindow(0, asOf)
+    expect(range.startMs).toBe(0)
+    const data = history({ version: 3, startMs: range.startMs, endMs: range.endMs, windowDays: 0, asOfMs: asOf, collecting: false, collectionError: '',
+      chartStartMs: 86400000, chartBucketMs: 12 * 86400000, historyCoverage: { kind: 'recorded-and-available-history', previouslyPrunedReceiptsMayBeMissing: true } })
+    expect(parseUsageHistory(data, 'local', range).totals.totalTokens).toBe(17)
+    for (const changes of [{ chartBucketMs: 86400000 }, { chartBucketMs: 86400001 }, { chartStartMs: 1 }, { days: [], providerDays: [] }, { historyCoverage: undefined }]) {
+      expect(() => parseUsageHistory({ ...data, ...changes }, 'local', range)).toThrow()
+    }
+    expect(() => parseUsageHistory({ ...data, windowDays: 90 }, 'local', range)).toThrow('Cached usage')
+  })
+
   it('validates automatic price references and catalog freshness at the bridge boundary', () => {
     const reference = { kind: 'reference', referenceModel: 'qwen3.8-27b', source: 'https://example.com/rates', verifiedDate: '2026-10-10', cacheFallback: true, speedFallback: false, inputPerMillion: 0.5, cachedInputPerMillion: null, cacheWritePerMillion: 0, outputPerMillion: 3 }
     const pricing = { refreshing: true, source: 'https://example.com/catalog', status: 'cached', fetchedAtMs: 1000, error: '', aliasError: '' }
