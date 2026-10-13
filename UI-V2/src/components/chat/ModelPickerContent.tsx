@@ -23,7 +23,7 @@ export function matchingModelCatalog(catalogs: ProviderModelCatalog[], providerI
 }
 
 /** T3-style provider rail and model list; browsing never changes the running provider. */
-export function ModelPickerContent({ providers, providerId, currentModelId, activeOptions, activeLoading, activeError, modelDisabled, canChangeProvider, workspaceDirectory, executionHostId, onSelect, onClose }: {
+export function ModelPickerContent({ providers, providerId, currentModelId, activeOptions, activeLoading, activeError, modelDisabled, canChangeProvider, workspaceDirectory, executionHostId, listHeight = LIST_HEIGHT, onSelect, onClose }: {
   providers: Provider[]
   providerId: string
   currentModelId: string
@@ -34,7 +34,8 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   canChangeProvider: boolean
   workspaceDirectory: string
   executionHostId: string
-  onSelect: (providerId: string, modelId: string) => void
+  listHeight?: number
+  onSelect:(providerId: string, modelId: string) => void
   onClose: () => void
 }) {
   const catalogs = useAppStore((state) => state.providerModelCatalogs)
@@ -78,7 +79,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   const grouped = selectedProvider === 'favorites'
   const virtual = !grouped && models.length > 60
   const first = virtual ? Math.max(0, Math.min(models.length - 1, Math.floor(scrollTop / ROW_HEIGHT) - 4)) : 0
-  const last = virtual ? Math.min(models.length, first + Math.ceil(LIST_HEIGHT / ROW_HEIGHT) + 8) : models.length
+  const last = virtual ? Math.min(models.length, first + Math.ceil(listHeight / ROW_HEIGHT) + 8) : models.length
 
   useEffect(() => { searchRef.current?.focus() }, [])
   useLayoutEffect(() => {
@@ -109,7 +110,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
       const list = listRef.current
       let top = list?.scrollTop ?? 0
       if (index * ROW_HEIGHT < top) top = index * ROW_HEIGHT
-      else if ((index + 1) * ROW_HEIGHT > top + LIST_HEIGHT) top = (index + 1) * ROW_HEIGHT - LIST_HEIGHT
+      else if ((index + 1) * ROW_HEIGHT > top + listHeight) top = (index + 1) * ROW_HEIGHT - listHeight
       if (list) list.scrollTop = top
       setScrollTop(top)
     }
@@ -179,7 +180,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
       {!grouped && <div className="uam-np-group">{providerLabel(selectedProvider)}</div>}
       {loading && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
       {error && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--yellow)' }}>{error}</div>}
-      <div ref={listRef} data-testid="model-options" style={{ maxHeight: LIST_HEIGHT, overflowY: 'auto' }} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
+      <div ref={listRef} data-testid="model-options" style={{ maxHeight: listHeight, overflowY: 'auto' }} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
         {models.length === 0 && (
           <div role="status" className="uam-np-empty">
             <span className="uam-np-empty__icon">{grouped && !query ? <Star size={16} aria-hidden /> : <Search size={16} aria-hidden />}</span>
