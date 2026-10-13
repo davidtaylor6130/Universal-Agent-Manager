@@ -1228,6 +1228,7 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/native_import_failure_tests.cpp
     tests/local_chat_bundle_tests.cpp
     tests/antigravity_tests.cpp
     tests/antigravity_mcp_tests.cpp

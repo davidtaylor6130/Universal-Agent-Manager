@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Import and attachments | Bugfix | Uncapped OpenCode Transcripts | OpenCode chat imports accept more than 10,000 messages while retaining captured-output bounds and per-record validation. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Usage and accounting | Bugfix | Lossless Usage JSON Paging | Frontend usage paging reconstructs complete JSON across an arbitrary number of byte-bounded pages. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Remote settings | Code Only | Remote Host Instruction Backend | The backend optionally supplies inline host instructions through existing instruction bundles while retaining legacy file behavior. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Providers and MCP | Code Only | Worktree Catalogue Serialization | Local worktree model catalogues serialize and restore with their owning workspace. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
@@ -440,6 +441,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Import and attachments | Bugfix | Uncapped OpenCode Transcripts | Imports above 10,000 messages pass focused checks; the reported 63-chat batch and GUI/live acceptance remain pending separately. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Usage and accounting | Bugfix | Lossless Usage JSON Paging | Frontend checks pass for byte-bounded paging; live usage acceptance remains pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Remote settings | Code Only | Remote Host Instruction Backend | Optional inline host instructions use existing instruction bundles and retain legacy file behavior; host and GUI acceptance remain pending. | Focused Verification Passed; Alpha-86 Build Verified; Un-Reviewed; Claude Review; Not User Tested | chat-1791918211573-01cfe1 |
 | Providers and review | Bugfix | Complete Permission Review Input | Full generic ACP permission parameters pass focused checks; provider and review acceptance remain pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
@@ -581,7 +583,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Permissions and MCP | Bugfix | Malformed MCP Reply Recovery | Validate malformed mailbox reply shapes and keep the actual stdio transport available for subsequent valid requests. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 
-| Import and attachments | Bugfix | Repeated Chat Import Failures | Investigate the reported repeated failure to import the same 63 chats and preserve per-chat failure details without silently skipping them. | In Progress; Open; Latest Build Report 2026-10-13; Un-Reviewed; Claude Review; Not User Tested; Non-GUI Swarm 2026-10-13 | chat-1791918211573-01cfe1 |
+| Import and attachments | Bugfix | Repeated Chat Import Failures | OpenCode message-count handling is fixed; the 4 MiB captured-export ceiling still needs a bounded streaming import path, while the reported 63-chat cohort remains unmapped and GUI/live acceptance outstanding. | In Progress; Partial Implementation; Open; Latest Build Report 2026-10-13; Un-Reviewed; Claude Review; Not User Tested; Non-GUI Swarm 2026-10-13; Focused Verification Passed | chat-1791918211573-01cfe1 |
 | Composer and queue | Bugfix | Composer Branch Send Duplication | Replace the existing send control when showing composer branch behavior instead of creating a second send button. | Open; Latest Build Report 2026-10-13; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Composer and queue | Graphical | Edit Branch Action Placement | Correct the reported placement of the edit-message save/create-new-branch action below the worktree tab. | Open; Placement Confirmation Pending; Latest Build Report 2026-10-13; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Navigation and interface | Bugfix | Active Chat Snooze Visibility | Investigate why snooze is missing from active chats and expose it in the intended active-chat controls. | Open; Latest Build Report 2026-10-13; Un-Reviewed; Claude Review; Not User Tested | Unassigned |

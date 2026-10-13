@@ -69,7 +69,6 @@ namespace
 	constexpr const char* kDefaultNativeHistoryProviderId = provider_build_config::DefaultNativeHistoryProviderId();
 	constexpr const char* kMemoryWorkerPromptPrefix = "You are a non-interactive memory extraction function.";
 	constexpr const char* kNativeImportTombstonesFile = "native-import-tombstones.json";
-	constexpr std::size_t kRemoteOpenCodeMaxMessages = 10000;
 	constexpr std::size_t kRemoteCodexMaxSessions = 200;
 	constexpr std::size_t kRemoteCodexMaxMessages = 10000;
 
@@ -2929,11 +2928,14 @@ try
 	}
 	const nlohmann::json root = nlohmann::json::parse(
 	    output.substr(first, last - first + 1), nullptr, false);
-	if (!root.is_object() || !root.contains("info") || !root["info"].is_object() ||
-	    !root.contains("messages") || !root["messages"].is_array() ||
-	    root["messages"].size() > kRemoteOpenCodeMaxMessages)
+	if (!root.is_object() || !root.contains("info") || !root["info"].is_object())
 	{
-		result.error = "OpenCode export returned invalid or oversized session data.";
+		result.error = "OpenCode export is missing valid session information.";
+		return result;
+	}
+	if (!root.contains("messages") || !root["messages"].is_array())
+	{
+		result.error = "OpenCode export is missing a valid messages array.";
 		return result;
 	}
 	const nlohmann::json& session_info = root["info"];
