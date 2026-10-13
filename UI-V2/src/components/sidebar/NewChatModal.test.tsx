@@ -78,7 +78,7 @@ describe('NewChatModal', () => {
     try {
       await act(async () => { root.render(<NewChatModal />) })
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-      expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('Cached Model')
+      expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')?.textContent).toContain('Cached Model')
       expect(host.textContent).toContain('discovering')
       expect(optionsSpy.mock.calls.at(-1)?.[0]).toMatchObject({ currentModelId: 'cached-model', configOptions: [{ currentValue: 'live-config' }] })
       act(() => {
@@ -86,7 +86,7 @@ describe('NewChatModal', () => {
         Reflect.deleteProperty(binding, 'availableModels')
         useAppStore.setState((state) => ({ acpBindingBySessionId: { active: binding }, providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelsLoading: false })) }))
       })
-      expect(optionsSpy.mock.calls.at(-1)?.[0]?.availableModels?.[0].id).toBe('cached-model')
+      expect(optionsSpy.mock.calls.filter(([, , , id]) => id === 'gemini-cli').at(-1)?.[0]?.availableModels?.[0].id).toBe('cached-model')
       await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Refresh models')?.click() })
       expect(discoverProviderModels).toHaveBeenCalledWith('', 'gemini-cli', '/tmp/project', 'local')
     } finally {
@@ -121,7 +121,7 @@ describe('NewChatModal', () => {
       expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Discovering models…')?.disabled).toBe(true)
       act(() => useAppStore.setState((state) => ({ providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelsLoading: false, availableModels: [{ id: 'fresh-model', name: 'Fresh Model', description: '' }] })) })))
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-      expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('Fresh Model')
+      expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')?.textContent).toContain('Fresh Model')
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
       act(() => useAppStore.setState((state) => ({ providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelRefreshError: 'Independent discovery failed.' })) })))
       expect(host.querySelector('[role="alert"]')?.textContent).toContain('Independent discovery failed.')
@@ -291,22 +291,22 @@ describe('NewChatModal', () => {
       model.click()
     })
     expect(model.getAttribute('aria-expanded')).toBe('true')
-    const modelList = document.body.querySelector<HTMLElement>('[role="listbox"][aria-label="Model"]')!
+    const modelList = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Provider and model"]')!
     expect(modelList).toBeTruthy()
 
     act(() => {
-      modelList.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      modelList.querySelector('input[aria-label="Search models"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     })
-    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
+    expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')).toBeNull()
     expect(setNewChatModalOpen).not.toHaveBeenCalled()
 
     act(() => model.click())
-    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeTruthy()
+    expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')).toBeTruthy()
     act(() => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')).toBeNull()
+    expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')).toBeNull()
 
     act(() => model.click())
-    const gpt = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) =>
+    const gpt = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find((option) =>
       option.textContent?.includes('GPT-5.4')
     )
     act(() => gpt?.click())
@@ -323,6 +323,23 @@ describe('NewChatModal', () => {
 
 	expect(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', 'gpt-5.4', 'high', 'chat')
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('filters the new chat model picker with the composer search', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')!.click())
+    const search = document.body.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!
+    expect(document.activeElement).toBe(search)
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'no-such-model-xyz')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(document.body.querySelector('[role="status"]')?.textContent).toContain('No matching models')
     act(() => root.unmount())
     host.remove()
   })
@@ -467,12 +484,12 @@ describe('NewChatModal', () => {
 	  await Promise.resolve()
 	})
 	act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-	const modelMenu = document.body.querySelector('[role="listbox"][aria-label="Model"]')
+	const modelMenu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]')
 	expect(modelMenu?.textContent).toContain('Remote Only')
 	expect(modelMenu?.textContent).not.toContain('Local Only')
 	expect(modelMenu?.textContent).not.toContain('Wrong Case')
 	expect(modelMenu?.textContent).not.toContain('Controller Default')
-	act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]'))
+	act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
 	  .find((option) => option.textContent?.includes('Remote Only'))?.click())
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Create chat')
@@ -823,7 +840,7 @@ describe('NewChatModal', () => {
 
 	  expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
 	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-	  expect(document.body.querySelector('[role="listbox"][aria-label="Model"]')?.textContent).toContain('GPT First Chat')
+	  expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')?.textContent).toContain('GPT First Chat')
 	  expect(requests).toEqual([])
 	  await act(async () => {
 	    Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Refresh models')?.click()
@@ -893,7 +910,7 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     await act(async () => { root.render(<NewChatModal />) })
     const click = (label: string) => act(() => {
-      const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.getAttribute('aria-label') === label || (item.getAttribute('role') === 'option' && item.querySelector('span.block')?.textContent === label))!
+      const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.getAttribute('aria-label') === label || (item.getAttribute('role') === 'option' && item.querySelector('span.block')?.textContent === label) || (item.getAttribute('role') === 'menuitemradio' && item.querySelector('.uam-np-model__name > span')?.textContent === label))!
       button.click()
     })
     const setInput = (label: string, value: string) => act(() => {

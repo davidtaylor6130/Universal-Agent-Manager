@@ -2,7 +2,7 @@ import { ExecutionRoutingDialog, RUNNER_STATUS } from '../modals/ExecutionRoutin
 import { canRouteAutomatically } from '../../types/executionRouting'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
+import { ChevronDown, FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Provider } from '../../types/provider'
@@ -11,8 +11,9 @@ import { WorkspacePicker } from './WorkspacePicker'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, providerCapabilities } from '../../utils/providerMetadata'
-import { Button, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
+import { Button, IconButton, MenuSelect, Notice, ViewportMenu, useOverlayState } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
+import { ModelPickerContent } from '../chat/ModelPickerContent'
 import { isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 
@@ -61,6 +62,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const [creatingWorkspace, setCreatingWorkspace] = useState(false)
   const [workspaceError, setWorkspaceError] = useState('')
   const [remoteBrowserOpen, setRemoteBrowserOpen] = useState(false)
+  const [modelOpen, setModelOpen] = useState(false)
+  const modelMenuRef = useRef<HTMLDivElement>(null)
+  const modelTriggerRef = useRef<HTMLButtonElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   const creatingChatRef = useRef(false)
   const workspaceChoices = useRef<Record<string, { folderId: string | null; path: string }>>({})
@@ -129,6 +133,18 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [remoteBrowserOpen, routingOpen, requestClose])
+
+  // Close the model picker on outside click (same rule as the composer's model popover).
+  useEffect(() => {
+    if (!modelOpen) return
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (target instanceof Element && target.closest('[data-viewport-menu]')) return
+      if (!modelMenuRef.current?.contains(target)) setModelOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [modelOpen])
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
@@ -449,20 +465,51 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <div role="group" aria-label="Model and reasoning" className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-3 items-start">
           <div>
             <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Model{cachedAcp?.modelsLoading ? ' · discovering…' : ''}</div>
-            <div className="flex items-center gap-2"><div className="min-w-0 flex-1"><MenuSelect
-              label="Model"
-              disabled={routingMode === 'automatic'}
-              value={routingMode === 'automatic' ? '' : selectedModelId}
-              options={routingMode === 'automatic' ? [{ value: '', label: 'Provider default on assigned computer' }] : modelOptions.map((option) => ({
-                value: option.id,
-                label: option.label,
-                description: option.detail,
-              }))}
-			  onChange={(nextModelId) => {
-				setModelId(nextModelId)
-				setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
-              }}
-            /></div>
+            <div className="flex items-center gap-2"><div ref={modelMenuRef} className="relative min-w-0 flex-1">
+              <button
+                ref={modelTriggerRef}
+                type="button"
+                title="Model"
+                aria-label="Model"
+                aria-haspopup="menu"
+                aria-expanded={modelOpen}
+                aria-controls={modelOpen ? 'new-chat-model-list' : undefined}
+                disabled={routingMode === 'automatic'}
+                onClick={() => setModelOpen((open) => !open)}
+                className="uam-menu-select__trigger flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm"
+              >
+                <span className="flex min-w-0 items-center gap-2 truncate">
+                  <span className="truncate">{routingMode === 'automatic' ? 'Provider default on assigned computer' : modelOptionFor(modelOptions, selectedModelId).label}</span>
+                </span>
+                <ChevronDown className={modelOpen ? 'uam-menu-select__chevron is-open' : 'uam-menu-select__chevron'} size={14} aria-hidden />
+              </button>
+              {modelOpen && routingMode !== 'automatic' && (
+                <ViewportMenu
+                  anchorRef={modelTriggerRef}
+                  side="bottom"
+                  align="start"
+                  id="new-chat-model-list"
+                  role="menu"
+                  aria-label="Provider and model"
+                  manageFocus={false}
+                  style={{ width: 360, border: '1px solid var(--border-bright)', borderRadius: 'var(--r-md)', background: 'var(--surface)', boxShadow: 'var(--elev-3)', padding: 0 }}
+                >
+                  <ModelPickerContent
+                    providers={providers} providerId={providerId} currentModelId={selectedModelId}
+                    activeOptions={modelOptions} activeLoading={cachedAcp?.modelsLoading} activeError={cachedAcp?.modelRefreshError}
+                    modelDisabled={false} canChangeProvider={false}
+                    workspaceDirectory={selectedWorkspace} executionHostId={executionHostId}
+                    onClose={() => { setModelOpen(false); modelTriggerRef.current?.focus() }}
+                    onSelect={(_selectedProviderId, nextModelId) => {
+                      setModelId(nextModelId)
+                      setReasoningEffort(reasoningEffortForModel(cachedAcp, nextModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID))
+                      setModelOpen(false)
+                      modelTriggerRef.current?.focus()
+                    }}
+                  />
+                </ViewportMenu>
+              )}
+            </div>
             <IconButton
               label={cachedAcp?.modelsLoading ? isRemote ? 'Discovering remote models…' : 'Discovering models…' : isRemote ? 'Discover remote models' : 'Refresh models'}
               icon={<RefreshCw size={14} style={cachedAcp?.modelsLoading ? { animation: 'uam-status-spin 0.9s linear infinite' } : undefined} />}
