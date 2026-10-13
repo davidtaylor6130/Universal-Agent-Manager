@@ -3,6 +3,8 @@ import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
+import { SettingsScopeBar } from './SettingsScopeBar'
+import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
@@ -950,7 +952,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         ...providerChatDefaults,
         [providerId]: defaults,
       },
-    })
+    }, settingsScope)
   }
 
   const toggleDefaultProvider = (providerId: string) => {
@@ -1586,6 +1588,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const selectedSettingsSection = selectedSection
+  // Settings scope: saves on per-computer pages go to the selected SSH host only when the backend supports it.
+  const settingsScopeHostId = useAppStore((s) => s.settingsScopeHostId)
+  const setSettingsScopeHostId = useAppStore((s) => s.setSettingsScopeHostId)
+  const hostScopedSettings = useAppStore((s) => s.hostScopedSettings === true)
+  const settingsScope = hostScopedSettings && executionHosts.some((host) => host.transport === 'ssh' && host.id === settingsScopeHostId) ? settingsScopeHostId : SETTINGS_ALL_ENVIRONMENTS
+  const scopeBarVisible = SSH_ENABLED && executionHosts.some((host) => host.transport === 'ssh') && (selectedSection === 'defaults' || selectedSection === 'mcp-servers' || selectedSection.startsWith('provider:'))
+  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={settingsScope} supported={hostScopedSettings} onChange={setSettingsScopeHostId} /> : null
   const handleProviderSettingsHostChange = (hostId: string) => {
     setPendingCliInstall(null)
     setOpenCliVersionMenu(null)
@@ -1768,7 +1777,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         : []
       return (
         <div className="space-y-4">
-          {!scopedProviderId && <SettingsSection title="AI permission reviewer" description="A second model can approve routine permission requests; anything it is unsure about still comes to you.">
+          {!scopedProviderId && settingsScope === SETTINGS_ALL_ENVIRONMENTS && <SettingsSection title="AI permission reviewer" description="A second model can approve routine permission requests; anything it is unsure about still comes to you.">
             <SettingRow title="Reviewer provider" description="Which agent reviews permission requests." control={renderDefaultsMenu(
                   'permission-reviewer-provider',
                   permissionReviewerProviderId,
@@ -1798,7 +1807,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     label: providerDisplayName(provider, provider.id),
                     detail: provider.name ?? provider.id,
                   })),
-                  (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }),
+                  (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }, settingsScope),
                   (option) => <ProviderLogo providerId={option.id} />
                 )} />
           </SettingsSection>}
@@ -2962,7 +2971,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'central-configuration') return <CentralProviderSettings ref={centralRef} />
 
-    if (selectedSection === 'mcp-servers') return <McpServerSetup onBusyChange={setMcpSaving} onDirtyChange={setMcpDraftDirty} />
+    if (selectedSection === 'mcp-servers') return <McpServerSetup onBusyChange={setMcpSaving} onDirtyChange={setMcpDraftDirty} scopeExecutionHostId={settingsScope} />
 
     if (selectedSection === 'chat-data') {
       return (
@@ -3077,8 +3086,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     <div id="settings-page-actions" className="flex items-center gap-2"/>
                   </div>
                 </div>
-                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div>
-                  return <div className="uam-settings-scroll"><div className="uam-settings-frame">{header}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
+                  if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-6">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden mt-5">{renderSectionContent()}</SettingsPageSwap></div>
+                  return <div className="uam-settings-scroll"><div className="uam-settings-frame">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
               </>}
             </div>

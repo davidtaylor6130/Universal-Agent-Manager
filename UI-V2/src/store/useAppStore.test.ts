@@ -4078,6 +4078,29 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toHaveLength(2)
   })
 
+  it('adds the settings scope host only to scoped saves', async () => {
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request))
+      onSuccess('{}')
+    }
+    useAppStore.setState({
+      providers: [{ id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#f97316', description: '' }],
+      defaultNewChatProviderId: 'gemini-cli',
+      providerChatDefaults: {},
+    })
+
+    await useAppStore.getState().setProviderChatDefaults({ defaultNewChatProviderId: 'gemini-cli' }, 'box-1')
+    await useAppStore.getState().setProviderChatDefaults({ defaultNewChatProviderId: 'gemini-cli' }, '*')
+    await useAppStore.getState().setMcpServers([], 'box-1')
+    await useAppStore.getState().setMcpServers([])
+
+    expect(requests[0].payload).toMatchObject({ defaultProviderId: 'gemini-cli', scopeExecutionHostId: 'box-1' })
+    expect(requests[1].payload).not.toHaveProperty('scopeExecutionHostId')
+    expect(requests[2].payload).toEqual({ servers: [], scopeExecutionHostId: 'box-1' })
+    expect(requests[3].payload).toEqual({ servers: [] })
+  })
+
   it('preserves generic provider defaults advertised by the selected runtime model', async () => {
     const now = new Date()
     window.cefQuery = ({ onSuccess }) => onSuccess('{}')

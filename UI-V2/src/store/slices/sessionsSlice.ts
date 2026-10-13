@@ -10,6 +10,7 @@ import { setPreferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
+import { withSettingsScope } from '../../utils/settingsScope'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
@@ -2015,7 +2016,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return { ok: response.ok, error: response.error }
     },
 
-    setMcpServers: async (servers: McpServerConfiguration[]): Promise<{ ok: boolean; error?: string }> => {
+    setMcpServers: async (servers: McpServerConfiguration[], scopeExecutionHostId?: string): Promise<{ ok: boolean; error?: string }> => {
       const previous = get().mcpServers
       const optimisticRevision = rememberOptimisticFields(['mcpServers'])
       set({ mcpServers: servers })
@@ -2023,7 +2024,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       const response = await sendToCEF({
         action: 'setMcpServers',
-        payload: { servers },
+        payload: withSettingsScope({ servers }, scopeExecutionHostId),
         requestId: createRequestId('setMcpServers'),
       })
       if (!response.ok) set(latestOptimisticRollback({ mcpServers: previous }, optimisticRevision))
@@ -2068,7 +2069,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setProviderChatDefaults: async (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }): Promise<boolean> => {
+    setProviderChatDefaults: async (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string): Promise<boolean> => {
       const previous = {
         defaultNewChatProviderId: get().defaultNewChatProviderId,
         providerChatDefaults: get().providerChatDefaults,
@@ -2113,10 +2114,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         applySettings()
         const response = await sendToCEF({
           action: 'setProviderChatDefaults',
-          payload: {
+          payload: withSettingsScope({
             defaultProviderId: next.defaultNewChatProviderId,
             defaults: next.providerChatDefaults,
-          },
+          }, scopeExecutionHostId),
           requestId,
         })
         if (!response.ok) {

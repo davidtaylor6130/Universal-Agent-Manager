@@ -126,6 +126,10 @@ export interface AppState {
   computerUseAllowlistEnabled: boolean
   computerUseAllowedApplications: ComputerUseAllowedApplication[]
   providerAgentImport?: boolean
+  /** Backend accepts scopeExecutionHostId on settings saves. Scope selector is disabled when absent. */
+  hostScopedSettings?: boolean
+  /** Settings page scope: '*' for all environments, otherwise an SSH execution host id. Session only. */
+  settingsScopeHostId: string
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>
   shellActions: ShellAction[]
   shellActionNotification: string
@@ -202,10 +206,10 @@ export interface AppState {
   setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
-  setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }) => Promise<boolean>
+  setProviderChatDefaults: (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string) => Promise<boolean>
   setEditorSettings: (settings: Pick<AppState, 'defaultEditorPresetId' | 'editorFileAssociations'> & Partial<Pick<AppState, 'fileExplorerApplication'>>) => Promise<boolean>
   setCentralProviderConfiguration: (configuration: CentralProviderConfiguration) => Promise<{ ok: boolean; error?: string }>
-  setMcpServers: (servers: McpServerConfiguration[]) => Promise<{ ok: boolean; error?: string }>
+  setMcpServers: (servers: McpServerConfiguration[], scopeExecutionHostId?: string) => Promise<{ ok: boolean; error?: string }>
   setUamAgentPreferences: (settings: { favoriteUamAgentIds: string[]; uamAgentCycleShortcut: UamAgentCycleShortcut }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
@@ -327,6 +331,7 @@ export interface AppState {
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
   setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
   setSettingsOpen: (open: boolean) => void
+  setSettingsScopeHostId: (hostId: string) => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setCommitPanelOpen: (open: boolean) => void
   setSidebarWidthPx: (width: number) => void
