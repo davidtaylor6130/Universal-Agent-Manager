@@ -76,6 +76,15 @@ namespace
 		session.goal_resume_suppressed = true;
 		SaveChatQuietly(app, chat);
 	}
+	void HoldUnconfirmedCodexGoal(AppState& app, AcpSessionState& session, ChatSession& chat,
+		const std::string& goal_id, const std::string& diagnostic)
+	{
+		// Failed fresh reads cannot authorize controls against potentially replaced native state.
+		session.codex_goal_owner = {};
+		session.codex_goal_native_active = false;
+		HoldCodexGoal(app, session, chat, goal_id, diagnostic);
+	}
+
 }
 
 bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& chat, Goal& goal,
@@ -115,6 +124,32 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 		owner.binding_created_at = session.codex_goal_created_at;
 		owner.tokens_used_at_start = previous.tokens_used_at_start;
 	}
+	if (!replace_native && goal.native_binding.has_value())
+	{
+		const NativeGoalBinding& binding = *goal.native_binding;
+		const bool valid = binding.version == 1 && binding.provider_id == session.provider_id &&
+			binding.execution_host_id == owner.execution_host_id && binding.thread_id == owner.thread_id &&
+			binding.uam_chat_id == chat.id && binding.uam_goal_id == goal.id &&
+			binding.objective == goal.objective && binding.uam_budget_at_creation == goal.token_budget &&
+			binding.created_at > 0 && binding.last_updated_at >= binding.created_at && binding.uam_tokens_at_creation >= 0 &&
+			binding.last_native_tokens_used >= 0 && binding.uam_tokens_at_creation <= goal.tokens_used &&
+			binding.last_native_tokens_used <= goal.tokens_used - binding.uam_tokens_at_creation &&
+			(!binding.native_token_budget || *binding.native_token_budget >= 0) &&
+			(goal.token_budget <= 0 || (binding.uam_tokens_at_creation < goal.token_budget &&
+			 binding.native_token_budget == goal.token_budget - binding.uam_tokens_at_creation));
+		if (!valid)
+		{
+			if (error_out != nullptr) *error_out = "The saved native goal binding cannot authorize resume.";
+			HoldUnconfirmedCodexGoal(app, session, chat, goal.id, "native_goal_invalid_durable_binding");
+			return false;
+		}
+		owner.resume_existing = true;
+		owner.binding_created_at = binding.created_at;
+		owner.tokens_used_at_start = binding.uam_tokens_at_creation;
+		// The read-only probe must confirm this witness before any native mutation.
+		session.codex_goal_created_at = binding.created_at;
+		session.codex_goal_updated_at = binding.last_updated_at;
+	}
 	if (!session.codex_goal_pending_requests.empty())
 	{
 		for (const std::pair<const std::string, AcpSessionState::CodexGoalOwner>& pending : session.codex_goal_pending_requests)
@@ -141,6 +176,7 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 	{
 		goal.execution_owner = "uam";
 		goal.provider_command.clear();
+		goal.native_binding.reset();
 		goal.last_diagnostic = "native_goal_unsupported_using_uam";
 		SaveChatQuietly(app, chat);
 		return ResumeGoal(app, chat.id, goal.id, error_out);
@@ -286,6 +322,12 @@ bool ApplyCodexNativeGoalReceipt(AcpSessionState& session, ChatSession& chat, co
 		(owner.binding_created_at > 0 && owner.binding_created_at != created_at) ||
 		updated_at < session.codex_goal_updated_at ||
 		used > std::numeric_limits<std::int64_t>::max() - owner.tokens_used_at_start) return false;
+	// Durable JsonValue numbers cannot represent integers beyond 2^53-1 exactly.
+	constexpr std::int64_t max_exact = 9'007'199'254'740'991LL;
+	const nlohmann::json::const_iterator native_budget = native_goal.find("tokenBudget");
+	if (used > max_exact || created_at > max_exact || updated_at > max_exact || owner.tokens_used_at_start > max_exact ||
+		owner.token_budget > max_exact || used > max_exact - owner.tokens_used_at_start || (native_budget != native_goal.end() && !native_budget->is_null() &&
+		(!native_budget->is_number_integer() || native_budget->get<std::int64_t>() < 0 || native_budget->get<std::int64_t>() > max_exact))) return false;
 	const std::string status = JsonDiagnosticStringValue(native_goal, "status");
 	if (mode == CodexGoalReceiptMode::Stopping && status != "paused") return false;
 	if (owner.token_budget > 0)
@@ -301,6 +343,17 @@ bool ApplyCodexNativeGoalReceipt(AcpSessionState& session, ChatSession& chat, co
 		if (goal.id != owner.goal_id) continue;
 		const std::int64_t total_used = owner.tokens_used_at_start + used;
 		if (total_used < goal.tokens_used) return false;
+		if (goal.native_binding.has_value())
+		{
+			NativeGoalBinding& binding = *goal.native_binding;
+			const nlohmann::json::const_iterator budget = native_goal.find("tokenBudget");
+			const std::optional<std::int64_t> reported_budget = budget != native_goal.end() && budget->is_number_integer()
+				? std::optional<std::int64_t>(budget->get<std::int64_t>()) : std::nullopt;
+			if (binding.created_at != created_at || binding.native_token_budget != reported_budget ||
+				updated_at < binding.last_updated_at || used < binding.last_native_tokens_used) return false;
+			binding.last_updated_at = updated_at;
+			binding.last_native_tokens_used = used;
+		}
 		session.codex_goal_created_at = created_at;
 		session.codex_goal_updated_at = updated_at;
 		goal.tokens_used = total_used;
@@ -332,9 +385,12 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 		if (owner.thread_id != session.session_id || owner.chat_id != chat.id) return true;
 		if (result.is_object() && result.contains("cleared") && result["cleared"].is_boolean())
 		{
+			if (chat.goal_command_revision == owner.revision)
+				if (Goal* goal = GoalService::FindGoalById(app, chat.id, owner.goal_id); goal != nullptr) goal->native_binding.reset();
 			session.codex_goal_owner = {};
 			session.codex_goal_native_active = false;
 			if (session.codex_turn_id.empty()) session.processing = false;
+			SaveChatQuietly(app, chat);
 		}
 		else
 		{
@@ -394,7 +450,7 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 	{
 		if (!result.is_object() || (result.contains("goal") && !result["goal"].is_null() && !result["goal"].is_object()))
 		{
-			HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_invalid_probe");
+			HoldUnconfirmedCodexGoal(app, session, chat, owner.goal_id, "native_goal_invalid_probe");
 			return true;
 		}
 		session.codex_goal_capability = AcpSessionState::CodexGoalCapability::StateApi;
@@ -403,7 +459,7 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 			const nlohmann::json& current = result["goal"];
 			if (JsonDiagnosticStringValue(current, "threadId") != owner.thread_id)
 			{
-				HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_invalid_probe_thread");
+				HoldUnconfirmedCodexGoal(app, session, chat, owner.goal_id, "native_goal_invalid_probe_thread");
 				return true;
 			}
 			const bool bound = owner.resume_existing && current.contains("createdAt") && current["createdAt"].is_number_integer() &&
@@ -414,25 +470,30 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 				session.codex_goal_owner = owner;
 				if (!ApplyCodexNativeGoalReceipt(session, chat, current, CodexGoalReceiptMode::Preparing))
 				{
-					HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_resume_state_unconfirmed");
+					HoldUnconfirmedCodexGoal(app, session, chat, owner.goal_id, "native_goal_resume_state_unconfirmed");
 					return true;
 				}
 				owner.action = Action::PreparePaused;
 				if (!SendCodexGoalRequest(session, BuildCodexGoalStatusRequest(next_id, owner.thread_id, "paused", owner.user_origin), owner))
-					HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_pause_write_failed");
+					HoldUnconfirmedCodexGoal(app, session, chat, owner.goal_id, "native_goal_pause_write_failed");
 				return true;
 			}
 			if (!owner.replace_native)
 			{
-				HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_binding_unavailable_requires_explicit_replace");
+				HoldUnconfirmedCodexGoal(app, session, chat, owner.goal_id, "native_goal_binding_unavailable_requires_explicit_replace");
 				return true;
 			}
+		}
+		if (!owner.replace_native)
+		{
+			HoldUnconfirmedCodexGoal(app, session, chat, owner.goal_id, "native_goal_missing_binding_requires_explicit_replace");
+			return true;
 		}
 		owner.resume_existing = false;
 		owner.binding_created_at = 0;
 		owner.action = Action::ReplaceClear;
 		if (!SendCodexGoalRequest(session, BuildCodexGoalClearRequest(next_id, owner.thread_id, owner.user_origin), owner))
-			HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_clear_write_failed");
+			HoldUnconfirmedCodexGoal(app, session, chat, owner.goal_id, "native_goal_clear_write_failed");
 		return true;
 	}
 	if (owner.action == Action::ReplaceClear)
@@ -442,6 +503,7 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 			HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_clear_unconfirmed");
 			return true;
 		}
+		if (Goal* goal = GoalService::FindGoalById(app, chat.id, owner.goal_id); goal != nullptr) goal->native_binding.reset();
 		session.codex_goal_owner = {};
 		session.codex_goal_created_at = 0;
 		session.codex_goal_updated_at = 0;
@@ -469,8 +531,24 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 	session.codex_goal_owner = owner;
 	if (owner.action == Action::PreparePaused && !chat.active_goal_id.empty())
 	{
+		Goal* goal = GoalService::FindGoalById(app, chat.id, owner.goal_id);
+		if (goal == nullptr) return true;
+		if (!goal->native_binding.has_value())
+		{
+			const nlohmann::json& receipt = result["goal"];
+			const std::optional<std::int64_t> native_budget = receipt.contains("tokenBudget") && receipt["tokenBudget"].is_number_integer()
+				? std::optional<std::int64_t>(receipt["tokenBudget"].get<std::int64_t>()) : std::nullopt;
+			goal->native_binding = NativeGoalBinding{1, session.provider_id, owner.execution_host_id, owner.thread_id,
+				owner.chat_id, owner.goal_id, owner.objective, session.codex_goal_created_at, session.codex_goal_updated_at, owner.tokens_used_at_start,
+				owner.token_budget, native_budget, receipt["tokensUsed"].get<std::int64_t>()};
+		}
+		if (!SaveChatQuietly(app, chat))
+		{
+			goal->native_binding.reset();
+			HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_binding_save_failed");
+			return true;
+		}
 		session.codex_goal_initial_turn_pending = owner;
-		SaveChatQuietly(app, chat);
 		StartPendingCodexNativeGoalTurn(app, session, chat);
 	}
 	SaveChatQuietly(app, chat);

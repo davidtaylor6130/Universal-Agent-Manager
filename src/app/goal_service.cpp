@@ -389,6 +389,7 @@ bool GoalService::UpdateGoalObjective(AppState& app, const std::string& chat_id,
 		if (error_out != nullptr) *error_out = "Only non-complete UAM-managed goals can be edited.";
 		return false;
 	}
+	goal->native_binding.reset();
 	goal->objective = trimmed_objective;
 	goal->updated_at = uam::time::TimestampNow();
 	MarkDirty(app, chat_id);

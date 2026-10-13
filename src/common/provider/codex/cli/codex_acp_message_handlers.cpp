@@ -796,7 +796,10 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			session.codex_goal_pending_requests.clear();
 			(void)GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Paused);
 			if (Goal* goal = GoalService::FindGoalById(app, chat.id, goal_id); goal != nullptr)
+			{
+				goal->native_binding.reset();
 				goal->last_diagnostic = "native_goal_binding_replaced";
+			}
 			session.goal_resume_suppressed = true;
 			SaveChatQuietly(app, chat);
 			return;
@@ -821,7 +824,10 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			const std::string goal_id = session.codex_goal_owner.goal_id;
 			(void)GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Paused);
 			if (Goal* goal = GoalService::FindGoalById(app, chat.id, goal_id); goal != nullptr)
+			{
+				goal->native_binding.reset();
 				goal->last_diagnostic = "native_goal_cleared";
+			}
 			session.codex_goal_owner = {};
 			SaveChatQuietly(app, chat);
 		}

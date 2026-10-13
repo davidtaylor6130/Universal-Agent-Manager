@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -183,6 +184,25 @@ enum class GoalStatus
 /// self-detects completion or gets stuck (>= 3 consecutive blocker turns).
 /// Mirrors Codex CLI's /goal mode.
 /// </summary>
+/// <summary>Receipt evidence for explicit native resume; creation time is not a unique provider ID or CAS token.</summary>
+struct NativeGoalBinding
+{
+	int version = 1;
+	std::string provider_id;
+	std::string execution_host_id;
+	std::string thread_id;
+	std::string uam_chat_id;
+	std::string uam_goal_id;
+	std::string objective;
+	std::int64_t created_at = 0;
+	std::int64_t last_updated_at = 0;
+	std::int64_t uam_tokens_at_creation = 0;
+	std::int64_t uam_budget_at_creation = 0;
+	std::optional<std::int64_t> native_token_budget;
+	std::int64_t last_native_tokens_used = 0;
+	bool operator==(const NativeGoalBinding&) const = default;
+};
+
 struct Goal
 {
 	std::string id;
@@ -207,6 +227,7 @@ struct Goal
 	std::string updated_at;
 	std::string execution_owner = "uam";
 	std::string provider_command;
+	std::optional<NativeGoalBinding> native_binding;
 	std::string worker_model_id;
 	std::string reviewer_model_id;
 	std::string creator = "user";

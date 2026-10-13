@@ -230,6 +230,14 @@ namespace
 		}
 	}
 
+	std::optional<std::int64_t> NativeGoalBindingInteger(const JsonValue* value)
+	{
+		if (value == nullptr || value->type != JsonValue::Type::Number || !std::isfinite(value->number_value) ||
+			value->number_value < 0 || value->number_value > 9'007'199'254'740'991.0 ||
+			std::floor(value->number_value) != value->number_value) return std::nullopt;
+		return static_cast<std::int64_t>(value->number_value);
+	}
+
 	int NonNegativeIntFieldOrZero(const JsonValue* value)
 	{
 		const double parsed = JsonNumberOrDefault(value, 0.0);
@@ -1062,6 +1070,10 @@ namespace
 
 	bool ChatsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
+		// Goal binding changes must not be discarded by identical-message recovery.
+		if (lhs.goals.size() != rhs.goals.size()) return false;
+		for (std::size_t index = 0; index < lhs.goals.size(); ++index)
+			if (lhs.goals[index].id != rhs.goals[index].id || lhs.goals[index].native_binding != rhs.goals[index].native_binding) return false;
 		return ChatScalarFieldsEquivalentForRecovery(lhs, rhs) && MessagesEquivalentForRecovery(lhs.messages, rhs.messages);
 	}
 
@@ -1652,6 +1664,37 @@ namespace
 				goal.updated_at = JsonStringOrEmpty(goal_obj.Find("updatedAt"));
 				goal.execution_owner = JsonStringOrEmpty(goal_obj.Find("executionOwner")) == "provider" ? "provider" : "uam";
 				goal.provider_command = goal.execution_owner == "provider" ? JsonStringOrEmpty(goal_obj.Find("providerCommand")) : "";
+				if (const JsonValue* binding = goal_obj.Find("nativeBinding"); binding != nullptr)
+				{
+					NativeGoalBinding receipt;
+					receipt.version = 0; // Invalid records remain a hold marker rather than legacy unbound intent.
+
+					const std::optional<std::int64_t> version = NativeGoalBindingInteger(binding->Find("version"));
+					const std::optional<std::int64_t> created = NativeGoalBindingInteger(binding->Find("createdAt"));
+					const std::optional<std::int64_t> updated = NativeGoalBindingInteger(binding->Find("updatedAt"));
+					const std::optional<std::int64_t> baseline = NativeGoalBindingInteger(binding->Find("uamTokensAtCreation"));
+					const std::optional<std::int64_t> ceiling = NativeGoalBindingInteger(binding->Find("uamBudgetAtCreation"));
+					const std::optional<std::int64_t> used = NativeGoalBindingInteger(binding->Find("nativeTokensUsed"));
+					const JsonValue* native_budget = binding->Find("nativeTokenBudget");
+					if (binding->type == JsonValue::Type::Object && version == 1 && created && updated && baseline && ceiling && used &&
+						native_budget != nullptr && (native_budget->type == JsonValue::Type::Null || NativeGoalBindingInteger(native_budget)))
+					{
+						receipt.version = 1;
+						receipt.provider_id = JsonStringOrEmpty(binding->Find("providerId"));
+						receipt.execution_host_id = JsonStringOrEmpty(binding->Find("executionHostId"));
+						receipt.thread_id = JsonStringOrEmpty(binding->Find("threadId"));
+						receipt.uam_chat_id = JsonStringOrEmpty(binding->Find("uamChatId"));
+						receipt.uam_goal_id = JsonStringOrEmpty(binding->Find("uamGoalId"));
+						receipt.objective = JsonStringOrEmpty(binding->Find("objective"));
+						receipt.created_at = *created;
+						receipt.last_updated_at = *updated;
+						receipt.uam_tokens_at_creation = *baseline;
+						receipt.uam_budget_at_creation = *ceiling;
+						receipt.last_native_tokens_used = *used;
+						receipt.native_token_budget = NativeGoalBindingInteger(native_budget);
+					}
+					goal.native_binding = std::move(receipt);
+				}
 				goal.worker_model_id = JsonStringOrEmpty(goal_obj.Find("workerModelId"));
 				goal.reviewer_model_id = JsonStringOrEmpty(goal_obj.Find("reviewerModelId"));
 				goal.creator = JsonStringOrEmpty(goal_obj.Find("creator")) == "model" ? "model" : "user";
@@ -2367,6 +2410,26 @@ try
 			uam::json::SetString(goal_obj, "updatedAt", goal.updated_at);
 			uam::json::SetString(goal_obj, "executionOwner", goal.execution_owner == "provider" ? "provider" : "uam");
 			uam::json::SetString(goal_obj, "providerCommand", goal.execution_owner == "provider" ? goal.provider_command : "");
+			if (goal.native_binding.has_value())
+			{
+				const NativeGoalBinding& receipt = *goal.native_binding;
+				JsonValue binding = uam::json::Object();
+				uam::json::SetNumber(binding, "version", receipt.version);
+				uam::json::SetString(binding, "providerId", receipt.provider_id);
+				uam::json::SetString(binding, "executionHostId", receipt.execution_host_id);
+				uam::json::SetString(binding, "threadId", receipt.thread_id);
+			uam::json::SetString(binding, "uamChatId", receipt.uam_chat_id);
+			uam::json::SetString(binding, "uamGoalId", receipt.uam_goal_id);
+				uam::json::SetString(binding, "objective", receipt.objective);
+				uam::json::SetNumber(binding, "createdAt", static_cast<double>(receipt.created_at));
+				uam::json::SetNumber(binding, "updatedAt", static_cast<double>(receipt.last_updated_at));
+				uam::json::SetNumber(binding, "uamTokensAtCreation", static_cast<double>(receipt.uam_tokens_at_creation));
+				uam::json::SetNumber(binding, "uamBudgetAtCreation", static_cast<double>(receipt.uam_budget_at_creation));
+				uam::json::SetNumber(binding, "nativeTokensUsed", static_cast<double>(receipt.last_native_tokens_used));
+				uam::json::SetValue(binding, "nativeTokenBudget", receipt.native_token_budget.has_value()
+					? uam::json::Number(static_cast<double>(*receipt.native_token_budget)) : JsonValue{});
+				uam::json::SetValue(goal_obj, "nativeBinding", std::move(binding));
+			}
 			uam::json::SetString(goal_obj, "workerModelId", goal.worker_model_id);
 			uam::json::SetString(goal_obj, "reviewerModelId", goal.reviewer_model_id);
 			uam::json::SetString(goal_obj, "creator", goal.creator == "model" ? "model" : "user");
