@@ -1333,6 +1333,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       if (id) showChatInPane(id)
     } finally { sideBusyRef.current = false; setSideBusy(false) }
   }
+  const showSideChatControls = !isCompanionContext() && Boolean(session.temporaryParentChatId || liveSideChatId)
   const isGitWorktree = session.workspaceIsolationKind === 'gitWorktree'
   const workspaceActionsDisabled = remoteComputerUseDisabled || workspaceActionBusy || Boolean(
     acp?.processing ||
@@ -2755,7 +2756,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
             <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context"
               detail={acp?.providerUsage?.contextUsage ? <ContextUsageStatus usage={acp.providerUsage.contextUsage} /> : undefined} />
             <SubagentWaitStatus binding={acp} />
@@ -2835,19 +2835,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 finally { if (currentSessionIdRef.current === submittedSessionId) setSteering(false) }
               }}
             />
-            {!isCompanionContext() && (session.temporaryParentChatId || liveSideChatId) && (
-              <div className="uam-composer-side-strip" role="group" aria-label="Side chat">
-                <CornerUpRight size={12} aria-hidden style={{ color: 'var(--accent)' }} />
-                {session.temporaryParentChatId ? <>
-                  <span className="min-w-0 flex-1 truncate">Side chat · main chat context is reference only</span>
-                  <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={13} aria-hidden />} title="Back to the main chat; this side chat stays open (/side-return)" onClick={() => void navigateSide('return')}>Return</Button>
-                  <Button type="button" size="sm" variant="ghost" leadingIcon={<X size={13} aria-hidden />} title="Close and discard this side chat (/side-dismiss)" disabled={sideBusy} onClick={() => void navigateSide('dismiss')}>Dismiss</Button>
-                </> : <>
-                  <span className="min-w-0 flex-1 truncate">A side chat is open for this chat</span>
-                  <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
-                </>}
-              </div>
-            )}
+            {(!isCompanionContext() || displayedGoal || stoppedStatusLabel || showSideChatControls) && <div className="uam-composer-tabs" data-workspace={(!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
             {(!isCompanionContext() || displayedGoal) && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
             {!isCompanionContext() && (
               <>
@@ -2940,6 +2928,22 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               }}>
               <Target size={13} aria-hidden /><span className="conversation-goal-chip__status">{displayedGoal.status}</span><span className="conversation-goal-chip__title">{displayedGoal.objective}</span>
             </button>}
+            </div>}
+            <div className="uam-composer-tabs__end">
+              <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
+              {showSideChatControls && (session.temporaryParentChatId ? (
+                <div className="uam-composer-side-controls" role="group" aria-label="Side chat">
+                  <span className="uam-composer-side-controls__pill" title="Main chat context is reference only">
+                    <CornerUpRight size={12} aria-hidden />
+                    Side chat
+                  </span>
+                  <IconButton size="sm" icon={<CornerUpLeft size={14} aria-hidden />} label="Return to main chat" tooltip="Back to the main chat; this side chat stays open (/side-return)" onClick={() => void navigateSide('return')} />
+                  <IconButton size="sm" icon={<X size={14} aria-hidden />} label="Dismiss side chat" tooltip="Close and discard this side chat (/side-dismiss)" disabled={sideBusy} onClick={() => void navigateSide('dismiss')} />
+                </div>
+              ) : (
+                <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
+              ))}
+            </div>
             </div>}
             {pendingUserInput && !session.importedReadOnly && (
               <UserInputInlineCard
