@@ -4947,6 +4947,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::shared_ptr<std::atomic<bool>> ownership;
 	};
 
+	struct PendingChatIconReceipt
+	{
+		std::filesystem::path data_root;
+		std::shared_ptr<const std::uint8_t> incarnation;
+		CustomIcon expected;
+		std::function<bool()> owned;
+		std::function<void(bool)> completion;
+	};
+
 	struct PendingChatSaveTask
 	{
 		std::filesystem::path data_root;
@@ -4970,9 +4979,55 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::size_t admission_generation = 0, admission_generation_at_capture = 0;
 		std::string admission_queue_fingerprint;
 		std::vector<std::function<void(bool)>> completions;
+		std::vector<PendingChatIconReceipt> icon_receipts;
+		CustomIcon icon_at_capture;
+		std::shared_ptr<const std::uint8_t> icon_incarnation_at_capture;
 		double due_at = 0.0;
-		~PendingChatSaveTask() { publication_owned->store(false, std::memory_order_release); queue_owned->store(false, std::memory_order_release); }
+		~PendingChatSaveTask()
+		{
+			publication_owned->store(false, std::memory_order_release);
+			queue_owned->store(false, std::memory_order_release);
+			for (PendingChatIconReceipt& receipt : icon_receipts)
+				if (receipt.completion)
+					try { receipt.completion(false); }
+					catch (...) { diagnostics::Write("Cancelled icon acknowledgement failed."); }
+		}
 	};
+
+	static void CollectChatIconResults(AppState& app, const std::shared_ptr<PendingChatSaveTask>& task,
+	    const std::optional<CustomIcon>& published_icon, const std::shared_ptr<const std::uint8_t>& incarnation,
+	    bool failed, std::vector<std::function<void()>>& acknowledgements)
+	{
+		if (!task) return;
+		const ChatSession* chat = ChatDomainService().FindChatById(app, task->chat_id);
+		std::vector<PendingChatIconReceipt> retained;
+		for (PendingChatIconReceipt& receipt : task->icon_receipts)
+		{
+			const bool owned = chat && app.data_root == receipt.data_root && chat->metadata_incarnation == receipt.incarnation &&
+			    chat->custom_icon == receipt.expected && receipt.owned();
+			const bool saved = owned && published_icon && *published_icon == receipt.expected && incarnation == receipt.incarnation;
+			if (!owned || failed || saved)
+			{
+				std::function<void(bool)> completion = std::move(receipt.completion);
+				acknowledgements.push_back([completion = std::move(completion), saved]() { completion(saved); });
+			}
+			else retained.push_back(std::move(receipt));
+		}
+		task->icon_receipts = std::move(retained);
+	}
+
+	bool DeferChatIconSaveResult(AppState& app, const std::string& chat_id, const CustomIcon& expected,
+	    std::function<bool()> owned, std::function<void(bool)> completion)
+	{
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (!chat || !owned || !completion || !app.pending_chat_save_at_by_chat_id.contains(chat_id) || chat->custom_icon != expected) return false;
+		std::shared_ptr<PendingChatSaveTask>& task = app.pending_chat_save_tasks[chat_id];
+		if (!task) task = std::make_shared<PendingChatSaveTask>();
+		task->chat_id = chat_id;
+		acp_detail::InvalidatePendingChatSave(app, chat_id);
+		task->icon_receipts.push_back({app.data_root, chat->metadata_incarnation, expected, std::move(owned), std::move(completion)});
+		return true;
+	}
 
 	static bool AdmissionIsOwned(const std::shared_ptr<PendingChatSaveTask>& task)
 	{
@@ -5041,9 +5096,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission)
 		{
 			const std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>>::iterator found = app.pending_chat_save_tasks.find(std::string(chat_id));
-			if (found != app.pending_chat_save_tasks.end() && found->second &&
-			    !(preserve_admission && AdmissionIsOwned(found->second)))
-				found->second->publication_owned->store(false, std::memory_order_release);
+			if (found == app.pending_chat_save_tasks.end() || !found->second) return;
+			bool preserve = preserve_admission && AdmissionIsOwned(found->second);
+			if (!preserve) found->second->publication_owned->store(false, std::memory_order_release);
 		}
 	}
 
@@ -5135,6 +5190,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>>::iterator found = app.pending_chat_save_tasks.find(chat_id);
 		if (found == app.pending_chat_save_tasks.end() || !found->second) return;
 		if (!saved) RejectPendingPromptSave(app, chat_id);
+		std::vector<std::function<void()>> icon_results;
+		const ChatSession* icon_chat = ChatDomainService().FindChatById(app, chat_id);
+		CollectChatIconResults(app, found->second, saved && icon_chat ? std::optional<CustomIcon>(icon_chat->custom_icon) : std::nullopt,
+		    icon_chat ? icon_chat->metadata_incarnation : nullptr, !saved, icon_results);
+		for (const std::function<void()>& result : icon_results)
+			try { result(); }
+			catch (const std::exception& error) { diagnostics::Write(std::string("Icon acknowledgement failed: ") + error.what()); }
 		found->second->admissions.clear();
 		found->second->queued_admission = false;
 		found->second->queue_full_save_required = false;
@@ -5159,11 +5221,17 @@ For desktop observation and input, use only the provider's built-in controller; 
 			task->queued_admission = false;
 			task->queue_full_save_required = false;
 			state_changed = true;
-			if (!saved) RejectPendingPromptSave(app, task->chat_id);
+			if (!saved)
+			{
+				RejectPendingPromptSave(app, task->chat_id);
+				CollectChatIconResults(app, task, std::nullopt, {}, true, acknowledgements);
+			}
 			for (std::function<void(bool)>& completion : task->completions)
 				acknowledgements.push_back([completion = std::move(completion), saved]() { completion(saved); });
 			task->completions.clear();
 		};
+		for (const std::pair<const std::string, std::shared_ptr<PendingChatSaveTask>>& entry : app.pending_chat_save_tasks)
+			CollectChatIconResults(app, entry.second, std::nullopt, {}, false, acknowledgements);
 		std::vector<std::string> due_chat_ids;
 		for (const auto& entry : app.pending_chat_save_at_by_chat_id)
 			if (force || entry.second <= now || app.pending_chat_save_tasks.contains(entry.first)) due_chat_ids.push_back(entry.first);
@@ -5201,6 +5269,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					catch (const std::exception& error) { diagnostics::Write(std::string("Background chat preparation failed at durable barrier: ") + error.what()); }
 				}
 				const bool saved = ChatRepository::SaveChat(app.data_root, *chat);
+				CollectChatIconResults(app, task, saved ? std::optional<CustomIcon>(chat->custom_icon) : std::nullopt, chat->metadata_incarnation, !saved, acknowledgements);
 				defer_results(task, saved);
 				app.pending_chat_save_tasks.erase(chat_id);
 				if (saved) app.pending_chat_save_at_by_chat_id.erase(chat_id);
@@ -5239,6 +5308,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 					if (!published && task->publication_owned->load(std::memory_order_acquire)) defer_results(task, false);
 					app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0;
 				}
+				const bool icon_published = published && metadata_matches && task->publishing && app.data_root == task->data_root &&
+				    ChatRepository::ChatStorageRevision(app.data_root, chat_id) == std::optional<std::string>(task->publishing->primary_revision);
+				CollectChatIconResults(app, task, icon_published ? std::optional<CustomIcon>(task->icon_at_capture) : std::nullopt,
+				    task->icon_incarnation_at_capture, false, acknowledgements);
+				if (!task->icon_receipts.empty()) app.pending_chat_save_at_by_chat_id[chat_id] = now;
 				task->publishing.reset();
 			}
 			if (task && task->baseline.valid())
@@ -5346,6 +5420,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			task->publication_owned = std::make_shared<std::atomic<bool>>(true);
 			task->data_root = app.data_root;
 			task->metadata = ChatRepository::ChatMetadataFingerprint(app.data_root, *chat);
+			task->icon_at_capture = chat->custom_icon;
+			task->icon_incarnation_at_capture = chat->metadata_incarnation;
 			task->queue_owner_at_capture = ChatRepository::QueueStorageOwner(*chat);
 			task->full_revision_at_capture = chat->acp_queue_full_save_revision;
 			task->due_at = app.pending_chat_save_at_by_chat_id[chat_id];

@@ -79,6 +79,7 @@ export interface CppChat {
   executionHostId?: string
   remoteRecoveryEnabled?: boolean
   remoteRecoveryState?: string
+  customIcon?: CustomIcon
   title: string
   folderId: string
   pinned?: boolean

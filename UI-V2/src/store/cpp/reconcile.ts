@@ -156,6 +156,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.routingReservationPending === next.routingReservationPending &&
     previous.routingUnresolvedReservation === next.routingUnresolvedReservation &&
     previous.name === next.name &&
+    customIconsEqual(previous.customIcon, next.customIcon) &&
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
     (previous.providerId ?? GEMINI_CLI_PROVIDER_ID) === next.providerId &&
@@ -225,6 +226,7 @@ export function sessionFromCppChat(
     remoteRecoveryEnabled: chat.remoteRecoveryEnabled ?? false,
     remoteRecoveryState: chat.remoteRecoveryState ?? '',
     name: chat.title || 'Untitled',
+    customIcon: chat.customIcon,
     viewMode: pendingViewMode ?? readChatViewMode(chat.id) ?? previous?.viewMode ?? 'chat',
     folderId: chat.folderId || null,
     isPinned: chat.pinned ?? false,

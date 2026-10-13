@@ -74,6 +74,7 @@ export interface Session {
   executionHostId?: string
   remoteRecoveryEnabled?: boolean
   remoteRecoveryState?: string
+  customIcon?: CustomIcon
   name: string
   viewMode: ViewMode
   folderId: string | null

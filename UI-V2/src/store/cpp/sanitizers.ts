@@ -898,6 +898,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     remoteRecoveryEnabled: booleanOr(value.remoteRecoveryEnabled, false),
     remoteRecoveryState: stringOr(value.remoteRecoveryState),
     title: stringOr(value.title, 'Untitled'),
+    customIcon: sanitizeCustomIcon(value.customIcon),
     folderId: stringOr(value.folderId),
     pinned: booleanOr(value.pinned),
     providerId: stringOr(value.providerId, GEMINI_CLI_PROVIDER_ID),

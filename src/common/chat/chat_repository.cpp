@@ -3133,6 +3133,7 @@ namespace
 		hydrated.folder_id = summary.folder_id;
 		hydrated.title = summary.title;
 		hydrated.custom_icon = summary.custom_icon;
+		hydrated.metadata_incarnation = summary.metadata_incarnation;
 		hydrated.pinned = summary.pinned;
 		hydrated.workspace_directory = summary.workspace_directory;
 		hydrated.workspace_isolation_kind = summary.workspace_isolation_kind;

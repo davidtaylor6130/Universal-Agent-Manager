@@ -1260,6 +1260,7 @@ if(UAM_BUILD_TESTS)
     tests/antigravity_history_scan_tests.cpp
     tests/transcript_scan_tests.cpp
     tests/usage_history_service_tests.cpp
+    tests/chat_icon_mutation_tests.cpp
     tests/chat_icon_metadata_tests.cpp
     tests/usage_ledger_tests.cpp
     tests/usage_store_tests.cpp
@@ -1494,6 +1495,45 @@ if(UAM_BUILD_TESTS)
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_dependencies(uam_core_tests uam_runner)
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
+
+  # Explicitly built connected bridge fixtures use the real handler/router sources.
+  # This target inherits compile/link settings only, never app packaging or startup.
+  get_target_property(UAM_ICON_HANDLER_TEST_SOURCES universal_agent_manager SOURCES)
+  list(REMOVE_ITEM UAM_ICON_HANDLER_TEST_SOURCES src/main.cpp)
+  add_executable(uam_chat_icon_handler_tests EXCLUDE_FROM_ALL
+    tests/chat_icon_handler_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
+  set_target_properties(uam_chat_icon_handler_tests PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+  foreach(UAM_ICON_TEST_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)
+    get_target_property(UAM_ICON_TEST_VALUE universal_agent_manager ${UAM_ICON_TEST_PROPERTY})
+    if(NOT UAM_ICON_TEST_VALUE STREQUAL "UAM_ICON_TEST_VALUE-NOTFOUND")
+      set_property(TARGET uam_chat_icon_handler_tests PROPERTY ${UAM_ICON_TEST_PROPERTY} "${UAM_ICON_TEST_VALUE}")
+    endif()
+  endforeach()
+  target_include_directories(uam_chat_icon_handler_tests PRIVATE tests)
+  if(APPLE)
+    # CEF uses @executable_path/../Frameworks; link immutable fixtures without copying it.
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/icon-handler-test-framework-$<CONFIG>.cmake" CONTENT
+      "set(destination \"$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/../Frameworks/Chromium Embedded Framework.framework\")
+if(NOT EXISTS \"\${destination}\")
+  file(MAKE_DIRECTORY \"$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/../Frameworks\")
+  file(CREATE_LINK \"${cef_binary_SOURCE_DIR}/Release/Chromium Embedded Framework.framework\" \"\${destination}\" SYMBOLIC RESULT result)
+  if(NOT result STREQUAL \"0\")
+    message(FATAL_ERROR \"Cannot link the connected test CEF framework: \${result}\")
+  endif()
+endif()
+")
+    add_custom_command(TARGET uam_chat_icon_handler_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/icon-handler-test-framework-$<CONFIG>.cmake")
+  elseif(WIN32)
+    add_custom_command(TARGET uam_chat_icon_handler_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/libcef.dll" "$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/libcef.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/chrome_elf.dll")
+  endif()
+  # Keep this opt-in executable outside the standard CTest inventory until built.
+
   if(APPLE)
     # macOS Unix sockets have a 104-byte path limit; the default TMPDIR can exceed it.
     set_tests_properties(uam_core_tests PROPERTIES ENVIRONMENT "TMPDIR=/tmp")

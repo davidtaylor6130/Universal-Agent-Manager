@@ -1,6 +1,9 @@
 #pragma once
 
 #include <set>
+#include <map>
+#include <tuple>
+#include <functional>
 
 #include "common/config/build_features.h"
 #if UAM_ENABLE_MOBILE_COMPANION
@@ -43,6 +46,9 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id) override;
 
   private:
+	friend struct ChatIconHandlerTestAccess;
+	void BeginChatIconQuery(Callback* callback, int browser_id, const std::string& frame_id, int64_t query_id);
+	void CancelChatIconQuery(int browser_id, const std::string& frame_id, int64_t query_id);
 	uam::AppState& m_app;
 	uam::TranscriptRetentionService m_transcriptRetention;
 	std::shared_ptr<uam::usage::MultiHostHistory> m_usageHistory;
@@ -57,6 +63,15 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 #endif
 	// Workers hold weak references so queued callbacks cannot outlive this handler.
 	std::shared_ptr<void> m_asyncLifetime = std::make_shared<char>();
+	struct ChatIconOperation
+	{
+		std::atomic<bool> cancelled{false};
+		std::atomic<bool> finished{false};
+	};
+	using ChatIconQueryIdentity = std::tuple<int, std::string, int64_t>;
+	std::unordered_map<std::string, std::shared_ptr<ChatIconOperation>> m_chatIconOperations;
+	std::unordered_map<Callback*, ChatIconQueryIdentity> m_chatIconQueryIdentities;
+	std::map<ChatIconQueryIdentity, std::function<void()>> m_chatIconCancellations;
 	std::shared_ptr<std::atomic<std::uint64_t>> m_searchGeneration = std::make_shared<std::atomic<std::uint64_t>>(0);
 	std::int64_t m_searchQueryId = -1;
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_nativeHistoryRequests;

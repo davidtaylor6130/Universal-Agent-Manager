@@ -327,6 +327,8 @@ struct CustomIcon
 
 struct ChatSession
 {
+	/// <summary>Runtime identity retained by copies; a recreated chat receives a fresh tag.</summary>
+	std::shared_ptr<const std::uint8_t> metadata_incarnation = std::make_shared<const std::uint8_t>(0);
 	std::string id;
 	std::string execution_host_id = "local";
 	std::string routing_mode = "explicit";

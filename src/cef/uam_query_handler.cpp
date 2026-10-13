@@ -329,6 +329,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	try
 	{
 		if (action == "searchChatMessages") m_searchQueryId = query_id;
+		if (action == "setCustomIcon") BeginChatIconQuery(callback.get(),
+		    browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 		if (!DispatchAction(action, browser, payload, callback))
 		{
 			callback->Failure(404, "Unknown action: " + action);
@@ -343,11 +345,30 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		callback->Failure(500, std::string("Bridge request failed: ") + ex.what());
 	}
 
+	m_chatIconQueryIdentities.erase(callback.get());
 	return true;
 }
 
-void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> /*browser*/, CefRefPtr<CefFrame> /*frame*/, int64_t query_id)
+void UamQueryHandler::BeginChatIconQuery(Callback* callback, int browser_id, const std::string& frame_id, int64_t query_id)
 {
+	m_chatIconQueryIdentities[callback] = ChatIconQueryIdentity{browser_id, frame_id, query_id};
+}
+
+void UamQueryHandler::CancelChatIconQuery(int browser_id, const std::string& frame_id, int64_t query_id)
+{
+	const ChatIconQueryIdentity identity{browser_id, frame_id, query_id};
+	const std::map<ChatIconQueryIdentity, std::function<void()>>::iterator icon = m_chatIconCancellations.find(identity);
+	if (icon != m_chatIconCancellations.end())
+	{
+		std::function<void()> cancel = std::move(icon->second);
+		m_chatIconCancellations.erase(icon);
+		cancel();
+	}
+}
+
+void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id)
+{
+	CancelChatIconQuery(browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 	if (query_id == m_searchQueryId)
 	{
 		++*m_searchGeneration;

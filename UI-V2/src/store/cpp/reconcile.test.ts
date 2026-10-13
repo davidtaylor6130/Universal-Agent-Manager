@@ -442,3 +442,20 @@ describe('reported compaction counts', () => {
       [{ type: 'context_compaction', text: '', tokensBefore: 1235 }])).toBe(false)
   })
 })
+
+
+describe('chat custom icon data', () => {
+  it('reconciles icon-only changes, removal and owned image changes without discarding unchanged sessions', () => {
+    const chat = sanitizeCppChat({ id: 'icon-chat', title: 'Icon chat', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' })!
+    const first = sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '📌' } }, undefined, [])
+    expect(first.customIcon).toEqual({ type: 'text', value: '📌' })
+    expect(sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '📌' } }, first, [])).toBe(first)
+    const changed = sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '🚀' } }, first, [])
+    expect(changed).not.toBe(first); expect(changed.customIcon?.value).toBe('🚀')
+    const removed = sessionFromCppChat(chat, changed, [])
+    expect(removed).not.toBe(changed); expect(removed.customIcon).toBeUndefined()
+    const png = { type: 'png' as const, value: '12345678-1234-1234-1234-123456789abc.png', dataUrl: 'data:image/png;base64,YQ==' }
+    const image = sessionFromCppChat({ ...chat, customIcon: png }, removed, [])
+    expect(sessionFromCppChat({ ...chat, customIcon: { ...png, dataUrl: undefined } }, image, [])).not.toBe(image)
+  })
+})

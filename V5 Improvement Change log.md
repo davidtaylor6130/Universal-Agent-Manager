@@ -374,6 +374,10 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Prompt durability | Performance | Remote Prompt Admission | Remote v3 admission publishes its owned durable delivery marker before transport without blocking the input caller. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Prompt durability | Performance | Manual Quota Admission | Manual Claude input cancels the in-memory quota wake while committing cancellation and new input together before provider delivery. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
+| Chat presentation | Bugfix | Portable Icon Projection | Full and compact session projections preserve owned chat icons through hydration and frontend reconciliation. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+| Chat durability | Performance | Async Icon Receipts | Chat icon mutations settle field-specific owned background receipts and reject stale rollback or acknowledgement across cancellation and replacement. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+| Test infrastructure | Code Only | Connected Watchdog Dispatch | The real-handler fixture executable dispatches macOS watchdog mode before running its six registered cases. | Implementation Verified; Un-Reviewed; Not User Tested |
+
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.

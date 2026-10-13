@@ -273,6 +273,7 @@ namespace uam
 			session_json["routingAssignedConnectionIdentity"] = session.routing_assigned_connection_identity;
 			session_json["routingAssignedProviderConfigurationIdentity"] = session.routing_assigned_provider_configuration_identity;
 			session_json["title"] = session.title;
+			session_json["customIcon"] = uam::icons::Serialize(session.custom_icon);
 			session_json["folderId"] = session.folder_id;
 			session_json["pinned"] = session.pinned;
 			session_json["providerId"] = session.provider_id;
@@ -1551,6 +1552,7 @@ namespace uam
 				chat_json = SerializeFingerprintSession(app, chat, catalog_cache, chat.id == selected_chat_id);
 			}
 			chat_json["attentionRevision"] = ChatDomainService().AttentionRevision(app, chat);
+			uam::icons::AddFrontendAsset(chat_json, app.data_root, chat.custom_icon);
 			chats_arr.push_back(std::move(chat_json));
 		}
 		j["chats"] = std::move(chats_arr);

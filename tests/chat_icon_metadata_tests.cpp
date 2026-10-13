@@ -110,3 +110,31 @@ UAM_TEST(ChatIconMetadataBackupRecoveryKeepsTheRecoveredIcon)
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, recovered.front()));
 	UAM_ASSERT(ChatRepository::LoadLocalChat(temp.root, chat.id)->custom_icon == previous);
 }
+
+UAM_TEST(ChatIconFrontendSerializationKeepsMetadataAndOwnedPngAssets)
+{
+	TempDir temp("uam-chat-icon-serialization");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.chats.push_back(IconMetadataChat());
+	app.selected_chat_index = 0;
+	ChatSession& chat = app.chats.front();
+	chat.custom_icon = {"text", "📌"};
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeSession(chat)["customIcon"], uam::icons::Serialize(chat.custom_icon));
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["customIcon"], uam::icons::Serialize(chat.custom_icon));
+	chat.custom_icon = {"png", "12345678-1234-1234-1234-123456789abc.png"};
+	std::string bytes;
+	UAM_ASSERT(uam::base64::Decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", bytes));
+	fs::create_directories(temp.root / "icons");
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "icons" / chat.custom_icon.value, bytes));
+	const nlohmann::json full = uam::StateSerializer::Serialize(app)["chats"][0]["customIcon"];
+	UAM_ASSERT_EQ(full["value"].get<std::string>(), chat.custom_icon.value);
+	UAM_ASSERT_EQ(full["dataUrl"].get<std::string>(), "data:image/png;base64," + uam::base64::Encode(bytes));
+	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app, true)["chats"][0]["customIcon"], full);
+	UAM_ASSERT(!uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["customIcon"].contains("dataUrl"));
+	fs::remove(temp.root / "icons" / chat.custom_icon.value);
+	UAM_ASSERT(uam::StateSerializer::Serialize(app)["chats"][0]["customIcon"]["dataUrl"].get<std::string>().empty());
+	chat.custom_icon = {"png", "../outside.png"};
+	UAM_ASSERT(uam::StateSerializer::SerializeSession(chat)["customIcon"].is_null());
+	UAM_ASSERT(uam::StateSerializer::Serialize(app)["chats"][0]["customIcon"].is_null());
+}
