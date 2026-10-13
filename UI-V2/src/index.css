@@ -2273,27 +2273,36 @@ button.uam-commit-check { cursor: pointer; }
 }
 /* The stopped notice sits inline in the row rather than spanning the composer width. */
 .uam-composer-tabs__end .chat-status-strip { width: auto; margin: 0; }
+/* Side-chat tab docked on top of the composer, same shape as the workspace tab but warning-tinted. */
 .uam-composer-side-controls {
   display: inline-flex;
   align-items: center;
+  align-self: flex-end;
   gap: 4px;
   min-width: 0;
+  max-width: 100%;
+  padding: 2px 6px 2px 10px;
+  border: 1px solid var(--warning);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: var(--warning-dim);
+  color: var(--text);
 }
+.uam-composer-side-controls > button { color: var(--text); }
+.uam-composer-side-controls > button svg { color: var(--warning); }
 .uam-composer-side-controls__pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   height: 26px;
-  padding: 0 10px;
+  padding: 0 4px 0 0;
   margin-right: 2px;
-  border-radius: var(--r-full);
   font-size: var(--fs-xs);
   font-weight: 500;
   white-space: nowrap;
-  background: var(--accent-dim);
-  color: var(--text-2);
+  color: var(--text);
 }
-.uam-composer-side-controls__pill svg { color: var(--accent); }
+.uam-composer-side-controls__pill svg { color: var(--warning); }
 
 /* Workspace / worktree tab docked on top of the composer */
 .uam-composer-workspace-tab {

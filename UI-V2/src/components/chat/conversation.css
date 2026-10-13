@@ -1,10 +1,10 @@
 /* Centered transcript; composer retains its original width and spacing. */
 .uam-chat-pane {
-  --conversation-column: var(--chat-column-width, 760px);
+  --conversation-column: var(--chat-column-width, 1000px);
 }
 
 /* Set by the Appearance "Message width" setting (applyAppearance). */
-:root[data-chat-width="wide"] { --chat-column-width: 1000px; }
+:root[data-chat-width="wide"] { --chat-column-width: 1320px; }
 :root[data-chat-width="full"] { --chat-column-width: 100%; }
 
 .uam-chat-pane .uam-chat-transcript .uam-chat-content {
@@ -135,7 +135,7 @@
 
 /* Loading and empty history: a quiet shimmer on placeholder rows that mirror the transcript layout. */
 .conversation-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-4); min-height: 30vh; font-size: var(--fs-base); color: var(--text-2); }
-.conversation-skeleton { display: flex; flex-direction: column; gap: var(--sp-5); width: 100%; max-width: var(--conversation-column, 760px); animation: conversation-turn-in var(--dur-base) var(--ease-out-soft) backwards; }
+.conversation-skeleton { display: flex; flex-direction: column; gap: var(--sp-5); width: 100%; max-width: var(--conversation-column, 1000px); animation: conversation-turn-in var(--dur-base) var(--ease-out-soft) backwards; }
 .conversation-skeleton__bubble, .conversation-skeleton__line { display: block; background: linear-gradient(90deg, var(--surface-up) 25%, var(--surface-high) 50%, var(--surface-up) 75%) 0 0 / 200% 100%; animation: conversation-skeleton-shimmer 1.6s linear infinite; }
 .conversation-skeleton__bubble { align-self: flex-end; width: 40%; height: 34px; border-radius: var(--r-md); }
 .conversation-skeleton__bubble--short { width: 24%; }
