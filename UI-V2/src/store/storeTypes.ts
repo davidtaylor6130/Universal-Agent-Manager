@@ -123,6 +123,7 @@ export interface AppState {
   uamAgentCycleShortcut: UamAgentCycleShortcut
   computerUseAllowlistEnabled: boolean
   computerUseAllowedApplications: ComputerUseAllowedApplication[]
+  providerAgentImport?: boolean
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>
   shellActions: ShellAction[]
   shellActionNotification: string

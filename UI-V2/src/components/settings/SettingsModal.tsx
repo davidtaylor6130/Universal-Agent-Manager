@@ -8,6 +8,7 @@ import { CentralProviderSettings, type CentralProviderSettingsHandle } from './C
 import { McpServerSetup } from './McpServerSetup'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
+import { ProviderAgentImport } from './ProviderAgentImport'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
@@ -541,6 +542,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const browseProviderAgentImport = useAppStore((s) => s.browseProviderAgentImport)
   const previewProviderAgentImport = useAppStore((s) => s.previewProviderAgentImport)
   const importProviderAgent = useAppStore((s) => s.importProviderAgent)
+  const providerAgentImport = useAppStore((s) => s.providerAgentImport === true)
   const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
   const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
   const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
@@ -2182,7 +2184,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             })}
           </SettingsSection>
 
-          <SettingsSection title="Import from a provider" description="Turn an agent defined for another CLI into a UAM agent.">
+          {providerAgentImport && <ProviderAgentImport />}
+
+          <SettingsSection
+            title={providerAgentImport ? 'Import from a Markdown file' : 'Import from a provider'}
+            description={providerAgentImport ? 'Turn one agent file into a UAM agent. Use this for a file outside the provider folders.' : 'Turn an agent defined for another CLI into a UAM agent.'}
+          >
             <SettingRow
               title="Source provider"
               description="The CLI the agent file was written for."
