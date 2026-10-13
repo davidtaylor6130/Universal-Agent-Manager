@@ -2026,8 +2026,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <SettingRow
               title="Agent cycle shortcut"
               description="Press this in the composer to move to the next agent. Disabled turns the shortcut off."
+              htmlFor="agent-cycle-shortcut"
               control={
                 <MenuSelect
+                  id="agent-cycle-shortcut"
                   label="Agent cycle shortcut"
                   value={uamAgentCycleShortcut}
                   options={[
@@ -2100,8 +2102,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <SettingRow
               title="Source provider"
               description="The CLI the agent file was written for."
+              htmlFor="agent-import-source-provider"
               control={
                 <MenuSelect
+                  id="agent-import-source-provider"
                   label="Source provider"
                   value={agentImportProvider}
                   options={[
@@ -2167,8 +2171,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                         />
                       </SettingsField>
                       <div className="grid gap-3 sm:grid-cols-2">
-                        <SettingsField label="Workspace access">
+                        <SettingsField label="Workspace access" htmlFor="agent-import-access">
                           <MenuSelect
+                            id="agent-import-access"
                             label="Workspace access"
                             value={agentImportAccess}
                             options={[
@@ -2178,8 +2183,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             onChange={(value) => setAgentImportAccess(value === 'write' ? 'write' : 'read')}
                           />
                         </SettingsField>
-                        <SettingsField label="Install scope">
+                        <SettingsField label="Install scope" htmlFor="agent-import-scope">
                           <MenuSelect
+                            id="agent-import-scope"
                             label="Install scope"
                             value={agentImportWorkspaceScope ? 'workspace' : 'global'}
                             options={[
@@ -2731,8 +2737,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingRow
             title="Provider setup timeout"
             description="Restarts a provider only after no setup activity for this long."
+            htmlFor="acp-setup-timeout"
             control={
               <MenuSelect
+                id="acp-setup-timeout"
                 label="ACP setup inactivity timeout"
                 value={String(acpSetupInactivityTimeoutSeconds)}
                 options={[

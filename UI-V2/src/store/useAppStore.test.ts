@@ -388,6 +388,24 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().activeSessionId).toBeNull()
   })
 
+  it('resolves a superseded Skills refresh as success without applying its stale result', async () => {
+    const replies: Array<(response: string) => void> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'listMarkdownStoreEntries') replies.push(onSuccess)
+    }
+    useAppStore.setState({ markdownStoreDirectory: '/tmp/start', markdownStoreEntries: [], markdownStoreError: '' })
+
+    const older = useAppStore.getState().refreshMarkdownStore()
+    const newer = useAppStore.getState().refreshMarkdownStore()
+    replies[1](JSON.stringify({ ok: true, data: { directory: '/tmp/new', entries: [] } }))
+    await expect(newer).resolves.toBe(true)
+    replies[0](JSON.stringify({ ok: true, data: { directory: '/tmp/old', entries: [] } }))
+    await expect(older).resolves.toBe(true)
+
+    expect(useAppStore.getState().markdownStoreDirectory).toBe('/tmp/new')
+    expect(useAppStore.getState().markdownStoreError).toBe('')
+  })
+
   it('distinguishes a failed Skills directory browse from cancellation', async () => {
     let response: 'failure' | 'cancel' | 'selected' = 'failure'
     const requests: Array<{ action: string; payload?: unknown }> = []

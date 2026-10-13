@@ -12,6 +12,7 @@ export interface MenuSelectOption {
 }
 
 export function MenuSelect({
+  id,
   label,
   value,
   options,
@@ -19,6 +20,8 @@ export function MenuSelect({
   disabled = false,
   placeholder,
 }: {
+  /** Applied to the trigger button so a `<label htmlFor>` can reference it. */
+  id?: string
   label: string
   value: string
   options: MenuSelectOption[]
@@ -92,6 +95,7 @@ export function MenuSelect({
     <div ref={rootRef} className="relative">
       <button
         ref={triggerRef}
+        id={id}
         type="button"
         role="combobox"
         title={label}
