@@ -98,7 +98,10 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
       const customIcon: CustomIcon | undefined = icon === null ? undefined : icon.type === 'text' ? icon : {
         type: 'png', value: `${crypto.randomUUID()}.png`, dataUrl: `data:image/png;base64,${icon.base64}`,
       }
-      if (targetType === 'workspace') {
+      if (targetType === 'chat') {
+        if (!get().sessions.some((session) => session.id === targetId)) return false
+        set((state) => ({ sessions: state.sessions.map((session) => session.id === targetId ? { ...session, customIcon } : session) }))
+      } else if (targetType === 'workspace') {
         if (!get().folders.some((folder) => folder.id === targetId)) return false
         set((state) => ({ folders: state.folders.map((folder) => folder.id === targetId ? { ...folder, customIcon } : folder) }))
       } else if (targetType === 'host') {

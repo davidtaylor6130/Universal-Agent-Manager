@@ -5058,6 +5058,7 @@ UAM_TEST(OpenCodeAcpBlocksStaleStartupModelWithoutRetry)
 	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, app.chats.front()));
 	UAM_ASSERT_EQ(raw_session->next_request_id, 1);
 	UAM_ASSERT(raw_session->last_error.find("no longer offers") != std::string::npos);
+	UAM_ASSERT(raw_session->last_error.find("Refresh models in Settings or restart UAM") != std::string::npos);
 	UAM_ASSERT(!uam::AcpSessionHasCancelableWork(*raw_session));
 	UAM_ASSERT(raw_session->queued_prompt.empty());
 	UAM_ASSERT_EQ(app.chats.front().model_id, std::string("inferdeck/Normal"));
@@ -11181,6 +11182,8 @@ UAM_TEST(AcpRejectedModelChangeRestoresPersistedAndRuntimeModel)
 	    ",\"error\":{\"code\":-32602,\"message\":\"Unsupported model\"}}";
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), rejection));
 
+	UAM_ASSERT(raw_session->last_error.find("Refresh models in Settings or restart UAM") != std::string::npos);
+
 	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("model-old"));
 	UAM_ASSERT_EQ(raw_session->model_change_request_id, 0);
 	UAM_ASSERT(app.chats.front().model_id.empty());
@@ -13508,4 +13511,41 @@ UAM_TEST(AcpPromptDispatchPreservesSettingsOverridesAndLoadedHistoryAcrossProvid
 	}
 	UAM_ASSERT(tested_providers > 0);
 	std::cout << "[COVERAGE] prompt_dispatch_providers=" << tested_providers << '\n';
+}
+
+
+UAM_TEST(UnavailableModelGuidanceOnlyClassifiesExactModelRejections)
+{
+	const std::vector<std::pair<int, std::string>> failures = {
+		{-32602, "Unsupported model"}, {-32603, "Unsupported model"},
+		{-32602, "Authentication required"}, {-32602, "Rate limit exceeded"},
+		{-32602, "Permission denied"}, {-32602, "Context length exceeded"}
+	};
+	for (const std::pair<int, std::string>& failure : failures)
+	{
+		TempDir temp("uam-model-refresh-guidance");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "model-guidance";
+		chat.provider_id = "gemini-cli";
+		chat.model_id = "model-new";
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.model_change_request_id = 7;
+		session.model_change_requested_id = "model-new";
+		session.model_change_previous_id = "model-old";
+		session.model_change_previous_chat_id = "model-old";
+		session.current_model_id = "model-new";
+		session.pending_request_methods[7] = "session/set_model";
+		const nlohmann::json response = {{"jsonrpc", "2.0"}, {"id", 7}, {"error", {{"code", failure.first}, {"message", failure.second}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), response.dump()));
+		UAM_ASSERT(session.last_error.find(failure.second) != std::string::npos);
+		const bool unavailable_model = failure.first == -32602 && failure.second == "Unsupported model";
+		UAM_ASSERT_EQ(session.last_error.find("Refresh models in Settings or restart UAM") != std::string::npos, unavailable_model);
+		UAM_ASSERT_EQ(session.current_model_id, std::string("model-old"));
+		UAM_ASSERT_EQ(app.chats.front().model_id, std::string("model-old"));
+	}
 }

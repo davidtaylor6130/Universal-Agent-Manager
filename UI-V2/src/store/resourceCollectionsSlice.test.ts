@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sanitizeCppAppState, sanitizeCppStatePatch } from './cpp/sanitizers'
+import { sanitizeCppChat } from './cpp/sanitizers'
+import { sessionFromCppChat } from './cpp/reconcile'
 import { useAppStore } from './useAppStore'
 import { moveResourceToCollection } from '../components/sidebar/CollectionMenuItems'
 
@@ -8,6 +10,39 @@ describe('resource collection state', () => {
     vi.restoreAllMocks()
     delete (window as Window & { cefQuery?: Window['cefQuery'] }).cefQuery
     useAppStore.setState({ resourceCollections: [], folders: [], sessions: [], activeSessionId: null })
+  })
+
+  it('keeps validated chat icons in full state and patches with safe unavailable-image fallback', () => {
+    const raw = { id: 'icon-chat', customIcon: { type: 'text', value: '📌' } }
+    expect(sanitizeCppAppState({ chats: [raw] })?.chats[0].customIcon).toEqual(raw.customIcon)
+    expect(sanitizeCppStatePatch({ stateRevision: 2, chats: [raw] })?.chats?.[0].customIcon).toEqual(raw.customIcon)
+    expect(sanitizeCppChat({ ...raw, customIcon: { type: 'png', value: '../outside.png' } })?.customIcon).toBeUndefined()
+    const value = '12345678-1234-1234-1234-123456789abc.png'
+    expect(sanitizeCppChat({ ...raw, customIcon: { type: 'png', value, dataUrl: 'file:///private/icon.png' } })?.customIcon).toEqual({ type: 'png', value, dataUrl: undefined })
+  })
+
+  it('updates and clears only the matching preview chat icon and rejects unknown targets', async () => {
+    const chat = sanitizeCppChat({ id: 'icon-chat' })!
+    const session = sessionFromCppChat(chat, undefined, [])
+    const other = { ...session, id: 'other-chat' }
+    useAppStore.setState({ sessions: [session, other] })
+    expect(await useAppStore.getState().setCustomIcon('chat', 'icon-chat', { type: 'text', value: '📌' })).toBe(true)
+    expect(useAppStore.getState().sessions[0].customIcon?.value).toBe('📌')
+    expect(useAppStore.getState().sessions[1]).toBe(other)
+    expect(useAppStore.getState().sessions[1].customIcon).toBeUndefined()
+    expect(await useAppStore.getState().setCustomIcon('chat', 'missing-chat', null)).toBe(false)
+    expect(await useAppStore.getState().setCustomIcon('chat', 'icon-chat', null)).toBe(true)
+    expect(useAppStore.getState().sessions[0].customIcon).toBeUndefined()
+  })
+
+  it('sends the desktop chat icon contract and preserves sessions when native persistence rejects it', async () => {
+    const session = sessionFromCppChat(sanitizeCppChat({ id: 'icon-chat' })!, undefined, [])
+    useAppStore.setState({ sessions: [session] })
+    const received: unknown[] = []
+    window.cefQuery = request => { received.push(JSON.parse(request.request)); request.onFailure(404, 'Icon target not found.') }
+    expect(await useAppStore.getState().setCustomIcon('chat', 'icon-chat', { type: 'text', value: '📌' })).toBe(false)
+    expect(received[0]).toMatchObject({ action: 'setCustomIcon', payload: { targetType: 'chat', targetId: 'icon-chat', icon: { type: 'text', value: '📌' } } })
+    expect(useAppStore.getState().sessions[0]).toBe(session)
   })
 
   it('sanitizes collections in full state and patches', () => {

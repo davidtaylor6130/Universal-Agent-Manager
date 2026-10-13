@@ -389,7 +389,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		failure.code = code;
 		failure.message = error_message;
 		failure.has_detail = !detail_text.empty();
-		const std::string formatted_error = FormatAcpFailureMessage(session, failure);
+		std::string formatted_error = FormatAcpFailureMessage(session, failure);
+		if (method == uam::acp_methods::kSessionSetModel && has_code && code == -32602 &&
+		    uam::strings::TrimAndLowerAscii(error_message) == "unsupported model")
+		{
+			formatted_error += " Refresh models in Settings or restart UAM, then select an available model before retrying.";
+		}
 		const bool model_discovery_request = method == uam::acp_methods::kSessionNew || method == uam::acp_methods::kSessionLoad || method == uam::acp_methods::kSessionResume;
 		if (app.provider_model_catalog != nullptr && (model_discovery_request || (session.model_discovery_only && method == uam::acp_methods::kInitialize)))
 		{
