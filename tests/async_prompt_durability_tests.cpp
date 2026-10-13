@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/paths/app_paths.h"
 #include "common/utils/hash_utils.h"
@@ -629,6 +630,74 @@ UAM_TEST(AcpBusyQueueAdmissionIsDurableWhileAssistantOutputContinues)
 	UAM_ASSERT(saved.has_value());
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Durable queue during streaming"));
+}
+
+UAM_TEST(AcpRunningSessionRetriesFifoQueueAfterPendingAdmissionSettles)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	const std::string process_identity = uam::acp_detail::AcpProcessHandleLabel(session);
+	const std::string session_identity = session.session_id;
+	session.processing = true;
+	session.prompt_request_id = 10;
+	session.turn_serial = 1;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "First automatic FIFO entry", &error));
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Second automatic FIFO entry", &error));
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, chat, "ready", nullptr);
+	UAM_ASSERT(!session.processing && session.queued_user_prompts.size() == 2);
+	AwaitSave(app);
+	for (int turn = 0; turn < 2; ++turn)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (session.prompt_request_id == 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			(void)uam::PollAllAcpSessions(app, nullptr);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(session.processing && session.prompt_request_id != 0);
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), static_cast<std::size_t>(1 - turn));
+		UAM_ASSERT_EQ(chat.messages.back().content, turn == 0 ? std::string("First automatic FIFO entry") : std::string("Second automatic FIFO entry"));
+		UAM_ASSERT_EQ(uam::acp_detail::AcpProcessHandleLabel(session), process_identity);
+		UAM_ASSERT_EQ(session.session_id, session_identity);
+		if (turn == 0) uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, chat, "ready", nullptr);
+	}
+}
+
+UAM_TEST(AcpRunningSessionAutomaticQueueRespectsHeldCancelAndStopIntent)
+{
+	for (int guard = 0; guard < 12; ++guard)
+	{
+		PromptFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		session.processing = true;
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Retained guarded queue entry", &error));
+		uam::acp_detail::CompletePromptTurn(session, "ready");
+		AwaitSave(app);
+		if (guard == 0) session.queue_held = chat.acp_queue_held = true;
+		else if (guard == 1) session.cancel_requested = true;
+		else if (guard == 2) session.local_stop_pending = true;
+		else if (guard == 3) session.waiting_for_permission = true;
+		else if (guard == 4) session.waiting_for_user_input = true;
+		else if (guard == 5) session.turn_checkpoint_commit_pending = true;
+		else if (guard == 6) session.remote_stop_pending = true;
+		else if (guard == 7) session.remote_stop_unconfirmed = true;
+		else if (guard == 8) session.recovering_remote_turn = true;
+		else if (guard == 9) session.recovering_remote_process = true;
+		else if (guard == 10) session.remote_source_exit_reported = true;
+		else session.manual_compaction_pending = true;
+		for (int poll = 0; poll < 3; ++poll) (void)uam::PollAllAcpSessions(app, nullptr);
+		UAM_ASSERT(!session.processing && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+	}
 }
 
 UAM_TEST(AcpLocalQueueDispatchReturnsBeforeStorageAndRetiresHeadWithItsUserMessage)

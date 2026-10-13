@@ -4965,6 +4965,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 				changed = true;
 			}
 
+			// Completion can defer FIFO admission until its durable queue save settles.
+			if (session.session_ready && !session.processing && session.queued_prompt.empty() &&
+			    !session.queued_user_prompts.empty() && !AcpSessionIsWaitingForInput(session) &&
+			    !AcpSessionHasPendingRuntimeRequest(session) && !AcpSessionHasPendingCancel(session) &&
+			    !session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed &&
+			    !session.reconnect_pending && !session.recovering_remote_turn && !session.recovering_remote_process &&
+			    !session.remote_source_exit_reported && !session.manual_compaction_pending &&
+			    !chat.remote_turn_reconnect_pending && !chat.remote_restart_pending && !chat.remote_stop_cleanup_pending &&
+			    DrainNextQueuedAcpUserPrompt(app, session, chat))
+			{
+				changed = true;
+			}
+
 			if (SendQueuedPromptIfReady(app, session, chat))
 			{
 				if (!session.last_error.empty() && session.lifecycle_state == kAcpLifecycleError)
@@ -4978,7 +4991,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				changed = true;
 			}
-
 			if (ResumeStalledGoalLoopIfNeeded(app, session, chat, browser, GetAppTimeSeconds()))
 			{
 				changed = true;
