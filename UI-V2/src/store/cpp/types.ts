@@ -764,6 +764,14 @@ export interface CppAppState {
   shellActions?: ShellAction[]
   shellActionNotification?: string
   statusLine?: string
+  deletionProgress?: CppDeletionProgress
+}
+
+export interface CppDeletionProgress {
+  requestId?: string
+  completed: number
+  total: number
+  currentLabel?: string
 }
 
 export interface CppCompanionUnchangedState {

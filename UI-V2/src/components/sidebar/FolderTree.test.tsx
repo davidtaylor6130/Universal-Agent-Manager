@@ -1711,6 +1711,35 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('shows determinate batch delete progress when the backend reports it and indeterminate otherwise', async () => {
+    let finish!: (deleted: boolean) => void
+    useAppStore.setState({ deleteFolders: vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve })) })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspaces"]')!.click())
+    const confirm = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
+    await act(async () => { confirm.click(); await Promise.resolve() })
+    expect(host.querySelector('[role="alertdialog"] [role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false)
+    await act(async () => {
+      useAppStore.setState({ deletionProgress: { completed: 3, total: 12, currentLabel: 'alpha' } })
+      await Promise.resolve()
+    })
+    const bar = host.querySelector<HTMLElement>('[role="alertdialog"] [role="progressbar"]')!
+    expect(bar.getAttribute('aria-valuenow')).toBe('3')
+    expect(bar.getAttribute('aria-valuemax')).toBe('12')
+    expect(bar.querySelector<HTMLElement>('span')!.style.transform).toBe('scaleX(0.25)')
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('3 of 12 removed')
+    expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('alpha')
+    await act(async () => finish(true))
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull()
+    useAppStore.setState({ deletionProgress: undefined })
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('prevents duplicate workspace delete requests and dismissal while a batch is pending', async () => {
     let finish!: (deleted: boolean) => void
     const deleteFolders = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve }))

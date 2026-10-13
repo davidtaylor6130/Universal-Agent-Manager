@@ -23,6 +23,7 @@ import type {
   CliVersionManager,
   CppAppState,
   CppCliDebugState,
+  CppDeletionProgress,
   EditorFileAssociation,
   GitWorktreeResult,
   GitWorktreeStatus,
@@ -127,6 +128,7 @@ export interface AppState {
   shellActions: ShellAction[]
   shellActionNotification: string
   statusLine: string
+  deletionProgress?: CppDeletionProgress
   workspaceFolderRecoveryError: string
 
   // UI

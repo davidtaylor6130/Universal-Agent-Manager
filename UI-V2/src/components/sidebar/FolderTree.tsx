@@ -1441,6 +1441,23 @@ function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: str
   )
 }
 
+// Determinate only when the backend reports per-item progress; otherwise the indeterminate sweep (no fake percentage).
+function DeletionProgressBar({ label, className }: { label: string; className?: string }) {
+  const progress = useAppStore((s) => s.deletionProgress)
+  if (!progress || progress.total <= 0) {
+    return <div role="progressbar" aria-label={label} className={`uam-sb-progress${className ? ` ${className}` : ''}`}><span /></div>
+  }
+  return <div className={className}>
+    <div role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.completed} className="uam-sb-progress uam-sb-progress--determinate">
+      <span style={{ transform: `scaleX(${progress.completed / progress.total})` }} />
+    </div>
+    <div className="mt-1 flex min-w-0 items-baseline justify-between gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
+      <span className="shrink-0 tabular-nums">{progress.completed} of {progress.total} removed</span>
+      {progress.currentLabel && <span className="truncate" style={{ color: 'var(--text-3)' }}>{progress.currentLabel}</span>}
+    </div>
+  </div>
+}
+
 function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCancel, onConfirm }: {
   folderCount: number; chatCount: number; error: string; deleting: boolean; onCancel: () => void; onConfirm: () => void
 }) {
@@ -1477,8 +1494,7 @@ function DeleteWorkspacesModal({ folderCount, chatCount, error, deleting, onCanc
         <p id="delete-workspaces-description">Delete {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
         {deleting && <>
           <p role="status" aria-live="polite" className="mt-2">Deleting {folderCount} {folderCount === 1 ? 'workspace' : 'workspaces'} and {chatCount} {chatCount === 1 ? 'chat' : 'chats'}…</p>
-          {/* Indeterminate: the delete request reports no per-item progress, so no fake percentage. */}
-          <div role="progressbar" aria-label="Deleting workspaces" className="uam-sb-progress mt-2"><span /></div>
+          <DeletionProgressBar label="Deleting workspaces" className="mt-2" />
         </>}
         {error && <p role="alert" className="mt-2" style={{ color: 'var(--error)' }}>{error}</p>}
       </div>
@@ -1712,7 +1728,7 @@ function DeleteFolderModal({
               Deleted chats cannot be restored from this app.
             </p>
           )}
-          {deleting && <div role="progressbar" aria-label="Deleting workspace" className="uam-sb-progress"><span /></div>}
+          {deleting && <DeletionProgressBar label="Deleting workspace" />}
           {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
         </div>
 

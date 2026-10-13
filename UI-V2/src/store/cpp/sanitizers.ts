@@ -29,6 +29,7 @@ import type {
   CppAppState,
   CppChat,
   CppCliDebugState,
+  CppDeletionProgress,
   CppCliDebugTerminal,
   CppFolder,
   CppGoal,
@@ -1716,6 +1717,22 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     shellActions,
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
+    deletionProgress: sanitizeDeletionProgress(value.deletionProgress),
+  }
+}
+
+export function sanitizeDeletionProgress(value: unknown): CppDeletionProgress | undefined {
+  if (!isRecord(value)) return undefined
+  const { completed, total } = value
+  if (!Number.isFinite(completed) || !Number.isFinite(total)) return undefined
+  const done = completed as number
+  const all = total as number
+  if (done < 0 || all < 0 || done > all) return undefined
+  return {
+    requestId: isString(value.requestId) ? value.requestId : undefined,
+    completed: done,
+    total: all,
+    currentLabel: isString(value.currentLabel) ? value.currentLabel : undefined,
   }
 }
 
