@@ -459,6 +459,24 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('places the stopped notice on the right of the workspace row above the composer', () => {
+    useAppStore.setState((state) => ({
+      messages: { 'chat-1': [] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, processing: false, lifecycleState: 'stopped', lastError: '', lastStopReason: 'timeout' } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const row = host.querySelector('.uam-composer-tabs') as HTMLElement
+    const end = row.querySelector('.uam-composer-tabs__end') as HTMLElement
+    expect(end.textContent).toContain('Stopped after timeout')
+    expect(row.querySelector('.uam-composer-workspace-tab')).toBeTruthy()
+    expect(row.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('requires pointer or keyboard interaction to acknowledge the current completion', () => {
     const original = useAppStore.getState().acknowledgeChatAttention
     const acknowledge = vi.fn(() => Promise.resolve(true))
@@ -1645,7 +1663,7 @@ describe('ChatView', () => {
     expect(workspaceTab?.textContent).toContain('project')
     expect(workspaceTab?.querySelector('svg')).toBeTruthy()
     expect(workspaceTab?.querySelector('button[aria-label="Workspace actions"]')).toBeTruthy()
-    expect(workspaceTab?.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
+    expect(workspaceTab?.parentElement?.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
     expect(host.querySelector('.uam-composer-toolbar button[aria-label="Workspace actions"]')).toBeNull()
 
     const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
@@ -7985,7 +8003,7 @@ describe('ChatView', () => {
         await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-notice button')).find((button) => button.textContent === 'Cancel')!.click())
         expect(host.textContent).not.toContain('Enable YOLO?')
       } else {
-        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Return')!.click())
+        await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Return to main chat')!.click())
         expect(select).toHaveBeenCalledWith('main-chat')
       }
       expect(send).not.toHaveBeenCalled()
