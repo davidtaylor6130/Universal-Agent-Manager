@@ -19,4 +19,6 @@ Rules:
 7. Lists (hosts, servers, agents, skills, editors): each item is a SettingRow (icon + name + mono detail in description + status) with icon-only actions in control; "Add …" is a section action button; add/edit flows that are multi-field open in a modal (Overlay + Presence, like the import dialog), not inline.
 8. Empty states: one muted sentence + the add action.
 9. Motion: sections fade/rise in (built into primitives); expand/collapse uses the existing presence/grid-rows pattern; no flashing of whole lists on refresh (keep previous data while refreshing; disable only the control being saved).
+   - Settings nav: the active page shows a selection dash, a 3px accent bar at the item's left edge (no tinted pill). It glides between items with transform; reduced motion disables the glide.
+   - Appearance > Motion: Default, Fast, Slow or Off scales the `--dur-*` tokens through `data-motion` on the root (persisted in localStorage `uam-motion`). New motion-driven CSS should use the tokens, not fixed durations, so the setting applies.
 10. Keep every aria-label/role that tests query; when a test asserts exact old copy you intentionally changed, update that assertion minimally.

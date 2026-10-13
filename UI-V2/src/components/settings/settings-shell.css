@@ -1,16 +1,15 @@
-/* Settings shell: one sliding nav indicator and a calm page header. */
+/* Settings shell: one sliding selection dash and a calm page header. */
 .uam-settings-nav { position: relative; }
 .uam-settings-nav .uam-settings-nav-item[data-active="true"]::before { display: none; }
 .uam-settings-nav__indicator {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 3px;
   top: 0;
-  border-radius: var(--r-md);
+  width: 3px;
+  border-radius: 3px;
   z-index: 0;
-  /* The whole active pill glides between items: tint plus a 3px accent edge. */
-  background: var(--accent-dim);
-  box-shadow: inset 3px 0 0 var(--accent);
+  /* Selection dash: a short accent bar at the left edge of the active item, gliding between items. */
+  background: var(--accent);
   pointer-events: none;
   transition: transform var(--dur-base) var(--ease-out-soft), height var(--dur-base) var(--ease-out-soft);
 }

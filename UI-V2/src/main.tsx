@@ -6,10 +6,12 @@ import './index.css'
 import { isCefContext } from './ipc/cefBridge'
 import { applyDocumentTheme, readStoredTheme } from './utils/themeStorage'
 import { applyAppearance, readAppearance } from './utils/appearancePreferences'
+import { applyMotionSpeed, readStoredMotion } from './utils/motionStorage'
 
-// Apply persisted theme before first render to prevent flash
+// Apply persisted theme and motion speed before first render to prevent flash
 applyDocumentTheme(readStoredTheme() ?? 'focus')
 applyAppearance(readAppearance())
+applyMotionSpeed(readStoredMotion())
 applyTypography(useTypographyStore.getState().preferences)
 
 const root = createRoot(document.getElementById('root')!)

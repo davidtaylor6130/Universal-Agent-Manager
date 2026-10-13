@@ -844,6 +844,17 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('marks the active settings page with a selection dash inside the nav', () => {
+    const { host, root } = renderModal()
+    const indicator = host.querySelector<HTMLElement>('nav .uam-settings-nav__indicator')
+    expect(indicator).toBeTruthy()
+    expect(indicator?.style.transform).toContain('translateY(')
+    expect(host.querySelector('nav [aria-label="Appearance"][data-active="true"]')).toBeTruthy()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('changes themes from the swatch grid', () => {
     const { host, root } = renderModal()
     const lightTile = host.querySelector('[role="radio"][aria-label="Light"]') as HTMLButtonElement | null
