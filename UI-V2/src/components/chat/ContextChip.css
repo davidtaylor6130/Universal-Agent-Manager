@@ -54,3 +54,5 @@ button.uam-context-chip__body { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .uam-context-chip { animation: none; }
 }
+/* Chips inside assistant prose sit on the text line without growing it. */
+.prose-msg .uam-context-chip { vertical-align: middle; margin-block: -3px; }

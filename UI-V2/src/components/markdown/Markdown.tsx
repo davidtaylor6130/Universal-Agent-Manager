@@ -1,10 +1,12 @@
-import { FileInspectionContext } from '../shared/fileInspectionContext'
+import { FileInspectionContext, KnownBranchesContext } from '../shared/fileInspectionContext'
 import { inlineFileReference, parseFileReference, type FileReference } from '../../utils/fileReferences'
 import { memo, ReactNode, useContext } from 'react'
 import { CopyTextButton } from '../chat/StatusHelpers'
-import { isPotentialTableRow, parseTableSeparator, safeHref, splitTableRow } from './markdownParsing'
+import { ContextChip } from '../chat/ContextChip'
+import { inlineChipFor, isPotentialTableRow, parseTableSeparator, safeHref, splitTableRow } from './markdownParsing'
 
-function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((reference: FileReference) => void) | null): ReactNode[] {
+/** chipBranches is null when inline code should stay plain (chips disabled for this surface). */
+function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((reference: FileReference) => void) | null, chipBranches: readonly string[] | null): ReactNode[] {
   const nodes: ReactNode[] = []
   let pattern = /(`[^`]+`|\*\*[^*]+?\*\*|\[[^\[\]]+\]\()/g
   let lastIndex = 0
@@ -34,7 +36,13 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
     const key = `${keyPrefix}-${match.index}`
     if (token.startsWith('`')) {
       const value = token.slice(1, -1)
+      const chip = chipBranches ? inlineChipFor(value, chipBranches) : null
       const reference = inspect ? inlineFileReference(value) : null
+      if (chip) {
+        nodes.push(<ContextChip key={key} kind={chip.kind} name={chip.name} detail={value} path={chip.reference?.path} reference={chip.reference} />)
+        lastIndex = match.index + token.length
+        continue
+      }
       nodes.push(<code key={key}>{reference ? <button type="button" style={{ color: 'var(--accent)', background: 'transparent', border: 'none', padding: 0, font: 'inherit', cursor: 'pointer' }} onClick={() => inspect?.(reference)} title="Inspect file">{value}</button> : value}</code>)
     } else if (token.startsWith('**')) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>)
@@ -65,8 +73,10 @@ function renderInlineMarkdown(text: string, keyPrefix: string, inspect: ((refere
   return nodes
 }
 
-function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string }) {
+function MarkdownTextBlock({ text, blockKey, chips }: { text: string; blockKey: string; chips: boolean }) {
   const inspect = useContext(FileInspectionContext)
+  const knownBranches = useContext(KnownBranchesContext)
+  const chipBranches = chips ? knownBranches : null
   const lines = text.replace(/\r\n/g, '\n').split('\n')
   const nodes: ReactNode[] = []
   let paragraph: string[] = []
@@ -75,7 +85,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
   const flushParagraph = () => {
     if (paragraph.length === 0) return
     const content = paragraph.join(' ')
-    nodes.push(<p key={`${blockKey}-p-${nodes.length}`}>{renderInlineMarkdown(content, `${blockKey}-p-${nodes.length}`, inspect)}</p>)
+    nodes.push(<p key={`${blockKey}-p-${nodes.length}`}>{renderInlineMarkdown(content, `${blockKey}-p-${nodes.length}`, inspect, chipBranches)}</p>)
     paragraph = []
   }
 
@@ -110,7 +120,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
                 <tr>
                   {headerCells.map((cell, cellIndex) => (
                     <th key={`${blockKey}-th-${index}-${cellIndex}`} style={{ textAlign: alignments[cellIndex] }}>
-                      {renderInlineMarkdown(cell, `${blockKey}-th-${index}-${cellIndex}`, inspect)}
+                      {renderInlineMarkdown(cell, `${blockKey}-th-${index}-${cellIndex}`, inspect, chipBranches)}
                     </th>
                   ))}
                 </tr>
@@ -123,7 +133,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
                         key={`${blockKey}-td-${index}-${rowIndex}-${cellIndex}`}
                         style={{ textAlign: alignments[cellIndex] }}
                       >
-                        {renderInlineMarkdown(cell, `${blockKey}-td-${index}-${rowIndex}-${cellIndex}`, inspect)}
+                        {renderInlineMarkdown(cell, `${blockKey}-td-${index}-${rowIndex}-${cellIndex}`, inspect, chipBranches)}
                       </td>
                     ))}
                   </tr>
@@ -140,7 +150,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
     if (heading) {
       flushParagraph()
       const level = heading[1].length
-      const content = renderInlineMarkdown(heading[2], `${blockKey}-h-${index}`, inspect)
+      const content = renderInlineMarkdown(heading[2], `${blockKey}-h-${index}`, inspect, chipBranches)
       if (level === 1) nodes.push(<h1 key={`${blockKey}-h-${index}`}>{content}</h1>)
       else if (level === 2) nodes.push(<h2 key={`${blockKey}-h-${index}`}>{content}</h2>)
       else nodes.push(<h3 key={`${blockKey}-h-${index}`}>{content}</h3>)
@@ -159,7 +169,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
         <ul key={`${blockKey}-ul-${index}`}>
           {items.map((item, itemIndex) => (
             <li key={`${blockKey}-ul-${index}-${itemIndex}`}>
-              {renderInlineMarkdown(item, `${blockKey}-ul-${index}-${itemIndex}`, inspect)}
+              {renderInlineMarkdown(item, `${blockKey}-ul-${index}-${itemIndex}`, inspect, chipBranches)}
             </li>
           ))}
         </ul>
@@ -178,7 +188,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
         <ol key={`${blockKey}-ol-${index}`}>
           {items.map((item, itemIndex) => (
             <li key={`${blockKey}-ol-${index}-${itemIndex}`}>
-              {renderInlineMarkdown(item, `${blockKey}-ol-${index}-${itemIndex}`, inspect)}
+              {renderInlineMarkdown(item, `${blockKey}-ol-${index}-${itemIndex}`, inspect, chipBranches)}
             </li>
           ))}
         </ol>
@@ -195,7 +205,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
       }
       nodes.push(
         <blockquote key={`${blockKey}-quote-${index}`}>
-          {renderInlineMarkdown(quoteLines.join(' '), `${blockKey}-quote-${index}`, inspect)}
+          {renderInlineMarkdown(quoteLines.join(' '), `${blockKey}-quote-${index}`, inspect, chipBranches)}
         </blockquote>
       )
       continue
@@ -209,7 +219,7 @@ function MarkdownTextBlock({ text, blockKey }: { text: string; blockKey: string 
   return <>{nodes}</>
 }
 
-export const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
+export const MarkdownContent = memo(function MarkdownContent({ content, chips = false }: { content: string; chips?: boolean }) {
   if (!content.trim()) return null
   const parts: ReactNode[] = []
   const fencePattern = /```(?:([A-Za-z0-9_-]+)\r?\n|\r?\n)?([\s\S]*?)```/g
@@ -223,6 +233,7 @@ export const MarkdownContent = memo(function MarkdownContent({ content }: { cont
           key={`text-${lastIndex}`}
           blockKey={`text-${lastIndex}`}
           text={content.slice(lastIndex, match.index)}
+          chips={chips}
         />
       )
     }
@@ -247,6 +258,7 @@ export const MarkdownContent = memo(function MarkdownContent({ content }: { cont
         key={`text-${lastIndex}`}
         blockKey={`text-${lastIndex}`}
         text={content.slice(lastIndex)}
+        chips={chips}
       />
     )
   }

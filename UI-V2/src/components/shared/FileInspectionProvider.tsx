@@ -1,10 +1,10 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Presence } from '../ui'
 import { useAppStore } from '../../store/useAppStore'
 import type { WorkspaceFilePreview } from '../../types/filePreview'
 import { workspaceRelativeFilePath, type FileReference } from '../../utils/fileReferences'
 import type { VcsChangedFile, VcsType } from '../../store/useAppStore'
-import { FileInspectionContext } from './fileInspectionContext'
+import { FileInspectionContext, KnownBranchesContext } from './fileInspectionContext'
 import { FilePreviewDialog } from './FilePreviewDialog'
 import { RepositoryDiffDialog } from './RepositoryDiffDialog'
 
@@ -16,6 +16,11 @@ export function FileInspectionProvider({ chatId, children }: { chatId: string; c
     return JSON.stringify([chatId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, session?.workspaceBaseRef, session?.workspaceIsolationKind, session?.importedReadOnly,
       state.folders.find((folder) => folder.id === session?.folderId)?.directory])
   })
+  const branchNames = useAppStore((state) => {
+    const session = state.sessions.find((candidate) => candidate.id === chatId)
+    return [session?.workspaceBranchName, session?.workspaceBaseRef].filter(Boolean).join('\n')
+  })
+  const knownBranches = useMemo(() => (branchNames ? branchNames.split('\n') : []), [branchNames])
   const latestContext = useRef(context); latestContext.current = context
   const current = useRef(selection); current.current = selection
   const close = useCallback(() => { setSelection(null); setChanges(null) }, [])
@@ -35,11 +40,11 @@ export function FileInspectionProvider({ chatId, children }: { chatId: string; c
     setChanges({ chatId, context: capturedContext, type: status.activeVcsType, comparisonRef,
       file: { path, status: 'M', binary: false, staged: false, additions: 0, deletions: 0 } })
   }
-  return <FileInspectionContext.Provider value={open}>
+  return <FileInspectionContext.Provider value={open}><KnownBranchesContext.Provider value={knownBranches}>
     {children}
     <Presence open={selection?.chatId === chatId}>{selection?.chatId === chatId && <FilePreviewDialog chatId={chatId} reference={selection.reference} onClose={close} onShowChanges={showChanges} />}</Presence>
     <Presence open={changes?.chatId === chatId && changes.context === context}>{changes?.chatId === chatId && changes.context === context && <RepositoryDiffDialog chatId={chatId} file={changes.file} vcsType={changes.type} comparisonRef={changes.comparisonRef}
       showFileStats={false} comparisonLabel={changes.comparisonRef ? `Against ${changes.comparisonRef}` : 'Working tree changes'} zIndex={1200}
       getDiff={useAppStore.getState().getVcsFileDiff} onClose={() => setChanges(null)} />}</Presence>
-  </FileInspectionContext.Provider>
+  </KnownBranchesContext.Provider></FileInspectionContext.Provider>
 }
