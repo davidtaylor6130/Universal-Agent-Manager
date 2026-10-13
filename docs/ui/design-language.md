@@ -46,6 +46,7 @@ UX rules (enforce):
 
 ## Notifications
 
+- Chat status notices (compacting, waiting on subagents, stopped/timeout, response interrupted or not sent) are inline transcript dividers, never composer-docked or tagged on a message.
 - One notifications panel (the bell rail) holds every app-wide message: failures, warnings, completed system actions and available updates.
 - One shared transient alert (`TransientAlertSurface` in `AppShell`, bottom-left, `aria-live="polite"`) briefly shows each new message. It auto-dismisses and the message stays in the panel.
 - No feature-specific popups or toasts. Features report failures through `reportAppFailure` (`utils/appFailure.ts`).

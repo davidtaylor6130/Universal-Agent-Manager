@@ -2271,8 +2271,6 @@ button.uam-commit-check { cursor: pointer; }
   margin-left: auto;
   padding-bottom: 2px;
 }
-/* The stopped notice sits inline in the row rather than spanning the composer width. */
-.uam-composer-tabs__end .chat-status-strip { width: auto; margin: 0; }
 /* Side-chat tab docked on top of the composer, same shape as the workspace tab but warning-tinted. */
 .uam-composer-side-controls {
   display: inline-flex;

@@ -2,7 +2,7 @@ import { formatContextReferences, sanitizeContextReferences } from '../../utils/
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
-import { SubagentWaitStatus } from '../chat/SubagentWaitStatus'
+import { SubagentWaitStatus, isWaitingOnSubagents } from '../chat/SubagentWaitStatus'
 import { InlinePromptQueue } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
@@ -22,7 +22,7 @@ import { buildAcpErrorCopyText, ChatStatusStrip, ContextUsageStatus, CopyTextBut
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
-import { attachmentChipKind, isImageAttachment, AttachmentList, CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { attachmentChipKind, isImageAttachment, AttachmentList, CompactionSeparator, InterruptedDivider, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
@@ -399,7 +399,6 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
       onRevert={isUserMessage && !isCompanionContext() ? () => void onCreateBranch(index) : undefined}
       revertLabel={retryInPlace ? 'Retry message' : undefined}
     >
-			{isUserMessage && message.interrupted && <div className="mb-2 text-xs" style={{ color: 'var(--warning)' }}>{message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'}</div>}
         <PersistedMessageContent
           message={message}
           omitImages
@@ -409,9 +408,10 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
           sourceChatId={sessionId}
           workingMode={workingMode}
         />
-      {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
-        <div className="conversation-interrupted">{stoppedResponseLabel(message.stopReason, message.interrupted)}</div>}
 		</MessageFrame>
+      {isUserMessage && message.interrupted && <InterruptedDivider label={message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'} />}
+      {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
+        <InterruptedDivider label={stoppedResponseLabel(message.stopReason, message.interrupted)} />}
 		</>
   )
 })
@@ -1501,6 +1501,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     !messages.some((message) => message.stopReason === acp.lastStopReason)
     ? stoppedResponseLabel(acp.lastStopReason, acp.lastStopReason !== 'timeout' && acp.lastStopReason !== 'provider-update')
     : ''
+  const liveDividerOpen = Boolean(acp?.compacting) || isWaitingOnSubagents(acp) || Boolean(stoppedStatusLabel)
+  useEffect(() => {
+    // Live dividers sit at the end of the transcript; bring them into view as a new message would.
+    if (liveDividerOpen && isNearBottomRef.current) bottomRef.current?.scrollIntoView?.({ block: 'end' })
+  }, [liveDividerOpen])
   const slashNoticeTone: ComposerNoticeTone = /failed|unsupported/i.test(slashMessage)
     ? 'error'
     : /working|unavailable|provider-managed/i.test(slashMessage)
@@ -2677,6 +2682,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   )}
                 </section>
               )}
+              <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context"
+                detail={acp?.providerUsage?.contextUsage ? <ContextUsageStatus usage={acp.providerUsage.contextUsage} /> : undefined} />
+              <SubagentWaitStatus binding={acp} />
+              <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
               </div>
               </SubAgentDisclosureProvider>
             </div>
@@ -2798,9 +2807,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context"
-              detail={acp?.providerUsage?.contextUsage ? <ContextUsageStatus usage={acp.providerUsage.contextUsage} /> : undefined} />
-            <SubagentWaitStatus binding={acp} />
             {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && (
               <div
                 role="alert"
@@ -2877,7 +2883,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 finally { if (currentSessionIdRef.current === submittedSessionId) setSteering(false) }
               }}
             />
-            {(!isCompanionContext() || displayedGoal || stoppedStatusLabel || showSideChatControls) && <div className="uam-composer-tabs" data-workspace={(!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
+            {(!isCompanionContext() || displayedGoal || showSideChatControls) && <div className="uam-composer-tabs" data-workspace={(!isCompanionContext() || displayedGoal) ? 'true' : undefined}>
             {(!isCompanionContext() || displayedGoal) && <div className="uam-composer-workspace-tab" data-worktree={isGitWorktree || undefined}>
             {!isCompanionContext() && (
               <>
@@ -2972,7 +2978,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             </button>}
             </div>}
             <div className="uam-composer-tabs__end">
-              <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
               {showSideChatControls && (session.temporaryParentChatId ? (
                 <div className="uam-composer-side-controls" role="group" aria-label="Side chat">
                   <span className="uam-composer-side-controls__pill" title="Main chat context is reference only">

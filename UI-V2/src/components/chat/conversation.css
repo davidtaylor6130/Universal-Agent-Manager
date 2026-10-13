@@ -101,8 +101,10 @@
 }
 
 .conversation-turn-start { display: block; text-align: center; margin: var(--sp-4) 0 var(--sp-2); color: var(--text-3); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; opacity: 0.85; }
-.conversation-interrupted { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 2px 8px; border-radius: var(--r-full); background: var(--surface-up); border: 1px solid var(--border); color: var(--text-2); font-size: var(--fs-xs); }
-.conversation-interrupted::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
+/* Static notice divider: same hairline-and-label form as the compacted-context line. */
+.conversation-interrupted { display: flex; align-items: center; gap: 8px; margin: 16px 0; color: var(--text-3); font-size: 12px; }
+.conversation-interrupted::before, .conversation-interrupted::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.conversation-interrupted svg { flex-shrink: 0; color: var(--warning); }
 [data-processing-step="true"] .conversation-work__tool-title,
 [data-processing-step="true"] .conversation-work__thought-label,
 .uam-thinking-block[data-active="true"] .uam-thinking-row__kind,
@@ -184,17 +186,16 @@
 @keyframes conversation-pop-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
 
 /* ── Chat status divider ─────────────────────────────────────
-   Centred like the compacted-context line: hairlines either side of a small tinted pill holding an
-   illustrated scene, the title and a live elapsed timer. One tint per state; springs in and out. */
-.chat-status-strip { --strip-tint: var(--info); display: flex; align-items: center; gap: 10px; width: 100%; margin: 0 0 var(--sp-2); color: var(--text-2); font-size: var(--fs-xs); animation: chat-status-in 420ms var(--ease-spring) backwards; }
-.chat-status-strip::before, .chat-status-strip::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--strip-tint) 35%, var(--border))); }
-.chat-status-strip::after { background: linear-gradient(90deg, color-mix(in srgb, var(--strip-tint) 35%, var(--border)), transparent); }
+   Live status is an inline transcript divider, styled like the compacted-context line: hairlines either
+   side of a small illustrated scene (tinted per state), the title and a live timer. Springs in and out. */
+.chat-status-strip { --strip-tint: var(--info); display: flex; align-items: center; gap: 10px; width: 100%; margin: 16px 0; color: var(--text-3); font-size: 12px; animation: chat-status-in 420ms var(--ease-spring) backwards; }
+.chat-status-strip::before, .chat-status-strip::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .chat-status-strip[data-tone="agents"] { --strip-tint: var(--teal); }
 .chat-status-strip[data-tone="warning"] { --strip-tint: var(--warning); }
 .chat-status-strip[data-state="closed"] { animation: chat-status-out 200ms var(--ease) forwards; pointer-events: none; }
-.chat-status-strip__pill { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; padding: 3px 12px 3px 8px; border-radius: var(--r-full); background: color-mix(in srgb, var(--strip-tint) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--strip-tint) 22%, var(--border)); transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease); }
+.chat-status-strip__pill { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .chat-status-strip__scene { display: inline-flex; color: var(--strip-tint); flex-shrink: 0; }
-.chat-status-strip__title { min-width: 0; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-status-strip__title { min-width: 0; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-status-strip__time { color: var(--text-3); font-variant-numeric: tabular-nums; }
 .chat-status-strip__detail { display: inline-flex; align-items: center; min-width: 0; color: var(--text-3); font-variant-numeric: tabular-nums; }
 @keyframes chat-status-in { from { opacity: 0; transform: translateY(6px) scale(.94); } }

@@ -16,7 +16,7 @@ import type {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Button, Notice, Tooltip } from '../ui'
-import { Brain, ChevronRight } from 'lucide-react'
+import { Brain, ChevronRight, CircleAlert } from 'lucide-react'
 import { ConversationWork, ConversationWorkRow, useWorkTraceDisclosure, useThoughtDisclosure, type WorkTraceDisclosureState } from './ConversationWork'
 import {
   PermissionInlineCard,
@@ -529,6 +529,11 @@ export function GoalReviewBlock({ review }: { review: GoalReviewDecision }) {
   )
 }
 
+/** Static transcript divider for an interrupted, unsent or stopped response. */
+export function InterruptedDivider({ label }: { label: string }) {
+  return <div className="conversation-interrupted"><CircleAlert size={12} aria-hidden /><span>{label}</span></div>
+}
+
 export function CompactionSeparator({ summary, tokensBefore, tokensAfter }: { summary: string; tokensBefore?: number; tokensAfter?: number }) {
   const known = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value >= 0
   const counts = known(tokensBefore) && known(tokensAfter) ? `${tokensBefore.toLocaleString()} → ${tokensAfter.toLocaleString()} tokens` : undefined
@@ -1022,7 +1027,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
           waitIsStale={waitIsStale} waitStaleReason={waitStaleReason} waitSeconds={waitSeconds}
           onCancelTurn={onCancelTurn} onStopRuntime={onStopRuntime} />
       )}
-      {stoppedResponseLabel(stopReason, interrupted) && <div className="conversation-interrupted">{stoppedResponseLabel(stopReason, interrupted)}</div>}
+      {stoppedResponseLabel(stopReason, interrupted) && <InterruptedDivider label={stoppedResponseLabel(stopReason, interrupted)} />}
     </div>
   )
 })

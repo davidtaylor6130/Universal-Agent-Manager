@@ -481,7 +481,7 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('places the stopped notice on the right of the workspace row above the composer', () => {
+  it('places the stopped notice as the last divider in the transcript, not in the composer row', () => {
     useAppStore.setState((state) => ({
       messages: { 'chat-1': [] },
       acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: false, processing: false, lifecycleState: 'stopped', lastError: '', lastStopReason: 'timeout' } },
@@ -490,9 +490,11 @@ describe('ChatView', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const list = host.querySelector('.uam-message-list') as HTMLElement
+    expect(list.lastElementChild?.classList.contains('chat-status-strip')).toBe(true)
+    expect(list.lastElementChild?.textContent).toContain('Stopped after timeout')
     const row = host.querySelector('.uam-composer-tabs') as HTMLElement
-    const end = row.querySelector('.uam-composer-tabs__end') as HTMLElement
-    expect(end.textContent).toContain('Stopped after timeout')
+    expect(row.textContent).not.toContain('Stopped after timeout')
     expect(row.querySelector('.uam-composer-workspace-tab')).toBeTruthy()
     expect(row.nextElementSibling?.classList.contains('uam-composer-surface')).toBe(true)
     act(() => root.unmount())
