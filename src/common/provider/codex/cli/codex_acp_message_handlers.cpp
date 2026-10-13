@@ -164,18 +164,19 @@ void HandleCodexTokenUsageUpdated(AcpSessionState& session, const nlohmann::json
 
 void MergeCodexRateLimitWindow(AcpRateLimitWindowState& window, const nlohmann::json* update)
 {
-	if (update == nullptr)
+	if (update == nullptr || !update->is_object())
 	{
 		return;
 	}
-	const std::optional<int> used_percent = uam::nlohmann_json::IntFieldStrict(*update, "usedPercent");
-	if (!used_percent || *used_percent < 0 || *used_percent > 100)
+	if (uam::nlohmann_json::FindField(*update, "usedPercent") != nullptr)
 	{
-		return;
+		const std::optional<int> used_percent = uam::nlohmann_json::IntFieldStrict(*update, "usedPercent");
+		if (used_percent && *used_percent >= 0 && *used_percent <= 100)
+		{
+			window.available = true;
+			window.used_percent = *used_percent;
+		}
 	}
-
-	window.available = true;
-	window.used_percent = *used_percent;
 	if (const nlohmann::json* resets_at = uam::nlohmann_json::FindField(*update, "resetsAt"))
 	{
 		if (resets_at->is_null())
