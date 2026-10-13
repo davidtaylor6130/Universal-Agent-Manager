@@ -22,7 +22,7 @@ import { buildAcpErrorCopyText, ChatStatusStrip, ContextUsageStatus, CopyTextBut
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
-import { isImageAttachment, AttachmentList, CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
+import { attachmentChipKind, isImageAttachment, AttachmentList, CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
@@ -30,6 +30,7 @@ import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton, Tooltip } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
 import { setPreferredBranch } from '../../utils/branchPreferenceStorage'
+import { ContextChip } from '../chat/ContextChip'
 import { replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { getTopmostModal } from '../../utils/modalFocus'
@@ -2973,64 +2974,30 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             {editingMessageIndex === null && (markdownStoreAttachments.length > 0 || composerAttachments.length > 0) && (
               <div className="flex flex-wrap gap-2 px-3 pt-3">
                 {markdownStoreAttachments.map((entry) => (
-                  <span
+                  <ContextChip
                     key={entry.filePath}
-                    className="inline-flex items-center gap-2 max-w-full text-[11px]"
-                    title={entry.filePath}
-                    style={{
-                      border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))',
-                      borderRadius: 7,
-                      background: 'color-mix(in srgb, var(--purple) 10%, var(--surface-up))',
-                      color: 'var(--text-2)',
-                      padding: '5px 8px',
-                    }}
-                  >
-                    <BookOpen size={13} aria-hidden style={{ color: 'var(--purple)' }} />
-                    <span style={{ color: 'var(--purple)' }}>Skills</span>
-                    <span className="truncate max-w-[260px]">{entry.title || entry.filePath.split(/[\\/]/).pop()}</span>
-                    <button
-                      type="button"
-                      onClick={() => detachMarkdownStoreEntry(session.id, entry.filePath)}
-                      title="Remove skill attachment"
-                      aria-label={`Remove ${entry.title || 'skill'} attachment`}
-                      className="uam-attachment-remove"
-                      style={{ color: 'var(--text-3)' }}
-                    >
-                      <X size={12} aria-hidden />
-                    </button>
-                  </span>
+                    kind="skill"
+                    name={entry.title || entry.filePath.split(/[\\/]/).pop() || 'skill'}
+                    detail={entry.filePath}
+                    onRemove={() => detachMarkdownStoreEntry(session.id, entry.filePath)}
+                    removeLabel={`Remove ${entry.title || 'skill'} attachment`}
+                  />
                 ))}
                 {composerAttachments.map((attachment) => (
-                  <span
+                  <ContextChip
                     key={attachment.id}
-                    className="inline-flex items-center gap-2 max-w-full text-[11px]"
-                    title={attachment.error || attachmentLabel(attachment)}
-                    style={{
-                      border: `1px solid ${attachment.status === 'failed' ? 'color-mix(in srgb, var(--red) 55%, var(--border))' : 'var(--border)'}`,
-                      borderRadius: 999,
-                      background: attachment.status === 'failed' ? 'color-mix(in srgb, var(--red) 10%, var(--surface))' : 'var(--surface-up)',
-                      color: attachment.status === 'failed' ? 'var(--red)' : 'var(--text-2)',
-                      padding: '3px 7px',
+                    kind={attachmentChipKind(attachment)}
+                    name={attachment.name}
+                    detail={attachment.error || attachmentLabel(attachment)}
+                    path={attachment.status === 'ready' ? attachment.path : undefined}
+                    meta={attachment.status === 'staging' ? 'copying' : undefined}
+                    error={attachment.status === 'failed'}
+                    onRemove={() => {
+                      removedAttachmentIdsRef.current.add(attachment.id)
+                      setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
                     }}
-                  >
-                    <span className="truncate max-w-[260px]">{attachment.name}</span>
-                    <span style={{ color: 'var(--text-3)' }}>
-                      {attachment.status === 'staging' ? 'copying' : attachment.type === 'directory' ? 'dir' : attachment.type}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        removedAttachmentIdsRef.current.add(attachment.id)
-                        setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
-                      }}
-                      title="Remove attachment"
-                      aria-label={`Remove ${attachment.name} attachment`}
-                      className="uam-attachment-remove"
-                      style={{ color: 'var(--text-3)' }}
-                    >
-                      <X size={12} aria-hidden />
-                    </button>
-                  </span>
+                    removeLabel={`Remove ${attachment.name} attachment`}
+                  />
                 ))}
               </div>
             )}

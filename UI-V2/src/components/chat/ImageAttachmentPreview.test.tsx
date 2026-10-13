@@ -146,7 +146,7 @@ it('uses the explicit source chat in shared normal and side persisted rendering'
   }, false)
   expect(host.querySelector('img')).toBeNull()
   expect(host.textContent).toContain('photo.png')
-  expect(host.querySelector('[title="/untrusted/path"]')).not.toBeNull()
+  expect(host.querySelector('[data-detail="/untrusted/path"]')).not.toBeNull()
 })
 
 it('replaces stale renderer indices instead of retaining shifted preview identity', () => {

@@ -22,10 +22,10 @@ describe('AttachmentList', () => {
 
     const markdownContext = host.querySelector('[aria-label="Skills context"]')
     const files = host.querySelector('[aria-label="File attachments"]')
-    expect(markdownContext?.textContent).toContain('Skillsreview.uam')
+    expect(markdownContext?.textContent).toContain('review.uamskill')
     expect(markdownContext?.textContent).not.toContain('/tmp/review.uam')
     expect(files?.textContent).toContain('diagram.pngimage')
-    expect(files?.querySelector('[title="/tmp/diagram.png"]')).not.toBeNull()
+    expect(files?.querySelector('[data-detail="/tmp/diagram.png"]')).not.toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -44,7 +44,7 @@ it.each(['plain', 'blocks', 'legacy'] as const)('keeps images above text and ord
     const order = host.textContent!
     expect(order.indexOf('photo.webp')).toBeLessThan(order.indexOf('Message text'))
     expect(order.indexOf('notes.txt')).toBeGreaterThan(order.indexOf('Message text'))
-    expect(host.querySelectorAll('[title="photo.webp"]')).toHaveLength(1)
+    expect(host.querySelectorAll('[data-detail="photo.webp"]')).toHaveLength(1)
   } finally { act(() => root.unmount()); host.remove() }
 })
 

@@ -30,6 +30,7 @@ Patterns:
 - Settings page: page title + one-line muted subtitle; sections = semibold 13–14px heading + muted one-line description; label above field; actions right-aligned; secondary buttons outlined. Sections separated by spacing/hairline, not heavy boxes inside boxes.
 - Lists/rows: identity line (text), detail line (mono, --text-3, for ids/paths), status line (StatusDot + semantic colour); icon-only actions on the right with Tooltip + aria-label.
 - Notices: tinted, calm, plain-language consequence; collapsible/dismissible where long.
+- Context chips (`components/chat/ContextChip.tsx`): referenced context (attachments, skills) is a 24px pill with a type icon, name and kind label on var(--surface-up). Full path is a Tooltip in mono; files open the preview on click; remove is an icon button on composer chips only.
 
 UX rules (enforce):
 1. One clear primary action per section; rest secondary/ghost.
