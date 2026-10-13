@@ -6,6 +6,7 @@
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 
+#include <array>
 #include <string_view>
 
 namespace
@@ -207,9 +208,12 @@ namespace uam
 	{
 		if (workspace.empty()) return nullptr;
 		const std::filesystem::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
-		const std::filesystem::path resolved = ResolveImportedWorkspaceFolderDirectory(location);
-		// Explicit ownership of a worktree (including its child cwd) precedes aliases.
-		for (const std::filesystem::path& candidate : {location, resolved})
+		const std::filesystem::path resolved = uam::paths::NormalizeExistingOrAbsolutePath(ResolveImportedWorkspaceFolderDirectory(location));
+		// A verified linked worktree belongs to its main checkout when both are registered.
+		const std::array<std::filesystem::path, 2> candidates = resolved == location
+		    ? std::array<std::filesystem::path, 2>{location, resolved}
+		    : std::array<std::filesystem::path, 2>{resolved, location};
+		for (const std::filesystem::path& candidate : candidates)
 		{
 			const ChatFolder* owner = nullptr;
 			std::size_t owner_depth = 0;

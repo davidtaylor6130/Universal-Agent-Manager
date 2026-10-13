@@ -25,7 +25,7 @@ UAM_TEST(RegisteredWorkspaceNestedOwnershipStopsAtDistinctRepository)
 	UAM_ASSERT(uam::FindImportedWorkspaceFolder(folders, temp.root / "base-other") == nullptr);
 }
 
-UAM_TEST(WorkspaceMigrationRetainsValidatedWorktreeAndNestedOwners)
+UAM_TEST(WorkspaceMigrationRetainsCanonicalWorktreeAndNestedOwners)
 {
 	UAM_ASSERT(GitAvailableForTests());
 	TempDir temp("uam-migrate-worktree-owner");
@@ -65,5 +65,7 @@ UAM_TEST(WorkspaceMigrationRetainsValidatedWorktreeAndNestedOwners)
 	UAM_ASSERT_EQ(app.chats[1].workspace_directory, (worktree / "child").string());
 	app.folders.push_back({"explicit-worktree", "Worktree", worktree.string(), false, "local"});
 	UAM_ASSERT(uam::FindImportedWorkspaceFolder(app.folders, worktree / "child") != nullptr);
-	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, worktree / "child")->id, std::string("explicit-worktree"));
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, worktree / "child")->id, std::string("main-owner"));
+	const std::vector<ChatFolder> worktree_only = {app.folders.back()};
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(worktree_only, worktree / "child")->id, std::string("explicit-worktree"));
 }

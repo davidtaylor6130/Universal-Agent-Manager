@@ -32,6 +32,43 @@ namespace
 	}
 }
 
+UAM_TEST(ImportedLinkedWorktreeUsesMainFolderAndKeepsNativeWorkspace)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-import-worktree-owner");
+	const fs::path main = temp.root / "main";
+	const fs::path worktree = temp.root / "linked";
+	fs::create_directories(main);
+	UAM_ASSERT(RunGitForTest(main, "init -q"));
+	UAM_ASSERT(RunGitForTest(main, "-c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -qm fixture"));
+	UAM_ASSERT(RunGitForTest(main, "worktree add --detach " + ShellQuoteForTest(worktree.string())));
+	fs::create_directories(main / "child");
+	fs::create_directories(worktree / "child");
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.folders.push_back({"main-owner", "Main", main.string(), false, "local"});
+	app.folders.push_back({"worktree-owner", "Linked", worktree.string(), false, "local"});
+	const fs::path ordinary = temp.root / "ordinary";
+	fs::create_directories(ordinary / "nested");
+	app.folders.push_back({"ordinary-owner", "Ordinary", ordinary.string(), false, "local"});
+	app.folders.push_back({"nested-owner", "Nested", (ordinary / "nested").string(), false, "local"});
+	app.folders.push_back({"remote-owner", "Remote", worktree.string(), false, "ssh-host"});
+
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, worktree / "child")->id, std::string("main-owner"));
+	UAM_ASSERT(uam::FindImportedWorkspaceFolder({app.folders.back()}, worktree) == nullptr);
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, ordinary / "nested")->id, std::string("nested-owner"));
+
+	ChatHistorySyncService::LocalHistoryDiscovery discovery;
+	discovery.chats.push_back(ImportFixture(worktree / "child", "native-worktree-session"));
+	const auto result = DrainFixture(app, discovery, ChatHistorySyncService::ImportPolicy::RegisteredWorkspacesOnly);
+	UAM_ASSERT(result.success);
+	UAM_ASSERT_EQ(result.imported_count, 1);
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("main-owner"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("native-worktree-session"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, (worktree / "child").string());
+}
+
 UAM_TEST(AutomaticHistoryImportOnlyPublishesRegisteredWorkspaceOwners)
 {
 	TempDir temp("uam-import-registered-only");

@@ -22744,7 +22744,10 @@ UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 	explicit_folder.id = "worktree-folder";
 	explicit_folder.directory = worktree.string();
 	app.folders.push_back(explicit_folder);
-	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, worktree)->id, explicit_folder.id);
+	// A proven linked worktree groups under its registered main checkout.
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, worktree)->id, folder.id);
+	const std::vector<ChatFolder> worktree_only = {explicit_folder};
+	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(worktree_only, worktree)->id, explicit_folder.id);
 	app.folders.back().execution_host_id = "remote";
 	UAM_ASSERT_EQ(uam::FindImportedWorkspaceFolder(app.folders, worktree)->id, folder.id);
 
@@ -22760,12 +22763,13 @@ UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 	const nlohmann::json user = {{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "worktree import"}}})}}}};
 	UAM_ASSERT(uam::io::WriteTextFile(codex_home / "sessions" / "rollout.jsonl", meta.dump() + "\n" + user.dump() + "\n"));
 	app.folders.back().execution_host_id = "local";
-	UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).imported_count, 0);
-	UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, explicit_folder.id).imported_count, 1);
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).imported_count, 1);
 	const auto imported = ChatRepository::LoadLocalChat(app.data_root, id);
 	UAM_ASSERT(imported.has_value());
-	UAM_ASSERT_EQ(imported->folder_id, explicit_folder.id);
+	UAM_ASSERT_EQ(imported->folder_id, folder.id);
+	UAM_ASSERT_EQ(imported->native_session_id, id);
 	UAM_ASSERT_EQ(imported->workspace_directory, worktree.string());
+	UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, explicit_folder.id).imported_count, 0);
 	app.folders.pop_back();
 	app.data_root = temp.root / "main-import-data";
 	UAM_ASSERT_EQ(ChatHistorySyncService().ImportCodexRolloutChatsForFolder(app, folder.id).imported_count, 1);
