@@ -1,7 +1,11 @@
 /* Centered transcript; composer retains its original width and spacing. */
 .uam-chat-pane {
-  --conversation-column: 760px;
+  --conversation-column: var(--chat-column-width, 760px);
 }
+
+/* Set by the Appearance "Message width" setting (applyAppearance). */
+:root[data-chat-width="wide"] { --chat-column-width: 1000px; }
+:root[data-chat-width="full"] { --chat-column-width: 100%; }
 
 .uam-chat-pane .uam-chat-transcript .uam-chat-content {
   width: 100%;

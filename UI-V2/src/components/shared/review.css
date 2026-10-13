@@ -125,13 +125,28 @@
   background: var(--bg);
 }
 
+/* Added/removed line colours; the Appearance setting swaps them via data-diff-palette. */
+:root {
+  --diff-add: var(--success);
+  --diff-add-dim: var(--success-dim);
+  --diff-del: var(--error);
+  --diff-del-dim: var(--error-dim);
+}
+
+:root[data-diff-palette="colour-blind"] {
+  --diff-add: var(--info);
+  --diff-add-dim: var(--info-dim);
+  --diff-del: var(--warning);
+  --diff-del-dim: var(--warning-dim);
+}
+
 .uam-rv-diff-row {
   display: flex;
   white-space: pre;
 }
 
-.uam-rv-diff-row[data-kind="added"] { background: var(--success-dim); }
-.uam-rv-diff-row[data-kind="removed"] { background: var(--error-dim); }
+.uam-rv-diff-row[data-kind="added"] { background: var(--diff-add-dim); }
+.uam-rv-diff-row[data-kind="removed"] { background: var(--diff-del-dim); }
 .uam-rv-diff-row[data-kind="header"] { color: var(--text-3); background: var(--surface); }
 
 .uam-rv-gutter {
@@ -151,8 +166,8 @@
   user-select: none;
 }
 
-.uam-rv-diff-row[data-kind="added"] .uam-rv-sign { color: var(--success); }
-.uam-rv-diff-row[data-kind="removed"] .uam-rv-sign { color: var(--error); }
+.uam-rv-diff-row[data-kind="added"] .uam-rv-sign { color: var(--diff-add); }
+.uam-rv-diff-row[data-kind="removed"] .uam-rv-sign { color: var(--diff-del); }
 
 .uam-rv-diff-text {
   padding-right: var(--sp-3);
@@ -169,8 +184,8 @@
   border-left: 1px solid var(--border);
 }
 
-.uam-rv-diff-side[data-kind="added"] { background: var(--success-dim); }
-.uam-rv-diff-side[data-kind="removed"] { background: var(--error-dim); }
+.uam-rv-diff-side[data-kind="added"] { background: var(--diff-add-dim); }
+.uam-rv-diff-side[data-kind="removed"] { background: var(--diff-del-dim); }
 
 /* Change-size bars: a stacked add/remove meter beside the +/- counts. */
 .uam-rv-stat {
@@ -208,8 +223,8 @@
 .uam-rv-bar__add,
 .uam-rv-bar__del { flex-basis: 0; height: 100%; }
 
-.uam-rv-bar__add { background: var(--success); }
-.uam-rv-bar__del { background: var(--error); }
+.uam-rv-bar__add { background: var(--diff-add); }
+.uam-rv-bar__del { background: var(--diff-del); }
 
 @keyframes uam-rv-grow {
   from { transform: scaleX(0); }

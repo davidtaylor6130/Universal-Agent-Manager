@@ -1,5 +1,6 @@
 import { VcsSettings } from './VcsSettings'
 import { TypographySettings } from './TypographySettings'
+import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { SettingRow, SettingsField, SettingsSection } from './SettingsPrimitives'
 import { ProviderConnections } from './ProviderConnections'
@@ -1649,6 +1650,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             />
           </SettingsSection>
           <TypographySettings />
+          <AppearanceDisplaySettings />
         </div>
       )
     }
