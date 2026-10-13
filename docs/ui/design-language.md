@@ -21,7 +21,7 @@ Type: sans UI text 13px base; scale var(--fs-xs 11) --fs-sm 12 --fs-base 13 --fs
 Spacing: 4px rhythm var(--sp-1..8). Radius var(--r-sm 5) --r-md 8 --r-lg 12. Elevation var(--elev-1..3), soft.
 Animation is IN SCOPE (David classes it as UX): add purposeful motion in your surface — panels/popovers/menus enter-exit (fade + 4–8px translate or scale .98→1), list items appearing/removing, disclosure expand/collapse, value changes (bars growing), state changes (hover/press feedback). Smooth, physical, quick; never blocking input; no layout jank; animate transform/opacity (not width/height where avoidable); exit faster than enter.
 Visuals over text: a picture is worth a thousand words. Quantities (allowances, limits, token usage, spend, progress, context usage, counts vs capacity) should be shown as bars/meters/sparklines/segmented bars with the exact number as secondary text — not plain text alone. Use semantic colour thresholds (e.g. >80% warning, >95% error).
-Motion: var(--dur-fast 120ms) / --dur-base 180ms, var(--ease) / --ease-out-soft. Respect prefers-reduced-motion. No idle animation loops.
+Motion: var(--dur-fast 120ms) / --dur-base 180ms, var(--ease) / --ease-out-soft. Respect prefers-reduced-motion. Anything that is loading or working must visibly move (shimmer skeletons, progress, working indicators) so the user can see the app has not frozen; keep that motion calm and purposeful. Animate to explain state, not to decorate, and stop the motion once the work settles.
 Focus: box-shadow: var(--focus-ring) on :focus-visible.
 
 Primitives — use them, don't restyle <button> ad hoc. Import from 'components/ui' (index.ts):
