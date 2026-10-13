@@ -44,11 +44,11 @@ const money = (value: number) => new Intl.NumberFormat(undefined, { style: 'curr
 const percentOf = (part: number, whole: number) => whole > 0 ? `${Math.round(part / whole * 100)}%` : '0%'
 /** Token segments are disjoint: input + cache read + cache write + output (reasoning is a part of output). */
 const TOKEN_SEGMENTS = [
-  { key: 'input', label: 'Input', color: 'var(--usage-tok-input)', value: (total: UsageTotals) => total.inputTokens },
-  { key: 'cache', label: 'Cache read', color: 'var(--usage-tok-cache)', value: (total: UsageTotals) => total.cachedInputTokens },
-  { key: 'cache-write', label: 'Cache write', color: 'var(--usage-tok-cache-write)', value: (total: UsageTotals) => total.cacheWriteTokens },
-  { key: 'output', label: 'Output', color: 'var(--usage-tok-output)', value: (total: UsageTotals) => total.outputTokens - total.reasoningTokens },
-  { key: 'reasoning', label: 'Reasoning, included in output', color: 'var(--usage-tok-reasoning)', value: (total: UsageTotals) => total.reasoningTokens },
+  { key: 'input', label: 'Input', color: 'var(--token-input)', value: (total: UsageTotals) => total.inputTokens },
+  { key: 'cache', label: 'Cache read', color: 'var(--token-cache-read)', value: (total: UsageTotals) => total.cachedInputTokens },
+  { key: 'cache-write', label: 'Cache write', color: 'var(--token-cache-write)', value: (total: UsageTotals) => total.cacheWriteTokens },
+  { key: 'output', label: 'Output', color: 'var(--token-output)', value: (total: UsageTotals) => total.outputTokens - total.reasoningTokens },
+  { key: 'reasoning', label: 'Reasoning, included in output', color: 'var(--token-reasoning)', value: (total: UsageTotals) => total.reasoningTokens },
 ] as const
 
 /** Token composition as one proportional bar. Labels sit inside wide segments; every segment keeps an exact tooltip. */

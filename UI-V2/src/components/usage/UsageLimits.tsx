@@ -20,11 +20,11 @@ function Meter({ label, percent }: { label: string; percent: number | null }) {
 function ConsumptionStack({ total }: { total: AcpTokenUsage['total'] }) {
   const cache = Math.max(0, total.cachedInputTokens) + Math.max(0, total.cacheWriteInputTokens)
   const segments = [
-    ['Input', Math.max(0, total.inputTokens - cache), 'var(--usage-tok-input)'],
-    ['Cache read', total.cachedInputTokens, 'var(--usage-tok-cache)'],
-    ['Cache write', total.cacheWriteInputTokens, 'var(--usage-tok-cache-write)'],
-    ['Output', Math.max(0, total.outputTokens - total.reasoningOutputTokens), 'var(--usage-tok-output)'],
-    ['Reasoning', total.reasoningOutputTokens, 'var(--usage-tok-reasoning)'],
+    ['Input', Math.max(0, total.inputTokens - cache), 'var(--token-input)'],
+    ['Cache read', total.cachedInputTokens, 'var(--token-cache-read)'],
+    ['Cache write', total.cacheWriteInputTokens, 'var(--token-cache-write)'],
+    ['Output', Math.max(0, total.outputTokens - total.reasoningOutputTokens), 'var(--token-output)'],
+    ['Reasoning', total.reasoningOutputTokens, 'var(--token-reasoning)'],
   ] as const
   return <div className="grid gap-2"><span className="uam-usage-stack" aria-hidden>{segments.map(([label, value, color]) => value > 0 ? <span key={label} title={`${label} · ${value.toLocaleString()}`} style={{ flexGrow: value, '--c': color } as CSSProperties} /> : null)}</span>
     <ul className="uam-usage-key text-xs" aria-hidden>{segments.map(([label, , color]) => <li key={label} className="uam-usage-key-item"><i className="uam-usage-swatch" style={{ '--c': color } as CSSProperties} />{label}</li>)}</ul>
