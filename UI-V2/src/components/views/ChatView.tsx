@@ -449,7 +449,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const [slashGroupIndex, setSlashGroupIndex] = useState(0)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const [confirmYolo, setConfirmYolo] = useState(false)
-  const [memoryChipExplicit, setMemoryChipExplicit] = useState(false)
   const [composerAttachments, setComposerAttachments] = useState<LocalAttachment[]>(() =>
     readChatComposerDraft(session.id).attachments.map((attachment) => ({ ...attachment, status: 'ready' }))
   )
@@ -479,7 +478,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
 
   useEffect(() => setSteering(false), [session.id])
 
-  useEffect(() => setMemoryChipExplicit(false), [session.id])
   const composerDraftRef = useRef({ text: draft, attachments: [] as Attachment[] })
   composerDraftRef.current = {
     text: draft,
@@ -580,8 +578,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const repositoryChanges = useAppStore((s) => s.repositoryReviewBySessionId[session.id] ?? null)
-  const composerBranch = repositoryChanges?.workspaceDirectory === workspaceDirectory
-    ? repositoryChanges.branchOrRevision || session.workspaceBranchName : session.workspaceBranchName
+  // Branch read once when the chat (or its workspace) is opened; see the composer branch effect below.
+  const [composerVcsBranch, setComposerVcsBranch] = useState({ scope: '', branch: '' })
+  const composerBranchScope = `${session.id}\n${workspaceDirectory}\n${session.executionHostId ?? ''}`
+  const composerBranch = (repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges.branchOrRevision : '')
+    || session.workspaceBranchName
+    || (composerVcsBranch.scope === composerBranchScope ? composerVcsBranch.branch : '')
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
   const resumeQueuedAcpPrompts = useAppStore((s) => s.resumeQueuedAcpPrompts)
@@ -1335,6 +1337,16 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     })
     return () => { cancelled = true }
   }, [completedTurnKey, getVcsCommitStatus, remoteComputerUseDisabled, repositoryComparisonRef, session.id, workspaceDirectory])
+  useEffect(() => {
+    let cancelled = false
+    if (isCompanionContext() || remoteComputerUseDisabled || !workspaceDirectory) return
+    // One light read per chat/workspace open (no polling): feeds the composer's repository branch.
+    void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
+      if (cancelled) return
+      setComposerVcsBranch({ scope: composerBranchScope, branch: status?.available && status.activeVcsType !== 'svn' ? status.branchOrRevision : '' })
+    })
+    return () => { cancelled = true }
+  }, [composerBranchScope, getVcsCommitStatus, remoteComputerUseDisabled, session.id, workspaceDirectory])
   const sideBusyRef = useRef(false)
   const [sideBusy, setSideBusy] = useState(false)
   // A main chat keeps at most one live side chat; reopening it is a local switch,
@@ -1968,7 +1980,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const currentMemoryLevel: MemoryLevel = session.memoryLevel ?? ((session.memoryEnabled ?? true) ? 'strict' : 'off')
   const runMemoryCommand = (level: MemoryLevel) => {
     setSlashIndex(0)
-    setMemoryChipExplicit(true)
     void setSessionMemoryLevel(session.id, level)
   }
   const slashCommands = useMemo<SlashCommand[]>(
@@ -2944,7 +2955,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
                   <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
-                  {composerBranch && <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate">{composerBranch}</span></span>}
+                  {composerBranch && <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate font-mono">{composerBranch}</span></span>}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
               </>
@@ -3220,7 +3231,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               computerUseAwaitingTarget={computerUseMode && !session.computerUseTargetId}
               memoryLevel={currentMemoryLevel}
               defaultMemoryLevel={defaultMemoryLevel}
-              memoryChipVisible={memoryChipExplicit || currentMemoryLevel !== defaultMemoryLevel}
               smallModelMode={session.smallModelMode ?? false}
               modelOpen={modelOpen}
               modelMenuRef={modelMenuRef}
@@ -3256,14 +3266,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               onSelectUamAgent={(agentId) => void setSessionUamAgent(session.id, agentId)}
               onSelectPermissionMode={(modeId) => void selectPermissionMode(modeId)}
               onToggleComputerUseMode={() => void setComputerUseActive(!computerUseMode)}
-              onSelectMemoryLevel={(level) => {
-                setMemoryChipExplicit(true)
-                void setSessionMemoryLevel(session.id, level)
-              }}
-              onClearMemoryLevel={() => {
-                setMemoryChipExplicit(false)
-                void setSessionMemoryLevel(session.id, defaultMemoryLevel)
-              }}
+              onSelectMemoryLevel={(level) => void setSessionMemoryLevel(session.id, level)}
               onToggleSmallModelMode={() => void setSessionSmallModelMode(session.id, !(session.smallModelMode ?? false))}
               goalArmed={goalArmNextMessage}
               goalActive={Boolean(activeGoal)}

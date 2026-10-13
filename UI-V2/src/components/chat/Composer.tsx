@@ -172,7 +172,6 @@ export function ComposerToolbar({
   computerUseAwaitingTarget,
   memoryLevel,
   defaultMemoryLevel,
-  memoryChipVisible,
   smallModelMode,
   modelOpen,
   modelMenuRef,
@@ -190,7 +189,6 @@ export function ComposerToolbar({
   onSelectPermissionMode,
   onToggleComputerUseMode,
   onSelectMemoryLevel,
-  onClearMemoryLevel,
   onToggleSmallModelMode,
   goalArmed,
   goalActive,
@@ -236,7 +234,6 @@ export function ComposerToolbar({
   computerUseAwaitingTarget: boolean
   memoryLevel: MemoryLevel
   defaultMemoryLevel: MemoryLevel
-  memoryChipVisible: boolean
   smallModelMode: boolean
   modelOpen: boolean
   modelMenuRef: RefObject<HTMLDivElement>
@@ -254,7 +251,6 @@ export function ComposerToolbar({
   onSelectPermissionMode: (modeId: string) => void
   onToggleComputerUseMode: () => void
   onSelectMemoryLevel: (level: MemoryLevel) => void
-  onClearMemoryLevel: () => void
   onToggleSmallModelMode: () => void
   goalArmed: boolean
   goalActive: boolean
@@ -364,6 +360,9 @@ export function ComposerToolbar({
     background: 'color-mix(in srgb, var(--surface-up) 72%, transparent)',
     color: 'var(--text-2)',
   }
+  const memoryOn = memoryLevel !== 'off'
+  // Turning memory back on uses the default level; a default of "off" falls back to Strict.
+  const memoryRestoreLevel: MemoryLevel = defaultMemoryLevel === 'off' ? 'strict' : defaultMemoryLevel
   const iconChipStyle = {
     ...chipStyle,
     width: 26,
@@ -632,15 +631,20 @@ export function ComposerToolbar({
           onChange={onSelectPermissionMode}
           disabled={!permissionsManagedByUam || permissionControlsDisabled}
         />
-        {memoryChipVisible && <ComposerChoice
-          label="Memory"
-          chipLabel={`Memory ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}`}
-          value={memoryLevel}
-          icon={<Brain size={12} aria-hidden />}
-          options={[...MEMORY_LEVEL_OPTIONS.map((option) => ({ value: option.id, label: option.label, description: option.detail })), { value: 'reset', label: 'Use default', description: MEMORY_LEVEL_OPTIONS.find((option) => option.id === defaultMemoryLevel)?.label }]}
-          onChange={(level) => level === 'reset' ? onClearMemoryLevel() : onSelectMemoryLevel(level as MemoryLevel)}
+        <button
+          type="button"
+          data-mode-chip={memoryOn ? 'Memory On' : 'Memory Off'}
+          aria-pressed={memoryOn}
+          aria-label={memoryOn ? 'Memory on' : 'Memory off'}
+          title="Use memories in this chat"
+          onClick={() => onSelectMemoryLevel(memoryOn ? 'off' : memoryRestoreLevel)}
           disabled={memoryDisabled}
-        />}
+          className="uam-composer-action inline-flex h-[26px] min-w-0 shrink-0 items-center gap-1.5 px-2 text-xs"
+          style={{ ...chipStyle, color: memoryOn ? 'var(--text)' : 'var(--text-3)' }}
+        >
+          <Brain size={12} aria-hidden />
+          <span>{memoryOn ? `Memory On · ${MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevel)?.label ?? memoryLevel}` : 'Memory Off'}</span>
+        </button>
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label="Architect + worker" compactLabel="Architect" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label={`Reviewer: ${currentReviewerModel.label}`} compactLabel={`Review: ${currentReviewerModel.shortLabel}`} icon={<Sparkles size={12} aria-hidden style={{ color: 'var(--purple)' }} />} />}
         {hasReasoningEffort && <ComposerChoice label="Reasoning" chipLabel={`Reasoning: ${currentReasoning.label}`} value={currentReasoning.id} icon={<Cpu size={12} aria-hidden />} options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))} onChange={onSelectReasoning} disabled={modelDisabled} />}
