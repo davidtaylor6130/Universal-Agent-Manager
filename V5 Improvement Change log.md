@@ -469,6 +469,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Navigation and interface | Bugfix | Deleted Active Chat Reopening | After deleting the active chat, the empty view can open a new chat on its own and keeps reopening it after it is closed; deleting must leave a stable empty or next-chat state. | Open; frontend delete path verified stable in tests, live reproduction needed; Codex Review; Codex Backend Implementation; Claude Review; Not User Tested | Unassigned |
 | Navigation and interface | Graphical | New Chat On Same Branch | Add a chat context-menu action that starts a new chat in the same workspace on the same branch or worktree as the chat that was right-clicked. | Frontend implemented in `6eebdeb6`, hidden until the backend contract below exists; Codex Review; Codex Backend Implementation; Claude UI Reviewed; Not User Tested | Unassigned |
 | Navigation and interface | Misc | Recorded Provider Stop Time | Record when a provider session stopped so the timeout status can show the true stop time after reloads, instead of the time the status first appeared. | Open; Un-Reviewed; Not User Tested | Unassigned |
+| Settings and motion | Graphical | Settings Environment Scope | Choose All environments or one SSH computer at the top of Settings so per-machine settings apply to that scope. | Frontend implemented in `a1815538` and `8e29298f`; Codex Review; Codex Backend Implementation; Claude UI Reviewed; Not User Tested | Unassigned |
 | Deferred ideas | Misc | T3 PR Workflow | Keep T3-inspired pull-request, branch and GitHub-provider workflows plus auto-settling at the very end of the backlog for later design and implementation. | Open; Claude Review; Not User Tested | Unassigned |
 
 Scope recorded 2026-10-12: David agreed to remove the organization undo toast, consolidate app-wide messages into one notification system and add system design documentation; automatic UI regression guards were considered and declined as impractical to test reliably.
@@ -658,6 +659,27 @@ These rows are marked **Codex Review; Codex Backend Implementation**. The fronte
 - **New Chat On Same Branch:** serialize top-level `createSessionFromSourceChat: true`; accept `sourceChatId` on `createSession` and copy the source chat's folder, workspace directory, isolation kind, branch, worktree and base ref.
 - **Reliable Compact Command:** `CompactAcpSession` (`acp_session_runtime.cpp`) returns 409 unless the session is running and ready; start or await the provider session (or queue the compaction) so `/compact` works when idle, stopped or not started.
 - **Deleted Active Chat Reopening:** frontend paths never create chats on their own and the C++ delete path does not reselect a deleted chat. Reproduce live, logging the `deleteSessions` response and `selectedChatId` pushes, and check whether native history sync (`runtime_orchestration_services.cpp`) re-imports the deleted chat.
+
+### Wave 6 — David's mock review feedback (2026-10-13)
+
+David reviewed wave 5 in the fake-backend preview (`UI-V2/mock.html`, `bb6148c7`) and asked for the changes below. Same process: Haiku subagent branches reviewed and merged by Claude into `claude/v5ui-integration`. Merged-tree verification: `tsc -b` clean, 1,532 of 1,532 unit and 22 of 22 performance tests pass, production build succeeds. Not visually re-checked by David yet.
+
+| Commit | Surface | Summary |
+|---|---|---|
+| `df7e2c8e` | Settings | Selected nav item keeps its tinted background and gains a straight V4-style accent line that glides between items. |
+| `43c264b1` | New chat | The T3-style provider rail and searchable model list is embedded directly in the dialog as the only provider and model choice. |
+| `be1228e5` | Composer | The workspace tab fetches and shows the branch for every chat, and memory has an always-visible On/Off toggle in the footer. |
+| `a1815538`, `8e29298f` | Settings | "Applying settings for" bar chooses All environments or one SSH computer and replaces the provider pages' own host picker. |
+| `cf5b3127` | Appearance | Message widths are Comfortable 1000px (default), Wide 1320px and Full. |
+| `0c963f35` | Composer | Side-chat controls sit in their own yellow tab beside the workspace tab. |
+| `6cfb9b7b` | Sidebar | Row hover and selected backgrounds share one CSS box instead of a JavaScript-painted hover. |
+| `51307a92`, `79e46fc7` | Transcript | Assistant replies show files, folders and branches named in inline code as context chips. |
+
+Overlap note: `be1228e5` touches branch display in the composer workspace tab, which overlaps the coordinator's in-progress **Composer Workspace Branch Controls** row (`chat-1791755529536-1b146e`); it adds display only, not branch selection, at David's direct request.
+
+#### Codex backend contract — Settings Environment Scope
+
+Codex Review; Codex Backend Implementation. Serialize `settings.hostScopedSettings: true` once supported. Then `setProviderChatDefaults` and `setMcpServers` may carry `scopeExecutionHostId`; store those values per SSH host, return the selected host's effective values, and fall back to the all-environments values when a host has none. CLI version, provider MCP status and model refresh already take `executionHostId` and need no change.
 
 ## Historical alpha82 commit inventory
 
