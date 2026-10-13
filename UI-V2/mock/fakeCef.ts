@@ -56,7 +56,7 @@ messagesByChat['c-attach'] = [
     { id: 'a1', name: 'ChatView.tsx', kind: 'file', path: '/Users/david/GitHub/UAM/UI-V2/src/components/views/ChatView.tsx', size: 120000, mimeType: 'text/plain' },
     { id: 'a2', name: 'components', kind: 'directory', path: '/Users/david/GitHub/UAM/UI-V2/src/components' },
   ] },
-  { role: 'assistant', providerId: 'codex-cli', content: 'I reviewed both. The composer row needs its controls aligned to the right.', createdAt: iso(3500000) },
+  { role: 'assistant', providerId: 'codex-cli', content: 'I reviewed both. In `UI-V2/src/components/views/ChatView.tsx` the composer row needs its controls aligned to the right; the styles live in `UI-V2/src/index.css` and the docs in `docs/ui/`. I made the change on `feature/composer-row`, branched from `main`. Run `npm test` afterwards.', createdAt: iso(3500000) },
 ]
 messagesByChat['c-stopped'] = [
   { role: 'user', content: 'Run the migration and report back.', createdAt: iso(7200000) },
@@ -100,7 +100,7 @@ function state(): Json {
     settings: {
       activeProviderId: 'claude-cli', theme: localStorage.getItem('uam-theme') ?? 'dark', memoryEnabledDefault: true, memoryIdleDelaySeconds: 60, memoryRecallBudgetBytes: 8192,
       goalMaxLoopIterations: 10, updateChecksEnabled: true, automaticProviderUpdates: false, updateLastCheckedAt: iso(3600000), dismissedUpdateVersions: {},
-      memoryLastStatus: '', memoryWorkerBindings: {}, gitEnabled: true, svnEnabled: false, executionHosts, computerUseEnabled, providerAgentImport: true,
+      memoryLastStatus: '', memoryWorkerBindings: {}, gitEnabled: true, svnEnabled: false, executionHosts, computerUseEnabled, providerAgentImport: true, hostScopedSettings: true,
       defaultNewChatProviderId: 'claude-cli',
     },
     cliVersionManager: { providers: [
@@ -198,6 +198,14 @@ async function handle(action: string, payload: Json): Promise<unknown> {
     case 'setChatPinned': setChat(payload.chatId as string, { pinned: payload.pinned }); setTimeout(push, 0); return {}
     case 'renameSession': setChat(payload.chatId as string, { title: payload.title }); setTimeout(push, 0); return {}
     case 'listMarkdownStoreEntries': return { entries: [] }
+    case 'listThemes': return { themes: [] }
+    case 'listUamAgents': return { agents: [] }
+    case 'getVcsCommitStatus': {
+      const c = chats.find(x => x.id === payload.chatId)
+      const branch = (c?.workspaceBranchName as string) || (c?.folderId === 'f-site' ? 'main' : 'claude/v5ui-integration')
+      return { available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: (c?.workspaceDirectory as string) ?? '', branchOrRevision: branch, lineStatsReady: true, warning: '', error: '',
+        changedFiles: [{ path: 'UI-V2/src/components/views/ChatView.tsx', status: 'M', additions: 42, deletions: 7, staged: false }] }
+    }
     default:
       console.info('[fake CEF] unhandled action', action, payload)
       return {}
