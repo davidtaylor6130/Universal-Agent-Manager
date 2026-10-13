@@ -950,9 +950,42 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	const std::optional<bool> git_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "gitEnabled");
 	const std::optional<bool> svn_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "svnEnabled");
 	if (!git_enabled || !svn_enabled) { cb->Failure(400, "VCS settings must be booleans."); return; }
+	const std::optional<bool> automatic_worktree = uam::nlohmann_json::BoolFieldStrict(payload, "gitAutoWorktree");
+	const nlohmann::json* base_value = uam::nlohmann_json::FindStringField(payload, "gitDefaultBaseBranch");
+	const std::string base_branch = base_value == nullptr ? std::string() : uam::strings::Trim(base_value->get<std::string>());
+	if ((payload.contains("gitAutoWorktree") && !automatic_worktree) ||
+	    (payload.contains("gitDefaultBaseBranch") && (!base_value || base_branch.size() > 255 ||
+	    std::ranges::any_of(base_branch, [](unsigned char c) { return c < 32 || c == 127; }))))
+	{
+		cb->Failure(400, "Automatic worktrees require a boolean and the default Git branch requires a short branch name.");
+		return;
+	}
+	const bool has_cleanup = payload.contains("worktreeCleanupEnabled");
+	const bool has_days = payload.contains("worktreeRetentionDays");
+	const std::optional<bool> cleanup_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "worktreeCleanupEnabled");
+	const std::optional<int> retention_days = uam::nlohmann_json::IntFieldStrict(payload, "worktreeRetentionDays");
+	if ((has_cleanup && !cleanup_enabled) || (has_days && (!retention_days || *retention_days < 1 || *retention_days > 3650)))
+	{
+		cb->Failure(400, "Worktree cleanup requires a boolean and retention from 1 to 3650 days.");
+		return;
+	}
+	// Accepted policy changes cannot race an exclusive background removal.
+	const bool policy_changed = m_app.settings.git_enabled != *git_enabled ||
+	    (cleanup_enabled && m_app.settings.worktree_cleanup_enabled != *cleanup_enabled) ||
+	    (retention_days && m_app.settings.worktree_retention_days != *retention_days);
+	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease;
+	if (policy_changed)
+	{
+		lease = m_app.worktree_retention_gate.TryAcquireMutation();
+		if (!lease) { cb->Failure(409, "Worktree cleanup is finishing. Retry the settings change."); return; }
+	}
 	const AppSettings previous = m_app.settings;
 	m_app.settings.git_enabled = *git_enabled;
 	m_app.settings.svn_enabled = *svn_enabled;
+	if (automatic_worktree) m_app.settings.git_auto_worktree = *automatic_worktree;
+	if (base_value) m_app.settings.git_default_base_branch = base_branch;
+	if (cleanup_enabled) m_app.settings.worktree_cleanup_enabled = *cleanup_enabled;
+	if (retention_days) m_app.settings.worktree_retention_days = *retention_days;
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		m_app.settings = previous;

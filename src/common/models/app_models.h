@@ -677,6 +677,10 @@ struct AppSettings
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
 	bool git_enabled = true;
+	bool git_auto_worktree = true;
+	std::string git_default_base_branch;
+	bool worktree_cleanup_enabled = true;
+	int worktree_retention_days = 14;
 	bool svn_enabled = true;
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;

@@ -83,11 +83,11 @@ namespace uam
 		/// Background-only inspection. Removal requires a separate exclusive workspace lease and fresh reference validation.
 		bool InspectRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& source_root,
 		    const std::filesystem::path& worktree, const std::vector<std::filesystem::path>& protected_paths,
-		    GitWorktreeRetentionCandidate& candidate, std::stop_token stop_token = {}) const;
+		    GitWorktreeRetentionCandidate& candidate, std::stop_token stop_token = {}, int retention_days = 14) const;
 		/// Requires the live data-root gate's exclusive lease and freshly captured references. Keeps the branch and its commits.
 		bool RemoveRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& source_root,
 		    const GitWorktreeRetentionCandidate& candidate, const std::vector<std::filesystem::path>& protected_paths,
-		    const WorkspaceLeaseGate::Lease& lease, std::stop_token stop_token = {}) const;
+		    const WorkspaceLeaseGate::Lease& lease, std::stop_token stop_token = {}, int retention_days = 14) const;
 		GitWorktreeStatus Status(const AppState& app, const ChatSession& chat) const;
 		/// Creates the saved default worktree before a new local chat launches a provider.
 		bool PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr) const;

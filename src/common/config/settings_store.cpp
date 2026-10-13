@@ -51,6 +51,10 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
 	constexpr std::string_view kGitEnabledKey = "git_enabled";
+	constexpr std::string_view kGitAutoWorktreeKey = "git_auto_worktree";
+	constexpr std::string_view kGitDefaultBaseBranchKey = "git_default_base_branch";
+	constexpr std::string_view kWorktreeCleanupEnabledKey = "worktree_cleanup_enabled";
+	constexpr std::string_view kWorktreeRetentionDaysKey = "worktree_retention_days";
 	constexpr std::string_view kSvnEnabledKey = "svn_enabled";
 	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
 	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
@@ -534,6 +538,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.default_new_chat_provider_id = uam::strings::NonEmptyOrFallback(
 		    NormalizeProviderId(settings.default_new_chat_provider_id), settings.active_provider_id);
 		uam::settings::ClampRuntimeTimeoutSettings(settings);
+		settings.git_default_base_branch = uam::strings::Trim(settings.git_default_base_branch);
+		if (settings.worktree_retention_days < 1 || settings.worktree_retention_days > 3650) settings.worktree_retention_days = 14;
 		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
 		uam::settings::ClampWindowSettings(settings);
 		uam::settings::ClampMemorySettings(settings);
@@ -601,6 +607,10 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
 	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
 	WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
+	WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
+	WriteEncodedSetting(lines, kGitDefaultBaseBranchKey, normalized.git_default_base_branch);
+	WriteBoolSetting(lines, kWorktreeCleanupEnabledKey, normalized.worktree_cleanup_enabled);
+	WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
 	WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
 	WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
 	WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
@@ -745,6 +755,22 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kGitEnabledKey)
 		{
 			settings.git_enabled = uam::parse::BoolOr(value, settings.git_enabled);
+		}
+		else if (key == kGitAutoWorktreeKey)
+		{
+			settings.git_auto_worktree = uam::parse::BoolOr(value, settings.git_auto_worktree);
+		}
+		else if (key == kGitDefaultBaseBranchKey)
+		{
+			settings.git_default_base_branch = uam::DecodeLineValue(value);
+		}
+		else if (key == kWorktreeCleanupEnabledKey)
+		{
+			settings.worktree_cleanup_enabled = uam::parse::BoolOr(value, settings.worktree_cleanup_enabled);
+		}
+		else if (key == kWorktreeRetentionDaysKey)
+		{
+			settings.worktree_retention_days = uam::parse::IntOr(value, settings.worktree_retention_days);
 		}
 		else if (key == kSvnEnabledKey)
 		{

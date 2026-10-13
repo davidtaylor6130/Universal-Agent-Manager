@@ -802,7 +802,7 @@ namespace uam
 		    !uam::paths::IsControllerLocalWorkspace(chat) || chat.imported_read_only ||
 		    !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() ||
 		    !chat.temporary_parent_chat_id.empty()) return true;
-		if (!app.settings.git_enabled)
+		if (!app.settings.git_enabled || !app.settings.git_auto_worktree)
 		{
 			// Only an uncreated default is cleared; existing isolated paths remain owned.
 			chat.workspace_isolation_kind.clear();
@@ -873,8 +873,22 @@ namespace uam
 			}
 		}
 
-		if (!GitOutput(repository, "rev-parse --verify " + uam::shell::EscapeArg("HEAD^{commit}"), &head, &result.message))
+		const std::string base_branch = managed_repository ? std::string() : uam::strings::Trim(app.settings.git_default_base_branch);
+		if (!base_branch.empty() && (base_branch.size() > 255 ||
+		    std::ranges::any_of(base_branch, [](unsigned char c) { return c < 32 || c == 127; }) ||
+		    !GitCommand(repository, "check-ref-format --branch " + uam::shell::EscapeArg(base_branch), &result.message)))
 		{
+			result.message = "The default Git base branch is invalid.";
+			return result;
+		}
+		const std::string base_ref = base_branch.empty() ? "HEAD" : "refs/heads/" + base_branch;
+		if (!GitOutput(repository, "rev-parse --verify --end-of-options " + uam::shell::EscapeArg(base_ref + "^{commit}"), &head, &result.message))
+		{
+			if (!base_branch.empty())
+			{
+				result.message = "The default Git base branch is unavailable: " + base_branch;
+				return result;
+			}
 			std::string head_ref;
 			if (!managed_repository && GitOutput(repository, "symbolic-ref -q HEAD", &head_ref) && !head_ref.empty())
 			{
@@ -921,7 +935,7 @@ namespace uam
 			return result;
 		}
 
-		const ProcessExecutionResult add_result = RunCommand(BuildGitCommandInDirectory(repository, "worktree add -b " + uam::shell::EscapeArg(branch_name) + " " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree_root)) + " HEAD"));
+		const ProcessExecutionResult add_result = RunCommand(BuildGitCommandInDirectory(repository, "worktree add -b " + uam::shell::EscapeArg(branch_name) + " " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree_root)) + " " + uam::shell::EscapeArg(head)));
 		if (!CommandSucceeded(add_result))
 		{
 			result.message = CommandOutputOrFallback(add_result, "Failed to create Git worktree.");
@@ -1056,10 +1070,10 @@ namespace uam
 	bool GitWorktreeService::InspectRetentionCandidate(const std::filesystem::path& data_root,
 	    const std::filesystem::path& source_root, const std::filesystem::path& worktree,
 	    const std::vector<std::filesystem::path>& protected_paths, GitWorktreeRetentionCandidate& candidate,
-	    std::stop_token stop_token) const
+	    std::stop_token stop_token, int retention_days) const
 	{
 		candidate = {};
-		if (stop_token.stop_requested() || data_root.empty() || source_root.empty() || worktree.empty()) return false;
+		if (stop_token.stop_requested() || retention_days < 1 || retention_days > 3650 || data_root.empty() || source_root.empty() || worktree.empty()) return false;
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 		const std::function<bool(const std::filesystem::path&, const std::string&, std::string&)> query = [&stop_token, deadline](const std::filesystem::path& directory, const std::string& arguments, std::string& output)
 		{
@@ -1134,7 +1148,7 @@ namespace uam
 		inspected.administrative_directory = admin;
 		if (!query(absolute, "symbolic-ref --short HEAD", inspected.branch_name) ||
 		    !query(absolute, "rev-parse HEAD", inspected.head_sha)) return false;
-		const std::filesystem::file_time_type cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 14);
+		const std::filesystem::file_time_type cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * retention_days);
 		inspected.activity_at = std::filesystem::file_time_type::min();
 		const std::vector<std::filesystem::path> activity_paths = {
 		    absolute, absolute / ".git", admin / "HEAD", admin / "index", admin / "logs" / "HEAD",
@@ -1160,11 +1174,11 @@ namespace uam
 	bool GitWorktreeService::RemoveRetentionCandidate(const std::filesystem::path& data_root,
 	    const std::filesystem::path& source_root, const GitWorktreeRetentionCandidate& candidate,
 	    const std::vector<std::filesystem::path>& protected_paths, const WorkspaceLeaseGate::Lease& lease,
-	    std::stop_token stop_token) const
+	    std::stop_token stop_token, int retention_days) const
 	{
 		if (!lease.IsExclusive() || stop_token.stop_requested()) return false;
 		GitWorktreeRetentionCandidate current;
-		if (!InspectRetentionCandidate(data_root, source_root, candidate.directory, protected_paths, current, stop_token) ||
+		if (!InspectRetentionCandidate(data_root, source_root, candidate.directory, protected_paths, current, stop_token, retention_days) ||
 		    current.administrative_directory != candidate.administrative_directory || current.branch_name != candidate.branch_name ||
 		    current.head_sha != candidate.head_sha || current.activity_at != candidate.activity_at) return false;
 		const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(source_root,

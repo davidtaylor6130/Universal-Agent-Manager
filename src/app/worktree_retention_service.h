@@ -25,6 +25,7 @@ namespace uam
 		struct Snapshot
 		{
 			std::filesystem::path data_root;
+			int retention_days = 14;
 			std::vector<std::filesystem::path> protected_paths;
 			std::vector<std::string> agent_transcript_ids;
 			std::unordered_set<std::string> known_chat_ids;
@@ -46,6 +47,13 @@ namespace uam
 		std::future<Result> m_worker;
 		std::vector<Candidate> m_candidates;
 		std::stop_source m_stop;
+		std::stop_source m_policyStop;
+		std::filesystem::path m_policyRoot;
+		int m_policyDays = 14;
+		bool m_policyEnabled = true;
+		bool m_policyGitEnabled = true;
+		std::uint64_t m_policyRevision = 0;
+		std::uint64_t m_workerRevision = 0;
 		bool m_removing = false;
 		std::chrono::steady_clock::time_point m_nextScan = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 	};

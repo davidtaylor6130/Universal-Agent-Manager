@@ -360,6 +360,9 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Memory and skills | Bugfix | Dynamic Default Memory Policy | Default memory policy resolves through provider and current app settings while asynchronous publication validates the captured effective policy. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
+| Storage and retention | Code Only | Configurable Worktree Retention | Native retention settings preserve existing ownership and cleanliness guards while disabled or changed policy revokes stale cleanup decisions. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+| VCS and worktrees | Code Only | Automatic Worktree Policy Defaults | Automatic worktree creation honors its native setting and resolves a validated local base branch before filesystem or reference mutation. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.

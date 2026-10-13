@@ -836,7 +836,7 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 		else target_folder_id = auto_created_folder_id;
 	}
 
-	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
+	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id, m_app.settings.git_enabled && m_app.settings.git_auto_worktree);
 	chat.execution_host_id = execution_host->id;
 	chat.routing_mode = routing_mode;
 	if (routing_mode == "automatic")

@@ -1270,6 +1270,8 @@ if(UAM_BUILD_TESTS)
     tests/chat_snooze_tests.cpp
     tests/workspace_file_preview_tests.cpp
     tests/workspace_lease_tests.cpp
+    tests/worktree_retention_policy_tests.cpp
+    tests/git_worktree_defaults_tests.cpp
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
     tests/provider_mcp_settings_tests.cpp

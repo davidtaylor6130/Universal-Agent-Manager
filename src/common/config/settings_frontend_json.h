@@ -108,6 +108,10 @@ namespace uam::settings_frontend_json
 		settings_json["showProviderIconsInSidebar"] = settings.show_provider_icons_in_sidebar;
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
 		settings_json["gitEnabled"] = settings.git_enabled;
+		settings_json["gitAutoWorktree"] = settings.git_auto_worktree;
+		settings_json["gitDefaultBaseBranch"] = settings.git_default_base_branch;
+		settings_json["worktreeCleanupEnabled"] = settings.worktree_cleanup_enabled;
+		settings_json["worktreeRetentionDays"] = settings.worktree_retention_days;
 		settings_json["svnEnabled"] = settings.svn_enabled;
 		settings_json["voiceInputMode"] = uam::voice_input::NormalizeMode(settings.voice_input_mode);
 		settings_json["voiceInputServerBaseUrl"] = uam::strings::Trim(settings.voice_input_server_base_url);
