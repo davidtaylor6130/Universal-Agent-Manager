@@ -45,6 +45,13 @@
   --info:             var(--blue);
   --info-dim:         var(--blue-dim);
 
+  /* Token categories (usage bars, legends, tooltips). Hues avoid provider, status and accent hues. */
+  --token-input:       #db2777;
+  --token-cache-read:  #4d7c0f;
+  --token-cache-write: #4f46e5;
+  --token-output:      #a16207;
+  --token-reasoning:   #a21caf;
+
   /* Sidebar */
   --sidebar-bg:      #fbfcfe;
   --sidebar-item-hover: rgba(16, 24, 40, 0.05);
@@ -149,6 +156,15 @@
 
 [data-theme="focus"], [data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] {
   --provider-logo-codex-filter: invert(1);
+}
+
+/* Token categories on dark surfaces: bright enough for --bg label text inside segments. */
+[data-theme="dark"], [data-theme="focus"], [data-theme="midnight"], [data-theme="dusk"], [data-theme="aurora"], [data-theme="contrast"] {
+  --token-input:       #f472b6;
+  --token-cache-read:  #bef264;
+  --token-cache-write: #818cf8;
+  --token-output:      #e7c9a0;
+  --token-reasoning:   #e879f9;
 }
 
 .uam-provider-logo--codex, .uam-provider-logo--copilot { filter: var(--provider-logo-codex-filter); }

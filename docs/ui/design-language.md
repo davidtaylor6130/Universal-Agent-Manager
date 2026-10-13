@@ -16,6 +16,7 @@ Colour — tokens only, never hard-coded hex (10 themes must work: dark, light, 
 - Text: var(--text), var(--text-2) secondary, var(--text-3) muted/meta.
 - ONE accent var(--accent) (orange), used sparingly: the single primary CTA, active/selected tint (var(--accent-dim)), focus ring. Never decorative.
 - Status only: var(--success)/--success-dim, var(--warning)/--warning-dim, var(--error)/--error-dim, var(--info)/--info-dim.
+- Token categories (usage split bars, legends, tooltips): var(--token-input), --token-cache-read, --token-cache-write, --token-output, --token-reasoning. Each is a distinct hue kept clear of provider, status and accent colours; never reuse them for anything else.
 Type: sans UI text 13px base; scale var(--fs-xs 11) --fs-sm 12 --fs-base 13 --fs-md 14 --fs-lg 16 --fs-xl 20. Weights 400/500/600 only. var(--font-mono) ONLY for code, CLI output, identifiers (paths, IDs, SSH aliases, model ids). Small uppercase tracked labels (11px, letter-spacing ~.08em, --text-3) for group headings.
 Spacing: 4px rhythm var(--sp-1..8). Radius var(--r-sm 5) --r-md 8 --r-lg 12. Elevation var(--elev-1..3), soft.
 Animation is IN SCOPE (David classes it as UX): add purposeful motion in your surface — panels/popovers/menus enter-exit (fade + 4–8px translate or scale .98→1), list items appearing/removing, disclosure expand/collapse, value changes (bars growing), state changes (hover/press feedback). Smooth, physical, quick; never blocking input; no layout jank; animate transform/opacity (not width/height where avoidable); exit faster than enter.

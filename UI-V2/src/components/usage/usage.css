@@ -1,7 +1,7 @@
 /* Usage workspace: pictures first. Bars carry the data; exact numbers sit beside or inside them. */
 
 /* Provider identity: one colour per provider, defined once here and mapped in UsagePage.tsx.
-   Token types use a neutral ramp so they never read as a provider. */
+   Token categories use --token-* from index.css; their hues are kept clear of these providers. */
 .uam-usage {
   --usage-claude: #d97757;
   --usage-codex: var(--text-2);
@@ -9,11 +9,6 @@
   --usage-opencode: #1fb88a;
   --usage-copilot: #a371f7;
   --usage-antigravity: #22d3ee;
-  --usage-tok-input: var(--text-2);
-  --usage-tok-cache: color-mix(in srgb, var(--text-2) 75%, var(--surface));
-  --usage-tok-cache-write: color-mix(in srgb, var(--text-2) 40%, var(--surface));
-  --usage-tok-output: var(--text);
-  --usage-tok-reasoning: color-mix(in srgb, var(--text) 45%, var(--surface));
 }
 
 @keyframes uam-usage-grow {
