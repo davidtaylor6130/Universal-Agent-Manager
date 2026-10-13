@@ -25,7 +25,7 @@
 
 namespace uam::query_handler_async { struct AsyncCefResult; }
 namespace uam { struct WorkspaceDeletionTask; }
-namespace uam::usage { class MultiHostHistory; }
+namespace uam::usage { class MultiHostHistory; class HistoryTransport; }
 
 /// <summary>
 /// Handles all window.cefQuery() requests from the React frontend.
@@ -55,6 +55,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	uam::TranscriptRetentionService m_transcriptRetention;
 	std::shared_ptr<uam::usage::MultiHostHistory> m_usageHistory;
 	CefRefPtr<CefThread> m_usageQueries;
+	std::shared_ptr<uam::usage::HistoryTransport> m_usageTransport;
 	CefRefPtr<CefThread> m_titleQueries;
 	CefRefPtr<CefThread> m_snoozeQueries;
 	std::set<std::string> m_snoozeRequests;

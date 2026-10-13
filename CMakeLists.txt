@@ -1265,6 +1265,7 @@ if(UAM_BUILD_TESTS)
     tests/antigravity_history_scan_tests.cpp
     tests/transcript_scan_tests.cpp
     tests/usage_history_service_tests.cpp
+    tests/usage_history_transport_tests.cpp
     tests/chat_icon_mutation_tests.cpp
     tests/workspace_chat_save_ticket_tests.cpp
     tests/chat_icon_metadata_tests.cpp

@@ -224,7 +224,7 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
     seenProviders.add(row.providerId)
     return true
   })) throw new Error('Usage provider data is invalid. Refresh to try again.')
-  if (!Array.isArray(value.models) || value.models.length > 20000 || !value.models.every(row => {
+  if (!Array.isArray(value.models) || !value.models.every(row => {
     if (!totals(row) || !object(row) || !provider(row.providerId) || typeof row.modelId !== 'string' || !row.modelId || row.modelId.length > 512 || !speed(row.speed) || (row.priceReference !== undefined && !priceReference(row.priceReference))) return false
     const key = JSON.stringify([row.providerId, row.modelId, row.speed])
     if (seenModels.has(key)) return false
@@ -253,4 +253,27 @@ export function formatUsageCost(totals: UsageTotals): string {
   const value = usageCost(totals)
   if (value === null) return 'Unknown'
   return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: value > 0 && value < 0.01 ? 4 : 2 }).format(value)
+}
+
+/** Reassemble one immutable native snapshot before any usage totals become visible. */
+export async function assembleUsageHistory(first: unknown, refreshId: string, next: (snapshotId: string, offset: number) => Promise<unknown>, obsolete: () => boolean): Promise<unknown> {
+  if (!object(first) || !('usagePage' in first)) return first
+  let page: unknown = first
+  let snapshotId = '', totalBytes = 0, offset = 0
+  const chunks: string[] = []
+  const encoder = new TextEncoder()
+  for (;;) {
+    if (obsolete()) throw new Error('Usage history loading was cancelled.')
+    if (!object(page) || page.usagePage !== 1 || page.refreshId !== refreshId || typeof page.snapshotId !== 'string' || !page.snapshotId || page.snapshotId.length > 32
+      || !Number.isSafeInteger(page.offset) || page.offset !== offset || !Number.isSafeInteger(page.totalBytes) || (page.totalBytes as number) <= 0
+      || typeof page.chunk !== 'string' || !page.chunk) throw new Error('Usage snapshot is invalid. Refresh to try again.')
+    if (!snapshotId) { snapshotId = page.snapshotId; totalBytes = page.totalBytes as number }
+    if (page.snapshotId !== snapshotId || page.totalBytes !== totalBytes || encoder.encode(JSON.stringify(page)).length > 2 * 1024 * 1024) throw new Error('Usage snapshot changed. Refresh to try again.')
+    const bytes = encoder.encode(page.chunk).length
+    if (bytes > 256 * 1024 || offset + bytes > totalBytes || (page.nextOffset === null ? offset + bytes !== totalBytes : page.nextOffset !== offset + bytes || offset + bytes >= totalBytes)) throw new Error('Usage snapshot page is invalid. Refresh to try again.')
+    chunks.push(page.chunk)
+    offset += bytes
+    if (page.nextOffset === null) return JSON.parse(chunks.join('')) as unknown
+    page = await next(snapshotId, offset)
+  }
 }
