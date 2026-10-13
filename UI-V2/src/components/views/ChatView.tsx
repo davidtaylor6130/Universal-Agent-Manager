@@ -518,16 +518,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const composerFormRef = useRef<HTMLFormElement>(null)
   const composerCentredRef = useRef(composerCentred)
   const composerTopRef = useRef(0)
-  // FLIP: when the composer moves between centred and bottom, animate the delta from its previous top.
+  const composerSessionRef = useRef(session.id)
+  // FLIP: when the first message moves the composer from centred to the bottom, animate the delta from its centred top.
+  // Layout is only read while centred (an empty chat), never on commits of a streaming transcript.
   useLayoutEffect(() => {
     const form = composerFormRef.current
-    if (!form) return
-    const top = form.getBoundingClientRect().top
-    const delta = composerTopRef.current - top
-    const moved = composerCentredRef.current !== composerCentred
+    const wasCentred = composerCentredRef.current && composerSessionRef.current === session.id
     composerCentredRef.current = composerCentred
-    composerTopRef.current = top
-    if (!moved || Math.abs(delta) < 1 || (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return
+    composerSessionRef.current = session.id
+    if (!form) return
+    if (composerCentred) { composerTopRef.current = form.getBoundingClientRect().top; return }
+    if (!wasCentred) return
+    const delta = composerTopRef.current - form.getBoundingClientRect().top
+    if (Math.abs(delta) < 1 || (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return
     form.style.transition = 'none'
     form.style.transform = `translateY(${delta}px)`
     void form.offsetHeight
@@ -2712,7 +2715,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           </ViewportMenu>
         )}
 
-        {composerCentred && <div role="status" className="uam-composer-region uam-composer-centre-heading">What would you like to work on?</div>}
+        {composerCentred && <div className="uam-composer-region uam-composer-centre-heading">What would you like to work on?</div>}
         <form
           ref={composerFormRef}
           onSubmit={submit}
