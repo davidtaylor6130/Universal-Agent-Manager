@@ -32,7 +32,7 @@ Patterns:
 - Lists/rows: identity line (text), detail line (mono, --text-3, for ids/paths), status line (StatusDot + semantic colour); icon-only actions on the right with Tooltip + aria-label.
 - Notices: tinted, calm, plain-language consequence; collapsible/dismissible where long.
 - Empty new chat: a short heading and the composer centre in the pane; the first send moves the composer down to its normal position (FLIP, transform only; reduced motion jumps).
-- Context chips (`components/chat/ContextChip.tsx`): referenced context (attachments, skills) is a 24px pill with a type icon, name and kind label on var(--surface-up). Full path is a Tooltip in mono; files open the preview on click; remove is an icon button on composer chips only.
+- Context chips (`components/chat/ContextChip.tsx`): referenced context (attachments, skills) is a 24px pill with a type icon, name and kind label on var(--surface-up). Full path is a Tooltip in mono; files open the preview on click; remove is an icon button on composer chips only. Kinds include file, folder, skill, image and branch (GitBranch icon). Assistant replies chip inline code that is clearly a file path, folder or branch; in prose the chip is vertical-align middle with negative block margin so the line height does not change.
 
 UX rules (enforce):
 1. One clear primary action per section; rest secondary/ghost.

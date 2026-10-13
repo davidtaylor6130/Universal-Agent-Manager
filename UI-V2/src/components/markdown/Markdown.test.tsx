@@ -104,3 +104,27 @@ it('does not mount an empty markdown row and preserves long code without extra p
     expect(host.querySelectorAll('button')).toHaveLength(1)
   } finally { act(() => root.unmount()) }
 })
+
+describe('MarkdownContent chips', () => {
+  it('renders file, folder and branch references as chips only when chips are enabled', () => {
+    const content = 'See `src/main.cpp:3`, `src/components/`, `feature/chips` and `object.method`.\n\n```ts\nconst `src/x.ts` = 1\n```'
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MarkdownContent content={content} chips />))
+      const chips = Array.from(host.querySelectorAll('.uam-context-chip'))
+      expect(chips.map((chip) => chip.getAttribute('data-detail'))).toEqual(['src/main.cpp:3', 'src/components/', 'feature/chips'])
+      expect(chips.map((chip) => chip.querySelector('.uam-context-chip__meta')?.textContent)).toEqual(['file', 'folder', 'branch'])
+      expect(host.querySelector('p code')?.textContent).toBe('object.method')
+      expect(host.querySelector('pre code')?.textContent).toBe('const `src/x.ts` = 1')
+
+      act(() => root.render(<MarkdownContent content={content} />))
+      expect(host.querySelectorAll('.uam-context-chip')).toHaveLength(0)
+      expect(host.querySelector('p code')?.textContent).toBe('src/main.cpp:3')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+})

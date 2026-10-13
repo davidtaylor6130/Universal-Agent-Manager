@@ -189,7 +189,7 @@ export function ConversationWork({ events, tools, active, duration, onSelectTool
             if (event.type === 'assistant_text' && event.text.trim()) {
               return <li key={`text-${index}`} className="conversation-work__event conversation-work__note">
                 <MessageSquare size={15} className="conversation-work__event-icon" aria-hidden />
-                <MarkdownContent content={event.text} />
+                <MarkdownContent content={event.text} chips />
               </li>
             }
             return null

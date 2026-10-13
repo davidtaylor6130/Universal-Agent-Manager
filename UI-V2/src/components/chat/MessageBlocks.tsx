@@ -615,7 +615,7 @@ export function PersistedMessageBlocksContent({
           if (!expanded && index !== lastAssistantBlockIndex) return null
           const review = parseGoalReviewDecision(block.text)
           if (review) return <div className="conversation-trace__text" key={`block-goal-review-${index}`}><GoalReviewBlock review={review} /></div>
-          return <div className="conversation-trace__text" key={`block-text-${index}`}><MarkdownContent content={block.text} /></div>
+          return <div className="conversation-trace__text" key={`block-text-${index}`}><MarkdownContent content={block.text} chips /></div>
         }
 
         if (block.type === 'thought') {
@@ -729,7 +729,7 @@ export function PersistedMessageContent({
     return (
       <div className="space-y-2">
         <AttachmentList attachments={imageAttachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
-        {goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />}
+        {goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} chips={message.role === 'assistant'} />}
         <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
       </div>
     )
@@ -765,7 +765,7 @@ export function PersistedMessageContent({
           />
         </>
       )}
-      {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} />)}
+      {message.content.trim() && (goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} chips={message.role === 'assistant'} />)}
       <PlanBlock
         summary={planSummary}
         entries={planEntries}
@@ -920,7 +920,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
         if (event.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} />
         if (event.type === 'assistant_text') {
           if (!traceExpanded && index !== lastAssistantEventIndex) return null
-          return <div className="conversation-trace__text" key={`text-${index}`}><MarkdownContent content={event.text} /></div>
+          return <div className="conversation-trace__text" key={`text-${index}`}><MarkdownContent content={event.text} chips /></div>
         }
 
         if (event.type === 'thought') {
