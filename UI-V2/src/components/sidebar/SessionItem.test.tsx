@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
 import { SessionItem } from './SessionItem'
@@ -944,5 +944,79 @@ describe('SessionItem status icons', () => {
     expect(moveResourceToCollection).toHaveBeenCalledWith('work', 'chat', 'chat-1', 'Chat 1')
     act(() => root.unmount())
     host.remove()
+  })
+})
+
+describe('New chat on this branch', () => {
+  const folder = { id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: now }
+
+  afterEach(() => {
+    delete (window as Window & { cefQuery?: Window['cefQuery'] }).cefQuery
+  })
+
+  function openMenu(session: Session) {
+    useAppStore.setState({ folders: [folder], sessions: [session] })
+    const { host, root } = renderSessionItem()
+    act(() => host.querySelector<HTMLElement>('[data-session-id="chat-1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
+    const items = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
+    return { items, cleanup: () => { act(() => root.unmount()); host.remove() } }
+  }
+
+  it('is hidden unless the backend advertises the capability', () => {
+    const menu = openMenu({ ...makeSession(), workspaceBranchName: 'feature/x' })
+    try {
+      expect(menu.items().some((item) => item.textContent?.includes('New chat on'))).toBe(false)
+    } finally {
+      menu.cleanup()
+    }
+  })
+
+  it('is hidden for chats without a workspace', () => {
+    useAppStore.setState({ createSessionFromSourceChat: true })
+    const menu = openMenu({ ...makeSession(), folderId: null })
+    try {
+      expect(menu.items().some((item) => item.textContent?.includes('New chat on'))).toBe(false)
+    } finally {
+      menu.cleanup()
+    }
+  })
+
+  it('labels the item with the known branch name', () => {
+    useAppStore.setState({ createSessionFromSourceChat: true })
+    const menu = openMenu({ ...makeSession(), workspaceBranchName: 'feature/x' })
+    try {
+      expect(menu.items().find((item) => item.textContent?.trim() === 'New chat on feature/x')).toBeTruthy()
+    } finally {
+      menu.cleanup()
+    }
+  })
+
+  it('falls back to a generic label when the branch is unknown', () => {
+    useAppStore.setState({ createSessionFromSourceChat: true })
+    const menu = openMenu(makeSession())
+    try {
+      expect(menu.items().find((item) => item.textContent?.trim() === 'New chat on this branch')).toBeTruthy()
+    } finally {
+      menu.cleanup()
+    }
+  })
+
+  it('creates a chat in the same workspace with the source chat id and provider', async () => {
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const message = JSON.parse(request)
+      requests.push(message)
+      onSuccess('{"chatId":"chat-3"}')
+    }
+    useAppStore.setState({ createSessionFromSourceChat: true })
+    const menu = openMenu({ ...makeSession(), providerId: 'codex-cli', workspaceBranchName: 'feature/x' })
+    try {
+      await act(async () => menu.items().find((item) => item.textContent?.includes('New chat on'))!.click())
+      const create = requests.find((request) => request.action === 'createSession')
+      expect(create?.payload).toMatchObject({ folderId: 'project', sourceChatId: 'chat-1' })
+      expect(create?.payload).not.toHaveProperty('workspaceDirectory')
+    } finally {
+      menu.cleanup()
+    }
   })
 })

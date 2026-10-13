@@ -1716,6 +1716,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     shellActions,
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
+    createSessionFromSourceChat: booleanOr(value.createSessionFromSourceChat),
   }
 }
 

@@ -140,6 +140,7 @@ function deserializeState(
     shellActions: ShellAction[]
     shellActionNotification: string
     statusLine: string
+    createSessionFromSourceChat: boolean
   }
 ) {
   // Build lookup maps for reference-identity preservation
@@ -345,6 +346,7 @@ function deserializeState(
     shellActions: cpp.shellActions ?? existing.shellActions,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
+    createSessionFromSourceChat: cpp.createSessionFromSourceChat ?? existing.createSessionFromSourceChat,
   }
 }
 
@@ -737,6 +739,7 @@ export const useAppStore = create<AppState>((set, get) => {
             shellActions: current.shellActions,
             shellActionNotification: current.shellActionNotification,
             statusLine: current.statusLine,
+            createSessionFromSourceChat: current.createSessionFromSourceChat,
           })
           set(deserialized)
           // Sync theme to DOM
@@ -1047,6 +1050,7 @@ export const useAppStore = create<AppState>((set, get) => {
         shellActions: current.shellActions,
         shellActionNotification: current.shellActionNotification,
         statusLine: current.statusLine,
+        createSessionFromSourceChat: current.createSessionFromSourceChat,
       })
       set(deserialized)
       if (deserialized.theme) {

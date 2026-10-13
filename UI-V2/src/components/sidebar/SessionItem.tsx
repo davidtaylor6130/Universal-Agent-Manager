@@ -23,6 +23,7 @@ import {
 import { providerShortName } from '../../utils/providerMetadata'
 import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
+import { reportAppFailure } from '../../utils/appFailure'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon } from '../shared/CustomIcon'
@@ -201,6 +202,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         lastOpenedAt: session.lastOpenedAt ?? session.updatedAt ?? null,
         isPinned: session.isPinned ?? false,
         providerId: session.providerId,
+        folderId: session.folderId,
+        workspaceDirectory: session.workspaceDirectory ?? '',
         worktreeDirectory: session.workspaceWorktreeDirectory ?? '',
         sourceDirectory: session.workspaceSourceDirectory ?? '',
         branchName: session.workspaceBranchName ?? '',
@@ -216,6 +219,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       lastOpenedAt: storeSession?.lastOpenedAt ?? storeSession?.updatedAt ?? null,
       isPinned: storeSession?.isPinned ?? false,
       providerId: storeSession?.providerId,
+      folderId: storeSession?.folderId ?? null,
+      workspaceDirectory: storeSession?.workspaceDirectory ?? '',
       worktreeDirectory: storeSession?.workspaceWorktreeDirectory ?? '',
       sourceDirectory: storeSession?.workspaceSourceDirectory ?? '',
       branchName: storeSession?.workspaceBranchName ?? '',
@@ -233,6 +238,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const isPinned = sessionSummary.isPinned
   const showProviderIcon = useAppStore((s) => s.showProviderIconsInSidebar)
   const showWorktreePath = useAppStore((s) => s.showWorktreePathInSidebar)
+  const createSessionFromSourceChat = useAppStore((s) => s.createSessionFromSourceChat)
+  const addSession = useAppStore((s) => s.addSession)
   const familySessionIds = useAppStore(useShallow((s) => providedFamilySessionIds ?? s.sessions
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
     .map((candidate) => candidate.id)))
@@ -292,6 +299,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
   const renameSession = useAppStore((s) => s.renameSession)
   const deleteSessions = useAppStore((s) => s.deleteSessions)
+  const canNewChatOnBranch = createSessionFromSourceChat && Boolean(sessionSummary.folderId || sessionSummary.workspaceDirectory)
+  const newChatOnBranch = () => {
+    setMenuPos(null)
+    void addSession('New chat', sessionSummary.folderId, sessionSummary.providerId, undefined, undefined, 'chat', sessionSummary.executionHostId, sessionSummary.workspaceDirectory, 'explicit', sessionId)
+      .then((created) => { if (!created) reportAppFailure('Could not start a chat on this branch.', 'Check the workspace and try again.') })
+  }
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(sessionName)
@@ -777,6 +790,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           {copyState && <p role={copyState === 'failed' ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: copyState === 'failed' ? 'var(--error)' : 'var(--text-2)' }}>
             {copyState === 'failed' ? 'Could not copy. Try again.' : copyState === 'id' ? 'Chat ID copied.' : 'Chat name copied.'}
           </p>}
+          {canNewChatOnBranch && <button type="button" role="menuitem" className="uam-sb-menu-item" onClick={newChatOnBranch}>
+            <GitBranch size={13} aria-hidden />
+            {sessionSummary.branchName.trim() ? `New chat on ${sessionSummary.branchName.trim()}` : 'New chat on this branch'}
+          </button>}
           <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={sessionSummary.snoozedUntilMs} />
           <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button
