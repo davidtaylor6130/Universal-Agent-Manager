@@ -3370,6 +3370,42 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('closes the slash palette at once when /compact is chosen, with no success notice', async () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null } },
+    }))
+    window.cefQuery = ({ request }) => {
+      void request // compaction request stays pending; the palette must already be closed
+    }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, '/compact')
+    await act(async () => { textarea.dispatchEvent(new Event('input', { bubbles: true })) })
+    const row = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/compact')) as HTMLElement
+    await act(async () => { row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
+    expect(document.body.querySelector('[aria-label="Slash commands"]')).toBeNull()
+    expect(host.textContent).not.toContain('Compaction requested.')
+    act(() => root.unmount())
+    host.remove()
+    delete window.cefQuery
+  })
+
+  it('shows a muted Draft label only while the composer holds unsent text', async () => {
+    writeChatComposerDraft('chat-1', { text: 'Half a thought', attachments: [] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const label = host.querySelector('[data-draft-indicator]') as HTMLElement
+    expect(label.textContent).toBe('Draft')
+    expect(label.getAttribute('style')).toContain('var(--text-3)')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it.each(['enter', 'send', 'palette', 'failure', 'not-accepted', 'new-draft'] as const)('routes compact via native control and preserves attachments (%s)', async (operation) => {
     const previousSendAcpPrompt = useAppStore.getState().sendAcpPrompt
     const previousSkills = useAppStore.getState().markdownStoreAttachedBySessionId
@@ -3420,7 +3456,7 @@ describe('ChatView', () => {
     expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
     expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
     if (operation === 'failure') expect(host.textContent).toContain('This provider does not support manual compaction.')
-    if (operation === 'not-accepted') expect(host.textContent).toContain('Compaction request was not accepted.')
+    if (operation === 'not-accepted') expect(host.textContent).toContain('Compaction failed: the request was not accepted.')
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery

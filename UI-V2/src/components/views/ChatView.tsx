@@ -1222,11 +1222,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       })
       if (!mountedRef.current || currentSessionIdRef.current !== submittedSessionId || compactRequestIdRef.current !== requestId) return
       if (!response.ok || response.data?.accepted !== true) {
-        setSlashMessage(response.error || 'Compaction request was not accepted.')
+        // "failed" keeps this on the error tone; a plain message would show green.
+        setSlashMessage(`Compaction failed: ${response.error || 'the request was not accepted.'}`)
         return
       }
-      // Acceptance is not completion; provider events report the actual compaction outcome.
-      setSlashMessage('Compaction requested.')
+      // Acceptance is not completion; the "Compacting context" strip and the transcript show progress.
       setDraft((current) => current === commandDraft && current.trim() === '/compact' ? '' : current)
     } catch {
       if (mountedRef.current && currentSessionIdRef.current === submittedSessionId && compactRequestIdRef.current === requestId) setSlashMessage('Failed to request compaction.')
@@ -2120,9 +2120,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [slashPaletteVisible])
   const runSlashCommand = (command: SlashCommand) => {
     if (command.id === 'compact') {
-      const commandDraft = activeSlashToken ? replaceSlashAction(draft, activeSlashToken, '/compact') : draft
-      setDraft(commandDraft)
-      void runCompact(commandDraft)
+      // Clear the typed "/compact" so the palette closes at once instead of waiting on the request.
+      if (activeSlashToken) setDraft(replaceSlashAction(draft, activeSlashToken, ''))
+      setSlashIndex(0)
+      setSlashGroup('')
+      setPermissionMenuOpen(false)
+      void runCompact()
       return
     }
     if (command.groupEntries) {
@@ -3222,6 +3225,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               }}
             />
             <ComposerToolbar
+              draftPending={editingMessageIndex === null && draft.trim().length > 0}
               acp={providerAcp}
               provider={currentProvider}
               providers={providers}
