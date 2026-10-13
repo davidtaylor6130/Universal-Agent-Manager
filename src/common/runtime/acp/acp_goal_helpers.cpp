@@ -1,6 +1,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/config/approval_modes.h"
+#include "app/chat_domain_service.h"
 
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -15,10 +16,51 @@
 namespace uam::acp_detail
 {
 
+namespace
+{
+	std::string NativeGoalDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat, const Goal& goal)
+	{
+		return nlohmann::json::array({PromptDeliveryConfiguration(app, session, chat), chat.workspace_directory,
+			chat.workspace_source_directory, chat.workspace_worktree_directory, chat.workspace_isolation_kind,
+			chat.uam_agent_id, session.active_uam_agent_workspace_access, session.active_uam_agent_execution_capability,
+			chat.small_model_mode, goal.worker_model_id, goal.reviewer_model_id}).dump();
+	}
+
+	bool NativeGoalDeliveryConfigurationMatches(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
+		const AcpSessionState::CodexGoalOwner& owner)
+	{
+		if (owner.delivery_configuration.empty()) return false;
+		for (const Goal& goal : chat.goals)
+			if (goal.id == owner.goal_id) return owner.delivery_configuration == NativeGoalDeliveryConfiguration(app, session, chat, goal);
+		return false;
+	}
+}
+
+AcpSessionState::CodexGoalOwner CaptureCodexNativeGoalOwner(const AcpSessionState& session, const ChatSession& chat,
+	const Goal& goal, bool replace_native)
+{
+	AcpSessionState::CodexGoalOwner owner{chat.id, session.session_id, goal.id,
+		chat.goal_command_revision, goal.objective, goal.token_budget, goal.tokens_used, true, true, replace_native};
+	owner.execution_host_id = chat.execution_host_id.empty() ? "local" : chat.execution_host_id;
+	owner.process_id = session.last_process_id;
+	owner.parent_incarnation = chat.metadata_incarnation;
+	owner.initial_history_incarnation = std::make_shared<const std::uint8_t>(0);
+	return owner;
+}
+
+AcpSessionState::CodexGoalOwner CaptureCodexNativeGoalOwner(const AppState& app, const AcpSessionState& session,
+	const ChatSession& chat, const Goal& goal, bool replace_native)
+{
+	AcpSessionState::CodexGoalOwner owner = CaptureCodexNativeGoalOwner(session, chat, goal, replace_native);
+	owner.delivery_configuration = NativeGoalDeliveryConfiguration(app, session, chat, goal);
+	return owner;
+}
+
 bool CodexGoalReceiptMatchesOwner(const AcpSessionState& session, const ChatSession& chat,
 	const AcpSessionState::CodexGoalOwner& owner, const std::string& thread_id, bool require_active)
 {
 	if (!session.running || !session.session_ready || session.provider_id != "codex-cli" || chat.provider_id != "codex-cli" ||
+		!owner.parent_incarnation || owner.parent_incarnation != chat.metadata_incarnation ||
 		owner.chat_id.empty() || owner.goal_id.empty() || owner.revision.empty() || owner.thread_id.empty() ||
 		owner.chat_id != chat.id || session.chat_id != chat.id || thread_id != owner.thread_id ||
 		owner.execution_host_id != (chat.execution_host_id.empty() ? "local" : chat.execution_host_id) ||
@@ -85,6 +127,107 @@ namespace
 		HoldCodexGoal(app, session, chat, goal_id, diagnostic);
 	}
 
+	bool NativeGoalInitialRowMatches(const ChatSession& chat, const Goal& goal, const NativeGoalInitialDelivery& witness)
+	{
+		if ((witness.state != NativeGoalInitialDelivery::State::Pending && witness.state != NativeGoalInitialDelivery::State::Attempted &&
+			witness.state != NativeGoalInitialDelivery::State::Accepted) || !chat.messages_loaded || witness.user_message_index < 0 || witness.user_message_index > std::numeric_limits<int>::max() ||
+			static_cast<std::size_t>(witness.user_message_index) >= chat.messages.size() || witness.user_message_created_at.empty()) return false;
+		const Message& message = chat.messages[static_cast<std::size_t>(witness.user_message_index)];
+		return message.role == MessageRole::User && message.content == goal.objective && message.created_at == witness.user_message_created_at &&
+			(witness.state != NativeGoalInitialDelivery::State::Pending || message.acp_prompt_not_sent) &&
+			(witness.state != NativeGoalInitialDelivery::State::Accepted || !message.acp_prompt_not_sent) &&
+			((witness.state == NativeGoalInitialDelivery::State::Accepted) == !witness.turn_id.empty());
+	}
+
+	/// <summary>Persists a current native control receipt without permitting a stale receipt to authorize transport.</summary>
+	void PersistCodexControlReceipt(AppState& app, AcpSessionState& session, ChatSession& chat,
+		const AcpSessionState::CodexGoalOwner& owner,
+		std::function<void(AppState&, AcpSessionState&, ChatSession&)> committed = {})
+	{
+		const Goal* goal = GoalService::FindGoalById(app, chat.id, owner.goal_id);
+		if (goal == nullptr) return;
+		const std::filesystem::path root = app.data_root;
+		const std::optional<NativeGoalBinding> binding = goal->native_binding;
+		const std::int64_t used = goal->tokens_used;
+		const std::int64_t native_created = session.codex_goal_created_at;
+		const std::int64_t native_updated = session.codex_goal_updated_at;
+		const std::string native_turn = session.codex_turn_id;
+		const AcpSessionState::CodexGoalOwner current_owner = session.codex_goal_owner;
+		const bool requires_activation = static_cast<bool>(committed);
+		const std::function<bool()> actor_owned = [&app, root, owner, binding, used, native_created, native_updated, native_turn, current_owner, requires_activation]()
+		{
+			const AcpSessionState* current = FindAcpSessionForChat(app, owner.chat_id);
+			const ChatSession* stored = ChatDomainService().FindChatById(app, owner.chat_id);
+			if (app.data_root != root || current == nullptr || stored == nullptr ||
+				!CodexGoalReceiptMatchesOwner(*current, *stored, owner, owner.thread_id, false) ||
+				current->codex_goal_created_at != native_created || current->codex_goal_owner.parent_incarnation != current_owner.parent_incarnation ||
+				current->codex_goal_owner.goal_id != current_owner.goal_id || current->codex_goal_owner.revision != current_owner.revision ||
+				current->codex_goal_owner.binding_created_at != current_owner.binding_created_at ||
+				current->codex_goal_owner.initial_history_incarnation != current_owner.initial_history_incarnation) return false;
+			if (requires_activation)
+			{
+				if (!current->codex_goal_initial_turn_pending.has_value()) return false;
+				const AcpSessionState::CodexGoalOwner& phase = *current->codex_goal_initial_turn_pending;
+				if (phase.action != AcpSessionState::CodexGoalOwner::Action::Activate || phase.parent_incarnation != owner.parent_incarnation ||
+					phase.goal_id != owner.goal_id || phase.revision != owner.revision || phase.thread_id != owner.thread_id ||
+					phase.process_id != owner.process_id || phase.binding_created_at != owner.binding_created_at ||
+					!owner.initial_history_incarnation || phase.initial_history_incarnation != owner.initial_history_incarnation) return false;
+			}
+			const Goal* saved_goal = GoalService::FindGoalById(app, owner.chat_id, owner.goal_id);
+			if (saved_goal == nullptr || saved_goal->native_binding.has_value() != binding.has_value()) return false;
+			if (!binding.has_value()) return true;
+			const NativeGoalBinding& actual = *saved_goal->native_binding;
+			const NativeGoalBinding& expected = *binding;
+			return actual.version == expected.version && actual.provider_id == expected.provider_id && actual.execution_host_id == expected.execution_host_id &&
+				actual.thread_id == expected.thread_id && actual.uam_chat_id == expected.uam_chat_id && actual.uam_goal_id == expected.uam_goal_id &&
+				actual.objective == expected.objective && actual.created_at == expected.created_at && actual.uam_tokens_at_creation == expected.uam_tokens_at_creation &&
+				actual.uam_budget_at_creation == expected.uam_budget_at_creation && actual.native_token_budget == expected.native_token_budget &&
+				actual.initial_delivery == expected.initial_delivery;
+		};
+		const std::function<bool()> owned = [&app, owner, binding, used, native_updated, native_turn, actor_owned, requires_activation]()
+		{
+			if (!actor_owned()) return false;
+			const AcpSessionState* current = FindAcpSessionForChat(app, owner.chat_id);
+			const ChatSession* stored = ChatDomainService().FindChatById(app, owner.chat_id);
+			const Goal* saved_goal = GoalService::FindGoalById(app, owner.chat_id, owner.goal_id);
+			return current != nullptr && stored != nullptr && saved_goal != nullptr &&
+				(!requires_activation || NativeGoalDeliveryConfigurationMatches(app, *current, *stored, owner)) &&
+				current->codex_goal_updated_at == native_updated &&
+				(!requires_activation || current->codex_turn_id == native_turn) && saved_goal->tokens_used == used && saved_goal->native_binding == binding;
+		};
+		const std::function<void(DurableAdmissionState)> completion = [&app, owner, owned, actor_owned, committed = std::move(committed)](DurableAdmissionState result)
+		{
+			if (!actor_owned()) return;
+			AcpSessionState* current = FindAcpSessionForChat(app, owner.chat_id);
+			ChatSession* stored = ChatDomainService().FindChatById(app, owner.chat_id);
+			if (current == nullptr || stored == nullptr) return;
+			const bool full_owned = owned();
+			if (committed && current->codex_goal_initial_turn_pending.has_value())
+			{
+				const AcpSessionState::CodexGoalOwner& phase = *current->codex_goal_initial_turn_pending;
+				if (phase.action != AcpSessionState::CodexGoalOwner::Action::Activate || phase.parent_incarnation != owner.parent_incarnation ||
+					phase.goal_id != owner.goal_id || phase.revision != owner.revision || phase.thread_id != owner.thread_id ||
+					phase.process_id != owner.process_id || phase.binding_created_at != owner.binding_created_at ||
+					!owner.initial_history_incarnation || phase.initial_history_incarnation != owner.initial_history_incarnation) return;
+				current->codex_goal_initial_turn_pending.reset();
+			}
+			if (result != DurableAdmissionState::Committed || !full_owned)
+			{
+				if (Goal* saved_goal = GoalService::FindGoalById(app, owner.chat_id, owner.goal_id); saved_goal != nullptr)
+					saved_goal->last_diagnostic = "native_goal_control_receipt_save_failed";
+				current->goal_resume_suppressed = true;
+				return;
+			}
+			if (committed && !current->cancel_requested && !current->local_stop_pending && !current->remote_stop_pending &&
+				CodexGoalReceiptMatchesOwner(*current, *stored, owner, owner.thread_id) &&
+				NativeGoalDeliveryConfigurationMatches(app, *current, *stored, owner)) committed(app, *current, *stored);
+		};
+		DurableAdmissionState admission = DurableAdmissionState::Failed;
+		try { admission = BeginDurableAdmission(app, chat, owned, completion, DurableAdmissionFailurePurpose::BindingOnly); }
+		catch (const std::exception&) { }
+		if (admission == DurableAdmissionState::Failed) completion(admission);
+	}
+
 }
 
 bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& chat, Goal& goal,
@@ -110,12 +253,9 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 	}
 	if (session.codex_goal_initial_turn_pending.has_value() &&
 		CodexGoalReceiptMatchesOwner(session, chat, *session.codex_goal_initial_turn_pending, session.session_id)) return true;
-	AcpSessionState::CodexGoalOwner owner{chat.id, session.session_id, goal.id,
-		chat.goal_command_revision, goal.objective, goal.token_budget, goal.tokens_used, true, true, replace_native};
-	owner.execution_host_id = chat.execution_host_id.empty() ? "local" : chat.execution_host_id;
-	owner.process_id = session.last_process_id;
+	AcpSessionState::CodexGoalOwner owner = CaptureCodexNativeGoalOwner(app, session, chat, goal, replace_native);
 	const AcpSessionState::CodexGoalOwner& previous = session.codex_goal_owner;
-	if (!replace_native && previous.chat_id == chat.id && previous.thread_id == session.session_id &&
+	if (!replace_native && previous.parent_incarnation == chat.metadata_incarnation && previous.chat_id == chat.id && previous.thread_id == session.session_id &&
 		previous.goal_id == goal.id && previous.objective == goal.objective && previous.token_budget == goal.token_budget &&
 		previous.execution_host_id == owner.execution_host_id && previous.process_id == owner.process_id &&
 		session.codex_goal_created_at > 0)
@@ -143,6 +283,30 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 			HoldUnconfirmedCodexGoal(app, session, chat, goal.id, "native_goal_invalid_durable_binding");
 			return false;
 		}
+		if (binding.initial_delivery.has_value())
+		{
+			const NativeGoalInitialDelivery& witness = *binding.initial_delivery;
+			if (!NativeGoalInitialRowMatches(chat, goal, witness) || witness.state == NativeGoalInitialDelivery::State::Attempted)
+			{
+				goal.last_diagnostic = witness.state == NativeGoalInitialDelivery::State::Attempted
+					? "native_goal_initial_delivery_ambiguous" : "native_goal_initial_row_unconfirmed";
+				session.goal_resume_suppressed = true;
+				if (error_out != nullptr) *error_out = "The saved native goal binding cannot authorize resume.";
+				return false;
+			}
+			owner.initial_history_user_message_index = static_cast<int>(witness.user_message_index);
+			owner.initial_history_user_message_created_at = witness.user_message_created_at;
+		}
+		else if (std::ranges::any_of(chat.messages, [&goal](const Message& message)
+		{
+			return message.role == MessageRole::User && message.acp_prompt_not_sent && message.content == goal.objective;
+		}))
+		{
+			goal.last_diagnostic = "native_goal_legacy_unsent_row_unconfirmed";
+			session.goal_resume_suppressed = true;
+			if (error_out != nullptr) *error_out = "The saved native goal binding cannot authorize resume.";
+			return false;
+		}
 		owner.resume_existing = true;
 		owner.binding_created_at = binding.created_at;
 		owner.tokens_used_at_start = binding.uam_tokens_at_creation;
@@ -154,7 +318,7 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 	{
 		for (const std::pair<const std::string, AcpSessionState::CodexGoalOwner>& pending : session.codex_goal_pending_requests)
 		{
-			if (pending.second.goal_id == goal.id && pending.second.revision == chat.goal_command_revision &&
+			if (pending.second.parent_incarnation == chat.metadata_incarnation && pending.second.goal_id == goal.id && pending.second.revision == chat.goal_command_revision &&
 				pending.second.start_authorized) return true;
 		}
 		session.codex_goal_queued_user_action = owner;
@@ -195,28 +359,34 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 
 bool StopCodexNativeGoal(AcpSessionState& session, const ChatSession& chat, bool user_action, const std::string& goal_id, bool clear_native)
 {
-	if (session.provider_id != "codex-cli") return true;
-	const bool has_owned_goal = !session.codex_goal_owner.goal_id.empty() &&
+	if (session.provider_id != "codex-cli" || !chat.metadata_incarnation) return true;
+	const bool has_owned_goal = session.codex_goal_owner.parent_incarnation == chat.metadata_incarnation &&
+		!session.codex_goal_owner.goal_id.empty() &&
 		(goal_id.empty() || session.codex_goal_owner.goal_id == goal_id);
 	const bool has_pending_goal = std::ranges::any_of(session.codex_goal_pending_requests,
 		[&](const std::pair<const std::string, AcpSessionState::CodexGoalOwner>& pending)
 		{
-			return goal_id.empty() || pending.second.goal_id == goal_id;
+			return pending.second.parent_incarnation == chat.metadata_incarnation &&
+				(goal_id.empty() || pending.second.goal_id == goal_id);
 		});
 	const bool has_queued_goal = session.codex_goal_queued_user_action.has_value() &&
+		session.codex_goal_queued_user_action->parent_incarnation == chat.metadata_incarnation &&
 		(goal_id.empty() || session.codex_goal_queued_user_action->goal_id == goal_id);
 	if (!has_owned_goal && !has_pending_goal && !has_queued_goal) return true;
 	if (session.codex_goal_initial_turn_pending.has_value() &&
+		session.codex_goal_initial_turn_pending->parent_incarnation == chat.metadata_incarnation &&
 		(goal_id.empty() || session.codex_goal_initial_turn_pending->goal_id == goal_id))
 		session.codex_goal_initial_turn_pending.reset();
 	if (session.codex_goal_queued_user_action.has_value() &&
+		session.codex_goal_queued_user_action->parent_incarnation == chat.metadata_incarnation &&
 		(goal_id.empty() || session.codex_goal_queued_user_action->goal_id == goal_id))
 		session.codex_goal_queued_user_action.reset();
 	AcpSessionState::CodexGoalOwner owner = session.codex_goal_owner;
-	bool set_sent = !owner.goal_id.empty() && (goal_id.empty() || owner.goal_id == goal_id);
+	bool set_sent = owner.parent_incarnation == chat.metadata_incarnation && !owner.goal_id.empty() && (goal_id.empty() || owner.goal_id == goal_id);
 	for (std::pair<const std::string, AcpSessionState::CodexGoalOwner>& request : session.codex_goal_pending_requests)
 	{
-		if (!goal_id.empty() && request.second.goal_id != goal_id) continue;
+		if (request.second.parent_incarnation != chat.metadata_incarnation ||
+			(!goal_id.empty() && request.second.goal_id != goal_id)) continue;
 		request.second.start_authorized = false;
 		if (request.second.chat_id != chat.id || request.second.thread_id != session.session_id) continue;
 		owner = request.second;
@@ -226,7 +396,11 @@ bool StopCodexNativeGoal(AcpSessionState& session, const ChatSession& chat, bool
 			request.second.action != AcpSessionState::CodexGoalOwner::Action::ReplaceClear) set_sent = true;
 	}
 	session.goal_resume_suppressed = true;
-	if (!set_sent || (!goal_id.empty() && owner.goal_id != goal_id) || owner.chat_id != chat.id || owner.thread_id != session.session_id) return true;
+	if (!owner.parent_incarnation || owner.parent_incarnation != chat.metadata_incarnation || !set_sent ||
+		(!goal_id.empty() && owner.goal_id != goal_id) || owner.chat_id != chat.id || owner.thread_id != session.session_id ||
+		(!owner.process_id.empty() && owner.process_id != session.last_process_id) ||
+		owner.execution_host_id != (chat.execution_host_id.empty() ? "local" : chat.execution_host_id) ||
+		owner.execution_host_id != (session.process_execution_host_id.empty() ? "local" : session.process_execution_host_id)) return true;
 	owner.user_origin = user_action;
 	owner.start_authorized = false;
 	owner.revision = chat.goal_command_revision;
@@ -254,8 +428,11 @@ void DrainQueuedCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSes
 void StartPendingCodexNativeGoalTurn(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
 	if (!session.codex_goal_initial_turn_pending.has_value()) return;
-	const AcpSessionState::CodexGoalOwner owner = *session.codex_goal_initial_turn_pending;
-	if (!owner.user_origin || !CodexGoalReceiptMatchesOwner(session, chat, owner, owner.thread_id))
+	AcpSessionState::CodexGoalOwner owner = *session.codex_goal_initial_turn_pending;
+	if (!owner.user_origin || !owner.initial_history_incarnation ||
+		!NativeGoalDeliveryConfigurationMatches(app, session, chat, owner) ||
+		(owner.binding_created_at > 0 && session.codex_goal_created_at != owner.binding_created_at) ||
+		!CodexGoalReceiptMatchesOwner(session, chat, owner, owner.thread_id))
 	{
 		session.codex_goal_initial_turn_pending.reset();
 		return;
@@ -263,19 +440,135 @@ void StartPendingCodexNativeGoalTurn(AppState& app, AcpSessionState& session, Ch
 	if (!session.codex_turn_id.empty() || session.prompt_request_id != 0 || !session.queued_prompt.empty() ||
 		!session.queued_user_prompts.empty() || session.turn_checkpoint_commit_pending || session.manual_compaction_pending ||
 		AcpSessionIsWaitingForInput(session) || session.cancel_requested || session.local_stop_pending || session.remote_stop_pending) return;
-	session.codex_goal_initial_turn_pending.reset();
-	int user_index = -1;
-	if (!owner.resume_existing)
+	using HistoryState = AcpSessionState::CodexGoalOwner::InitialHistoryState;
+	if (owner.initial_history_state == HistoryState::Pending) return;
+	if (owner.initial_history_state == HistoryState::Unprepared)
 	{
-		user_index = static_cast<int>(chat.messages.size());
-		chat.messages.push_back({MessageRole::User, owner.objective, uam::time::TimestampNow()});
-	}
-	if (!SaveChatQuietly(app, chat))
-	{
-		if (user_index >= 0) chat.messages.pop_back();
-		HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_initial_history_save_failed");
+		Goal* goal = GoalService::FindGoalById(app, chat.id, owner.goal_id);
+		if (goal == nullptr || !goal->native_binding.has_value()) return;
+		if (!owner.resume_existing)
+		{
+			if (goal->native_binding->initial_delivery.has_value())
+			{
+				const NativeGoalInitialDelivery& witness = *goal->native_binding->initial_delivery;
+				if ((witness.state != NativeGoalInitialDelivery::State::Pending &&
+					!(witness.state == NativeGoalInitialDelivery::State::Attempted && owner.initial_history_user_message_index == witness.user_message_index &&
+					owner.initial_history_user_message_created_at == witness.user_message_created_at)) || !NativeGoalInitialRowMatches(chat, *goal, witness)) return;
+				owner.initial_history_user_message_index = static_cast<int>(witness.user_message_index);
+				owner.initial_history_user_message_created_at = witness.user_message_created_at;
+			}
+			else
+			{
+				owner.initial_history_user_message_index = static_cast<int>(chat.messages.size());
+				owner.initial_history_user_message_created_at = uam::time::TimestampNow();
+				chat.messages.push_back({MessageRole::User, owner.objective, owner.initial_history_user_message_created_at});
+				chat.messages.back().acp_prompt_not_sent = true;
+				goal->native_binding->initial_delivery = NativeGoalInitialDelivery{owner.initial_history_user_message_index,
+					owner.initial_history_user_message_created_at, NativeGoalInitialDelivery::State::Pending, ""};
+			}
+		}
+		owner.initial_history_state = HistoryState::Pending;
+		session.codex_goal_initial_turn_pending = owner;
+		const std::filesystem::path root = app.data_root;
+		const std::optional<NativeGoalBinding> expected_binding = goal->native_binding;
+		const std::function<bool()> identity_owned = [&app, root, owner, expected_binding]()
+		{
+			const AcpSessionState* current = FindAcpSessionForChat(app, owner.chat_id);
+			const ChatSession* stored = ChatDomainService().FindChatById(app, owner.chat_id);
+			if (app.data_root != root || current == nullptr || stored == nullptr || current->cancel_requested ||
+				current->local_stop_pending || current->remote_stop_pending ||
+				!current->codex_goal_initial_turn_pending.has_value() ||
+				current->codex_goal_created_at != owner.binding_created_at ||
+				!CodexGoalReceiptMatchesOwner(*current, *stored, owner, owner.thread_id)) return false;
+			const AcpSessionState::CodexGoalOwner& pending = *current->codex_goal_initial_turn_pending;
+			if (pending.initial_history_state != HistoryState::Pending || pending.parent_incarnation != owner.parent_incarnation ||
+				pending.initial_history_incarnation != owner.initial_history_incarnation ||
+				pending.revision != owner.revision || pending.thread_id != owner.thread_id || pending.process_id != owner.process_id ||
+				pending.goal_id != owner.goal_id || pending.binding_created_at != owner.binding_created_at ||
+				pending.initial_history_user_message_index != owner.initial_history_user_message_index ||
+				pending.initial_history_user_message_created_at != owner.initial_history_user_message_created_at) return false;
+			const Goal* saved_goal = GoalService::FindGoalById(app, owner.chat_id, owner.goal_id);
+			if (saved_goal == nullptr || !saved_goal->native_binding.has_value() || !expected_binding.has_value()) return false;
+			const NativeGoalBinding& actual = *saved_goal->native_binding;
+			const NativeGoalBinding& expected = *expected_binding;
+			if (actual.version != expected.version || actual.provider_id != expected.provider_id || actual.execution_host_id != expected.execution_host_id ||
+				actual.thread_id != expected.thread_id || actual.uam_chat_id != expected.uam_chat_id || actual.uam_goal_id != expected.uam_goal_id ||
+				actual.objective != expected.objective || actual.created_at != expected.created_at || actual.uam_tokens_at_creation != expected.uam_tokens_at_creation ||
+				actual.uam_budget_at_creation != expected.uam_budget_at_creation || actual.native_token_budget != expected.native_token_budget ||
+				actual.initial_delivery != expected.initial_delivery) return false;
+			if (owner.resume_existing) return !saved_goal->native_binding->initial_delivery.has_value() ||
+				NativeGoalInitialRowMatches(*stored, *saved_goal, *saved_goal->native_binding->initial_delivery);
+			const int index = owner.initial_history_user_message_index;
+			if (index < 0 || static_cast<std::size_t>(index) >= stored->messages.size()) return false;
+			const Message& message = stored->messages[static_cast<std::size_t>(index)];
+			return message.role == MessageRole::User && message.content == owner.objective &&
+				message.created_at == owner.initial_history_user_message_created_at && message.acp_prompt_not_sent;
+		};
+		const std::function<bool()> owned = [&app, owner, expected_binding, identity_owned]()
+		{
+			if (!identity_owned()) return false;
+			const Goal* saved_goal = GoalService::FindGoalById(app, owner.chat_id, owner.goal_id);
+			const AcpSessionState* current = FindAcpSessionForChat(app, owner.chat_id);
+			const ChatSession* stored = ChatDomainService().FindChatById(app, owner.chat_id);
+			return current != nullptr && stored != nullptr && saved_goal != nullptr && saved_goal->native_binding == expected_binding &&
+				NativeGoalDeliveryConfigurationMatches(app, *current, *stored, owner);
+		};
+		const std::function<void(DurableAdmissionState)> completion = [&app, owner, owned, identity_owned](DurableAdmissionState result)
+		{
+			if (!identity_owned()) return;
+			AcpSessionState* current = FindAcpSessionForChat(app, owner.chat_id);
+			ChatSession* stored = ChatDomainService().FindChatById(app, owner.chat_id);
+			if (current == nullptr || stored == nullptr) return;
+			if (result != DurableAdmissionState::Committed || !owned())
+			{
+				if (!owner.resume_existing)
+					if (Goal* goal = GoalService::FindGoalById(app, owner.chat_id, owner.goal_id); goal != nullptr &&
+						goal->native_binding.has_value() && goal->native_binding->initial_delivery.has_value() &&
+						goal->native_binding->initial_delivery->state != NativeGoalInitialDelivery::State::Accepted)
+						goal->native_binding->initial_delivery->state = NativeGoalInitialDelivery::State::Pending;
+				current->codex_goal_initial_turn_pending.reset();
+				current->goal_resume_suppressed = true;
+				if (Goal* goal = GoalService::FindGoalById(app, owner.chat_id, owner.goal_id); goal != nullptr)
+				{
+					goal->last_diagnostic = "native_goal_initial_history_save_failed";
+					goal->status = GoalStatus::Paused;
+					goal->updated_at = uam::time::TimestampNow();
+				}
+				if (stored->active_goal_id == owner.goal_id) stored->active_goal_id.clear();
+				if (stored->goal_pending_continuation_id == owner.goal_id) stored->goal_pending_continuation_id.clear();
+				app.chats_with_unseen_updates.insert(owner.chat_id);
+				return;
+			}
+			current->codex_goal_initial_turn_pending->initial_history_state = HistoryState::Committed;
+			StartPendingCodexNativeGoalTurn(app, *current, *stored);
+		};
+		DurableAdmissionState admission = DurableAdmissionState::Failed;
+		try { admission = BeginDurableAdmission(app, chat, owned, completion, DurableAdmissionFailurePurpose::BindingOnly); }
+		catch (const std::exception&) { }
+		if (admission == DurableAdmissionState::Failed) completion(admission);
 		return;
 	}
+	Goal* current_goal = GoalService::FindGoalById(app, chat.id, owner.goal_id);
+	if (current_goal == nullptr || !current_goal->native_binding.has_value()) return;
+	if (!owner.resume_existing && current_goal->native_binding->initial_delivery.has_value() &&
+		current_goal->native_binding->initial_delivery->state == NativeGoalInitialDelivery::State::Pending)
+	{
+		current_goal->native_binding->initial_delivery->state = NativeGoalInitialDelivery::State::Attempted;
+		owner.initial_history_state = HistoryState::Unprepared;
+		session.codex_goal_initial_turn_pending = owner;
+		// The row is already prepared; the second full receipt records ambiguity before pipe transport.
+		StartPendingCodexNativeGoalTurn(app, session, chat);
+		return;
+	}
+	const int user_index = owner.resume_existing ? -1 : owner.initial_history_user_message_index;
+	if (!owner.resume_existing)
+	{
+		if (user_index < 0 || static_cast<std::size_t>(user_index) >= chat.messages.size()) return;
+		const Message& message = chat.messages[static_cast<std::size_t>(user_index)];
+		if (message.role != MessageRole::User || message.content != owner.objective ||
+			message.created_at != owner.initial_history_user_message_created_at || !message.acp_prompt_not_sent) return;
+	}
+	session.codex_goal_initial_turn_pending.reset();
 	const int request_id = session.next_request_id++;
 	std::string method;
 	nlohmann::json request = ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpBuildPrompt(
@@ -288,6 +581,8 @@ void StartPendingCodexNativeGoalTurn(AppState& app, AcpSessionState& session, Ch
 		HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_initial_turn_write_failed");
 		return;
 	}
+	if (user_index >= 0) chat.messages[static_cast<std::size_t>(user_index)].acp_prompt_not_sent = false;
+	ScheduleChatSave(app, chat, 0.0);
 	session.codex_goal_initial_turn_request_id = request_id;
 	session.current_assistant_message_index = -1;
 	session.turn_first_user_message_index = user_index;
@@ -379,10 +674,19 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 		return method == "thread/goal/get" || method == "thread/goal/set" || method == "thread/goal/clear";
 	AcpSessionState::CodexGoalOwner owner = pending->second;
 	session.codex_goal_pending_requests.erase(pending);
+	if (!owner.parent_incarnation || owner.parent_incarnation != chat.metadata_incarnation ||
+		owner.chat_id != chat.id || owner.thread_id != session.session_id ||
+		(!owner.process_id.empty() && owner.process_id != session.last_process_id) ||
+		owner.execution_host_id != (chat.execution_host_id.empty() ? "local" : chat.execution_host_id) ||
+		owner.execution_host_id != (session.process_execution_host_id.empty() ? "local" : session.process_execution_host_id)) return true;
 	using Action = AcpSessionState::CodexGoalOwner::Action;
 	if (owner.action == Action::StopClear)
 	{
-		if (owner.thread_id != session.session_id || owner.chat_id != chat.id) return true;
+		if (owner.thread_id != session.session_id || owner.chat_id != chat.id ||
+			owner.revision != chat.goal_command_revision ||
+			(!owner.process_id.empty() && owner.process_id != session.last_process_id) ||
+			owner.execution_host_id != (chat.execution_host_id.empty() ? "local" : chat.execution_host_id) ||
+			owner.execution_host_id != (session.process_execution_host_id.empty() ? "local" : session.process_execution_host_id)) return true;
 		if (result.is_object() && result.contains("cleared") && result["cleared"].is_boolean())
 		{
 			if (chat.goal_command_revision == owner.revision)
@@ -390,7 +694,7 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 			session.codex_goal_owner = {};
 			session.codex_goal_native_active = false;
 			if (session.codex_turn_id.empty()) session.processing = false;
-			SaveChatQuietly(app, chat);
+			PersistCodexControlReceipt(app, session, chat, owner);
 		}
 		else
 		{
@@ -413,7 +717,7 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 				goal->last_diagnostic = "native_goal_stop_unconfirmed";
 		}
 		else if (session.codex_turn_id.empty()) session.processing = false;
-		SaveChatQuietly(app, chat);
+		PersistCodexControlReceipt(app, session, chat, owner);
 		return true;
 	}
 	if (owner.action == Action::InitialTurn)
@@ -431,10 +735,39 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 			HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_initial_turn_unconfirmed");
 			return true;
 		}
+		Goal* accepted_goal = GoalService::FindGoalById(app, chat.id, owner.goal_id);
+		if (accepted_goal == nullptr || !accepted_goal->native_binding.has_value()) return true;
+		if (accepted_goal->native_binding->initial_delivery.has_value())
+		{
+			NativeGoalInitialDelivery& witness = *accepted_goal->native_binding->initial_delivery;
+			if (!NativeGoalInitialRowMatches(chat, *accepted_goal, witness) ||
+				(!owner.resume_existing && (witness.state != NativeGoalInitialDelivery::State::Attempted ||
+				 witness.user_message_index != owner.initial_history_user_message_index ||
+				 witness.user_message_created_at != owner.initial_history_user_message_created_at))) return true;
+			if (owner.resume_existing)
+			{
+				if (witness.state != NativeGoalInitialDelivery::State::Accepted) return true;
+			}
+			else
+			{
+				witness.state = NativeGoalInitialDelivery::State::Accepted;
+				witness.turn_id = turn_id;
+			}
+		}
+		else if (!owner.resume_existing) return true;
 		owner.action = Action::Activate;
-		const int next_id = session.next_request_id++;
-		if (!SendCodexGoalRequest(session, BuildCodexGoalStatusRequest(next_id, owner.thread_id, "active", owner.user_origin), owner))
-			HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_activation_write_failed");
+		owner.initial_history_state = AcpSessionState::CodexGoalOwner::InitialHistoryState::Pending;
+		session.codex_goal_initial_turn_pending = owner;
+		PersistCodexControlReceipt(app, session, chat, owner, [owner](AppState& current_app, AcpSessionState& current_session, ChatSession& current_chat)
+		{
+			const int next_id = current_session.next_request_id++;
+			if (!SendCodexGoalRequest(current_session, BuildCodexGoalStatusRequest(next_id, owner.thread_id, "active", owner.user_origin), owner))
+			{
+				current_session.goal_resume_suppressed = true;
+				if (Goal* goal = GoalService::FindGoalById(current_app, current_chat.id, owner.goal_id); goal != nullptr)
+					goal->last_diagnostic = "native_goal_activation_write_failed";
+			}
+		});
 		return true;
 	}
 	if (!owner.start_authorized || !CodexGoalReceiptMatchesOwner(session, chat, owner, owner.thread_id))
@@ -542,16 +875,20 @@ bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession&
 				owner.chat_id, owner.goal_id, owner.objective, session.codex_goal_created_at, session.codex_goal_updated_at, owner.tokens_used_at_start,
 				owner.token_budget, native_budget, receipt["tokensUsed"].get<std::int64_t>()};
 		}
-		if (!SaveChatQuietly(app, chat))
+
+		if (goal->native_binding->initial_delivery.has_value() &&
+			goal->native_binding->initial_delivery->state == NativeGoalInitialDelivery::State::Pending)
 		{
-			goal->native_binding.reset();
-			HoldCodexGoal(app, session, chat, owner.goal_id, "native_goal_binding_save_failed");
-			return true;
+			owner.resume_existing = false;
+			owner.initial_history_user_message_index = static_cast<int>(goal->native_binding->initial_delivery->user_message_index);
+			owner.initial_history_user_message_created_at = goal->native_binding->initial_delivery->user_message_created_at;
 		}
 		session.codex_goal_initial_turn_pending = owner;
 		StartPendingCodexNativeGoalTurn(app, session, chat);
+		return true;
 	}
-	SaveChatQuietly(app, chat);
+	if (owner.action == Action::Activate) PersistCodexControlReceipt(app, session, chat, owner);
+	else SaveChatQuietly(app, chat);
 	return true;
 }
 
@@ -562,6 +899,11 @@ bool HandleCodexGoalError(AppState& app, AcpSessionState& session, ChatSession& 
 		return failure.method == "thread/goal/get" || failure.method == "thread/goal/set" || failure.method == "thread/goal/clear";
 	const AcpSessionState::CodexGoalOwner owner = pending->second;
 	session.codex_goal_pending_requests.erase(pending);
+	if (!owner.parent_incarnation || owner.parent_incarnation != chat.metadata_incarnation ||
+		owner.chat_id != chat.id || owner.thread_id != session.session_id ||
+		(!owner.process_id.empty() && owner.process_id != session.last_process_id) ||
+		owner.execution_host_id != (chat.execution_host_id.empty() ? "local" : chat.execution_host_id) ||
+		owner.execution_host_id != (session.process_execution_host_id.empty() ? "local" : session.process_execution_host_id)) return true;
 	using Action = AcpSessionState::CodexGoalOwner::Action;
 	if (owner.action == Action::InitialTurn) session.codex_goal_initial_turn_request_id = 0;
 	if ((owner.action == Action::StopClear || owner.action == Action::StopPause) &&

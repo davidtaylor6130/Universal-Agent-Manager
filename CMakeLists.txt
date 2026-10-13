@@ -461,6 +461,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/computer_use_service.cpp
   src/app/git_worktree_service.cpp
   src/app/worktree_retention_service.cpp
+  src/app/storage_retention_service.cpp
+  src/app/worktree_launch_preparation_service.cpp
   src/app/local_chat_bundle_service.cpp
   src/app/markdown_store_service.cpp
   src/common/memory/memory_library_store.cpp
@@ -487,6 +489,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/shell_action_service.cpp
   src/app/theme_service.cpp
   src/app/vcs_commit_service.cpp
+  src/app/workspace_vcs_context_service.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_cef_client.cpp
@@ -1245,6 +1248,7 @@ if(UAM_BUILD_TESTS)
     tests/workspace_import_policy_tests.cpp
     tests/workspace_migration_alias_tests.cpp
     tests/deletion_workspace_ownership_tests.cpp
+    tests/copied_deletion_timing_tests.cpp
 		tests/remote_context_policy_tests.cpp
 		tests/memory_recall_preparation_tests.cpp
     tests/native_chat_identity_tests.cpp
@@ -1261,6 +1265,7 @@ if(UAM_BUILD_TESTS)
     tests/transcript_scan_tests.cpp
     tests/usage_history_service_tests.cpp
     tests/chat_icon_mutation_tests.cpp
+    tests/workspace_chat_save_ticket_tests.cpp
     tests/chat_icon_metadata_tests.cpp
     tests/usage_ledger_tests.cpp
     tests/usage_store_tests.cpp
@@ -1273,6 +1278,12 @@ if(UAM_BUILD_TESTS)
     tests/workspace_lease_tests.cpp
     tests/worktree_retention_policy_tests.cpp
     tests/git_worktree_defaults_tests.cpp
+    tests/git_worktree_chat_base_override_tests.cpp
+    tests/workspace_vcs_context_tests.cpp
+    tests/git_worktree_pull_tests.cpp
+    tests/git_worktree_port_method_tests.cpp
+    tests/storage_retention_tests.cpp
+    tests/worktree_launch_preparation_tests.cpp
     tests/usage_pricing_tests.cpp
     tests/usage_pricing_cache_tests.cpp
     tests/provider_mcp_settings_tests.cpp
@@ -1280,6 +1291,7 @@ if(UAM_BUILD_TESTS)
     tests/provider_availability_tests.cpp
     tests/async_prompt_durability_tests.cpp
     tests/uam_control_transport_tests.cpp
+    tests/uam_control_mailbox_response_tests.cpp
     src/common/utils/diagnostic_log.cpp
     tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp
@@ -1297,7 +1309,9 @@ if(UAM_BUILD_TESTS)
     tests/opencode_usage_tests.cpp
     tests/state_workspace_snapshot_tests.cpp
     tests/terminal_tests.cpp
+    tests/sidechat_context_tests.cpp
     tests/goal_tests.cpp
+    tests/provider_child_activity_tests.cpp
     tests/theme_tests.cpp
     tests/resource_collection_tests.cpp
     src/app/attachment_preview_service.cpp
@@ -1315,6 +1329,8 @@ if(UAM_BUILD_TESTS)
     src/app/computer_use_service.cpp
     src/app/git_worktree_service.cpp
     src/app/worktree_retention_service.cpp
+    src/app/storage_retention_service.cpp
+    src/app/worktree_launch_preparation_service.cpp
     src/app/local_chat_bundle_service.cpp
     src/app/markdown_store_service.cpp
     src/common/memory/memory_library_store.cpp
@@ -1341,6 +1357,7 @@ if(UAM_BUILD_TESTS)
     src/app/shell_action_service.cpp
     src/app/theme_service.cpp
     src/app/vcs_commit_service.cpp
+  src/app/workspace_vcs_context_service.cpp
     src/cef/uam_cef_command_line_config.cpp
     src/cef/uam_bridge_request.cpp
     src/cef/cef_push.cpp
@@ -1531,6 +1548,28 @@ endif()
         "${cef_binary_SOURCE_DIR}/Release/libcef.dll" "$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/libcef.dll"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_chat_icon_handler_tests>/chrome_elf.dll")
+  endif()
+  # Actual goal bridge timing fixtures keep their three-case inventory separate.
+  add_executable(uam_goal_handler_timing_tests EXCLUDE_FROM_ALL
+    tests/goal_handler_timing_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
+  set_target_properties(uam_goal_handler_timing_tests PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+  foreach(UAM_GOAL_TEST_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)
+    get_target_property(UAM_GOAL_TEST_VALUE universal_agent_manager ${UAM_GOAL_TEST_PROPERTY})
+    if(NOT UAM_GOAL_TEST_VALUE STREQUAL "UAM_GOAL_TEST_VALUE-NOTFOUND")
+      set_property(TARGET uam_goal_handler_timing_tests PROPERTY ${UAM_GOAL_TEST_PROPERTY} "${UAM_GOAL_TEST_VALUE}")
+    endif()
+  endforeach()
+  target_include_directories(uam_goal_handler_timing_tests PRIVATE tests)
+  if(APPLE)
+    add_custom_command(TARGET uam_goal_handler_timing_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/icon-handler-test-framework-$<CONFIG>.cmake")
+  elseif(WIN32)
+    add_custom_command(TARGET uam_goal_handler_timing_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/libcef.dll" "$<TARGET_FILE_DIR:uam_goal_handler_timing_tests>/libcef.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_goal_handler_timing_tests>/chrome_elf.dll")
   endif()
   # Keep this opt-in executable outside the standard CTest inventory until built.
 

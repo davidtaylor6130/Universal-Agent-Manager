@@ -325,7 +325,7 @@ bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
 }
 
 bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
-                                   const std::string& goal_id, GoalStatus status, bool user_action)
+                                   const std::string& goal_id, GoalStatus status, bool user_action, bool defer_native_stop)
 {
 	if (status == GoalStatus::Active) return false;
 	Goal* goal = FindGoalById(app, chat_id, goal_id);
@@ -333,7 +333,7 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 	if (goal == nullptr || chat == nullptr) return false;
 	chat->goal_command_revision = GenerateGoalId();
 	chat->goal_pending_continuation_id.clear();
-	if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr)
+	if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr && !defer_native_stop)
 	{
 		if (!uam::acp_detail::StopCodexNativeGoal(*session, *chat, user_action, goal_id, status == GoalStatus::Complete))
 			goal->last_diagnostic = "native_goal_stop_unconfirmed";
@@ -397,7 +397,7 @@ bool GoalService::UpdateGoalObjective(AppState& app, const std::string& chat_id,
 }
 
 bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
-                                std::string* error_out, bool* work_changed_out)
+                                std::string* error_out, bool* work_changed_out, bool defer_native_stop)
 {
 	if (work_changed_out != nullptr) *work_changed_out = false;
 	ChatSession* chat = FindChatMutable(app, chat_id);
@@ -408,7 +408,7 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 
 	if (goal_id.empty())
 	{
-		return ClearActiveGoal(app, chat_id);
+		return ClearActiveGoal(app, chat_id, false, defer_native_stop);
 	}
 
 	Goal* matched_goal = nullptr;
@@ -430,7 +430,7 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 		if (error_out != nullptr) *error_out = "Completed goals cannot be reactivated.";
 		return false;
 	}
-	if (chat->active_goal_id != goal_id)
+	if (chat->active_goal_id != goal_id && !defer_native_stop)
 	{
 		if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr && session->codex_goal_owner.goal_id != goal_id)
 		{
@@ -484,14 +484,14 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 	return true;
 }
 
-bool GoalService::ClearActiveGoal(AppState& app, const std::string& chat_id, bool user_action)
+bool GoalService::ClearActiveGoal(AppState& app, const std::string& chat_id, bool user_action, bool defer_native_stop)
 {
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr)
 	{
 		return false;
 	}
-	if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr)
+	if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr && !defer_native_stop)
 		(void)uam::acp_detail::StopCodexNativeGoal(*session, *chat, user_action);
 
 	const std::string updated_at = uam::time::TimestampNow();
@@ -625,13 +625,55 @@ std::vector<Goal> GoalService::GetGoalsForChat(const AppState& app, const std::s
 }
 
 bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
-                             std::string* error_out, bool* work_changed_out)
+                             std::string* error_out, bool* work_changed_out, GoalRemovalStage stage,
+                             GoalRemovalPreparation* preparation, std::function<bool()> admitted_owner)
 {
+	if (stage == GoalRemovalStage::AfterReceipt && (!preparation || !admitted_owner || !admitted_owner())) return false;
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr) return false;
 	auto it = std::find_if(chat->goals.begin(), chat->goals.end(),
 	                       [&goal_id](const Goal& goal) { return goal.id == goal_id; });
-	if (it == chat->goals.end()) return false;
+	if (stage == GoalRemovalStage::AfterReceipt)
+	{
+		if (preparation->chat_id != chat_id || preparation->goal.id != goal_id ||
+		    preparation->parent_incarnation != chat->metadata_incarnation ||
+		    preparation->prepared_revision != chat->goal_command_revision || it != chat->goals.end()) return false;
+		for (const GoalRemovalPreparation::RunOwner& owner : preparation->managed_roots)
+		{
+			const std::vector<AgentRun>::const_iterator run = std::find_if(app.agent_runs.begin(), app.agent_runs.end(),
+			    [&](const AgentRun& candidate) { return candidate.id == owner.id; });
+			if (run == app.agent_runs.end()) continue;
+			if (run->root_chat_id != chat_id || run->goal_id != goal_id || run->created_at != owner.created_at ||
+			    run->definition_hash != owner.definition_hash) return false;
+		}
+		for (const GoalRemovalPreparation::RunOwner& owner : preparation->managed_roots)
+		{
+			if (work_changed_out) *work_changed_out = true;
+			const bool exists = std::ranges::any_of(app.agent_runs, [&](const AgentRun& candidate) { return candidate.id == owner.id; });
+			if (exists && !AgentRunScheduler::CancelTree(app, owner.id, error_out)) return false;
+			if (!admitted_owner()) return false;
+		}
+		if (!admitted_owner()) return false;
+		std::erase_if(app.pending_goal_iterations, [&](const PendingGoalIterationState& pending)
+		{ return pending.owner_chat_id == chat_id && pending.goal_id == goal_id; });
+		return true;
+	}
+	if (it == chat->goals.end() || (stage == GoalRemovalStage::PrepareOnly && !preparation)) return false;
+	if (stage == GoalRemovalStage::PrepareOnly)
+	{
+		preparation->chat_id = chat_id;
+		preparation->goal = *it;
+		preparation->parent_incarnation = chat->metadata_incarnation;
+		preparation->managed_roots.clear();
+		preparation->native_owner.reset();
+		if (const AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session && session->codex_goal_owner.goal_id == goal_id &&
+		    uam::acp_detail::CodexGoalReceiptMatchesOwner(*session, *chat, session->codex_goal_owner, session->session_id, false))
+		{
+			preparation->native_owner = session->codex_goal_owner;
+			preparation->native_process_label = uam::acp_detail::AcpProcessHandleLabel(*session);
+			preparation->native_created_at = session->codex_goal_created_at;
+		}
+	}
 	std::vector<std::string> managed_roots;
 	for (const AgentRun& run : app.agent_runs)
 	{
@@ -641,8 +683,13 @@ bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const st
 		{
 			return parent.id == run.parent_run_id && parent.root_chat_id == chat_id && parent.goal_id == goal_id;
 		});
-		if (!parent_in_goal) managed_roots.push_back(run.id);
+		if (!parent_in_goal)
+		{
+			managed_roots.push_back(run.id);
+			if (stage == GoalRemovalStage::PrepareOnly) preparation->managed_roots.push_back({run.id, run.created_at, run.definition_hash});
+		}
 	}
+	if (stage == GoalRemovalStage::Normal)
 	for (const std::string& run_id : managed_roots)
 	{
 		if (work_changed_out != nullptr) *work_changed_out = true;
@@ -652,6 +699,7 @@ bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const st
 	if (chat == nullptr) return false;
 	chat->goal_command_revision = GenerateGoalId();
 	chat->goal_pending_continuation_id.clear();
+	if (stage == GoalRemovalStage::Normal)
 	std::erase_if(app.pending_goal_iterations, [&](const PendingGoalIterationState& pending) { return pending.owner_chat_id == chat_id && pending.goal_id == goal_id; });
 	chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr) return false;
@@ -670,6 +718,7 @@ bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const st
 		chat->goal_iteration_repair_attempts = 0;
 	}
 	chat->goals.erase(it);
+	if (stage == GoalRemovalStage::PrepareOnly) preparation->prepared_revision = chat->goal_command_revision;
 	MarkDirty(app, chat->id);
 	return true;
 }

@@ -9,6 +9,7 @@ import { version as packageVersion } from '../../../package.json'
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 describe('SettingsModal memory settings', () => {
+  const originalSaveActions = { setVoiceInputSettings: useAppStore.getState().setVoiceInputSettings, setProviderAvailability: useAppStore.getState().setProviderAvailability }
   beforeEach(() => {
     vi.restoreAllMocks()
     window.cefQuery = undefined
@@ -53,6 +54,10 @@ describe('SettingsModal memory settings', () => {
           { id: 'writer', description: 'Write', builtIn: false },
         ],
       },
+      ...originalSaveActions,
+      providerAvailability: [],
+      voiceInputMode: 'system', voiceInputServerBaseUrl: 'https://api.openai.com', voiceInputServerEndpoint: '/v1/audio/transcriptions', voiceInputServerModel: 'whisper-1', voiceInputApiKeyEnv: 'OPENAI_API_KEY',
+      voiceInputCapabilities: { system: { supported: true, reason: '' }, server: { supported: false, reason: 'Server capture is unavailable on this platform.' }, local: { supported: false, reason: 'Local AI is not supported.' } },
       memoryEnabledDefault: true,
       memoryLevelDefault: 'strict',
       memoryIdleDelaySeconds: 120,
@@ -933,18 +938,22 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('updates the default memory selectivity level', () => {
+  it('updates the default memory selectivity level', async () => {
     const { host, root } = renderModal()
     openMemorySettingsSection(host)
     const group = host.querySelector('[role="radiogroup"][aria-label="Default memory level"]') as HTMLElement
-    const balanced = Array.from(group.querySelectorAll('button[role="radio"]')).find((button) => button.textContent === 'Balanced') as HTMLButtonElement
-    expect(group.querySelector('button[aria-checked="true"]')?.textContent).toBe('Strict')
+    const balanced = Array.from(group.querySelectorAll('button[role="radio"]')).find((button) => button.textContent === 'Balanced Creation') as HTMLButtonElement
+    expect(group.querySelector('button[aria-checked="true"]')?.textContent).toBe('Strict Creation')
 
-    act(() => {
-      balanced.click()
-    })
-
+    expect(Array.from(group.querySelectorAll('button[role="radio"]')).map((button) => button.textContent)).toEqual(['Off', 'Read Only', 'Strict Creation', 'Balanced Creation', 'Remember Everything'])
+    await act(async () => { balanced.click() })
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'balanced' })
+    const readOnly = Array.from(group.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Read Only')!
+    await act(async () => { readOnly.click() })
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ memoryLevelDefault: 'readOnly' })
+    const chatPolicy = host.querySelector<HTMLButtonElement>('button[aria-label="Current chat memory policy"]')!
+    act(() => chatPolicy.click())
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Default', 'Off', 'Read Only', 'Strict Creation', 'Balanced Creation', 'Remember Everything'])
     act(() => root.unmount())
     host.remove()
   })
@@ -1053,7 +1062,7 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
-  it('keeps provider chat defaults collapsed until toggled', () => {
+  it('keeps provider chat defaults collapsed until toggled', async () => {
     const { host, root } = renderModal()
 
     const defaultsSectionButton = Array.from(host.querySelectorAll('button')).find(
@@ -1083,14 +1092,21 @@ describe('SettingsModal memory settings', () => {
     expect(memoryLevel).toBeTruthy()
 
     act(() => memoryLevel.click())
+    expect(Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual(['Default', 'Off', 'Read Only', 'Strict Creation', 'Balanced Creation', 'Remember Everything'])
     const openMemory = Array.from(document.body.querySelectorAll('button[role="option"]')).find((button) => button.textContent?.includes('Save every valid')) as HTMLButtonElement
     expect(openMemory).toBeTruthy()
-    act(() => openMemory.click())
+    await act(async () => openMemory.click())
     expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({
       providerChatDefaults: expect.objectContaining({
         'codex-cli': expect.objectContaining({ memoryLevel: 'open', memoryEnabled: true }),
       }),
     }))
+
+    act(() => useAppStore.setState({ memoryEnabledDefault: false, memoryLevelDefault: 'off' }))
+    act(() => memoryLevel.click())
+    const inheritedMemory = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((button) => button.querySelector('span.block')?.textContent === 'Default')!
+    await act(async () => inheritedMemory.click())
+    expect(useAppStore.getState().setProviderChatDefaults).toHaveBeenCalledWith(expect.objectContaining({ providerChatDefaults: expect.objectContaining({ 'codex-cli': expect.objectContaining({ memoryLevel: 'default', memoryEnabled: false }) }) }))
 
     const smallModelWorkflow = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Architect + worker off')) as HTMLButtonElement
     expect(smallModelWorkflow).toBeTruthy()
@@ -1752,7 +1768,10 @@ describe('SettingsModal memory settings', () => {
     const { host, root } = renderModal()
     const voiceSection = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Voice Input'))
     act(() => voiceSection?.click())
-    expect(host.textContent).toContain('native system speech service')
+    expect(host.textContent).toContain('operating system speech service')
+    expect(host.querySelector<HTMLButtonElement>('button[role="radio"][aria-checked="true"]')?.textContent).toBe('System')
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Server')?.disabled).toBe(true)
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Local AI')?.disabled).toBe(true)
     expect(host.querySelector('button[aria-label="Speech-to-text service"]')).toBeNull()
     expect(host.querySelector('input[aria-label="Voice transcription server URL"]')).toBeNull()
     expect(host.textContent).not.toContain('OpenAI-compatible server')
@@ -2042,6 +2061,78 @@ describe('SettingsModal memory settings', () => {
     expect(useAppStore.getState().setEditorSettings).toHaveBeenCalledWith(expect.objectContaining({ fileExplorerApplication: '/Applications/Files.app' }))
     expect(host.textContent).toContain('File explorer could not be saved.')
     act(() => root.unmount()); host.remove()
+  })
+
+  it('disables unsupported dictation modes and refuses invalid server URLs without saving', async () => {
+    const save = vi.fn(async () => true)
+    useAppStore.setState({ setVoiceInputSettings: save })
+    const { host, root } = renderModal()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice Input"]')!.click())
+      const mode = (label: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === label)!
+      expect(mode('Server').disabled).toBe(true)
+      expect(mode('Local AI').disabled).toBe(true)
+      act(() => useAppStore.setState({ voiceInputCapabilities: { system: { supported: true, reason: '' }, server: { supported: true, reason: '' }, local: { supported: false, reason: 'Not supported' } } }))
+      act(() => mode('Server').click())
+      const url = host.querySelector<HTMLInputElement>('input[aria-label="Server URL"]')!
+      act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(url, 'http://remote.example.test'); url.dispatchEvent(new Event('input', { bubbles: true })) })
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Use HTTPS')
+      const saveButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save voice settings')!
+      expect(saveButton.disabled).toBe(true)
+      await act(async () => saveButton.click())
+      expect(save).not.toHaveBeenCalled()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('guards unsaved voice choices and saves server fields while keeping credentials and capabilities separate', async () => {
+    const capabilities = { system: { supported: true, reason: '' }, server: { supported: true, reason: '' }, local: { supported: false, reason: 'Not supported' } }
+    const save = vi.fn(async (settings: import('../../store/cpp/types').VoiceInputSettingsRequest) => {
+      useAppStore.setState({ voiceInputMode: settings.mode, voiceInputServerBaseUrl: settings.serverBaseUrl, voiceInputServerEndpoint: settings.serverEndpoint, voiceInputServerModel: settings.serverModel, voiceInputApiKeyEnv: settings.apiKeyEnv })
+      return true
+    })
+    useAppStore.setState({ voiceInputCapabilities: capabilities, setVoiceInputSettings: save })
+    const { host, root } = renderModal()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Voice Input"]')!.click())
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button[role="radio"]')).find((button) => button.textContent === 'Server')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory Settings"]')!.click())
+      const dialog = host.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Unsaved voice settings"]')!
+      expect(dialog).toBeTruthy()
+      act(() => Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep editing')!.click())
+      await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save voice settings')!.click())
+      expect(save).toHaveBeenCalledWith({ mode: 'server', serverBaseUrl: 'https://api.openai.com', serverEndpoint: '/v1/audio/transcriptions', serverModel: 'whisper-1', apiKeyEnv: 'OPENAI_API_KEY' })
+      expect(useAppStore.getState().voiceInputCapabilities).toBe(capabilities)
+      expect(host.querySelector<HTMLInputElement>('input[type="password"]')).toBeNull()
+      expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save voice settings')!.disabled).toBe(true)
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Memory Settings"]')!.click())
+      expect(host.querySelector('[aria-label="Unsaved voice settings"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Default memory level"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('binds provider saves to the selected host and retains a failed draft for retry', async () => {
+    const save = vi.fn(async (_request: import('../../store/cpp/types').ProviderAvailabilityRequest) => false)
+    useAppStore.setState({ executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }], setProviderAvailability: save })
+    const { host, root } = renderModal()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Codex"]')!.click())
+      const availability = () => host.querySelector<HTMLButtonElement>('button[aria-label="Codex availability"]')!
+      expect(availability().textContent).toContain('Disabled')
+      act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
+      expect(availability().textContent).toContain('Enabled')
+      act(() => availability().click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent === 'Disabled')!.click())
+      const saveButton = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save provider settings')!
+      await act(async () => saveButton().click())
+      expect(save).toHaveBeenCalledWith({ providerId: 'codex-cli', executionHostId: 'lab', enabled: false })
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not save provider settings')
+      expect(availability().textContent).toContain('Disabled')
+      expect(saveButton().disabled).toBe(false)
+      save.mockImplementation(async (request) => { useAppStore.setState((state) => ({ providerAvailability: [...state.providerAvailability, request] })); return true })
+      await act(async () => saveButton().click())
+      expect(useAppStore.getState().providerAvailability).toEqual([{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }, { providerId: 'codex-cli', executionHostId: 'lab', enabled: false }])
+      expect(saveButton().disabled).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
 })

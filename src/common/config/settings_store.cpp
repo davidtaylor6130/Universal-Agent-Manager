@@ -52,6 +52,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
 	constexpr std::string_view kGitEnabledKey = "git_enabled";
 	constexpr std::string_view kGitAutoWorktreeKey = "git_auto_worktree";
+	constexpr std::string_view kGitPortMethodKey = "git_port_method";
+	constexpr std::string_view kGitPullBeforeChatKey = "git_pull_before_chat";
 	constexpr std::string_view kGitDefaultBaseBranchKey = "git_default_base_branch";
 	constexpr std::string_view kWorktreeCleanupEnabledKey = "worktree_cleanup_enabled";
 	constexpr std::string_view kWorktreeRetentionDaysKey = "worktree_retention_days";
@@ -608,6 +610,8 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
 	WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
 	WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
+	WriteBoolSetting(lines, kGitPullBeforeChatKey, normalized.git_pull_before_chat);
+	WriteRawSetting(lines, kGitPortMethodKey, normalized.git_port_method == GitPortMethod::Merge ? "merge" : normalized.git_port_method == GitPortMethod::Squash ? "squash" : "patch");
 	WriteEncodedSetting(lines, kGitDefaultBaseBranchKey, normalized.git_default_base_branch);
 	WriteBoolSetting(lines, kWorktreeCleanupEnabledKey, normalized.worktree_cleanup_enabled);
 	WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
@@ -759,6 +763,14 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kGitAutoWorktreeKey)
 		{
 			settings.git_auto_worktree = uam::parse::BoolOr(value, settings.git_auto_worktree);
+		}
+		else if (key == kGitPortMethodKey)
+		{
+			settings.git_port_method = value == "merge" ? GitPortMethod::Merge : value == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;
+		}
+		else if (key == kGitPullBeforeChatKey)
+		{
+			settings.git_pull_before_chat = uam::parse::BoolOr(value, settings.git_pull_before_chat);
 		}
 		else if (key == kGitDefaultBaseBranchKey)
 		{

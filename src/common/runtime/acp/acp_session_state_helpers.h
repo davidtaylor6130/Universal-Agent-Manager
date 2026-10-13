@@ -3,6 +3,7 @@
 #include "common/state/app_state.h"
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
+#include "common/provider/provider_runtime.h"
 #include "common/security/command_safety.h"
 
 #include <algorithm>
@@ -82,7 +83,7 @@ inline bool AcpSessionHasDeferredUserQueueOnly(const AcpSessionState& session)
 inline bool AcpSessionHasBlockingRuntimeWork(const AcpSessionState& session)
 {
 	return AcpSessionHasActiveTurn(session) || AcpSessionHasPendingRuntimeRequest(session) ||
-	    !session.claude_live_background_task_ids.empty() || !session.codex_live_background_thread_ids.empty();
+	    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session) > 0;
 }
 
 

@@ -633,7 +633,7 @@ void ChatDomainService::SelectChatById(uam::AppState& app, const std::string& ch
 	RefreshRememberedSelection(app);
 }
 
-ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const std::string& provider_id, bool automatic_worktree) const
+ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const std::string& provider_id, bool automatic_worktree, std::optional<std::string> git_base_branch_override) const
 {
 	ChatSession chat;
 	chat.id = uam::chat_ids::NewChatId();
@@ -648,6 +648,7 @@ ChatSession ChatDomainService::CreateNewChat(const std::string& folder_id, const
 	chat.interaction_at = uam::time::InteractionTimestampNow();
 	chat.last_opened_at = chat.created_at;
 	chat.title = "Chat " + chat.created_at;
+	chat.git_base_branch_override = std::move(git_base_branch_override);
 	if (automatic_worktree) chat.workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
 	return chat;
 }

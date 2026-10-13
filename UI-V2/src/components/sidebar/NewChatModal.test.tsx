@@ -9,6 +9,7 @@ import * as modelOptions from '../chat/modelOptions'
 
 const originalDiscoverProviderModels = useAppStore.getState().discoverProviderModels
 const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
+const originalSetNewChatModalOpen = useAppStore.getState().setNewChatModalOpen
 
 describe('NewChatModal', () => {
   beforeEach(() => {
@@ -1024,6 +1025,32 @@ describe('NewChatModal', () => {
       await act(async () => create().click())
       expect(addSession).toHaveBeenLastCalledWith('New chat', 'project', 'gemini-cli', undefined, undefined, 'chat', 'local', '/tmp/project', 'automatic')
     } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('passes the captured worktree context and refuses stale context instead of default isolation', async () => {
+    const source = { id: 'source-chat', name: 'Source', viewMode: 'chat' as const, folderId: 'project', createdAt: new Date(), updatedAt: new Date(), executionHostId: 'local', workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '/tmp/selected-worktree', workspaceBranchName: 'selected-branch' }
+    const context = { sourceChatId: source.id, expectedWorkspaceDirectory: source.workspaceWorktreeDirectory, expectedExecutionHostId: 'local' }
+    const addSession = vi.fn().mockResolvedValue(false)
+    useAppStore.setState({ sessions: [source], activeSessionId: 'unrelated-chat', newChatFolderId: 'project', newChatWorktreeContext: context, addSession, setNewChatModalOpen: originalSetNewChatModalOpen })
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<NewChatModal />))
+      expect(host.textContent).toContain('Using the selected worktree: selected-branch')
+      const create = () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      await act(async () => create().click())
+      expect(addSession).toHaveBeenCalledOnce()
+      expect(addSession.mock.calls[0].slice(6)).toEqual(['local', '', 'explicit', context])
+      act(() => useAppStore.setState({ sessions: [{ ...source, workspaceWorktreeDirectory: '/tmp/replaced-worktree' }] }))
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+      expect(host.textContent).toContain('The selected worktree changed')
+      expect(create().disabled).toBe(true)
+      await act(async () => create().click())
+      expect(addSession).toHaveBeenCalledOnce()
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Close new chat"]')!.click())
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+      act(() => useAppStore.getState().setNewChatModalOpen(true, 'project'))
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ newChatWorktreeContext: null }) }
   })
 
 })

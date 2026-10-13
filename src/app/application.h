@@ -51,7 +51,7 @@ class Application
 	uam::ComputerUseService m_computerUseService;
 	uam::WorktreeRetentionService m_worktreeRetention;
 	PlatformServices* m_platformServices = nullptr;
-	std::unique_ptr<uam::platform::DataRootLock> m_dataRootLock;
+	std::shared_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	std::shared_ptr<std::atomic_bool> m_lifetimeToken = std::make_shared<std::atomic_bool>(true);
 	CefRefPtr<CefBrowser> m_browser;
 	bool m_done = false;

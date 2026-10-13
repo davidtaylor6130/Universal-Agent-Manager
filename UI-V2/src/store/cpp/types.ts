@@ -65,7 +65,18 @@ export interface ChatAttachmentInput {
   dataBase64?: string
 }
 
+export interface NewChatWorktreeContext {
+  sourceChatId: string
+  expectedWorkspaceDirectory: string
+  expectedExecutionHostId: string
+}
+
+export interface CreateSessionOptions extends Partial<NewChatWorktreeContext> {
+  gitBaseBranch?: string
+}
+
 export interface CppChat {
+  gitBaseBranch?: string | null
   routingMode?: 'explicit' | 'automatic'
   routingSourceFolderId?: string
   routingSourceDirectory?: string
@@ -595,7 +606,48 @@ export interface ShellAction {
   openWorkspace: boolean
 }
 
-export interface CppSettings {
+export interface ProviderAvailabilityOverride {
+  providerId: string
+  executionHostId: string
+  enabled: boolean
+}
+
+export type ProviderAvailabilityRequest = ProviderAvailabilityOverride
+export interface VoiceInputSettingsRequest {
+  mode: VoiceInputMode
+  serverBaseUrl?: string
+  serverEndpoint?: string
+  serverModel?: string
+  apiKeyEnv?: string
+}
+
+export type VoiceInputMode = 'system' | 'local' | 'server'
+export type VoiceInputCapabilities = Partial<Record<VoiceInputMode, { supported: boolean; reason: string }>>
+
+export interface VoiceInputSettings {
+  voiceInputMode?: VoiceInputMode
+  voiceInputServerBaseUrl?: string
+  voiceInputServerEndpoint?: string
+  voiceInputServerModel?: string
+  voiceInputApiKeyEnv?: string
+  voiceInputCapabilities?: VoiceInputCapabilities
+}
+
+export interface VcsStorageSettings {
+  gitAutoWorktree: boolean
+  gitDefaultBaseBranch: string
+  gitPullBeforeChat: boolean
+  gitPortMethod: 'patch' | 'merge' | 'squash'
+  worktreeCleanupEnabled: boolean
+  worktreeRetentionDays: number
+  backupLogRetentionDays: number
+  httpCacheClearIntervalDays: number
+}
+export type VcsSettingsRequest = { gitEnabled: boolean; svnEnabled: boolean } & Partial<Omit<VcsStorageSettings, 'backupLogRetentionDays' | 'httpCacheClearIntervalDays'>>
+export type StorageSettingsRequest = Pick<VcsStorageSettings, 'backupLogRetentionDays' | 'httpCacheClearIntervalDays'>
+
+export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSettings> {
+  providerAvailability?: ProviderAvailabilityOverride[]
   activeProviderId: string
   theme: StoredTheme
   showProviderIconsInSidebar?: boolean
@@ -785,7 +837,7 @@ export interface CppStatePatch {
   selectedChatId?: string | null
   providers?: CppProvider[]
   providerModelCatalogs?: ProviderModelCatalog[]
-  settings?: CppSettings
+  settings?: Partial<CppSettings>
   memoryActivity?: MemoryActivity
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]

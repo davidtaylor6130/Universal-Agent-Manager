@@ -185,6 +185,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
+		{"setStorageSettings", &UamQueryHandler::HandleSetStorageSettings},
 		{"setProviderAvailability", &UamQueryHandler::HandleSetProviderAvailability},
 		{"setUpdateSettings", &UamQueryHandler::HandleSetUpdateSettings},
 		{"setProviderChatDefaults", &UamQueryHandler::HandleSetProviderChatDefaults},
@@ -253,6 +254,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"portChatWorktreeChanges", &UamQueryHandler::HandlePortChatWorktreeChanges},
 		{"previewChatTurnRollback", &UamQueryHandler::HandlePreviewChatTurnRollback},
 		{"rollbackChatTurn", &UamQueryHandler::HandleRollbackChatTurn},
+		{"getWorkspaceVcsContext", &UamQueryHandler::HandleGetWorkspaceVcsContext},
 		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
 		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
 		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
@@ -326,14 +328,32 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	const std::string& action = parsed.request.action;
 	const nlohmann::json& payload = parsed.request.payload;
 
+	const std::string port_chat_id = action == "portChatWorktreeChanges" && payload.contains("chatId") && payload["chatId"].is_string() ? payload["chatId"].get<std::string>() : std::string();
+	const std::unordered_map<std::string, std::shared_ptr<uam::AppState::GitPortRequest>>::const_iterator previous_port = m_app.git_port_requests.find(port_chat_id);
+	const std::shared_ptr<uam::AppState::GitPortRequest> prior_port = previous_port == m_app.git_port_requests.end() ? nullptr : previous_port->second;
 	try
 	{
 		if (action == "searchChatMessages") m_searchQueryId = query_id;
+		if (action == "setGoal" || action == "updateGoalStatus" || action == "resumeGoal" ||
+		    action == "updateGoalObjective" || action == "setActiveGoal" || action == "removeGoal")
+			m_goalQueryIdentities[callback.get()] = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
 		if (action == "setCustomIcon") BeginChatIconQuery(callback.get(),
 		    browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 		if (!DispatchAction(action, browser, payload, callback))
 		{
 			callback->Failure(404, "Unknown action: " + action);
+		}
+		if (!port_chat_id.empty())
+		{
+			const std::unordered_map<std::string, std::shared_ptr<uam::AppState::GitPortRequest>>::const_iterator current = m_app.git_port_requests.find(port_chat_id);
+			const std::weak_ptr<void> lifetime = m_asyncLifetime;
+			if (current != m_app.git_port_requests.end() && current->second != prior_port &&
+			    !current->second->handler_lifetime.owner_before(lifetime) && !lifetime.owner_before(current->second->handler_lifetime))
+			{
+				current->second->query_id = query_id;
+				current->second->browser_id = browser ? browser->GetIdentifier() : -1;
+				current->second->frame_id = frame ? frame->GetIdentifier().ToString() : "";
+			}
 		}
 	}
 	catch (const nlohmann::json::exception& ex)
@@ -346,6 +366,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	}
 
 	m_chatIconQueryIdentities.erase(callback.get());
+	m_goalQueryIdentities.erase(callback.get());
 	return true;
 }
 
@@ -368,11 +389,24 @@ void UamQueryHandler::CancelChatIconQuery(int browser_id, const std::string& fra
 
 void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id)
 {
+	const ChatIconQueryIdentity goal_identity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
+	const std::map<ChatIconQueryIdentity, std::weak_ptr<GoalMutationOperation>>::iterator goal_operation = m_goalQueryOperations.find(goal_identity);
+	if (goal_operation != m_goalQueryOperations.end())
+	{
+		if (const std::shared_ptr<GoalMutationOperation> operation = goal_operation->second.lock()) operation->cancelled = true;
+		m_goalQueryOperations.erase(goal_operation);
+	}
 	CancelChatIconQuery(browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 	if (query_id == m_searchQueryId)
 	{
 		++*m_searchGeneration;
 		m_searchQueryId = -1;
 	}
-	// Only the latest deep-search owner is cancellable here.
+	const std::weak_ptr<void> lifetime = m_asyncLifetime;
+	for (const std::pair<const std::string, std::shared_ptr<uam::AppState::GitPortRequest>>& entry : m_app.git_port_requests)
+	{
+		const uam::AppState::GitPortRequest& request = *entry.second;
+		if (browser && frame && request.query_id == query_id && request.browser_id == browser->GetIdentifier() && request.frame_id == frame->GetIdentifier().ToString() &&
+		    !request.handler_lifetime.owner_before(lifetime) && !lifetime.owner_before(request.handler_lifetime)) request.cancellation->request_stop();
+	}
 }

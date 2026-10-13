@@ -2,6 +2,8 @@
 
 #include "common/utils/time_utils.h"
 #include "common/paths/path_utils.h"
+#include "common/paths/workspace_lease.h"
+#include <atomic>
 
 #include <chrono>
 #include <condition_variable>
@@ -29,6 +31,8 @@ namespace
 	std::filesystem::path g_path;
 	std::uintmax_t g_bytes = 0;
 	std::unique_ptr<std::jthread> g_worker;
+	uam::WorkspaceLeaseGate g_retentionGate;
+	std::atomic<int> g_backupRetentionDays{14};
 	constexpr std::size_t kMaxQueuedBytes = 512 * 1024;
 
 	bool Open(std::ios_base::openmode mode)
@@ -90,13 +94,17 @@ namespace
 
 	void ExpirePreviousLog()
 	{
+		const std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = g_retentionGate.TryAcquireCleanup();
+		if (!lease) return;
+		const int days = g_backupRetentionDays.load();
+		if (days == 0) return;
 		std::filesystem::path previous = g_path;
 		previous += ".1";
 		std::error_code error;
 		const std::filesystem::file_status status = std::filesystem::symlink_status(previous, error);
 		if (error || !std::filesystem::is_regular_file(status)) return;
 		const std::filesystem::file_time_type modified = std::filesystem::last_write_time(previous, error);
-		if (!error && modified < std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 14))
+		if (!error && modified < std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * days))
 		{
 			std::filesystem::remove(previous, error);
 			if (error) std::cerr << "Old diagnostic log could not be removed: " << error.message() << '\n';
@@ -146,7 +154,16 @@ namespace
 	}
 }
 
-bool StartFileLog(const std::filesystem::path& path, std::string& error)
+bool ConfigureBackupRetention(int days)
+{
+	if (days < 0 || days > 3650) return false;
+	const std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = g_retentionGate.TryAcquireMutation();
+	if (!lease) return false;
+	g_backupRetentionDays.store(days);
+	return true;
+}
+
+bool StartFileLog(const std::filesystem::path& path, std::string& error, int backup_retention_days)
 {
 	std::lock_guard<std::mutex> lock(g_lifecycleMutex);
 	error.clear();
@@ -155,6 +172,7 @@ bool StartFileLog(const std::filesystem::path& path, std::string& error)
 		error = "Diagnostic file logging is already active.";
 		return false;
 	}
+	if (!ConfigureBackupRetention(backup_retention_days)) { error = "Diagnostic backup retention is invalid or busy."; return false; }
 	g_path = path;
 	if (Open(std::ios::app))
 	{

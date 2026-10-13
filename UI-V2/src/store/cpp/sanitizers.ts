@@ -44,6 +44,11 @@ import type {
   MemoryActivity,
   MemoryWorkerBinding,
   ProviderChatDefaults,
+  ProviderAvailabilityOverride,
+  VoiceInputMode,
+  VoiceInputCapabilities,
+  VoiceInputSettings,
+  VcsStorageSettings,
   ProviderModelCatalog,
   ShellAction,
   VcsCommitResult,
@@ -58,6 +63,7 @@ import { normalizeStoredTheme } from '../../utils/themeStorage'
 import {
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
   normalizeCliProviderIdAlias,
+  SUPPORTED_CLI_PROVIDER_IDS,
   providerCapabilities,
 } from '../../utils/providerMetadata'
 
@@ -888,11 +894,18 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
   }
 }
 
+/** Native branch override boundary: undefined is invalid/absent, empty means explicit HEAD. */
+export function sanitizeGitBaseBranch(value: unknown): string | undefined {
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value) || new TextEncoder().encode(value).length > 255) return undefined
+  return value.replace(/^ +| +$/g, '')
+}
+
 export function sanitizeCppChat(value: unknown): CppChat | null {
   if (!isRecord(value)) return null
   const id = stringOr(value.id).trim()
   if (!id) return null
   return {
+    gitBaseBranch: value.gitBaseBranch === null ? null : sanitizeGitBaseBranch(value.gitBaseBranch),
     id,
     executionHostId: stringOr(value.executionHostId).trim() || 'local',
     remoteRecoveryEnabled: booleanOr(value.remoteRecoveryEnabled, false),
@@ -1476,6 +1489,89 @@ export function sanitizeCentralProviderConfiguration(value: unknown): CentralPro
   }
 }
 
+/** Reject an invalid override set instead of accidentally enabling a previously disabled provider. */
+export function sanitizeProviderAvailability(value: unknown): ProviderAvailabilityOverride[] | undefined {
+  if (!Array.isArray(value) || value.length > 4096) return undefined
+  const entries = new Map<string, ProviderAvailabilityOverride>()
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.providerId !== 'string' || typeof item.executionHostId !== 'string' || typeof item.enabled !== 'boolean') return undefined
+    const providerId = normalizeCliProviderIdAlias(item.providerId)
+    const executionHostId = item.executionHostId.trim() || 'local'
+    if (!SUPPORTED_CLI_PROVIDER_IDS.includes(providerId) || !/^[a-zA-Z0-9_-]{1,64}$/.test(executionHostId)) return undefined
+    entries.set(JSON.stringify([providerId, executionHostId]), { providerId, executionHostId, enabled: item.enabled })
+  }
+  return [...entries.values()]
+}
+
+function voiceText(value: unknown, limit: number): string | undefined {
+  if (typeof value !== 'string' || /[\u0000-\u001f\u007f]/.test(value) || new TextEncoder().encode(value).length > limit) return undefined
+  return value.trim()
+}
+
+/** Preserve only validated native settings and explicit capability observations; never infer platform support. */
+export function sanitizeVoiceInputSettings(value: unknown): VoiceInputSettings {
+  if (!isRecord(value)) return {}
+  const settings: VoiceInputSettings = {}
+  if (typeof value.voiceInputMode === 'string') {
+    const mode = value.voiceInputMode.trim().toLowerCase()
+    if (mode === 'system' || mode === 'local' || mode === 'server') settings.voiceInputMode = mode
+  }
+  const url = voiceText(value.voiceInputServerBaseUrl, 4096)
+  if (url !== undefined && !/[\\@?#\s]/.test(url)) {
+    const lower = url.toLowerCase()
+    const https = lower.startsWith('https://')
+    const http = lower.startsWith('http://')
+    const authority = lower.slice(https ? 8 : 7).split('/')[0]
+    if (authority && (https || (http && /^(localhost(?::.*)?|127\.0\.0\.1(?::.*)?|\[::1\](?::.*)?)$/.test(authority)))) settings.voiceInputServerBaseUrl = url
+  }
+  const endpoint = voiceText(value.voiceInputServerEndpoint, 2048)
+  if (endpoint?.startsWith('/') && !endpoint.startsWith('//') && !/[ \\?#]/.test(endpoint)) settings.voiceInputServerEndpoint = endpoint
+  const model = voiceText(value.voiceInputServerModel, 256)
+  if (model) settings.voiceInputServerModel = model
+  const env = voiceText(value.voiceInputApiKeyEnv, 128)
+  if (env !== undefined && (env === '' || /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(env))) settings.voiceInputApiKeyEnv = env
+  if (isRecord(value.voiceInputCapabilities)) {
+    const capabilities: VoiceInputCapabilities = {}
+    let valid = true
+    for (const mode of ['system', 'local', 'server'] as VoiceInputMode[]) {
+      if (!(mode in value.voiceInputCapabilities)) continue
+      const entry = value.voiceInputCapabilities[mode]
+      const reason = isRecord(entry) ? voiceText(entry.reason, 4096) : undefined
+      if (!isRecord(entry) || typeof entry.supported !== 'boolean' || reason === undefined) { valid = false; break }
+      capabilities[mode] = { supported: entry.supported, reason }
+    }
+    if (valid) settings.voiceInputCapabilities = capabilities
+  }
+  return settings
+}
+
+export function sanitizeVcsStorageSettings(value: unknown): Partial<VcsStorageSettings> {
+  if (!isRecord(value)) return {}
+  const settings: Partial<VcsStorageSettings> = {}
+  for (const key of ['gitAutoWorktree', 'gitPullBeforeChat', 'worktreeCleanupEnabled'] as const) {
+    if (typeof value[key] === 'boolean') settings[key] = value[key]
+  }
+  const branch = sanitizeGitBaseBranch(value.gitDefaultBaseBranch)
+  if (branch !== undefined) settings.gitDefaultBaseBranch = branch
+  if (value.gitPortMethod === 'patch' || value.gitPortMethod === 'merge' || value.gitPortMethod === 'squash') settings.gitPortMethod = value.gitPortMethod
+  for (const key of ['worktreeRetentionDays', 'backupLogRetentionDays', 'httpCacheClearIntervalDays'] as const) {
+    const days = value[key]
+    if (typeof days === 'number' && Number.isInteger(days) && days >= (key === 'worktreeRetentionDays' ? 1 : 0) && days <= 3650) settings[key] = days
+  }
+  return settings
+}
+
+/** Partial bridge updates carry only explicitly supplied settings, so omitted values cannot reset saved configuration. */
+function sanitizeCppSettingsPatch(value: Record<string, unknown>): Partial<CppSettings> {
+  const sanitized = sanitizeCppSettings(value)
+  return Object.fromEntries(Object.keys(value).flatMap((key) => {
+    if (!Object.prototype.hasOwnProperty.call(sanitized, key)) return []
+    if ((key === 'gitEnabled' || key === 'svnEnabled') && typeof value[key] !== 'boolean') return []
+    const field = sanitized[key as keyof CppSettings]
+    return field === undefined ? [] : [[key, field]]
+  })) as Partial<CppSettings>
+}
+
 export function sanitizeCppSettings(value: unknown): CppSettings {
   if (!isRecord(value)) {
     return {
@@ -1615,6 +1711,9 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     ? requestedUamAgentCycleShortcut as CppSettings['uamAgentCycleShortcut']
     : 'shift+tab'
   return {
+    ...sanitizeVoiceInputSettings(value),
+    ...sanitizeVcsStorageSettings(value),
+    providerAvailability: sanitizeProviderAvailability(value.providerAvailability),
     activeProviderId: stringOr(value.activeProviderId, GEMINI_CLI_PROVIDER_ID),
     theme,
     showProviderIconsInSidebar: booleanOr(value.showProviderIconsInSidebar, true),
@@ -1864,11 +1963,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
       ? sanitizeProviderModelCatalogs(value.providerModelCatalogs)
       : undefined,
     startupNativeImports: value.startupNativeImports !== undefined ? sanitizeStartupNativeImportStatus(value.startupNativeImports) : undefined,
-    settings: isRecord(value.settings) ? {
-      ...sanitizeCppSettings(value.settings),
-      gitEnabled: typeof value.settings.gitEnabled === 'boolean' ? value.settings.gitEnabled : undefined,
-      svnEnabled: typeof value.settings.svnEnabled === 'boolean' ? value.settings.svnEnabled : undefined,
-    } : undefined,
+    settings: isRecord(value.settings) ? sanitizeCppSettingsPatch(value.settings) : undefined,
     memoryActivity: value.memoryActivity !== undefined ? sanitizeMemoryActivity(value.memoryActivity) : undefined,
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,

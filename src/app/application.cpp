@@ -1,3 +1,5 @@
+#include "app/storage_retention_service.h"
+#include "include/cef_request_context.h"
 #include "app/execution_routing_integration.h"
 #include "application.h"
 #include <thread>
@@ -93,6 +95,16 @@ namespace uam_cef_globals
 
 namespace
 {
+	class HttpCacheClearCompletion : public CefCompletionCallback
+	{
+	  public:
+		explicit HttpCacheClearCompletion(std::function<void()> completion) : m_completion(std::move(completion)) {}
+		void OnComplete() override { m_completion(); }
+	  private:
+		std::function<void()> m_completion;
+		IMPLEMENT_REFCOUNTING(HttpCacheClearCompletion);
+	};
+
 
 	void ResetRuntimeCliVersionState(uam::AppState& app)
 	{
@@ -472,6 +484,15 @@ void Application::PollTick()
 	const bool history_discovery_changed = PollHistoryDiscovery();
 	const std::chrono::steady_clock::time_point history_finished = std::chrono::steady_clock::now();
 	m_worktreeRetention.Poll(m_app);
+	if (m_app.storage_retention_service != nullptr)
+		m_app.storage_retention_service->Poll(m_app, [this](std::function<void()> completion)
+		{
+			if (!m_cefInitialized) return false;
+			const CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
+			if (!context) return false;
+			context->ClearHttpCache(new HttpCacheClearCompletion(std::move(completion)));
+			return true;
+		});
 	const std::chrono::steady_clock::time_point retention_finished = std::chrono::steady_clock::now();
 
 	// Poll the provider model catalog service for async model refresh completion.
@@ -622,7 +643,7 @@ bool Application::InitializeState()
 		return false;
 	}
 	std::string log_error;
-	if (!uam::diagnostics::StartFileLog(m_app.data_root / "uam.log", log_error))
+	if (!uam::diagnostics::StartFileLog(m_app.data_root / "uam.log", log_error, 0))
 		uam::diagnostics::Write(log_error);
 	uam::diagnostics::Write("[storage] data_root=" + uam::paths::Utf8PathString(m_app.data_root));
 	std::string uam_control_error;
@@ -648,6 +669,7 @@ bool Application::InitializeState()
 		return false;
 	}
 	m_settingsLoaded = true;
+	m_app.storage_retention_service = std::make_shared<uam::StorageRetentionService>(m_dataRootLock);
 	bool settings_dirty = false;
 	const fs::path bundled_skills_root = MarkdownStoreService::BundledRootForExecutable(executable_path);
 	if (m_app.settings.markdown_store_directory.empty())
@@ -829,6 +851,7 @@ bool Application::InitializeCef(CefMainArgs main_args)
 void Application::Shutdown()
 {
 	m_worktreeRetention.Stop();
+	if (m_app.storage_retention_service != nullptr) m_app.storage_retention_service->Stop();
 	if (m_app.startup_native_import_service != nullptr) m_app.startup_native_import_service->Cancel();
 	if (m_shutdownComplete)
 	{

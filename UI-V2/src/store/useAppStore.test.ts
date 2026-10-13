@@ -5706,13 +5706,34 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState()).toMatchObject({ gitEnabled: true, svnEnabled: true })
   })
 
-  it('keeps VCS switches absent from unrelated or malformed settings patches', () => {
-    expect(sanitizeCppStatePatch({ stateRevision: 2, settings: { theme: 'focus' } })?.settings)
-      .toMatchObject({ gitEnabled: undefined, svnEnabled: undefined })
-    expect(sanitizeCppStatePatch({ stateRevision: 3, settings: { gitEnabled: false, svnEnabled: true } })?.settings)
-      .toMatchObject({ gitEnabled: false, svnEnabled: true })
-    expect(sanitizeCppStatePatch({ stateRevision: 4, settings: { gitEnabled: 'false', svnEnabled: null } })?.settings)
-      .toMatchObject({ gitEnabled: undefined, svnEnabled: undefined })
+  it('keeps VCS switches absent from unrelated or malformed settings patches', async () => {
+    const unrelated = sanitizeCppStatePatch({ stateRevision: 2, settings: { theme: 'focus' } })!
+    const valid = sanitizeCppStatePatch({ stateRevision: 3, settings: { gitEnabled: true, svnEnabled: false } })!
+    const malformed = sanitizeCppStatePatch({ stateRevision: 4, settings: { gitEnabled: 'false', svnEnabled: null } })!
+    expect(unrelated.settings).toEqual({ theme: 'focus' })
+    expect(valid.settings).toEqual({ gitEnabled: true, svnEnabled: false })
+    expect(malformed.settings).toEqual({})
+    for (const patch of [unrelated, malformed]) {
+      expect(Object.prototype.hasOwnProperty.call(patch.settings, 'gitEnabled')).toBe(false)
+      expect(Object.prototype.hasOwnProperty.call(patch.settings, 'svnEnabled')).toBe(false)
+    }
+
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.settings.gitEnabled = false
+    initial.settings.svnEnabled = true
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(testWindow.uamPush).toBeTypeOf('function')
+    testWindow.uamPush!({ type: 'statePatch', data: unrelated })
+    expect(cefStore.getState()).toMatchObject({ gitEnabled: false, svnEnabled: true })
+    testWindow.uamPush!({ type: 'statePatch', data: valid })
+    expect(cefStore.getState()).toMatchObject({ gitEnabled: true, svnEnabled: false })
+    testWindow.uamPush!({ type: 'statePatch', data: malformed })
+    expect(cefStore.getState()).toMatchObject({ gitEnabled: true, svnEnabled: false })
   })
 
   it('saves and applies shell actions through CEF', async () => {

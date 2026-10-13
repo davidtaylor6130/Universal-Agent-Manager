@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/paths/app_paths.h"
+#include "common/utils/hash_utils.h"
 #include <future>
 
 using namespace uam_test;
@@ -1445,4 +1446,1103 @@ UAM_TEST(AcpSmallModelLargeUnsavedHistoryKeepsAdmissionPollWithinInputBudget)
 	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
 	AwaitDelivery(app, *fixture.session);
 	UAM_ASSERT(fixture.session->prompt_request_id != 0);
+}
+
+static void CheckColdLocalConfigurationAdmission(std::string_view variation)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	TempDir temp("uam-cold-local-admission");
+	const fs::path assets = temp.root / "private-skills" / "fixture";
+	fs::create_directories(assets);
+	UAM_ASSERT(uam::io::WriteTextFile(assets / "SKILL.md", "Read the fixture references when requested."));
+	// This supported cold bundle exercises real resource reads, hashes and installation.
+	for (int index = 0; index < 2048; ++index)
+	{
+		std::ofstream file(assets / ("reference-" + std::to_string(index) + ".txt"), std::ios::binary);
+		file << "Private fixture reference " << index << std::string(512, 'x');
+		UAM_ASSERT(file.good());
+	}
+	const fs::path provider_input = temp.root / "private-provider-input.jsonl";
+	const fs::path prompt_log = temp.root / "private-provider-prompts.jsonl";
+#if defined(_WIN32)
+	const fs::path shim = temp.root / "opencode.cmd";
+	const fs::path script = temp.root / "provider-fixture.ps1";
+	UAM_ASSERT(uam::io::WriteTextFile(shim, "@echo off\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%~dp0provider-fixture.ps1\"\r\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(script, R"(
+$heldId = $null
+$heldOnce = $false
+function Reply($id, $result) { [Console]::WriteLine((@{jsonrpc='2.0';id=$id;result=$result} | ConvertTo-Json -Compress -Depth 12)) }
+while ($null -ne ($line = [Console]::ReadLine())) {
+  [IO.File]::AppendAllText($env:UAM_TEST_COLD_INPUT, $line + "`n")
+  $request = $line | ConvertFrom-Json
+  switch ($request.method) {
+    'initialize' { Reply $request.id @{protocolVersion=1;agentCapabilities=@{loadSession=$true}} }
+    'session/new' { Reply $request.id @{sessionId='cold-private-session'}; if ($env:UAM_TEST_COLD_EXIT_AFTER_SETUP -eq '1') { exit 0 } }
+    'session/load' { Reply $request.id @{sessionId='cold-private-session'}; if ($env:UAM_TEST_COLD_EXIT_AFTER_SETUP -eq '1') { exit 0 } }
+    'session/set_mode' { Reply $request.id @{} }
+    'session/set_config_option' { Reply $request.id @{} }
+    'fixture/chunk' { [Console]::WriteLine('{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"stream-during-agent-preparation"}}}}') }
+    'fixture/release' { if ($null -ne $heldId) { Reply $heldId @{stopReason='end_turn'}; $heldId = $null } }
+    'session/prompt' {
+      $durable = [IO.File]::ReadAllText($env:UAM_TEST_COLD_PRIMARY)
+      if (-not $durable.Contains('Launch with the private cold configuration') -or -not $durable.Contains('199xxxxxxxx') -or -not $durable.Contains($env:UAM_TEST_COLD_AGENT_HASH) -or -not $durable.Contains('cold-private-session')) { exit 94 }
+      [IO.File]::AppendAllText($env:UAM_TEST_COLD_PROMPTS, $line + "`n")
+      [Console]::WriteLine('{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"private-cold-launch-ok"}}}}')
+      if ($env:UAM_TEST_COLD_HOLD_COMPLETION -ne '1' -or $heldOnce) { Reply $request.id @{stopReason='end_turn'} } else { $heldId = $request.id; $heldOnce = $true }
+    }
+  }
+}
+)"));
+	const char separator = ';';
+#else
+	const fs::path shim = temp.root / "opencode";
+	UAM_ASSERT(uam::io::WriteTextFile(shim, R"(#!/bin/sh
+held_id=
+held_once=0
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$UAM_TEST_COLD_INPUT"
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}\n' "$id" ;;
+    *'"method":"session/new"'*|*'"method":"session/load"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"cold-private-session"}}\n' "$id"; if [ "$UAM_TEST_COLD_EXIT_AFTER_SETUP" = 1 ]; then exit 0; fi ;;
+    *'"method":"session/set_mode"'*|*'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"fixture/chunk"'*) printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"stream-during-agent-preparation"}}}}' ;;
+    *'"method":"fixture/release"'*) if [ -n "$held_id" ]; then printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$held_id"; held_id=; fi ;;
+    *'"method":"session/prompt"'*)
+      grep -Fq 'Launch with the private cold configuration' "$UAM_TEST_COLD_PRIMARY" || exit 94
+      grep -Fq '199xxxxxxxx' "$UAM_TEST_COLD_PRIMARY" || exit 94
+      grep -Fq "$UAM_TEST_COLD_AGENT_HASH" "$UAM_TEST_COLD_PRIMARY" || exit 94
+      grep -Fq 'cold-private-session' "$UAM_TEST_COLD_PRIMARY" || exit 94
+      printf '%s\n' "$line" >> "$UAM_TEST_COLD_PROMPTS"
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"private-cold-launch-ok"}}}}'
+      if [ "$UAM_TEST_COLD_HOLD_COMPLETION" != 1 ] || [ "$held_once" = 1 ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      else
+        held_id=$id
+        held_once=1
+      fi
+      ;;
+  esac
+done
+)"));
+	fs::permissions(shim, fs::perms::owner_all, fs::perm_options::replace);
+	const char separator = ':';
+#endif
+	ScopedEnvVar path("PATH", temp.root.string() + separator + uam::env::GetNonEmptyString("PATH").value_or(""));
+	ScopedEnvVar input_path("UAM_TEST_COLD_INPUT", provider_input.string());
+	ScopedEnvVar prompts_path("UAM_TEST_COLD_PROMPTS", prompt_log.string());
+	ScopedEnvVar hold_completion("UAM_TEST_COLD_HOLD_COMPLETION", variation.starts_with("busy") ? "1" : "0");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+	app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "uam";
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.central_provider_configuration.skill_directories = {(temp.root / "private-skills").string()};
+	if (variation == "failure") app.settings.central_provider_configuration.instruction_files = {(temp.root / "missing-instructions.md").string()};
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id["opencode-cli"];
+	version.checked = version.supported = true;
+	const ProviderCliPolicy* policy = ProviderRuntimeRegistry::ResolveById("opencode-cli").CliVersionPolicy();
+	UAM_ASSERT(policy != nullptr);
+	version.installed_version = policy->minimum_version;
+	ChatSession chat;
+	chat.id = "cold-local-admission";
+	chat.provider_id = "opencode-cli";
+	chat.uam_agent_id = "build";
+	chat.approval_mode.clear();
+	chat.memory_enabled = false;
+	chat.workspace_directory = temp.root.string();
+	chat.messages.push_back({.role = MessageRole::User, .content = "Previously durable history"});
+	app.chats.push_back(std::move(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	if (variation == "catalog" || variation == "default" || variation == "prepare" || variation == "source" || variation == "agentfailure" || variation == "warm" || variation.starts_with("busy"))
+	{
+		// Both supported scopes stay below their existing 8 MiB and 256-file limits.
+		for (const bool workspace_scope : {false, true})
+		{
+			const fs::path directory = workspace_scope ? temp.root / ".uam" / "agents" : app.data_root / "agents";
+			fs::create_directories(directory);
+			for (int index = 0; index < 48; ++index)
+			{
+				const std::string id = std::string(workspace_scope ? "workspace-" : "global-") + std::to_string(index);
+				std::ofstream file(directory / (id + ".md"), std::ios::binary);
+				file << "---\nversion: 1\nname: " << id << "\ndescription: Private selected agent timing fixture\nmode: primary\nworkspaceAccess: write\nskills: []\ndelegates: []\n---\n";
+				file << "Retain selected agent instructions " << id << "\n" << std::string(170 * 1024, 'x') << '\n';
+				UAM_ASSERT(file.good());
+			}
+		}
+		app.chats.front().uam_agent_id = variation == "default" ? std::string{} : variation == "agentfailure" ? "missing-agent" : "workspace-47";
+	}
+	ScopedEnvVar durable_path("UAM_TEST_COLD_PRIMARY", AppPaths::UamChatFilePath(app.data_root, app.chats.front().id).string());
+	const int history_count = variation == "receiptexit" ? 2 : 200;
+	for (int index = 1; index < history_count; ++index)
+		app.chats.front().messages.push_back({.role = MessageRole::Assistant,
+		    .content = std::to_string(index) + std::string(128 * 1024, 'x')});
+	std::string expected_hash = "opencode-cli:builtin-build-v1";
+	if (app.chats.front().uam_agent_id == "workspace-47")
+		expected_hash = "opencode-cli:fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(ReadFile(temp.root / ".uam/agents/workspace-47.md")));
+	ScopedEnvVar binding_hash("UAM_TEST_COLD_AGENT_HASH", expected_hash);
+	ScopedEnvVar exit_after_setup("UAM_TEST_COLD_EXIT_AFTER_SETUP", variation == "receiptexit" ? "1" : "0");
+	struct Cleanup
+	{
+		uam::AppState& app;
+		~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+	} cleanup{app};
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error);
+	const std::chrono::steady_clock::duration feedback = std::chrono::steady_clock::now() - started;
+	UAM_ASSERT(accepted);
+	UAM_ASSERT(feedback <= std::chrono::milliseconds(100));
+	UAM_ASSERT(!app.acp_sessions.empty() && (app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->pending_local_launch));
+	if (app.acp_sessions.front()->pending_agent_input)
+	{
+		UAM_ASSERT_EQ(app.acp_sessions.front()->lifecycle_state, std::string("preparing_agent"));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(history_count + 1));
+		UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("Launch with the private cold configuration"));
+		UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+		UAM_ASSERT(app.chats.front().last_prompt_agent_definition_hash.empty());
+		UAM_ASSERT(!fs::exists(provider_input));
+	}
+	if (variation == "prepare")
+	{
+		const std::chrono::steady_clock::time_point second_started = std::chrono::steady_clock::now();
+		UAM_ASSERT(!uam::SendAcpPrompt(app, app.chats.front().id, "Hold additional input during definition preparation", &error));
+		UAM_ASSERT(std::chrono::steady_clock::now() - second_started <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{201});
+		const std::shared_ptr<std::optional<bool>> receipt = std::make_shared<std::optional<bool>>();
+		UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [receipt](bool saved) { *receipt = saved; }));
+		const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+		while (!receipt->has_value() && std::chrono::steady_clock::now() < deadline)
+		{
+			const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+			(void)uam::FlushPendingChatSaves(app);
+			UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(receipt->has_value() && **receipt);
+		const std::optional<ChatSession> unbound = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+		UAM_ASSERT(unbound && unbound->messages.size() == 201 && unbound->messages.back().acp_prompt_not_sent);
+		UAM_ASSERT(unbound->last_prompt_agent_definition_hash.empty() && unbound->acp_queued_prompts.empty());
+		UAM_ASSERT_EQ(unbound->messages.back().content, std::string("Launch with the private cold configuration"));
+		UAM_ASSERT(!fs::exists(provider_input));
+	}
+	if (variation == "source")
+	{
+		const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+		while (!uam::acp_detail::AgentInputPreparationReady(*app.acp_sessions.front()) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		UAM_ASSERT(uam::acp_detail::AgentInputPreparationReady(*app.acp_sessions.front()));
+		const fs::path source = temp.root / ".uam/agents/workspace-47.md";
+		const fs::file_time_type stamp = fs::last_write_time(source);
+		std::string replacement = ReadFile(source);
+		replacement[replacement.size() - 2] = 'y';
+		UAM_ASSERT(uam::io::WriteTextFile(source, replacement));
+		fs::last_write_time(source, stamp);
+	}
+	if (!variation.empty() && variation != "catalog" && variation != "default" && variation != "prepare" && variation != "receiptstop" && variation != "receiptfailure" && variation != "completionnext" && variation != "receiptroot" && variation != "receiptrecreation" && variation != "receiptqueue" && variation != "receiptexit" && variation != "warm" && !variation.starts_with("busy"))
+	{
+		if (variation == "cancel") UAM_ASSERT(uam::CancelAcpTurn(app, app.chats.front().id));
+		else if (variation == "stop") UAM_ASSERT(uam::StopAcpSession(app, app.chats.front().id));
+		else if (variation == "recreation")
+		{
+			ChatSession replacement;
+			replacement.id = app.chats.front().id;
+			replacement.provider_id = app.chats.front().provider_id;
+			replacement.workspace_directory = app.chats.front().workspace_directory;
+			replacement.messages = std::move(app.chats.front().messages);
+			app.chats.front() = std::move(replacement);
+		}
+		else if (variation == "settings") app.settings.central_provider_configuration.instructions = "Changed after admission";
+		else if (variation == "workspace") app.chats.front().workspace_directory = (temp.root / "replacement-workspace").string();
+		else if (variation == "root") app.data_root = temp.root / "replacement-data";
+		else if (variation == "provider") app.chats.front().provider_id = "gemini-cli";
+		else if (variation == "goal") app.chats.front().goal_command_revision = "replacement-goal-revision";
+		else if (variation == "host") app.settings.execution_hosts.front().instruction_file = (temp.root / "changed-host.md").string();
+		const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+		while (std::chrono::steady_clock::now() < deadline &&
+		    (app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->pending_local_launch ||
+		     !app.agent_input_preparation_tasks.empty() || !app.local_acp_launch_tasks.empty()))
+		{
+			const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
+			(void)uam::PollAllAcpSessions(app);
+			UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= std::chrono::milliseconds(100));
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(app.local_acp_launch_tasks.empty() && app.agent_input_preparation_tasks.empty());
+		UAM_ASSERT(!app.acp_sessions.front()->pending_agent_input);
+		UAM_ASSERT(!app.acp_sessions.front()->pending_local_launch);
+		UAM_ASSERT(!app.acp_sessions.front()->running);
+		UAM_ASSERT(!fs::exists(provider_input));
+		UAM_ASSERT(!fs::exists(prompt_log));
+		if (variation == "failure" || variation == "agentfailure") UAM_ASSERT(!app.acp_sessions.front()->last_error.empty());
+		else if (variation == "source") UAM_ASSERT(app.acp_sessions.front()->last_error.find("sources changed") != std::string::npos);
+		else if (variation != "cancel" && variation != "stop") UAM_ASSERT(app.acp_sessions.front()->last_error.find("ownership changed") != std::string::npos);
+		UAM_ASSERT_EQ(app.chats.front().messages[199].content, std::to_string(199) + std::string(128 * 1024, 'x'));
+		if (variation == "agentfailure" || variation == "source")
+		{
+			const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+			while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+				(void)uam::FlushPendingChatSaves(app);
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			const std::optional<ChatSession> unsent = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+			UAM_ASSERT(unsent && unsent->messages.size() == 201 && unsent->messages.back().acp_prompt_not_sent);
+			UAM_ASSERT(unsent->last_prompt_agent_definition_hash.empty());
+		}
+		return;
+	}
+	bool completed = false;
+	bool receipt_guard_exercised = false;
+	bool completion_guard_exercised = false;
+	const fs::path blocked_chats = app.data_root / "chats";
+	const fs::path saved_chats = app.data_root / "fixture-saved-chats";
+	const std::chrono::steady_clock::time_point deadline = started + std::chrono::seconds(10);
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
+		(void)uam::PollAllAcpSessions(app);
+		UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= std::chrono::milliseconds(100));
+		if (variation == "receiptexit" && app.acp_sessions.front()->pending_local_session_receipt &&
+		    !app.acp_sessions.front()->running && !app.acp_sessions.front()->pending_local_launch &&
+		    !app.acp_sessions.front()->pending_agent_input)
+		{
+			UAM_ASSERT(!fs::exists(prompt_log));
+			UAM_ASSERT_EQ(app.chats.front().messages[2].content, std::string("Launch with the private cold configuration"));
+			UAM_ASSERT(app.chats.front().messages[2].acp_prompt_not_sent);
+			UAM_ASSERT(!app.acp_sessions.front()->processing);
+			return;
+		}
+		if (variation == "receiptexit" && app.acp_sessions.front()->pending_local_session_receipt)
+		{
+			// Hold the full receipt pending to prove provider monitoring does not depend on publication.
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			continue;
+		}
+		if (!receipt_guard_exercised && app.acp_sessions.front()->pending_local_session_receipt &&
+		    (variation == "receiptstop" || variation == "receiptfailure" || variation == "receiptroot" || variation == "receiptrecreation" || variation == "receiptqueue"))
+		{
+			receipt_guard_exercised = true;
+			UAM_ASSERT(!fs::exists(prompt_log));
+			if (variation == "receiptqueue")
+			{
+				const std::chrono::steady_clock::time_point queued_started = std::chrono::steady_clock::now();
+				UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error));
+				UAM_ASSERT(std::chrono::steady_clock::now() - queued_started <= std::chrono::milliseconds(100));
+				UAM_ASSERT(!fs::exists(prompt_log));
+			}
+			else if (variation == "receiptstop")
+			{
+				UAM_ASSERT(uam::StopAcpSession(app, app.chats.front().id));
+				while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+				{
+					(void)uam::PollAllAcpSessions(app);
+					(void)uam::FlushPendingChatSaves(app);
+					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				}
+				UAM_ASSERT(!fs::exists(prompt_log));
+				UAM_ASSERT(!app.acp_sessions.front()->running);
+				UAM_ASSERT_EQ(app.chats.front().messages[200].content, std::string("Launch with the private cold configuration"));
+				UAM_ASSERT(app.chats.front().messages[200].acp_prompt_not_sent);
+				return;
+			}
+			if (variation == "receiptroot" || variation == "receiptrecreation")
+			{
+				if (variation == "receiptroot") app.data_root = temp.root / "replacement-data";
+				else app.chats.front().metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+				while (app.acp_sessions.front()->last_error.find("ownership changed") == std::string::npos &&
+				    std::chrono::steady_clock::now() < deadline)
+				{
+					const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+					(void)uam::PollAllAcpSessions(app);
+					(void)uam::FlushPendingChatSaves(app);
+					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				}
+				UAM_ASSERT(app.acp_sessions.front()->last_error.find("ownership changed") != std::string::npos);
+				UAM_ASSERT(!fs::exists(prompt_log));
+				UAM_ASSERT_EQ(app.chats.front().messages[200].content, std::string("Launch with the private cold configuration"));
+				return;
+			}
+			if (variation == "receiptfailure")
+			{
+				fs::rename(blocked_chats, saved_chats);
+				UAM_ASSERT(uam::io::WriteTextFile(blocked_chats, "private storage failure"));
+			}
+		}
+		if (variation == "completionnext" && !completion_guard_exercised &&
+		    app.acp_sessions.front()->session_ready && !app.acp_sessions.front()->processing &&
+		    app.chats.front().messages.size() >= 202)
+		{
+			completion_guard_exercised = true;
+			UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
+			const std::chrono::steady_clock::time_point input_started = std::chrono::steady_clock::now();
+			UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error));
+			UAM_ASSERT(std::chrono::steady_clock::now() - input_started <= std::chrono::milliseconds(100));
+			const std::string before_receipt = ReadFile(prompt_log);
+			UAM_ASSERT_EQ(std::count(before_receipt.begin(), before_receipt.end(), '\n'), 1);
+		}
+		const std::chrono::steady_clock::time_point flush_started = std::chrono::steady_clock::now();
+		(void)uam::FlushPendingChatSaves(app);
+		UAM_ASSERT(std::chrono::steady_clock::now() - flush_started <= std::chrono::milliseconds(100));
+		if (variation != "receiptstop" && variation != "receiptfailure" && variation != "completionnext")
+			UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= std::chrono::milliseconds(100));
+		if (variation == "receiptfailure" && receipt_guard_exercised && fs::is_regular_file(blocked_chats) &&
+		    !app.acp_sessions.front()->processing)
+		{
+			UAM_ASSERT(!fs::exists(prompt_log));
+			UAM_ASSERT(app.chats.front().messages[200].acp_prompt_not_sent);
+			UAM_ASSERT(app.chats.front().messages[200].interrupted);
+			UAM_ASSERT_EQ(app.chats.front().messages[199].content, std::to_string(199) + std::string(128 * 1024, 'x'));
+			fs::remove(blocked_chats);
+			fs::rename(saved_chats, blocked_chats);
+			const std::chrono::steady_clock::time_point retry_started = std::chrono::steady_clock::now();
+			UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Launch with the private cold configuration", &error));
+			UAM_ASSERT(std::chrono::steady_clock::now() - retry_started <= std::chrono::milliseconds(100));
+		}
+		if (variation.starts_with("busy") && app.acp_sessions.front()->session_ready &&
+		    app.acp_sessions.front()->processing && app.chats.front().messages.size() >= 202 &&
+		    fs::exists(prompt_log))
+		{
+			const std::string first_prompt = ReadFile(prompt_log);
+			UAM_ASSERT_EQ(std::count(first_prompt.begin(), first_prompt.end(), '\n'), 1);
+			const std::uint64_t first_turn = app.acp_sessions.front()->turn_serial;
+			const int first_user = app.acp_sessions.front()->turn_user_message_index;
+			const int first_assistant = app.acp_sessions.front()->current_assistant_message_index;
+			const std::string first_lifecycle = app.acp_sessions.front()->lifecycle_state;
+			const int first_request = app.acp_sessions.front()->prompt_request_id;
+			if (variation == "busyfailure") app.chats.front().uam_agent_id = "missing-agent";
+			const std::chrono::steady_clock::time_point queued_started = std::chrono::steady_clock::now();
+			UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Queue input against the current selected catalogue", &error));
+			UAM_ASSERT(std::chrono::steady_clock::now() - queued_started <= std::chrono::milliseconds(100));
+			UAM_ASSERT(app.acp_sessions.front()->pending_agent_input);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->turn_serial, first_turn);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->turn_user_message_index, first_user);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->current_assistant_message_index, first_assistant);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->lifecycle_state, first_lifecycle);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->prompt_request_id, first_request);
+			UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{203});
+			UAM_ASSERT(app.chats.front().messages[202].acp_prompt_not_sent);
+			if (variation == "busycancel")
+			{
+				// An unrelated retained queue item must survive the explicit preserve flag.
+				uam::AcpQueuedUserPromptState unrelated;
+				unrelated.id = "unrelated-held-input";
+				unrelated.text = "Retain this independently owned queued input";
+				app.acp_sessions.front()->queued_user_prompts.push_back(unrelated);
+				app.chats.front().acp_queued_prompts = {unrelated};
+				app.acp_sessions.front()->queue_held = app.chats.front().acp_queue_held = true;
+				UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+				UAM_ASSERT(uam::CancelAcpTurn(app, app.chats.front().id, &error, true, true));
+				UAM_ASSERT(!app.acp_sessions.front()->pending_agent_input);
+				while ((ReadFile(provider_input).find("session/cancel") == std::string::npos ||
+				    !app.pending_chat_save_at_by_chat_id.empty()) && std::chrono::steady_clock::now() < deadline)
+				{
+					const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+					(void)uam::PollAllAcpSessions(app);
+					(void)uam::FlushPendingChatSaves(app);
+					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+					std::this_thread::sleep_for(std::chrono::milliseconds(2));
+				}
+				UAM_ASSERT(ReadFile(provider_input).find("session/cancel") != std::string::npos);
+				UAM_ASSERT(app.acp_sessions.front()->running);
+				UAM_ASSERT(app.acp_sessions.front()->cancel_requested);
+				UAM_ASSERT_EQ(app.acp_sessions.front()->turn_serial, first_turn);
+				UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), std::size_t{1});
+				UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.front().id, unrelated.id);
+				UAM_ASSERT(app.chats.front().messages[202].acp_prompt_not_sent && app.chats.front().messages[202].interrupted);
+				UAM_ASSERT(app.chats.front().messages[201].interrupted);
+				UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+				const std::optional<ChatSession> canceled_primary = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+				UAM_ASSERT(canceled_primary && canceled_primary->messages.size() == 203);
+				UAM_ASSERT(canceled_primary->messages[202].acp_prompt_not_sent && canceled_primary->messages[202].interrupted);
+				UAM_ASSERT_EQ(canceled_primary->acp_queued_prompts.size(), std::size_t{1});
+				UAM_ASSERT_EQ(canceled_primary->acp_queued_prompts.front().id, unrelated.id);
+				UAM_ASSERT_EQ(ReadFile(prompt_log), first_prompt);
+				return;
+			}
+			if (variation == "busysource")
+			{
+				while (!uam::acp_detail::AgentInputPreparationReady(*app.acp_sessions.front()) && std::chrono::steady_clock::now() < deadline)
+					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				UAM_ASSERT(uam::acp_detail::AgentInputPreparationReady(*app.acp_sessions.front()));
+				const fs::path source = temp.root / ".uam/agents/workspace-47.md";
+				const fs::file_time_type stamp = fs::last_write_time(source);
+				std::string replacement = ReadFile(source);
+				replacement[replacement.size() - 2] = 'y';
+				UAM_ASSERT(uam::io::WriteTextFile(source, replacement));
+				fs::last_write_time(source, stamp);
+			}
+			IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+			const std::string chunk = "{\"method\":\"fixture/chunk\"}\n";
+			UAM_ASSERT(service.WriteToStdioProcess(*app.acp_sessions.front(), chunk.data(), chunk.size(), &error));
+			const std::chrono::steady_clock::time_point chunk_started = std::chrono::steady_clock::now();
+			while (app.chats.front().messages[201].content.find("stream-during-agent-preparation") == std::string::npos &&
+			    std::chrono::steady_clock::now() - chunk_started <= std::chrono::milliseconds(100))
+			{
+				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+				(void)uam::PollAllAcpSessions(app);
+				(void)uam::FlushPendingChatSaves(app);
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			}
+			UAM_ASSERT(app.chats.front().messages[201].content.find("stream-during-agent-preparation") != std::string::npos);
+			while ((app.acp_sessions.front()->pending_agent_input || !app.pending_chat_save_at_by_chat_id.empty()) &&
+			    std::chrono::steady_clock::now() < deadline)
+			{
+				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+				(void)uam::PollAllAcpSessions(app);
+				(void)uam::FlushPendingChatSaves(app);
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			UAM_ASSERT(!app.acp_sessions.front()->pending_agent_input && app.pending_chat_save_at_by_chat_id.empty());
+			UAM_ASSERT(app.acp_sessions.front()->processing);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->turn_serial, first_turn);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->turn_user_message_index, first_user);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->current_assistant_message_index, first_assistant);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->prompt_request_id, first_request);
+			UAM_ASSERT_EQ(ReadFile(prompt_log), first_prompt);
+			const std::optional<ChatSession> queued_primary = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+			UAM_ASSERT(queued_primary && queued_primary->messages.size() == 203);
+			UAM_ASSERT_EQ(queued_primary->messages[202].content, std::string("Queue input against the current selected catalogue"));
+			if (variation == "busysource" || variation == "busyfailure")
+			{
+				UAM_ASSERT(queued_primary->messages[202].acp_prompt_not_sent && queued_primary->messages[202].interrupted);
+				UAM_ASSERT(app.acp_sessions.front()->queued_user_prompts.empty());
+				if (variation == "busysource") UAM_ASSERT(app.acp_sessions.front()->last_error.find("sources changed") != std::string::npos);
+				if (variation == "busyfailure") UAM_ASSERT(!app.acp_sessions.front()->last_error.empty());
+				return;
+			}
+			UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), std::size_t{1});
+			UAM_ASSERT_EQ(queued_primary->acp_queued_prompts.size(), std::size_t{1});
+			const uam::AcpQueuedUserPromptState& restored = queued_primary->acp_queued_prompts.front();
+			UAM_ASSERT_EQ(restored.existing_user_message_index, 202);
+			UAM_ASSERT_EQ(restored.existing_user_message_created_at, queued_primary->messages[202].created_at);
+			UAM_ASSERT(!restored.append_user_message && !restored.uam_agent_definition_hash.empty());
+			if (variation == "busyreload" || variation.starts_with("busysummary") || variation.starts_with("busyrelaunch"))
+			{
+				app.acp_sessions.front()->queue_held = app.chats.front().acp_queue_held = true;
+				UAM_ASSERT(uam::StopAcpSession(app, app.chats.front().id, uam::AcpStopPurpose::Interrupt, true));
+				const std::optional<ChatSession> restart_primary = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+				UAM_ASSERT(restart_primary && restart_primary->messages.size() == 203 && restart_primary->acp_queued_prompts.size() == 1);
+				ScopedEnvVar restarted_hold("UAM_TEST_COLD_HOLD_COMPLETION", "0");
+				uam::AppState restarted;
+				restarted.data_root = app.data_root;
+				restarted.settings = app.settings;
+				restarted.provider_profiles = app.provider_profiles;
+				restarted.runtime_cli_versions_by_provider_id = app.runtime_cli_versions_by_provider_id;
+				if (variation.starts_with("busysummary"))
+				{
+					const std::optional<ChatSession> summary = ChatRepository::LoadLocalChatSummaryReadOnly(app.data_root, app.chats.front().id);
+					UAM_ASSERT(summary && !summary->messages_loaded && summary->messages.empty());
+					UAM_ASSERT_EQ(summary->acp_queued_prompts.size(), std::size_t{1});
+					UAM_ASSERT_EQ(summary->acp_queued_prompts.front().existing_user_message_index, 202);
+					UAM_ASSERT_EQ(summary->acp_queued_prompts.front().existing_user_message_created_at, restored.existing_user_message_created_at);
+					restarted.chats.push_back(*summary);
+				}
+				else restarted.chats.push_back(*restart_primary);
+				Cleanup restarted_cleanup{restarted};
+				uam::AcpSessionState& resumed = uam::acp_detail::EnsureAcpSessionForChat(restarted, restarted.chats.front());
+				UAM_ASSERT(resumed.queue_held && resumed.queued_user_prompts.size() == 1);
+				if (variation == "busyrelaunchfailure")
+					restarted.settings.central_provider_configuration.instruction_files = {(temp.root / "missing-restart-instructions.md").string()};
+				const std::chrono::steady_clock::time_point resume_started = std::chrono::steady_clock::now();
+				UAM_ASSERT(uam::ResumeQueuedAcpPrompts(restarted, restarted.chats.front().id, {{restored.id, restored.revision}}, &error));
+				UAM_ASSERT(std::chrono::steady_clock::now() - resume_started <= std::chrono::milliseconds(100));
+				if (variation.starts_with("busysummary"))
+				{
+					UAM_ASSERT(!restarted.chats.front().messages_loaded && restarted.chats.front().messages.empty());
+					UAM_ASSERT_EQ(ReadFile(prompt_log), first_prompt);
+				}
+				if (variation == "busysummaryroot" || variation == "busysummarystop" || variation == "busysummarystorage" || variation == "busysummaryrevision")
+				{
+					UAM_ASSERT(resumed.pending_queued_history);
+					if (variation == "busysummaryroot") restarted.data_root = temp.root / "replacement-data-root";
+					if (variation == "busysummarystop") UAM_ASSERT(uam::StopAcpSession(restarted, restarted.chats.front().id, uam::AcpStopPurpose::Interrupt, true));
+					if (variation == "busysummaryrevision")
+						UAM_ASSERT(uam::EditQueuedAcpPrompt(restarted, restarted.chats.front().id, restored.id, restored.revision,
+						    "Revised pending input must not inherit the old raw-row authority", &error));
+					if (variation == "busysummarystorage")
+					{
+						ChatSession replacement = *restart_primary;
+						replacement.native_session_id = "replacement-native-session";
+						UAM_ASSERT(ChatRepository::SaveChat(app.data_root, replacement));
+					}
+					const std::chrono::steady_clock::time_point guard_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+					while (resumed.pending_queued_history && std::chrono::steady_clock::now() < guard_deadline)
+					{
+						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+						(void)uam::PollAllAcpSessions(restarted);
+						(void)uam::FlushPendingChatSaves(restarted);
+						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+						std::this_thread::sleep_for(std::chrono::milliseconds(2));
+					}
+					UAM_ASSERT(!resumed.pending_queued_history);
+					UAM_ASSERT(!restarted.chats.front().messages_loaded && restarted.chats.front().messages.empty());
+					UAM_ASSERT(resumed.queue_held && resumed.queued_user_prompts.size() == 1);
+					UAM_ASSERT_EQ(resumed.queued_user_prompts.front().existing_user_message_index, 202);
+					UAM_ASSERT_EQ(resumed.queued_user_prompts.front().existing_user_message_created_at, restored.existing_user_message_created_at);
+					UAM_ASSERT_EQ(ReadFile(prompt_log), first_prompt);
+					const std::optional<ChatSession> retained = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+					UAM_ASSERT(retained && retained->messages.size() == 203);
+					UAM_ASSERT_EQ(retained->messages[202].content, restored.text);
+					UAM_ASSERT_EQ(retained->messages[202].created_at, restored.existing_user_message_created_at);
+					UAM_ASSERT(retained->messages[202].acp_prompt_not_sent);
+					return;
+				}
+				if (variation.starts_with("busyrelaunch"))
+				{
+					const std::chrono::steady_clock::time_point stage_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+					while (resumed.pending_referenced_queue_launch_fingerprint.empty() && std::chrono::steady_clock::now() < stage_deadline)
+					{
+						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+						(void)uam::PollAllAcpSessions(restarted);
+						(void)uam::FlushPendingChatSaves(restarted);
+						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+						std::this_thread::sleep_for(std::chrono::milliseconds(2));
+					}
+					UAM_ASSERT(!resumed.pending_referenced_queue_launch_fingerprint.empty());
+					UAM_ASSERT(!resumed.running && resumed.queued_user_prompts.size() == 1);
+					if (variation == "busyrelaunchsettings") restarted.chats.front().uam_agent_id = "replacement-agent";
+					if (variation == "busyrelaunchqueue")
+						UAM_ASSERT(uam::EditQueuedAcpPrompt(restarted, restarted.chats.front().id, restored.id, restored.revision,
+						    "Revised queued input must not launch an obsolete agent snapshot", &error));
+					while (!resumed.pending_referenced_queue_launch_fingerprint.empty() && std::chrono::steady_clock::now() < stage_deadline)
+					{
+						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+						(void)uam::PollAllAcpSessions(restarted);
+						(void)uam::FlushPendingChatSaves(restarted);
+						UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+						std::this_thread::sleep_for(std::chrono::milliseconds(2));
+					}
+					UAM_ASSERT(resumed.pending_referenced_queue_launch_fingerprint.empty());
+					UAM_ASSERT(!resumed.running && resumed.queue_held && resumed.queued_user_prompts.size() == 1);
+					UAM_ASSERT_EQ(resumed.queued_user_prompts.front().id, restored.id);
+					UAM_ASSERT_EQ(resumed.queued_user_prompts.front().existing_user_message_index, 202);
+					UAM_ASSERT_EQ(resumed.queued_user_prompts.front().existing_user_message_created_at, restored.existing_user_message_created_at);
+					UAM_ASSERT(restarted.chats.front().messages[202].acp_prompt_not_sent);
+					UAM_ASSERT(!resumed.last_error.empty());
+					UAM_ASSERT_EQ(ReadFile(prompt_log), first_prompt);
+					return;
+				}
+				const std::chrono::steady_clock::time_point restart_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+				while (std::chrono::steady_clock::now() < restart_deadline)
+				{
+					const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+					(void)uam::PollAllAcpSessions(restarted);
+					(void)uam::FlushPendingChatSaves(restarted);
+
+					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+					if (!resumed.processing && resumed.queued_user_prompts.empty() && restarted.pending_chat_save_at_by_chat_id.empty() &&
+					    restarted.chats.front().messages.size() == 204) break;
+					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				}
+				UAM_ASSERT(!resumed.processing && resumed.queued_user_prompts.empty());
+				const std::optional<ChatSession> after_reload = ChatRepository::LoadLocalChat(restarted.data_root, restarted.chats.front().id);
+				UAM_ASSERT(after_reload && after_reload->messages.size() == 204);
+				UAM_ASSERT_EQ(after_reload->messages[202].content, restored.text);
+				UAM_ASSERT_EQ(after_reload->messages[202].created_at, restored.existing_user_message_created_at);
+				UAM_ASSERT_EQ(after_reload->native_session_id, restart_primary->native_session_id);
+				UAM_ASSERT_EQ(after_reload->messages[199].content, restart_primary->messages[199].content);
+				UAM_ASSERT_EQ(std::count_if(after_reload->messages.begin(), after_reload->messages.end(), [&restored](const Message& row)
+				{
+					return row.role == MessageRole::User && row.content == restored.text;
+				}), 1);
+				UAM_ASSERT(!after_reload->messages[202].acp_prompt_not_sent);
+				const std::string after_restart_prompts = ReadFile(prompt_log);
+				UAM_ASSERT_EQ(std::count(after_restart_prompts.begin(), after_restart_prompts.end(), '\n'), 2);
+				UAM_ASSERT_EQ(resumed.active_uam_agent_definition_hash, restored.uam_agent_definition_hash);
+				UAM_ASSERT(resumed.pending_referenced_queue_launch_fingerprint.empty());
+				const std::string all_input = ReadFile(provider_input);
+				const auto method_count = [&all_input](std::string_view method)
+				{
+					std::size_t count = 0, position = 0;
+					while ((position = all_input.find(method, position)) != std::string::npos) { ++count; position += method.size(); }
+					return count;
+				};
+				UAM_ASSERT_EQ(method_count("\"method\":\"session/new\""), std::size_t{1});
+				UAM_ASSERT_EQ(method_count("\"method\":\"session/load\""), std::size_t{1});
+				return;
+			}
+			if (variation == "busyrow") app.chats.front().messages[202].created_at = "replacement-row";
+			const std::string release = "{\"method\":\"fixture/release\"}\n";
+			UAM_ASSERT(service.WriteToStdioProcess(*app.acp_sessions.front(), release.data(), release.size(), &error));
+			while (std::chrono::steady_clock::now() < deadline)
+			{
+				const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+				(void)uam::PollAllAcpSessions(app);
+				(void)uam::FlushPendingChatSaves(app);
+				UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+				if (variation == "busyrow" && !app.acp_sessions.front()->last_error.empty()) break;
+				if (variation != "busyrow" && !app.acp_sessions.front()->processing && app.acp_sessions.front()->queued_user_prompts.empty() &&
+				    app.pending_chat_save_at_by_chat_id.empty() && app.chats.front().messages.size() >= 204) break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			if (variation == "busyrow")
+			{
+				UAM_ASSERT(app.acp_sessions.front()->last_error.find("original unsent message changed") != std::string::npos);
+				UAM_ASSERT_EQ(ReadFile(prompt_log), first_prompt);
+				UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), std::size_t{1});
+				return;
+			}
+			UAM_ASSERT(!app.acp_sessions.front()->processing && app.acp_sessions.front()->queued_user_prompts.empty());
+			const std::optional<ChatSession> after_queue = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+			UAM_ASSERT(after_queue && after_queue->messages.size() == 204);
+			UAM_ASSERT_EQ(after_queue->messages[202].content, restored.text);
+			UAM_ASSERT(!after_queue->messages[202].acp_prompt_not_sent);
+			const std::string delivered = ReadFile(prompt_log);
+			UAM_ASSERT_EQ(std::count(delivered.begin(), delivered.end(), '\n'), 2);
+			return;
+		}
+		if (!app.acp_sessions.empty() && app.acp_sessions.front()->session_ready &&
+		    !app.acp_sessions.front()->processing && app.chats.front().messages.size() >= 202 &&
+		    app.pending_chat_save_at_by_chat_id.empty())
+		{
+			completed = true;
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(completed);
+	if (variation == "receiptfailure") UAM_ASSERT(receipt_guard_exercised && !fs::exists(saved_chats));
+	if (variation == "completionnext") UAM_ASSERT(completion_guard_exercised);
+	if (variation == "receiptqueue") UAM_ASSERT(receipt_guard_exercised);
+	const std::optional<ChatSession> durable = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(durable && durable->messages.size() >= 202);
+	UAM_ASSERT_EQ(durable->messages.front().content, std::string("Previously durable history"));
+	for (int index = 1; index < 200; ++index)
+		UAM_ASSERT_EQ(durable->messages[static_cast<std::size_t>(index)].content, std::to_string(index) + std::string(128 * 1024, 'x'));
+	UAM_ASSERT_EQ(durable->messages[200].content, std::string("Launch with the private cold configuration"));
+	UAM_ASSERT_EQ(durable->messages.back().content, std::string("private-cold-launch-ok"));
+	UAM_ASSERT_EQ(durable->last_prompt_agent_definition_hash, expected_hash);
+	const std::string prompts = ReadFile(prompt_log);
+	UAM_ASSERT_EQ(std::count(prompts.begin(), prompts.end(), '\n'), (variation == "completionnext" || variation == "receiptqueue") ? 2 : 1);
+	if (variation == "receiptfailure")
+	{
+		UAM_ASSERT(durable->messages[200].acp_prompt_not_sent && durable->messages[200].interrupted);
+		UAM_ASSERT_EQ(std::count_if(durable->messages.begin(), durable->messages.end(), [](const Message& row)
+		    { return row.role == MessageRole::User && row.content == "Launch with the private cold configuration"; }), 2);
+	}
+	UAM_ASSERT(prompts.find("Launch with the private cold configuration") != std::string::npos);
+	UAM_ASSERT(!app.acp_sessions.front()->provider_configuration_directory.empty());
+	UAM_ASSERT(fs::exists(app.acp_sessions.front()->provider_configuration_directory / "skills/fixture/reference-2047.txt"));
+	if (variation == "catalog" || variation == "prepare" || variation == "warm")
+	{
+		UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_id, std::string("workspace-47"));
+		UAM_ASSERT(!app.acp_sessions.front()->active_uam_agent_definition_hash.empty());
+		const std::string selected = ReadFile(app.acp_sessions.front()->provider_configuration_directory / "agents/workspace-47.md");
+		UAM_ASSERT(selected.find("Retain selected agent instructions workspace-47") != std::string::npos);
+		UAM_ASSERT(selected.find(std::string(170 * 1024, 'x')) != std::string::npos);
+	}
+	if (variation == "warm")
+	{
+		UAM_ASSERT(app.acp_sessions.front()->running && app.acp_sessions.front()->session_ready);
+		UAM_ASSERT(!app.acp_sessions.front()->pending_agent_input && !app.acp_sessions.front()->pending_local_launch);
+		const std::chrono::steady_clock::time_point warm_started = std::chrono::steady_clock::now();
+		UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Warm input against the current selected catalogue", &error));
+		UAM_ASSERT(std::chrono::steady_clock::now() - warm_started <= std::chrono::milliseconds(100));
+		UAM_ASSERT_EQ(ReadFile(prompt_log), prompts);
+		const std::chrono::steady_clock::time_point warm_deadline = warm_started + std::chrono::seconds(10);
+		while ((app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->processing || !app.pending_chat_save_at_by_chat_id.empty()) &&
+		    std::chrono::steady_clock::now() < warm_deadline)
+		{
+			const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+			(void)uam::PollAllAcpSessions(app);
+			(void)uam::FlushPendingChatSaves(app);
+			UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(!app.acp_sessions.front()->pending_agent_input && !app.acp_sessions.front()->processing && app.pending_chat_save_at_by_chat_id.empty());
+		const std::optional<ChatSession> warm_durable = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+		UAM_ASSERT(warm_durable && warm_durable->messages.size() == 204);
+		UAM_ASSERT_EQ(warm_durable->messages[202].content, std::string("Warm input against the current selected catalogue"));
+		UAM_ASSERT(!warm_durable->messages[202].acp_prompt_not_sent);
+		UAM_ASSERT_EQ(warm_durable->native_session_id, durable->native_session_id);
+		const std::string warm_prompts = ReadFile(prompt_log);
+		UAM_ASSERT_EQ(std::count(warm_prompts.begin(), warm_prompts.end(), '\n'), 2);
+	}
+#endif
+}
+
+UAM_TEST(AcpColdLocalConfigurationAdmissionKeepsInputAndPollBudgets)
+{
+	CheckColdLocalConfigurationAdmission({});
+}
+
+UAM_TEST(AcpColdLocalConfigurationCancellationRevokesLaunch)
+{
+	CheckColdLocalConfigurationAdmission("cancel");
+	CheckColdLocalConfigurationAdmission("stop");
+}
+
+UAM_TEST(AcpColdLocalConfigurationRejectsRecreatedChat)
+{
+	CheckColdLocalConfigurationAdmission("recreation");
+}
+
+UAM_TEST(AcpColdLocalConfigurationFailureNeverStartsProvider)
+{
+	CheckColdLocalConfigurationAdmission("failure");
+}
+
+UAM_TEST(AcpColdLocalConfigurationRejectsChangedLaunchScope)
+{
+	for (const std::string_view variation : {"settings", "workspace", "root", "provider", "goal", "host"})
+		CheckColdLocalConfigurationAdmission(variation);
+}
+
+UAM_TEST(AcpColdSelectedAgentAdmissionKeepsInputAndPollBudgets)
+{
+	CheckColdLocalConfigurationAdmission("catalog");
+}
+
+UAM_TEST(AcpColdDefaultAgentAdmissionKeepsInputAndPollBudgets)
+{
+	CheckColdLocalConfigurationAdmission("default");
+}
+
+UAM_TEST(AcpPreparingAgentRetainsUnboundDurableIntentAndRejectsAdditionalInput)
+{
+	CheckColdLocalConfigurationAdmission("prepare");
+}
+
+UAM_TEST(AcpPreparingAgentRejectsSameStampSourceChange)
+{
+	CheckColdLocalConfigurationAdmission("source");
+}
+
+UAM_TEST(AcpPreparingUnavailableAgentRetainsCompleteUnsentIntent)
+{
+	CheckColdLocalConfigurationAdmission("agentfailure");
+}
+
+UAM_TEST(AcpLocalSetupReceiptFailureRetainsIntentAndAllowsExplicitRetry)
+{
+	CheckColdLocalConfigurationAdmission("receiptfailure");
+}
+
+UAM_TEST(AcpLocalSetupReceiptStopPreventsPromptTransport)
+{
+	CheckColdLocalConfigurationAdmission("receiptstop");
+}
+
+UAM_TEST(AcpLocalCompletionSaveAllowsOwnedNextInput)
+{
+	CheckColdLocalConfigurationAdmission("completionnext");
+}
+
+UAM_TEST(AcpLocalSetupReceiptRejectsChangedDataRoot)
+{
+	CheckColdLocalConfigurationAdmission("receiptroot");
+}
+
+UAM_TEST(AcpLocalSetupReceiptRejectsRecreatedIdentity)
+{
+	CheckColdLocalConfigurationAdmission("receiptrecreation");
+}
+
+UAM_TEST(AcpLocalSetupReceiptRestagesAcceptedQueuedInput)
+{
+	CheckColdLocalConfigurationAdmission("receiptqueue");
+}
+
+UAM_TEST(AcpLocalSetupReceiptStillObservesProviderExit)
+{
+	CheckColdLocalConfigurationAdmission("receiptexit");
+}
+
+UAM_TEST(AcpWarmSelectedAgentSendKeepsInputBudget)
+{
+	CheckColdLocalConfigurationAdmission("warm");
+}
+
+UAM_TEST(AcpBusySelectedAgentEnqueueKeepsInputBudget)
+{
+	CheckColdLocalConfigurationAdmission("busy");
+}
+
+UAM_TEST(InitialPromptSaveFailureCannotRejectReplacementTurnOrIncarnation)
+{
+	for (int replacement = 0; replacement < 3; ++replacement)
+	{
+		PromptFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Original deferred input", &error));
+		if (replacement == 0) ++session.turn_serial;
+		else if (replacement == 1) session.queued_prompt = "Replacement input";
+		else app.chats.front().metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+		const std::string pending = session.queued_prompt;
+		std::optional<bool> acknowledgement;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id,
+		    [&acknowledgement](bool saved) { acknowledgement = saved; }));
+		app.data_root = fixture.temp.root / "blocked-replacement-save";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Private blocked root"));
+		UAM_ASSERT(!uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+		UAM_ASSERT(acknowledgement.has_value() && !*acknowledgement);
+		UAM_ASSERT(session.processing);
+		UAM_ASSERT_EQ(session.queued_prompt, pending);
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	}
+}
+
+UAM_TEST(AcpBusyAgentPreparationCancelCancelsActiveTurn)
+{
+	CheckColdLocalConfigurationAdmission("busycancel");
+}
+
+UAM_TEST(AcpBusyAgentPreparationRejectsChangedDefinition)
+{
+	CheckColdLocalConfigurationAdmission("busysource");
+}
+
+UAM_TEST(AcpBusyPreparedAgentQueueRejectsChangedRawRow)
+{
+	CheckColdLocalConfigurationAdmission("busyrow");
+}
+
+UAM_TEST(AcpBusyPreparedAgentQueueResumesExactRawRowAfterReload)
+{
+	CheckColdLocalConfigurationAdmission("busyreload");
+}
+
+UAM_TEST(AcpBusyAgentPreparationFailurePreservesActiveTurn)
+{
+	CheckColdLocalConfigurationAdmission("busyfailure");
+}
+
+UAM_TEST(AcpDetachedPreparedAgentQueueResumesExactRawRowAfterRestart)
+{
+	CheckColdLocalConfigurationAdmission("busysummary");
+}
+
+UAM_TEST(BindingOnlyFullSaveFailurePreservesUndeliveredPromptIntent)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	app.data_root = fixture.temp.root / "blocked-binding-save";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Private blocked root"));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Held native objective", &error));
+	const std::string prompt = session.queued_prompt;
+	const std::filesystem::path root = app.data_root;
+	const std::shared_ptr<const std::uint8_t> incarnation = app.chats.front().metadata_incarnation;
+	std::optional<uam::acp_detail::DurableAdmissionState> receipt;
+	int callbacks = 0;
+	UAM_ASSERT(uam::acp_detail::BeginDurableAdmission(app, app.chats.front(), [&]()
+	{
+		return app.data_root == root && app.chats.front().metadata_incarnation == incarnation &&
+		    session.processing && session.queued_prompt == prompt && session.prompt_request_id == 0;
+	}, [&](uam::acp_detail::DurableAdmissionState result)
+	{
+		receipt = result;
+		++callbacks;
+	}, uam::acp_detail::DurableAdmissionFailurePurpose::BindingOnly) == uam::acp_detail::DurableAdmissionState::Pending);
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!receipt.has_value() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(receipt.has_value() && *receipt == uam::acp_detail::DurableAdmissionState::Failed);
+	UAM_ASSERT_EQ(callbacks, 1);
+	UAM_ASSERT(session.processing);
+	UAM_ASSERT_EQ(session.queued_prompt, prompt);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT_EQ(ReadFile(fixture.saved_path), fixture.original);
+}
+
+UAM_TEST(MixedBindingAndPromptFullSaveFailureRetainsPromptRejection)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	app.data_root = fixture.temp.root / "blocked-mixed-save";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Private blocked root"));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Owned prompt failure", &error));
+	const std::string prompt = session.queued_prompt;
+	const std::function<bool()> owned = [&]() { return session.processing && session.queued_prompt == prompt; };
+	int callbacks = 0;
+	const std::function<void(uam::acp_detail::DurableAdmissionState)> completion = [&](uam::acp_detail::DurableAdmissionState result)
+	{
+		UAM_ASSERT(result == uam::acp_detail::DurableAdmissionState::Failed);
+		UAM_ASSERT(!session.processing && session.queued_prompt.empty());
+		++callbacks;
+	};
+	UAM_ASSERT(uam::acp_detail::BeginDurableAdmission(app, app.chats.front(), owned, completion,
+		uam::acp_detail::DurableAdmissionFailurePurpose::BindingOnly) == uam::acp_detail::DurableAdmissionState::Pending);
+	UAM_ASSERT(uam::acp_detail::BeginDurableAdmission(app, app.chats.front(), owned, completion) == uam::acp_detail::DurableAdmissionState::Pending);
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (callbacks < 2 && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT_EQ(callbacks, 2);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	UAM_ASSERT_EQ(ReadFile(fixture.saved_path), fixture.original);
+}
+
+UAM_TEST(AcpDetachedQueueHistoryRejectsChangedRoot)
+{
+	CheckColdLocalConfigurationAdmission("busysummaryroot");
+}
+
+UAM_TEST(AcpDetachedQueueHistoryStopRetainsHeldRawRow)
+{
+	CheckColdLocalConfigurationAdmission("busysummarystop");
+}
+
+UAM_TEST(AcpDetachedQueueHistoryRejectsChangedStorageRevision)
+{
+	CheckColdLocalConfigurationAdmission("busysummarystorage");
+}
+
+UAM_TEST(AcpDetachedQueueHistoryRejectsChangedQueueRevision)
+{
+	CheckColdLocalConfigurationAdmission("busysummaryrevision");
+}
+
+UAM_TEST(AcpReferencedQueueLaunchFailureRetainsOwnedRawRow)
+{
+	CheckColdLocalConfigurationAdmission("busyrelaunchfailure");
+}
+
+UAM_TEST(AcpReferencedQueueLaunchRejectsChangedAgentScope)
+{
+	CheckColdLocalConfigurationAdmission("busyrelaunchsettings");
+}
+
+UAM_TEST(AcpReferencedQueueLaunchRejectsChangedQueueRevision)
+{
+	CheckColdLocalConfigurationAdmission("busyrelaunchqueue");
+}
+
+UAM_TEST(AcpSmallModelNativeSteerKeepsInputBudgetAndDurability)
+{
+	PromptFixture fixture;
+	PrepareNativeSteer(fixture);
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	chat.small_model_mode = true;
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, chat);
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SteerAcpPrompt(app, chat.id, "Small-model steer retains its parent turn", {}, {}, false, &error);
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(accepted);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT(session.processing && session.prompt_request_id == 17 && session.turn_serial == 7);
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT_EQ(session.codex_turn_id, std::string("private-active-turn"));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	UAM_ASSERT(!acknowledgement.has_value());
+	AwaitSave(app);
+	UAM_ASSERT(acknowledgement.has_value() && *acknowledgement);
+	UAM_ASSERT_EQ(session.pending_request_methods.size(), std::size_t{1});
+	UAM_ASSERT(session.processing && session.prompt_request_id == 17 && session.turn_serial == 7);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->small_model_mode && saved->messages.size() == 3);
+	UAM_ASSERT_EQ(saved->messages[0].content, std::string("Previously saved history"));
+	UAM_ASSERT_EQ(saved->messages[1].content, std::string("Parent output before steering"));
+	UAM_ASSERT_EQ(saved->messages[2].content, std::string("Small-model steer retains its parent turn"));
+	UAM_ASSERT(saved->messages[2].continues_turn && !saved->messages[2].acp_prompt_not_sent);
+	UAM_ASSERT_EQ(std::ranges::count_if(session.diagnostics, [](const uam::AcpDiagnosticEntryState& item)
+	    { return item.method == "turn/steer" && item.reason == "sent"; }), std::ptrdiff_t{1});
+}
+
+namespace
+{
+	void CheckSmallModelSteerRevocation(int mutation)
+	{
+		PromptFixture fixture;
+		PrepareNativeSteer(fixture);
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		chat.small_model_mode = true;
+		std::string error;
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		UAM_ASSERT(uam::SteerAcpPrompt(app, chat.id, "Owned small-model steer pending receipt", {}, {}, false, &error));
+		UAM_ASSERT(std::chrono::steady_clock::now() - started <= std::chrono::milliseconds(100));
+		std::optional<bool> acknowledgement;
+		int callback_count = 0;
+		UAM_ASSERT(uam::DeferChatSaveResult(app, chat.id, [&acknowledgement, &callback_count](bool saved) { ++callback_count; acknowledgement = saved; }));
+		const fs::path retained_root = fixture.temp.root / "retained-data";
+		if (mutation == 0)
+		{
+			fs::rename(app.data_root, retained_root);
+			UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Private unavailable storage"));
+		}
+		if (mutation == 1) chat.small_model_mode = false;
+		if (mutation == 2) session.codex_turn_id = "replacement-native-turn";
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+		{
+			const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
+			(void)uam::FlushPendingChatSaves(app);
+			UAM_ASSERT(std::chrono::steady_clock::now() - tick <= std::chrono::milliseconds(100));
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(acknowledgement.has_value());
+		UAM_ASSERT_EQ(*acknowledgement, mutation != 0);
+		UAM_ASSERT_EQ(callback_count, 1);
+		UAM_ASSERT(session.processing && session.prompt_request_id == 17 && session.turn_serial == 7);
+		UAM_ASSERT(session.pending_request_methods.empty() && session.pending_local_steer_abandon.empty());
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{3});
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		if (mutation == 0)
+		{
+			fs::remove(app.data_root);
+			fs::rename(retained_root, app.data_root);
+		}
+		AwaitSave(app);
+		UAM_ASSERT(session.pending_request_methods.empty());
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->messages.size() == 3 && saved->messages.back().acp_prompt_not_sent && saved->messages.back().interrupted);
+		UAM_ASSERT_EQ(saved->messages.back().content, std::string("Owned small-model steer pending receipt"));
+		UAM_ASSERT_EQ(callback_count, 1);
+		UAM_ASSERT_EQ(saved->messages[0].content, std::string("Previously saved history"));
+		UAM_ASSERT_EQ(std::ranges::count_if(session.diagnostics, [](const uam::AcpDiagnosticEntryState& item)
+		    { return item.method == "turn/steer" && item.reason == "sent"; }), std::ptrdiff_t{0});
+	}
+}
+
+UAM_TEST(AcpSmallModelSteerFailureRetainsIntentAndParent)
+{
+	CheckSmallModelSteerRevocation(0);
+}
+UAM_TEST(AcpSmallModelSteerRejectsChangedSmallModelScope)
+{
+	CheckSmallModelSteerRevocation(1);
+}
+UAM_TEST(AcpSmallModelSteerRejectsChangedNativeTurn)
+{
+	CheckSmallModelSteerRevocation(2);
 }

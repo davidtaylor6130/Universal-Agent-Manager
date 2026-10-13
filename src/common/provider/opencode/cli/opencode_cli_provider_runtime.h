@@ -29,6 +29,10 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	    const uam::acp_detail::AcpResponseFailureDetails& details) const override;
 	bool OnAcpHandleResult(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
 	    const std::string& method, const std::string& request_id, const nlohmann::json& result) const override;
+	std::size_t AcpBackgroundTaskCount(const uam::AcpSessionState& session) const override;
+	nlohmann::json OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const override;
+	bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
+	    const nlohmann::json& message, const CefRefPtr<CefBrowser>&) const override;
 	const char* AcpProtocolKind() const override { return "opencode-acp"; }
 	const char* GetAcpDisplayName() const override { return "OpenCode ACP"; }
 	bool IsGenericAcpSession() const override { return true; }

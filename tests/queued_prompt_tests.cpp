@@ -1,5 +1,6 @@
 #include "cef/state_serializer.h"
 #include "test_harness.h"
+#include "common/runtime/acp/acp_session_internal.h"
 
 #include <functional>
 
@@ -221,5 +222,55 @@ UAM_TEST(QueuedPromptRemoveAndSteerRejectStaleIdentityAndPreparedDelivery)
 		if (steer) UAM_ASSERT(fixture.session->queued_user_prompts.front().priority_steer);
 		// Legacy index-only clients retain access to future, undispatched queue entries.
 		UAM_ASSERT(act(std::nullopt));
+	}
+}
+
+UAM_TEST(ObserverOnlySaveFailuresPreserveForeignRemotePromptPrefix)
+{
+	for (const std::string kind : {"metadata", "icon", "workspace"})
+	{
+		std::optional<bool> observer_saved;
+		int callbacks = 0;
+		QueuedPromptFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		chat.execution_host_id = "remote-host";
+		fixture.session->queued_prompt = "Dispatched remote prompt";
+		uam::AcpQueuedUserPromptState pending;
+		pending.id = "dispatched"; pending.text = fixture.session->queued_prompt; pending.prepared_for_delivery = true;
+		chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(), pending);
+		chat.acp_dispatched_queued_prompt_count = 1;
+		const fs::path blocked = fixture.temp.root / "blocked-root";
+		UAM_ASSERT(uam::io::WriteTextFile(blocked, "Not a directory")); fixture.app.data_root = blocked;
+		std::shared_ptr<uam::WorkspaceChatSaveTicket> ticket;
+		if (kind == "workspace")
+			ticket = uam::ScheduleWorkspaceChatSave(fixture.app, chat, [&](bool saved) { observer_saved = saved; ++callbacks; });
+		else
+		{
+			uam::acp_detail::ScheduleChatSave(fixture.app, chat, 0.0);
+			if (kind == "metadata")
+				UAM_ASSERT(uam::DeferChatSaveResult(fixture.app, chat.id, [&](bool saved) { observer_saved = saved; ++callbacks; }));
+			if (kind == "icon")
+			{
+				chat.custom_icon = {"text", "A"};
+				UAM_ASSERT(uam::DeferChatIconSaveResult(fixture.app, chat.id, chat.custom_icon, []() { return true; },
+				    [&](bool saved) { observer_saved = saved; ++callbacks; }));
+			}
+		}
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!observer_saved && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		UAM_ASSERT(observer_saved && !*observer_saved); UAM_ASSERT_EQ(callbacks, 1);
+		UAM_ASSERT_EQ(fixture.session->queued_prompt, std::string("Dispatched remote prompt")); UAM_ASSERT(fixture.session->processing);
+		UAM_ASSERT(!uam::acp_detail::SaveChatQuietly(fixture.app, chat));
+		UAM_ASSERT_EQ(fixture.session->queued_prompt, std::string("Dispatched remote prompt")); UAM_ASSERT(fixture.session->processing);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.front().id, std::string("dispatched")); UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, std::size_t{1});
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().id, std::string("one"));
+		UAM_ASSERT(observer_saved && !*observer_saved); UAM_ASSERT_EQ(callbacks, 1);
+		uam::FlushPendingChatSaves(fixture.app, true);
+		UAM_ASSERT_EQ(fixture.session->queued_prompt, std::string("Dispatched remote prompt")); UAM_ASSERT(fixture.session->processing);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.front().id, std::string("dispatched")); UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, std::size_t{1});
+		UAM_ASSERT_EQ(callbacks, 1);
 	}
 }

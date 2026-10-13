@@ -6,7 +6,7 @@ import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw,
+  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -316,6 +316,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const [editValue, setEditValue] = useState(sessionName)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
   // Context/overflow menu anchored to a viewport position (cursor or button).
+  const canReuseWorktree = useAppStore((state) => {
+    const source = state.sessions.find((candidate) => candidate.id === sessionId)
+    return Boolean(source && !source.importedReadOnly && source.workspaceIsolationKind === 'gitWorktree' && source.workspaceWorktreeDirectory && source.folderId && (source.executionHostId || 'local') === 'local')
+  })
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -758,6 +762,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             boxShadow: 'var(--elev-2)',
           }}
         >
+          <button type="button" role="menuitem" className="uam-sb-menu-item"
+            disabled={!canReuseWorktree}
+            onClick={() => {
+              const current = useAppStore.getState()
+              const source = current.sessions.find((candidate) => candidate.id === sessionId)
+              if (!source || source.importedReadOnly || source.workspaceIsolationKind !== 'gitWorktree' || !source.workspaceWorktreeDirectory || !source.folderId || (source.executionHostId || 'local') !== 'local') return
+              setMenuPos(null)
+              current.setNewChatModalOpen(true, source.folderId, { sourceChatId: source.id, expectedWorkspaceDirectory: source.workspaceWorktreeDirectory, expectedExecutionHostId: source.executionHostId || 'local' })
+            }}><MessageSquarePlus size={13} aria-hidden />New chat in this worktree</button>
           <button
             role="menuitem"
             className="uam-sb-menu-item"

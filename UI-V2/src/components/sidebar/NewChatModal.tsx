@@ -37,6 +37,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const addFolder = useAppStore((s) => s.addFolder)
   const browseFolderDirectory = useAppStore((s) => s.browseFolderDirectory)
   const newChatFolderId = useAppStore((s) => s.newChatFolderId)
+  const newChatWorktreeContext = useAppStore((s) => s.newChatWorktreeContext)
   const activeFolderId = sessions.find((session) => session.id === activeSessionId)?.folderId ?? null
   const initialFolderId = [newChatFolderId, activeFolderId, folders[0]?.id]
     .find((candidate) => candidate !== null && candidate !== undefined && folders.some((folder) => folder.id === candidate)) ?? null
@@ -45,6 +46,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const [routingOpen, setRoutingOpen] = useState(false)
   const [routingMode, setRoutingMode] = useState<'explicit' | 'automatic'>('explicit')
   const [name, setName] = useState('')
+  const [sourceContextInvalid, setSourceContextInvalid] = useState(false)
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
   const initialIsRemote = Boolean(initialFolder?.executionHostId && initialFolder.executionHostId !== 'local')
   const initialProviderId =
@@ -134,6 +136,17 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
   const automaticAvailable = canRouteAutomatically(executionRouting, selectedFolder ?? undefined, providerId)
   useEffect(() => { if (!automaticAvailable) setRoutingMode('explicit') }, [automaticAvailable])
+  useEffect(() => {
+    if (!newChatWorktreeContext) return
+    const source = sessions.find((candidate) => candidate.id === newChatWorktreeContext.sourceChatId)
+    if (!source || source.importedReadOnly || source.workspaceIsolationKind !== 'gitWorktree' || source.folderId !== folderId ||
+      (source.executionHostId || 'local') !== newChatWorktreeContext.expectedExecutionHostId || executionHostId !== newChatWorktreeContext.expectedExecutionHostId ||
+      source.workspaceWorktreeDirectory !== newChatWorktreeContext.expectedWorkspaceDirectory || routingMode !== 'explicit') {
+      setSourceContextInvalid(true)
+      setChatError('The selected worktree changed. Choose a workspace again before creating a chat.')
+      setNewChatModalOpen(true, folderId, null)
+    }
+  }, [newChatWorktreeContext, sessions, folderId, executionHostId, routingMode, setNewChatModalOpen])
   const selectedProvider = providers.find((provider) => provider.id === providerId)
   const selectedExecutionHost = executionHosts.find((host) => host.id === executionHostId)
   const isRemote = executionHostId !== 'local'
@@ -186,6 +199,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         ? await addSession(n, selectedFolder?.id ?? null, providerId, undefined, undefined, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace, 'automatic')
         : isRemote
         ? await addSession(n, selectedFolder?.id ?? null, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', executionHostId, selectedWorkspace)
+        : newChatWorktreeContext
+        ? await addSession(n, selectedFolder!.id, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat', 'local', '', 'explicit', newChatWorktreeContext)
         : await addSession(n, selectedFolder!.id, providerId, selectedModelId, effort, terminalFallback ? 'cli' : 'chat')
       if (created) {
         onCreated?.()
@@ -206,7 +221,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 		? normalized.toLowerCase()
 		: normalized
 	}
-	const selectedWorkspace = isRemote ? selectedFolder?.directory ?? remoteWorkspace.trim() : selectedFolder?.directory ?? ''
+	const selectedWorkspace = newChatWorktreeContext?.expectedWorkspaceDirectory ?? (isRemote ? selectedFolder?.directory ?? remoteWorkspace.trim() : selectedFolder?.directory ?? '')
 	const discoverySession = providerSessions.find((session) => (session.executionHostId ?? 'local') === executionHostId && workspaceKey(session.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const scopedCatalog = providerModelCatalogs.find((catalog) => catalog.providerId === providerId && catalog.executionHostId === executionHostId && workspaceKey(catalog.workspaceDirectory) === workspaceKey(selectedWorkspace))
 	const liveBinding = discoverySession ? acpBindingBySessionId[discoverySession.id] : undefined
@@ -237,7 +252,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 	if (structuredCreationBlocked || !selectedWorkspace || (isRemote && !isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace))) return
 	void discoverProviderModels('', providerId, selectedWorkspace, executionHostId)
   }
-  const canCreate = Boolean(selectedExecutionHost) && (isRemote
+  const canCreate = !sourceContextInvalid && Boolean(selectedExecutionHost) && (isRemote
     ? isAbsoluteRemoteWorkspace(selectedExecutionHost?.platform, selectedWorkspace)
     : selectedFolder !== null && Boolean(selectedWorkspace))
 
@@ -267,6 +282,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     setReasoningEffort(saved?.effort ?? defaults?.reasoningEffort ?? '')
   }
   const chooseHost = (hostId: string) => {
+    if (newChatWorktreeContext && hostId !== executionHostId) setNewChatModalOpen(true, null, null)
+    setSourceContextInvalid(false); setChatError('')
     workspaceChoices.current[executionHostId] = { folderId, path: remoteWorkspace }
     const saved = workspaceChoices.current[hostId]
     const compatible = folders.find((folder) => (folder.executionHostId || 'local') === hostId)
@@ -348,7 +365,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               issues: host.transport === 'ssh' && host.runnerStatus !== 'ready'
                 ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
             }))]}
-            onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) setRoutingMode('automatic'); else { setRoutingMode('explicit'); chooseHost(hostId) } }}
+            onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) { if (newChatWorktreeContext) setNewChatModalOpen(true, folderId, null); setSourceContextInvalid(false); setChatError(''); setRoutingMode('automatic') } else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
           </div>
           {SSH_ENABLED && <div className="-mt-2 flex justify-end"><Button variant="ghost" size="sm" leadingIcon={<Route size={13} />} disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button></div>}
@@ -368,6 +385,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
                 executionHostId={executionHostId}
                 remoteEmptyOption={isRemote ? { label: 'New remote workspace…', description: `Create on ${selectedExecutionHost?.label}` } : undefined}
                 onChange={(nextFolderId) => {
+                  if (newChatWorktreeContext && nextFolderId !== folderId) setNewChatModalOpen(true, nextFolderId, null)
+                  setSourceContextInvalid(false); setChatError('')
 				  setFolderId(nextFolderId)
 				  const folder = folders.find((candidate) => candidate.id === nextFolderId)
 				  if (folder && isRemote) setRemoteWorkspace(folder.directory)
@@ -375,6 +394,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               />
             </div>
           )}
+
+          {newChatWorktreeContext && <p role="status" className="text-xs" style={{ color: 'var(--text-2)' }}>Using the selected worktree: {sessions.find((source) => source.id === newChatWorktreeContext.sourceChatId)?.workspaceBranchName || 'existing worktree'}.</p>}
 
           {isRemote && (
             <div>

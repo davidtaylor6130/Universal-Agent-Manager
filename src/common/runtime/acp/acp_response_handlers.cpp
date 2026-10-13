@@ -3,6 +3,9 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
+#include "app/chat_domain_service.h"
+#include "common/chat/chat_repository.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -17,8 +20,131 @@
 #include <string>
 #include <vector>
 
+namespace uam
+{
+	/// <summary>Owns the full native binding save without borrowing GUI chat/session references.</summary>
+	struct PendingLocalSessionReceipt
+	{
+		std::filesystem::path data_root;
+		std::shared_ptr<const std::uint8_t> incarnation;
+		std::string ownership;
+		std::string queue_revision;
+		std::string queue_fingerprint;
+		std::string prompt;
+		std::uint64_t turn_serial = 0;
+		std::size_t queue_count = 0;
+		bool callback_complete = false;
+		acp_detail::DurableAdmissionState admission = acp_detail::DurableAdmissionState::Pending;
+	};
+}
+
 namespace uam::acp_detail
 {
+namespace
+{
+	bool CanDeferLocalSessionReceipt(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+	{
+		return app.settings.central_provider_configuration.enabled &&
+		    chat.execution_host_id == execution_hosts::kLocalHostId &&
+		    session.process_execution_host_id == execution_hosts::kLocalHostId && !chat.small_model_mode &&
+		    !session.model_discovery_only && !session.goal_internal_session &&
+		    session.goal_turn_kind.empty() && !session.goal_review_turn &&
+		    chat.active_goal_id.empty() && chat.goal_owner_chat_id.empty() &&
+		    chat.goal_iteration_goal_id.empty() && !session.recovering_remote_turn &&
+		    !session.recovering_remote_process && session.running && session.session_ready;
+	}
+
+	bool OwnsLocalSessionScope(const AppState& app, const AcpSessionState& session,
+	    const ChatSession& chat, const PendingLocalSessionReceipt& receipt)
+	{
+		return CanDeferLocalSessionReceipt(app, session, chat) && !session.cancel_requested &&
+		    !session.local_stop_pending && receipt.data_root == app.data_root &&
+		    receipt.incarnation == chat.metadata_incarnation &&
+		    receipt.ownership == LocalSessionReceiptOwnership(app, session, chat);
+	}
+
+	bool OwnsLocalSessionReceipt(const AppState& app, const AcpSessionState& session,
+	    const ChatSession& chat, const PendingLocalSessionReceipt& receipt)
+	{
+		return OwnsLocalSessionScope(app, session, chat, receipt) && receipt.turn_serial == session.turn_serial &&
+		    receipt.queue_revision == chat.acp_queue_storage_revision &&
+		    receipt.queue_fingerprint == ChatRepository::QueueAdmissionFingerprint(chat) &&
+		    receipt.queue_count == session.queued_user_prompts.size() && receipt.prompt == session.queued_prompt;
+	}
+
+	void StageLocalSessionReceipt(AppState& app, AcpSessionState& session, const ChatSession& chat)
+	{
+		const std::shared_ptr<PendingLocalSessionReceipt> receipt = std::make_shared<PendingLocalSessionReceipt>();
+		receipt->data_root = app.data_root;
+		receipt->incarnation = chat.metadata_incarnation;
+		receipt->ownership = LocalSessionReceiptOwnership(app, session, chat);
+		receipt->queue_revision = chat.acp_queue_storage_revision;
+		receipt->queue_fingerprint = ChatRepository::QueueAdmissionFingerprint(chat);
+		receipt->queue_count = session.queued_user_prompts.size();
+		receipt->prompt = session.queued_prompt;
+		receipt->turn_serial = session.turn_serial;
+		session.pending_local_session_receipt = receipt;
+		const std::weak_ptr<PendingLocalSessionReceipt> weak = receipt;
+		const std::string chat_id = chat.id;
+		receipt->admission = BeginDurableAdmission(app, chat, [&app, chat_id, weak]()
+		{
+			const std::shared_ptr<PendingLocalSessionReceipt> saved = weak.lock();
+			const ChatSession* current = ChatDomainService().FindChatById(app, chat_id);
+			const AcpSessionState* owner = FindAcpSessionForChat(app, chat_id);
+			return saved && current && owner && owner->pending_local_session_receipt == saved &&
+			    OwnsLocalSessionReceipt(app, *owner, *current, *saved);
+		}, [weak](DurableAdmissionState result)
+		{
+			if (const std::shared_ptr<PendingLocalSessionReceipt> saved = weak.lock())
+			{
+				saved->admission = result;
+				saved->callback_complete = true;
+			}
+		});
+		if (receipt->admission == DurableAdmissionState::Failed) receipt->callback_complete = true;
+	}
+}
+
+bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSession& chat)
+{
+	const std::shared_ptr<PendingLocalSessionReceipt> receipt = session.pending_local_session_receipt;
+	if (!receipt) return false;
+	if (OwnsLocalSessionScope(app, session, chat, *receipt) && session.processing &&
+	    receipt->turn_serial == session.turn_serial && receipt->prompt == session.queued_prompt &&
+	    (receipt->queue_revision != chat.acp_queue_storage_revision ||
+	     receipt->queue_count != session.queued_user_prompts.size() ||
+	     receipt->queue_fingerprint != ChatRepository::QueueAdmissionFingerprint(chat)))
+	{
+		// Let the old callback retire its admission guard before adding the replacement.
+		if (!receipt->callback_complete) return true;
+		// A legitimate queued edit revokes the older snapshot and requires a new full receipt.
+		StageLocalSessionReceipt(app, session, chat);
+		return true;
+	}
+	if (receipt->admission == DurableAdmissionState::Failed && receipt->callback_complete && session.processing &&
+	    !session.queued_prompt.empty() && session.turn_serial != receipt->turn_serial &&
+	    receipt->data_root == app.data_root && receipt->incarnation == chat.metadata_incarnation &&
+	    CanDeferLocalSessionReceipt(app, session, chat))
+	{
+		// A fresh explicit turn obtains its own complete receipt; never revive failed input.
+		StageLocalSessionReceipt(app, session, chat);
+		return true;
+	}
+	if (!OwnsLocalSessionReceipt(app, session, chat, *receipt))
+	{
+		if (receipt->admission != DurableAdmissionState::Failed)
+		{
+			receipt->admission = DurableAdmissionState::Failed;
+			session.last_error = "Session setup ownership changed before its durable receipt committed.";
+		}
+		return true;
+	}
+	if (receipt->admission != DurableAdmissionState::Committed) return true;
+	session.pending_local_session_receipt.reset();
+	(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
+	return false;
+}
+
 
 void HandleAcpRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
@@ -533,7 +659,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		if (!session.model_discovery_only)
 		{
 			(void)ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpReconcileModelOptions(app, session, chat);
-			SaveChatQuietly(app, chat);
+			if (CanDeferLocalSessionReceipt(app, session, chat)) StageLocalSessionReceipt(app, session, chat);
+			else SaveChatQuietly(app, chat);
 		}
 		StopBackgroundModelDiscovery(app, session);
 		(void)ResumeQueuedUserPromptsAfterSessionSetup(app, session, chat);
@@ -566,9 +693,11 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 
 	if (method == uam::acp_methods::kSessionPrompt)
 	{
+		const bool defer_completion = CanDeferLocalSessionReceipt(app, session, chat);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, nullptr);
-		SaveChatQuietly(app, chat);
+		if (defer_completion) ScheduleChatSave(app, chat, 0.0);
+		else SaveChatQuietly(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
 		return;
 	}

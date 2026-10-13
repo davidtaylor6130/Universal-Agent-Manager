@@ -1,3 +1,4 @@
+#include "app/storage_retention_service.h"
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
 #include "common/config/settings_store.h"
@@ -945,11 +946,42 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 	}
 }
 
+void UamQueryHandler::HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<int> logs = uam::nlohmann_json::IntFieldStrict(payload, "backupLogRetentionDays");
+	const std::optional<int> cache = uam::nlohmann_json::IntFieldStrict(payload, "httpCacheClearIntervalDays");
+	if (!logs || !cache || *logs < 0 || *logs > 3650 || *cache < 0 || *cache > 3650)
+	{ cb->Failure(400, "Storage policy requires integer day values from 0 to 3650; zero disables cleanup."); return; }
+	if (!m_app.storage_retention_service)
+	{ cb->Failure(409, "Storage policy is still loading."); return; }
+	m_app.storage_retention_service->Poll(m_app);
+	const std::weak_ptr<void> lifetime = m_asyncLifetime;
+	if (!m_app.storage_retention_service->RequestPolicy(m_app.data_root, {*logs, *cache}, lifetime,
+	    [this, browser, cb, lifetime](bool saved, const std::string& error)
+	    {
+		    if (lifetime.expired()) return;
+		    if (!saved) { cb->Failure(500, error); return; }
+		    uam::PushStateUpdateIfChanged(browser, m_app);
+		    cb->Success("{}");
+	    })) cb->Failure(409, "Storage policy publication is busy or still loading. Retry shortly.");
+}
+
 void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::optional<bool> git_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "gitEnabled");
 	const std::optional<bool> svn_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "svnEnabled");
 	if (!git_enabled || !svn_enabled) { cb->Failure(400, "VCS settings must be booleans."); return; }
+	const std::optional<bool> pull_before_chat = uam::nlohmann_json::BoolFieldStrict(payload, "gitPullBeforeChat");
+	if (payload.contains("gitPullBeforeChat") && !pull_before_chat)
+	{
+		cb->Failure(400, "Pull before chat requires a boolean."); return;
+	}
+	const nlohmann::json* port_value = uam::nlohmann_json::FindStringField(payload, "gitPortMethod");
+	const std::string port_method = port_value ? port_value->get<std::string>() : std::string();
+	if (payload.contains("gitPortMethod") && (!port_value || (port_method != "patch" && port_method != "merge" && port_method != "squash")))
+	{
+		cb->Failure(400, "Git port method must be patch, merge or squash."); return;
+	}
 	const std::optional<bool> automatic_worktree = uam::nlohmann_json::BoolFieldStrict(payload, "gitAutoWorktree");
 	const nlohmann::json* base_value = uam::nlohmann_json::FindStringField(payload, "gitDefaultBaseBranch");
 	const std::string base_branch = base_value == nullptr ? std::string() : uam::strings::Trim(base_value->get<std::string>());
@@ -983,6 +1015,8 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	m_app.settings.git_enabled = *git_enabled;
 	m_app.settings.svn_enabled = *svn_enabled;
 	if (automatic_worktree) m_app.settings.git_auto_worktree = *automatic_worktree;
+	if (pull_before_chat) m_app.settings.git_pull_before_chat = *pull_before_chat;
+	if (port_value) m_app.settings.git_port_method = port_method == "merge" ? GitPortMethod::Merge : port_method == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;
 	if (base_value) m_app.settings.git_default_base_branch = base_branch;
 	if (cleanup_enabled) m_app.settings.worktree_cleanup_enabled = *cleanup_enabled;
 	if (retention_days) m_app.settings.worktree_retention_days = *retention_days;

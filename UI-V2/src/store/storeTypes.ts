@@ -32,6 +32,15 @@ import type {
   McpServerConfiguration,
   CentralProviderConfiguration,
   ProviderChatDefaults,
+  CreateSessionOptions,
+  NewChatWorktreeContext,
+  ProviderAvailabilityOverride,
+  VoiceInputSettings,
+  VcsStorageSettings,
+  VcsSettingsRequest,
+  StorageSettingsRequest,
+  ProviderAvailabilityRequest,
+  VoiceInputSettingsRequest,
   ProviderModelCatalog,
   ProviderAgentImportPreview,
   UamAgentCycleShortcut,
@@ -50,7 +59,8 @@ export type MutationResult = { ok: boolean; error?: string }
 export type CommandSafetyTierResult = MutationResult & { cancelled?: boolean }
 export type GoalCreateResult = MutationResult & { goalId?: string }
 
-export interface AppState {
+export interface AppState extends VoiceInputSettings, VcsStorageSettings {
+  providerAvailability: ProviderAvailabilityOverride[]
   startupNativeImports: StartupNativeImportStatus
   startupNativeImportReviewSequence: number
   startupNativeImportFolderId: string | null
@@ -139,6 +149,7 @@ export interface AppState {
   collapsibleWorkSections: boolean
   isNewChatModalOpen: boolean
   newChatFolderId: string | null
+  newChatWorktreeContext: NewChatWorktreeContext | null
   isSettingsOpen: boolean
   memoryLibraryScope: MemoryScope | null
   memoryLibraryEntries: MemoryEntry[]
@@ -174,7 +185,7 @@ export interface AppState {
   loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
   loadOlderSessionMessages: (id: string) => Promise<boolean>
   unloadSessionMessages: (id: string) => void
-  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic') => Promise<boolean>
+  addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic', options?: CreateSessionOptions) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[]) => Promise<string | null>
   retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
@@ -320,9 +331,12 @@ export interface AppState {
   refreshCustomThemes: () => Promise<boolean>
   saveCustomTheme: (theme: CustomTheme) => Promise<CustomTheme | null>
   deleteCustomTheme: (id: string) => Promise<boolean>
-  setVcsSettings: (settings: Pick<AppState, 'gitEnabled' | 'svnEnabled'>) => Promise<boolean>
+  setVcsSettings: (settings: VcsSettingsRequest) => Promise<boolean>
+  setProviderAvailability: (settings: ProviderAvailabilityRequest) => Promise<boolean>
+  setVoiceInputSettings: (settings: VoiceInputSettingsRequest) => Promise<boolean>
+  setStorageSettings: (settings: StorageSettingsRequest) => Promise<boolean>
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
-  setNewChatModalOpen: (open: boolean, folderId?: string | null) => void
+  setNewChatModalOpen: (open: boolean, folderId?: string | null, worktreeContext?: NewChatWorktreeContext | null) => void
   setSettingsOpen: (open: boolean) => void
   setSidebarCollapsed: (collapsed: boolean) => void
   setCommitPanelOpen: (open: boolean) => void

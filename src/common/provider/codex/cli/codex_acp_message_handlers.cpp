@@ -774,10 +774,12 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	{
 		if (JsonDiagnosticStringValue(params, "threadId") != session.session_id) return;
 		const bool preparing = !session.codex_goal_native_active &&
-			(session.codex_goal_initial_turn_pending.has_value() || CodexGoalOwnsNativeTurn(session, chat, session.session_id));
+			((session.codex_goal_initial_turn_pending.has_value() &&
+			 CodexGoalReceiptMatchesOwner(session, chat, *session.codex_goal_initial_turn_pending, session.session_id)) || CodexGoalOwnsNativeTurn(session, chat, session.session_id));
 		const nlohmann::json native_goal = JsonObjectValue(params, "goal");
 		// A newer replacement loses our receipt binding; preserve the replacement without sending controls.
-		if (!session.codex_goal_owner.goal_id.empty() && session.codex_goal_created_at > 0 &&
+		if (CodexGoalReceiptMatchesOwner(session, chat, session.codex_goal_owner, session.session_id, false) &&
+			!session.codex_goal_owner.goal_id.empty() && session.codex_goal_created_at > 0 &&
 			native_goal.contains("createdAt") && native_goal["createdAt"].is_number_integer() &&
 			native_goal.contains("updatedAt") && native_goal["updatedAt"].is_number_integer() &&
 			native_goal["updatedAt"].get<std::int64_t>() >= session.codex_goal_updated_at &&

@@ -155,6 +155,7 @@ namespace
 	constexpr std::string_view kChatWorkspaceIsolationKindField = "workspace_isolation_kind";
 	constexpr std::string_view kChatWorkspaceSourceDirectoryField = "workspace_source_directory";
 	constexpr std::string_view kChatWorkspaceBaseRefField = "workspace_base_ref";
+	constexpr std::string_view kChatGitBaseBranchOverrideField = "git_base_branch_override";
 	constexpr std::string_view kChatWorkspaceBranchNameField = "workspace_branch_name";
 	constexpr std::string_view kChatWorkspaceWorktreeDirectoryField = "workspace_worktree_directory";
 	constexpr std::string_view kChatImportedReadOnlyField = "imported_read_only";
@@ -343,6 +344,11 @@ namespace
 			uam::json::PushValue(attachments, AttachmentToJson(attachment));
 		uam::json::SetValue(obj, "attachments", std::move(attachments));
 		uam::json::SetBool(obj, "append_user_message", prompt.append_user_message);
+		if (prompt.existing_user_message_index >= 0)
+		{
+			uam::json::SetNumber(obj, "existing_user_message_index", prompt.existing_user_message_index);
+			uam::json::SetString(obj, "existing_user_message_created_at", prompt.existing_user_message_created_at);
+		}
 		if (prompt.prepared_for_delivery)
 			uam::json::SetBool(obj, "prepared_for_delivery", true);
 		if (!prompt.claude_quota_continuation_id.empty())
@@ -463,6 +469,19 @@ namespace
 		}
 		if (prompt.text.empty() && prompt.attachments.empty()) return std::nullopt;
 		prompt.append_user_message = JsonBoolOrDefault(obj.Find("append_user_message"), true);
+		const JsonValue* existing_index = obj.Find("existing_user_message_index");
+		const JsonValue* existing_created = obj.Find("existing_user_message_created_at");
+		if (existing_index != nullptr || existing_created != nullptr)
+		{
+			if (existing_index == nullptr || existing_created == nullptr || prompt.append_user_message ||
+			    existing_index->type != JsonValue::Type::Number || !std::isfinite(existing_index->number_value) ||
+			    existing_index->number_value < 0 || existing_index->number_value > std::numeric_limits<int>::max() ||
+			    std::floor(existing_index->number_value) != existing_index->number_value ||
+			    existing_created->type != JsonValue::Type::String || existing_created->string_value.empty() ||
+			    existing_created->string_value.size() > 256) return std::nullopt;
+			prompt.existing_user_message_index = static_cast<int>(existing_index->number_value);
+			prompt.existing_user_message_created_at = existing_created->string_value;
+		}
 		prompt.prepared_for_delivery = JsonBoolOrDefault(obj.Find("prepared_for_delivery"), false);
 		prompt.claude_quota_continuation_id = JsonStringOrEmpty(obj.Find("claude_quota_continuation_id"));
 		prompt.prepared_user_message_count = std::min(NonNegativeIntFieldOrZero(
@@ -952,7 +971,7 @@ namespace
 
 	bool ChatBranchFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		if (lhs.temporary_parent_chat_id != rhs.temporary_parent_chat_id || lhs.provider_handoff_context != rhs.provider_handoff_context || lhs.provider_handoff_session_id != rhs.provider_handoff_session_id ||
+		if (lhs.temporary_parent_chat_id != rhs.temporary_parent_chat_id || lhs.temporary_storage_owner_token != rhs.temporary_storage_owner_token || lhs.provider_handoff_context != rhs.provider_handoff_context || lhs.provider_handoff_session_id != rhs.provider_handoff_session_id ||
 		    lhs.provider_handoff_cli_contexts != rhs.provider_handoff_cli_contexts || lhs.side_cleanup_requested != rhs.side_cleanup_requested || lhs.parent_chat_id != rhs.parent_chat_id || lhs.branch_root_chat_id != rhs.branch_root_chat_id)
 		{
 			return false;
@@ -981,7 +1000,7 @@ namespace
 		{
 			return false;
 		}
-		if (lhs.workspace_source_directory != rhs.workspace_source_directory || lhs.workspace_base_ref != rhs.workspace_base_ref)
+		if (lhs.workspace_source_directory != rhs.workspace_source_directory || lhs.workspace_base_ref != rhs.workspace_base_ref || lhs.git_base_branch_override != rhs.git_base_branch_override)
 		{
 			return false;
 		}
@@ -1542,6 +1561,7 @@ namespace
 		    NonNegativeUintmaxFieldOrZero(root.Find(kChatAcpDispatchedQueuedPromptCountField)),
 		    chat.acp_queued_prompts.size());
 		chat.temporary_parent_chat_id = JsonStringOrEmpty(root.Find("temporary_parent_chat_id"));
+		chat.temporary_storage_owner_token = JsonStringOrEmpty(root.Find("temporary_storage_owner_token"));
 		chat.side_cleanup_requested = JsonBoolOrDefault(root.Find("side_cleanup_requested"), false);
 		chat.parent_chat_id = JsonStringOrEmpty(root.Find(kChatParentChatIdField));
 		chat.branch_root_chat_id = JsonStringOrEmpty(root.Find(kChatBranchRootChatIdField));
@@ -1569,6 +1589,14 @@ namespace
 		chat.workspace_isolation_kind = JsonStringOrEmpty(root.Find(kChatWorkspaceIsolationKindField));
 		chat.workspace_source_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceSourceDirectoryField));
 		chat.workspace_base_ref = JsonStringOrEmpty(root.Find(kChatWorkspaceBaseRefField));
+		const JsonValue* base_override = root.Find(kChatGitBaseBranchOverrideField);
+		if (base_override && base_override->type != JsonValue::Type::Null)
+		{
+			if (base_override->type != JsonValue::Type::String || base_override->string_value.size() > 255 ||
+			    std::ranges::any_of(base_override->string_value, [](unsigned char c) { return c < 32 || c == 127; }))
+				return {std::nullopt, "contains an invalid Git base branch override"};
+			chat.git_base_branch_override = uam::strings::Trim(base_override->string_value);
+		}
 		chat.workspace_branch_name = JsonStringOrEmpty(root.Find(kChatWorkspaceBranchNameField));
 		chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceWorktreeDirectoryField));
 		chat.imported_read_only = JsonBoolOrDefault(root.Find(kChatImportedReadOnlyField), false);
@@ -1715,6 +1743,21 @@ namespace
 						receipt.last_native_tokens_used = *used;
 						receipt.native_token_budget = NativeGoalBindingInteger(native_budget);
 					}
+					if (const JsonValue* delivery = binding->Find("initialDelivery"); delivery != nullptr)
+					{
+						const std::optional<std::int64_t> index = NativeGoalBindingInteger(delivery->Find("userMessageIndex"));
+						const std::string timestamp = JsonStringOrEmpty(delivery->Find("userMessageCreatedAt"));
+						const std::string state = JsonStringOrEmpty(delivery->Find("state"));
+						const JsonValue* turn = delivery->Find("turnId");
+						const std::string turn_id = JsonStringOrEmpty(turn);
+						if (delivery->type != JsonValue::Type::Object || !index || *index < 0 || *index > std::numeric_limits<int>::max() ||
+							timestamp.empty() || turn == nullptr || turn->type != JsonValue::Type::String ||
+							(state != "pending" && state != "attempted" && state != "accepted") ||
+							((state == "accepted") != !turn_id.empty())) receipt.version = 0;
+						else receipt.initial_delivery = NativeGoalInitialDelivery{*index, timestamp,
+							state == "pending" ? NativeGoalInitialDelivery::State::Pending :
+							state == "attempted" ? NativeGoalInitialDelivery::State::Attempted : NativeGoalInitialDelivery::State::Accepted, turn_id};
+					}
 					goal.native_binding = std::move(receipt);
 				}
 				goal.worker_model_id = JsonStringOrEmpty(goal_obj.Find("workerModelId"));
@@ -1754,6 +1797,7 @@ namespace
 		if (chat.imported_read_only)
 		{
 			chat.temporary_parent_chat_id.clear();
+			chat.temporary_storage_owner_token.clear();
 			chat.side_cleanup_requested = false;
 			chat.provider_handoff_context.clear();
 			chat.provider_handoff_session_id.clear();
@@ -2044,13 +2088,34 @@ namespace
 		return index;
 	}
 
+	bool PrimaryTemporaryOwnerMatches(const fs::path& primary, std::string_view parent, std::string_view token)
+	{
+		if (parent.empty() || token.empty()) return false;
+		const std::optional<std::string> revision = StorageRevision(primary);
+		if (!revision || *revision == "missing") return false;
+		std::string metadata;
+		std::optional<uam::chat_pages::Index> index = uam::chat_pages::ReadIndex(uam::chat_pages::IndexPath(primary), *revision);
+		// Ownership checks never repair or scan a large transcript on synchronous save callers.
+		if (!index && !uam::io::TryReadTextFile(primary, metadata, 4 * 1024 * 1024)) return false;
+		if (index)
+		{
+			std::ifstream input(primary, std::ios::binary);
+			if (!uam::chat_pages::ReadMetadata(input, *index, metadata)) return false;
+		}
+		const std::optional<JsonValue> document = ParseJson(metadata);
+		return document && document->type == JsonValue::Type::Object &&
+			JsonStringOrEmpty(document->Find("temporary_parent_chat_id")) == parent &&
+			JsonStringOrEmpty(document->Find("temporary_storage_owner_token")) == token && StorageRevision(primary) == revision;
+	}
+
 	bool PageOwnerMatches(const ChatSession& lhs, const ChatSession& rhs)
 	{
 		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && lhs.updated_at == rhs.updated_at && lhs.provider_id == rhs.provider_id &&
 		    lhs.native_session_id == rhs.native_session_id && lhs.execution_host_id == rhs.execution_host_id &&
+		    lhs.temporary_storage_owner_token == rhs.temporary_storage_owner_token &&
 		    lhs.folder_id == rhs.folder_id && lhs.workspace_directory == rhs.workspace_directory &&
 		    lhs.workspace_isolation_kind == rhs.workspace_isolation_kind && lhs.workspace_source_directory == rhs.workspace_source_directory &&
-		    lhs.workspace_base_ref == rhs.workspace_base_ref && lhs.workspace_branch_name == rhs.workspace_branch_name &&
+		    lhs.workspace_base_ref == rhs.workspace_base_ref && lhs.git_base_branch_override == rhs.git_base_branch_override && lhs.workspace_branch_name == rhs.workspace_branch_name &&
 		    lhs.workspace_worktree_directory == rhs.workspace_worktree_directory && lhs.imported_read_only == rhs.imported_read_only;
 	}
 
@@ -2124,7 +2189,7 @@ bool ChatRepository::MatchesMessagePage(const ChatSession& current, const ChatMe
 	    current.persisted_messages_digest == page.chat.persisted_messages_digest;
 }
 
-bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint)
+bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint, std::string* saved_revision)
 try
 {
 	std::unique_lock<std::mutex> lock(ChatSaveMutex(), std::defer_lock);
@@ -2136,6 +2201,8 @@ try
 	}
 
 	const fs::path file_path = AppPaths::UamChatFilePath(data_root, chat.id);
+	if (fingerprint == nullptr && !fail_if_exists && !chat.temporary_storage_owner_token.empty() &&
+		!PrimaryTemporaryOwnerMatches(file_path, chat.temporary_parent_chat_id, chat.temporary_storage_owner_token)) return false;
 	const fs::path queue_path = QueueJournalPath(data_root, chat.id);
 	const std::optional<std::string> queue_revision = fingerprint == nullptr ? QueueJournalRevision(queue_path) : std::optional<std::string>("missing");
 	if (!queue_revision || (*queue_revision != "missing" &&
@@ -2151,6 +2218,8 @@ try
 	if (prepared != nullptr)
 	{
 		prepared->chat_id = chat.id;
+		prepared->temporary_parent_chat_id = chat.temporary_parent_chat_id;
+		prepared->temporary_storage_owner_token = chat.temporary_storage_owner_token;
 		prepared->queue_storage_revision = chat.acp_queue_storage_revision;
 		prepared->published_queue_full_revision = full_queue_revision;
 		prepared->queue_path = queue_path;
@@ -2295,6 +2364,7 @@ try
 	                         chat.acp_dispatched_queued_prompt_count,
 	                         chat.acp_queued_prompts.size())));
 	uam::json::SetString(root, "temporary_parent_chat_id", chat.temporary_parent_chat_id);
+	SetNonEmptyString(root, "temporary_storage_owner_token", chat.temporary_storage_owner_token);
 	uam::json::SetBool(root, "side_cleanup_requested", chat.side_cleanup_requested);
 	uam::json::SetString(root, kChatParentChatIdField, chat.parent_chat_id);
 	uam::json::SetString(root, kChatBranchRootChatIdField, chat.branch_root_chat_id);
@@ -2325,6 +2395,7 @@ try
 	uam::json::SetString(root, kChatWorkspaceIsolationKindField, chat.workspace_isolation_kind);
 	uam::json::SetString(root, kChatWorkspaceSourceDirectoryField, chat.workspace_source_directory);
 	uam::json::SetString(root, kChatWorkspaceBaseRefField, chat.workspace_base_ref);
+	uam::json::SetValue(root, kChatGitBaseBranchOverrideField, chat.git_base_branch_override ? uam::json::String(*chat.git_base_branch_override) : JsonValue{});
 	uam::json::SetString(root, kChatWorkspaceBranchNameField, chat.workspace_branch_name);
 	uam::json::SetString(root, kChatWorkspaceWorktreeDirectoryField, chat.workspace_worktree_directory);
 	uam::json::SetBool(root, kChatImportedReadOnlyField, chat.imported_read_only);
@@ -2451,6 +2522,18 @@ try
 				uam::json::SetNumber(binding, "nativeTokensUsed", static_cast<double>(receipt.last_native_tokens_used));
 				uam::json::SetValue(binding, "nativeTokenBudget", receipt.native_token_budget.has_value()
 					? uam::json::Number(static_cast<double>(*receipt.native_token_budget)) : JsonValue{});
+				if (receipt.initial_delivery.has_value())
+				{
+					const NativeGoalInitialDelivery& witness = *receipt.initial_delivery;
+					JsonValue delivery = uam::json::Object();
+					uam::json::SetNumber(delivery, "userMessageIndex", static_cast<double>(witness.user_message_index));
+					uam::json::SetString(delivery, "userMessageCreatedAt", witness.user_message_created_at);
+					uam::json::SetString(delivery, "state", witness.state == NativeGoalInitialDelivery::State::Pending ? "pending" :
+						witness.state == NativeGoalInitialDelivery::State::Attempted ? "attempted" :
+						witness.state == NativeGoalInitialDelivery::State::Accepted ? "accepted" : "invalid");
+					uam::json::SetString(delivery, "turnId", witness.turn_id);
+					uam::json::SetValue(binding, "initialDelivery", std::move(delivery));
+				}
 				uam::json::SetValue(goal_obj, "nativeBinding", std::move(binding));
 			}
 			uam::json::SetString(goal_obj, "workerModelId", goal.worker_model_id);
@@ -2632,6 +2715,13 @@ try
 		(void)uam::io::WriteTextFile(summary_path, summary_json);
 	}
 	chat.acp_queue_full_save_revision = full_queue_revision;
+	if (saved_revision != nullptr)
+	{
+		const std::optional<std::string> revision = StorageRevision(file_path);
+		if (!revision) return false;
+		// A small-child receipt binds exact bytes, including same-size/same-time replacement.
+		*saved_revision = *revision + "\n" + json;
+	}
 	return true;
 }
 
@@ -2741,6 +2831,8 @@ try
 	prepared->summary_temp = uam::io::MakeTempWritePath(prepared->summary_path);
 	prepared->preserve_backup = base->preserve_backup;
 	prepared->chat_id = base->chat_id;
+	prepared->temporary_parent_chat_id = base->temporary_parent_chat_id;
+	prepared->temporary_storage_owner_token = base->temporary_storage_owner_token;
 	prepared->queue_path = base->queue_path;
 	prepared->expected_queue_revision = base->expected_queue_revision;
 	prepared->queue_storage_revision = base->queue_storage_revision;
@@ -2768,6 +2860,8 @@ bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatS
 	    (committed_chat->id != prepared->chat_id || committed_chat->acp_queue_storage_revision != prepared->queue_storage_revision)) return false;
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
 	if (still_owned && !still_owned()) return false;
+	if (!prepared->temporary_storage_owner_token.empty() &&
+		!PrimaryTemporaryOwnerMatches(prepared->primary_path, prepared->temporary_parent_chat_id, prepared->temporary_storage_owner_token)) return false;
 	if (!prepared->queue_path.empty() && QueueJournalRevision(prepared->queue_path) != prepared->expected_queue_revision) return false;
 	if (!prepared->transcript_source_path.empty() && StorageRevision(prepared->transcript_source_path) != prepared->transcript_source_revision) return false;
 	if (!prepared->expected_storage_revision.empty() && StorageRevision(prepared->primary_path) != prepared->expected_storage_revision) return false;
@@ -2818,6 +2912,8 @@ try
 	if (!uam::chat_ids::IsSafeStorageChatId(chat.id) || chat.imported_read_only || chat.acp_queue_storage_error) return false;
 	std::unique_lock<std::mutex> lock(ChatSaveMutex());
 	if (still_owned && !still_owned()) return false;
+	if (!chat.temporary_storage_owner_token.empty() &&
+		!PrimaryTemporaryOwnerMatches(AppPaths::UamChatFilePath(data_root, chat.id), chat.temporary_parent_chat_id, chat.temporary_storage_owner_token)) return false;
 	const fs::path queue_path = QueueJournalPath(data_root, chat.id);
 	const std::optional<std::string> current = QueueJournalRevision(queue_path);
 	if (!current || (*current != "missing" && *current != chat.acp_queue_storage_revision)) return false;
@@ -2895,6 +2991,8 @@ catch (const std::exception& error)
 
 std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLastOpenedAt(const fs::path& data_root, const ChatSession& metadata)
 {
+	if (!metadata.temporary_storage_owner_token.empty() &&
+		!PrimaryTemporaryOwnerMatches(AppPaths::UamChatFilePath(data_root, metadata.id), metadata.temporary_parent_chat_id, metadata.temporary_storage_owner_token)) return nullptr;
 	const std::optional<std::string> revision = ChatStorageRevision(data_root, metadata.id);
 	if (!revision) return nullptr;
 	const fs::path primary = AppPaths::UamChatFilePath(data_root, metadata.id);
@@ -2924,6 +3022,8 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLastOpenedAt(const fs::
 	uam::json::SetNumber(*summary, "snoozed_until_ms", static_cast<double>(metadata.snoozed_until_ms));
 	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
 	prepared->primary_path = primary;
+	prepared->temporary_parent_chat_id = metadata.temporary_parent_chat_id;
+	prepared->temporary_storage_owner_token = metadata.temporary_storage_owner_token;
 	prepared->summary_path = summary_path;
 	prepared->summary_temp = uam::io::MakeTempWritePath(summary_path);
 	prepared->expected_storage_revision = *revision;
@@ -2937,6 +3037,7 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLastOpenedAt(const fs::
 
 bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat)
 {
+	if (!chat.temporary_storage_owner_token.empty()) return PublishPreparedChatSave(PrepareLastOpenedAt(data_root, chat));
 	if (!uam::chat_ids::IsSafeStorageChatId(chat.id)) return false;
 	const fs::path chat_path = AppPaths::UamChatFilePath(data_root, chat.id);
 	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
@@ -2959,39 +3060,74 @@ bool ChatRepository::SaveLastOpenedAt(const std::filesystem::path& data_root, co
 	return uam::io::WriteTextFile(summary_path, SerializeJson(*summary)) || SaveChat(data_root, chat);
 }
 
-bool ChatRepository::SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat)
+bool ChatRepository::SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat, std::string* saved_revision)
 {
-	return SaveChatImpl(data_root, chat, true);
+	if (saved_revision != nullptr) saved_revision->clear();
+	return SaveChatImpl(data_root, chat, true, false, nullptr, nullptr, saved_revision);
 }
 
-ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id)
+bool ChatRepository::MatchesTemporaryChatSaveReceipt(const fs::path& data_root, std::string_view chat_id, std::string_view saved_revision)
 {
-	std::lock_guard<std::mutex> lock(ChatSaveMutex());
-	ChatStorageDeleteResult result;
-	if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id)) return false;
+	const std::size_t boundary = saved_revision.find('\n');
+	if (boundary == std::string_view::npos || boundary == 0) return false;
+	const std::string_view revision = saved_revision.substr(0, boundary);
+	const std::string_view expected_content = saved_revision.substr(boundary + 1);
+	if (revision == "missing" || expected_content.empty()) return false;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
+	std::string actual_content;
+	return StorageRevision(primary) == revision &&
+		uam::io::TryReadTextFile(primary, actual_content, expected_content.size()) && actual_content == expected_content &&
+		StorageRevision(primary) == revision;
+}
+
+namespace
+{
+	ChatStorageDeleteResult DeleteChatStorageFilesLocked(const fs::path& data_root, std::string_view chat_id)
 	{
-		result.unsafe_chat_id = true;
+		ChatStorageDeleteResult result;
+		if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
+		{
+			result.unsafe_chat_id = true;
+			return result;
+		}
+
+		if (uam::paths::IsLinkOrReparsePointNoThrow(QueueJournalPath(data_root, chat_id).parent_path()))
+		{
+			result.queue_file_error = std::make_error_code(std::errc::operation_not_permitted);
+			return result;
+		}
+		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
+		uam::paths::RemoveFileNoThrow(QueueJournalPath(data_root, chat_id), &result.queue_file_error);
+		const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
+		uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
+		uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(metadata_path), &result.message_index_file_error);
+		uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(uam::io::MakeBackupPath(metadata_path)), &result.message_index_backup_file_error);
+		uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
+		const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
+		uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);
+		uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(summary_path), &result.summary_backup_file_error);
+		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(
+		    data_root / "computer-use" / std::string(chat_id), &result.computer_use_directory_error);
 		return result;
 	}
 
-	if (uam::paths::IsLinkOrReparsePointNoThrow(QueueJournalPath(data_root, chat_id).parent_path()))
-	{
-		result.queue_file_error = std::make_error_code(std::errc::operation_not_permitted);
-		return result;
-	}
-	uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
-	uam::paths::RemoveFileNoThrow(QueueJournalPath(data_root, chat_id), &result.queue_file_error);
-	const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
-	uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
-	uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(metadata_path), &result.message_index_file_error);
-	uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(uam::io::MakeBackupPath(metadata_path)), &result.message_index_backup_file_error);
-	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
-	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
-	uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);
-	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(summary_path), &result.summary_backup_file_error);
-	uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(
-	    data_root / "computer-use" / std::string(chat_id), &result.computer_use_directory_error);
-	return result;
+}
+
+bool ChatRepository::DeleteTemporaryChatIfRevision(const fs::path& data_root, std::string_view chat_id, std::string_view parent_id, std::string_view expected_revision)
+{
+	std::lock_guard<std::mutex> lock(ChatSaveMutex());
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id) || parent_id.empty() || expected_revision.empty() || expected_revision == "missing" ||
+		!MatchesTemporaryChatSaveReceipt(data_root, chat_id, expected_revision)) return false;
+	const std::optional<ChatSession> child = LoadLocalChat(data_root, std::string(chat_id), false);
+	if (!child || child->temporary_parent_chat_id != parent_id) return false;
+	return !DeleteChatStorageFilesLocked(data_root, chat_id).Failed();
+}
+
+ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& data_root, std::string_view chat_id)
+{
+	std::lock_guard<std::mutex> lock(ChatSaveMutex());
+	return DeleteChatStorageFilesLocked(data_root, chat_id);
 }
 
 ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
@@ -3139,6 +3275,7 @@ namespace
 		hydrated.workspace_isolation_kind = summary.workspace_isolation_kind;
 		hydrated.workspace_source_directory = summary.workspace_source_directory;
 		hydrated.workspace_base_ref = summary.workspace_base_ref;
+		hydrated.git_base_branch_override = summary.git_base_branch_override;
 		hydrated.workspace_branch_name = summary.workspace_branch_name;
 		hydrated.workspace_worktree_directory = summary.workspace_worktree_directory;
 		hydrated.imported_read_only = summary.imported_read_only;
@@ -3150,6 +3287,7 @@ namespace
 		hydrated.provider_handoff_cli_contexts = summary.provider_handoff_cli_contexts;
 		hydrated.agent_run_id = summary.agent_run_id;
 		hydrated.temporary_parent_chat_id = summary.temporary_parent_chat_id;
+		hydrated.temporary_storage_owner_token = summary.temporary_storage_owner_token;
 		hydrated.side_cleanup_requested = summary.side_cleanup_requested;
 		hydrated.side_cleanup_retry_time_s = summary.side_cleanup_retry_time_s;
 		hydrated.goal_owner_chat_id = summary.goal_owner_chat_id;

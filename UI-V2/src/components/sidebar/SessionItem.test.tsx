@@ -968,4 +968,20 @@ describe('SessionItem status icons', () => {
     act(() => root.unmount())
     host.remove()
   })
+  it('opens new chat from the right-clicked worktree even while another chat is active or processing', () => {
+    const source = { ...makeSession(), workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '/tmp/selected-worktree', executionHostId: 'local' }
+    useAppStore.setState({ sessions: [source], activeSessionId: 'other-chat', acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true }) }, newChatWorktreeContext: null })
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('[data-testid="session-row-chat-1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
+      const menu = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Actions for Chat 1"]')!
+      const create = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('New chat in this worktree'))!
+      expect(create.disabled).toBe(false)
+      act(() => create.click())
+      expect(useAppStore.getState()).toMatchObject({ isNewChatModalOpen: true, newChatFolderId: 'project', newChatWorktreeContext: { sourceChatId: 'chat-1', expectedWorkspaceDirectory: '/tmp/selected-worktree', expectedExecutionHostId: 'local' } })
+      act(() => useAppStore.getState().setNewChatModalOpen(false))
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
 })

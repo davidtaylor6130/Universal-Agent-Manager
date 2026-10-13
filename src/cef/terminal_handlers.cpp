@@ -175,6 +175,93 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		cb->Success(BuildCliBindingResponse(terminal).dump());
 		return;
 	}
+	const uam::WorktreeLaunchPreparationResult workspace = uam::PrepareWorktreeForLaunch(m_app, *chat);
+	if (workspace.state == uam::WorktreeLaunchPreparationState::Failed)
+	{
+		terminal.last_error = workspace.error;
+		if (terminal.native_session_setup_cancel) terminal.native_session_setup_cancel->request_stop();
+		terminal.native_session_setup_cancel.reset();
+		terminal.worktree_launch_pending = false;
+		terminal.worktree_launch_cancellation.reset();
+		terminal.should_launch = false;
+		cb->Success(BuildCliBindingResponse(terminal).dump());
+		return;
+	}
+	if (workspace.state == uam::WorktreeLaunchPreparationState::Pending)
+	{
+		// Reattachments share one continuation and use its latest terminal dimensions.
+		if (terminal.native_session_setup_cancel != nullptr)
+		{
+			cb->Success(BuildCliBindingResponse(terminal).dump());
+			return;
+		}
+		std::shared_ptr<std::stop_source> request = workspace.cancellation ? workspace.cancellation : std::make_shared<std::stop_source>();
+		terminal.native_session_setup_cancel = request;
+		terminal.worktree_launch_pending = true;
+		terminal.worktree_launch_cancellation = request;
+		terminal.should_launch = false;
+		CefRefPtr<PendingCliStartTask> pending = new PendingCliStartTask(m_asyncLifetime,
+		    [this, browser, payload, cb, request, chat_id, root = m_app.data_root, created = chat->created_at, incarnation = chat->metadata_incarnation,
+		    provider_id = chat->provider_id, host_id = chat->execution_host_id, native_id = chat->native_session_id,
+		    directory = chat->workspace_directory, folder_id = chat->folder_id, imported = chat->imported_read_only,
+		    agent_run = chat->agent_run_id, goal_owner = chat->goal_owner_chat_id, side_parent = chat->temporary_parent_chat_id,
+		    git_enabled = m_app.settings.git_enabled, automatic = m_app.settings.git_auto_worktree, pull = m_app.settings.git_pull_before_chat,
+		    base_branch = m_app.settings.git_default_base_branch, base_override = chat->git_base_branch_override](std::string_view task_error) mutable
+		    {
+			ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			uam::CliTerminalState* target = uam::FindCliTerminalForChat(m_app, chat_id);
+			if (current == nullptr || target == nullptr || target->native_session_setup_cancel != request || request->stop_requested() || !target->ui_attached ||
+			    m_app.data_root != root || current->created_at != created || current->metadata_incarnation != incarnation || current->provider_id != provider_id || current->execution_host_id != host_id ||
+			    current->native_session_id != native_id || current->workspace_directory != directory || current->folder_id != folder_id ||
+			    current->imported_read_only != imported || current->agent_run_id != agent_run || current->goal_owner_chat_id != goal_owner ||
+			    current->temporary_parent_chat_id != side_parent || current->git_base_branch_override != base_override || m_app.settings.git_enabled != git_enabled ||
+			    m_app.settings.git_auto_worktree != automatic || m_app.settings.git_default_base_branch != base_branch || m_app.settings.git_pull_before_chat != pull)
+			{
+				request->request_stop();
+				uam::CancelWorktreeLaunchPreparation(m_app, chat_id, request);
+				if (target != nullptr && target->native_session_setup_cancel == request)
+				{
+					target->native_session_setup_cancel.reset();
+					target->worktree_launch_pending = false;
+					target->worktree_launch_cancellation.reset();
+				}
+				cb->Failure(409, "Terminal start was canceled.");
+				return true;
+			}
+			const uam::WorktreeLaunchPreparationResult prepared = task_error.empty()
+			    ? uam::PrepareWorktreeForLaunch(m_app, *current)
+			    : uam::WorktreeLaunchPreparationResult{uam::WorktreeLaunchPreparationState::Failed, std::string(task_error), {}};
+			if (prepared.state == uam::WorktreeLaunchPreparationState::Pending)
+			{
+				if (prepared.cancellation && prepared.cancellation != request)
+				{
+					request = prepared.cancellation;
+					target->native_session_setup_cancel = request;
+					target->worktree_launch_cancellation = request;
+				}
+				return false;
+			}
+			target->native_session_setup_cancel.reset();
+			target->worktree_launch_pending = false;
+			target->worktree_launch_cancellation.reset();
+			if (prepared.state == uam::WorktreeLaunchPreparationState::Failed)
+			{
+				target->last_error = prepared.error;
+				uam::PushStateUpdateIfChanged(browser, m_app);
+				cb->Success(BuildCliBindingResponse(*target).dump());
+				return true;
+			}
+			nlohmann::json resumed_payload = payload;
+			resumed_payload["attachmentId"] = target->ui_attachment_id;
+			resumed_payload["rows"] = target->rows;
+			resumed_payload["cols"] = target->cols;
+			HandleStartCli(browser, resumed_payload, cb);
+			return true;
+		    });
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		pending->Execute();
+		return;
+	}
 	if (terminal.native_session_setup_cancel != nullptr)
 	{
 		// Reattachments share the outstanding creation; stale detaches carry a different attachment ID.

@@ -12,7 +12,7 @@ import { version as packageVersion } from '../../../package.json'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
-import type { ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
+import type { CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -24,7 +24,7 @@ import {
   normalizeCliProviderIdAlias,
   providerCapabilities,
 } from '../../utils/providerMetadata'
-import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
 import {
   attachmentsEquivalent,
   buildMessageFromCpp,
@@ -352,6 +352,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     fileExplorerApplication: '',
     defaultEditorPresetId: 'vscode',
     editorFileAssociations: defaultEditorFileAssociations() as EditorFileAssociation[],
+    providerAvailability: [],
+    voiceInputMode: 'system' as VoiceInputMode,
+    gitAutoWorktree: true,
+    gitDefaultBaseBranch: '',
+    gitPullBeforeChat: false,
+    gitPortMethod: 'patch' as VcsStorageSettings['gitPortMethod'],
+    worktreeCleanupEnabled: true,
+    worktreeRetentionDays: 14,
+    backupLogRetentionDays: 14,
+    httpCacheClearIntervalDays: 0,
     centralProviderConfiguration: DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: [] as McpServerConfiguration[],
     executionHosts: [{
@@ -578,7 +588,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
     },
 
-    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '', routingMode: 'explicit' | 'automatic' = 'explicit') => {
+    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '', routingMode: 'explicit' | 'automatic' = 'explicit', options: CreateSessionOptions = {}) => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
@@ -593,6 +603,21 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         console.error('[UAM] createSession requires a workspace folder')
         return false
       }
+      if (!isRecord(options) || Object.keys(options).some((key) => !['gitBaseBranch', 'sourceChatId', 'expectedWorkspaceDirectory', 'expectedExecutionHostId'].includes(key))) return false
+      const hasWorktreeContext = ['sourceChatId', 'expectedWorkspaceDirectory', 'expectedExecutionHostId'].some((key) => options[key as keyof CreateSessionOptions] !== undefined)
+      if (hasWorktreeContext) {
+        const source = current.sessions.find((session) => session.id === options.sourceChatId)
+        const bounded = (value: unknown, maximum: number) => typeof value === 'string' && value.length > 0 && !/[\u0000-\u001f\u007f]/.test(value) && new TextEncoder().encode(value).length <= maximum
+        if (!bounded(options.sourceChatId, 512) || !bounded(options.expectedWorkspaceDirectory, 16384) ||
+          typeof options.expectedExecutionHostId !== 'string' || options.expectedExecutionHostId !== 'local' ||
+          !isCefContext() || isRemote || routingMode !== 'explicit' || options.gitBaseBranch !== undefined ||
+          !source || source.importedReadOnly || source.workspaceIsolationKind !== 'gitWorktree' || source.folderId !== selectedFolderId ||
+          (source.executionHostId || 'local') !== options.expectedExecutionHostId || source.workspaceWorktreeDirectory !== options.expectedWorkspaceDirectory) return false
+      }
+      const hasBaseOverride = options.gitBaseBranch !== undefined
+      const gitBaseBranch = hasBaseOverride ? sanitizeGitBaseBranch(options.gitBaseBranch) : undefined
+      if (hasBaseOverride && (gitBaseBranch === undefined || routingMode !== 'explicit' || isRemote ||
+        !selectedFolder?.directory || !current.gitEnabled || !current.gitAutoWorktree || !isCefContext())) return false
       const normalizedProviderId = normalizeCliProviderIdAlias(providerId)
       const normalizedDefaultProviderId = normalizeCliProviderIdAlias(current.defaultNewChatProviderId)
       const requestedProviderId = current.providers.some((provider) => provider.id === normalizedProviderId)
@@ -613,6 +638,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const resp = await sendToCEF<{ chatId?: string }>({
           action: 'createSession',
           payload: {
+            ...(hasBaseOverride ? { gitBaseBranch } : {}),
+            ...(hasWorktreeContext ? { sourceChatId: options.sourceChatId, expectedWorkspaceDirectory: options.expectedWorkspaceDirectory, expectedExecutionHostId: options.expectedExecutionHostId } : {}),
             title: name,
             ...(routingMode === 'automatic' ? { routingMode } : {}),
             folderId: selectedFolderId ?? '',

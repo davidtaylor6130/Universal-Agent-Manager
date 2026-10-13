@@ -14,6 +14,11 @@
 
 using namespace uam::acp_detail;
 
+std::size_t IProviderRuntime::AcpBackgroundTaskCount(const uam::AcpSessionState& session) const
+{
+	return session.claude_live_background_task_ids.size() + session.codex_live_background_thread_ids.size();
+}
+
 nlohmann::json IProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const
 {
 	(void)session;

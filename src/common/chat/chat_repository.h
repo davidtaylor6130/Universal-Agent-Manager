@@ -28,6 +28,8 @@ struct PreparedChatSave
 	std::filesystem::path queue_path;
 	std::string expected_queue_revision;
 	std::string chat_id;
+	std::string temporary_parent_chat_id;
+	std::string temporary_storage_owner_token;
 	std::string queue_storage_revision;
 	std::string published_queue_full_revision;
 	~PreparedChatSave();
@@ -94,7 +96,7 @@ class ChatRepository
 	static std::shared_ptr<PreparedChatSave> PrepareLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& metadata);
 	static bool SaveLastOpenedAt(const std::filesystem::path& data_root, const ChatSession& chat);
 	/// <summary>Saves one chat only when neither its primary nor backup storage already exists.</summary>
-	static bool SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat);
+	static bool SaveChatIfAbsent(const std::filesystem::path& data_root, const ChatSession& chat, std::string* saved_revision = nullptr);
 	/// <summary>Loads locally persisted chat sessions from disk.</summary>
 	static std::vector<ChatSession> LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out = nullptr);
 	/// <summary>Loads locally persisted chat sessions without hydrating message bodies.</summary>
@@ -119,9 +121,13 @@ class ChatRepository
 	/// <summary>Adopts a validated hydrated transcript without replacing live chat metadata.</summary>
 	static bool AdoptHydratedMessagesIfUnchanged(ChatSession& current, ChatSession&& loaded,
 	                                             std::size_t expected_count, std::string_view expected_digest);
+	/// <summary>Matches the complete saved receipt of a small temporary child without changing storage.</summary>
+	static bool MatchesTemporaryChatSaveReceipt(const std::filesystem::path& data_root, std::string_view chat_id, std::string_view saved_revision);
+	/// <summary>Deletes only the unchanged temporary child owned by the specified parent.</summary>
+	static bool DeleteTemporaryChatIfRevision(const std::filesystem::path& data_root, std::string_view chat_id, std::string_view parent_id, std::string_view expected_revision);
 	/// <summary>Deletes both legacy chat directories and current UAM chat metadata for a chat id.</summary>
 	static ChatStorageDeleteResult DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id);
 
   private:
-	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged = false, PreparedChatSave* prepared = nullptr, std::string* fingerprint = nullptr);
+	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged = false, PreparedChatSave* prepared = nullptr, std::string* fingerprint = nullptr, std::string* saved_revision = nullptr);
 };

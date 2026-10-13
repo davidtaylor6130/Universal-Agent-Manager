@@ -436,6 +436,86 @@ namespace uam
 		return catalog;
 	}
 
+	namespace
+	{
+		/** Metadata revision is bounded by the same per-scope catalog file limit. */
+		std::string AgentScopeRevision(const std::filesystem::path& data_root, const std::filesystem::path& workspace_root)
+		{
+			nlohmann::json scopes = nlohmann::json::array();
+			for (const std::filesystem::path& root : {data_root / "agents", workspace_root.empty() ? std::filesystem::path{} : workspace_root / ".uam" / "agents"})
+			{
+				if (root.empty()) { scopes.push_back(nullptr); continue; }
+				std::error_code error;
+				const std::filesystem::file_status status = std::filesystem::symlink_status(root, error);
+				if (error || !std::filesystem::is_directory(status))
+				{
+					scopes.push_back({uam::paths::Utf8PathString(root), static_cast<int>(status.type()), error.value()});
+					continue;
+				}
+				const std::filesystem::file_time_type directory_time = std::filesystem::last_write_time(root, error);
+				if (error) return {};
+				std::vector<std::filesystem::path> paths;
+				for (std::filesystem::directory_iterator entry(root, error), end; !error && entry != end; entry.increment(error))
+				{
+					if (uam::strings::TrimAndLowerAscii(uam::paths::Utf8PathString(entry->path().extension())) != ".md") continue;
+					paths.push_back(entry->path());
+					if (paths.size() > kMaxFilesPerScope) break;
+				}
+				if (error) return {};
+				std::ranges::sort(paths);
+				nlohmann::json files = nlohmann::json::array();
+				for (const std::filesystem::path& path : paths)
+				{
+					const std::filesystem::file_status file_status = std::filesystem::symlink_status(path, error);
+					if (error) return {};
+					std::uintmax_t size = 0;
+					std::filesystem::file_time_type time{};
+					if (std::filesystem::is_regular_file(file_status))
+					{
+						size = std::filesystem::file_size(path, error);
+						if (error) return {};
+						time = std::filesystem::last_write_time(path, error);
+						if (error) return {};
+					}
+					files.push_back({uam::paths::Utf8PathString(path.filename()), static_cast<int>(file_status.type()), size, time.time_since_epoch().count()});
+				}
+				scopes.push_back({uam::paths::Utf8PathString(root), directory_time.time_since_epoch().count(), files});
+			}
+			return scopes.dump();
+		}
+	}
+
+	bool AgentDefinitionService::CaptureSelectedPrimary(const std::filesystem::path& data_root,
+	    const std::filesystem::path& workspace_root, const std::string& agent_id,
+	    SelectedPrimaryAgentSnapshot& snapshot, std::string& error)
+	{
+		const std::string before = AgentScopeRevision(data_root, workspace_root);
+		if (before.empty()) { error = "Agent sources could not be inspected."; return false; }
+		const AgentDefinitionCatalog catalog = Load(data_root, workspace_root);
+		const std::string after = AgentScopeRevision(data_root, workspace_root);
+		if (before != after) { error = "Agent sources changed during preparation."; return false; }
+		const std::vector<AgentDefinition>::const_iterator selected = std::ranges::find(catalog.definitions, agent_id, &AgentDefinition::id);
+		if (selected == catalog.definitions.end() || (selected->mode != "primary" && selected->mode != "both"))
+		{ error = "Selected UAM agent is unavailable for primary chat use: " + agent_id + "."; return false; }
+		snapshot = {*selected, data_root, workspace_root, after};
+		return true;
+	}
+
+	bool AgentDefinitionService::SelectedPrimaryIsCurrent(const SelectedPrimaryAgentSnapshot& snapshot)
+	{
+		if (snapshot.scope_revision.empty() || snapshot.scope_revision != AgentScopeRevision(snapshot.data_root, snapshot.workspace_root)) return false;
+		if (!PathComponentsAreSafe(snapshot.data_root, snapshot.data_root / "agents") ||
+		    (!snapshot.workspace_root.empty() && !PathComponentsAreSafe(snapshot.workspace_root, snapshot.workspace_root / ".uam" / "agents"))) return false;
+		if (snapshot.definition.built_in) return true;
+		const std::filesystem::path root = snapshot.definition.workspace_override ? snapshot.workspace_root / ".uam" / "agents" : snapshot.data_root / "agents";
+		const std::optional<std::uintmax_t> size = ValidDefinitionFileSize(root, snapshot.definition.source_path);
+		if (!size || *size == 0 || *size > kMaxDefinitionBytes) return false;
+		std::string text;
+		return uam::io::TryReadTextFile(snapshot.definition.source_path, text) && text.size() == *size &&
+		    ValidDefinitionFileSize(root, snapshot.definition.source_path) == size &&
+		    snapshot.definition.definition_hash == "fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(text));
+	}
+
 	ProviderAgentImportPreview AgentDefinitionService::PreviewProviderAgentImport(
 	    const std::string& provider_id, const std::filesystem::path& source_path)
 	{

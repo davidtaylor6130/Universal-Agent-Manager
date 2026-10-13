@@ -143,7 +143,8 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 }
 
 export function sessionsEquivalent(previous: Session, next: Session): boolean {
-  return (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
+  return previous.gitBaseBranch === next.gitBaseBranch &&
+    (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
     (previous.executionHostId ?? 'local') === (next.executionHostId ?? 'local') &&
     (previous.remoteRecoveryEnabled ?? false) === (next.remoteRecoveryEnabled ?? false) &&
     (previous.remoteRecoveryState ?? '') === (next.remoteRecoveryState ?? '') &&
@@ -221,6 +222,7 @@ export function sessionFromCppChat(
   if (pendingViewMode) pendingViewModeBySessionId.delete(chat.id)
   const nextSession: Session = {
     uamControlEnabled: chat.uamControlEnabled ?? false,
+    gitBaseBranch: chat.gitBaseBranch === undefined ? previous?.gitBaseBranch : chat.gitBaseBranch,
     id: chat.id,
     executionHostId: chat.executionHostId ?? 'local',
     remoteRecoveryEnabled: chat.remoteRecoveryEnabled ?? false,

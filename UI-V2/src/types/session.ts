@@ -61,6 +61,7 @@ export interface ComputerUseState {
 }
 
 export interface Session {
+  gitBaseBranch?: string | null
   routingMode?: 'explicit' | 'automatic'
   routingSourceFolderId?: string
   routingSourceDirectory?: string

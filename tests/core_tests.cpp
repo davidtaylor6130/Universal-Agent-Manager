@@ -5385,26 +5385,111 @@ UAM_TEST(SettingsHandlersRestoreRejectedValuesAfterSaveFailure)
 
 UAM_TEST(GoalHandlersDoNotRestoreStateAfterIrreversibleCancellation)
 {
+	TempDir temp("uam-goal-control-cancellation-admission");
+	uam::AppState app;
+	app.data_root = temp.root / "blocked";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "private full-save failure"));
+	ChatSession chat;
+	chat.id = "owned-removal";
+	chat.provider_id = "codex-cli";
+	chat.goal_command_revision = "original-goal-command";
+	chat.active_goal_id = "goal";
+	Goal goal;
+	goal.id = chat.active_goal_id;
+	goal.objective = "Preserve cancellation ownership.";
+	goal.execution_owner = "provider";
+	goal.provider_command = "thread/goal";
+	goal.token_budget = 100;
+	chat.goals.push_back(goal);
+	chat.messages.push_back({.role = MessageRole::User, .content = "Retained input"});
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.front();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.session_id = "owned-native-thread";
+	session.running = session.session_ready = true;
+	session.codex_goal_owner = uam::acp_detail::CaptureCodexNativeGoalOwner(app, session, app.chats.front(), goal);
+	session.codex_goal_created_at = session.codex_goal_owner.binding_created_at = 100;
+	AgentRun run;
+	run.id = "captured-managed-root";
+	run.root_chat_id = chat.id;
+	run.goal_id = goal.id;
+	run.transcript_chat_id = "private-managed-child";
+	run.created_at = "original-run-birth";
+	run.definition_hash = "original-definition";
+	run.status = "running";
+	app.agent_runs.push_back(run);
+	uam::PendingGoalIterationState iteration;
+	iteration.owner_chat_id = chat.id;
+	iteration.goal_id = goal.id;
+	app.pending_goal_iterations.push_back(iteration);
+	uam::GoalService::GoalRemovalPreparation preparation;
+	std::string error;
+	UAM_ASSERT(uam::GoalService::RemoveGoal(app, chat.id, goal.id, &error, nullptr,
+	    uam::GoalService::GoalRemovalStage::PrepareOnly, &preparation));
+	UAM_ASSERT_EQ(preparation.goal.id, goal.id);
+	UAM_ASSERT_EQ(preparation.parent_incarnation, chat.metadata_incarnation);
+	UAM_ASSERT(preparation.native_owner.has_value());
+	UAM_ASSERT_EQ(preparation.native_owner->goal_id, goal.id);
+	UAM_ASSERT_EQ(preparation.managed_roots.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.chats.front().goals.empty());
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("running"));
+	UAM_ASSERT(app.pending_agent_run_cancellation_ids.empty());
+	UAM_ASSERT_EQ(app.pending_goal_iterations.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(session.pending_request_methods.empty());
+	app.chats.front().messages.push_back({.role = MessageRole::Assistant, .content = "Newer accounting and content survive."});
+
+	const fs::path expected_root = app.data_root;
+	const std::shared_ptr<const std::uint8_t> expected_parent = app.chats.front().metadata_incarnation;
+	const std::string expected_revision = app.chats.front().goal_command_revision;
+	uam::acp_detail::DurableAdmissionState receipt = uam::acp_detail::DurableAdmissionState::Pending;
+	int callbacks = 0;
+	const uam::acp_detail::DurableAdmissionState initial = uam::acp_detail::BeginDurableAdmission(app, app.chats.front(),
+	    [&]() { return app.data_root == expected_root && app.chats.front().metadata_incarnation == expected_parent &&
+	        app.chats.front().goal_command_revision == expected_revision; },
+	    [&](uam::acp_detail::DurableAdmissionState state) { receipt = state; ++callbacks; },
+	    uam::acp_detail::DurableAdmissionFailurePurpose::BindingOnly);
+	UAM_ASSERT_EQ(initial, uam::acp_detail::DurableAdmissionState::Pending);
+	for (int attempt = 0; attempt < 500 && receipt == uam::acp_detail::DurableAdmissionState::Pending; ++attempt)
+	{
+		uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT_EQ(receipt, uam::acp_detail::DurableAdmissionState::Failed);
+	UAM_ASSERT_EQ(callbacks, 1);
+	UAM_ASSERT(!uam::GoalService::RemoveGoal(app, chat.id, goal.id, &error, nullptr,
+	    uam::GoalService::GoalRemovalStage::AfterReceipt, &preparation,
+	    [&]() { return receipt == uam::acp_detail::DurableAdmissionState::Committed; }));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("running"));
+	UAM_ASSERT(app.pending_agent_run_cancellation_ids.empty());
+	UAM_ASSERT_EQ(app.pending_goal_iterations.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT_EQ(session.codex_goal_owner.goal_id, goal.id);
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
+
+	// A reused run ID cannot inherit the captured removal's cancellation authority.
+	app.agent_runs.front().created_at = "replacement-run-birth";
+	UAM_ASSERT(!uam::GoalService::RemoveGoal(app, chat.id, goal.id, &error, nullptr,
+	    uam::GoalService::GoalRemovalStage::AfterReceipt, &preparation, []() { return true; }));
+	UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("running"));
+	UAM_ASSERT(app.pending_agent_run_cancellation_ids.empty());
+	UAM_ASSERT_EQ(app.pending_goal_iterations.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(session.pending_request_methods.empty());
+	UAM_ASSERT_EQ(ReadFile(app.data_root), std::string("private full-save failure"));
+
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
 	const std::string source = ReadFile(source_root / "src/cef/goal_handlers.cpp");
-	const auto handler = [&](std::string_view start_text, std::string_view end_text)
-	{
-		const std::size_t start = source.find(start_text);
-		const std::size_t end = end_text.empty() ? source.size() : source.find(end_text, start);
-		UAM_ASSERT(start != std::string::npos);
-		UAM_ASSERT(end != std::string::npos);
-		return source.substr(start, end - start);
-	};
-
-	const std::string status = handler("void UamQueryHandler::HandleUpdateGoalStatus",
-	                                   "void UamQueryHandler::HandleUpdateGoalObjective");
-	const std::string remove = handler("void UamQueryHandler::HandleRemoveGoal", "");
-	UAM_ASSERT(status.find("previous_chat, cb") != std::string::npos);
-	UAM_ASSERT(status.find("CancelGoalWork") == std::string::npos);
-	UAM_ASSERT(source.find("uam::acp_detail::ScheduleChatSave(app, *chat, 0.0)") != std::string::npos);
-	UAM_ASSERT(remove.find("const bool restore_on_failure = !work_changed") != std::string::npos);
-	UAM_ASSERT(remove.find("previous_chat, cb, restore_on_failure") != std::string::npos);
-	UAM_ASSERT(remove.find("if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);") != std::string::npos);
+	UAM_ASSERT(source.find("const ChatSession previous_chat") == std::string::npos);
+	UAM_ASSERT(source.find("CancelGoalWork") == std::string::npos);
+	const std::size_t removal = source.find("void UamQueryHandler::HandleRemoveGoal");
+	UAM_ASSERT(removal != std::string::npos);
+	UAM_ASSERT(source.find("if (removed && admitted() && preparation->native_owner)", removal) != std::string::npos);
+	const std::size_t persist = source.find("void UamQueryHandler::PersistGoalMutation");
+	const std::size_t execute = source.find("if (!execute) completed", persist);
+	UAM_ASSERT(persist != std::string::npos && execute != std::string::npos);
+	UAM_ASSERT(source.find("rollback();", persist) < execute);
+	UAM_ASSERT(source.substr(execute, source.find("void UamQueryHandler::HandleSetGoal", execute) - execute).find("rollback();") == std::string::npos);
 }
 
 UAM_TEST(CopilotEffortChangingModelSwitchRejectsBusyAndStopsIdleRuntime)
@@ -11102,7 +11187,12 @@ UAM_TEST(GitWorktreeNamesUseAgentAndTitleWithSafeFallbacksAndCollisions)
 		chat.uam_agent_id = "build";
 		std::string error;
 		// Retain the first worktree to exercise the filesystem collision on the next chat.
-		if (index != 0) UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, chat, &error));
+		if (index != 0)
+		{
+			UAM_ASSERT(service.RemoveUnusedBranchWorktree(app, chat, &error));
+			// Match rollback ownership: a removed chat must not retain a claim on a reused path.
+			UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(app.data_root, chat.id).Failed());
+		}
 		UAM_ASSERT_EQ(fs::exists(worktree), index == 0);
 	}
 

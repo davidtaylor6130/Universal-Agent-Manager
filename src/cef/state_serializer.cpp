@@ -256,6 +256,7 @@ namespace uam
 			chat_json["workspaceIsolationKind"] = chat.workspace_isolation_kind;
 			chat_json["workspaceSourceDirectory"] = chat.workspace_source_directory;
 			chat_json["workspaceBaseRef"] = chat.workspace_base_ref;
+			chat_json["gitBaseBranch"] = chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr);
 			chat_json["workspaceBranchName"] = chat.workspace_branch_name;
 			chat_json["workspaceWorktreeDirectory"] = chat.workspace_worktree_directory;
 		}
@@ -1052,7 +1053,7 @@ namespace uam
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing || (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held");
 			acp_json["compacting"] = session->running && (session->manual_compaction_pending || session->context_compaction_in_progress);
-			acp_json["backgroundTaskCount"] = session->claude_live_background_task_ids.size() + session->codex_live_background_thread_ids.size() + ManagedChildRunCountForChat(app, chat);
+			acp_json["backgroundTaskCount"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) + ManagedChildRunCountForChat(app, chat);
 			if (AcpSessionCanIdleShutdown(*session, chat))
 				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 			acp_json["readySinceLastSelect"] = ready_since_last_select;

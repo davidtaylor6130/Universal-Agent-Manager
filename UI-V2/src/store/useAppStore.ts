@@ -43,7 +43,7 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type { AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import type { VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
 import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
@@ -85,7 +85,8 @@ function mergeAssistantText(durable: string, streamed: string): string {
 
 function deserializeState(
   cpp: CppAppState,
-  existing: {
+  existing: VoiceInputSettings & VcsStorageSettings & {
+    providerAvailability?: ProviderAvailabilityOverride[]
     sessions: Session[]
     folders: Folder[]
     resourceCollections: ResourceCollection[]
@@ -333,6 +334,21 @@ function deserializeState(
     fileExplorerApplication: cpp.settings.fileExplorerApplication ?? '',
     defaultEditorPresetId: cpp.settings.defaultEditorPresetId ?? 'vscode',
     editorFileAssociations: cpp.settings.editorFileAssociations ?? defaultEditorFileAssociations(),
+    voiceInputMode: cpp.settings.voiceInputMode ?? existing.voiceInputMode,
+    voiceInputServerBaseUrl: cpp.settings.voiceInputServerBaseUrl ?? existing.voiceInputServerBaseUrl,
+    voiceInputServerEndpoint: cpp.settings.voiceInputServerEndpoint ?? existing.voiceInputServerEndpoint,
+    voiceInputServerModel: cpp.settings.voiceInputServerModel ?? existing.voiceInputServerModel,
+    voiceInputApiKeyEnv: cpp.settings.voiceInputApiKeyEnv ?? existing.voiceInputApiKeyEnv,
+    voiceInputCapabilities: cpp.settings.voiceInputCapabilities ?? existing.voiceInputCapabilities,
+    providerAvailability: cpp.settings.providerAvailability ?? existing.providerAvailability ?? [],
+    gitAutoWorktree: cpp.settings.gitAutoWorktree ?? existing.gitAutoWorktree,
+    gitDefaultBaseBranch: cpp.settings.gitDefaultBaseBranch ?? existing.gitDefaultBaseBranch,
+    gitPullBeforeChat: cpp.settings.gitPullBeforeChat ?? existing.gitPullBeforeChat,
+    gitPortMethod: cpp.settings.gitPortMethod ?? existing.gitPortMethod,
+    worktreeCleanupEnabled: cpp.settings.worktreeCleanupEnabled ?? existing.worktreeCleanupEnabled,
+    worktreeRetentionDays: cpp.settings.worktreeRetentionDays ?? existing.worktreeRetentionDays,
+    backupLogRetentionDays: cpp.settings.backupLogRetentionDays ?? existing.backupLogRetentionDays,
+    httpCacheClearIntervalDays: cpp.settings.httpCacheClearIntervalDays ?? existing.httpCacheClearIntervalDays,
     centralProviderConfiguration: cpp.settings.centralProviderConfiguration ?? DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: cpp.settings.mcpServers ?? [],
     executionRouting: cpp.settings.executionRouting ?? existing.executionRouting,
@@ -533,6 +549,21 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     fileExplorerApplication: patch.settings?.fileExplorerApplication ?? current.fileExplorerApplication,
     defaultEditorPresetId: patch.settings?.defaultEditorPresetId ?? current.defaultEditorPresetId,
     editorFileAssociations: patch.settings?.editorFileAssociations ?? current.editorFileAssociations,
+    voiceInputMode: patch.settings?.voiceInputMode ?? current.voiceInputMode,
+    voiceInputServerBaseUrl: patch.settings?.voiceInputServerBaseUrl ?? current.voiceInputServerBaseUrl,
+    voiceInputServerEndpoint: patch.settings?.voiceInputServerEndpoint ?? current.voiceInputServerEndpoint,
+    voiceInputServerModel: patch.settings?.voiceInputServerModel ?? current.voiceInputServerModel,
+    voiceInputApiKeyEnv: patch.settings?.voiceInputApiKeyEnv ?? current.voiceInputApiKeyEnv,
+    voiceInputCapabilities: patch.settings?.voiceInputCapabilities ? { ...current.voiceInputCapabilities, ...patch.settings.voiceInputCapabilities } : current.voiceInputCapabilities,
+    providerAvailability: patch.settings?.providerAvailability ?? current.providerAvailability,
+    gitAutoWorktree: patch.settings?.gitAutoWorktree ?? current.gitAutoWorktree,
+    gitDefaultBaseBranch: patch.settings?.gitDefaultBaseBranch ?? current.gitDefaultBaseBranch,
+    gitPullBeforeChat: patch.settings?.gitPullBeforeChat ?? current.gitPullBeforeChat,
+    gitPortMethod: patch.settings?.gitPortMethod ?? current.gitPortMethod,
+    worktreeCleanupEnabled: patch.settings?.worktreeCleanupEnabled ?? current.worktreeCleanupEnabled,
+    worktreeRetentionDays: patch.settings?.worktreeRetentionDays ?? current.worktreeRetentionDays,
+    backupLogRetentionDays: patch.settings?.backupLogRetentionDays ?? current.backupLogRetentionDays,
+    httpCacheClearIntervalDays: patch.settings?.httpCacheClearIntervalDays ?? current.httpCacheClearIntervalDays,
     centralProviderConfiguration: patch.settings?.centralProviderConfiguration ?? current.centralProviderConfiguration,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
     executionRouting: patch.settings?.executionRouting ?? current.executionRouting,
@@ -722,6 +753,21 @@ export const useAppStore = create<AppState>((set, get) => {
             markdownStoreDirectory: current.markdownStoreDirectory,
             defaultNewChatProviderId: current.defaultNewChatProviderId,
             providerChatDefaults: current.providerChatDefaults,
+            voiceInputMode: current.voiceInputMode,
+            voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+            voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+            voiceInputServerModel: current.voiceInputServerModel,
+            voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+            voiceInputCapabilities: current.voiceInputCapabilities,
+            providerAvailability: current.providerAvailability,
+            gitAutoWorktree: current.gitAutoWorktree,
+            gitDefaultBaseBranch: current.gitDefaultBaseBranch,
+            gitPullBeforeChat: current.gitPullBeforeChat,
+            gitPortMethod: current.gitPortMethod,
+            worktreeCleanupEnabled: current.worktreeCleanupEnabled,
+            worktreeRetentionDays: current.worktreeRetentionDays,
+            backupLogRetentionDays: current.backupLogRetentionDays,
+            httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
             fileExplorerApplication: current.fileExplorerApplication,
         defaultEditorPresetId: current.defaultEditorPresetId,
             editorFileAssociations: current.editorFileAssociations,
@@ -1032,6 +1078,21 @@ export const useAppStore = create<AppState>((set, get) => {
         markdownStoreDirectory: current.markdownStoreDirectory,
         defaultNewChatProviderId: current.defaultNewChatProviderId,
         providerChatDefaults: current.providerChatDefaults,
+        voiceInputMode: current.voiceInputMode,
+        voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+        voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+        voiceInputServerModel: current.voiceInputServerModel,
+        voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+        voiceInputCapabilities: current.voiceInputCapabilities,
+        providerAvailability: current.providerAvailability,
+        gitAutoWorktree: current.gitAutoWorktree,
+        gitDefaultBaseBranch: current.gitDefaultBaseBranch,
+        gitPullBeforeChat: current.gitPullBeforeChat,
+        gitPortMethod: current.gitPortMethod,
+        worktreeCleanupEnabled: current.worktreeCleanupEnabled,
+        worktreeRetentionDays: current.worktreeRetentionDays,
+        backupLogRetentionDays: current.backupLogRetentionDays,
+        httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
         fileExplorerApplication: current.fileExplorerApplication,
         defaultEditorPresetId: current.defaultEditorPresetId,
         editorFileAssociations: current.editorFileAssociations,
