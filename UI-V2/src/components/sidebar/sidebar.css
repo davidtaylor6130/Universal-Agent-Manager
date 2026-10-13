@@ -70,6 +70,16 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-sb-progress > span { animation: none; transform: translateX(40%); }
 }
+/* Determinate: scaleX from the left edge, inline transform carries the value. */
+.uam-sb-progress--determinate > span {
+  width: 100%;
+  transform-origin: left center;
+  animation: none;
+  transition: transform var(--dur-base) var(--ease-out-soft);
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-sb-progress--determinate > span { transition: none; }
+}
 
 /* Shared row-menu item (chat context menu and snooze presets). */
 .uam-sb-menu-item {

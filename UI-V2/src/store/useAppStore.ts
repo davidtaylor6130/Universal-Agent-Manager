@@ -347,6 +347,8 @@ function deserializeState(
     shellActions: cpp.shellActions ?? existing.shellActions,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
+    // Full-state only: absent means no deletion is running, so do not keep the previous value.
+    deletionProgress: cpp.deletionProgress,
   }
 }
 
