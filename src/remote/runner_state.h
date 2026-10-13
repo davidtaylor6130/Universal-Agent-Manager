@@ -68,6 +68,7 @@ namespace uam::remote
 			std::atomic<std::int64_t> lease_deadline_ms{0};
 			std::mutex mutex;
 			std::jthread drainer;
+			std::atomic<bool> retirement_cleanup_active{false};
 			std::atomic<bool> ready{false};
 			std::atomic<bool> exited{false};
 			std::atomic<int> exit_code{-1};
@@ -108,6 +109,7 @@ namespace uam::remote
 		};
 
 	  private:
+		friend struct RunnerStateRetirementTestAccess;
 		void SweepExpiredTransientProcesses();
 		std::mutex m_stateMutex;
 		std::shared_ptr<uam::usage::Collector> m_usageHistory;
@@ -122,6 +124,7 @@ namespace uam::remote
 		std::filesystem::path m_spoolDirectory;
 		std::uintmax_t m_maxSpoolBytesPerStream;
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_processes;
+		std::unordered_map<std::string, std::shared_ptr<Process>> m_retiringProcesses;
 		std::unordered_map<std::string, Channel> m_channels;
 		std::unordered_map<std::string, std::shared_ptr<Upload>> m_uploads;
 	};
