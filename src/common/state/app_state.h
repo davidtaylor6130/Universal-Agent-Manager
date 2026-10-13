@@ -728,6 +728,39 @@ namespace uam
 		std::unordered_set<std::string> codex_streamed_reasoning_keys;
 		/// <summary>Effective reviewer confirmed by this native thread, never inferred from requested settings.</summary>
 		std::string codex_approvals_reviewer;
+		/// <summary>Native goal support is confirmed by this process, never inferred from slash commands.</summary>
+		enum class CodexGoalCapability { Unknown, StateApi, Unsupported };
+		CodexGoalCapability codex_goal_capability = CodexGoalCapability::Unknown;
+		/// <summary>Volatile receipt ownership binds native execution to the persisted UAM intent.</summary>
+		struct CodexGoalOwner
+		{
+			enum class Action { Probe, ReplaceClear, PreparePaused, InitialTurn, Activate, StopPause, StopClear };
+			std::string chat_id;
+			std::string thread_id;
+			std::string goal_id;
+			std::string revision;
+			std::string objective;
+			std::int64_t token_budget = 0;
+			std::int64_t tokens_used_at_start = 0;
+			bool user_origin = false;
+			bool start_authorized = false;
+			bool replace_native = false;
+			bool resume_existing = false;
+			std::int64_t binding_created_at = 0;
+			Action action = Action::Probe;
+			std::string execution_host_id = "local";
+			std::string process_id;
+		};
+		CodexGoalOwner codex_goal_owner;
+		std::unordered_map<std::string, CodexGoalOwner> codex_goal_pending_requests;
+		std::optional<CodexGoalOwner> codex_goal_queued_user_action;
+		std::optional<CodexGoalOwner> codex_goal_initial_turn_pending;
+		bool codex_goal_native_active = false;
+		bool codex_goal_auto_continuation_observed = false;
+		std::string codex_goal_initial_turn_id;
+		int codex_goal_initial_turn_request_id = 0;
+		std::int64_t codex_goal_created_at = 0;
+		std::int64_t codex_goal_updated_at = 0;
 		std::string codex_last_reasoning_section;
 		std::vector<AcpCommandState> available_commands;
 		std::vector<AcpModeState> available_modes;

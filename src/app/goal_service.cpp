@@ -5,6 +5,7 @@
 #include "common/config/provider_chat_defaults.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/app_time.h"
 #include "common/utils/string_utils.h"
@@ -264,6 +265,14 @@ bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
 		}
 	};
 	AcpSessionState* root_session = FindAcpSessionForChat(app, chat_id);
+	if (root_session != nullptr && work_changed_out != nullptr &&
+		(!root_session->codex_goal_owner.goal_id.empty() || !root_session->codex_goal_pending_requests.empty()))
+		*work_changed_out = true;
+	if (root_session != nullptr && !uam::acp_detail::StopCodexNativeGoal(*root_session, *chat, false, goal_id))
+	{
+		work_stopped = false;
+		first_error = root_session->last_error;
+	}
 	if (chat->active_goal_id == goal_id && root_session != nullptr &&
 	    (AcpSessionHasActiveTurn(*root_session) || AcpStopInProgress(app, chat_id)))
 		cancel_turn(chat_id);
@@ -316,15 +325,20 @@ bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
 }
 
 bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
-                                   const std::string& goal_id, GoalStatus status)
+                                   const std::string& goal_id, GoalStatus status, bool user_action)
 {
 	if (status == GoalStatus::Active) return false;
 	Goal* goal = FindGoalById(app, chat_id, goal_id);
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (goal == nullptr || chat == nullptr) return false;
-
 	chat->goal_command_revision = GenerateGoalId();
 	chat->goal_pending_continuation_id.clear();
+	if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr)
+	{
+		if (!uam::acp_detail::StopCodexNativeGoal(*session, *chat, user_action, goal_id, status == GoalStatus::Complete))
+			goal->last_diagnostic = "native_goal_stop_unconfirmed";
+	}
+
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
 	if (status == GoalStatus::Complete)
@@ -339,7 +353,7 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 	if ((status == GoalStatus::Complete || status == GoalStatus::Blocked || status == GoalStatus::Paused) &&
 	    chat->active_goal_id == goal_id)
 	{
-		ClearActiveGoal(app, chat->id);
+		chat->active_goal_id.clear();
 	}
 	if (status != GoalStatus::Active && chat->goal_iteration_goal_id == goal_id)
 	{
@@ -415,6 +429,21 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 		if (error_out != nullptr) *error_out = "Completed goals cannot be reactivated.";
 		return false;
 	}
+	if (chat->active_goal_id != goal_id)
+	{
+		if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr && session->codex_goal_owner.goal_id != goal_id)
+		{
+			if (!session->codex_goal_owner.goal_id.empty() || !session->codex_goal_pending_requests.empty())
+			{
+				if (work_changed_out != nullptr) *work_changed_out = true;
+				if (!uam::acp_detail::StopCodexNativeGoal(*session, *chat, false, chat->active_goal_id))
+				{
+					if (error_out != nullptr) *error_out = session->last_error;
+					return false;
+				}
+			}
+		}
+	}
 
 	chat = FindChatMutable(app, chat_id);
 	matched_goal = FindGoalById(app, chat_id, goal_id);
@@ -454,13 +483,15 @@ bool GoalService::SetActiveGoal(AppState& app, const std::string& chat_id, const
 	return true;
 }
 
-bool GoalService::ClearActiveGoal(AppState& app, const std::string& chat_id)
+bool GoalService::ClearActiveGoal(AppState& app, const std::string& chat_id, bool user_action)
 {
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (chat == nullptr)
 	{
 		return false;
 	}
+	if (AcpSessionState* session = FindAcpSessionForChat(app, chat_id); session != nullptr)
+		(void)uam::acp_detail::StopCodexNativeGoal(*session, *chat, user_action);
 
 	const std::string updated_at = uam::time::TimestampNow();
 	if (!chat->active_goal_id.empty())

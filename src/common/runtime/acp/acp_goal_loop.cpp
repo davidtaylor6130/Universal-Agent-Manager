@@ -217,7 +217,7 @@ namespace uam::acp_detail
 		}
 	}
 
-bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& goal_id, std::string* error_out, bool restart)
+bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& goal_id, std::string* error_out, bool restart, bool user_action, bool replace_native)
 {
 	ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 	Goal* goal = GoalService::FindGoalById(app, chat_id, goal_id);
@@ -251,7 +251,9 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		if (error_out != nullptr) *error_out = "The provider is not ready to resume this goal.";
 		return false;
 	}
-	if (!restart && goal->status == GoalStatus::Active && chat->active_goal_id == goal_id && session != nullptr && AcpSessionHasActiveTurn(*session)) return true;
+	if (!restart && !GoalService::IsProviderManaged(*goal) && goal->status == GoalStatus::Active && chat->active_goal_id == goal_id && session != nullptr && AcpSessionHasActiveTurn(*session)) return true;
+	if (!restart && session->codex_goal_native_active && goal->status == GoalStatus::Active && chat->active_goal_id == goal_id &&
+		CodexGoalReceiptMatchesOwner(*session, *chat, session->codex_goal_owner, session->session_id)) return true;
 	std::string prompt = GoalService::IsProviderManaged(*goal)
 	                         ? uam::strings::Trim(goal->provider_command + " " + goal->objective)
 	                         : uam::strings::Trim(goal->last_next_prompt);
@@ -302,12 +304,17 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		return false;
 	}
 	const bool active_turn = AcpSessionHasActiveTurn(*session);
-	chat->goal_pending_continuation_id = active_turn ? goal_id : "";
+	chat->goal_pending_continuation_id = active_turn && !(chat->provider_id == "codex-cli" && GoalService::IsProviderManaged(*goal)) ? goal_id : "";
 	if (!ChatRepository::SaveChat(app.data_root, *chat))
 	{
 		*chat = previous_chat;
 		if (error_out != nullptr) *error_out = "Failed to persist the active goal.";
 		return false;
+	}
+	if (chat->provider_id == "codex-cli" && GoalService::IsProviderManaged(*goal))
+	{
+		chat->goal_pending_continuation_id.clear();
+		return StartCodexNativeGoal(app, *session, *chat, *goal, user_action, error_out, replace_native || restart);
 	}
 	if (active_turn) return true;
 	if (!QueueGoalInternalPrompt(app, *session, *chat, prompt, false, model_id,
@@ -737,8 +744,10 @@ namespace
 			const std::string provider_goal_id = active_goal->id;
 			ClearGoalReviewState(session);
 			session.goal_turn_kind.clear();
-			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, provider_goal_id, GoalStatus::Complete);
-			AppendGoalLoopDiagnostic(session, "provider_managed_complete", provider_goal_id);
+			if (chat.provider_id == "codex-cli" && CodexGoalOwnsNativeTurn(session, chat, session.session_id))
+				return;
+			// A completed chat turn does not prove a provider goal has completed or been verified.
+			AppendGoalLoopDiagnostic(session, "provider_managed_turn_complete_unverified", provider_goal_id);
 			if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 			if (!session.queued_user_prompts.empty())
 			{
@@ -896,6 +905,22 @@ bool PollPendingGoalIterations(AppState& app)
 {
 	bool changed = !app.pending_goal_iterations.empty();
 	app.pending_goal_iterations.clear();
+	for (ChatSession& chat : app.chats)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		if (session == nullptr || session->provider_id != "codex-cli" || chat.active_goal_id.empty()) continue;
+		if ((!session->codex_goal_owner.goal_id.empty() || !session->codex_goal_pending_requests.empty()) &&
+			(chat.imported_read_only || chat.approval_mode == "plan" || session->current_mode_id == "plan" ||
+			 session->active_uam_agent_workspace_access == "read" || session->goal_review_turn))
+		{
+			const std::string id = chat.active_goal_id;
+			(void)GoalService::UpdateGoalStatus(app, chat.id, id, GoalStatus::Paused);
+			if (Goal* goal = GoalService::FindGoalById(app, chat.id, id); goal != nullptr)
+				goal->last_diagnostic = "native_goal_mode_hold";
+			SaveChatQuietly(app, chat);
+			changed = true;
+		}
+	}
 	std::vector<std::string> ready_ids;
 	for (const ChatSession& chat : app.chats)
 	{

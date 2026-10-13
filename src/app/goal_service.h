@@ -54,7 +54,7 @@ class GoalService
 	/// Transition a goal to a new status (complete, blocked).
 	/// Returns true on success.
 	/// </summary>
-	static bool UpdateGoalStatus(AppState& app, const std::string& chat_id, const std::string& goal_id, GoalStatus status);
+	static bool UpdateGoalStatus(AppState& app, const std::string& chat_id, const std::string& goal_id, GoalStatus status, bool user_action = false);
 	static bool UpdateGoalObjective(AppState& app, const std::string& chat_id,
 	                                const std::string& goal_id, const std::string& objective,
 	                                std::string* error_out = nullptr);
@@ -69,7 +69,7 @@ class GoalService
 	/// <summary>
 	/// Clear the active goal for a chat session.
 	/// </summary>
-	static bool ClearActiveGoal(AppState& app, const std::string& chat_id);
+	static bool ClearActiveGoal(AppState& app, const std::string& chat_id, bool user_action = false);
 
 	/// <summary>
 	/// Find the active goal for a chat, or nullptr if none.

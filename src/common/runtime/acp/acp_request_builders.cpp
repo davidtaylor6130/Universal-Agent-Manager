@@ -16,6 +16,32 @@
 namespace uam::acp_detail
 {
 
+nlohmann::json BuildCodexGoalGetRequest(int request_id, const std::string& thread_id)
+{
+	return uam::acp_json_rpc::Request(request_id, "thread/goal/get", {{"threadId", thread_id}});
+}
+
+nlohmann::json BuildCodexGoalSetRequest(int request_id, const std::string& thread_id, const std::string& objective,
+	const std::string& status, std::int64_t token_budget, bool user_origin)
+{
+	return uam::acp_json_rpc::Request(request_id, "thread/goal/set",
+		{{"threadId", thread_id}, {"objective", objective}, {"status", status},
+		 {"tokenBudget", token_budget > 0 ? nlohmann::json(token_budget) : nlohmann::json(nullptr)},
+		 {"origin", user_origin ? "user" : "automatic"}});
+}
+
+nlohmann::json BuildCodexGoalClearRequest(int request_id, const std::string& thread_id, bool user_origin)
+{
+	return uam::acp_json_rpc::Request(request_id, "thread/goal/clear",
+		{{"threadId", thread_id}, {"origin", user_origin ? "user" : "automatic"}});
+}
+
+nlohmann::json BuildCodexGoalStatusRequest(int request_id, const std::string& thread_id, const std::string& status, bool user_origin)
+{
+	return uam::acp_json_rpc::Request(request_id, "thread/goal/set",
+		{{"threadId", thread_id}, {"status", status}, {"origin", user_origin ? "user" : "automatic"}});
+}
+
 nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd, const ChatSession* chat)
 {
 	return uam::acp_json_rpc::Request(request_id, uam::acp_methods::kSessionNew,

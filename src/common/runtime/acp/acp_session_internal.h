@@ -229,6 +229,23 @@ std::string PromptLengthDetail(const nlohmann::json& params);
 std::string AcpMessageDetailForDiagnostics(const nlohmann::json& message);
 
 // Protocol request builders
+bool CodexGoalReceiptMatchesOwner(const AcpSessionState& session, const ChatSession& chat,
+	const AcpSessionState::CodexGoalOwner& owner, const std::string& thread_id, bool require_active = true);
+bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& chat, Goal& goal, bool user_action, std::string* error_out, bool replace_native = false);
+bool CodexGoalOwnsNativeTurn(const AcpSessionState& session, const ChatSession& chat, const std::string& thread_id);
+void DrainQueuedCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& chat);
+bool StopCodexNativeGoal(AcpSessionState& session, const ChatSession& chat, bool user_action = false, const std::string& goal_id = {}, bool clear_native = true);
+void StartPendingCodexNativeGoalTurn(AppState& app, AcpSessionState& session, ChatSession& chat);
+bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& method,
+	const std::string& request_id, const nlohmann::json& result);
+bool HandleCodexGoalError(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpFailureDetails& failure);
+enum class CodexGoalReceiptMode { Running, Preparing, Stopping };
+bool ApplyCodexNativeGoalReceipt(AcpSessionState& session, ChatSession& chat, const nlohmann::json& native_goal, CodexGoalReceiptMode mode = CodexGoalReceiptMode::Running);
+nlohmann::json BuildCodexGoalGetRequest(int request_id, const std::string& thread_id);
+nlohmann::json BuildCodexGoalSetRequest(int request_id, const std::string& thread_id, const std::string& objective,
+	const std::string& status, std::int64_t token_budget, bool user_origin);
+nlohmann::json BuildCodexGoalClearRequest(int request_id, const std::string& thread_id, bool user_origin);
+nlohmann::json BuildCodexGoalStatusRequest(int request_id, const std::string& thread_id, const std::string& status, bool user_origin);
 nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd, const ChatSession* chat = nullptr);
 nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd, const ChatSession* chat = nullptr);
 nlohmann::json BuildResumeSessionRequest(int request_id, const std::string& session_id,

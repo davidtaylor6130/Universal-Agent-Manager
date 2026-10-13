@@ -770,6 +770,63 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 {
 	const std::string method = JsonDiagnosticStringValue(message, "method");
 	const nlohmann::json params = JsonObjectValue(message, "params");
+	if (method == "thread/goal/updated")
+	{
+		if (JsonDiagnosticStringValue(params, "threadId") != session.session_id) return;
+		const bool preparing = !session.codex_goal_native_active &&
+			(session.codex_goal_initial_turn_pending.has_value() || CodexGoalOwnsNativeTurn(session, chat, session.session_id));
+		const nlohmann::json native_goal = JsonObjectValue(params, "goal");
+		// A newer replacement loses our receipt binding; preserve the replacement without sending controls.
+		if (!session.codex_goal_owner.goal_id.empty() && session.codex_goal_created_at > 0 &&
+			native_goal.contains("createdAt") && native_goal["createdAt"].is_number_integer() &&
+			native_goal.contains("updatedAt") && native_goal["updatedAt"].is_number_integer() &&
+			native_goal["updatedAt"].get<std::int64_t>() >= session.codex_goal_updated_at &&
+			JsonDiagnosticStringValue(native_goal, "threadId") == session.session_id &&
+			(native_goal["createdAt"].get<std::int64_t>() != session.codex_goal_created_at ||
+			 JsonDiagnosticStringValue(native_goal, "objective") != session.codex_goal_owner.objective))
+		{
+			const std::string goal_id = session.codex_goal_owner.goal_id;
+			session.codex_goal_owner = {};
+			session.codex_goal_native_active = false;
+			session.codex_goal_initial_turn_pending.reset();
+			session.codex_goal_queued_user_action.reset();
+			for (std::pair<const std::string, AcpSessionState::CodexGoalOwner>& pending : session.codex_goal_pending_requests)
+				pending.second.start_authorized = false;
+			// Retire ownership before pausing UAM intent so GoalService cannot clear foreign state.
+			session.codex_goal_pending_requests.clear();
+			(void)GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Paused);
+			if (Goal* goal = GoalService::FindGoalById(app, chat.id, goal_id); goal != nullptr)
+				goal->last_diagnostic = "native_goal_binding_replaced";
+			session.goal_resume_suppressed = true;
+			SaveChatQuietly(app, chat);
+			return;
+		}
+		if (ApplyCodexNativeGoalReceipt(session, chat, native_goal,
+			preparing ? CodexGoalReceiptMode::Preparing : CodexGoalReceiptMode::Running))
+		{
+			if (chat.active_goal_id.empty())
+			{
+				if (JsonDiagnosticStringValue(native_goal, "status") == "active")
+					(void)StopCodexNativeGoal(session, chat, false, {}, false);
+				if (session.codex_turn_id.empty()) session.processing = false;
+			}
+			SaveChatQuietly(app, chat);
+		}
+		return;
+	}
+	if (method == "thread/goal/cleared")
+	{
+		if (CodexGoalReceiptMatchesOwner(session, chat, session.codex_goal_owner, JsonDiagnosticStringValue(params, "threadId")))
+		{
+			const std::string goal_id = session.codex_goal_owner.goal_id;
+			(void)GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Paused);
+			if (Goal* goal = GoalService::FindGoalById(app, chat.id, goal_id); goal != nullptr)
+				goal->last_diagnostic = "native_goal_cleared";
+			session.codex_goal_owner = {};
+			SaveChatQuietly(app, chat);
+		}
+		return;
+	}
 	if (!message.contains("id"))
 	{
 		const std::string thread_id = JsonDiagnosticStringValue(params, "threadId");
@@ -825,10 +882,11 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 	}
 	const bool cancel_boundary = pending_cancel &&
 	    (method == uam::acp_methods::kTurnStarted || method == uam::acp_methods::kTurnCompleted);
+	const bool native_goal_turn = CodexGoalOwnsNativeTurn(session, chat, JsonDiagnosticStringValue(params, "threadId"));
 	// A queued steer keeps the session active, but late output still belongs to the cancelled turn.
 	// Keep its lifecycle notifications so a deferred interrupt can be sent and settled normally.
 	if (!permission_request && method != uam::acp_methods::kItemToolRequestUserInput &&
-	    (!uam::AcpSessionHasActiveTurn(session) || pending_cancel) && !cancel_boundary &&
+	    ((!uam::AcpSessionHasActiveTurn(session) && !native_goal_turn) || pending_cancel) && !cancel_boundary &&
 	    (method.rfind("item/", 0) == 0 || method.rfind("turn/", 0) == 0 || method == uam::acp_methods::kError))
 	{
 		return;
@@ -836,6 +894,21 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 
 	if (method == uam::acp_methods::kTurnStarted)
 	{
+		if (native_goal_turn &&
+			session.codex_turn_id.empty() && session.codex_goal_initial_turn_request_id == 0 && session.prompt_request_id == 0 && session.queued_prompt.empty())
+		{
+			// Native goals own subsequent turns; do not reuse the previous answer's message indices.
+			session.processing = true;
+			session.current_assistant_message_index = -1;
+			session.turn_first_user_message_index = -1;
+			session.turn_user_message_index = -1;
+			session.turn_assistant_message_index = -1;
+			session.turn_serial += 1;
+			session.goal_command_revision = chat.goal_command_revision;
+			session.turn_started_time_s = GetAppTimeSeconds();
+			session.last_runtime_activity_time_s = session.turn_started_time_s;
+			ResetAcpTurnStreamState(session);
+		}
 		// Codex marks live turns explicitly; an answer may repeat resumed history.
 		session.assistant_replay_prefixes.clear();
 		session.load_history_replay_updates.clear();
@@ -843,6 +916,9 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		if (turn.is_object())
 		{
 			session.codex_turn_id = JsonDiagnosticStringValueOr(turn, "id", session.codex_turn_id);
+			if (session.codex_goal_native_active && !session.codex_goal_initial_turn_id.empty() &&
+				session.codex_turn_id != session.codex_goal_initial_turn_id && native_goal_turn)
+				session.codex_goal_auto_continuation_observed = true;
 		}
 		session.lifecycle_state = kAcpLifecycleProcessing;
 		(void)SendDeferredCodexInterruptIfReady(app, session, chat);
@@ -928,6 +1004,12 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !completed_cancelled_turn);
+		StartPendingCodexNativeGoalTurn(app, session, chat);
+		if (!completed_cancelled_turn && CodexGoalOwnsNativeTurn(session, chat, session.session_id))
+		{
+			session.processing = true;
+			session.lifecycle_state = kAcpLifecycleProcessing;
+		}
 		if (browser)
 		{
 			uam::PushStreamDone(browser, chat.id);

@@ -31,6 +31,7 @@ UAM_TEST(CheckpointCompletionCannotFinalizeANewerTurnOrActiveCompaction)
 		session->running = true;
 		session->session_ready = true;
 		session->turn_serial = 1;
+		session->goal_turn_kind = "owned-checkpoint-finalization";
 		session->goal_command_revision = app.chats.front().goal_command_revision;
 		session->turn_checkpoint_commit_pending = true;
 		app.acp_sessions.push_back(std::move(session));
@@ -61,7 +62,9 @@ UAM_TEST(CheckpointCompletionCannotFinalizeANewerTurnOrActiveCompaction)
 		UAM_ASSERT(uam::acp_detail::PollTurnCheckpointTasks(app, nullptr));
 		UAM_ASSERT(app.turn_checkpoint_tasks.empty());
 		UAM_ASSERT_EQ(app.chats.front().messages.front().checkpoint_sha, std::string("previous-turn-checkpoint"));
-		UAM_ASSERT_EQ(app.chats.front().goals.front().status, activity == "unchanged" ? GoalStatus::Complete : GoalStatus::Active);
+		// A committed checkpoint finalizes its turn; it does not verify a provider-owned objective.
+		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+		UAM_ASSERT_EQ(app.acp_sessions.front()->goal_turn_kind, activity == "unchanged" ? std::string() : std::string("owned-checkpoint-finalization"));
 		UAM_ASSERT_EQ(app.acp_sessions.front()->turn_checkpoint_commit_pending, activity != "unchanged");
 		UAM_ASSERT_EQ(app.acp_sessions.front()->processing, activity != "unchanged");
 		UAM_ASSERT_EQ(app.acp_sessions.front()->manual_compaction_pending, activity == "compaction");

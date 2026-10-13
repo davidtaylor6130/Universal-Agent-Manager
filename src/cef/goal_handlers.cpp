@@ -108,6 +108,18 @@ void UamQueryHandler::HandleSetGoal(CefRefPtr<CefBrowser> browser, const nlohman
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		return;
 	}
+	chat = ChatDomainService().FindChatById(m_app, chat_id);
+	if (provider_managed && chat != nullptr && chat->provider_id == "codex-cli")
+	{
+		std::string native_error;
+		if (!uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, &native_error, false, true, true))
+		{
+			(void)uam::GoalService::UpdateGoalStatus(m_app, chat_id, goal_id, GoalStatus::Paused, true);
+			if (Goal* goal = uam::GoalService::FindGoalById(m_app, chat_id, goal_id); goal != nullptr)
+				goal->last_diagnostic = uam::strings::NonEmptyOrFallback(native_error, "native_goal_waiting_for_ready_thread");
+			if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb, false)) return;
+		}
+	}
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	if (!activation_error.empty())
@@ -163,12 +175,12 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 	const bool stops_work = status == GoalStatus::Complete || status == GoalStatus::Blocked || status == GoalStatus::Paused;
 	if (stops_work && !EnsureGoalChatWritable(m_app, *chat, cb)) return;
 
-	if (!uam::GoalService::UpdateGoalStatus(m_app, chat_id, goal_id, status))
+	if (!uam::GoalService::UpdateGoalStatus(m_app, chat_id, goal_id, status, true))
 	{
 		cb->Failure(404, "Goal not found in this chat.");
 		return;
 	}
-	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb))
+	if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb, chat->provider_id != "codex-cli"))
 	{
 		return;
 	}
@@ -235,7 +247,7 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 	std::string mutation_warning;
 	if (goal_id.empty())
 	{
-		updated = uam::GoalService::ClearActiveGoal(m_app, chat_id);
+		updated = uam::GoalService::ClearActiveGoal(m_app, chat_id, true);
 	}
 	else
 	{
@@ -254,6 +266,20 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 	{
 		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);
 		return;
+	}
+	chat = ChatDomainService().FindChatById(m_app, chat_id);
+	if (!goal_id.empty() && chat != nullptr && chat->provider_id == "codex-cli")
+	{
+		Goal* goal = uam::GoalService::FindGoalById(m_app, chat_id, goal_id);
+		if (goal != nullptr && uam::GoalService::IsProviderManaged(*goal))
+		{
+			std::string native_error;
+			if (!uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, &native_error, false, true))
+			{
+				(void)uam::GoalService::UpdateGoalStatus(m_app, chat_id, goal_id, GoalStatus::Paused, true);
+				if (!SaveGoalMutationOrRestore(m_app, chat_id, previous_chat, cb, false)) return;
+			}
+		}
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	if (!mutation_warning.empty())
@@ -281,7 +307,7 @@ void UamQueryHandler::HandleResumeGoal(CefRefPtr<CefBrowser> browser, const nloh
 		return;
 	}
 	if (!EnsureGoalChatWritable(m_app, *chat, cb)) return;
-	if (!uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, &error, payload.value("restart", false)))
+	if (!uam::acp_detail::ResumeGoal(m_app, chat_id, goal_id, &error, payload.value("restart", false), true))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(409, uam::strings::NonEmptyOrFallback(error, "Failed to resume goal."));
@@ -311,6 +337,8 @@ void UamQueryHandler::HandleRemoveGoal(CefRefPtr<CefBrowser> browser, const nloh
 
 	std::string remove_error;
 	bool work_changed = false;
+	if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id); session != nullptr)
+		(void)uam::acp_detail::StopCodexNativeGoal(*session, *chat, true, goal_id);
 	if (!uam::GoalService::RemoveGoal(m_app, chat_id, goal_id, &remove_error, &work_changed))
 	{
 		if (work_changed) uam::PushStateUpdateIfChanged(browser, m_app);

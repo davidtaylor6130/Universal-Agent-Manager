@@ -358,6 +358,22 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionStat
 	// Account limits belong to this process's login; retained transcript tokens do not.
 	session.provider_usage.rate_limits = {};
 	session.codex_approvals_reviewer.clear();
+	for (const std::pair<const std::string, uam::AcpSessionState::CodexGoalOwner>& pending : session.codex_goal_pending_requests)
+	{
+		try { session.pending_request_methods.erase(std::stoi(pending.first)); }
+		catch (...) {}
+	}
+	session.codex_goal_capability = uam::AcpSessionState::CodexGoalCapability::Unknown;
+	session.codex_goal_owner = {};
+	session.codex_goal_pending_requests.clear();
+	session.codex_goal_queued_user_action.reset();
+	session.codex_goal_initial_turn_pending.reset();
+	session.codex_goal_initial_turn_request_id = 0;
+	session.codex_goal_initial_turn_id.clear();
+	session.codex_goal_native_active = false;
+	session.codex_goal_auto_continuation_observed = false;
+	session.codex_goal_created_at = 0;
+	session.codex_goal_updated_at = 0;
 	if ((!session.recovering_remote_process && !session.recovering_remote_turn) || session.remote_source_exit_reported)
 	{
 		session.codex_known_child_thread_ids.clear();
@@ -434,6 +450,11 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 	const AcpFailureDetails& failure = details.failure;
 	const std::string& detail_text = details.detail_text;
 	const std::string& formatted_error = details.formatted_error;
+	if (HandleCodexGoalError(app, session, chat, failure))
+	{
+		DrainQueuedCodexNativeGoal(app, session, chat);
+		return true;
+	}
 	if (failure.method == uam::acp_methods::kThreadCompactStart)
 	{
 		session.manual_compaction_pending = false;
@@ -513,6 +534,11 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 {
 	using namespace uam;
 	using namespace uam::acp_detail;
+	if (HandleCodexGoalResult(app, session, chat, method, request_id, result))
+	{
+		DrainQueuedCodexNativeGoal(app, session, chat);
+		return true;
+	}
 	if (method == uam::acp_methods::kThreadCompactStart)
 	{
 		// Acceptance is not completion: standard turn notifications settle compaction.
