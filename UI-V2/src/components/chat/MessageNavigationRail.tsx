@@ -60,7 +60,7 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
     <div role="slider" tabIndex={busy ? -1 : 0} aria-label="Navigate user messages" aria-orientation="vertical"
       aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={label} aria-disabled={busy}
       className="relative w-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
-      style={{ height: Math.max(1, count - 1) * 4, maxHeight: '100%' }}
+      style={{ height: Math.max(1, count - 1) * 8, maxHeight: '100%' }}
       onMouseMove={(event) => {
         const rect = event.currentTarget.getBoundingClientRect()
         setPreviewIndex(messageIndexAtPointer(count, rect.top, rect.height, event.clientY))
@@ -82,16 +82,16 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         setPreviewIndex(target)
         onNavigate(indices[target])
       }}>
-      <span aria-hidden style={{ position: 'absolute', top: count === 1 ? '50%' : 0, bottom: count === 1 ? undefined : -1, left: 6, width: 7, height: count === 1 ? 1 : undefined,
+      <span aria-hidden style={{ position: 'absolute', top: count === 1 ? '50%' : 0, bottom: count === 1 ? undefined : -1, left: 6, width: 14, height: count === 1 ? 1.5 : undefined,
         background: count === 1 ? 'var(--text-3)' : undefined,
-        backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--text-3) 1px, transparent 1px)' : undefined,
+        backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--text-3) 1.5px, transparent 1.5px)' : undefined,
         backgroundSize: count > 1 ? `100% calc((100% - 1px) / ${count - 1})` : undefined }} />
       {previewIndex !== null && [-2, -1, 1, 2].map(distance => {
         const neighbor = index + distance
         if (neighbor < 0 || neighbor >= count) return null
-        return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none transition-transform duration-150 motion-reduce:transition-none" style={{ position: 'absolute', top: `${neighbor / (count - 1) * 100}%`, left: 6, width: 24, height: 1, background: 'var(--text-3)', transformOrigin: 'left', transform: `scaleX(${Math.abs(distance) === 1 ? 2 / 3 : 5 / 12})` }} />
+        return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: `${neighbor / (count - 1) * 100}%`, left: 6, width: 24, height: 1.5, background: 'var(--text-3)', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${Math.abs(distance) === 1 ? 5 / 6 : 3 / 4})` }} />
       })}
-      <span aria-hidden data-rail-target={index} className="pointer-events-none transition-transform duration-150 motion-reduce:transition-none" style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 6, width: 24, height: 3, background: 'var(--accent)', transformOrigin: 'left', transform: `scaleX(${previewIndex === null ? 11 / 24 : 1})` }} />
+      <span aria-hidden data-rail-target={index} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 6, width: 24, height: 3, background: 'var(--accent)', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${previewIndex === null ? 22 / 24 : 1})` }} />
       {previewIndex !== null && <div className="conversation-rail-preview" aria-hidden style={{ top: `${count === 1 ? 50 : index / (count - 1) * 100}%` }}>
         <div className="conversation-rail-preview__label">{label}</div>
         {preview !== null

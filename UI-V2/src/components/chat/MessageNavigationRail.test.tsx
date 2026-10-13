@@ -55,7 +55,7 @@ describe('Message navigation rail', () => {
     try {
       act(() => root.render(<MessageNavigationRail userMessageIndices={[0, 5, 10, 15, 20, 25, 30]} startIndex={0} messages={[]} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={onNavigate} />))
       const slider = host.querySelector<HTMLElement>('[role="slider"]')!
-      expect(slider.style.height).toBe('24px')
+      expect(slider.style.height).toBe('48px')
       expect(slider.style.maxHeight).toBe('100%')
       vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({ top: 20, height: 300 } as DOMRect)
       act(() => slider.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientY: 170 })))
@@ -67,6 +67,23 @@ describe('Message navigation rail', () => {
       expect(onNavigate).toHaveBeenLastCalledWith(15)
       act(() => slider.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))
       expect(host.querySelectorAll('[data-rail-neighbor]')).toHaveLength(0)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('doubles notch pitch and width without dropping notches', () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      const indices = Array.from({ length: 200 }, (_, index) => index * 2)
+      act(() => root.render(<MessageNavigationRail userMessageIndices={indices} startIndex={0} messages={[]} currentIndex={0} viewportRef={createRef()} busy={false} onNavigate={vi.fn()} />))
+      const slider = host.querySelector<HTMLElement>('[role="slider"]')!
+      expect(slider.getAttribute('aria-valuemax')).toBe('200')
+      expect(slider.style.height).toBe('1592px')
+      expect(slider.style.maxHeight).toBe('100%')
+      const spine = slider.querySelector<HTMLElement>('span')!
+      expect(spine.style.width).toBe('14px')
+      expect(spine.style.backgroundImage).toContain('1.5px')
     } finally { act(() => root.unmount()); host.remove() }
   })
 
@@ -86,7 +103,7 @@ describe('Message navigation rail', () => {
       act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true })))
       expect(onNavigate).toHaveBeenLastCalledWith(99999)
       expect(slider.getAttribute('aria-valuenow')).toBe('3')
-      expect((slider as HTMLElement).style.height).toBe('8px')
+      expect((slider as HTMLElement).style.height).toBe('16px')
       expect(host.querySelectorAll('span').length).toBeLessThan(5)
       act(() => render(true))
       onNavigate.mockClear()
