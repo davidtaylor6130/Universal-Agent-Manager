@@ -77,10 +77,9 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     try {
       await act(async () => { root.render(<NewChatModal />) })
-      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-      expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')?.textContent).toContain('Cached Model')
-      expect(host.textContent).toContain('discovering')
-      expect(optionsSpy.mock.calls.at(-1)?.[0]).toMatchObject({ currentModelId: 'cached-model', configOptions: [{ currentValue: 'live-config' }] })
+      expect(host.querySelector('[data-testid="model-options"]')?.textContent).toContain('Cached Model')
+      expect(host.textContent).toContain('Discovering models')
+      expect(optionsSpy.mock.calls.filter(([, , , id]) => id === 'gemini-cli').at(-1)?.[0]).toMatchObject({ currentModelId: 'cached-model', configOptions: [{ currentValue: 'live-config' }] })
       act(() => {
         const binding = { ...useAppStore.getState().acpBindingBySessionId.active }
         Reflect.deleteProperty(binding, 'availableModels')
@@ -120,9 +119,7 @@ describe('NewChatModal', () => {
       await act(async () => { root.render(<NewChatModal />) })
       expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Discovering models…')?.disabled).toBe(true)
       act(() => useAppStore.setState((state) => ({ providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelsLoading: false, availableModels: [{ id: 'fresh-model', name: 'Fresh Model', description: '' }] })) })))
-      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-      expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')?.textContent).toContain('Fresh Model')
-      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
+      expect(host.querySelector('[data-testid="model-options"]')?.textContent).toContain('Fresh Model')
       act(() => useAppStore.setState((state) => ({ providerModelCatalogs: state.providerModelCatalogs.map((catalog) => ({ ...catalog, modelRefreshError: 'Independent discovery failed.' })) })))
       expect(host.querySelector('[role="alert"]')?.textContent).toContain('Independent discovery failed.')
       await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')?.click() })
@@ -282,31 +279,10 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
 
-    const codex = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Codex'))
-    act(() => codex?.click())
-
-    expect(host.querySelector('select[aria-label="Model"]')).toBeNull()
-    const model = host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')!
-    act(() => {
-      model.click()
-    })
-    expect(model.getAttribute('aria-expanded')).toBe('true')
-    const modelList = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Provider and model"]')!
-    expect(modelList).toBeTruthy()
-
-    act(() => {
-      modelList.querySelector('input[aria-label="Search models"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
-    })
-    expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')).toBeNull()
+    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Codex"]')?.click())
     expect(setNewChatModalOpen).not.toHaveBeenCalled()
 
-    act(() => model.click())
-    expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')).toBeTruthy()
-    act(() => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
-    expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')).toBeNull()
-
-    act(() => model.click())
-    const gpt = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find((option) =>
+    const gpt = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find((option) =>
       option.textContent?.includes('GPT-5.4')
     )
     act(() => gpt?.click())
@@ -327,14 +303,25 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
+  it('shows one inline provider and model picker at a fixed height with no popup trigger', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<NewChatModal />))
+    expect(host.querySelector('button[aria-label="Model"]')).toBeNull()
+    expect(host.querySelector('button[aria-label="Codex"]')).not.toBeNull()
+    expect(host.querySelector<HTMLElement>('[data-testid="model-options"]')?.style.maxHeight).toBe('240px')
+    expect(host.querySelector('[role="menuitemradio"]')).not.toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('filters the new chat model picker with the composer search', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<NewChatModal />))
-    act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')!.click())
     const search = document.body.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!
-    expect(document.activeElement).toBe(search)
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'no-such-model-xyz')
       search.dispatchEvent(new Event('input', { bubbles: true }))
@@ -401,7 +388,6 @@ describe('NewChatModal', () => {
     const root = createRoot(host)
     try {
       act(() => root.render(<NewChatModal />))
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Model"]')!.click())
       expect(document.body.textContent).toContain('Correct workspace')
       expect(document.body.textContent).not.toContain('Different workspace')
     } finally { act(() => root.unmount()); host.remove() }
@@ -483,8 +469,7 @@ describe('NewChatModal', () => {
 		.find((button) => button.getAttribute('aria-label') === 'Discover remote models')?.click()
 	  await Promise.resolve()
 	})
-	act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-	const modelMenu = document.body.querySelector('[role="menu"][aria-label="Provider and model"]')
+	const modelMenu = host.querySelector('[data-testid="model-options"]')
 	expect(modelMenu?.textContent).toContain('Remote Only')
 	expect(modelMenu?.textContent).not.toContain('Local Only')
 	expect(modelMenu?.textContent).not.toContain('Wrong Case')
@@ -642,8 +627,9 @@ describe('NewChatModal', () => {
 
     const codex = host.querySelector<HTMLButtonElement>('button[aria-label="Codex"]')
     act(() => codex?.click())
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')).find((option) => option.textContent?.includes('Default'))?.click())
 
-    expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
+    expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Default')
     const reasoning = host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')!
     expect(reasoning.textContent).toContain('Low')
     const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
@@ -838,9 +824,8 @@ describe('NewChatModal', () => {
 	  const root = createRoot(host)
 	  await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
 
-	  expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Default')
-	  act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.click())
-	  expect(document.body.querySelector('[role="menu"][aria-label="Provider and model"]')?.textContent).toContain('GPT First Chat')
+	  expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Default')
+	  expect(host.querySelector('[data-testid="model-options"]')?.textContent).toContain('GPT First Chat')
 	  expect(requests).toEqual([])
 	  await act(async () => {
 	    Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.getAttribute('aria-label') === 'Refresh models')?.click()
@@ -882,7 +867,6 @@ describe('NewChatModal', () => {
     act(() => root.render(<NewChatModal />))
     const label = (text: string) => Array.from(host.querySelectorAll<HTMLElement>('div')).find((element) => element.textContent?.trim() === text)
     expect(label('Runs on')?.style.color).toBe('var(--text-2)')
-    expect(label('Provider')?.style.color).toBe('var(--text-2)')
     expect(label('Folder')?.tagName).toBe('DIV')
     expect(host.querySelector<HTMLButtonElement>('[aria-label="Close new chat"]')?.className).toContain('uam-iconbtn--ghost')
     act(() => root.unmount())
@@ -922,7 +906,7 @@ describe('NewChatModal', () => {
     expect(host.querySelector('[aria-label="This computer"]')?.getAttribute('aria-pressed')).toBe('true')
     setInput('Chat name', 'Keep my draft')
     click('Home lab')
-    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Default')
+    expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Default')
     click('Folder')
     click('New remote workspace…')
     setInput('Remote workspace path', '/srv/custom')
@@ -933,14 +917,13 @@ describe('NewChatModal', () => {
     act(() => useAppStore.setState({ folders: [...useAppStore.getState().folders] }))
     expect(host.querySelector('[aria-label="Home lab"]')?.getAttribute('aria-pressed')).toBe('true')
     click('This computer')
-    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Reasoning model')
+    expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Reasoning model')
     expect(host.querySelector('[aria-label="Reasoning effort"]')?.textContent).toContain('High')
-    click('Model')
     click('Plain model')
     expect(host.querySelector('[aria-label="Reasoning effort"]')).toBeNull()
     click('Gemini')
     click('Codex')
-    expect(host.querySelector('[aria-label="Model"]')?.textContent).toContain('Plain model')
+    expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Plain model')
     await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click() })
     expect(addSession).toHaveBeenCalledWith('Keep my draft', 'project', 'codex-cli', 'plain-model', '', 'chat')
     expect(host.querySelector<HTMLInputElement>('[aria-label="Chat name"]')?.value).toBe('Keep my draft')
@@ -1032,11 +1015,10 @@ describe('NewChatModal', () => {
       act(() => useAppStore.setState({ executionRouting: { enabled: true, hosts: [{ hostId: 'ssh-a', enabled: true, maxActiveTurns: 2, providers: [{ providerId: 'gemini-cli', connectionIdentity: 'host-v1', providerConfigurationIdentity: 'provider-v1' }], workspaceMappings: [{ sourceFolderId: 'project', sourceDirectory: '/tmp/project', destinationFolderId: 'remote-project' }] }] } }))
       expect(automatic().disabled).toBe(false)
       act(() => automatic().click())
-      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.disabled).toBe(true)
-      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Provider default on assigned computer')
+      expect(host.querySelector<HTMLButtonElement>('[role="menuitemradio"]')?.disabled).toBe(true)
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="This computer"]')!.click())
-      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.disabled).toBe(false)
-      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Model"]')?.textContent).toContain('Local account model')
+      expect(host.querySelector<HTMLButtonElement>('[role="menuitemradio"]')?.disabled).toBe(false)
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Local account model')
       act(() => automatic().click())
       await act(async () => create().click())
       expect(addSession).toHaveBeenLastCalledWith('New chat', 'project', 'gemini-cli', undefined, undefined, 'chat', 'local', '/tmp/project', 'automatic')
