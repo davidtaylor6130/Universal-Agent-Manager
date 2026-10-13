@@ -223,7 +223,6 @@ namespace uam
 			{
 				if (!scope.is_object()) continue;
 				const std::string host = scope.value("executionHostId", "local");
-				if (host == uam::execution_hosts::kLocalHostId) continue;
 				append_catalog(scope.value("providerId", ""),
 				    scope.value("workspaceDirectory", ""), host);
 			}

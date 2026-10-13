@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Providers and MCP | Code Only | Worktree Catalogue Serialization | Local worktree model catalogues serialize and restore with their owning workspace. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Workspaces and recovery | Bugfix | Worktree Restart Receipt Recovery | Restart recovery uses owned receipts and rejects receipt reads above 64 KiB. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Workspaces and recovery | Bugfix | Canonical Main Import Grouping | Native imports retain canonical main workspace grouping and use the native worktree working directory. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Providers and MCP | Bugfix | OpenCode Agent Import Default | OpenCode agent file imports with omitted mode default to canonical `both` for primary and subagent targets. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
@@ -437,6 +438,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Providers and MCP | Code Only | Worktree Catalogue Serialization | Local worktree model catalogue serialization passes focused verification; GUI selector and live acceptance remain pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Providers and MCP | Bugfix | OpenCode Agent Import Default | Omitted mode defaults to canonical `both` for primary and subagent targets; live acceptance remains pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Usage and accounting | Bugfix | Codex Allowance Field Updates | Fieldwise Codex allowance updates pass focused checks without fabricating unknown percentages; provider acceptance remains pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Integration | Bugfix | Main Ancestry Reconciliation | Review and user-test the reconciled main safeguards and preserved V5 workflows after build and exact frontend inventory verification. | Implementation Verified; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |

@@ -87,6 +87,50 @@ UAM_TEST(StateSerializerWorkspaceSnapshotsRefreshFolderAndCatalogTogether)
 	}
 }
 
+UAM_TEST(StateSerializerPublishesPersistedLocalWorktreeCatalog)
+{
+	TempDir temp("uam-workspace-snapshot-worktree-catalog");
+	temp.root = fs::canonical(temp.root);
+	const fs::path source = temp.root / "source";
+	const fs::path worktree = temp.root / "worktree";
+	fs::create_directories(source);
+	fs::create_directories(worktree);
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+	ChatFolder folder;
+	folder.id = "source-folder";
+	folder.directory = uam::paths::Utf8PathString(source);
+	app.folders.push_back(folder);
+	ChatSession chat;
+	chat.id = "worktree-chat";
+	chat.provider_id = "opencode-cli";
+	chat.folder_id = folder.id;
+	chat.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	chat.workspace_worktree_directory = uam::paths::Utf8PathString(worktree);
+	app.chats.push_back(chat);
+	const nlohmann::json models = nlohmann::json::array({{{"id", "cached/worktree-model"}}});
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("opencode-cli", models, chat.workspace_worktree_directory));
+	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+
+	const nlohmann::json serialized = uam::StateSerializer::Serialize(app, false);
+	bool found_worktree_catalog = false;
+	for (const nlohmann::json& catalog : serialized["providerModelCatalogs"])
+	{
+		if (catalog.value("providerId", "") != "opencode-cli" ||
+		    catalog.value("executionHostId", "") != "local" ||
+		    catalog.value("workspaceDirectory", "") != uam::paths::Utf8PathString(worktree)) continue;
+		found_worktree_catalog = true;
+		bool found_cached_model = false;
+		for (const nlohmann::json& model : catalog["availableModels"])
+			if (model.value("id", "") == "cached/worktree-model") found_cached_model = true;
+		UAM_ASSERT(found_cached_model);
+	}
+	UAM_ASSERT(found_worktree_catalog);
+}
+
 UAM_TEST(StateSerializerWorkspaceSnapshotsDoNotRetainPriorCurrentDirectory)
 {
 	TempDir temp("uam-workspace-snapshot-current-directory");
