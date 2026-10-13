@@ -17,9 +17,13 @@ struct PreparedChatSave
 	std::filesystem::path primary_temp;
 	std::filesystem::path summary_path;
 	std::filesystem::path summary_temp;
+	std::filesystem::path index_path;
+	std::filesystem::path index_temp;
 	bool preserve_backup = true;
 	std::string expected_storage_revision;
 	std::string primary_revision;
+	std::filesystem::path transcript_source_path;
+	std::string transcript_source_revision;
 	std::string expected_summary_revision;
 	std::filesystem::path queue_path;
 	std::string expected_queue_revision;
@@ -27,6 +31,16 @@ struct PreparedChatSave
 	std::string queue_storage_revision;
 	std::string published_queue_full_revision;
 	~PreparedChatSave();
+};
+
+struct ChatMessagePage
+{
+	ChatSession chat;
+	std::size_t start_index = 0;
+	std::size_t total_count = 0;
+	std::string messages_digest;
+	std::string storage_revision;
+	std::optional<std::vector<std::size_t>> user_message_indices;
 };
 
 struct ChatStorageDeleteResult
@@ -38,13 +52,15 @@ struct ChatStorageDeleteResult
 	std::error_code summary_file_error;
 	std::error_code summary_backup_file_error;
 	std::error_code queue_file_error;
+	std::error_code message_index_file_error;
+	std::error_code message_index_backup_file_error;
 	std::error_code computer_use_directory_error;
 
 	bool Failed() const
 	{
 		return unsafe_chat_id || static_cast<bool>(legacy_directory_error) || static_cast<bool>(metadata_file_error) ||
 		       static_cast<bool>(metadata_backup_file_error) || static_cast<bool>(summary_file_error) ||
-		       static_cast<bool>(summary_backup_file_error) || static_cast<bool>(queue_file_error) || static_cast<bool>(computer_use_directory_error);
+		       static_cast<bool>(summary_backup_file_error) || static_cast<bool>(queue_file_error) || static_cast<bool>(message_index_file_error) || static_cast<bool>(message_index_backup_file_error) || static_cast<bool>(computer_use_directory_error);
 	}
 };
 
@@ -89,6 +105,12 @@ class ChatRepository
 	static std::optional<ChatSession> LoadLocalChatSummaryReadOnly(const std::filesystem::path& data_root, std::string_view chat_id);
 	/// <summary>Loads one locally persisted chat without scanning sibling files.</summary>
 	static std::optional<ChatSession> LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages = true, std::string* warning_out = nullptr, bool publish_summary_cache = true);
+	/// <summary>Seeks a bounded page of complete messages, repairing missing derived offsets on a worker.</summary>
+	static std::optional<ChatMessagePage> ReadMessagePage(const std::filesystem::path& data_root,
+	    const ChatSession& expected, std::size_t limit, std::optional<std::size_t> before = {},
+	    std::string* warning_out = nullptr, const std::function<bool()>& cancelled = {});
+	/// <summary>Rejects detached pages after transcript or provider/workspace ownership changes.</summary>
+	static bool MatchesMessagePage(const ChatSession& current, const ChatMessagePage& page);
 	/// <summary>Loads one locally persisted chat with its message bodies.</summary>
 	static bool HydrateChatMessages(const std::filesystem::path& data_root, ChatSession& chat, std::string* warning_out = nullptr);
 	/// <summary>Checks transcript ownership before adoption or detached page publication.</summary>

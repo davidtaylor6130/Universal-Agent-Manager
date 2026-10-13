@@ -1,3 +1,4 @@
+#include "common/chat/chat_message_page_index.h"
 #include "common/chat/chat_repository.h"
 
 #include "common/chat/chat_ids.h"
@@ -22,6 +23,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <array>
+#include <fstream>
 #include <cmath>
 #include <limits>
 #include <mutex>
@@ -1215,6 +1218,21 @@ namespace
 			if (root && root->type == JsonValue::Type::Object && JsonStringOrEmpty(root->Find(kChatIdField)) == chat_id &&
 			    NonNegativeUintmaxFieldOrZero(root->Find(kChatSummarySourceSizeField)) == size) return root;
 		}
+		const std::optional<std::string> revision = StorageRevision(primary);
+		const std::optional<uam::chat_pages::Index> index = revision ? uam::chat_pages::ReadIndex(uam::chat_pages::IndexPath(primary), *revision) : std::nullopt;
+		if (index)
+		{
+			std::ifstream input(primary, std::ios::binary);
+			if (uam::chat_pages::ReadMetadata(input, *index, text))
+			{
+				std::optional<JsonValue> root = ParseJson(text);
+				if (root && root->type == JsonValue::Type::Object && JsonStringOrEmpty(root->Find(kChatIdField)) == chat_id)
+				{
+					root->object_value.erase(std::string(kChatMessagesField));
+					return root;
+				}
+			}
+		}
 		if (!uam::io::TryReadTextFile(primary, text, kMaxChatJsonBytes)) return std::nullopt;
 		std::optional<JsonValue> root = ParseJson(text);
 		if (!root || root->type != JsonValue::Type::Object || JsonStringOrEmpty(root->Find(kChatIdField)) != chat_id) return std::nullopt;
@@ -1259,19 +1277,8 @@ namespace
 		uam::diagnostics::Write("Queued inputs held: journal is unreadable or does not match saved chat " + chat.id);
 	}
 
-	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0, bool publish_summary_cache = true, std::size_t max_read_bytes = 0)
+	LoadChatResult ParseLocalChatDocument(const fs::path& path, std::string file_text, bool include_messages, std::uintmax_t expected_source_size, bool publish_summary_cache, std::size_t max_read_bytes)
 	{
-		std::string file_text;
-		if (max_read_bytes != 0)
-		{
-			if (!uam::io::TryReadTextFile(path, file_text, max_read_bytes)) return {std::nullopt, "cannot be read within the metadata size limit"};
-		}
-		else file_text = uam::io::ReadTextFile(path);
-		if (file_text.empty())
-		{
-			return {std::nullopt, "is empty"};
-		}
-
 		auto root_opt = ParseJson(file_text);
 		if (!root_opt || root_opt->type != JsonValue::Type::Object)
 		{
@@ -1750,6 +1757,22 @@ namespace
 		return {std::move(chat), ""};
 	}
 
+	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0, bool publish_summary_cache = true, std::size_t max_read_bytes = 0)
+	{
+		std::string file_text;
+		if (max_read_bytes != 0)
+		{
+			if (!uam::io::TryReadTextFile(path, file_text, max_read_bytes)) return {std::nullopt, "cannot be read within the metadata size limit"};
+		}
+		else file_text = uam::io::ReadTextFile(path);
+		if (file_text.empty())
+		{
+			return {std::nullopt, "is empty"};
+		}
+
+		return ParseLocalChatDocument(path, std::move(file_text), include_messages, expected_source_size, publish_summary_cache, max_read_bytes);
+	}
+
 	enum class UnloadedTranscriptSource
 	{
 		None,
@@ -1909,6 +1932,131 @@ namespace
 		const std::chrono::nanoseconds fraction = std::chrono::duration_cast<std::chrono::nanoseconds>(modified.time_since_epoch() - seconds);
 		return std::to_string(size) + ":" + std::to_string(seconds.count()) + ":" + std::to_string(fraction.count());
 	}
+	std::optional<ChatSession> ReadIndexedMetadata(const fs::path& primary, const uam::chat_pages::Index& index)
+	{
+		std::ifstream input(primary, std::ios::binary);
+		std::string text;
+		if (!uam::chat_pages::ReadMetadata(input, index, text)) return std::nullopt;
+		std::optional<JsonValue> root = ParseJson(text);
+		if (!root || root->type != JsonValue::Type::Object) return std::nullopt;
+		root->object_value.erase(std::string(kChatMessagesField));
+		uam::json::SetNumber(*root, kChatPersistedMessageCountField, static_cast<double>(index.message_count));
+		// A primary contains metadata; its summary digest is recency/count, distinct from the frontend content hash.
+		root->object_value.erase(std::string(kChatPersistedMessagesDigestField));
+		return ParseLocalChatDocument(primary, SerializeJson(*root, kMaxChatJsonBytes), false, 0, false, kMaxChatJsonBytes).chat;
+	}
+
+	std::optional<uam::chat_pages::Index> EnsureMessageIndex(const fs::path& primary, std::string_view revision,
+	    const std::function<bool()>& cancelled = {}, bool rebuild = false)
+	{
+		if (!rebuild)
+		{
+			const std::optional<uam::chat_pages::Index> cached = uam::chat_pages::ReadIndex(uam::chat_pages::IndexPath(primary), revision);
+			std::error_code error;
+			if (cached && fs::file_size(primary, error) == cached->source_size && !error && ReadIndexedMetadata(primary, *cached)) return cached;
+		}
+		uam::chat_pages::Builder builder(primary);
+		std::uint64_t array_begin = 0, array_end = 0;
+		const std::function<std::optional<Message>(std::string_view)> decode = [](std::string_view raw)
+		{
+			const std::optional<JsonValue> value = ParseJson(raw);
+			if (!value || value->type != JsonValue::Type::Object) return std::optional<Message>{};
+			return std::optional<Message>{JsonToMessage(*value)};
+		};
+		if (!uam::chat_pages::Scan(primary, builder, decode, array_begin, array_end, cancelled)) return std::nullopt;
+		std::error_code error;
+		const std::uintmax_t size = fs::file_size(primary, error);
+		if (error || (cancelled && cancelled()) || StorageRevision(primary) != revision) return std::nullopt;
+		const std::shared_ptr<PreparedChatSave> staged = std::make_shared<PreparedChatSave>();
+		staged->index_path = uam::chat_pages::IndexPath(primary);
+		staged->index_temp = uam::io::MakeTempWritePath(staged->index_path);
+		if (!builder.Finish(staged->index_temp, revision, size, array_begin, array_end)) return std::nullopt;
+		const std::optional<uam::chat_pages::Index> index = uam::chat_pages::ReadIndex(staged->index_temp, revision);
+		if (!index || !ReadIndexedMetadata(primary, *index)) return std::nullopt;
+		std::lock_guard<std::mutex> lock(ChatSaveMutex());
+		if ((cancelled && cancelled()) || StorageRevision(primary) != revision ||
+		    !uam::io::CommitSyncedAtomicTemp(staged->index_path, staged->index_temp, false).success) return std::nullopt;
+		return index;
+	}
+
+	bool PageOwnerMatches(const ChatSession& lhs, const ChatSession& rhs)
+	{
+		return lhs.id == rhs.id && lhs.created_at == rhs.created_at && lhs.updated_at == rhs.updated_at && lhs.provider_id == rhs.provider_id &&
+		    lhs.native_session_id == rhs.native_session_id && lhs.execution_host_id == rhs.execution_host_id &&
+		    lhs.folder_id == rhs.folder_id && lhs.workspace_directory == rhs.workspace_directory &&
+		    lhs.workspace_isolation_kind == rhs.workspace_isolation_kind && lhs.workspace_source_directory == rhs.workspace_source_directory &&
+		    lhs.workspace_base_ref == rhs.workspace_base_ref && lhs.workspace_branch_name == rhs.workspace_branch_name &&
+		    lhs.workspace_worktree_directory == rhs.workspace_worktree_directory && lhs.imported_read_only == rhs.imported_read_only;
+	}
+
+}
+
+std::optional<ChatMessagePage> ChatRepository::ReadMessagePage(const fs::path& data_root,
+    const ChatSession& expected, std::size_t limit, std::optional<std::size_t> before,
+    std::string* warning_out, const std::function<bool()>& cancelled)
+try
+{
+	const std::function<std::optional<ChatMessagePage>()> failure = [&]()
+	{
+		if (warning_out) *warning_out = "Could not read chat history. Retry to refresh it.";
+		return std::optional<ChatMessagePage>{};
+	};
+	if (!uam::chat_ids::IsSafeStorageChatId(expected.id) || expected.messages_loaded || limit > 200) return failure();
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, expected.id);
+	const std::optional<std::string> revision = ChatStorageRevision(data_root, expected.id);
+	if (!revision || *revision == "missing" || (cancelled && cancelled())) return failure();
+	if (uam::paths::IsLinkOrReparsePointNoThrow(primary) || uam::paths::IsLinkOrReparsePointNoThrow(uam::chat_pages::IndexPath(primary))) return failure();
+	for (int attempt = 0; attempt < 2; ++attempt)
+	{
+		const std::optional<uam::chat_pages::Index> index = EnsureMessageIndex(primary, *revision, cancelled, attempt != 0);
+		if (!index) return failure();
+		const std::optional<ChatSession> metadata = ReadIndexedMetadata(primary, *index);
+		if (!metadata) continue;
+		if (metadata->persisted_message_count != expected.persisted_message_count ||
+		    metadata->persisted_messages_digest != expected.persisted_messages_digest || !PageOwnerMatches(expected, *metadata)) return failure();
+		ChatMessagePage page;
+		page.chat = *metadata;
+		page.total_count = static_cast<std::size_t>(index->message_count);
+		const std::size_t end = std::min(before.value_or(page.total_count), page.total_count);
+		page.start_index = end > limit ? end - limit : 0;
+		page.messages_digest = index->messages_digest;
+		page.storage_revision = *revision;
+		page.user_message_indices = index->user_indices;
+		std::vector<uam::chat_pages::Span> spans;
+		if (!uam::chat_pages::ReadMessageSpans(uam::chat_pages::IndexPath(primary), *index, page.start_index, end, spans)) continue;
+		std::ifstream input(primary, std::ios::binary);
+		bool valid = true;
+		for (const uam::chat_pages::Span span : spans)
+		{
+			if (cancelled && cancelled()) return failure();
+			std::string raw;
+			if (!uam::chat_pages::ReadSpan(input, span, raw)) { valid = false; break; }
+			const std::optional<JsonValue> parsed = ParseJson(raw);
+			if (!parsed || parsed->type != JsonValue::Type::Object) { valid = false; break; }
+			Message message = JsonToMessage(*parsed);
+			std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+			uam::chat_pages::AppendMessageDigest(hash, message);
+			if (hash != span.content_hash) { valid = false; break; }
+			page.chat.messages.push_back(std::move(message));
+		}
+		if (!valid) continue;
+		if ((cancelled && cancelled()) || ChatStorageRevision(data_root, expected.id) != revision) return failure();
+		return page;
+	}
+	return failure();
+}
+catch (const std::exception& error)
+{
+	uam::diagnostics::Write(std::string("History page read rejected: ") + error.what());
+	if (warning_out) *warning_out = "Could not read chat history. Retry to refresh it.";
+	return std::nullopt;
+}
+
+bool ChatRepository::MatchesMessagePage(const ChatSession& current, const ChatMessagePage& page)
+{
+	return !current.messages_loaded && PageOwnerMatches(current, page.chat) &&
+	    current.persisted_message_count == page.total_count &&
+	    current.persisted_messages_digest == page.chat.persisted_messages_digest;
 }
 
 bool ChatRepository::SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged, PreparedChatSave* prepared, std::string* fingerprint)
@@ -2157,7 +2305,9 @@ try
 	    ? SummaryDigest(chat, persisted_message_count)
 	    : chat.persisted_messages_digest;
 	bool preserve_existing_primary_as_backup = true;
-	if (fingerprint == nullptr && chat.messages_loaded && !chat.messages.empty())
+	const bool stream_primary = prepared != nullptr && fingerprint == nullptr &&
+	    ((chat.messages_loaded && !chat.messages.empty()) || (!chat.messages_loaded && chat.persisted_message_count > 0));
+	if (fingerprint == nullptr && chat.messages_loaded && !chat.messages.empty() && !stream_primary)
 	{
 		JsonValue msgs = uam::json::Array();
 		for (const auto& m : chat.messages)
@@ -2166,7 +2316,7 @@ try
 		}
 		uam::json::SetValue(root, kChatMessagesField, std::move(msgs));
 	}
-	else if (fingerprint == nullptr && !chat.messages_loaded)
+	else if (fingerprint == nullptr && !chat.messages_loaded && !stream_primary)
 	{
 		UnloadedTranscriptSelection transcript =
 		    SelectTranscriptForUnloadedSave(file_path, chat.id, chat.persisted_message_count);
@@ -2264,6 +2414,95 @@ try
 		*fingerprint = SerializeJson(root, kMaxChatJsonBytes);
 		return true;
 	}
+	if (stream_primary)
+	{
+		std::optional<uam::chat_pages::Index> source_index;
+		fs::path source_path;
+		std::string source_revision;
+		if (!chat.messages_loaded)
+		{
+			for (const fs::path& candidate : {file_path, uam::io::MakeBackupPath(file_path)})
+			{
+				const std::optional<std::string> revision = StorageRevision(candidate);
+				if (!revision || *revision == "missing") continue;
+				const std::optional<uam::chat_pages::Index> index = EnsureMessageIndex(candidate, *revision);
+				const std::optional<ChatSession> metadata = index ? ReadIndexedMetadata(candidate, *index) : std::nullopt;
+				if (!metadata || metadata->id != chat.id || index->message_count == 0) continue;
+				source_index = index;
+				source_path = candidate;
+				source_revision = *revision;
+				persisted_message_count = static_cast<std::size_t>(index->message_count);
+				persisted_messages_digest = SummaryDigest(chat, persisted_message_count);
+				preserve_existing_primary_as_backup = candidate == file_path;
+				break;
+			}
+			if (!source_index) return false;
+		}
+		prepared->primary_path = file_path;
+		prepared->primary_temp = uam::io::MakeTempWritePath(file_path);
+		prepared->summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat.id);
+		prepared->summary_temp = uam::io::MakeTempWritePath(prepared->summary_path);
+		prepared->index_path = uam::chat_pages::IndexPath(file_path);
+		prepared->index_temp = uam::io::MakeTempWritePath(prepared->index_path);
+		prepared->preserve_backup = preserve_existing_primary_as_backup;
+		prepared->transcript_source_path = source_path;
+		prepared->transcript_source_revision = source_revision;
+		if (!uam::paths::CreateDirectoriesNoThrow(prepared->summary_path.parent_path())) return false;
+		uam::chat_pages::Builder builder(file_path);
+		std::uint64_t array_begin = 0;
+		std::uint64_t written = 0, array_end = 0;
+		const std::string fields = SerializeJson(root, kMaxChatJsonBytes);
+		uam::io::AtomicWriteResult result;
+		const uam::io::AtomicTempProducer writer = [&](const std::function<bool(std::string_view)>& sink)
+		{
+			const std::function<bool(std::string_view)> append = [&](std::string_view bytes)
+			{
+				// Loaded saves retain the full-loader ceiling; unloaded copies preserve complete existing transcripts.
+				if (chat.messages_loaded && bytes.size() > kMaxChatJsonBytes - written) return false;
+				if (!sink(bytes)) return false;
+				written += bytes.size();
+				return true;
+			};
+			if (!append("{\"messages\":[")) return false;
+			array_begin = written - 1;
+			if (source_index)
+			{
+				if (!builder.CopyRecords(uam::chat_pages::IndexPath(source_path), *source_index, array_begin)) return false;
+				std::ifstream input(source_path, std::ios::binary);
+				input.seekg(static_cast<std::streamoff>(source_index->array_begin + 1));
+				std::uint64_t remaining = source_index->array_end - source_index->array_begin - 1;
+				std::array<char, 65536> buffer{};
+				while (remaining != 0)
+				{
+					const std::size_t size = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, buffer.size()));
+					if (!input.read(buffer.data(), static_cast<std::streamsize>(size)) || !append(std::string_view(buffer.data(), size))) return false;
+					remaining -= size;
+				}
+			}
+			else
+			{
+				for (const Message& message : chat.messages)
+				{
+					if (builder.Count() != 0 && !append(",")) return false;
+					const JsonValue value = MessageToJson(message);
+					const std::string text = SerializeJson(value, kMaxChatJsonBytes - static_cast<std::size_t>(written));
+					const uam::chat_pages::Span span{written, text.size()};
+					if (!append(text) || !builder.Add(span, JsonToMessage(value))) return false;
+				}
+			}
+			array_end = written;
+			return append("],") && !fields.empty() && append(std::string_view(fields).substr(1));
+		};
+		if (!uam::io::WriteAndSyncAtomicTemp(prepared->primary_temp, writer, {}, result)) return false;
+		const std::optional<std::string> revision = StorageRevision(prepared->primary_temp);
+		if (!revision || (!source_path.empty() && StorageRevision(source_path) != source_revision)) return false;
+		prepared->primary_revision = *revision;
+		if (!builder.Finish(prepared->index_temp, *revision, written, array_begin, array_end)) return false;
+		uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(persisted_message_count));
+		uam::json::SetString(root, kChatPersistedMessagesDigestField, persisted_messages_digest);
+		uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(written));
+		return uam::io::WriteAndSyncAtomicTemp(prepared->summary_temp, SerializeJson(root, kMaxChatJsonBytes), {}, result);
+	}
 	const std::string json = SerializeJson(root, kMaxChatJsonBytes);
 	const auto matches_file = [](const fs::path& path, const std::string& content)
 	{
@@ -2320,6 +2559,7 @@ PreparedChatSave::~PreparedChatSave()
 {
 	uam::io::RemoveAtomicTempNoThrow(primary_temp);
 	uam::io::RemoveAtomicTempNoThrow(summary_temp);
+	uam::io::RemoveAtomicTempNoThrow(index_temp);
 }
 
 std::optional<std::string> ChatRepository::ChatStorageRevision(const fs::path& data_root, std::string_view chat_id)
@@ -2359,14 +2599,27 @@ try
 	if (!uam::paths::CreateDirectoriesNoThrow(prepared->primary_path.parent_path())) return nullptr;
 	std::shared_ptr<PreparedChatSave> base;
 	std::size_t message_count = 0;
-	const uam::io::AtomicTempProducer writer = [&](const std::function<bool(std::string_view)>& append)
+	std::uint64_t written_bytes = 0, array_end = 0;
+	std::uint64_t array_begin = 0;
+	uam::chat_pages::Builder index_builder(prepared->primary_path);
+	const uam::io::AtomicTempProducer writer = [&](const std::function<bool(std::string_view)>& sink)
 	{
+		const std::function<bool(std::string_view)> append = [&](std::string_view bytes)
+		{
+			if (!sink(bytes)) return false;
+			written_bytes += bytes.size();
+			return true;
+		};
 		if (!append("{\"messages\":[")) return false;
+		array_begin = written_bytes - 1;
 		const std::function<bool(const Message&)> emit = [&](const Message& message)
 		{
 			if (message_count > 0 && !append(",")) return false;
 			// A complete message is the serialization unit; aggregate transcript size is unrestricted.
-			if (!append(SerializeJson(MessageToJson(message)))) return false;
+			const JsonValue value = MessageToJson(message);
+			const std::string serialized = SerializeJson(value);
+			const uam::chat_pages::Span span{written_bytes, serialized.size()};
+			if (!append(serialized) || !index_builder.Add(span, JsonToMessage(value))) return false;
 			++message_count;
 			return true;
 		};
@@ -2379,6 +2632,7 @@ try
 		if (!base) return false;
 		std::string fields;
 		if (!uam::io::TryReadTextFile(base->primary_temp, fields, 4 * 1024 * 1024)) return false;
+		array_end = written_bytes;
 		const std::size_t opening = fields.find('{');
 		if (opening == std::string::npos || !append("],")) return false;
 		return append(std::string_view(fields).substr(opening + 1));
@@ -2409,6 +2663,9 @@ try
 	const std::optional<std::string> revision = StorageRevision(prepared->primary_temp);
 	if (!revision) return nullptr;
 	prepared->primary_revision = *revision;
+	prepared->index_path = uam::chat_pages::IndexPath(prepared->primary_path);
+	prepared->index_temp = uam::io::MakeTempWritePath(prepared->index_path);
+	if (!index_builder.Finish(prepared->index_temp, *revision, primary_size, array_begin, array_end)) return nullptr;
 	if (ChatStorageRevision(data_root, metadata.id) != prepared->expected_storage_revision) return nullptr;
 	return prepared;
 }
@@ -2426,12 +2683,14 @@ bool ChatRepository::PublishPreparedChatSave(const std::shared_ptr<PreparedChatS
 	std::lock_guard<std::mutex> lock(ChatSaveMutex());
 	if (still_owned && !still_owned()) return false;
 	if (!prepared->queue_path.empty() && QueueJournalRevision(prepared->queue_path) != prepared->expected_queue_revision) return false;
+	if (!prepared->transcript_source_path.empty() && StorageRevision(prepared->transcript_source_path) != prepared->transcript_source_revision) return false;
 	if (!prepared->expected_storage_revision.empty() && StorageRevision(prepared->primary_path) != prepared->expected_storage_revision) return false;
 	if (!prepared->expected_summary_revision.empty() && StorageRevision(prepared->summary_path) != prepared->expected_summary_revision) return false;
 	if (prepared->primary_temp.empty())
 		return uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory).success;
 	const uam::io::AtomicWriteResult primary = uam::io::CommitSyncedAtomicTemp(prepared->primary_path, prepared->primary_temp, prepared->preserve_backup, {}, sync_directory);
 	if (!primary.success) return false;
+	if (!prepared->index_temp.empty()) (void)uam::io::CommitSyncedAtomicTemp(prepared->index_path, prepared->index_temp, false, {}, sync_directory);
 	(void)uam::io::CommitSyncedAtomicTemp(prepared->summary_path, prepared->summary_temp, false, {}, sync_directory);
 	if (committed_chat != nullptr) committed_chat->acp_queue_full_save_revision = prepared->published_queue_full_revision;
 	return true;
@@ -2446,6 +2705,13 @@ std::string ChatRepository::ChatMetadataFingerprint(const fs::path& data_root, c
 
 bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)
 {
+	if (!chat.messages_loaded && chat.persisted_message_count > 0)
+	{
+		const std::shared_ptr<PreparedChatSave> prepared = PrepareChatSave(data_root, chat);
+		if (!PublishPreparedChatSave(prepared)) return false;
+		chat.acp_queue_full_save_revision = prepared->published_queue_full_revision;
+		return true;
+	}
 	return SaveChatImpl(data_root, chat, false, skip_unchanged);
 }
 
@@ -2631,6 +2897,8 @@ ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const std::filesy
 	uam::paths::RemoveFileNoThrow(QueueJournalPath(data_root, chat_id), &result.queue_file_error);
 	const fs::path metadata_path = AppPaths::UamChatFilePath(data_root, chat_id);
 	uam::paths::RemoveFileNoThrow(metadata_path, &result.metadata_file_error);
+	uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(metadata_path), &result.message_index_file_error);
+	uam::paths::RemoveFileNoThrow(uam::chat_pages::IndexPath(uam::io::MakeBackupPath(metadata_path)), &result.message_index_backup_file_error);
 	uam::paths::RemoveFileNoThrow(uam::io::MakeBackupPath(metadata_path), &result.metadata_backup_file_error);
 	const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, chat_id);
 	uam::paths::RemoveFileNoThrow(summary_path, &result.summary_file_error);

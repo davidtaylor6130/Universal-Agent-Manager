@@ -522,6 +522,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
+  src/common/chat/chat_message_page_index.cpp
   src/common/chat/chat_branching.cpp
   src/common/chat/native_chat_identity.cpp
   src/common/usage/transcript_usage.cpp
@@ -1252,6 +1253,7 @@ if(UAM_BUILD_TESTS)
     tests/transcript_retention_tests.cpp
     tests/chat_search_tests.cpp
     tests/interaction_performance_tests.cpp
+    tests/chat_message_page_tests.cpp
     tests/provider_configuration_tests.cpp
     tests/transcript_usage_tests.cpp
     tests/antigravity_accounting_tests.cpp
@@ -1341,6 +1343,7 @@ if(UAM_BUILD_TESTS)
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
     src/common/chat/chat_repository.cpp
+    src/common/chat/chat_message_page_index.cpp
     src/common/chat/chat_branching.cpp
     src/common/chat/native_chat_identity.cpp
     src/common/usage/transcript_usage.cpp
