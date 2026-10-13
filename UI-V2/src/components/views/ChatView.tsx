@@ -2972,7 +2972,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   <IconButton size="sm" icon={<X size={14} aria-hidden />} label="Dismiss side chat" tooltip="Close and discard this side chat (/side-dismiss)" disabled={sideBusy} onClick={() => void navigateSide('dismiss')} />
                 </div>
               ) : (
-                <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
+                <div className="uam-composer-side-controls">
+                  <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
+                </div>
               ))}
             </div>
             </div>}
