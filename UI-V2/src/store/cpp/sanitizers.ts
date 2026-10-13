@@ -1580,6 +1580,10 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       const runnerStatus = ['uninstalled', 'installing', 'ready', 'offline', 'error'].includes(stringOr(entry.runnerStatus))
         ? stringOr(entry.runnerStatus) as 'uninstalled' | 'installing' | 'ready' | 'offline' | 'error'
         : 'uninstalled'
+      const runnerStartupApplied = ['enabled', 'disabled', 'pending', 'failed'].includes(stringOr(entry.runnerStartupApplied))
+        ? stringOr(entry.runnerStartupApplied) as 'enabled' | 'disabled' | 'pending' | 'failed'
+        : undefined
+      const runnerStartupError = stringOr(entry.runnerStartupError).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 300)
       executionHosts.push({
         id,
         label: stringOr(entry.label).trim() || sshAlias,
@@ -1597,6 +1601,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         startupEnabled: booleanOr(entry.startupEnabled, false),
         cliUpdatesAsAdmin: booleanOr(entry.cliUpdatesAsAdmin, false),
         startupStatus: stringOr(entry.startupStatus, 'disabled'),
+        ...(runnerStartupApplied ? { runnerStartupApplied } : {}),
+        ...(runnerStartupError ? { runnerStartupError } : {}),
       })
     }
   }

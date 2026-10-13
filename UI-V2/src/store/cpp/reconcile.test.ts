@@ -442,3 +442,27 @@ describe('reported compaction counts', () => {
       [{ type: 'context_compaction', text: '', tokensBefore: 1235 }])).toBe(false)
   })
 })
+
+describe('remote host startup applied state sanitization', () => {
+  const host = { id: 'h1', sshAlias: 'h1', label: 'H1', runnerStatus: 'ready' }
+
+  it('keeps applied state absent when the backend does not report it', () => {
+    const [entry] = sanitizeCppSettings({ executionHosts: [host] }).executionHosts!.slice(1)
+    expect(entry).not.toHaveProperty('runnerStartupApplied')
+    expect(entry).not.toHaveProperty('runnerStartupError')
+  })
+
+  it('accepts known applied states and sanitizes the error to one bounded line', () => {
+    const [entry] = sanitizeCppSettings({
+      executionHosts: [{ ...host, runnerStartupApplied: 'failed', runnerStartupError: `bad\nline\u0007${'x'.repeat(400)}` }],
+    }).executionHosts!.slice(1)
+    expect(entry.runnerStartupApplied).toBe('failed')
+    expect(entry.runnerStartupError).not.toMatch(/[\u0000-\u001f\u007f]/)
+    expect(entry.runnerStartupError!.length).toBe(300)
+  })
+
+  it('drops unknown applied states', () => {
+    const [entry] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerStartupApplied: 'exploded' }] }).executionHosts!.slice(1)
+    expect(entry).not.toHaveProperty('runnerStartupApplied')
+  })
+})

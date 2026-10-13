@@ -24,6 +24,10 @@ export interface ExecutionHost {
   cliUpdatesAsAdmin?: boolean
   startupEnabled?: boolean
   startupStatus?: string
+  /** Applied state of the saved startupEnabled preference on the host; absent when the backend does not report it. */
+  runnerStartupApplied?: 'enabled' | 'disabled' | 'pending' | 'failed'
+  /** Sanitized single-line reason for runnerStartupApplied === 'failed'. */
+  runnerStartupError?: string
 }
 
 export interface RemoteDirectoryEntry {

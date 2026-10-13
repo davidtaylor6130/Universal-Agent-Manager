@@ -111,6 +111,20 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
     || startupEnabled !== Boolean(host.startupEnabled)
     || cliUpdatesAsAdmin !== Boolean(host.cliUpdatesAsAdmin)
   const saveReason = instructionError ? 'Fix the instruction file path first.' : dirty ? undefined : 'No changes to save.'
+  // Switch = saved preference; status = applied state on the host. Without runnerStartupApplied, keep the legacy line.
+  const applied = host.runnerStartupApplied
+  const appliedOn = applied === 'enabled'
+  const startupMismatch = applied === 'failed' || ((applied === 'enabled' || applied === 'disabled') && appliedOn !== Boolean(host.startupEnabled))
+  const startupStatus = applied ? (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <StatusDot tone={applied === 'enabled' ? 'success' : applied === 'failed' ? 'error' : applied === 'pending' ? 'info' : 'neutral'} pulse={applied === 'pending'} />
+      {applied === 'enabled' && <span>Starts automatically</span>}
+      {applied === 'disabled' && <span>Doesn't start automatically</span>}
+      {applied === 'pending' && <span>Applying…</span>}
+      {applied === 'failed' && <span style={{ color: 'var(--error)' }}>{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span>}
+      {startupMismatch && <span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span>}
+    </span>
+  ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses Windows login or Linux systemd user session`
   return (
     <form className="mt-2 grid gap-2" onSubmit={(event) => {
       event.preventDefault()
@@ -119,7 +133,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       <SettingRow
         title="Start runner at login"
         description="Starts the helper when you sign in to the computer."
-        status={`Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses Windows login or Linux systemd user session`}
+        status={startupStatus}
         control={<Switch hideLabel name="startupEnabled" label="Start runner at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
       />
       {host.platform === 'linux' && (

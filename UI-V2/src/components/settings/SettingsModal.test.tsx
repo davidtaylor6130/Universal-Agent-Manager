@@ -568,6 +568,29 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
+  it.each([
+    { applied: undefined, error: undefined, expected: 'Currently off' },
+    { applied: 'enabled', error: undefined, expected: 'Starts automatically' },
+    { applied: 'disabled', error: undefined, expected: "Doesn't start automatically" },
+    { applied: 'pending', error: undefined, expected: 'Applying…' },
+    { applied: 'failed', error: 'systemd user session unavailable', expected: "Couldn't apply: systemd user session unavailable" },
+  ] as const)('shows applied startup state $applied while the switch keeps the saved preference', ({ applied, error, expected }) => {
+    useAppStore.setState({
+      executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', startupEnabled: true, runnerStartupApplied: applied, runnerStartupError: error }],
+    })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      expect(host.textContent).toContain(expected)
+      expect(host.querySelector<HTMLInputElement>('[name="startupEnabled"]')?.checked).toBe(true)
+      // Saved is on, so only states that are not "enabled" differ from it.
+      expect(host.textContent?.includes("doesn't match what is applied")).toBe(applied === 'failed' || applied === 'disabled')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   function setNativeInputValue(input: HTMLInputElement, value: string) {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
     act(() => {
