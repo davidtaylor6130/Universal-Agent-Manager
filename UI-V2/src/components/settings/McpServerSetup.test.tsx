@@ -17,7 +17,7 @@ const saveServers = vi.fn(async (servers: McpServerConfiguration[]) => { useAppS
 const saveCentral = vi.fn(async (configuration: ReturnType<typeof useAppStore.getState>['centralProviderConfiguration']) => { useAppStore.setState({ centralProviderConfiguration: configuration }); return { ok: true } })
 beforeEach(async () => {
   saveServers.mockClear(); saveCentral.mockClear(); vi.mocked(sendToCEF).mockReset(); buildFeatures.COMPUTER_USE_ENABLED = true
-  useAppStore.setState({ mcpServers: [server], sessions: [], activeSessionId: null, executionHosts: [], centralProviderConfiguration: { enabled: true, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true }, setMcpServers: saveServers, setCentralProviderConfiguration: saveCentral })
+  useAppStore.setState({ computerUseEnabled: undefined, mcpServers: [server], sessions: [], activeSessionId: null, executionHosts: [], centralProviderConfiguration: { enabled: true, instructions: '', instructionFiles: [], skillDirectories: [], defaultAgentId: 'build', uamControlEnabled: true }, setMcpServers: saveServers, setCentralProviderConfiguration: saveCentral })
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
 })
@@ -264,6 +264,25 @@ it.each([true, false])('shows Computer Use server build availability %s without 
   expect(document.body.textContent).toContain(enabled ? 'Available in this build' : 'Unavailable in this build')
   expect(document.querySelector('[aria-label="UAM Computer Use for current chat"]')).toBeNull()
   expect(document.querySelectorAll('button[aria-label^="Delete"]')).toHaveLength(1)
+})
+
+it('switches Computer Use from the built-in row, disables it in flight and reports a failed change', async () => {
+  useAppStore.setState({ computerUseEnabled: true })
+  await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
+  const toggle = document.querySelector<HTMLInputElement>('input[aria-label="UAM Computer Use"]')!
+  expect(toggle.checked).toBe(true)
+  let finish!: (value: unknown) => void
+  vi.mocked(sendToCEF).mockImplementationOnce((() => new Promise(resolve => { finish = resolve })) as never)
+  await act(async () => toggle.click())
+  expect(sendToCEF).toHaveBeenCalledWith({ action: 'setComputerUseEnabled', payload: { enabled: false } })
+  expect(toggle.disabled).toBe(true)
+  await act(async () => finish({ ok: false, error: 'Computer Use could not be turned off.' }))
+  expect(toggle.disabled).toBe(false)
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe('Computer Use could not be turned off.')
+  useAppStore.setState({ computerUseEnabled: false })
+  await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
+  expect(document.body.textContent).toContain('Off')
+  expect(document.body.textContent).toContain("Chats can't control this computer's screen, mouse or keyboard.")
 })
 
 it('keeps provider override identity when a server is renamed in the JSON editor', async () => {

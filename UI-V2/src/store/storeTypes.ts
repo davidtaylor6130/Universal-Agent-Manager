@@ -121,6 +121,7 @@ export interface AppState {
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
   uamAgentCycleShortcut: UamAgentCycleShortcut
+  computerUseEnabled?: boolean
   computerUseAllowlistEnabled: boolean
   computerUseAllowedApplications: ComputerUseAllowedApplication[]
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>

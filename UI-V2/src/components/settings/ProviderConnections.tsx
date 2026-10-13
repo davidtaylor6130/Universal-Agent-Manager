@@ -35,6 +35,7 @@ export function ProviderConnections({ providerId, selectedHostId, onHostChange, 
   const versions = useAppStore(state => state.cliVersionManager)
   const central = useAppStore(state => state.centralProviderConfiguration)
   const servers = useAppStore(useShallow(state => state.mcpServers))
+  const computerUseEnabled = useAppStore(state => state.computerUseEnabled)
   const [ownHostId, setOwnHostId] = useState('local')
   const hostId = selectedHostId ?? ownHostId
   const setHostId = onHostChange ?? setOwnHostId
@@ -174,7 +175,7 @@ export function ProviderConnections({ providerId, selectedHostId, onHostChange, 
             <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusDot tone={healthTone}/>{terminalOnly ? 'Terminal only' : healthLabel}</span>
               {!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'Always on. Managed in the UAM MCP service section.' : uamOn === false ? 'Off. Turn UAM MCP on in the UAM MCP service section.' : 'Not known yet')}</td>
-            <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUse, computerUse ? 'Available. Chat permissions are set in the composer.' : computerUse === false ? 'Not available for this provider' : 'Not known yet')}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUse === undefined ? undefined : computerUse && computerUseEnabled !== false, computerUseEnabled === false && computerUse ? 'Off. Turn Computer Use on in the Built in section.' : computerUse ? 'Available. Chat permissions are set in the composer.' : computerUse === false ? 'Not available for this provider' : 'Not known yet')}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), `${id}:shared-setup`)}</td>
             {collapseServers
               ? <td className="px-2 py-2">{mcpChip(id, terminalOnly, health)}</td>
