@@ -21,6 +21,7 @@ import {
   normalizeCodexReasoningEffort,
   normalizeCodexServiceTier,
   normalizeMemoryLevel,
+  memoryEnabledForLevel,
 } from './sanitizers'
 import {
   pendingModelByChatId,
@@ -252,7 +253,7 @@ export function sessionFromCppChat(
     computerUseTargetInputMode: chat.computerUseTargetInputMode ?? 'foreground',
     computerUse: chat.computerUse,
     memoryLevel: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
-    memoryEnabled: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true) !== 'off',
+    memoryEnabled: memoryEnabledForLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
     smallModelMode: chat.smallModelMode ?? false,
     memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
     memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',

@@ -1642,7 +1642,7 @@ namespace
 		chat.service_tier_explicit = JsonBoolOrDefault(root.Find(kChatServiceTierExplicitField), !chat.service_tier.empty());
 		chat.extra_flags = JsonStringOrEmpty(root.Find(kChatExtraFlagsField));
 		chat.memory_enabled = JsonBoolOrDefault(root.Find(kChatMemoryEnabledField), true);
-		chat.memory_level = uam::memory_levels::Normalize(JsonStringOrEmpty(root.Find(kChatMemoryLevelField)), chat.memory_enabled);
+		chat.memory_level = uam::memory_levels::NormalizeSelection(JsonStringOrEmpty(root.Find(kChatMemoryLevelField)), chat.memory_enabled);
 		chat.memory_enabled = uam::memory_levels::IsEnabled(chat.memory_level);
 		chat.memory_last_processed_message_count = NonNegativeIntFieldOrZero(root.Find(kChatMemoryLastProcessedMessageCountField));
 		chat.memory_last_processed_at = JsonStringOrEmpty(root.Find(kChatMemoryLastProcessedAtField));
@@ -2357,7 +2357,7 @@ try
 	uam::json::SetString(root, kChatServiceTierField, chat.service_tier);
 	uam::json::SetBool(root, kChatServiceTierExplicitField, chat.service_tier_explicit);
 	uam::json::SetString(root, kChatExtraFlagsField, chat.extra_flags);
-	const std::string memory_level = uam::memory_levels::Normalize(chat.memory_level, chat.memory_enabled);
+	const std::string memory_level = uam::memory_levels::NormalizeSelection(chat.memory_level, chat.memory_enabled);
 	uam::json::SetString(root, kChatMemoryLevelField, memory_level);
 	uam::json::SetBool(root, kChatMemoryEnabledField, uam::memory_levels::IsEnabled(memory_level));
 	uam::json::SetNumber(root, kChatMemoryLastProcessedMessageCountField, static_cast<double>(chat.memory_last_processed_message_count));

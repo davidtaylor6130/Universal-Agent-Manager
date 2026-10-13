@@ -116,7 +116,7 @@ inline ProviderChatDefaults DefaultsFromPayload(const nlohmann::json& value, con
 	{
 		defaults.small_model_mode = *small_model_mode;
 	}
-	defaults.memory_level = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(value, "memoryLevel", defaults.memory_level), defaults.memory_enabled);
+	defaults.memory_level = uam::memory_levels::NormalizeSelection(uam::nlohmann_json::TrimmedStringValueOr(value, "memoryLevel", defaults.memory_level), defaults.memory_enabled);
 	defaults.reasoning_effort = uam::nlohmann_json::TrimmedStringValueOr(value, "reasoningEffort", defaults.reasoning_effort);
 	defaults.service_tier = uam::nlohmann_json::TrimmedStringValueOr(value, "serviceTier", defaults.service_tier);
 	return uam::provider_chat_defaults::Normalize(defaults, provider_id);

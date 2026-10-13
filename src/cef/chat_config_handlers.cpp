@@ -1564,7 +1564,7 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const bool enabled = payload.value("enabled", true);
-	const std::string requested_level = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(payload, "memoryLevel", ""), enabled);
+	const std::string requested_level = uam::memory_levels::NormalizeSelection(uam::nlohmann_json::TrimmedStringValueOr(payload, "memoryLevel", ""), enabled);
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{

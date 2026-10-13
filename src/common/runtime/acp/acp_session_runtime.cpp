@@ -18,6 +18,7 @@
 #include "app/uam_control_service.h"
 #include "app/memory_service.h"
 #include "common/memory/memory_levels.h"
+#include "common/memory/memory_policy.h"
 #include "app/native_session_link_service.h"
 #include "app/transcript_retention_service.h"
 #include "app/provider_resolution_service.h"
@@ -1183,7 +1184,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					if (recall_position != nullptr && paths::IsControllerLocalWorkspace(chat))
 					{
 						// Two directory probes preserve the empty-memory fast path; bodies are worker-only.
-						if (memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) && app.settings.memory_recall_budget_bytes > 0 &&
+						if (memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat)) && app.settings.memory_recall_budget_bytes > 0 &&
 						    (paths::IsDirectoryNoThrow(MemoryService::GlobalMemoryRoot(app.data_root)) ||
 						     paths::IsDirectoryNoThrow(MemoryService::LocalMemoryRoot(paths::ResolveControllerWorkspaceRootPath(app, chat)))))
 							*recall_position = effective_prompt.size();

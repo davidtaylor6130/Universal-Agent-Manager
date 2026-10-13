@@ -64,7 +64,7 @@ namespace uam::settings_frontend_json
 			    {"approvalMode", uam::approval_modes::NormalizePersistedProviderDefaultApprovalMode(entry.second.approval_mode)},
 			    {"commandSafetyTier", uam::command_safety::NormalizeTier(entry.second.command_safety_tier)},
 			    {"memoryEnabled", entry.second.memory_enabled},
-			    {"memoryLevel", uam::memory_levels::Normalize(entry.second.memory_level, entry.second.memory_enabled)},
+			    {"memoryLevel", uam::memory_levels::NormalizeSelection(entry.second.memory_level, entry.second.memory_enabled)},
 			    {"reasoningEffort", uam::provider_chat_defaults::NormalizeReasoningEffort(provider_id, entry.second.reasoning_effort)},
 			    {"serviceTier", uam::codex::NormalizeServiceTier(entry.second.service_tier)},
 			    {"smallModelMode", entry.second.small_model_mode},

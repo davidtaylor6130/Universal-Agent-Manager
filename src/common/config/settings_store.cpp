@@ -318,7 +318,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		defaults.command_safety_tier = uam::command_safety::NormalizeTier(defaults.command_safety_tier);
 		defaults.reasoning_effort = uam::provider_chat_defaults::NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
-		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
+		defaults.memory_level = uam::memory_levels::NormalizeSelection(defaults.memory_level, defaults.memory_enabled);
 		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
 	}
@@ -404,7 +404,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			defaults.memory_enabled = BoolFieldOr(fields, 4, true);
 			defaults.reasoning_effort = uam::DecodedLineFieldOr(fields, 5, "");
 			defaults.service_tier = uam::DecodedLineFieldOr(fields, 6, "");
-			defaults.memory_level = uam::memory_levels::Normalize(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
+			defaults.memory_level = uam::memory_levels::NormalizeSelection(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
 			defaults.small_model_mode = BoolFieldOr(fields, 8, false);
 			defaults.reviewer_model_id = uam::DecodedLineFieldOr(fields, 9, "");
 			defaults.feature_preference = uam::DecodedLineFieldOr(fields, 10, "uam");

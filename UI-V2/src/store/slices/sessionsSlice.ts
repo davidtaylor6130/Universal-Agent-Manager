@@ -1884,8 +1884,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const requestedDefaultLevel = settings.memoryLevelDefault
         ?? (settings.memoryEnabledDefault === undefined ? previous.memoryLevelDefault : settings.memoryEnabledDefault ? 'strict' : 'off')
       const next = {
-        memoryLevelDefault: normalizeMemoryLevel(requestedDefaultLevel),
-        memoryEnabledDefault: normalizeMemoryLevel(requestedDefaultLevel) !== 'off',
+        memoryLevelDefault: normalizeMemoryLevel(requestedDefaultLevel, true, false),
+        memoryEnabledDefault: normalizeMemoryLevel(requestedDefaultLevel, true, false) !== 'off',
         memoryIdleDelaySeconds: clampedFiniteNumberOr(settings.memoryIdleDelaySeconds, previous.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
         memoryRecallBudgetBytes: clampedFiniteNumberOr(settings.memoryRecallBudgetBytes, previous.memoryRecallBudgetBytes, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
         goalMaxLoopIterations: settings.goalMaxLoopIterations === undefined

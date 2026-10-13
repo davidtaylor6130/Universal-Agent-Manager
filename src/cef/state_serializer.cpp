@@ -10,6 +10,7 @@
 #include "app/provider_model_catalog_service.h"
 #include "app/uam_control_service.h"
 #include "common/memory/memory_levels.h"
+#include "common/memory/memory_policy.h"
 
 #include "common/chat/message_attachment_json.h"
 #include "common/constants/app_constants.h"
@@ -298,7 +299,7 @@ namespace uam
 			session_json["computerUseTargetId"] = session.computer_use_target_id;
 			session_json["computerUseTargetTitle"] = session.computer_use_target_title;
 			session_json["computerUseTargetInputMode"] = session.computer_use_target_input_mode;
-			session_json["memoryLevel"] = uam::memory_levels::Normalize(session.memory_level, session.memory_enabled);
+			session_json["memoryLevel"] = uam::memory_levels::NormalizeSelection(session.memory_level, session.memory_enabled);
 			session_json["memoryEnabled"] = uam::memory_levels::IsEnabled(session.memory_level, session.memory_enabled);
 			session_json["smallModelMode"] = session.small_model_mode;
 			session_json["memoryLastProcessedMessageCount"] = session.memory_last_processed_message_count;
@@ -1121,6 +1122,7 @@ namespace uam
 		{
 			nlohmann::json chat_json;
 			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(WorkspaceSnapshotForChat(app, chat, cache)), cache_selected);
+			chat_json["memoryEnabled"] = uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, chat));
 			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 			chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
@@ -1535,6 +1537,7 @@ namespace uam
 			if (selected_chat && chat.messages_loaded && !summary_only)
 			{
 				chat_json = SerializeSession(chat, chat.id == selected_chat_id);
+				chat_json["memoryEnabled"] = uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, chat));
 				const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 				chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);

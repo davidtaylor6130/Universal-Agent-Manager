@@ -28,6 +28,7 @@
 #include "remote/runner_proxy.h"
 #include "remote/host_context.h"
 #include "common/memory/memory_levels.h"
+#include "common/memory/memory_policy.h"
 #include "remote/runner_protocol.h"
 
 #include <cstring>
@@ -66,7 +67,7 @@ std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionSta
 	return nlohmann::json::array({chat.model_id, chat.reasoning_effort, chat.service_tier, chat.service_tier_explicit,
 	    chat.approval_mode, chat.command_safety_tier, session.current_model_id,
 	    session.current_mode_id, session.goal_turn_model_id, session.active_uam_agent_id,
-	    session.active_uam_agent_definition_hash, chat.memory_level, chat.memory_enabled,
+	    session.active_uam_agent_definition_hash, chat.memory_level, memory_policy::Resolve(app.settings, chat),
 	    app.settings.memory_recall_budget_bytes, chat.computer_use_enabled,
 	    chat.computer_use_backend, chat.computer_use_target_id,
 	    chat.computer_use_target_process_id, chat.computer_use_target_input_mode}).dump();
@@ -1287,7 +1288,7 @@ static MemoryRecallIdentity MemoryRecallSnapshot(const AppState& app, const AcpS
 	return {app.data_root, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)),
 	    chat.id, session.provider_id, session.session_id, session.queued_prompt, session.memory_recall_query,
 	    session.memory_recall_position.value_or(0), session.turn_serial, app.settings.memory_recall_budget_bytes,
-	    memory_levels::Normalize(chat.memory_level, chat.memory_enabled), chat.small_model_mode};
+	    memory_policy::Resolve(app.settings, chat), chat.small_model_mode};
 }
 
 static std::string PreparedPromptText(const AcpSessionState& session)
@@ -1481,7 +1482,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (app.pending_chat_save_at_by_chat_id.contains(chat.id)) return false;
 	if (session.memory_recall_preparation != nullptr &&
 	    (!paths::IsControllerLocalWorkspace(chat) || !session.memory_recall_position.has_value() ||
-	     session.queued_prompt.empty() || !memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) ||
+	     session.queued_prompt.empty() || !memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat)) ||
 	     app.settings.memory_recall_budget_bytes <= 0 ||
 	     session.memory_recall_preparation->state->identity != MemoryRecallSnapshot(app, session, chat)))
 		session.memory_recall_preparation.reset();
@@ -1489,13 +1490,14 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (session.remote_context_preparation != nullptr)
 	{
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
-		const int memory_budget = session.turn_first_user_message_index <= 0 && memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled)
+		const int memory_budget = session.turn_first_user_message_index <= 0 && memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat))
 		    ? app.settings.memory_recall_budget_bytes : 0;
 		const std::shared_ptr<RemoteContextPreparation>& preparation = session.remote_context_preparation;
 		if (chat.execution_host_id == execution_hosts::kLocalHostId || host == nullptr ||
 		    !execution_hosts::SameConnection(preparation->host, *host) ||
 		    preparation->workspace != paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)) ||
-		    preparation->prompt != session.queued_prompt || preparation->memory_budget != memory_budget)
+		    preparation->prompt != session.queued_prompt || preparation->memory_budget != memory_budget ||
+		    preparation->memory_level != memory_policy::Resolve(app.settings, chat))
 		{
 			preparation->cancel.request_stop();
 			session.remote_context_preparation.reset();
@@ -1593,7 +1595,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		                             packet->request_id, packet->unsent_messages);
 	}
 	if (paths::IsControllerLocalWorkspace(chat) && session.memory_recall_position.has_value() &&
-	    memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) && app.settings.memory_recall_budget_bytes > 0)
+	    memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat)) && app.settings.memory_recall_budget_bytes > 0)
 	{
 		if (*session.memory_recall_position > session.queued_prompt.size())
 		{
@@ -1647,7 +1649,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const std::string workspace = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
 		const bool first_prompt = session.turn_first_user_message_index <= 0;
-		const int memory_budget = first_prompt && memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled)
+		const int memory_budget = first_prompt && memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat))
 		    ? app.settings.memory_recall_budget_bytes : 0;
 		if (host == nullptr)
 		{
@@ -1658,7 +1660,8 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		{
 			std::shared_ptr<RemoteContextPreparation>& preparation = session.remote_context_preparation;
 			if (preparation != nullptr && (!execution_hosts::SameConnection(preparation->host, *host) ||
-			    preparation->workspace != workspace || preparation->prompt != prompt))
+			    preparation->workspace != workspace || preparation->prompt != prompt ||
+		    preparation->memory_budget != memory_budget || preparation->memory_level != memory_policy::Resolve(app.settings, chat)))
 			{
 				preparation->cancel.request_stop();
 				preparation.reset();
@@ -1668,6 +1671,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 				preparation = std::make_shared<RemoteContextPreparation>();
 				preparation->host = *host; preparation->workspace = workspace; preparation->prompt = prompt;
 				preparation->memory_budget = memory_budget;
+				preparation->memory_level = memory_policy::Resolve(app.settings, chat);
 				RemoteContextTask task;
 				task.state = preparation;
 				task.worker = std::make_unique<std::jthread>([state = preparation, memory_budget](std::stop_token shutdown)

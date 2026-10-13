@@ -493,6 +493,7 @@ namespace uam
 
 	struct RemoteContextPreparation
 	{
+		std::string memory_level = "strict";
 		ExecutionHost host;
 		std::string workspace;
 		std::string prompt;

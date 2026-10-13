@@ -97,12 +97,20 @@ export function normalizeAcpSetupInactivityTimeoutSeconds(value: unknown): numbe
   return clampedFiniteNumberOr(value, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MIN_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, MAX_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS)
 }
 
-export function normalizeMemoryLevel(value: unknown, legacyEnabled = true): MemoryLevel {
-  if (!legacyEnabled) return 'off'
+export function normalizeMemoryLevel(value: unknown, legacyEnabled = true, allowDefault = true): MemoryLevel {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (allowDefault && normalized === 'default') return 'default'
+  if (!legacyEnabled) return 'off'
+  if (normalized === 'readonly') return 'readOnly'
   return normalized === 'off' || normalized === 'strict' || normalized === 'balanced' || normalized === 'open'
     ? normalized
     : 'strict'
+}
+
+/** Default retains the native resolved enabled flag instead of treating the marker as an enabled policy. */
+export function memoryEnabledForLevel(value: unknown, nativeEnabled = true): boolean {
+  const level = normalizeMemoryLevel(value, nativeEnabled)
+  return level === 'default' ? nativeEnabled : level !== 'off'
 }
 
 // ---------------------------------------------------------------------------
@@ -934,7 +942,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
             : [],
         }
       : undefined,
-    memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
+    memoryEnabled: memoryEnabledForLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     smallModelMode: booleanOr(value.smallModelMode),
     memoryLastProcessedMessageCount: finiteNumberOr(value.memoryLastProcessedMessageCount, 0),
@@ -1407,7 +1415,7 @@ export function sanitizeProviderChatDefaults(value: unknown): ProviderChatDefaul
     commandSafetyTier: normalizeCommandSafetyTier(
       isString(value.commandSafetyTier) ? value.commandSafetyTier : booleanOr(value.autoApproveCommands) ? 'yolo' : 'off'
     ),
-    memoryEnabled: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)) !== 'off',
+    memoryEnabled: memoryEnabledForLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     memoryLevel: normalizeMemoryLevel(value.memoryLevel, booleanOr(value.memoryEnabled, true)),
     smallModelMode: booleanOr(value.smallModelMode),
     reasoningEffort: normalizeCodexReasoningEffort(value.reasoningEffort),
@@ -1437,7 +1445,7 @@ export function providerChatDefaultsForNewChat(
   const saved = state.providerChatDefaults[providerId]
   const defaults = sanitizeProviderChatDefaults(saved ?? null)
   if (!saved) {
-    defaults.memoryLevel = normalizeMemoryLevel(state.memoryLevelDefault, state.memoryEnabledDefault)
+    defaults.memoryLevel = normalizeMemoryLevel(state.memoryLevelDefault, state.memoryEnabledDefault, false)
     defaults.memoryEnabled = defaults.memoryLevel !== 'off'
   }
   const caps = providerCapabilities(providerId)
@@ -1612,8 +1620,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     showWorktreePathInSidebar: booleanOr(value.showWorktreePathInSidebar, true),
     gitEnabled: booleanOr(value.gitEnabled, true),
     svnEnabled: booleanOr(value.svnEnabled, true),
-    memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)) !== 'off',
-    memoryLevelDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true)),
+    memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true), false) !== 'off',
+    memoryLevelDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true), false),
     memoryIdleDelaySeconds: clampedFiniteNumberOr(value.memoryIdleDelaySeconds, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS),
     memoryRecallBudgetBytes: clampedFiniteNumberOr(value.memoryRecallBudgetBytes, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES),
     goalMaxLoopIterations: normalizeGoalMaxLoopIterations(value.goalMaxLoopIterations),
