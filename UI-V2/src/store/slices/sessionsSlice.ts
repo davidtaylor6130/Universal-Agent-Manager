@@ -2,6 +2,7 @@ import type { ContextReference } from '../../types/contextReference'
 import { sanitizeContextReferences, CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { filePreviewResponse } from '../../types/filePreview'
+import { reportAppFailure } from '../../utils/appFailure'
 import { canRouteAutomatically } from '../../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch'
 import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
@@ -1147,8 +1148,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return true
       }
 
-      const organizationSequence = get().organizationMutationSequence + 1
-      set({ organizationMutationSequence: organizationSequence })
+      set({ organizationMutationSequence: get().organizationMutationSequence + 1 })
       const applyPinned = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
@@ -1169,9 +1169,6 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         })
 
         if (response.ok) {
-          if (get().organizationMutationSequence === organizationSequence && isLatestPendingRequest(requestKey, response.requestId) && (get().sessions.find((session) => session.id === id)?.isPinned ?? false) === pinned) {
-            set({ organizationUndo: { label: pinned ? 'Pin chat' : 'Unpin chat', change: { kind: 'pin', chatId: id, expected: pinned, replacement: previousSession.isPinned ?? false } } })
-          }
           clearPendingRequest(requestKey, response.requestId)
           return true
         }
@@ -1183,13 +1180,13 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             ),
           }))
           pendingRequestIdsByKey.delete(requestKey)
+          reportAppFailure('Could not save the pin change.', 'The chat was returned to its previous state. Try again.')
         }
 
         return false
       }
 
       applyPinned()
-      set({ organizationUndo: { label: pinned ? 'Pin chat' : 'Unpin chat', change: { kind: 'pin', chatId: id, expected: pinned, replacement: previousSession.isPinned ?? false } } })
       return true
     },
 

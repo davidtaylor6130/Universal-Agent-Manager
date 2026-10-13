@@ -2,12 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { ChevronRight, Library } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { createRequestId } from '../../ipc/cefBridge'
 import { ViewportMenu } from '../ui'
 import type { ResourceReferenceType } from '../../types/resourceCollection'
-
-export const COLLECTION_MOVE_FAILURE_EVENT = 'uam-collection-move-failure'
-export type CollectionMoveFailure = { id: string; time: string; message: string; detail: string }
+import { reportAppFailure } from '../../utils/appFailure'
 
 /** Moves membership through one guarded native transaction and reports failures to the shell. */
 export async function moveResourceToCollection(collectionId: string | null, type: ResourceReferenceType, target: string, label: string) {
@@ -15,14 +12,7 @@ export async function moveResourceToCollection(collectionId: string | null, type
     if (await useAppStore.getState().moveResourceToCollection(collectionId, type, target, label)) return true
     throw new Error('Collection membership changed or could not be saved. Refresh and try again.')
   } catch (error) {
-    window.dispatchEvent(new CustomEvent<CollectionMoveFailure>(COLLECTION_MOVE_FAILURE_EVENT, {
-      detail: {
-        id: createRequestId('collection-move-failure'),
-        time: new Date().toISOString(),
-        message: `Could not move "${label}".`,
-        detail: error instanceof Error ? error.message : 'Collection move failed.',
-      },
-    }))
+    reportAppFailure(`Could not move "${label}".`, error instanceof Error ? error.message : 'Collection move failed.')
     return false
   }
 }

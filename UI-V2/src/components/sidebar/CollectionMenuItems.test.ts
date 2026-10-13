@@ -2,15 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const bridge = vi.hoisted(() => ({ cef: false, send: vi.fn(async () => ({ ok: true })) }))
 vi.mock('../../ipc/cefBridge', async (original) => ({ ...await original<typeof import('../../ipc/cefBridge')>(), isCefContext: () => bridge.cef, sendToCEF: bridge.send }))
 import { useAppStore } from '../../store/useAppStore'
-import { COLLECTION_MOVE_FAILURE_EVENT, moveResourceToCollection, type CollectionMoveFailure } from './CollectionMenuItems'
+import { moveResourceToCollection } from './CollectionMenuItems'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 const initial = useAppStore.getState()
 afterEach(() => { useAppStore.setState(initial, true); bridge.cef = false; bridge.send.mockReset() })
 
 describe('atomic collection moves', () => {
   it.each(['save', 'stale', 'missing', 'transport'] as const)('reports %s failure without changing any original memberships', async (failure) => {
-    const events: CollectionMoveFailure[] = []
-    const listener = (event: Event) => events.push((event as CustomEvent<CollectionMoveFailure>).detail)
-    window.addEventListener(COLLECTION_MOVE_FAILURE_EVENT, listener)
+    const events: AppFailure[] = []
+    const listener = (event: Event) => events.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, listener)
     const original = (failure === 'missing' ? ['first', 'second'] : ['first', 'second', 'destination']).map((id) => ({ id, name: id, collapsed: false,
       references: id === 'destination' ? [] : [{ id: `${id}-ref`, type: 'workspace-folder' as const, target: 'folder', label: id }] }))
     const remove = vi.fn()
@@ -37,18 +38,18 @@ describe('atomic collection moves', () => {
       expect(Number.isFinite(Date.parse(events[0].time))).toBe(true)
       if (failure === 'transport') expect(events[0].detail).toContain('Connection closed')
       else expect(events[0].detail).toContain('could not be saved')
-    } finally { window.removeEventListener(COLLECTION_MOVE_FAILURE_EVENT, listener) }
+    } finally { window.removeEventListener(APP_FAILURE_EVENT, listener) }
   })
 
   it('does not emit failure or repeat the transaction for an existing destination membership', async () => {
     const listener = vi.fn()
-    window.addEventListener(COLLECTION_MOVE_FAILURE_EVENT, listener)
+    window.addEventListener(APP_FAILURE_EVENT, listener)
     useAppStore.setState({ resourceCollections: [{ id: 'destination', name: 'Destination', collapsed: false, references: [] }] })
     try {
       expect(await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace')).toBe(true)
       expect(await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace')).toBe(true)
       expect(useAppStore.getState().resourceCollections[0].references).toHaveLength(1)
       expect(listener).not.toHaveBeenCalled()
-    } finally { window.removeEventListener(COLLECTION_MOVE_FAILURE_EVENT, listener) }
+    } finally { window.removeEventListener(APP_FAILURE_EVENT, listener) }
   })
 })

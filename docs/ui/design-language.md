@@ -41,6 +41,13 @@ UX rules (enforce):
 7. Density: no oversized cards/padding; align to a grid; consistent heights (controls 26/32px).
 8. Don't invent features or data the code does not provide.
 
+## Notifications
+
+- One notifications panel (the bell rail) holds every app-wide message: failures, warnings, completed system actions and available updates.
+- One shared transient alert (`TransientAlertSurface` in `AppShell`, bottom-left, `aria-live="polite"`) briefly shows each new message. It auto-dismisses and the message stays in the panel.
+- No feature-specific popups or toasts. Features report failures through `reportAppFailure` (`utils/appFailure.ts`).
+- No undo offers or undo shortcuts. A change either saves or is reported as failed.
+
 ## Verifying UI work
 
 - Check every changed surface visually in dark and light themes (and at least one other built-in theme for colour work), including loading, empty and error states.

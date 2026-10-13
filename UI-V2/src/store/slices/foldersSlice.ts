@@ -204,9 +204,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       ordered.push(...previous.filter((folder) => !seen.has(folder.id)).map((folder) => folder.id))
       const expected = previous.map((folder) => folder.id)
       if (JSON.stringify(expected) === JSON.stringify(ordered)) return true
-      if (!await get().applyOrganizationChange({ kind: 'folderOrder', expected, replacement: ordered })) return false
-      set({ organizationUndo: { label: 'Reorder workspaces', change: { kind: 'folderOrder', expected: ordered, replacement: expected } } })
-      return true
+      return get().applyOrganizationChange({ kind: 'folderOrder', expected, replacement: ordered })
     },
 
     rescanFolderChats: async (id: string): Promise<boolean> => {

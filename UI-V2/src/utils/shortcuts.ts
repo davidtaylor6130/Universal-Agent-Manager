@@ -1,7 +1,7 @@
 /** App-wide keyboard shortcuts: ⌘ on macOS, Ctrl elsewhere. */
 const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)
 
-export type AppShortcut = 'newChat' | 'search' | 'settings' | 'sidebar' | 'nextAttention' | 'undoOrganization' | 'focusActiveInput'
+export type AppShortcut = 'newChat' | 'search' | 'settings' | 'sidebar' | 'nextAttention' | 'focusActiveInput'
 
 const SHORTCUT_KEYS: Record<AppShortcut, string> = {
   newChat: 'n',
@@ -9,7 +9,6 @@ const SHORTCUT_KEYS: Record<AppShortcut, string> = {
   settings: ',',
   sidebar: 'b',
   nextAttention: 'j',
-  undoOrganization: 'z',
   focusActiveInput: 'l',
 }
 

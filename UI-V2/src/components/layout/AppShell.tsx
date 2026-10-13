@@ -3,10 +3,9 @@ import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser
 import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
-import { COLLECTION_MOVE_FAILURE_EVENT, type CollectionMoveFailure } from '../sidebar/CollectionMenuItems'
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, Undo2, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
 import './panels.css'
 
 /** GitHub mark (lucide dropped brand icons). */
@@ -44,6 +43,7 @@ import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 import { focusActiveInput } from '../../utils/activeInputFocus'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 
 // These panels subscribe to their own state; shell navigation must not rerender their histories.
 const ChatPanel = memo(MainPanel)
@@ -57,43 +57,25 @@ const MemoryLibraryModal = lazy(() => import('../settings/MemoryLibraryModal').t
 const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({ MemoryScanModal }) => ({ default: MemoryScanModal })))
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
-/** Offers the latest guarded inverse without taking focus from the current draft. */
-function OrganizationUndoNotice() {
-  const undo = useAppStore((state) => state.organizationUndo)
-  const [dismissed, setDismissed] = useState<typeof undo>(null)
-  const [pending, setPending] = useState<typeof undo>(null)
-  const pendingRef = useRef(false)
-  const [failure, setFailure] = useState<{ undo: typeof undo; message: string } | null>(null)
-  const shown = undo && undo !== dismissed ? undo : null
-  const { mounted, closing } = usePresence(shown !== null)
-  // Keep the last offer on screen while the toast animates out.
-  const lastShown = useRef(shown)
-  if (shown) lastShown.current = shown
-  const current = shown ?? lastShown.current
+type TransientAlert = { id: string; tone: 'error' | 'info'; message: string; actionLabel: string; action: 'notifications' | 'updates' }
+
+/** The one shared transient alert for app-wide messages; every message is also kept in the notifications panel. */
+function TransientAlertSurface({ alert, onAction, onDismiss }: { alert: TransientAlert | null; onAction: (action: TransientAlert['action']) => void; onDismiss: () => void }) {
+  const { mounted, closing } = usePresence(alert !== null)
+  // Keep the last alert on screen while it animates out.
+  const lastAlert = useRef(alert)
+  if (alert) lastAlert.current = alert
+  const current = lastAlert.current
   if (!mounted || !current) return null
-  const label = ({ 'Pin chat': 'Chat pinned', 'Unpin chat': 'Chat unpinned', 'Move resource': 'Resource moved', 'Reorder collections': 'Collections reordered', 'Reorder references': 'Collection items reordered', 'Reorder workspaces': 'Workspaces reordered' } as Record<string, string>)[current.label] ?? current.label
-  const busy = pending !== null
-  const failed = failure?.undo === current
-  return <div role="status" data-state={closing ? 'closed' : 'open'} className="uam-sb-undo-toast fixed bottom-4 left-16 flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
-    style={{ zIndex: VIEWPORT_MENU_Z_INDEX, maxWidth: 'calc(100vw - 80px)', background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
-    <span className="min-w-0 truncate" style={{ color: failed ? 'var(--error)' : 'var(--text)' }}>{failed ? failure.message : label}</span>
-    <Button variant="ghost" size="sm" disabled={busy} leadingIcon={<Undo2 size={13} />} onClick={() => {
-      if (pendingRef.current || useAppStore.getState().organizationUndo !== current) return
-      pendingRef.current = true
-      const submitted = current
-      setPending(submitted)
-      setFailure(null)
-      void useAppStore.getState().undoOrganization().then((ok) => {
-        if (!ok && useAppStore.getState().organizationUndo === submitted) setFailure({ undo: submitted, message: 'Could not undo. The organization may have changed.' })
-      }).catch(() => {
-        if (useAppStore.getState().organizationUndo === submitted) setFailure({ undo: submitted, message: 'Could not undo. Try again.' })
-      }).finally(() => {
-        pendingRef.current = false
-        setPending((value) => value === submitted ? null : value)
-      })
-    }}>{pending === current ? 'Undoing…' : 'Undo'}</Button>
-    <IconButton icon={<X size={13} />} size="sm" label="Dismiss undo" onClick={() => setDismissed(current)} />
-  </div>
+  return (
+    <div role="status" aria-live="polite" data-testid="transient-alert" data-state={closing ? 'closed' : 'open'}
+      className="uam-transient-alert fixed bottom-4 left-4 flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
+      style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, width: 360, maxWidth: 'calc(100vw - 32px)', background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
+      <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere', color: current.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>{current.message}</span>
+      <Button variant="ghost" size="sm" onClick={() => { onAction(current.action); onDismiss() }}>{current.actionLabel}</Button>
+      <IconButton icon={<X size={13} />} size="sm" label="Dismiss alert" onClick={onDismiss} />
+    </div>
+  )
 }
 
 const SIDEBAR_WIDTH_MIN = 260
@@ -116,6 +98,14 @@ function statusLineNotificationId(detail: string): string {
 
 function providerUpdateNotificationId(result: UpdateMonitor['providerUpdateResults'][number]): string {
   return `provider-update-${result.executionHostId ? JSON.stringify([result.executionHostId, result.providerId]) : result.providerId}-${result.installedVersion}-${result.message}`
+}
+
+function updateSummaryText(updates: UpdateMonitor['updates']): string {
+  return updates.map((update) => `${update.name} ${update.latestVersion}`).join(' · ')
+}
+
+function updateNotificationId(updates: UpdateMonitor['updates']): string {
+  return `updates-${updateSummaryText(updates)}`
 }
 
 function missingFolderNotificationId(folder: { id: string; name: string; directory: string }): string {
@@ -274,18 +264,22 @@ function NotificationsPanel({
   closing = false,
   dismissedNotificationIds,
   remoteNotifications,
-  collectionFailures,
+  failures,
+  updates,
   providerUpdateResults,
   onClose,
   onDismiss,
+  onReviewUpdates,
 }: {
   closing?: boolean
   dismissedNotificationIds: ReadonlySet<string>
   remoteNotifications: RemoteConnectionNotification[]
-  collectionFailures: CollectionMoveFailure[]
+  failures: AppFailure[]
+  updates: UpdateMonitor['updates']
   providerUpdateResults: UpdateMonitor['providerUpdateResults']
   onClose: () => void
   onDismiss: (id: string) => void
+  onReviewUpdates: () => void
 }) {
   const missingFolders = useAppStore(useShallow((s) => s.folders.filter((folder) => folder.missing)))
   const shellActionNotification = useAppStore((s) => s.shellActionNotification)
@@ -300,7 +294,7 @@ function NotificationsPanel({
   const headingRef = useRef<HTMLDivElement>(null)
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
-  type Notification = { id: string; title: string; detail: string; warning?: boolean; failure?: CollectionMoveFailure; actions?: NotificationAction[] }
+  type Notification = { id: string; title: string; detail: string; warning?: boolean; failure?: AppFailure; actions?: NotificationAction[] }
 
   const notifications: Notification[] = [
     ...(statusLine ? [{
@@ -314,8 +308,14 @@ function NotificationsPanel({
       title: `${FILE_MANAGER_NAME} action`,
       detail: shellActionNotification,
     }] : []),
-    ...collectionFailures.map((failure) => ({ id: failure.id, title: 'Collection move failed', detail: failure.detail, failure })),
+    ...failures.map((failure): Notification => ({ id: failure.id, title: 'Change not saved', detail: failure.detail, failure })),
     ...remoteNotifications,
+    ...(updates.length > 0 ? [{
+      id: updateNotificationId(updates),
+      title: `${updates.length} update${updates.length === 1 ? '' : 's'} available`,
+      detail: updateSummaryText(updates),
+      actions: [{ label: 'Review updates', variant: 'primary' as const, run: onReviewUpdates }],
+    }] : []),
     ...providerUpdateResults.filter((result) => result.status === 'succeeded').map((result): Notification => ({
       id: providerUpdateNotificationId(result),
       title: `${result.name} update completed`,
@@ -589,28 +589,27 @@ export function AppShell() {
   const dismissShellActionNotification = useAppStore((s) => s.dismissShellActionNotification)
   const updateMonitor = useUpdateMonitor()
   const [alertsOpen, setAlertsOpen] = useState(false)
-  const [collectionFailures, setCollectionFailures] = useState<CollectionMoveFailure[]>([])
-  const [collectionToast, setCollectionToast] = useState<CollectionMoveFailure | null>(null)
+  const [appFailures, setAppFailures] = useState<AppFailure[]>([])
+  const [transientAlert, setTransientAlert] = useState<TransientAlert | null>(null)
 
   useEffect(() => {
     const onFailure = (event: Event) => {
-      const failure = (event as CustomEvent<CollectionMoveFailure>).detail
-      setCollectionFailures((history) => [...history, failure])
-      setCollectionToast(failure)
+      const failure = (event as CustomEvent<AppFailure>).detail
+      setAppFailures((history) => [...history, failure])
+      setTransientAlert({ id: failure.id, tone: 'error', message: failure.message, actionLabel: 'View in notifications', action: 'notifications' })
     }
-    window.addEventListener(COLLECTION_MOVE_FAILURE_EVENT, onFailure)
-    return () => window.removeEventListener(COLLECTION_MOVE_FAILURE_EVENT, onFailure)
+    window.addEventListener(APP_FAILURE_EVENT, onFailure)
+    return () => window.removeEventListener(APP_FAILURE_EVENT, onFailure)
   }, [])
 
   useEffect(() => {
-    if (!collectionToast) return
-    const timer = window.setTimeout(() => setCollectionToast(null), 8000)
+    if (!transientAlert) return
+    const timer = window.setTimeout(() => setTransientAlert(null), 8000)
     return () => window.clearTimeout(timer)
-  }, [collectionToast])
+  }, [transientAlert])
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
-  const [postponedUpdates, setPostponedUpdates] = useState('')
-  const updateNoticeIdentity = JSON.stringify(updateMonitor.updates.map((update) => [update.id, update.latestVersion]))
+  const updateNoticeId = updateMonitor.updates.length > 0 ? updateNotificationId(updateMonitor.updates) : ''
   const connectionIssues = useMemo(() => {
     const state = useAppStore.getState()
     return remoteConnectionIssues(
@@ -624,7 +623,8 @@ export function AppShell() {
   const [connectionRecoveries, setConnectionRecoveries] = useState<RemoteConnectionNotification[]>([])
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const activeNotificationIds = [
-    ...collectionFailures.map((failure) => failure.id),
+    ...appFailures.map((failure) => failure.id),
+    ...(updateNoticeId ? [updateNoticeId] : []),
     ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
     ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
     ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
@@ -664,8 +664,22 @@ export function AppShell() {
   }, [connectionIssues])
 
   useEffect(() => {
+    if (updateMonitor.updates.length === 0) return
+    const count = updateMonitor.updates.length
+    setTransientAlert({
+      id: updateNoticeId,
+      tone: 'info',
+      message: `${count} update${count === 1 ? '' : 's'} available · ${updateSummaryText(updateMonitor.updates)}`,
+      actionLabel: 'Review updates',
+      action: 'updates',
+    })
+    // Only a new set of updates should raise the transient alert again.
+  }, [updateNoticeId])
+
+  useEffect(() => {
     const activeIds = new Set([
-      ...collectionFailures.map((failure) => failure.id),
+      ...appFailures.map((failure) => failure.id),
+      ...(updateNoticeId ? [updateNoticeId] : []),
       ...(statusLine ? [statusLineNotificationId(statusLine)] : []),
       ...(shellActionNotification ? [shellActionNotificationId(shellActionNotification)] : []),
       ...folders.filter((folder) => folder.missing).map(missingFolderNotificationId),
@@ -678,7 +692,7 @@ export function AppShell() {
       const remainingIds = currentIds.filter((id) => activeIds.has(id))
       return remainingIds.length === currentIds.length ? dismissed : new Set(remainingIds)
     })
-  }, [collectionFailures, connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine, updateMonitor.providerUpdateResults])
+  }, [appFailures, connectionIssues, connectionRecoveries, folders, shellActionNotification, statusLine, updateMonitor.providerUpdateResults, updateNoticeId])
 
   const startResize = useCallback((
     side: 'sidebar' | 'commit',
@@ -759,6 +773,17 @@ export function AppShell() {
     else setSettingsOpen(!isSettingsOpen)
   }
 
+  const openNotifications = () => {
+    setAlertsOpen(true)
+    setCommitPanelOpen(false)
+    setUpdatesOpen(false)
+  }
+  const openUpdates = () => {
+    setUpdatesOpen(true)
+    setCommitPanelOpen(false)
+    setAlertsOpen(false)
+  }
+
   const shortcutStateRef = useRef({ isSettingsOpen, usageOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings })
   shortcutStateRef.current = { isSettingsOpen, usageOpen, sidebarCollapsed, sidebarWouldStarveChat, toggleSettings }
 
@@ -773,10 +798,6 @@ export function AppShell() {
         if (!state.isSettingsOpen && !state.usageOpen && focusActiveInput()) event.preventDefault()
         return
       }
-      if (shortcut === 'undoOrganization') {
-        const target = event.target instanceof Element ? event.target : document.activeElement
-        if (state.isSettingsOpen || state.usageOpen || target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"]') || !useAppStore.getState().organizationUndo) return
-      }
       event.preventDefault()
       const store = useAppStore.getState()
       if (shortcut === 'newChat') {
@@ -786,8 +807,6 @@ export function AppShell() {
         state.toggleSettings()
       } else if (shortcut === 'sidebar') {
         if (!state.isSettingsOpen && !state.usageOpen) store.setSidebarCollapsed(!state.sidebarCollapsed)
-      } else if (shortcut === 'undoOrganization') {
-        void store.undoOrganization()
       } else if (shortcut === 'nextAttention') {
         const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-session-id]'))
           .filter((row) => !row.closest('[hidden], [inert], [aria-hidden="true"]'))
@@ -896,25 +915,6 @@ export function AppShell() {
         </>
       )}
 
-      {/* Settings is a full page; the rail's update button stays available there. */}
-      {!updatesOpen && !isSettingsOpen && updateMonitor.updates.length > 0 && postponedUpdates !== updateNoticeIdentity && (
-        <div className="uam-side-panel-in fixed bottom-4 right-14 z-40 w-80 max-w-[calc(100vw-2rem)] rounded-xl p-3" style={{ background: 'var(--surface-up)', color: 'var(--text)', boxShadow: 'var(--elev-3)', border: '1px solid var(--border-bright)' }} role="status">
-          <div className="flex items-start gap-2.5">
-            <ArrowUpCircle size={18} aria-hidden className="mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold">{updateMonitor.updates.length} update{updateMonitor.updates.length === 1 ? '' : 's'} available</p>
-              <p className="mt-0.5 truncate text-xs" style={{ color: 'var(--text-2)' }} title={updateMonitor.updates.map((update) => update.name).join(', ')}>
-                {updateMonitor.updates.map((update) => `${update.name} ${update.latestVersion}`).join(' · ')}
-              </p>
-            </div>
-            <IconButton size="sm" icon={<X size={14} />} label="Remind me later" onClick={() => setPostponedUpdates(updateNoticeIdentity)} />
-          </div>
-          <div className="mt-3 flex items-center justify-between gap-2">
-            <button type="button" className="text-xs underline-offset-2 hover:underline" style={{ color: 'var(--text-3)', background: 'none', border: 0, cursor: 'pointer' }} onClick={updateMonitor.dismissAll}>Skip these versions</button>
-            <Button size="sm" variant="primary" onClick={() => setUpdatesOpen(true)}>Review updates</Button>
-          </div>
-        </div>
-      )}
       {updatesPresence.mounted && <UpdatesPanel monitor={updateMonitor} closing={updatesPresence.closing} onClose={() => setUpdatesOpen(false)} />}
 
       {alertsPresence.mounted && (
@@ -922,15 +922,17 @@ export function AppShell() {
           closing={alertsPresence.closing}
           dismissedNotificationIds={dismissedNotificationIds}
           remoteNotifications={[...connectionIssues, ...connectionRecoveries]}
-          collectionFailures={collectionFailures}
+          failures={appFailures}
+          updates={updateMonitor.updates}
           providerUpdateResults={updateMonitor.providerUpdateResults}
           onClose={() => setAlertsOpen(false)}
+          onReviewUpdates={openUpdates}
           onDismiss={(id) => {
             if (shellActionNotification && id === shellActionNotificationId(shellActionNotification)) {
               void dismissShellActionNotification()
               return
             }
-            setCollectionToast((toast) => toast?.id === id ? null : toast)
+            setTransientAlert((alert) => alert?.id === id ? null : alert)
             setDismissedNotificationIds((dismissed) => new Set(dismissed).add(id))
           }}
         />
@@ -959,33 +961,7 @@ export function AppShell() {
       />
 
       <StartupNativeImportChooser />
-      {!collectionToast && <OrganizationUndoNotice />}
-      {collectionToast && (
-        <div role="alert" className="fixed bottom-4 left-4 flex items-start gap-3 rounded-md p-3 text-xs"
-          style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, width: 340, maxWidth: 'calc(100vw - 32px)', background: 'var(--surface)', color: 'var(--text)', border: '1px solid var(--border-bright)' }}>
-          <div className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>
-            <div className="mb-1 flex items-center gap-2">
-              <strong style={{ color: 'var(--red)' }}>Error</strong>
-              <time dateTime={collectionToast.time}>{new Date(collectionToast.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-            </div>
-            {collectionToast.message}
-            <button
-              type="button"
-              className="mt-1.5 block underline underline-offset-2"
-              style={{ color: 'var(--text-2)' }}
-              onClick={() => {
-                setCollectionToast(null)
-                setAlertsOpen(true)
-                setCommitPanelOpen(false)
-                setUpdatesOpen(false)
-              }}
-            >
-              View in notifications
-            </button>
-          </div>
-          <IconButton icon={<X size={13} />} size="sm" label="Dismiss collection notification" onClick={() => setCollectionToast(null)} />
-        </div>
-      )}
+      <TransientAlertSurface alert={transientAlert} onAction={(action) => action === 'updates' ? openUpdates() : openNotifications()} onDismiss={() => setTransientAlert(null)} />
 
       {/* Modals */}
       <Presence open={isNewChatModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setNewChatModalOpen(false)}><Suspense fallback={null}><NewChatModal /></Suspense></InterfaceErrorBoundary></Presence>

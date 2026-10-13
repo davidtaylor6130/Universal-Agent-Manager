@@ -104,11 +104,3 @@
 .uam-sb-attention-strip:hover { background: var(--warning-dim); filter: brightness(1.08); }
 .uam-sb-attention-strip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
-/* Organization undo toast: rises from the bottom edge and fades out on dismiss. */
-.uam-sb-undo-toast { animation: uam-sb-toast-in var(--dur-base) var(--ease-out-soft) backwards; }
-.uam-sb-undo-toast[data-state="closed"] { animation: uam-sb-toast-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-@keyframes uam-sb-toast-in { from { opacity: 0; transform: translateY(8px); } }
-@keyframes uam-sb-toast-out { to { opacity: 0; transform: translateY(6px); } }
-@media (prefers-reduced-motion: reduce) {
-  .uam-sb-undo-toast, .uam-sb-undo-toast[data-state="closed"] { animation: none; }
-}
