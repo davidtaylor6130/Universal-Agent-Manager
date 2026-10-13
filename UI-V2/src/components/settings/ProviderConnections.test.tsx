@@ -42,6 +42,15 @@ it('shows installations and Computer Use availability for the selected host', as
   expect(host.querySelector('[aria-label="Codex Computer Use"]')?.getAttribute('aria-checked')).toBe('false')
 })
 
+it('reads Off in the Computer Use column when the built-in setting is disabled', async () => {
+  useAppStore.setState({ computerUseEnabled: false })
+  await render('codex-cli')
+  const cell = host.querySelector('[aria-label="Codex Computer Use"]')
+  expect(cell?.getAttribute('aria-checked')).toBe('false')
+  expect(cell?.getAttribute('title')).toContain('Off')
+  useAppStore.setState({ computerUseEnabled: undefined })
+})
+
 it('updates a provider server override only after successful verified backend reply', async () => {
   await render('codex-cli')
   let finish!: (value: unknown) => void

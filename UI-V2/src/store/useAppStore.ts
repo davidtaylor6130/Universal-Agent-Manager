@@ -134,6 +134,7 @@ function deserializeState(
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
     uamAgentCycleShortcut: AppState['uamAgentCycleShortcut']
+    computerUseEnabled?: boolean
     computerUseAllowlistEnabled: boolean
     computerUseAllowedApplications: AppState['computerUseAllowedApplications']
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
@@ -339,6 +340,7 @@ function deserializeState(
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
+    computerUseEnabled: cpp.settings.computerUseEnabled,
     computerUseAllowlistEnabled: cpp.settings.computerUseAllowlistEnabled ?? false,
     computerUseAllowedApplications: cpp.settings.computerUseAllowedApplications ?? [],
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
@@ -539,6 +541,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     uamAgentCycleShortcut: patch.settings?.uamAgentCycleShortcut ?? current.uamAgentCycleShortcut,
+    computerUseEnabled: patch.settings?.computerUseEnabled ?? current.computerUseEnabled,
     computerUseAllowlistEnabled: patch.settings?.computerUseAllowlistEnabled ?? current.computerUseAllowlistEnabled,
     computerUseAllowedApplications: patch.settings?.computerUseAllowedApplications ?? current.computerUseAllowedApplications,
     uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
@@ -731,6 +734,7 @@ export const useAppStore = create<AppState>((set, get) => {
             executionHosts: current.executionHosts,
             favoriteUamAgentIds: current.favoriteUamAgentIds,
             uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+            computerUseEnabled: current.computerUseEnabled,
             computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
             computerUseAllowedApplications: current.computerUseAllowedApplications,
             uamAgentsBySessionId: current.uamAgentsBySessionId,
@@ -1041,6 +1045,7 @@ export const useAppStore = create<AppState>((set, get) => {
         executionHosts: current.executionHosts,
         favoriteUamAgentIds: current.favoriteUamAgentIds,
         uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+        computerUseEnabled: current.computerUseEnabled,
         computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
         computerUseAllowedApplications: current.computerUseAllowedApplications,
         uamAgentsBySessionId: current.uamAgentsBySessionId,

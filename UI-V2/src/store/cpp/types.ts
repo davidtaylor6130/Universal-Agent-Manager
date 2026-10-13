@@ -628,6 +628,7 @@ export interface CppSettings {
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
+  computerUseEnabled?: boolean
   computerUseAllowlistEnabled?: boolean
   computerUseAllowedApplications?: ComputerUseAllowedApplication[]
 }
