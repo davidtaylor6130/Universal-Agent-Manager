@@ -1,6 +1,9 @@
 #pragma once
 
 #include "common/utils/string_utils.h"
+#include "common/utils/io_utils.h"
+
+#include <mutex>
 
 #include <nlohmann/json.hpp>
 
@@ -17,6 +20,75 @@ namespace uam::voice_input
 	inline constexpr std::string_view kDefaultServerEndpoint = "/v1/audio/transcriptions";
 	inline constexpr std::string_view kDefaultServerModel = "whisper-1";
 	inline constexpr std::string_view kDefaultApiKeyEnv = "OPENAI_API_KEY";
+
+	inline constexpr std::size_t kMaxRecordingBytes = 25 * 1024 * 1024;
+	inline constexpr std::size_t kMaxResponseBytes = 1024 * 1024;
+
+	/// Read owned recordings only after size preflight; the reader also bounds growth during the read.
+	inline bool ReadRecording(const std::filesystem::path& path, std::string& bytes, std::string& error)
+	{
+		bytes.clear();
+		std::error_code file_error;
+		const std::uintmax_t size = std::filesystem::file_size(path, file_error);
+		if (file_error) { error = "Could not read the microphone recording."; return false; }
+		if (size == 0) { error = "No microphone audio was recorded."; return false; }
+		if (size > kMaxRecordingBytes) { error = "Voice recording exceeds the 25 MiB upload limit."; return false; }
+		if (!io::TryReadTextFile(path, bytes, kMaxRecordingBytes) || bytes.empty())
+		{ error = "Could not read the microphone recording within the 25 MiB limit."; return false; }
+		error.clear();
+		return true;
+	}
+
+	inline bool IsCurrentRecording(std::uint64_t requested, std::uint64_t current, bool running)
+	{
+		return running && requested == current;
+	}
+
+	/// Network callbacks and cancellation share a bounded buffer; completion can consume it only once.
+	class ResponseBuffer
+	{
+	public:
+		bool AcceptLength(std::int64_t expected)
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			if (m_finished || m_canceled || m_oversized) return false;
+			if (expected > static_cast<std::int64_t>(kMaxResponseBytes)) { RejectOversize(); return false; }
+			return true;
+		}
+		bool Append(std::string_view bytes)
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			if (m_finished || m_canceled || m_oversized) return false;
+			if (bytes.size() > kMaxResponseBytes - m_bytes.size()) { RejectOversize(); return false; }
+			if (!bytes.empty()) m_bytes.append(bytes);
+			return true;
+		}
+		void Cancel()
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			m_canceled = true;
+			m_bytes.clear();
+		}
+		bool TakeForRecording(std::uint64_t requested, std::uint64_t current, bool running, std::string& bytes, std::string& error)
+		{
+			std::lock_guard<std::mutex> lock(m_mutex);
+			bytes.clear();
+			if (m_finished || m_canceled || !IsCurrentRecording(requested, current, running))
+			{ m_finished = true; m_bytes.clear(); error.clear(); return false; }
+			m_finished = true;
+			if (m_oversized) { error = "Voice server response exceeds the 1 MiB limit."; return false; }
+			error.clear();
+			bytes = std::move(m_bytes);
+			return true;
+		}
+	private:
+		void RejectOversize() { m_oversized = true; m_bytes.clear(); }
+		std::mutex m_mutex;
+		std::string m_bytes;
+		bool m_canceled = false;
+		bool m_finished = false;
+		bool m_oversized = false;
+	};
 
 	inline std::string NormalizeMode(std::string_view value)
 	{
@@ -108,7 +180,7 @@ namespace uam::voice_input
 	inline bool ParseTranscriptResponse(std::string_view response, std::string& transcript, std::string* error_out = nullptr)
 	{
 		transcript.clear();
-		if (response.size() > 1024 * 1024)
+		if (response.size() > kMaxResponseBytes)
 		{
 			if (error_out) *error_out = "Voice server response exceeds the 1 MiB limit.";
 			return false;

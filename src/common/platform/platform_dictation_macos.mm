@@ -9,7 +9,55 @@
 #include <algorithm>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <utility>
+
+typedef void (^UamVoiceTransferCompletion)(std::shared_ptr<uam::voice_input::ResponseBuffer>, std::string);
+
+@interface UamVoiceResponseDelegate : NSObject <NSURLSessionDataDelegate>
+{
+	std::shared_ptr<uam::voice_input::ResponseBuffer> m_buffer;
+	UamVoiceTransferCompletion m_completion;
+	std::string m_error;
+}
+- (instancetype)initWithBuffer:(std::shared_ptr<uam::voice_input::ResponseBuffer>)buffer completion:(UamVoiceTransferCompletion)completion;
+@end
+
+@implementation UamVoiceResponseDelegate
+- (instancetype)initWithBuffer:(std::shared_ptr<uam::voice_input::ResponseBuffer>)buffer completion:(UamVoiceTransferCompletion)completion
+{
+	self = [super init];
+	if (self) { m_buffer = std::move(buffer); m_completion = [completion copy]; }
+	return self;
+}
+- (void)URLSession:(NSURLSession*)session dataTask:(NSURLSessionDataTask*)task didReceiveResponse:(NSURLResponse*)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completion
+{
+	if (![response isKindOfClass:[NSHTTPURLResponse class]] || [(NSHTTPURLResponse*)response statusCode] < 200 || [(NSHTTPURLResponse*)response statusCode] >= 300)
+	{
+		m_error = "Voice server rejected the transcription request.";
+		completion(NSURLSessionResponseCancel);
+		return;
+	}
+	completion(m_buffer->AcceptLength(response.expectedContentLength) ? NSURLSessionResponseAllow : NSURLSessionResponseCancel);
+}
+- (void)URLSession:(NSURLSession*)session dataTask:(NSURLSessionDataTask*)task didReceiveData:(NSData*)data
+{
+	[data enumerateByteRangesUsingBlock:^(const void* bytes, NSRange range, BOOL* stop)
+	{
+		if (!m_buffer->Append(std::string_view(static_cast<const char*>(bytes), range.length)))
+		{
+			*stop = YES;
+			[task cancel];
+		}
+	}];
+}
+- (void)URLSession:(NSURLSession*)session task:(NSURLSessionTask*)task didCompleteWithError:(NSError*)error
+{
+	if (m_error.empty() && error != nil) m_error = error.localizedDescription.UTF8String ?: "Voice transcription request failed.";
+	if (m_completion != nil) { m_completion(m_buffer, m_error); m_completion = nil; }
+	[session finishTasksAndInvalidate];
+}
+@end
 
 namespace uam::platform_macos_impl
 {
@@ -19,6 +67,8 @@ class MacDictationService final : public IPlatformDictationService
   public:
 	~MacDictationService() override
 	{
+		if (m_responseBuffer != nullptr) m_responseBuffer->Cancel();
+		[m_uploadSession invalidateAndCancel];
 		[m_uploadTask cancel];
 		[m_audioEngine stop];
 		RemoveInputTap();
@@ -232,12 +282,15 @@ class MacDictationService final : public IPlatformDictationService
 	void UploadRecording(std::uint64_t generation)
 	{
 		m_audioFile = nil;
-		NSData* audio = [NSData dataWithContentsOfURL:m_audioUrl];
-		if (audio.length == 0 || audio.length > 25 * 1024 * 1024)
+		std::string audio_bytes, read_error;
+		const char* recording_path = m_audioUrl == nil ? nullptr : m_audioUrl.fileSystemRepresentation;
+		if (recording_path == nullptr || !voice_input::ReadRecording(paths::PathFromUtf8(recording_path), audio_bytes, read_error))
 		{
-			Fail(generation, audio.length == 0 ? "No microphone audio was recorded." : "Voice recording exceeds the 25 MB upload limit.");
+			Fail(generation, read_error.empty() ? "No microphone audio was recorded." : read_error);
 			return;
 		}
+		NSData* audio = [NSData dataWithBytes:audio_bytes.data() length:audio_bytes.size()];
+		std::string{}.swap(audio_bytes);
 
 		NSURL* url = [NSURL URLWithString:[NSString stringWithUTF8String:m_options.server_url.c_str()]];
 		if (url == nil)
@@ -264,33 +317,38 @@ class MacDictationService final : public IPlatformDictationService
 		}
 
 		NSURL* recording_url = m_audioUrl;
-		m_uploadTask = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-			dispatch_async(dispatch_get_main_queue(), ^{
+		m_responseBuffer = std::make_shared<voice_input::ResponseBuffer>();
+		UamVoiceResponseDelegate* delegate = [[UamVoiceResponseDelegate alloc] initWithBuffer:m_responseBuffer completion:^(std::shared_ptr<voice_input::ResponseBuffer> buffer, std::string transfer_error)
+		{
+			dispatch_async(dispatch_get_main_queue(), ^
+			{
 				[[NSFileManager defaultManager] removeItemAtURL:recording_url error:nil];
-				if (!IsCurrent(generation)) return;
-				if (error != nil)
+				std::string response_text, response_error;
+				bool accepted = false;
 				{
-					Fail(generation, error.localizedDescription.UTF8String ?: "Voice transcription request failed.");
+					std::scoped_lock lock(m_mutex);
+					if (!voice_input::IsCurrentRecording(generation, m_generation, m_running)) return;
+					accepted = buffer->TakeForRecording(generation, m_generation, m_running, response_text, response_error);
+				}
+				if (!accepted)
+				{
+					if (!response_error.empty()) Fail(generation, response_error);
 					return;
 				}
-				const NSInteger status = [(NSHTTPURLResponse*)response statusCode];
-				if (status < 200 || status >= 300 || data.length > 1024 * 1024)
-				{
-					Fail(generation, status < 200 || status >= 300 ? "Voice server rejected the transcription request." : "Voice server response is too large.");
-					return;
-				}
-				std::string transcript;
-				std::string parse_error;
-				const std::string response_text(static_cast<const char*>(data.bytes), data.length);
-				if (!uam::voice_input::ParseTranscriptResponse(response_text, transcript, &parse_error))
-				{
-					Fail(generation, parse_error);
-					return;
-				}
+				if (!transfer_error.empty()) { Fail(generation, transfer_error); return; }
+				std::string transcript, parse_error;
+				if (!voice_input::ParseTranscriptResponse(response_text, transcript, &parse_error))
+				{ Fail(generation, parse_error); return; }
 				Enqueue(generation, {DictationEventType::Final, std::move(transcript)});
 				Complete(generation);
 			});
 		}];
+		NSOperationQueue* queue = [[NSOperationQueue alloc] init];
+		queue.maxConcurrentOperationCount = 1;
+		NSURLSessionConfiguration* configuration = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+		configuration.URLCache = nil;
+		m_uploadSession = [NSURLSession sessionWithConfiguration:configuration delegate:delegate delegateQueue:queue];
+		m_uploadTask = [m_uploadSession dataTaskWithRequest:request];
 		[m_uploadTask resume];
 	}
 
@@ -376,7 +434,7 @@ class MacDictationService final : public IPlatformDictationService
 	bool IsCurrent(std::uint64_t generation) const
 	{
 		std::scoped_lock lock(m_mutex);
-		return m_running && m_generation == generation;
+		return voice_input::IsCurrentRecording(generation, m_generation, m_running);
 	}
 
 	void Enqueue(std::uint64_t generation, DictationEvent event)
@@ -405,8 +463,12 @@ class MacDictationService final : public IPlatformDictationService
 		m_audioEngine = nil;
 		m_recognizer = nil;
 		m_audioFile = nil;
+		if (m_responseBuffer != nullptr) m_responseBuffer->Cancel();
 		[m_uploadTask cancel];
+		[m_uploadSession invalidateAndCancel];
 		m_uploadTask = nil;
+		m_uploadSession = nil;
+		m_responseBuffer.reset();
 		if (m_audioUrl != nil)
 		{
 			[[NSFileManager defaultManager] removeItemAtURL:m_audioUrl error:nil];
@@ -461,6 +523,8 @@ class MacDictationService final : public IPlatformDictationService
 	AVAudioFile* m_audioFile = nil;
 	NSURL* m_audioUrl = nil;
 	NSURLSessionDataTask* m_uploadTask = nil;
+	NSURLSession* m_uploadSession = nil;
+	std::shared_ptr<voice_input::ResponseBuffer> m_responseBuffer;
 	DictationOptions m_options;
 	bool m_uploading = false;
 };

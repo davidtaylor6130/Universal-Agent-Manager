@@ -52,3 +52,73 @@ UAM_TEST(VoiceInputSettingsPersistValidateAndParseServerResponses)
 	UAM_ASSERT(!uam::voice_input::ParseTranscriptResponse(R"({"text":""})", transcript, &error));
 	UAM_ASSERT(!uam::voice_input::ParseTranscriptResponse(std::string(1024 * 1024 + 1, 'x'), transcript, &error));
 }
+
+UAM_TEST(VoiceRecordingReadRejectsBeforeAllocation)
+{
+	uam_test::TempDir temp("uam-voice-recording-bounds");
+	const std::filesystem::path recording = temp.root / "recording.wav";
+	std::string bytes = "stale";
+	std::string error;
+	UAM_ASSERT(!uam::voice_input::ReadRecording(recording, bytes, error));
+	UAM_ASSERT(bytes.empty());
+	UAM_ASSERT(uam::io::WriteTextFile(recording, ""));
+	UAM_ASSERT(!uam::voice_input::ReadRecording(recording, bytes, error));
+	UAM_ASSERT(uam::io::WriteTextFile(recording, std::string(uam::voice_input::kMaxRecordingBytes, 'a')));
+	UAM_ASSERT(uam::voice_input::ReadRecording(recording, bytes, error));
+	UAM_ASSERT_EQ(bytes.size(), uam::voice_input::kMaxRecordingBytes);
+	UAM_ASSERT(error.empty());
+	std::filesystem::resize_file(recording, uam::voice_input::kMaxRecordingBytes + 1);
+	UAM_ASSERT(!uam::voice_input::ReadRecording(recording, bytes, error));
+	UAM_ASSERT(bytes.empty());
+	UAM_ASSERT(!error.empty());
+}
+
+UAM_TEST(VoiceResponseTransferBoundsAndRecordingLifetime)
+{
+	std::string bytes;
+	std::string error;
+	const std::string limit(uam::voice_input::kMaxResponseBytes, 'x');
+	uam::voice_input::ResponseBuffer exact;
+	UAM_ASSERT(exact.AcceptLength(uam::voice_input::kMaxResponseBytes));
+	UAM_ASSERT(exact.Append(limit));
+	UAM_ASSERT(exact.TakeForRecording(7, 7, true, bytes, error));
+	UAM_ASSERT_EQ(bytes, limit);
+	UAM_ASSERT(!exact.Append("late"));
+	UAM_ASSERT(!exact.TakeForRecording(7, 7, true, bytes, error));
+	UAM_ASSERT(bytes.empty());
+	for (const std::int64_t declared : {-1LL, 1LL})
+	{
+		uam::voice_input::ResponseBuffer oversized;
+		UAM_ASSERT(oversized.AcceptLength(declared));
+		UAM_ASSERT(oversized.Append(limit));
+		UAM_ASSERT(!oversized.Append("x"));
+		UAM_ASSERT(!oversized.TakeForRecording(7, 7, true, bytes, error));
+		UAM_ASSERT(bytes.empty());
+		UAM_ASSERT(!error.empty());
+	}
+	uam::voice_input::ResponseBuffer advertised;
+	UAM_ASSERT(!advertised.AcceptLength(uam::voice_input::kMaxResponseBytes + 1));
+	UAM_ASSERT(!advertised.Append("x"));
+	UAM_ASSERT(!advertised.TakeForRecording(7, 7, true, bytes, error));
+	UAM_ASSERT(!error.empty());
+	uam::voice_input::ResponseBuffer canceled;
+	UAM_ASSERT(canceled.Append("old result"));
+	canceled.Cancel();
+	UAM_ASSERT(!canceled.Append("late"));
+	UAM_ASSERT(!canceled.TakeForRecording(7, 7, true, bytes, error));
+	UAM_ASSERT(bytes.empty());
+	UAM_ASSERT(error.empty());
+	uam::voice_input::ResponseBuffer stale;
+	UAM_ASSERT(stale.Append("old result"));
+	UAM_ASSERT(!stale.TakeForRecording(7, 8, true, bytes, error));
+	UAM_ASSERT(!stale.TakeForRecording(7, 7, true, bytes, error));
+	UAM_ASSERT(bytes.empty());
+	uam::voice_input::ResponseBuffer newer;
+	UAM_ASSERT(newer.Append("new result"));
+	UAM_ASSERT(newer.TakeForRecording(8, 8, true, bytes, error));
+	UAM_ASSERT_EQ(bytes, std::string("new result"));
+	uam::voice_input::ResponseBuffer stopped;
+	UAM_ASSERT(stopped.Append("result"));
+	UAM_ASSERT(!stopped.TakeForRecording(8, 8, false, bytes, error));
+	UAM_ASSERT(bytes.empty());
+}
