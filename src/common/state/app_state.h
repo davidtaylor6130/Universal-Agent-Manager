@@ -363,6 +363,7 @@ namespace uam
 		std::string provider_request_kind;
 		std::string codex_approval_payload_json;
 		std::string provider_input_json;
+		std::string provider_request_params_json;
 		std::string tool_call_id;
 		std::string title;
 		std::string kind;

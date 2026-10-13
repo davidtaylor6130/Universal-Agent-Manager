@@ -368,8 +368,13 @@ UAM_TEST(GenericAcpPermissionRetainsOriginalReviewInputAndMethod)
 	session.chat_id = chat.id;
 	session.provider_id = chat.provider_id;
 	const nlohmann::json input = {{"command", "git status"}, {"cwd", "/private-fixture"}, {"network", false}};
-	const nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 91}, {"method", "session/request_permission"},
+	nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 91}, {"method", "session/request_permission"},
 	    {"params", {{"toolCall", {{"toolCallId", "complete-input"}, {"title", "Inspect fixture"}, {"kind", "execute"}, {"rawInput", input}}}}}};
+	frame["params"]["toolCall"]["content"] = nlohmann::json::array({{{"type", "text"}, {"text", "Complete sibling context"}}});
+	frame["params"]["toolCall"]["locations"] = nlohmann::json::array({{{"path", "/fixture/file"}, {"line", 7}}});
+	frame["params"]["toolCall"]["_meta"] = {{"scope", "fixture"}};
+	frame["params"]["options"] = nlohmann::json::array({{{"optionId", "allow-once"}, {"kind", "allow_once"}}});
+	frame["params"]["_meta"] = {{"source", "fixture-provider"}};
 	uam::acp_detail::HandlePermissionRequest(app, session, chat, frame);
 	UAM_ASSERT_EQ(session.pending_permission.content, std::string("git status"));
 	UAM_ASSERT_EQ(session.pending_permission.provider_request_method, std::string("session/request_permission"));
@@ -380,13 +385,15 @@ UAM_TEST(GenericAcpPermissionRetainsOriginalReviewInputAndMethod)
 	UAM_ASSERT(marker != std::string::npos);
 	const nlohmann::json request = nlohmann::json::parse(prompt.substr(marker + 9));
 	UAM_ASSERT_EQ(request["providerInput"], input);
+	UAM_ASSERT_EQ(request["providerRequestParams"], frame["params"]);
+	UAM_ASSERT_EQ(nlohmann::json::parse(session.pending_permission.provider_request_params_json), frame["params"]);
 	UAM_ASSERT_EQ(request["providerMethod"], frame["method"]);
 }
 
 UAM_TEST(GenericAcpMixedSecretAndUnreviewableInputsNeverLaunchReviewer)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	for (const std::string scenario : {"secret", "oversized", "escaped", "array", "string", "null"})
+	for (const std::string scenario : {"secret", "oversized", "escaped", "array", "string", "null", "secret-content", "secret-locations", "secret-metadata", "oversized-sibling", "escaped-sibling"})
 	{
 		TempDir temp("uam-generic-review-gate");
 		uam::AppState app;
@@ -406,15 +413,21 @@ UAM_TEST(GenericAcpMixedSecretAndUnreviewableInputsNeverLaunchReviewer)
 		if (scenario == "array") input = nlohmann::json::array({"git status"});
 		if (scenario == "string") input = "git status";
 		if (scenario == "null") input = nullptr;
-		const nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 92}, {"method", "session/request_permission"},
+		nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 92}, {"method", "session/request_permission"},
 		    {"params", {{"toolCall", {{"toolCallId", "manual-input"}, {"title", "Inspect fixture"}, {"kind", "execute"}, {"rawInput", input}}}}}};
+		frame["params"]["options"] = nlohmann::json::array({{{"optionId", "allow-once"}, {"kind", "allow_once"}}});
+		if (scenario == "secret-content") frame["params"]["toolCall"]["content"] = {{{"password", "fixture-private"}}};
+		if (scenario == "secret-locations") frame["params"]["toolCall"]["locations"] = {{{"password", "fixture-private"}}};
+		if (scenario == "secret-metadata") frame["params"]["_meta"] = {{"password", "fixture-private"}};
+		if (scenario == "oversized-sibling") frame["params"]["toolCall"]["content"] = std::string(12 * 1024, 'x');
+		if (scenario == "escaped-sibling") frame["params"]["toolCall"]["content"] = std::string(10 * 1024, '\n');
 		uam::acp_detail::HandlePermissionRequest(app, session, chat, frame);
 		UAM_ASSERT(session.waiting_for_permission);
 		UAM_ASSERT_EQ(session.pending_permission.request_id_json, std::string("92"));
 		UAM_ASSERT(app.permission_review_tasks.empty());
 		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [&scenario](const uam::AcpDiagnosticEntryState& entry)
 		{
-			return entry.reason == (scenario == "secret" ? "sensitive_input" : "input_not_reviewable");
+			return entry.reason == (scenario.starts_with("secret") ? "sensitive_input" : "input_not_reviewable");
 		}));
 	}
 #endif
