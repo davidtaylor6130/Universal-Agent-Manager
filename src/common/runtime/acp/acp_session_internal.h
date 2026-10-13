@@ -306,6 +306,10 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// <summary>Confirmed remote v3 admission retains legacy and quota compatibility barriers.</summary>
+bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+/// <summary>Writes only a committed stable marker; initial delivery and reconnect share deduplication identity.</summary>
+bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Save immediately, clear satisfied deferred writes, and retry failures for owned chats.</summary>
 bool SaveChatQuietly(AppState& app, const ChatSession& chat);

@@ -2166,6 +2166,8 @@ done
 	for (int attempt = 0; attempt < 500; ++attempt)
 	{
 		(void)uam::PollAllAcpSessions(app);
+		// Match the application tick: advance owned persistence after runtime polling.
+		(void)uam::FlushPendingChatSaves(app);
 		if (app.acp_sessions.front()->session_ready &&
 		    !app.acp_sessions.front()->processing && app.chats.front().messages.size() >= 2)
 			break;

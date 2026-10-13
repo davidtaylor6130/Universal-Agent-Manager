@@ -371,6 +371,9 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Remote ownership | Bugfix | Retryable Runner Retirement | Retiring processes retain their exact ownership until positive exit observation and spool cleanup permit a retry to finish. | Implementation Verified on macOS; Linux runtime pending; Claude Review; Un-Reviewed; Not User Tested |
 
+| Prompt durability | Performance | Remote Prompt Admission | Remote v3 admission publishes its owned durable delivery marker before transport without blocking the input caller. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+| Prompt durability | Performance | Manual Quota Admission | Manual Claude input cancels the in-memory quota wake while committing cancellation and new input together before provider delivery. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.

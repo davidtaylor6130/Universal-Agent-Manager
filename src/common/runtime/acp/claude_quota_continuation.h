@@ -12,5 +12,7 @@ namespace uam::acp_detail
 	bool StartClaudeQuotaContinuation(AppState& app, ChatSession& chat, std::string* error_out);
 	bool ValidateClaudeQuotaDelivery(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 	bool CancelClaudeQuotaWait(AppState& app, ChatSession& chat);
+	/// <summary>Eligible manual input persists its cancellation with the full unsent admission.</summary>
+	bool PrepareClaudeQuotaCancellationForManualAdmission(AppState& app, ChatSession& chat);
 	bool PollClaudeQuotaContinuations(AppState& app, int64_t now_epoch_s);
 }

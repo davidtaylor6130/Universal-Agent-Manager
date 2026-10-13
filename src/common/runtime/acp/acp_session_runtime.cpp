@@ -244,8 +244,8 @@ namespace uam
 				chat.acp_dispatched_queued_prompt_count = 1;
 			}
 			chat.acp_queue_held = session.queue_held;
-			const bool idle_admission = defer_idle_admission && !session.processing && CanDeferLocalPromptAdmission(app, session, chat);
-			if (chat.execution_host_id == execution_hosts::kLocalHostId &&
+			const bool idle_admission = defer_idle_admission && !session.processing && (CanDeferLocalPromptAdmission(app, session, chat) || CanDeferRemotePromptAdmission(app, session, chat));
+			if ((chat.execution_host_id == execution_hosts::kLocalHostId || CanDeferRemotePromptAdmission(app, session, chat)) &&
 			    (idle_admission || (queue_only && session.processing && (session.prompt_request_id != 0 || !session.queued_prompt.empty()))))
 			{
 				const std::filesystem::path root = app.data_root;
@@ -1320,7 +1320,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out != nullptr) *error_out = "Queued input recovery is held because its saved journal is unreadable or mismatched.";
 				return false;
 			}
-			if (app.claude_quota_dispatch_id != chat.claude_quota_continuation.id && !acp_detail::CancelClaudeQuotaWait(app, chat))
+			if (app.claude_quota_dispatch_id != chat.claude_quota_continuation.id && !acp_detail::PrepareClaudeQuotaCancellationForManualAdmission(app, chat))
 			{
 				if (error_out != nullptr) *error_out = "Could not save quota continuation cancellation.";
 				return false;
@@ -1984,7 +1984,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (error_out != nullptr) *error_out = "Resolve the held native continuation before adding prompts.";
 			return false;
 		}
-		if (app.claude_quota_dispatch_id != chat.claude_quota_continuation.id && !acp_detail::CancelClaudeQuotaWait(app, chat))
+		if (app.claude_quota_dispatch_id != chat.claude_quota_continuation.id && !acp_detail::PrepareClaudeQuotaCancellationForManualAdmission(app, chat))
 		{
 			if (error_out != nullptr) *error_out = "Could not save quota continuation cancellation.";
 			return false;
@@ -2677,21 +2677,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::deque<AcpQueuedUserPromptState> batch{session.queued_user_prompts.front()};
 		const bool local_dispatch = chat.execution_host_id == execution_hosts::kLocalHostId;
 		const bool local_async = CanDeferLocalPromptAdmission(app, session, chat);
+		const bool remote_async = CanDeferRemotePromptAdmission(app, session, chat);
 		std::string error;
 		chat.acp_queued_prompts.assign(
 		    session.queued_user_prompts.begin(), session.queued_user_prompts.end());
 		chat.acp_dispatched_queued_prompt_count = local_dispatch ? 0 : batch.size();
-		if (!local_dispatch && !acp_detail::SaveChatQuietly(app, chat))
+		if (!local_dispatch && !remote_async && !acp_detail::SaveChatQuietly(app, chat))
 		{
 			chat.acp_dispatched_queued_prompt_count = 0;
 			session.last_error = "Queued prompt is waiting for its dispatch marker to be saved.";
 			session.lifecycle_state = kAcpLifecycleError;
 			return false;
 		}
-		if (!StartAcpUserPromptBatch(app, session, chat, batch, &error, local_async, true))
+		if (!StartAcpUserPromptBatch(app, session, chat, batch, &error, local_async || remote_async, true))
 		{
 			chat.acp_dispatched_queued_prompt_count = 0;
-			if (local_async) acp_detail::ScheduleChatSave(app, chat, 0.0);
+			if (local_async || remote_async) acp_detail::ScheduleChatSave(app, chat, 0.0);
 			else (void)acp_detail::SaveChatQuietly(app, chat);
 			session.last_error = uam::strings::NonEmptyOrFallback(error, "Failed to deliver queued prompt.");
 			session.lifecycle_state = kAcpLifecycleError;
