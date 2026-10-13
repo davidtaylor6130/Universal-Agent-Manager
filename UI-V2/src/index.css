@@ -167,6 +167,14 @@
   --token-reasoning:   #e879f9;
 }
 
+/* Appearance "Higher contrast" setting. Mixes from --text/--bg (not the token itself) to avoid a cyclic custom property. */
+:root[data-contrast="more"] {
+  --text-2: color-mix(in srgb, var(--text) 86%, var(--bg));
+  --text-3: color-mix(in srgb, var(--text) 72%, var(--bg));
+  --border: color-mix(in srgb, var(--text) 28%, transparent);
+  --border-bright: color-mix(in srgb, var(--text) 45%, transparent);
+}
+
 .uam-provider-logo--codex, .uam-provider-logo--copilot { filter: var(--provider-logo-codex-filter); }
 
 /* ── Design System Scales (theme-independent) ─────────────────
