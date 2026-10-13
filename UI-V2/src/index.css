@@ -2209,19 +2209,7 @@ button.uam-commit-check { cursor: pointer; }
 .uam-settings-nav-item:hover { background: var(--sidebar-item-hover); color: var(--text); }
 .uam-settings-nav-item[data-active="true"] { background: var(--accent-dim); color: var(--text); }
 .uam-settings-nav .uam-settings-nav-item { z-index: 1; }
-.uam-settings-nav .uam-settings-nav-item[data-active="true"] { background: transparent; }
 .uam-settings-nav-item[data-active="true"] svg { color: var(--accent); }
-.uam-settings-nav-item[data-active="true"]::before {
-  content: '';
-  position: absolute;
-  left: 3px;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 3px;
-  background: var(--accent);
-  animation: uam-reveal-in var(--dur-base) var(--ease-out-soft) backwards;
-}
 .uam-settings-nav-item:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 
 .uam-memory-worker-row {
