@@ -363,6 +363,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     uamAgentCycleShortcut: 'shift+tab' as UamAgentCycleShortcut,
     uamAgentsBySessionId: {} as Record<string, UamAgentSummary[]>,
     statusLine: '',
+    createSessionFromSourceChat: false,
 
     acknowledgeChatAttention: async (id: string, revision: string) => {
       const response = await sendToCEF({ action: 'acknowledgeChatAttention', payload: { chatId: id, attentionRevision: revision } })
@@ -579,7 +580,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
     },
 
-    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '', routingMode: 'explicit' | 'automatic' = 'explicit') => {
+    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '', routingMode: 'explicit' | 'automatic' = 'explicit', sourceChatId = '') => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
@@ -620,6 +621,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             providerId: requestedProviderId,
             defaults: requestDefaults,
             ...(executionHostId === 'local' ? {} : { executionHostId, workspaceDirectory }),
+            ...(sourceChatId ? { sourceChatId } : {}),
           },
         })
         if (!resp.ok) {

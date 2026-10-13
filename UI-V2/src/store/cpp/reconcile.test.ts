@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
 import { messageBlocksEquivalent, sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
-import { sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
+import { sanitizeCppAppState, sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
+
+describe('createSessionFromSourceChat capability', () => {
+  it('is true only when the backend advertises it', () => {
+    expect(sanitizeCppAppState({ createSessionFromSourceChat: true })?.createSessionFromSourceChat).toBe(true)
+    expect(sanitizeCppAppState({ createSessionFromSourceChat: 'yes' })?.createSessionFromSourceChat).toBe(false)
+    expect(sanitizeCppAppState({})?.createSessionFromSourceChat).toBe(false)
+  })
+})
 
 describe('Computer Use settings sanitization', () => {
   it('canonicalizes backend identity kinds during persisted settings roundtrip', () => {

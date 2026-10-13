@@ -765,6 +765,7 @@ export interface CppAppState {
   shellActions?: ShellAction[]
   shellActionNotification?: string
   statusLine?: string
+  createSessionFromSourceChat?: boolean
   deletionProgress?: CppDeletionProgress
 }
 
