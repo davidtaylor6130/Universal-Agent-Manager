@@ -26,6 +26,14 @@ describe('Computer Use settings sanitization', () => {
   })
 })
 
+describe('providerAgentImport capability sanitization', () => {
+  it('keeps only a real boolean and otherwise leaves the capability absent', () => {
+    expect(sanitizeCppSettings({ providerAgentImport: true }).providerAgentImport).toBe(true)
+    expect(sanitizeCppSettings({ providerAgentImport: 'yes' }).providerAgentImport).toBeUndefined()
+    expect(sanitizeCppSettings({}).providerAgentImport).toBeUndefined()
+  })
+})
+
 const message: CppMessage = {
   role: 'user',
   content: 'Use the attached file.',

@@ -631,6 +631,8 @@ export interface CppSettings {
   computerUseEnabled?: boolean
   computerUseAllowlistEnabled?: boolean
   computerUseAllowedApplications?: ComputerUseAllowedApplication[]
+  /** Backend supports importing agents from provider configuration. Hidden when absent or false. */
+  providerAgentImport?: boolean
 }
 
 export interface ComputerUseAllowedApplication {
@@ -644,6 +646,19 @@ export interface UamAgentSummary {
   id: string
   description: string
   builtIn: boolean
+}
+
+export interface ProviderAgentCandidate {
+  id: string
+  name: string
+  description?: string
+  sourcePath: string
+  alreadyImported?: boolean
+}
+
+export interface ProviderAgentImportResult {
+  imported: number
+  failed?: Array<{ id: string; error: string }>
 }
 
 export interface ProviderAgentImportPreview {

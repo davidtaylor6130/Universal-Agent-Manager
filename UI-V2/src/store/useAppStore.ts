@@ -137,6 +137,7 @@ function deserializeState(
     computerUseEnabled?: boolean
     computerUseAllowlistEnabled: boolean
     computerUseAllowedApplications: AppState['computerUseAllowedApplications']
+    providerAgentImport?: boolean
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
     shellActions: ShellAction[]
     shellActionNotification: string
@@ -344,6 +345,7 @@ function deserializeState(
     computerUseEnabled: cpp.settings.computerUseEnabled,
     computerUseAllowlistEnabled: cpp.settings.computerUseAllowlistEnabled ?? false,
     computerUseAllowedApplications: cpp.settings.computerUseAllowedApplications ?? [],
+    providerAgentImport: cpp.settings.providerAgentImport,
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
     shellActions: cpp.shellActions ?? existing.shellActions,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
@@ -548,6 +550,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     computerUseEnabled: patch.settings?.computerUseEnabled ?? current.computerUseEnabled,
     computerUseAllowlistEnabled: patch.settings?.computerUseAllowlistEnabled ?? current.computerUseAllowlistEnabled,
     computerUseAllowedApplications: patch.settings?.computerUseAllowedApplications ?? current.computerUseAllowedApplications,
+    providerAgentImport: patch.settings?.providerAgentImport ?? current.providerAgentImport,
     uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
     shellActions: patch.shellActions ?? current.shellActions,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
@@ -741,6 +744,7 @@ export const useAppStore = create<AppState>((set, get) => {
             computerUseEnabled: current.computerUseEnabled,
             computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
             computerUseAllowedApplications: current.computerUseAllowedApplications,
+            providerAgentImport: current.providerAgentImport,
             uamAgentsBySessionId: current.uamAgentsBySessionId,
             shellActions: current.shellActions,
             shellActionNotification: current.shellActionNotification,
@@ -1053,6 +1057,7 @@ export const useAppStore = create<AppState>((set, get) => {
         computerUseEnabled: current.computerUseEnabled,
         computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
         computerUseAllowedApplications: current.computerUseAllowedApplications,
+        providerAgentImport: current.providerAgentImport,
         uamAgentsBySessionId: current.uamAgentsBySessionId,
         shellActions: current.shellActions,
         shellActionNotification: current.shellActionNotification,

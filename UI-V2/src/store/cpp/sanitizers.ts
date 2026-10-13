@@ -1647,6 +1647,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     uamAgentCycleShortcut,
     computerUseEnabled: typeof value.computerUseEnabled === 'boolean' ? value.computerUseEnabled : undefined,
     computerUseAllowlistEnabled: booleanOr(value.computerUseAllowlistEnabled, false),
+    providerAgentImport: typeof value.providerAgentImport === 'boolean' ? value.providerAgentImport : undefined,
     computerUseAllowedApplications: Array.isArray(value.computerUseAllowedApplications)
       ? value.computerUseAllowedApplications.flatMap((entry): ComputerUseAllowedApplication[] => {
           if (!isRecord(entry)) return []

@@ -125,6 +125,7 @@ export interface AppState {
   computerUseEnabled?: boolean
   computerUseAllowlistEnabled: boolean
   computerUseAllowedApplications: ComputerUseAllowedApplication[]
+  providerAgentImport?: boolean
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>
   shellActions: ShellAction[]
   shellActionNotification: string
