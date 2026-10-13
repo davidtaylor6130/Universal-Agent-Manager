@@ -345,6 +345,8 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Voice input | Bugfix | Dictation Allocation Bounds | Recording reads and server response chunks reject oversize input before allocation while preserving cancellation and recording identity. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
+| Remote startup | Bugfix | Reversible Startup Registration | Failed Linux startup verification rolls back registration and unit files while unknown state refuses mutation and truthful applied state is preserved. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.
@@ -383,7 +385,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Remote maintenance | Misc | Current Helper Activation | Verify safe activation of the latest packaged helpers on both remote hosts and sending Codex skill prompts without the OS launch-limit failure after resolving ownership guards. | In Progress; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Remote maintenance | Misc | Elevated Provider Update Acceptance | Verify saved per-host elevation choices update the identified provider installations without resetting settings or granting chat sessions privileges. | In Progress; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Remote maintenance | Misc | Interactive Sudo Update Support | Resolve the unimplemented password-authenticated update path for hosts requiring interactive sudo without placing passwords in chat or settings. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
-| Remote startup | Misc | Runner Startup Acceptance | Verify real Linux user-session and Windows login startup behavior while preserving independently saved host options on failure. | In Progress; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
+| Remote startup | Misc | Runner Startup Acceptance | Private Linux registration rollback and state refusal tests pass while real Linux user-session and Windows login startup acceptance remain pending. | In Progress; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Remote routing | Misc | Concurrent Two Host Acceptance | Run the production-linked two-host lifecycle packet with independent review and verify pinning, token refusal, authorized release and scoped cleanup. | Blocked; Assigned for coordination; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Remote evidence | Misc | Missing Incident Evidence | Keep the failed r4 run and missing historical startup or Stop traces explicit until equivalent fresh evidence can be captured. | Blocked; Assigned for coordination; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |
 | Provider acceptance | Misc | Six Provider Live Matrix | Complete fresh authenticated acceptance for all six providers across applicable local and remote launch, send, resume, cancellation and token/cost accounting paths with unsupported usage explicit. | In Progress; Un-Reviewed; Not User Tested | chat-1791755529536-1b146e |

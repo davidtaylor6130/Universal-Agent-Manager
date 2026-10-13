@@ -1280,6 +1280,7 @@ if(UAM_BUILD_TESTS)
     tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp
     tests/remote_runner_tests.cpp
+    tests/runner_startup_rollback_tests.cpp
     tests/memory_tests.cpp
     tests/remote_memory_publication_tests.cpp
     tests/acp_session_tests.cpp

@@ -3372,10 +3372,14 @@ UAM_TEST(RemoteLinuxStartupIsReversibleIdempotentAndRollsBackFailedRegistration)
 	TempDir temp("uam-startup-registration");
 	const fs::path home = fs::canonical(temp.root);
 	const fs::path manager = home / "systemctl";
-	UAM_ASSERT(uam::io::WriteTextFile(manager, "#!/bin/sh\nif test \"$UAM_STARTUP_FAIL\" = yes; then echo 'Fixture user session unavailable' >&2; exit 1; fi\nexit 0\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(manager,
+	    "#!/bin/sh\nif test \"$UAM_STARTUP_FAIL\" = yes; then echo 'Fixture user session unavailable' >&2; exit 1; fi\n"
+	    "case \"$2\" in\nis-enabled) if test -f \"$UAM_STARTUP_MARKER\"; then echo enabled; else echo disabled; exit 1; fi;;\n"
+	    "enable) touch \"$UAM_STARTUP_MARKER\";;\ndisable) rm -f \"$UAM_STARTUP_MARKER\";;\nesac\n"));
 	fs::permissions(manager, fs::perms::owner_all);
 	ScopedEnvVar path("PATH", home.string() + ":/usr/bin:/bin");
 	ScopedEnvVar fail("UAM_STARTUP_FAIL", "no");
+	ScopedEnvVar marker("UAM_STARTUP_MARKER", (home / "enabled").string());
 	const fs::path executable = home / "runner/4.9.0/uam-runner";
 	const fs::path socket = home / "runner/uam-4.9.0-p3.sock";
 	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
