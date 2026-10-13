@@ -245,7 +245,7 @@ namespace uam
 			}
 			chat.acp_queue_held = session.queue_held;
 			const bool idle_admission = defer_idle_admission && !session.processing && CanDeferLocalPromptAdmission(app, session, chat);
-			if (chat.execution_host_id == execution_hosts::kLocalHostId && !chat.small_model_mode &&
+			if (chat.execution_host_id == execution_hosts::kLocalHostId &&
 			    (idle_admission || (queue_only && session.processing && (session.prompt_request_id != 0 || !session.queued_prompt.empty()))))
 			{
 				const std::filesystem::path root = app.data_root;
@@ -1056,7 +1056,10 @@ namespace uam
 				if (error_out != nullptr) *error_out = "Failed to start the small-model workflow.";
 				return false;
 			}
-			SaveChatQuietly(app, chat);
+			// The full local admission persists the generated goal and prompt together before input.
+			if (chat.execution_host_id == execution_hosts::kLocalHostId && app.claude_quota_dispatch_id.empty())
+				ScheduleChatSave(app, chat, 0.0);
+			else SaveChatQuietly(app, chat);
 			active_goal = GoalService::FindActiveGoal(app, chat.id);
 			if (active_goal != nullptr) return true;
 			if (error_out != nullptr) *error_out = "Failed to start the small-model workflow.";
@@ -1300,7 +1303,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		/** Uses staged durability for ordinary local input with a usable or pending transport. */
 		bool CanDeferLocalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 		{
-			if (chat.execution_host_id != execution_hosts::kLocalHostId || chat.small_model_mode ||
+			if (chat.execution_host_id != execution_hosts::kLocalHostId ||
 			    !app.claude_quota_dispatch_id.empty()) return false;
 			if (!session.running || !session.session_ready) return true;
 #if defined(_WIN32)
@@ -1528,7 +1531,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				chat.acp_dispatched_queued_prompt_count = 1;
 			}
 			session.defer_prompt_save = defer_durable_admission;
-			// Deferred inputs stage owned durability; legacy quota, small-model and unusable transport callers retain synchronous rollback.
+			// Deferred inputs stage owned durability; legacy quota and unusable transport callers retain synchronous rollback.
 			if (defer_durable_admission) ScheduleChatSave(app, chat, 0.0);
 			else if (!SaveChatQuietly(app, chat))
 			{
@@ -1639,7 +1642,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 				durable.provider_turn_id = pending.provider_turn_id;
 				chat.remote_pending_requests.push_back(durable);
 			}
-			if (!remote && CanDeferLocalPromptAdmission(app, session, chat))
+			// Small-model native steering retains its compatibility rollback until its own admission is verified.
+			if (!remote && !chat.small_model_mode && CanDeferLocalPromptAdmission(app, session, chat))
 			{
 				const std::filesystem::path root = app.data_root;
 				const std::string chat_id = chat.id, created_at = chat.created_at;
@@ -2119,7 +2123,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			session.queued_user_prompts.push_back(std::move(queued));
 			if (restart_remote_cancellation) chat.remote_restart_pending = true;
-			if (!PersistQueuedPromptOutbox(app, session, chat, error_out, !restart_remote_cancellation && !chat.small_model_mode, !session.processing && !restart_remote_cancellation))
+			if (!PersistQueuedPromptOutbox(app, session, chat, error_out, !restart_remote_cancellation, !session.processing && !restart_remote_cancellation))
 			{
 				session.queued_user_prompts = previous_queue;
 				chat.acp_queued_prompts = previous_outbox;
@@ -5053,6 +5057,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	namespace acp_detail
 	{
+		DurableAdmissionState BeginDurableAdmission(AppState& app, const ChatSession& chat,
+		    std::function<bool()> owned, std::function<void(DurableAdmissionState)> completion)
+		{
+			if (!owned || !completion || !owned()) return DurableAdmissionState::Failed;
+			ScheduleChatSave(app, chat, 0.0);
+			ProtectPendingChatAdmission(app, chat.id, owned);
+			if (!DeferChatSaveResult(app, chat.id, [owned = std::move(owned), completion = std::move(completion)](bool saved)
+			{
+				completion(saved && owned() ? DurableAdmissionState::Committed : DurableAdmissionState::Failed);
+			})) return DurableAdmissionState::Failed;
+			return DurableAdmissionState::Pending;
+		}
+
 		void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id)
 		{
 			const std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>>::iterator found = app.pending_chat_save_tasks.find(chat_id);

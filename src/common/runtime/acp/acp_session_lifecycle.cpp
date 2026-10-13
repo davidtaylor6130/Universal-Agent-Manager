@@ -55,7 +55,12 @@ namespace uam
 		std::string configuration;
 		std::vector<std::size_t> unsent_messages;
 		std::vector<std::pair<std::size_t, std::string>> user_messages;
-		std::optional<bool> saved;
+		std::string created_at;
+		std::string process_id;
+		std::string active_goal_id;
+		std::string goal_revision;
+		bool small_model_mode = false;
+		acp_detail::DurableAdmissionState admission = acp_detail::DurableAdmissionState::Pending;
 	};
 }
 
@@ -75,6 +80,25 @@ std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionSta
 
 namespace
 {
+	bool OwnsPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
+	    const PendingAcpPromptDelivery& packet)
+	{
+		return packet.turn_serial == session.turn_serial && packet.prompt == session.queued_prompt &&
+		    session.processing && !session.cancel_requested && packet.data_root == app.data_root &&
+		    packet.created_at == chat.created_at && packet.provider_id == session.provider_id &&
+		    packet.provider_id == chat.provider_id && packet.session_id == session.session_id &&
+		    packet.process_id == AcpProcessHandleLabel(session) && packet.workspace == chat.workspace_directory &&
+		    chat.execution_host_id == execution_hosts::kLocalHostId && packet.active_goal_id == chat.active_goal_id &&
+		    packet.goal_revision == chat.goal_command_revision && packet.small_model_mode == chat.small_model_mode &&
+		    packet.configuration == PromptDeliveryConfiguration(app, session, chat) &&
+		    provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id) &&
+		    std::ranges::all_of(packet.user_messages, [&chat](const std::pair<std::size_t, std::string>& user)
+		    {
+			    return user.first < chat.messages.size() && chat.messages[user.first].role == MessageRole::User &&
+			        chat.messages[user.first].content == user.second && !chat.messages[user.first].acp_prompt_not_sent;
+		    });
+	}
+
 	bool ConfigureRemoteUamControlRelay(AppState& app, AcpSessionState& session,
 	                                    ChatSession& chat, const ExecutionHost& execution_host,
 	                                    std::string_view method,
@@ -1570,17 +1594,8 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		const std::shared_ptr<PendingAcpPromptDelivery> packet = session.pending_prompt_delivery;
 		const bool same_turn = packet->turn_serial == session.turn_serial && packet->prompt == session.queued_prompt;
-		const bool same_users = std::ranges::all_of(packet->user_messages, [&chat](const std::pair<std::size_t, std::string>& user)
-		{
-			return user.first < chat.messages.size() && chat.messages[user.first].role == MessageRole::User &&
-			    chat.messages[user.first].content == user.second && !chat.messages[user.first].acp_prompt_not_sent;
-		});
-		const bool owned = same_turn && session.processing && !session.cancel_requested &&
-		    packet->data_root == app.data_root && packet->provider_id == session.provider_id &&
-		    packet->provider_id == chat.provider_id && packet->session_id == session.session_id &&
-		    packet->workspace == chat.workspace_directory && chat.execution_host_id == execution_hosts::kLocalHostId &&
-		    same_users && packet->configuration == PromptDeliveryConfiguration(app, session, chat);
-		if (!owned || (packet->saved.has_value() && !*packet->saved))
+		const bool owned = OwnsPromptAdmission(app, session, chat, *packet);
+		if (!owned || packet->admission == DurableAdmissionState::Failed)
 		{
 			RestorePendingPromptDelivery(session, chat);
 			if (same_turn) FailAcpTurnOrSession(session, &chat, owned
@@ -1589,7 +1604,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			ScheduleChatSave(app, chat, 0.0);
 			return true;
 		}
-		if (!packet->saved.has_value()) return false;
+		if (packet->admission == DurableAdmissionState::Pending) return false;
 		session.pending_prompt_delivery.reset();
 		return DeliverPreparedPrompt(app, session, chat, packet->message, packet->method,
 		                             packet->request_id, packet->unsent_messages);
@@ -1810,11 +1825,23 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		for (const std::size_t index : unsent_messages)
 			packet->user_messages.emplace_back(index, chat.messages[index].content);
 		session.pending_prompt_delivery = packet;
-		ScheduleChatSave(app, chat, 0.0);
+		packet->created_at = chat.created_at;
+		packet->process_id = AcpProcessHandleLabel(session);
+		packet->active_goal_id = chat.active_goal_id;
+		packet->goal_revision = chat.goal_command_revision;
+		packet->small_model_mode = chat.small_model_mode;
 		const std::weak_ptr<PendingAcpPromptDelivery> weak = packet;
-		(void)DeferChatSaveResult(app, chat.id, [weak](bool saved)
+		const std::string chat_id = chat.id;
+		packet->admission = BeginDurableAdmission(app, chat, [&app, chat_id, weak]()
 		{
-			if (const std::shared_ptr<PendingAcpPromptDelivery> owned = weak.lock()) owned->saved = saved;
+			const std::shared_ptr<PendingAcpPromptDelivery> pending = weak.lock();
+			const ChatSession* current = ChatDomainService().FindChatById(app, chat_id);
+			const AcpSessionState* owner = FindAcpSessionForChat(app, chat_id);
+			return pending && current != nullptr && owner != nullptr && owner->pending_prompt_delivery == pending &&
+			    OwnsPromptAdmission(app, *owner, *current, *pending);
+		}, [weak](DurableAdmissionState state)
+		{
+			if (const std::shared_ptr<PendingAcpPromptDelivery> pending = weak.lock()) pending->admission = state;
 		});
 		return true;
 	}

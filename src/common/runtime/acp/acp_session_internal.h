@@ -309,6 +309,10 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Save immediately, clear satisfied deferred writes, and retry failures for owned chats.</summary>
 bool SaveChatQuietly(AppState& app, const ChatSession& chat);
+/// <summary>Pending input may be retained locally; only Committed authorizes transport.</summary>
+enum class DurableAdmissionState { Pending, Committed, Failed };
+DurableAdmissionState BeginDurableAdmission(AppState& app, const ChatSession& chat,
+    std::function<bool()> owned, std::function<void(DurableAdmissionState)> completion);
 void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id);
 /// <summary>Revokes a background publication before a newer synchronous command can replace its storage.</summary>
 void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);

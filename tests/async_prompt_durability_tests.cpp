@@ -1313,3 +1313,136 @@ UAM_TEST(AcpNativeSteerRejectsReplacedNativeTurnBeforeItsReceipt)
 	UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& item)
 	    { return item.method == "turn/steer" && item.reason == "sent"; }));
 }
+
+UAM_TEST(AcpSmallModelSendWaitsForDurableGoalBeforeProviderInput)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	app.chats.front().small_model_mode = true;
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, app.chats.front());
+	UAM_ASSERT(prepared);
+	std::promise<void> entered;
+	std::future<void> locked = entered.get_future();
+	std::jthread publication([&entered, prepared]()
+	{
+		(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+		{
+			entered.set_value();
+			std::this_thread::sleep_for(std::chrono::milliseconds(350));
+			return false;
+		});
+	});
+	UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const bool accepted = uam::SendAcpPrompt(app, app.chats.front().id, "Small model durable objective", &error);
+	const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+	publication.join();
+	UAM_ASSERT(accepted);
+	UAM_ASSERT(elapsed <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT_EQ(ReadFile(fixture.saved_path), fixture.original);
+	UAM_ASSERT_EQ(app.chats.front().goals.size(), std::size_t{1});
+	const std::string goal_id = app.chats.front().active_goal_id;
+	UAM_ASSERT(!goal_id.empty());
+	AwaitSave(app);
+	const std::optional<ChatSession> durable = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(durable);
+	UAM_ASSERT_EQ(durable->active_goal_id, goal_id);
+	UAM_ASSERT_EQ(durable->goals.size(), std::size_t{1});
+	UAM_ASSERT_EQ(durable->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(durable->messages.back().content, std::string("Small model durable objective"));
+	AwaitDelivery(app, *fixture.session);
+	UAM_ASSERT(fixture.session->prompt_request_id != 0);
+}
+
+UAM_TEST(AcpSmallModelCanceledAdmissionRetainsGoalWithoutProviderPrompt)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	app.chats.front().small_model_mode = true;
+	uam::AcpSessionState& session = *fixture.session;
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Cancel before delivery", &error));
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT(session.pending_prompt_delivery != nullptr);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(uam::CancelAcpTurn(app, app.chats.front().id, &error));
+	AwaitSave(app);
+	(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, app.chats.front());
+	UAM_ASSERT(session.pending_prompt_delivery == nullptr);
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)
+	    { return diagnostic.method == "session/prompt" && diagnostic.reason == "sent"; }));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(saved.has_value() && saved->messages.back().acp_prompt_not_sent);
+}
+
+
+UAM_TEST(AcpSmallModelFailedAdmissionKeepsGoalAndPromptUnsent)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	app.chats.front().small_model_mode = true;
+	app.data_root = fixture.temp.root / "blocked-storage";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Not a directory"));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Cannot persist this prompt", &error));
+	std::optional<bool> acknowledgement;
+	UAM_ASSERT(uam::DeferChatSaveResult(app, app.chats.front().id, [&acknowledgement](bool saved) { acknowledgement = saved; }));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	bool state_changed = false;
+	while (!acknowledgement.has_value() && std::chrono::steady_clock::now() < deadline)
+	{
+		state_changed = uam::FlushPendingChatSaves(app) || state_changed;
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(acknowledgement.has_value() && !*acknowledgement);
+	UAM_ASSERT(state_changed);
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	UAM_ASSERT_EQ(app.chats.front().goals.size(), std::size_t{1});
+	UAM_ASSERT(!fixture.session->processing);
+	UAM_ASSERT(fixture.session->queued_prompt.empty());
+	UAM_ASSERT(!fixture.session->last_error.empty());
+	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	UAM_ASSERT_EQ(ReadFile(fixture.saved_path), fixture.original);
+}
+
+UAM_TEST(AcpSmallModelLargeUnsavedHistoryKeepsAdmissionPollWithinInputBudget)
+{
+	PromptFixture fixture;
+	uam::AppState& app = fixture.app;
+	app.chats.front().small_model_mode = true;
+	for (int index = 1; index < 200; ++index)
+		app.chats.front().messages.push_back({.role = MessageRole::Assistant,
+		    .content = std::to_string(index) + std::string(128 * 1024, 'x')});
+	const std::string last_unsaved = app.chats.front().messages.back().content;
+	std::string error;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Keep large small-model history", &error));
+	UAM_ASSERT(std::chrono::steady_clock::now() - started <= std::chrono::milliseconds(100));
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id) && std::chrono::steady_clock::now() < deadline)
+	{
+		const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
+		uam::FlushPendingChatSaves(app);
+		UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= std::chrono::milliseconds(100));
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
+	const std::optional<ChatSession> durable = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(durable);
+	UAM_ASSERT_EQ(durable->messages.size(), std::size_t{201});
+	UAM_ASSERT_EQ(durable->messages[199].content, last_unsaved);
+	UAM_ASSERT_EQ(durable->messages.back().content, std::string("Keep large small-model history"));
+	UAM_ASSERT_EQ(durable->goals.size(), std::size_t{1});
+	UAM_ASSERT(!durable->active_goal_id.empty());
+	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
+	AwaitDelivery(app, *fixture.session);
+	UAM_ASSERT(fixture.session->prompt_request_id != 0);
+}
