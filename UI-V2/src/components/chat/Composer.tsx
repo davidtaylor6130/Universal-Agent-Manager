@@ -144,6 +144,7 @@ export function ComposerAgentSelector({ agents, agentId, nextTurn, onSelectUamAg
 }
 
 export function ComposerToolbar({
+  draftPending = false,
   acp,
   provider,
   providers,
@@ -206,6 +207,8 @@ export function ComposerToolbar({
   dictationAvailable,
   onToggleDictation,
 }: {
+  /** Composer holds unsent text; shown as a quiet "Draft" label, never as a sent state. */
+  draftPending?: boolean
   acp?: AcpBinding
   provider: Provider
   providers: Provider[]
@@ -646,6 +649,7 @@ export function ComposerToolbar({
 
       </fieldset>
       <div className="flex shrink-0 items-center gap-2">
+        {draftPending && <span data-draft-indicator className="text-xs" style={{ color: 'var(--text-3)' }} title="You have unsent text in the composer">Draft</span>}
         <ProviderAllowanceIndicator providerId={providerId} sourceProviderId={acp?.providerId} rateLimits={acp?.providerUsage?.rateLimits} running={Boolean(acp?.running)} />
         <div ref={modelMenuRef} className="relative">
           <button
