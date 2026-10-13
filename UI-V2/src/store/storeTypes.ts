@@ -3,7 +3,7 @@ import type { WorkspaceFilePreview } from '../types/filePreview'
 import type { StartupNativeImportStatus } from '../types/startupNativeImports'
 import type { ExecutionRoutingSettings, RoutingReservation } from '../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../types/chatSearch'
-import type { OrganizationChange, OrganizationUndo } from '../types/organization'
+import type { OrganizationChange } from '../types/organization'
 import type { CustomIconInput, CustomIconTarget } from '../types/customIcon'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, RemoteDirectoryBrowseResult, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
 import type { Message, Attachment } from '../types/message'
@@ -58,9 +58,7 @@ export interface AppState {
   // Data
   folders: Folder[]
   resourceCollections: ResourceCollection[]
-  organizationUndo: OrganizationUndo | null
   organizationMutationSequence: number
-  undoOrganization: () => Promise<boolean>
   applyOrganizationChange: (change: OrganizationChange) => Promise<boolean>
   moveResourceToCollection: (collectionId: string | null, type: ResourceReferenceType, target: string, label: string) => Promise<boolean>
   sessions: Session[]

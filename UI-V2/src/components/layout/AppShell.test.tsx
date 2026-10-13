@@ -31,7 +31,6 @@ import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const defaultSetSettingsOpen = useAppStore.getState().setSettingsOpen
-const defaultUndoOrganization = useAppStore.getState().undoOrganization
 const localStorageValues = new Map<string, string>()
 Object.defineProperty(window, 'localStorage', {
   configurable: true,
@@ -52,8 +51,6 @@ describe('AppShell', () => {
     window.localStorage.clear()
     useAppStore.setState({
       folders: [],
-      organizationUndo: null,
-      undoOrganization: defaultUndoOrganization,
       sessions: [],
       activeSessionId: null,
       isNewChatModalOpen: false,
@@ -76,62 +73,6 @@ describe('AppShell', () => {
       acpBindingBySessionId: {},
       cliBindingBySessionId: {},
     })
-  })
-
-  it('shows guarded organization undo without stealing draft focus and dismisses only its notice', async () => {
-    const undoOrganization = vi.fn().mockResolvedValue(false)
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    act(() => root.render(<AppShell />))
-    const draft = host.querySelector<HTMLInputElement>('[aria-label="Chat draft"]')!
-    draft.value = 'Unsent text'
-    draft.focus()
-    const undo = { label: 'Pin chat', change: { kind: 'pin' as const, chatId: 'chat', expected: true, replacement: false } }
-    act(() => useAppStore.setState({ organizationUndo: undo, undoOrganization }))
-    expect(document.activeElement).toBe(draft)
-    expect(host.textContent).toContain('Chat pinned')
-    await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Undo')!.click())
-    expect(undoOrganization).toHaveBeenCalledOnce()
-    expect(host.textContent).toContain('Could not undo.')
-    expect(draft.value).toBe('Unsent text')
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss undo"]')!.click())
-    expect(host.textContent).not.toContain('Could not undo.')
-    expect(useAppStore.getState().organizationUndo).toBe(undo)
-    act(() => root.unmount())
-    host.remove()
-  })
-
-  it('admits only one undo when clicked twice before React renders busy state', async () => {
-    let resolveUndo!: (value: boolean) => void
-    const undoOrganization = vi.fn(() => new Promise<boolean>(resolve => { resolveUndo = resolve }))
-    useAppStore.setState({ organizationUndo: { label: 'Pin chat', change: { kind: 'pin', chatId: 'chat', expected: true, replacement: false } }, undoOrganization })
-    const host = document.createElement('div')
-    const root = createRoot(host)
-    act(() => root.render(<AppShell />))
-    const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Undo')!
-    act(() => { button.click(); button.click() })
-    expect(undoOrganization).toHaveBeenCalledOnce()
-    await act(async () => resolveUndo(true))
-    act(() => root.unmount())
-  })
-
-  it('cannot replace a newer undo notice with an older failed response', async () => {
-    let resolveUndo!: (value: boolean) => void
-    const undoOrganization = vi.fn(() => new Promise<boolean>(resolve => { resolveUndo = resolve }))
-    const first = { label: 'Pin chat', change: { kind: 'pin' as const, chatId: 'chat', expected: true, replacement: false } }
-    const second = { label: 'Unpin chat', change: { kind: 'pin' as const, chatId: 'chat', expected: false, replacement: true } }
-    useAppStore.setState({ organizationUndo: first, undoOrganization })
-    const host = document.createElement('div')
-    const root = createRoot(host)
-    act(() => root.render(<AppShell />))
-    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Undo')!.click())
-    act(() => useAppStore.setState({ organizationUndo: second }))
-    await act(async () => resolveUndo(false))
-    expect(host.textContent).toContain('Chat unpinned')
-    expect(host.textContent).not.toContain('Could not undo.')
-    expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Undo')!.disabled).toBe(false)
-    act(() => root.unmount())
   })
 
   it('shows the update count and opens a full sidebar panel', async () => {
@@ -165,11 +106,10 @@ describe('AppShell', () => {
 
     const button = host.querySelector('button[aria-label="2 updates available"]') as HTMLButtonElement
     expect(button).toBeTruthy()
-    const upgradeNotice = host.querySelector('[role="status"].uam-side-panel-in')
-    expect(upgradeNotice?.textContent).toContain('2 updates available')
-    expect(upgradeNotice?.textContent).toContain('0.130.0')
-    expect(upgradeNotice?.querySelector('button[aria-label="Remind me later"]')).toBeTruthy()
-    expect(upgradeNotice?.textContent).toContain('Skip these versions')
+    const updateAlert = host.querySelector('[data-testid="transient-alert"]')
+    expect(updateAlert?.getAttribute('aria-live')).toBe('polite')
+    expect(updateAlert?.textContent).toContain('2 updates available')
+    expect(updateAlert?.textContent).toContain('0.130.0')
     expect(button.parentElement?.querySelector('span[aria-hidden]')?.textContent).toBe('1')
     act(() => button.click())
     expect(host.querySelector('[data-testid="updates-panel"]')).toBeTruthy()
@@ -1099,37 +1039,38 @@ describe('AppShell', () => {
     act(() => root.unmount())
     host.remove()
   })
-  it('retains real move failures after toast dismissal and allows explicit history dismissal', async () => {
+  it('keeps failed moves in notifications after the transient alert is dismissed', async () => {
     vi.useFakeTimers()
     const originalMove = useAppStore.getState().moveResourceToCollection
     useAppStore.setState({
       updateChecksEnabled: false,
       resourceCollections: [{ id: 'destination', name: 'Destination', collapsed: false, references: [] }],
-      moveResourceToCollection: vi.fn().mockResolvedValueOnce(false).mockRejectedValueOnce(new Error('Transport closed')),
+      moveResourceToCollection: vi.fn().mockRejectedValueOnce(new Error('Membership changed')).mockRejectedValueOnce(new Error('Transport closed')),
     })
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
     try {
       await act(async () => root.render(<AppShell />))
-      expect(host.querySelector('[aria-label="Dismiss collection notification"]')).toBeNull()
+      expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
       await act(async () => { await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace') })
-      const toast = host.querySelector('[role="alert"]')!
-      expect(toast.textContent).toContain('Error')
-      expect(toast.textContent).toContain('Could not move "Workspace".')
-      expect(toast.querySelector('time')?.getAttribute('datetime')).toBeTruthy()
-      act(() => (host.querySelector('[aria-label="Dismiss collection notification"]') as HTMLButtonElement).click())
-      expect(host.querySelector('[role="alert"]')).toBeNull()
+      const alert = host.querySelector('[data-testid="transient-alert"]')!
+      expect(alert.getAttribute('aria-live')).toBe('polite')
+      expect(alert.textContent).toContain('Could not move "Workspace".')
+      act(() => (host.querySelector('[aria-label="Dismiss alert"]') as HTMLButtonElement).click())
+      act(() => vi.advanceTimersByTime(200))
+      expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
       await act(async () => { await moveResourceToCollection('destination', 'workspace-folder', 'folder', 'Workspace') })
       act(() => vi.advanceTimersByTime(8000))
-      expect(host.querySelector('[role="alert"]')).toBeNull()
+      act(() => vi.advanceTimersByTime(200))
+      expect(host.querySelector('[data-testid="transient-alert"]')).toBeNull()
       act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
       const panel = host.querySelector('[data-testid="notifications-panel"]')!
       expect(panel.querySelectorAll('time')).toHaveLength(2)
       expect(panel.textContent).toContain('Transport closed')
       act(() => useAppStore.setState({ statusLine: 'Another status' }))
       expect(panel.querySelectorAll('time')).toHaveLength(2)
-      act(() => (panel.querySelector('[aria-label="Dismiss Collection move failed"]') as HTMLButtonElement).click())
+      act(() => (panel.querySelector('[aria-label="Dismiss Change not saved"]') as HTMLButtonElement).click())
       expect(panel.querySelectorAll('time')).toHaveLength(1)
       act(() => (panel.querySelector('[aria-label="Close notifications"]') as HTMLButtonElement).click())
       act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
@@ -1174,41 +1115,6 @@ describe('AppShell', () => {
       act(() => root.unmount())
       host.remove()
       useAppStore.setState({ setActiveSession: previousSelect })
-    }
-  })
-
-  it('keeps text editor undo native and only handles organization undo outside editors', async () => {
-    const undo = vi.fn(async () => true)
-    const originalUndo = useAppStore.getState().undoOrganization
-    useAppStore.setState({ undoOrganization: undo, organizationUndo: { label: 'Pin chat', change: { kind: 'pin', chatId: 'chat', expected: true, replacement: false } } })
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    const key = () => new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true, cancelable: true })
-    try {
-      await act(async () => root.render(<AppShell />))
-      const input = host.querySelector('input[aria-label="Chat draft"]')!
-      const inputKey = key()
-      act(() => input.dispatchEvent(inputKey))
-      expect(inputKey.defaultPrevented).toBe(false)
-      expect(undo).not.toHaveBeenCalled()
-      const editor = document.createElement('div')
-      editor.setAttribute('contenteditable', 'true')
-      host.appendChild(editor)
-      act(() => editor.dispatchEvent(key()))
-      expect(undo).not.toHaveBeenCalled()
-      const backgroundKey = key()
-      act(() => host.dispatchEvent(backgroundKey))
-      expect(backgroundKey.defaultPrevented).toBe(true)
-      expect(undo).toHaveBeenCalledTimes(1)
-      act(() => useAppStore.setState({ organizationUndo: null }))
-      const noUndo = key()
-      act(() => host.dispatchEvent(noUndo))
-      expect(noUndo.defaultPrevented).toBe(false)
-    } finally {
-      act(() => root.unmount())
-      host.remove()
-      useAppStore.setState({ undoOrganization: originalUndo, organizationUndo: null })
     }
   })
 

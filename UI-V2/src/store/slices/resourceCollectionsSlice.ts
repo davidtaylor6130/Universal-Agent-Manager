@@ -1,4 +1,5 @@
-import type { OrganizationChange, OrganizationUndo, ResourceMembership } from '../../types/organization'
+import type { OrganizationChange, ResourceMembership } from '../../types/organization'
+import { reportAppFailure } from '../../utils/appFailure'
 import { sanitizeCustomIcon, type CustomIcon, type CustomIconInput, type CustomIconTarget } from '../../types/customIcon'
 import { createRequestId, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import type { ResourceCollection, ResourceReference, ResourceReferenceType } from '../../types/resourceCollection'
@@ -6,6 +7,12 @@ import type { ZustandGet, ZustandSet } from '../storeTypes'
 import { clearPendingRequest, isLatestPendingRequest, rememberPendingRequest } from '../cpp/reconcile'
 
 let localId = 0
+const ORDER_FAILURE_MESSAGE: Record<Exclude<OrganizationChange['kind'], 'memberships'>, string> = {
+  folderOrder: 'Could not reorder workspaces.',
+  referenceOrder: 'Could not reorder collection items.',
+  collectionOrder: 'Could not reorder collections.',
+}
+const ORDER_FAILURE_DETAIL = 'The order could not be saved. Refresh and try again.'
 const pendingToggles = new Map<string, { baseline: boolean; count: number; successCount: number }>()
 
 function nextLocalId(prefix: string) {
@@ -33,27 +40,28 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
   async function applyChange(change: OrganizationChange): Promise<boolean> {
     const state = get()
     const observedValue = (current: ReturnType<ZustandGet>) => {
-      if (change.kind === 'pin') { const session = current.sessions.find((entry) => entry.id === change.chatId); return session ? session.isPinned ?? false : undefined }
       if (change.kind === 'folderOrder') return current.folders.map((entry) => entry.id)
       if (change.kind === 'referenceOrder') return current.resourceCollections.find((entry) => entry.id === change.collectionId)?.references.map((entry) => entry.id)
       if (change.kind === 'collectionOrder') return current.resourceCollections.map((entry) => entry.id)
       return memberships(current.resourceCollections, change.type, change.target)
     }
-    if (JSON.stringify(observedValue(state)) !== JSON.stringify(change.expected)) return false
+    // Memberships are reported by the collection move wrapper, which knows the item label.
+    const reject = () => {
+      if (change.kind !== 'memberships') reportAppFailure(ORDER_FAILURE_MESSAGE[change.kind], ORDER_FAILURE_DETAIL)
+      return false
+    }
+    if (JSON.stringify(observedValue(state)) !== JSON.stringify(change.expected)) return reject()
     const sequence = state.organizationMutationSequence + 1
     set({ organizationMutationSequence: sequence })
     if (isCefContext()) {
-      const response = await sendToCEF(change.kind === 'pin'
-        ? { action: 'setChatPinned', payload: { chatId: change.chatId, pinned: change.replacement, expectedPinned: change.expected } }
-        : { action: 'applyOrganizationAction', payload: change })
-      if (!response.ok) return false
+      const response = await sendToCEF({ action: 'applyOrganizationAction', payload: change })
+      if (!response.ok) return reject()
     }
     if (get().organizationMutationSequence !== sequence) return false
     const latest = get()
     const observed = observedValue(latest)
-    if (JSON.stringify(observed) !== JSON.stringify(change.expected) && JSON.stringify(observed) !== JSON.stringify(change.replacement)) return false
+    if (JSON.stringify(observed) !== JSON.stringify(change.expected) && JSON.stringify(observed) !== JSON.stringify(change.replacement)) return reject()
     set((current) => {
-      if (change.kind === 'pin') return { sessions: current.sessions.map((entry) => entry.id === change.chatId ? { ...entry, isPinned: change.replacement } : entry) }
       if (change.kind === 'folderOrder') return { folders: change.replacement.flatMap((id) => current.folders.find((entry) => entry.id === id) ?? []) }
       if (change.kind === 'referenceOrder') return { resourceCollections: current.resourceCollections.map((collection) => collection.id === change.collectionId ? { ...collection, references: change.replacement.flatMap((id) => collection.references.find((entry) => entry.id === id) ?? []) } : collection) }
       if (change.kind === 'memberships') return { resourceCollections: applyMemberships(current.resourceCollections, change) }
@@ -63,15 +71,8 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
   }
   return {
     resourceCollections: [] as ResourceCollection[],
-    organizationUndo: null as OrganizationUndo | null,
     organizationMutationSequence: 0,
     applyOrganizationChange: applyChange,
-    undoOrganization: async (): Promise<boolean> => {
-      const undo = get().organizationUndo
-      if (!undo || !await applyChange(undo.change)) return false
-      if (get().organizationUndo === undo) set({ organizationUndo: null })
-      return true
-    },
     moveResourceToCollection: async (collectionId: string | null, type: ResourceReferenceType, target: string, label: string): Promise<boolean> => {
       const collections = get().resourceCollections
       const expected = memberships(collections, type, target)
@@ -84,9 +85,7 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
       }] : []
       if (JSON.stringify(expected) === JSON.stringify(replacement)) return true
       const change: OrganizationChange = { kind: 'memberships', type, target, expected, replacement }
-      if (!await applyChange(change)) return false
-      set({ organizationUndo: { label: 'Move resource', change: { ...change, expected: replacement, replacement: expected } } })
-      return true
+      return applyChange(change)
     },
 
     setCustomIcon: async (targetType: CustomIconTarget, targetId: string, icon: CustomIconInput): Promise<boolean> => {
@@ -208,9 +207,7 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
       const current = get().resourceCollections.map((entry) => entry.id)
       if (collectionIds.length !== current.length || new Set(collectionIds).size !== current.length || collectionIds.some((id) => !current.includes(id))) return false
       if (JSON.stringify(current) === JSON.stringify(collectionIds)) return true
-      if (!await applyChange({ kind: 'collectionOrder', expected: current, replacement: collectionIds })) return false
-      set({ organizationUndo: { label: 'Reorder collections', change: { kind: 'collectionOrder', expected: collectionIds, replacement: current } } })
-      return true
+      return applyChange({ kind: 'collectionOrder', expected: current, replacement: collectionIds })
     },
 
     addResourceReference: async (collectionId: string, type: ResourceReferenceType, target: string, label = ''): Promise<ResourceReference | null> => {
@@ -258,9 +255,7 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
       const current = get().resourceCollections.find((entry) => entry.id === collectionId)?.references.map((entry) => entry.id)
       if (!current || referenceIds.length !== current.length || new Set(referenceIds).size !== current.length || referenceIds.some((id) => !current.includes(id))) return false
       if (JSON.stringify(current) === JSON.stringify(referenceIds)) return true
-      if (!await applyChange({ kind: 'referenceOrder', collectionId, expected: current, replacement: referenceIds })) return false
-      set({ organizationUndo: { label: 'Reorder references', change: { kind: 'referenceOrder', collectionId, expected: referenceIds, replacement: current } } })
-      return true
+      return applyChange({ kind: 'referenceOrder', collectionId, expected: current, replacement: referenceIds })
     },
   }
 }

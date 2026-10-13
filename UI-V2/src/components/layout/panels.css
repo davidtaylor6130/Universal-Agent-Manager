@@ -252,3 +252,12 @@
   .uam-np-rail__button,
   .uam-np-row__dismiss { transition: none; }
 }
+
+/* Shared transient alert: rises in; exits faster than it enters. */
+.uam-transient-alert { animation: uam-transient-alert-in var(--dur-base) var(--ease-out-soft) backwards; }
+.uam-transient-alert[data-state="closed"] { animation: uam-transient-alert-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-transient-alert-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes uam-transient-alert-out { to { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) {
+  .uam-transient-alert, .uam-transient-alert[data-state="closed"] { animation: none; }
+}
