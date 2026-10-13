@@ -951,6 +951,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	else if (!prepared)
 	{
 		ResetAcpRuntimeState(app, session, chat);
+		// The selected launch model must survive transport reset before async ownership is captured.
+		session.goal_turn_model_id = goal_turn_model_id;
 	}
 	if (retrying_undelivered_prompt || recovering_remote_turn || recovering_remote_process)
 	{

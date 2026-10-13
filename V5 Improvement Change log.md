@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Performance and durability | Bugfix | Selected Model Launch Ownership | Local alpha-85 startup preserves the selected turn model through transport reset before central configuration captures launch ownership. | Implementation Verified; Full Automated Verification Passed; Alpha-85 Build Verified; Un-Reviewed; Not User Tested |
 | Remote settings | Bugfix | Scoped MCP Configuration Counts | Provider MCP status counts apply host-specific provider switches and exclude remote sessions without recorded launch hosts. | Un-Reviewed; Claude Review; Not User Tested |
 | Voice input | Bugfix | Native Dictation Modes Restore | Persisted system and macOS server transcription settings retain recording identity and cancellation while local AI and Windows server capture remain unavailable. | Un-Reviewed; Claude Review; Not User Tested |
 | Providers and review | Bugfix | Review Queue Task Ownership | Completed review tasks leave the vector before advancing queues, retaining newly started workers for the next poll. | Claude Review; Un-Reviewed; Not User Tested |
@@ -411,6 +412,10 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | VCS and worktrees | Bugfix | Shared Worktree Mutation Guard | Destructive discard, patch port, rollback and removal refuse worktrees referenced by other in-memory or persisted local chats. | Focused Verification Passed; Full Automated Verification Passed; Claude Review; Un-Reviewed; Not User Tested |
 
 ## Incomplete Work
+
+| Group | Type | Change | Summary | Status | Owner |
+|---|---|---|---|---|---|
+| Performance and durability | Bugfix | Selected Model Launch Ownership | The alpha-85 build passes version, signature and three package checks after the fix passed 1919 native cases and 19 CTest gates, while installation, review and live acceptance remain pending. | Implementation Verified; Full Automated Verification Passed; Alpha-85 Build Verified; Installation Pending; Live Acceptance Pending; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.
 

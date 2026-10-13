@@ -1480,6 +1480,7 @@ while ($null -ne ($line = [Console]::ReadLine())) {
     'session/new' { Reply $request.id @{sessionId='cold-private-session'}; if ($env:UAM_TEST_COLD_EXIT_AFTER_SETUP -eq '1') { exit 0 } }
     'session/load' { Reply $request.id @{sessionId='cold-private-session'}; if ($env:UAM_TEST_COLD_EXIT_AFTER_SETUP -eq '1') { exit 0 } }
     'session/set_mode' { Reply $request.id @{} }
+    'session/set_model' { Reply $request.id @{} }
     'session/set_config_option' { Reply $request.id @{} }
     'fixture/chunk' { [Console]::WriteLine('{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"stream-during-agent-preparation"}}}}') }
     'fixture/release' { if ($null -ne $heldId) { Reply $heldId @{stopReason='end_turn'}; $heldId = $null } }
@@ -1505,7 +1506,7 @@ while IFS= read -r line; do
   case "$line" in
     *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}\n' "$id" ;;
     *'"method":"session/new"'*|*'"method":"session/load"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"cold-private-session"}}\n' "$id"; if [ "$UAM_TEST_COLD_EXIT_AFTER_SETUP" = 1 ]; then exit 0; fi ;;
-    *'"method":"session/set_mode"'*|*'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"session/set_mode"'*|*'"method":"session/set_model"'*|*'"method":"session/set_config_option"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
     *'"method":"fixture/chunk"'*) printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"stream-during-agent-preparation"}}}}' ;;
     *'"method":"fixture/release"'*) if [ -n "$held_id" ]; then printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$held_id"; held_id=; fi ;;
     *'"method":"session/prompt"'*)
@@ -1548,6 +1549,7 @@ done
 	ChatSession chat;
 	chat.id = "cold-local-admission";
 	chat.provider_id = "opencode-cli";
+	if (variation.empty()) chat.model_id = "selected-cold-model";
 	chat.uam_agent_id = "build";
 	chat.approval_mode.clear();
 	chat.memory_enabled = false;
@@ -2107,7 +2109,9 @@ done
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	}
+	if (variation.empty()) UAM_ASSERT_EQ(app.acp_sessions.front()->last_error, std::string{});
 	UAM_ASSERT(completed);
+	if (variation.empty()) UAM_ASSERT_EQ(app.acp_sessions.front()->current_model_id, app.chats.front().model_id);
 	if (variation == "receiptfailure") UAM_ASSERT(receipt_guard_exercised && !fs::exists(saved_chats));
 	if (variation == "completionnext") UAM_ASSERT(completion_guard_exercised);
 	if (variation == "receiptqueue") UAM_ASSERT(receipt_guard_exercised);
