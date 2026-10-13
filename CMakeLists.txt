@@ -1250,6 +1250,7 @@ if(UAM_BUILD_TESTS)
     tests/deletion_workspace_ownership_tests.cpp
     tests/copied_deletion_timing_tests.cpp
 		tests/remote_context_policy_tests.cpp
+		tests/remote_host_inline_instruction_tests.cpp
 		tests/memory_recall_preparation_tests.cpp
     tests/native_chat_identity_tests.cpp
     tests/chat_file_change_receipt_tests.cpp

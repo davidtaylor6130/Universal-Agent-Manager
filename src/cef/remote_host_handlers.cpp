@@ -170,6 +170,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	{
 		previous_host = *collision;
 		host.instruction_file = collision->instruction_file;
+		host.instruction_text = collision->instruction_text;
 		host.startup_enabled = collision->startup_enabled;
 		host.startup_status = collision->startup_status;
 		host.cli_updates_as_admin = collision->cli_updates_as_admin;
@@ -459,6 +460,13 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 		return;
 	}
 	ExecutionHost updated = *host;
+	if (payload.contains("instructionText"))
+	{
+		const nlohmann::json& text = payload["instructionText"];
+		if (!text.is_null() && (!text.is_string() || text.get_ref<const std::string&>().size() > uam::execution_hosts::kMaxInstructionTextBytes))
+		{ cb->Failure(400, "Host instruction text must be text of at most 256 KiB, or null for the legacy file."); return; }
+		updated.instruction_text = text.is_null() ? std::nullopt : std::optional<std::string>(text.get<std::string>());
+	}
 	updated.instruction_file = uam::strings::Trim(payload.value("instructionFile", host->instruction_file));
 	updated.startup_enabled = payload.value("startupEnabled", host->startup_enabled);
 	updated.cli_updates_as_admin = payload.value("cliUpdatesAsAdmin", host->cli_updates_as_admin);
@@ -481,7 +489,7 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 		}
 	}
 	if (g_remote_install_tokens.contains(id) ||
-	    (updated.instruction_file != host->instruction_file && HostHasActiveRuntimeWork(m_app, id)))
+	    ((updated.instruction_file != host->instruction_file || updated.instruction_text != host->instruction_text) && HostHasActiveRuntimeWork(m_app, id)))
 	{
 		cb->Failure(409, "Stop or finish this host's sessions before changing its instructions.");
 		return;

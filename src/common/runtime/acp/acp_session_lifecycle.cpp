@@ -2011,7 +2011,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			FailAcpTurnOrSession(session, &chat, "The SSH host no longer exists.");
 			return true;
 		}
-		if (!host->instruction_file.empty() || memory_budget > 0)
+		if ((host->instruction_text ? !host->instruction_text->empty() : !host->instruction_file.empty()) || memory_budget > 0)
 		{
 			std::shared_ptr<RemoteContextPreparation>& preparation = session.remote_context_preparation;
 			if (preparation != nullptr && (!execution_hosts::SameConnection(preparation->host, *host) ||

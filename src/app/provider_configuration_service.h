@@ -4,6 +4,7 @@
 #include "app/markdown_store_service.h"
 #include "common/provider/provider_setup.h"
 #include "common/config/central_provider_configuration.h"
+#include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
 
 namespace uam
@@ -150,6 +151,14 @@ namespace uam
 					if (ec) { error = "Could not read imported skill assets."; return false; }
 				}
 			}
+			if (host.instruction_text)
+			{
+				if (host.instruction_text->size() > execution_hosts::kMaxInstructionTextBytes)
+				{ error = "Host instruction text exceeds 256 KiB."; return false; }
+				if (!host.instruction_text->empty()) instructions += "\n\n" + *host.instruction_text;
+			}
+			if (instructions.size() > provider_setup::kMaxFileBytes)
+			{ error = "Combined provider instructions exceed 2 MiB."; return false; }
 			bundle.files["AGENTS.md"] = std::move(instructions);
 		}
 		std::vector<McpServerConfiguration> servers;
@@ -162,7 +171,7 @@ namespace uam
 			servers.push_back(std::move(server));
 		}
 		bundle.manifest = {{"format", 1}, {"mcpOnly", !configuration.enabled}, {"files", nlohmann::json::object()},
-		    {"hostInstructionFile", configuration.enabled ? host.instruction_file : ""}, {"mcpServers", mcp_server_config::Serialize(servers)}};
+		    {"hostInstructionFile", configuration.enabled && !host.instruction_text ? host.instruction_file : ""}, {"mcpServers", mcp_server_config::Serialize(servers)}};
 		for (const auto& [name, bytes] : bundle.files)
 			bundle.manifest["files"][name] = {{"size", bytes.size()}, {"digest", provider_setup::Digest(bytes)}, {"executable", executable_files.contains(name)}};
 		bundle.local_directory = data_root / "runtime" / "provider-setup" / provider_setup::Digest(bundle.manifest.dump());

@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Remote settings | Code Only | Remote Host Instruction Backend | The backend optionally supplies inline host instructions through existing instruction bundles while retaining legacy file behavior. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Providers and MCP | Code Only | Worktree Catalogue Serialization | Local worktree model catalogues serialize and restore with their owning workspace. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Workspaces and recovery | Bugfix | Worktree Restart Receipt Recovery | Restart recovery uses owned receipts and rejects receipt reads above 64 KiB. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Workspaces and recovery | Bugfix | Canonical Main Import Grouping | Native imports retain canonical main workspace grouping and use the native worktree working directory. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
@@ -438,6 +439,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Remote settings | Code Only | Remote Host Instruction Backend | Optional inline host instructions use existing instruction bundles and retain legacy file behavior; host and GUI acceptance remain pending. | Focused Verification Passed; Alpha-86 Build Verified; Un-Reviewed; Claude Review; Not User Tested | chat-1791918211573-01cfe1 |
 | Providers and review | Bugfix | Complete Permission Review Input | Full generic ACP permission parameters pass focused checks; provider and review acceptance remain pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Providers and MCP | Code Only | Worktree Catalogue Serialization | Local worktree model catalogue serialization passes focused verification; GUI selector and live acceptance remain pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Providers and MCP | Bugfix | OpenCode Agent Import Default | Omitted mode defaults to canonical `both` for primary and subagent targets; live acceptance remains pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |

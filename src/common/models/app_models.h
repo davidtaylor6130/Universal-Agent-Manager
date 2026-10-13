@@ -639,6 +639,8 @@ struct ExecutionHost
 	std::string startup_status = "disabled";
 	CustomIcon custom_icon;
 	bool cli_updates_as_admin = false;
+	/// Absent uses the legacy remote file; an empty value explicitly disables host instructions.
+	std::optional<std::string> instruction_text;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
