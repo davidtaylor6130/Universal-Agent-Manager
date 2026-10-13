@@ -922,7 +922,13 @@ namespace uam
 		try
 		{
 			if (uam::paths::IsLinkOrReparsePointNoThrow(receipt) || !uam::paths::IsSameOrInsideRoot(root, receipt)) return false;
-			const nlohmann::json record = nlohmann::json::parse(uam::io::ReadTextFile(receipt));
+			std::string receipt_text;
+			if (!uam::io::TryReadTextFile(receipt, receipt_text, 64 * 1024))
+			{
+				error = "Prepared workspace ownership receipt could not be read within its size limit. The workspace was preserved.";
+				return false;
+			}
+			const nlohmann::json record = nlohmann::json::parse(receipt_text);
 			const std::filesystem::path repository = uam::paths::PathFromUtf8(record.at("repository").get<std::string>());
 			const std::filesystem::path worktree = uam::paths::PathFromUtf8(metadata.workspace_worktree_directory);
 			AppState snapshot;

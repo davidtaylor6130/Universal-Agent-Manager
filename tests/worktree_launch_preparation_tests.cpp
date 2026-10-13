@@ -410,3 +410,116 @@ UAM_TEST(WorktreeLaunchPreparationExistingIsolationWaitsForPortOperation)
 	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
 	fixture.AssertForeignSurvivors();
 }
+
+UAM_TEST(WorktreeLaunchPreparationRestartRecoversOwnedReceipts)
+{
+	if (!GitAvailableForTests()) return;
+	for (const std::string_view source_kind : {"git", "managed", "subdirectory"})
+	{
+		LaunchFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		if (source_kind == "managed")
+		{
+			const fs::path source = fixture.temporary.root / "managed-source";
+			UAM_ASSERT(uam::io::WriteTextFile(source / "baseline.txt", "managed baseline"));
+			chat.workspace_directory = source.string();
+			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		}
+		if (source_kind == "subdirectory")
+		{
+			fs::create_directories(fixture.repository / "nested-source");
+			chat.workspace_directory = (fixture.repository / "nested-source").string();
+			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		}
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> interrupted = fixture.app.worktree_launch_preparations.at(chat.id);
+		fixture.WaitForWorker(interrupted);
+		const uam::PreparedLaunchWorktree prepared = interrupted->worker.get();
+		UAM_ASSERT(prepared.operation.ok);
+		fixture.app.worktree_launch_preparations.clear();
+		fixture.app.worktree_operation_chat_ids.clear();
+		interrupted->lease.reset();
+		chat = *ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+		UAM_ASSERT(chat.workspace_worktree_directory.empty());
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> recovered = fixture.app.worktree_launch_preparations.at(chat.id);
+		fixture.WaitForWorker(recovered);
+		(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+		UAM_ASSERT(recovered->merged);
+		UAM_ASSERT_EQ(recovered->receipt_file, interrupted->receipt_file);
+		UAM_ASSERT_EQ(chat.workspace_worktree_directory, prepared.metadata.workspace_worktree_directory);
+		UAM_ASSERT_EQ(chat.workspace_branch_name, prepared.metadata.workspace_branch_name);
+		fixture.WaitForSave(recovered);
+		UAM_ASSERT(*recovered->saved);
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+		fixture.AssertForeignSurvivors();
+	}
+}
+
+UAM_TEST(WorktreeLaunchPreparationRestartRejectsChangedOwnership)
+{
+	if (!GitAvailableForTests()) return;
+	for (const std::string_view change : {"malformed", "oversized", "created", "source", "repository", "head", "shared", "policy", "legacy", "symlink", "ambiguous"})
+	{
+		LaunchFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> interrupted = fixture.app.worktree_launch_preparations.at(chat.id);
+		fixture.WaitForWorker(interrupted);
+		const uam::PreparedLaunchWorktree prepared = interrupted->worker.get();
+		UAM_ASSERT(prepared.operation.ok);
+		fixture.app.worktree_launch_preparations.clear();
+		fixture.app.worktree_operation_chat_ids.clear();
+		interrupted->lease.reset();
+		const fs::path artifact = uam::paths::PathFromUtf8(prepared.metadata.workspace_worktree_directory);
+		nlohmann::json receipt = nlohmann::json::parse(uam::io::ReadTextFile(interrupted->receipt_file));
+		if (change == "malformed") UAM_ASSERT(uam::io::WriteTextFile(interrupted->receipt_file, "{}"));
+		if (change == "oversized")
+		{
+			UAM_ASSERT(uam::io::WriteTextFile(interrupted->receipt_file, receipt.dump() + std::string(64 * 1024, ' ')));
+			std::string validation_error;
+			UAM_ASSERT(!uam::GitWorktreeService().ValidatePreparedWorkspace(fixture.app.data_root, interrupted->receipt_file, prepared.metadata, validation_error));
+			UAM_ASSERT(validation_error.find("size limit") != std::string::npos);
+		}
+		if (change == "created") chat.created_at += "-replacement";
+		if (change == "source") chat.workspace_directory = fixture.foreign.string();
+		if (change == "repository")
+		{
+			receipt["repository"] = fixture.foreign.string();
+			UAM_ASSERT(uam::io::WriteTextFile(interrupted->receipt_file, receipt.dump()));
+		}
+		if (change == "legacy")
+		{
+			receipt.erase("launchPolicy");
+			UAM_ASSERT(uam::io::WriteTextFile(interrupted->receipt_file, receipt.dump()));
+		}
+		if (change == "policy") fixture.app.settings.git_default_base_branch = "changed-base";
+		if (change == "head") UAM_ASSERT(RunGitForTest(artifact, "-c user.name=Fixture -c user.email=fixture@example.test commit --allow-empty -m foreign"));
+		if (change == "shared")
+		{
+			ChatSession other = ChatDomainService().CreateNewChat("", "codex-cli");
+			other.workspace_directory = artifact.string();
+			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, other));
+		}
+		if (change == "symlink")
+		{
+			const fs::path target = fixture.temporary.root / "receipt.json";
+			fs::rename(interrupted->receipt_file, target);
+			fs::create_symlink(target, interrupted->receipt_file);
+		}
+		if (change == "ambiguous") fs::copy_file(interrupted->receipt_file, interrupted->receipt_file.parent_path() / (interrupted->receipt_file.stem().string() + "-duplicate.json"));
+		const std::string preserved_receipt = uam::io::ReadTextFile(interrupted->receipt_file);
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> rejected = fixture.app.worktree_launch_preparations.at(chat.id);
+		fixture.WaitForWorker(rejected);
+		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
+		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
+		if (change == "oversized") UAM_ASSERT(refusal.error.find("size limit") != std::string::npos);
+		UAM_ASSERT(chat.workspace_worktree_directory.empty());
+		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT(fs::exists(artifact));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(interrupted->receipt_file), preserved_receipt);
+		UAM_ASSERT(RunGitForTest(fixture.repository, "show-ref --verify refs/heads/" + prepared.metadata.workspace_branch_name));
+		fixture.AssertForeignSurvivors();
+	}
+}

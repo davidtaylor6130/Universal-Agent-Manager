@@ -2,6 +2,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/vcs_commit_service.h"
+#include "common/chat/chat_repository.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -11,6 +12,7 @@
 #include "common/utils/time_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -47,7 +49,7 @@ namespace uam
 		}
 
 		bool RecordIntent(const std::filesystem::path& root, const std::filesystem::path& receipt,
-		    const std::string& chat_id, const std::string& created_at, const GitWorktreeCreationIntent& intent, std::string& error)
+		    const std::string& chat_id, const std::string& created_at, const nlohmann::json& policy, const GitWorktreeCreationIntent& intent, std::string& error)
 		{
 			if (paths::IsLinkOrReparsePointNoThrow(root) || paths::IsLinkOrReparsePointNoThrow(receipt.parent_path()) ||
 			    paths::IsLinkOrReparsePointNoThrow(receipt)) { error = "Workspace ownership storage is unsafe."; return false; }
@@ -64,9 +66,62 @@ namespace uam
 			const nlohmann::json record = {{"chatId", chat_id}, {"createdAt", created_at},
 			    {"source", paths::Utf8PathString(intent.source)}, {"repository", paths::Utf8PathString(intent.repository)},
 			    {"worktree", paths::Utf8PathString(intent.worktree)}, {"branch", intent.branch}, {"baseSha", intent.base_sha},
-			    {"managedRepository", intent.managed_repository}};
+			    {"managedRepository", intent.managed_repository}, {"launchPolicy", policy}};
 			if (!io::WriteTextFile(receipt, record.dump())) { error = "Could not record workspace ownership."; return false; }
 			return true;
+		}
+
+		bool ReferencesPreparedWorkspace(const ChatSession& other, const ChatSession& prepared)
+		{
+			if (other.id == prepared.id || !paths::IsControllerLocalWorkspace(other)) return false;
+			const std::filesystem::path worktree = paths::PathFromUtf8(prepared.workspace_worktree_directory);
+			for (const std::string* path : {&other.workspace_directory, &other.workspace_worktree_directory, &other.workspace_source_directory})
+				if (!path->empty() && paths::IsSameOrInsideRoot(worktree, paths::PathFromUtf8(*path))) return true;
+			return false;
+		}
+
+		bool RecoverOwnedWorkspace(const std::filesystem::path& root, const std::vector<ChatSession>& live_chats,
+		    ChatSession& metadata, const nlohmann::json& policy, std::filesystem::path& receipt, bool& found, std::string& error, std::stop_token stop)
+		{
+			const std::filesystem::path directory = root / ".worktree-launch";
+			std::error_code scan_error;
+			if (!std::filesystem::exists(directory, scan_error)) return !scan_error;
+			if (paths::IsLinkOrReparsePointNoThrow(directory)) return false;
+			const std::string prefix = hashing::Hex64(hashing::Fnv1a64(metadata.id)) + "-";
+			try
+			{
+				for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory))
+				{
+					if (!entry.path().filename().string().starts_with(prefix) || entry.path().extension() != ".json") continue;
+					if (found || paths::IsLinkOrReparsePointNoThrow(entry.path())) return false;
+					found = true;
+					std::string receipt_text;
+					if (!io::TryReadTextFile(entry.path(), receipt_text, 64 * 1024))
+					{
+						error = "Interrupted workspace ownership receipt could not be read within its size limit. The workspace was preserved.";
+						return false;
+					}
+					const nlohmann::json record = nlohmann::json::parse(receipt_text);
+					if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at ||
+					    record.at("launchPolicy") != policy ||
+					    !paths::IsSameOrInsideRoot(paths::PathFromUtf8(record.at("source").get<std::string>()), paths::PathFromUtf8(metadata.workspace_directory))) return false;
+					metadata.workspace_isolation_kind = paths::kGitWorktreeIsolationKind;
+					metadata.workspace_source_directory = record.at("source").get<std::string>();
+					metadata.workspace_worktree_directory = record.at("worktree").get<std::string>();
+					metadata.workspace_branch_name = record.at("branch").get<std::string>();
+					metadata.workspace_base_ref = record.at("baseSha").get<std::string>();
+					if (metadata.workspace_branch_name.empty() || metadata.workspace_base_ref.empty() ||
+					    !GitWorktreeService().ValidatePreparedWorkspace(root, entry.path(), metadata, error, stop)) return false;
+					const auto references = [&](const ChatSession& other) { return ReferencesPreparedWorkspace(other, metadata); };
+					const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChatSummariesReadOnly(root);
+					if (std::any_of(live_chats.begin(), live_chats.end(), references) ||
+					    std::any_of(persisted.begin(), persisted.end(), references)) return false;
+					receipt = entry.path();
+					metadata.updated_at = time::TimestampNow();
+				}
+				return true;
+			}
+			catch (const std::exception&) { return false; }
 		}
 
 		void BeginSave(AppState& app, ChatSession& chat, const std::shared_ptr<WorktreeLaunchPreparationTask>& task)
@@ -224,6 +279,12 @@ namespace uam
 			}
 			if (task->prepared && !task->merged && task->error.empty())
 			{
+				if (task->prepared->operation.ok && std::any_of(app.chats.begin(), app.chats.end(),
+				    [&](const ChatSession& other) { return ReferencesPreparedWorkspace(other, task->prepared->metadata); }))
+				{
+					task->prepared->operation.ok = false;
+					task->prepared->operation.message = "Another chat uses the prepared workspace. The workspace was preserved.";
+				}
 				if (!task->prepared->operation.ok) task->error = task->prepared->operation.message.empty() ? "Workspace preparation failed. Retry opening the chat." : task->prepared->operation.message;
 				else
 				{
@@ -339,13 +400,32 @@ namespace uam
 		settings.git_pull_before_chat = app.settings.git_pull_before_chat;
 		ChatSession metadata = task->original;
 		metadata.workspace_directory = task->resolved_source;
-		std::packaged_task<PreparedLaunchWorktree()> worker([root = task->data_root, receipt = task->receipt_file, settings = std::move(settings), metadata = std::move(metadata), cancellation = task->cancellation, lease]() mutable
+		std::vector<ChatSession> live_chats;
+		live_chats.reserve(app.chats.size());
+		for (const ChatSession& other : app.chats) live_chats.push_back(CaptureVcsChatContext(other));
+		std::packaged_task<PreparedLaunchWorktree()> worker([task, live_chats = std::move(live_chats), root = task->data_root, receipt = task->receipt_file, settings = std::move(settings), metadata = std::move(metadata), cancellation = task->cancellation, lease]() mutable
 		{
 			AppState snapshot;
 			snapshot.data_root = root;
 			snapshot.settings = std::move(settings);
-			const GitWorktreeIntentRecorder record = [root, receipt, id = metadata.id, created = metadata.created_at](const GitWorktreeCreationIntent& intent, std::string& error)
-			{ return RecordIntent(root, receipt, id, created, intent, error); };
+			const nlohmann::json policy = {{"version", 1}, {"requestedSource", metadata.workspace_directory}, {"baseBranch", snapshot.settings.git_default_base_branch},
+			    {"pullBeforeChat", snapshot.settings.git_pull_before_chat}, {"gitEnabled", snapshot.settings.git_enabled},
+			    {"automaticWorktree", snapshot.settings.git_auto_worktree},
+			    {"baseOverride", metadata.git_base_branch_override ? nlohmann::json(*metadata.git_base_branch_override) : nlohmann::json(nullptr)}};
+			bool recovered = false;
+			GitWorktreeOperationResult recovery;
+			if (!RecoverOwnedWorkspace(root, live_chats, metadata, policy, task->receipt_file, recovered, recovery.message, cancellation->get_token()))
+			{
+				if (recovery.message.empty()) recovery.message = "Interrupted workspace ownership could not be verified. The workspace was preserved.";
+				return PreparedLaunchWorktree{std::move(recovery), std::move(metadata)};
+			}
+			if (recovered)
+			{
+				recovery.ok = true;
+				return PreparedLaunchWorktree{std::move(recovery), std::move(metadata)};
+			}
+			const GitWorktreeIntentRecorder record = [root, receipt, policy, id = metadata.id, created = metadata.created_at](const GitWorktreeCreationIntent& intent, std::string& error)
+			{ return RecordIntent(root, receipt, id, created, policy, intent, error); };
 			GitWorktreeOperationResult operation = GitWorktreeService().PrepareForChat(snapshot, metadata, record, cancellation->get_token());
 			return PreparedLaunchWorktree{std::move(operation), std::move(metadata)};
 		});
