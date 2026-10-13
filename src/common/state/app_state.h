@@ -193,6 +193,7 @@ namespace uam
 		std::string id;
 		std::string name;
 		std::string description;
+		std::string provider_id;
 	};
 
 	struct AcpConfigOptionChoiceState

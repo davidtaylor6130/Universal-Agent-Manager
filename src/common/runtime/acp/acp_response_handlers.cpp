@@ -125,6 +125,7 @@ void UpdateAcpModesFromJson(AcpSessionState& session, const nlohmann::json& mode
 			}
 			AcpModeState parsed;
 			parsed.id = AppApprovalModeId(provider_mode_id);
+			parsed.provider_id = provider_mode_id;
 			parsed.name = uam::nlohmann_json::TrimmedStringValue(mode, {"name"});
 			if (parsed.name.empty())
 			{

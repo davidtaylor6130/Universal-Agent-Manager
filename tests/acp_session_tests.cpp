@@ -4459,6 +4459,80 @@ UAM_TEST(AcpMissingSessionIdRecordsDiagnostics)
 	UAM_ASSERT(raw_session->diagnostics.back().detail.find("result={}") != std::string::npos);
 }
 
+UAM_TEST(GeminiAcpAcceptEditsUsesAdvertisedWireSpellingAndUnchangedCliFlag)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("gemini-cli");
+	ChatSession chat;
+	chat.provider_id = "gemini-cli";
+	chat.approval_mode = "acceptEdits";
+	const std::vector<std::string> launch = runtime.BuildStructuredLaunchArgv(ProviderProfileStore::DefaultGeminiProfile(), chat);
+	const std::vector<std::string>::const_iterator flag = std::find(launch.begin(), launch.end(), "--approval-mode");
+	UAM_ASSERT(flag != launch.end() && std::next(flag) != launch.end());
+	UAM_ASSERT_EQ(*std::next(flag), std::string("auto_edit"));
+	for (const std::string wire_id : {"autoEdit", "auto_edit"})
+	{
+		uam::AcpSessionState session;
+		session.provider_id = chat.provider_id;
+		session.session_id = "gemini-private-mode";
+		const nlohmann::json modes = {{"currentModeId", wire_id}, {"availableModes", nlohmann::json::array({
+		    {{"id", "default"}, {"name", "Default"}}, {{"id", wire_id}, {"name", "Auto Edit"}}, {{"id", "plan"}, {"name", "Plan"}}})}};
+		uam::acp_detail::UpdateAcpModesFromJson(session, modes);
+		UAM_ASSERT_EQ(session.current_mode_id, std::string("acceptEdits"));
+		UAM_ASSERT_EQ(session.available_modes[1].id, std::string("acceptEdits"));
+		const nlohmann::json request = uam::acp_detail::BuildSetModeRequest(41, session.session_id,
+		    uam::acp_detail::ProviderApprovalModeId(session, "acceptEdits"));
+		UAM_ASSERT_EQ(request["params"]["modeId"], nlohmann::json(wire_id));
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "plan"), std::string("plan"));
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "default"), std::string("default"));
+	}
+#endif
+}
+
+UAM_TEST(GeminiAcpNegotiationPreservesAdvertisedAliasesAndSafeFallbacks)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	for (const std::vector<std::string> aliases : {std::vector<std::string>{"autoEdit", "auto_edit"}, std::vector<std::string>{"auto_edit", "autoEdit"}})
+	{
+		uam::AcpSessionState session;
+		session.provider_id = "gemini-cli";
+		nlohmann::json advertised = nlohmann::json::array();
+		for (const std::string& alias : aliases) advertised.push_back({{"id", alias}, {"name", "Auto Edit"}});
+		advertised.push_back({{"id", "yolo"}, {"name", "YOLO"}});
+		advertised.push_back({{"id", "unknown-mode"}, {"name", "Unknown"}});
+		uam::acp_detail::UpdateAcpModesFromJson(session, {{"availableModes", advertised}});
+		UAM_ASSERT_EQ(session.available_modes.size(), std::size_t{3});
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "acceptEdits"), aliases.front());
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "unknown-mode"), std::string("unknown-mode"));
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "default"), std::string("default"));
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "plan"), std::string("plan"));
+	}
+	uam::AcpSessionState unadvertised;
+	unadvertised.provider_id = "gemini-cli";
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(unadvertised, "acceptEdits"), std::string("autoEdit"));
+	// Legacy in-memory rows carry no provider ID and use the current provider fallback.
+	unadvertised.available_modes.push_back({"acceptEdits", "Auto Edit", ""});
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(unadvertised, "acceptEdits"), std::string("autoEdit"));
+	unadvertised.available_modes.push_back({"default", "Suppressed", "", "yolo"});
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(unadvertised, "default"), std::string("default"));
+	unadvertised.available_modes.push_back({"plan", "Invalid alias", "", "default"});
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(unadvertised, "plan"), std::string("plan"));
+#endif
+}
+
+UAM_TEST(NonGeminiModeOverridesRemainAuthoritativeOverAdvertisedAliases)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	uam::AcpSessionState session;
+	session.provider_id = "copilot-cli";
+	uam::acp_detail::UpdateAcpModesFromJson(session, {{"availableModes", nlohmann::json::array({
+	    {{"id", "autoEdit"}, {"name", "Auto Edit"}}, {{"id", "plan"}, {"name", "Plan"}}})}});
+	UAM_ASSERT_EQ(session.available_modes.front().id, std::string("acceptEdits"));
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "acceptEdits"), std::string(uam::approval_modes::kAcpAgentMode));
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "plan"), std::string(uam::approval_modes::kAcpPlanMode));
+#endif
+}
+
 UAM_TEST(AcpSessionNewParsesModesModelsAndModeUpdates)
 {
 	TempDir temp("uam-acp-modes-models");

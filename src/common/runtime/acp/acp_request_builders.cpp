@@ -1,6 +1,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/config/approval_modes.h"
+#include "common/provider/provider_ids.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/runtime/acp/acp_content.h"
 #include "common/runtime/acp/acp_json_rpc.h"
@@ -183,6 +184,15 @@ std::string AppApprovalModeId(std::string_view mode_id)
 
 std::string ProviderApprovalModeId(const AcpSessionState& session, const std::string& mode_id)
 {
+	if (session.provider_id == uam::provider_ids::kGeminiCli)
+	{
+		for (const AcpModeState& mode : session.available_modes)
+		{
+			if (mode.id == uam::strings::TrimAsciiView(mode_id) && !mode.provider_id.empty() &&
+			    !uam::approval_modes::IsSuppressedProviderApprovalMode(mode.provider_id) &&
+			    AppApprovalModeId(mode.provider_id) == mode.id) return mode.provider_id;
+		}
+	}
 	return ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpMapApprovalModeId(mode_id);
 }
 

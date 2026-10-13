@@ -352,6 +352,8 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Remote maintenance | Bugfix | Verified Interactive Elevation | Manual Linux maintenance uses a trusted terminal action with durable shared-prefix ownership and scoped completion probes while automatic updates remain noninteractive. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
+| Permissions and review | Bugfix | Gemini Negotiated Mode Identity | Modern and legacy Gemini ACP modes retain their advertised raw identity while sibling provider overrides remain authoritative. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.
