@@ -24,6 +24,10 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleCreateSession(nullptr, payload, callback);
 	}
+	static void Retry(UamQueryHandler& handler, const std::string& chat_id, int index, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleRetryFailedMessage(nullptr, {{"chatId", chat_id}, {"messageIndex", index}}, callback);
+	}
 	static void Cancel(UamQueryHandler& handler, int browser, const std::string& frame, int64_t query)
 	{
 		handler.CancelChatIconQuery(browser, frame, query);
@@ -36,9 +40,10 @@ namespace
 	{
 	  public:
 		int successes = 0, failures = 0, last_failure = 0;
+		std::string failure_message;
 		void Success(const CefString&) override { ++successes; }
 		void Success(const void*, size_t) override { ++successes; }
-		void Failure(int code, const CefString&) override { ++failures; last_failure = code; }
+		void Failure(int code, const CefString& message) override { ++failures; last_failure = code; failure_message = message.ToString(); }
 	  private:
 		IMPLEMENT_REFCOUNTING(RecordingIconCallback);
 	};
@@ -387,6 +392,86 @@ UAM_TEST(ChatCreateSelectedWorktreeRejectsBranchMismatchWithoutMutation)
 	UAM_ASSERT_EQ(GitState(fixture.repository, "worktree list --porcelain"), worktrees);
 }
 
+namespace
+{
+	struct ColdRetryFixture
+	{
+		TempDir temp{"uam-connected-cold-retry"};
+		uam::AppState app;
+		int user_index = 200;
+		explicit ColdRetryFixture(bool assistant_output = false)
+		{
+			app.data_root = temp.root / "data";
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			ChatSession chat = HandlerChat("cold-retry");
+			chat.branch_root_chat_id = "original";
+			chat.execution_host_id = "missing-host";
+			chat.workspace_directory = temp.root.string();
+			chat.memory_enabled = false;
+			chat.messages.clear();
+			for (int index = 0; index < user_index; ++index)
+				chat.messages.push_back({.role = index % 2 ? MessageRole::Assistant : MessageRole::User,
+					.content = "Retained history " + std::to_string(index)});
+			chat.messages.push_back({.role = MessageRole::User, .content = "Retry original unsent prompt", .acp_prompt_not_sent = true});
+			if (assistant_output) chat.messages.push_back({.role = MessageRole::Assistant, .content = "Already answered"});
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+			std::optional<ChatSession> summary = ChatRepository::LoadLocalChatSummaryReadOnly(app.data_root, chat.id);
+			UAM_ASSERT(summary && !summary->messages_loaded && summary->messages.empty());
+			app.chats.push_back(std::move(*summary));
+		}
+		void Await(const CefRefPtr<RecordingIconCallback>& callback)
+		{
+			RunCreationLoopUntil([callback]() { return callback->successes + callback->failures != 0; }, std::chrono::seconds(10));
+			UAM_ASSERT_EQ(callback->successes + callback->failures, 1);
+		}
+	};
+}
+
+UAM_TEST(ChatRetryColdLatestUserLoadsHistoryWithoutDuplicatingPrompt)
+{
+	ColdRetryFixture fixture;
+	UamQueryHandler handler(fixture.app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	ChatIconHandlerTestAccess::Retry(handler, "cold-retry", fixture.user_index, callback);
+	UAM_ASSERT(std::chrono::steady_clock::now() - started <= std::chrono::milliseconds(100));
+	fixture.Await(callback);
+	UAM_ASSERT_EQ(callback->failure_message, std::string("The selected execution host no longer exists."));
+	UAM_ASSERT(fixture.app.chats.front().messages_loaded);
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{201});
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.back().content, std::string("Retry original unsent prompt"));
+	UAM_ASSERT(fixture.app.chats.front().messages.back().acp_prompt_not_sent);
+}
+
+UAM_TEST(ChatRetryColdPreparationCancellationLeavesHistoryUnloaded)
+{
+	ColdRetryFixture fixture;
+	const std::string original = ReadFile(AppPaths::UamChatFilePath(fixture.app.data_root, "cold-retry"));
+	UamQueryHandler handler(fixture.app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::Retry(handler, "cold-retry", fixture.user_index, callback);
+	UAM_ASSERT(callback->failures == 0 && callback->successes == 0);
+	ChatDomainService().CancelBranchPreparations(fixture.app, "cold-retry");
+	fixture.Await(callback);
+	UAM_ASSERT_EQ(callback->failures, 1);
+	UAM_ASSERT(!fixture.app.chats.front().messages_loaded && fixture.app.chats.front().messages.empty());
+	UAM_ASSERT(fixture.app.acp_sessions.empty());
+	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(fixture.app.data_root, "cold-retry")), original);
+}
+
+UAM_TEST(ChatRetryColdHistoryStillRejectsLaterAssistantOutput)
+{
+	ColdRetryFixture fixture(true);
+	UamQueryHandler handler(fixture.app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::Retry(handler, "cold-retry", fixture.user_index, callback);
+	fixture.Await(callback);
+	UAM_ASSERT(fixture.app.chats.front().messages_loaded);
+	UAM_ASSERT_EQ(callback->failure_message, std::string("The failed message is no longer the latest message."));
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{202});
+	UAM_ASSERT(fixture.app.acp_sessions.empty());
+}
+
 int main(int argc, char** argv)
 {
 #if defined(__APPLE__)
@@ -404,25 +489,26 @@ int main(int argc, char** argv)
 	if (subprocess >= 0) return subprocess;
 	std::unique_ptr<CreationCefRuntime> cef;
 	bool initialization_attempted = false;
-	std::size_t passed = 0, icon_passed = 0, create_passed = 0;
+	std::size_t passed = 0, icon_passed = 0, create_passed = 0, retry_passed = 0;
 	for (const TestCase& test : Registry())
 	{
 		try
 		{
 			const bool creation = test.name.rfind("ChatCreate", 0) == 0;
-			if (creation && !initialization_attempted)
+			const bool retry = test.name.rfind("ChatRetry", 0) == 0;
+			if ((creation || retry) && !initialization_attempted)
 			{
 				initialization_attempted = true;
 				cef = std::make_unique<CreationCefRuntime>(main_args);
 			}
-			if (creation) UAM_ASSERT(cef != nullptr);
+			if (creation || retry) UAM_ASSERT(cef != nullptr);
 			test.fn(); ++passed;
-			if (creation) ++create_passed; else ++icon_passed;
+			if (creation) ++create_passed; else if (retry) ++retry_passed; else ++icon_passed;
 			std::cout << "PASS " << test.name << '\n';
 		}
 		catch (const std::exception& error) { std::cerr << "FAIL " << test.name << ": " << error.what() << '\n'; }
 	}
-	std::cout << icon_passed << "/6 connected icon cases passed\n" << create_passed << "/4 connected create cases passed\n";
+	std::cout << icon_passed << "/6 connected icon cases passed\n" << create_passed << "/4 connected create cases passed\n" << retry_passed << "/3 connected retry cases passed\n";
 	cef.reset();
-	return passed == Registry().size() && Registry().size() == 10 && icon_passed == 6 && create_passed == 4 ? 0 : 1;
+	return passed == Registry().size() && Registry().size() == 13 && icon_passed == 6 && create_passed == 4 && retry_passed == 3 ? 0 : 1;
 }

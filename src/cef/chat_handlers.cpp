@@ -1082,7 +1082,50 @@ void UamQueryHandler::HandleRetryFailedMessage(CefRefPtr<CefBrowser> browser, co
 		return;
 	}
 	const std::string chat_id = payload["chatId"].get<std::string>();
-	if (uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat no longer exists.") == nullptr) return;
+	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat no longer exists.");
+	if (chat == nullptr) return;
+	using namespace uam::query_handler_async;
+	const ChatDomainService domain;
+	const auto pending = m_app.branch_preparations.find(chat_id);
+	if (pending != m_app.branch_preparations.end() && !pending->second.expired())
+	{
+		cb->Failure(409, "Chat preparation is still running. Wait before retrying the prompt.");
+		return;
+	}
+	if (!chat->messages_loaded)
+	{
+		const std::shared_ptr<ChatDomainService::ColdHistoryPreparation> preparation = domain.BeginColdHistoryPreparation(m_app, chat_id);
+		if (!preparation)
+		{
+			cb->Failure(409, "Chat history is changing. Retry after it settles.");
+			return;
+		}
+		const bool queued = RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [domain, preparation]()
+		    {
+			    std::string error;
+			    return domain.LoadColdHistoryPreparation(*preparation, error)
+			        ? AsyncSuccess(nlohmann::json::object())
+			        : AsyncFailure(409, uam::query_handler_internal::FailureDetailOrFallback(error, "Chat history changed or preparation was stopped."));
+		    },
+		    [this, browser, payload, cb, domain, preparation](AsyncCefResult& result)
+		    {
+			    if (!result.ok)
+			    {
+				    (void)domain.ConsumeBranchPreparation(m_app, preparation->identity.chat_id, preparation->ownership);
+				    return;
+			    }
+			    if (!domain.CompleteColdHistoryPreparation(m_app, *preparation))
+			    {
+				    result = AsyncFailure(409, "Chat history changed or preparation was stopped. Retry the prompt.");
+				    return;
+			    }
+			    HandleRetryFailedMessage(browser, payload, cb);
+			    result.callback_deferred = true;
+		    }, TID_FILE_USER_BLOCKING);
+		if (!queued) (void)domain.ConsumeBranchPreparation(m_app, chat_id, preparation->ownership);
+		return;
+	}
 	std::string error;
 	if (!uam::RetryFailedAcpMessage(m_app, chat_id, *message_index, &error))
 	{
