@@ -3,6 +3,7 @@
 // Extracted from ChatView.tsx (MO-3).
 
 import { ImageAttachmentPreview } from './ImageAttachmentPreview'
+import { ContextChip, type ContextChipKind } from './ContextChip'
 import { MarkdownContent } from '../markdown/Markdown'
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAppStore } from '../../store/useAppStore'
@@ -15,7 +16,7 @@ import type {
 } from '../../store/useAppStore'
 import type { Attachment, Message, MessageBlock } from '../../types/message'
 import { Button, Notice, Tooltip } from '../ui'
-import { BookOpen, Brain, ChevronRight } from 'lucide-react'
+import { Brain, ChevronRight } from 'lucide-react'
 import { ConversationWork, ConversationWorkRow, useWorkTraceDisclosure, useThoughtDisclosure, type WorkTraceDisclosureState } from './ConversationWork'
 import {
   PermissionInlineCard,
@@ -783,6 +784,12 @@ export function isImageAttachment(attachment: Attachment): boolean {
   return attachment.type === 'image' || Boolean(attachment.mimeType?.startsWith('image/'))
 }
 
+export function attachmentChipKind(attachment: Attachment): ContextChipKind {
+  if (attachment.type === 'markdown-store') return 'skill'
+  if (attachment.type === 'directory') return 'directory'
+  return isImageAttachment(attachment) ? 'image' : 'file'
+}
+
 export function AttachmentList({ attachments, chatId, nativeMessageIndex }: { attachments: Attachment[]; chatId?: string; nativeMessageIndex?: number }) {
   if (attachments.length === 0) return null
 
@@ -794,22 +801,7 @@ export function AttachmentList({ attachments, chatId, nativeMessageIndex }: { at
       {markdownStoreAttachments.length > 0 && (
         <div className="flex flex-wrap gap-2" aria-label="Skills context">
           {markdownStoreAttachments.map((attachment) => (
-            <span
-              key={attachment.id}
-              className="inline-flex items-center gap-2 max-w-full text-[11px]"
-              title={attachmentLabel(attachment)}
-              style={{
-                border: '1px solid color-mix(in srgb, var(--purple) 45%, var(--border))',
-                borderRadius: 7,
-                background: 'color-mix(in srgb, var(--purple) 10%, var(--surface-up))',
-                color: 'var(--text-2)',
-                padding: '5px 8px',
-              }}
-            >
-              <BookOpen size={13} aria-hidden style={{ color: 'var(--purple)' }} />
-              <span style={{ color: 'var(--purple)' }}>Skills</span>
-              <span className="truncate max-w-[320px]">{attachment.name}</span>
-            </span>
+            <ContextChip key={attachment.id} kind="skill" name={attachment.name} detail={attachmentLabel(attachment)} />
           ))}
         </div>
       )}
@@ -817,20 +809,7 @@ export function AttachmentList({ attachments, chatId, nativeMessageIndex }: { at
         <div className="flex flex-wrap gap-2" aria-label="File attachments">
           {fileAttachments.map((attachment) => (
             <ImageAttachmentPreview key={attachment.id} chatId={chatId} messageIndex={nativeMessageIndex} attachment={attachment} fallback={
-            <span
-              className="inline-flex items-center gap-2 max-w-full text-[11px]"
-              title={attachmentLabel(attachment)}
-              style={{
-                border: '1px solid var(--border)',
-                borderRadius: 999,
-                background: 'var(--surface-up)',
-                color: 'var(--text-2)',
-                padding: '3px 7px',
-              }}
-            >
-              <span className="truncate max-w-[320px]">{attachment.name}</span>
-              <span style={{ color: 'var(--text-3)' }}>{attachment.type}</span>
-            </span>
+              <ContextChip kind={attachmentChipKind(attachment)} name={attachment.name} detail={attachmentLabel(attachment)} path={attachment.path} />
             } />
           ))}
         </div>

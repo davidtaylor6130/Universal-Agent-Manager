@@ -1,0 +1,56 @@
+/* Referenced context pills: 24px, hairline, quiet surface. Used by the composer and sent messages. */
+.uam-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 24px;
+  max-width: 100%;
+  padding: 0 var(--sp-1) 0 var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  animation: uam-context-chip-in var(--dur-fast) var(--ease);
+}
+.uam-context-chip.is-error {
+  border-color: color-mix(in srgb, var(--error) 55%, var(--border));
+  background: var(--error-dim);
+  color: var(--error);
+}
+.uam-context-chip__body {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  border-radius: var(--r-sm);
+  cursor: default;
+}
+button.uam-context-chip__body { cursor: pointer; }
+.uam-context-chip__body:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-context-chip__icon { display: inline-flex; flex-shrink: 0; color: var(--text-3); }
+.uam-context-chip.is-error .uam-context-chip__icon { color: var(--error); }
+.uam-context-chip .uam-context-chip__name {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.uam-context-chip__meta { flex-shrink: 0; color: var(--text-3); }
+.uam-context-chip .uam-context-chip__remove.uam-iconbtn--sm { width: 18px; height: 18px; border-radius: var(--r-sm); }
+.uam-context-chip__remove:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+@keyframes uam-context-chip-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-context-chip { animation: none; }
+}
