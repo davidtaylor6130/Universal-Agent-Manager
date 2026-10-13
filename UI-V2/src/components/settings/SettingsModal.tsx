@@ -91,6 +91,54 @@ function cliActionErrorKey(providerId: string, executionHostId: string) {
   return `${executionHostId || 'local'}:${providerId}`
 }
 
+// Mirrors the backend rule: the host instruction file is empty or an absolute path on that host.
+function remoteInstructionFileError(platform: string | undefined, rawValue: string) {
+  const value = rawValue.trim()
+  if (!value) return ''
+  const windows = platform === 'windows' || platform === 'Windows'
+  if (windows) return /^[A-Za-z]:[\\/]/.test(value) || (value.startsWith('\\\\') && value.length >= 5) ? '' : 'Use an absolute path such as C:\\Users\\you\\AGENTS.md.'
+  return value.startsWith('/') ? '' : 'Use an absolute path such as /home/you/AGENTS.md.'
+}
+
+function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: ExecutionHost; busy: boolean; onSave: (instructionFile: string, startupEnabled: boolean, cliUpdatesAsAdmin: boolean) => void; onCheck: (instructionFile: string) => void }) {
+  const [instructionFile, setInstructionFile] = useState(host.instructionFile || '')
+  const [startupEnabled, setStartupEnabled] = useState(Boolean(host.startupEnabled))
+  const [cliUpdatesAsAdmin, setCliUpdatesAsAdmin] = useState(Boolean(host.cliUpdatesAsAdmin))
+  const instructionError = remoteInstructionFileError(host.platform, instructionFile)
+  const dirty = instructionFile.trim() !== (host.instructionFile || '').trim()
+    || startupEnabled !== Boolean(host.startupEnabled)
+    || cliUpdatesAsAdmin !== Boolean(host.cliUpdatesAsAdmin)
+  const saveReason = instructionError ? 'Fix the instruction file path first.' : dirty ? undefined : 'No changes to save.'
+  return (
+    <form className="mt-2 grid gap-2" onSubmit={(event) => {
+      event.preventDefault()
+      if (!busy && dirty && !instructionError) onSave(instructionFile, startupEnabled, cliUpdatesAsAdmin)
+    }}>
+      <SettingRow
+        title="Start runner at login"
+        description="Starts the helper when you sign in to the computer."
+        status={`Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses Windows login or Linux systemd user session`}
+        control={<Switch hideLabel name="startupEnabled" label="Start runner at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
+      />
+      {host.platform === 'linux' && (
+        <SettingRow
+          title="Run CLI updates with sudo"
+          description="Opt in only if npm works with passwordless sudo. Chat sessions still run as your SSH user."
+          control={<Switch hideLabel name="cliUpdatesAsAdmin" label="Run CLI updates with sudo" checked={cliUpdatesAsAdmin} disabled={busy} onChange={(event) => setCliUpdatesAsAdmin(event.currentTarget.checked)} />}
+        />
+      )}
+      <SettingsField label="Host instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Read on this host before project context. Leave empty to skip.">
+        <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
+        {instructionError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span>}
+      </SettingsField>
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="secondary" type="button" disabled={busy || !instructionFile.trim() || Boolean(instructionError)} onClick={() => onCheck(instructionFile)}>Check file</Button>
+        <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError)} title={saveReason}>Save host options</Button>
+      </div>
+    </form>
+  )
+}
+
 function workspaceKey(value: string | undefined) {
   return (value ?? '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
@@ -537,7 +585,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const computerUseOsLabel = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform) ? 'macOS' : 'your operating system'
   const [remoteLabel, setRemoteLabel] = useState('')
   const [remoteAlias, setRemoteAlias] = useState('')
-  const [remoteBusy, setRemoteBusy] = useState(false)
+  const [remoteBusyHostIds, setRemoteBusyHostIds] = useState<string[]>([])
+  const remoteBusy = remoteBusyHostIds.length > 0
+  const isRemoteHostBusy = (hostId: string) => remoteBusyHostIds.includes(hostId)
+  const setRemoteHostBusy = (hostId: string, busy: boolean) => setRemoteBusyHostIds(current => busy ? [...current.filter(id => id !== hostId), hostId] : current.filter(id => id !== hostId))
   const [remoteMessage, setRemoteMessage] = useState('')
   const [remotePreview, setRemotePreview] = useState<{ host: ExecutionHost; preview: string } | null>(null)
   const [remoteCustomDirectory, setRemoteCustomDirectory] = useState(false)
@@ -704,12 +755,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       setRemoteMessage('Enter one exact host alias from ~/.ssh/config.')
       return
     }
-    setRemoteBusy(true)
+    setRemoteHostBusy(host.id, true)
     setRemoteMessage('')
 	setRemoteCustomDirectory(Boolean(host.runnerDirectory))
 	setRemoteDirectory(host.runnerDirectory || 'uam-helper')
     const response = await sendToCEF<{ host: ExecutionHost; preview: string }>({ action: 'previewRemoteHost', payload: host })
-    setRemoteBusy(false)
+    setRemoteHostBusy(host.id, false)
     if (!response.ok || !response.data) {
       setRemoteMessage(response.error || 'The remote setup preview could not be created.')
       return
@@ -718,13 +769,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const installRemoteHost = async () => {
-    if (!remotePreview || remoteBusy) return
+    if (!remotePreview || isRemoteHostBusy(remotePreview.host.id)) return
 	const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
 	if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
-    setRemoteBusy(true)
+    setRemoteHostBusy(remotePreview.host.id, true)
     setRemoteMessage('Connecting, verifying the copied helper, and starting the runner…')
     const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
-    setRemoteBusy(false)
+    setRemoteHostBusy(remotePreview.host.id, false)
     if (!response.ok) {
       setRemotePreview(null)
       setRemoteMessage(response.error || 'Remote helper setup failed.')
@@ -737,19 +788,28 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const saveRemoteHostOptions = async (host: ExecutionHost, instructionFile: string, startupEnabled: boolean, cliUpdatesAsAdmin: boolean) => {
-    if (remoteBusy) return
-    setRemoteBusy(true)
+    if (isRemoteHostBusy(host.id)) return
+    setRemoteHostBusy(host.id, true)
     const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, instructionFile, startupEnabled, cliUpdatesAsAdmin } })
-    setRemoteBusy(false)
+    setRemoteHostBusy(host.id, false)
     setRemoteMessage(response.ok ? `${host.label} options saved.` : response.error || 'SSH host options could not be saved.')
   }
 
+  const checkRemoteHostInstruction = (host: ExecutionHost, instructionFile: string) => {
+    if (isRemoteHostBusy(host.id)) return
+    setRemoteHostBusy(host.id, true)
+    void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile } }).then((response) => {
+      setRemoteHostBusy(host.id, false)
+      setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
+    })
+  }
+
   const removeRemoteHost = async (host: ExecutionHost) => {
-    if (remoteBusy) return
-    setRemoteBusy(true)
+    if (isRemoteHostBusy(host.id)) return
+    setRemoteHostBusy(host.id, true)
     setRemoteMessage('')
     const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
-    setRemoteBusy(false)
+    setRemoteHostBusy(host.id, false)
     setRemoteMessage(response.ok ? `${host.label} was removed from UAM. Any helper files on that machine were left untouched.` : response.error || 'Remote host removal failed.')
   }
 
@@ -2377,7 +2437,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </SettingsSection>
 
           <SettingsSection title="Configured hosts" description="Helpers installed on these computers. Each host keeps its own options.">
-            {remoteBusy && <div role="progressbar" aria-label="Remote host task running" className="uam-settings-progress" />}
             {remoteHosts.length === 0 && <SettingRow title="No remote hosts yet" description="Add a computer above to run workspaces over SSH." />}
             {remoteHosts.map((host) => (
               <SettingRow
@@ -2394,49 +2453,22 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 )}
                 control={(
                   <div className="flex items-center gap-1">
-                    <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={remoteBusy} onClick={() => void previewRemoteHost(host)} />
-                    <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={remoteBusy} onClick={() => setPendingHostRemoval(host)} />
+                    <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={isRemoteHostBusy(host.id)} onClick={() => void previewRemoteHost(host)} />
+                    <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={isRemoteHostBusy(host.id)} onClick={() => setPendingHostRemoval(host)} />
                   </div>
                 )}
               >
                 <div className="grid gap-3">
+                  {isRemoteHostBusy(host.id) && <div role="progressbar" aria-label={`Remote host task running on ${host.label}`} className="uam-settings-progress" />}
                   <div className="font-mono text-xs" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
                   <details>
                     <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--text)' }}>Host options</summary>
-                    <form className="mt-2 grid gap-2" onSubmit={(event) => {
-                      event.preventDefault()
-                      const fields = new FormData(event.currentTarget)
-                      void saveRemoteHostOptions(host, String(fields.get('instructionFile') || ''), fields.get('startupEnabled') === 'on', fields.get('cliUpdatesAsAdmin') === 'on')
-                    }}>
-                      <SettingRow
-                        title="Start runner at login"
-                        description="Starts the helper when you sign in to the computer."
-                        status={`Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses Windows login or Linux systemd user session`}
-                        control={<Switch hideLabel name="startupEnabled" label="Start runner at login" defaultChecked={host.startupEnabled || false} />}
-                      />
-                      {host.platform === 'linux' && (
-                        <SettingRow
-                          title="Run CLI updates with sudo"
-                          description="Opt in only if npm works with passwordless sudo. Chat sessions still run as your SSH user."
-                          control={<Switch hideLabel name="cliUpdatesAsAdmin" label="Run CLI updates with sudo" defaultChecked={host.cliUpdatesAsAdmin || false} />}
-                        />
-                      )}
-                      <SettingsField label="Host instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Read on this host before project context. Leave empty to skip.">
-                        <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} defaultValue={host.instructionFile || ''} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
-                      </SettingsField>
-                      <div className="flex justify-end gap-2">
-                        <Button size="sm" variant="secondary" type="button" disabled={remoteBusy} onClick={(event) => {
-                          const form = event.currentTarget.closest('form')
-                          if (!form) return
-                          setRemoteBusy(true)
-                          void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile: String(new FormData(form).get('instructionFile') || '') } }).then((response) => {
-                            setRemoteBusy(false)
-                            setRemoteMessage(response.ok ? `Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.` : response.error || 'Host instruction file could not be read.')
-                          })
-                        }}>Check file</Button>
-                        <Button size="sm" variant="primary" type="submit" disabled={remoteBusy}>Save host options</Button>
-                      </div>
-                    </form>
+                    <RemoteHostOptionsForm
+                      host={host}
+                      busy={isRemoteHostBusy(host.id)}
+                      onSave={(instructionFile, startupEnabled, cliUpdatesAsAdmin) => void saveRemoteHostOptions(host, instructionFile, startupEnabled, cliUpdatesAsAdmin)}
+                      onCheck={(instructionFile) => checkRemoteHostInstruction(host, instructionFile)}
+                    />
                   </details>
                 </div>
               </SettingRow>
@@ -3102,7 +3134,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </div>
         </Overlay>}
       </Presence>
-      <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={remoteBusy}
+      <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
         onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
         This removes the saved host configuration. Any helper files on that machine are left untouched.
       </ConfirmDialog>

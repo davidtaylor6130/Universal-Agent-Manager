@@ -545,7 +545,7 @@ describe('SettingsModal memory settings', () => {
     try {
       openRemoteHostsSection(host)
       const input = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Fixture host"]')!
-      input.value = '/tmp/new-instructions.md'
+      setNativeInputValue(input, '/tmp/new-instructions.md')
       const form = input.form!
       requests.length = 0
       const buttons = Array.from(form.querySelectorAll('button'))
@@ -562,6 +562,54 @@ describe('SettingsModal memory settings', () => {
           ? { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md', startupEnabled: false, cliUpdatesAsAdmin: false }
           : { id: 'fixture-host', instructionFile: '/tmp/new-instructions.md' },
       }])
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  function setNativeInputValue(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it('enables host options save only for valid changes and keeps other hosts usable while one saves', async () => {
+    const twoHosts = [
+      { id: 'host-a', label: 'Host A', transport: 'ssh', sshAlias: 'host-a', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' },
+      { id: 'host-b', label: 'Host B', transport: 'ssh', sshAlias: 'host-b', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '' },
+    ]
+    useAppStore.setState({ executionHosts: twoHosts as never })
+    const requests: Array<{ action: string; payload: Record<string, unknown>; respond: () => void }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      requests.push({ ...parsed, respond: () => onSuccess(JSON.stringify({})) })
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      const saveA = () => Array.from(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!.form!.querySelectorAll('button')).find(b => b.type === 'submit') as HTMLButtonElement
+      const inputA = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
+      expect(saveA().disabled).toBe(true)
+
+      setNativeInputValue(inputA, 'relative/AGENTS.md')
+      expect(saveA().disabled).toBe(true)
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('absolute path')
+
+      setNativeInputValue(inputA, '/tmp/new-AGENTS.md')
+      expect(saveA().disabled).toBe(false)
+
+      await act(async () => { saveA().click() })
+      expect(requests.find(r => r.action === 'saveRemoteHostOptions')?.payload.id).toBe('host-a')
+      // Only Host A shows progress and is disabled; Host B's controls stay usable.
+      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host A"]')).toBeTruthy()
+      expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host B"]')).toBeNull()
+      expect(saveA().disabled).toBe(true)
+      const reinstallB = host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host B"]')!
+      expect(reinstallB.disabled).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host A"]')!.disabled).toBe(true)
     } finally {
       act(() => root.unmount())
       host.remove()
