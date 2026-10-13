@@ -38,6 +38,7 @@ import {
   type BuiltInTheme,
   type StoredTheme,
 } from '../../utils/themeStorage'
+import { MOTION_SPEEDS, applyMotionSpeed, readStoredMotion, writeStoredMotion, type MotionSpeed } from '../../utils/motionStorage'
 import type { Provider } from '../../types/provider'
 import type { ComputerUseBackend, ExecutionHost, Session } from '../../types/session'
 import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
@@ -496,6 +497,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
   const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
   const { theme, setTheme } = useTheme()
+  const [motionSpeed, setMotionSpeed] = useState<MotionSpeed>(readStoredMotion)
   const [settingsSearch, setSettingsSearch] = useState('')
   const navRef = useRef<HTMLElement>(null)
   const [navIndicator, setNavIndicator] = useState<{ top: number; height: number } | null>(null)
@@ -572,7 +574,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (!nav) return
     const measure = () => {
       const active = nav.querySelector<HTMLElement>('[data-active="true"]')
-      setNavIndicator(active ? { top: active.offsetTop, height: active.offsetHeight } : null)
+      // Inset 8px so the dash sits inside the item's rounded edges, like the old ::before bar.
+      setNavIndicator(active ? { top: active.offsetTop + 8, height: active.offsetHeight - 16 } : null)
     }
     measure()
     if (typeof ResizeObserver === 'undefined') return
@@ -1646,6 +1649,25 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               title="Collapsible work sections"
               description="Let finished work sections fold away."
               control={<Switch hideLabel label="Allow work sections to collapse" checked={collapsibleWorkSections} onChange={(event) => setCollapsibleWorkSections(event.target.checked)} />}
+            />
+          </SettingsSection>
+          <SettingsSection title="Motion" description="How fast panels, menus and transitions move. Saved on this computer.">
+            <SettingRow
+              title="Animation speed"
+              description="Off removes transitions entirely."
+              control={
+                <MenuSelect
+                  label="Animation speed"
+                  value={motionSpeed}
+                  options={MOTION_SPEEDS.map((speed) => ({ value: speed.id, label: speed.label }))}
+                  onChange={(value) => {
+                    const next = value as MotionSpeed
+                    setMotionSpeed(next)
+                    writeStoredMotion(next)
+                    applyMotionSpeed(next)
+                  }}
+                />
+              }
             />
           </SettingsSection>
           <TypographySettings />

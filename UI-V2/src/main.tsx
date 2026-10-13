@@ -5,9 +5,11 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import { isCefContext } from './ipc/cefBridge'
 import { applyDocumentTheme, readStoredTheme } from './utils/themeStorage'
+import { applyMotionSpeed, readStoredMotion } from './utils/motionStorage'
 
-// Apply persisted theme before first render to prevent flash
+// Apply persisted theme and motion speed before first render to prevent flash
 applyDocumentTheme(readStoredTheme() ?? 'focus')
+applyMotionSpeed(readStoredMotion())
 applyTypography(useTypographyStore.getState().preferences)
 
 const root = createRoot(document.getElementById('root')!)
