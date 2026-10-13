@@ -356,6 +356,8 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Goals and providers | Code Only | Durable Native Goal Binding | Explicit native goal resume validates persisted provider, host, thread, objective, budget and usage witnesses before authorizing controls. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
+| Navigation and interface | Code Only | Portable Chat Icon Metadata | Validated chat icon metadata survives normal, indexed unloaded and backup-recovery saves while transport and picker integration remain pending. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.

@@ -4,6 +4,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/approval_modes.h"
+#include "common/config/custom_icon.h"
 #include "common/config/execution_host_config.h"
 #include "common/memory/memory_levels.h"
 #include "common/security/command_safety.h"
@@ -144,6 +145,7 @@ namespace
 	constexpr std::string_view kChatBranchRetryErrorField = "branch_retry_error";
 	constexpr std::string_view kChatFolderIdField = "folder_id";
 	constexpr std::string_view kChatTitleField = "title";
+	constexpr std::string_view kChatCustomIconField = "custom_icon";
 	constexpr std::string_view kChatCreatedAtField = "created_at";
 	constexpr std::string_view kChatUpdatedAtField = "updated_at";
 	constexpr std::string_view kChatLastOpenedAtField = "last_opened_at";
@@ -210,6 +212,25 @@ namespace
 		return lhs.updated_at > rhs.updated_at;
 	}
 
+
+	CustomIcon JsonCustomIconOrEmpty(const JsonValue* value)
+	{
+		if (value == nullptr || value->type != JsonValue::Type::Object) return {};
+		const JsonValue* type = value->Find("type");
+		const JsonValue* content = value->Find("value");
+		if (type == nullptr || content == nullptr || type->type != JsonValue::Type::String || content->type != JsonValue::Type::String) return {};
+		const CustomIcon icon{type->string_value, content->string_value};
+		return uam::icons::IsValid(icon) ? icon : CustomIcon{};
+	}
+
+	JsonValue CustomIconToJson(const CustomIcon& icon)
+	{
+		if (!uam::icons::IsValid(icon) || icon.type.empty()) return {};
+		JsonValue value = uam::json::Object();
+		uam::json::SetString(value, "type", icon.type);
+		uam::json::SetString(value, "value", icon.value);
+		return value;
+	}
 
 	JsonValue StringArrayToJson(const std::vector<std::string>& values);
 	std::vector<std::string> JsonStringArrayOrEmpty(const JsonValue* value);
@@ -942,7 +963,7 @@ namespace
 
 	bool ChatDisplayFieldsEquivalentForRecovery(const ChatSession& lhs, const ChatSession& rhs)
 	{
-		if (lhs.folder_id != rhs.folder_id || lhs.title != rhs.title || lhs.pinned != rhs.pinned)
+		if (lhs.folder_id != rhs.folder_id || lhs.title != rhs.title || lhs.custom_icon != rhs.custom_icon || lhs.pinned != rhs.pinned)
 		{
 			return false;
 		}
@@ -1531,6 +1552,7 @@ namespace
 		chat.folder_id = JsonStringOrEmpty(root.Find(kChatFolderIdField));
 		std::erase_if(chat.folder_id, [](char c) { return static_cast<unsigned char>(c) < 0x20; });
 		chat.title = JsonStringOrEmpty(root.Find(kChatTitleField));
+		chat.custom_icon = JsonCustomIconOrEmpty(root.Find(kChatCustomIconField));
 		chat.created_at = JsonStringOrEmpty(root.Find(kChatCreatedAtField));
 		chat.updated_at = JsonStringOrEmpty(root.Find(kChatUpdatedAtField));
 		chat.last_opened_at = JsonStringOrEmpty(root.Find(kChatLastOpenedAtField));
@@ -2286,6 +2308,7 @@ try
 		uam::json::SetString(root, kChatFolderIdField, std::move(folder_id_sanitized));
 	}
 	uam::json::SetString(root, kChatTitleField, chat.title);
+	uam::json::SetValue(root, kChatCustomIconField, CustomIconToJson(chat.custom_icon));
 	uam::json::SetString(root, kChatCreatedAtField, chat.created_at);
 	uam::json::SetString(root, kChatUpdatedAtField, chat.updated_at);
 	uam::json::SetString(root, kChatLastOpenedAtField, uam::strings::NonEmptyOrFallback(chat.last_opened_at, chat.updated_at));
@@ -3109,6 +3132,7 @@ namespace
 		hydrated.execution_host_id = summary.execution_host_id;
 		hydrated.folder_id = summary.folder_id;
 		hydrated.title = summary.title;
+		hydrated.custom_icon = summary.custom_icon;
 		hydrated.pinned = summary.pinned;
 		hydrated.workspace_directory = summary.workspace_directory;
 		hydrated.workspace_isolation_kind = summary.workspace_isolation_kind;

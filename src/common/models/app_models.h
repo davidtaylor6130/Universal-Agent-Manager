@@ -317,6 +317,14 @@ struct ClaudeQuotaContinuation
 	bool operator==(const ClaudeQuotaContinuation&) const = default;
 };
 
+/// <summary>Portable custom icon metadata. PNG values name assets under the data root.</summary>
+struct CustomIcon
+{
+	std::string type;
+	std::string value;
+	bool operator==(const CustomIcon&) const = default;
+};
+
 struct ChatSession
 {
 	std::string id;
@@ -388,6 +396,7 @@ struct ChatSession
 	std::string branch_retry_error;
 	std::string folder_id;
 	std::string title;
+	CustomIcon custom_icon;
 	std::string created_at;
 	std::string updated_at;
 	std::string last_opened_at;
@@ -494,14 +503,6 @@ struct ProviderChatDefaults
 /// <summary>
 /// User-defined chat folder metadata.
 /// </summary>
-/// <summary>Portable custom icon metadata. PNG values name assets under the data root.</summary>
-struct CustomIcon
-{
-	std::string type;
-	std::string value;
-	bool operator==(const CustomIcon&) const = default;
-};
-
 struct ChatFolder
 {
 	std::string id;
