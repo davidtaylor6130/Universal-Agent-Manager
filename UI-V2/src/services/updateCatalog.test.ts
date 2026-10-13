@@ -71,6 +71,73 @@ describe('update catalog', () => {
     await result
   })
 
+  it.each([undefined, null, 123, { text: 'Unexpected object' }, ['Unexpected array'], '   '])('omits missing or malformed release bodies (%j)', async (body) => {
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-07-13T00:00:00.000Z', uam: { version: '4.1.0', url: '', releaseNotesExcerpt: 'Older release notes.' }, providers: {},
+    }))
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => String(input).includes('api.github.com')
+        ? { tag_name: 'V4.2.0', html_url: 'https://example.test/release', body }
+        : { version: '1.0.0' },
+    })))
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.uam.version).toBe('V4.2.0')
+    expect(catalog.uam).not.toHaveProperty('releaseNotesExcerpt')
+  })
+
+  it('normalizes release text, caches it, and projects it only onto the UAM update', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => String(input).includes('api.github.com')
+        ? { tag_name: 'V4.2.0', html_url: 'https://example.test/release', body: '# Fixes\r\n- **Faster** [startup](https://example.test).\n<p>Stable `sessions`.</p><script>unsafe()</script>\u0000' }
+        : { version: '2.0.0' },
+    })))
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.uam.releaseNotesExcerpt).toBe('Fixes Faster startup. Stable sessions.')
+    expect(readCachedUpdateCatalog()?.uam).toEqual(catalog.uam)
+    const updates = availableUpdates(catalog, '4.1.0', {
+      providers: [{ providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '' }],
+    }, [], {})
+    expect(updates[0].releaseNotesExcerpt).toBe(catalog.uam.releaseNotesExcerpt)
+    expect(updates[1]).not.toHaveProperty('releaseNotesExcerpt')
+    expect(fetch).toHaveBeenCalledTimes(11)
+  })
+
+  it('bounds oversized release bodies before caching and projection', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => String(input).includes('api.github.com')
+        ? { tag_name: 'V4.2.0', body: 'A'.repeat(20_000) }
+        : { version: '1.0.0' },
+    })))
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.uam.releaseNotesExcerpt).toBe('A'.repeat(500))
+    expect(readCachedUpdateCatalog()?.uam.releaseNotesExcerpt).toHaveLength(500)
+    expect(availableUpdates(catalog, '4.1.0', { providers: [] }, [], {})[0].releaseNotesExcerpt).toHaveLength(500)
+  })
+
+  it('accepts legacy cache entries and ignores malformed optional excerpts', () => {
+    const legacy = { checkedAt: '2026-07-13T00:00:00.000Z', uam: { version: '4.2.0', url: 'https://example.test/uam' }, providers: {} }
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify(legacy))
+    expect(readCachedUpdateCatalog()).toEqual(legacy)
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({ ...legacy, uam: { ...legacy.uam, releaseNotesExcerpt: { text: 'Invalid' } } }))
+    expect(readCachedUpdateCatalog()).toEqual(legacy)
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({ ...legacy, uam: { ...legacy.uam, releaseNotesExcerpt: 'B'.repeat(1_000) } }))
+    expect(readCachedUpdateCatalog()?.uam.releaseNotesExcerpt).toBe('B'.repeat(500))
+  })
+
+  it('retains cached notes with their version when GitHub is unavailable', async () => {
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-07-13T00:00:00.000Z', uam: { version: '4.2.0', url: 'https://example.test/uam', releaseNotesExcerpt: 'Existing fixes.' }, providers: {},
+    }))
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => ({
+      ok: !String(input).includes('api.github.com'),
+      json: async () => ({ version: '1.0.0' }),
+    })))
+    expect((await fetchLatestUpdateCatalog()).uam).toMatchObject({ version: '4.2.0', releaseNotesExcerpt: 'Existing fixes.' })
+  })
+
   it('reports UAM and installed provider updates while respecting dismissals', () => {
     const updates = availableUpdates(
       {

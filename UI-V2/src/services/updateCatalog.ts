@@ -5,6 +5,7 @@ import type { ExecutionHost } from '../types/session'
 const CACHE_KEY = 'uam-update-catalog-v1'
 export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 export const UPDATE_REQUEST_TIMEOUT_MS = 15_000
+const RELEASE_NOTES_EXCERPT_LIMIT = 500
 
 const providerPackages: Record<string, {
   npmPackage: string
@@ -19,7 +20,7 @@ const providerPackages: Record<string, {
 
 export interface LatestUpdateCatalog {
   checkedAt: string
-  uam: { version: string; url: string }
+  uam: { version: string; url: string; releaseNotesExcerpt?: string }
   providers: Record<string, {
     version: string
     url: string
@@ -37,6 +38,20 @@ export interface AvailableUpdate {
   latestVersion: string
   url: string
   installable: boolean
+  releaseNotesExcerpt?: string
+}
+
+function releaseNotesExcerpt(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.slice(0, 10_000)
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|>\s*)/gm, '')
+    .replace(/[`*_~]/g, '')
+    .replace(/[\s\u0000-\u001f\u007f]+/g, ' ')
+    .trim()
+  return text ? text.slice(0, RELEASE_NOTES_EXCERPT_LIMIT).trimEnd() : undefined
 }
 
 export function cliProviderUpdateId(providerId: string, executionHostId?: string): string {
@@ -120,7 +135,10 @@ export function readCachedUpdateCatalog(): LatestUpdateCatalog | null {
   if (typeof window === 'undefined') return null
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(CACHE_KEY) ?? '')
-    return isCatalog(parsed) ? parsed : null
+    if (!isCatalog(parsed)) return null
+    const { releaseNotesExcerpt: cachedExcerpt, ...uam } = parsed.uam
+    const excerpt = releaseNotesExcerpt(cachedExcerpt)
+    return { ...parsed, uam: { ...uam, ...(excerpt ? { releaseNotesExcerpt: excerpt } : {}) } }
   } catch {
     return null
   }
@@ -160,7 +178,7 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
   const providerResults = results.slice(0, providerEntries.length)
   const homebrewResults = results.slice(providerEntries.length)
   const releaseResponse = releaseResult.status === 'fulfilled' ? releaseResult.value : null
-  let release: { tag_name?: string; html_url?: string } = {}
+  let release: { tag_name?: string; html_url?: string; body?: unknown } = {}
   try {
     if (releaseResponse?.ok) release = await releaseResponse.json()
   } catch {
@@ -210,11 +228,14 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
 
   if (!release.tag_name && Object.keys(providers).length === 0) throw new Error('Update services are currently unavailable.')
 
+  const cachedUam = readCachedUpdateCatalog()?.uam
+  const excerpt = release.tag_name ? releaseNotesExcerpt(release.body) : cachedUam?.releaseNotesExcerpt
   const catalog: LatestUpdateCatalog = {
     checkedAt: new Date().toISOString(),
     uam: {
-      version: release.tag_name || readCachedUpdateCatalog()?.uam.version || '',
+      version: release.tag_name || cachedUam?.version || '',
       url: release.html_url || 'https://github.com/davidtaylor6130/Universal-Agent-Manager/releases/latest',
+      ...(excerpt ? { releaseNotesExcerpt: excerpt } : {}),
     },
     providers,
   }
@@ -240,6 +261,7 @@ export function availableUpdates(
       latestVersion: uamVersion,
       url: catalog.uam.url,
       installable: false,
+      ...(catalog.uam.releaseNotesExcerpt ? { releaseNotesExcerpt: catalog.uam.releaseNotesExcerpt } : {}),
     })
   }
 

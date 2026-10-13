@@ -8,6 +8,8 @@ ACP permission handlers classify requests and consult per-chat approval mode, co
 
 The agreed notification direction routes app-wide messages through the notifications panel and one shared transient alert. Existing separate notices remain until that work lands. UI presentation follows the [design language](../ui/design-language.md); settings controls follow [settings rules](../ui/settings.md).
 
+`UI-V2/src/services/updateCatalog.ts` normalizes the first 10,000 characters of the UAM release body into an optional plain-text `releaseNotesExcerpt` capped at 500 characters, preserves it through validated caching and UAM update projection, and leaves GUI rendering and provider release excerpts pending.
+
 ## Ownership and checks
 
 - Permission policy and ACP decisions: `src/common/config/approval_modes.h`, `src/common/security/`, `src/common/runtime/acp/acp_permission_handlers.cpp`, `src/app/computer_use_service.*`.
