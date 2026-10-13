@@ -83,6 +83,7 @@ describe('useUpdateMonitor', () => {
     window.cefQuery = ({ request, onSuccess }) => {
       const { action, payload } = JSON.parse(request)
       expect(action).toBe('applyCliProviderVersions')
+      expect(payload.allowInteractiveElevation).toBe(true)
       for (const target of payload.targets) {
         requests.push(target.executionHostId)
         push(target.executionHostId, { status: 'installing', running: true, lastInstallStatus: 'running' })
@@ -107,6 +108,44 @@ describe('useUpdateMonitor', () => {
       }
       expect(requests).toEqual(['alpha', 'beta', 'gamma'])
     } finally {
+      act(() => root.unmount())
+      useAppStore.setState(previous, true)
+    }
+  })
+
+  it('keeps interactive elevation pending until the owned host update is verified', async () => {
+    vi.useFakeTimers()
+    const previous = useAppStore.getState()
+    const provider: CliVersionProviderState = { providerId: 'codex-cli', executionHostId: 'alpha', installedVersion: '1.0.0', selectedVersion: '2.0.0', availableVersions: [], preferredVersion: 'latest', status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'none' }
+    useAppStore.setState({ updateChecksEnabled: false, cliVersionManager: { providers: [], remoteProviders: [provider] } })
+    window.cefQuery = vi.fn(({ request, onSuccess }) => {
+      expect(JSON.parse(request)).toMatchObject({ action: 'applyCliProviderVersion', payload: { executionHostId: 'alpha', allowInteractiveElevation: true } })
+      useAppStore.setState({ cliVersionManager: { providers: [], remoteProviders: [{ ...provider, status: 'installing', running: true, lastInstallStatus: 'running' }] } })
+      onSuccess('{}')
+    })
+    let monitor: ReturnType<typeof useUpdateMonitor> | undefined
+    function Results() { monitor = useUpdateMonitor(); return null }
+    const root = createRoot(document.createElement('div'))
+    const controller = new AbortController()
+    try {
+      act(() => root.render(<Results />))
+      let completed!: Promise<boolean>
+      let settled = false
+      await act(async () => {
+        completed = monitor!.installCliProviderVersion('codex-cli', '2.0.0', 'alpha', controller.signal)
+        void completed.then(() => { settled = true })
+      })
+      await act(async () => {
+        useAppStore.setState({ cliVersionManager: { providers: [], remoteProviders: [{ ...provider, lastInstallStatus: 'awaiting-verification' }] } })
+        vi.advanceTimersByTime(16 * 60 * 1000)
+      })
+      expect(settled).toBe(false)
+      await act(async () => useAppStore.setState({ cliVersionManager: { providers: [], remoteProviders: [{ ...provider, installedVersion: '2.0.0', lastInstallStatus: 'succeeded' }] } }))
+      expect(await completed).toBe(true)
+      expect(window.cefQuery).toHaveBeenCalledTimes(1)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      controller.abort()
       act(() => root.unmount())
       useAppStore.setState(previous, true)
     }

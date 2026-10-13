@@ -1281,6 +1281,7 @@ if(UAM_BUILD_TESTS)
 	    tests/computer_use_tests.cpp
     tests/remote_runner_tests.cpp
     tests/runner_startup_rollback_tests.cpp
+    tests/remote_cli_elevation_tests.cpp
     tests/memory_tests.cpp
     tests/remote_memory_publication_tests.cpp
     tests/acp_session_tests.cpp

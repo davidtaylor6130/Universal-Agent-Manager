@@ -837,6 +837,7 @@ namespace uam
 	struct AsyncCommandTask
 	{
 		bool running = false;
+		bool allow_interactive_elevation = false;
 		ExecutionHost execution_host;
 		std::string command_preview;
 		std::shared_ptr<AsyncProcessTaskState> state;
@@ -852,6 +853,7 @@ namespace uam
 		}
 
 		task.running = false;
+		task.allow_interactive_elevation = false;
 		task.command_preview.clear();
 		task.state.reset();
 	}

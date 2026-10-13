@@ -25,8 +25,8 @@ class ProviderCliCompatibilityService
  public:
 	void StartVersionCheck(uam::AppState& app, bool force, bool include_remote = false) const;
 	bool StartProviderVersionCheck(uam::AppState& app, std::string_view provider_id, bool force, std::string_view execution_host_id = {}, std::string* error_out = nullptr) const;
-	bool StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out = nullptr, std::string_view execution_host_id = {}, bool stop_sessions = false, bool prepare_only = false) const;
-	void StartInstallProviderVersions(uam::AppState& app, const std::vector<std::tuple<std::string, std::string, std::string>>& targets) const;
+	bool StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out = nullptr, std::string_view execution_host_id = {}, bool stop_sessions = false, bool prepare_only = false, bool allow_interactive_elevation = false) const;
+	void StartInstallProviderVersions(uam::AppState& app, const std::vector<std::tuple<std::string, std::string, std::string>>& targets, bool allow_interactive_elevation = false) const;
 	void Poll(uam::AppState& app) const;
 	std::vector<CliProviderVersionOption> SupportedVersionsForProvider(std::string_view provider_id) const;
 	std::string PreferredVersionForProvider(std::string_view provider_id) const;
@@ -67,3 +67,8 @@ std::vector<std::string> ProviderCliBlockingChatIds(const uam::AppState& app, st
 std::string BuildBulkNpmInstallCommand(const std::vector<std::pair<std::string, std::string>>& targets);
 
 std::string BuildBulkHomebrewUpgradeCommand(const std::vector<std::pair<std::string, std::string>>& targets);
+
+/// <summary>Builds one guarded Linux npm transaction; interactive sudo reads only from the native terminal.</summary>
+std::string BuildLinuxNpmMaintenanceScript(const std::string& command,
+    const std::vector<std::pair<std::string, std::string>>& probes,
+    std::string_view nonce, bool elevated, bool interactive);

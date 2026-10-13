@@ -571,7 +571,7 @@ export interface CliVersionProviderState {
   checkError?: string
   running: boolean
   installMethod?: 'npm' | 'homebrew-formula' | 'homebrew-cask' | 'winget' | 'unknown'
-  lastInstallStatus?: 'none' | 'running' | 'succeeded' | 'failed'
+  lastInstallStatus?: 'none' | 'running' | 'awaiting-verification' | 'succeeded' | 'failed'
   lastCommand: string
   lastOutput: string
 }

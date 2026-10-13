@@ -973,12 +973,12 @@ describe('useAppStore Gemini CLI slice', () => {
     initial.cliVersionManager = { providers: [], remoteProviders: [{
       providerId: 'codex-cli', executionHostId: 'alpha', executionHostName: 'Alpha',
       installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest',
-      status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '',
+      status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'awaiting-verification',
     }] }
     testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
     const { useAppStore: cefStore } = await import('./useAppStore')
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(cefStore.getState().cliVersionManager.remoteProviders?.[0]).toMatchObject({ executionHostId: 'alpha', executionHostName: 'Alpha', providerId: 'codex-cli' })
+    expect(cefStore.getState().cliVersionManager.remoteProviders?.[0]).toMatchObject({ executionHostId: 'alpha', executionHostName: 'Alpha', providerId: 'codex-cli', lastInstallStatus: 'awaiting-verification' })
     const requests: { action: string; payload?: unknown }[] = []
     testWindow.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
     await cefStore.getState().refreshCliProviderVersion('codex-cli', 'alpha')
@@ -987,8 +987,8 @@ describe('useAppStore Gemini CLI slice', () => {
     await cefStore.getState().refreshCliProviderVersion('unknown-provider', 'beta')
     expect(requests.map((request) => request.payload)).toEqual([
       { providerId: 'codex-cli', executionHostId: 'alpha' },
-      { providerId: 'codex-cli', version: 'latest', executionHostId: 'alpha' },
-      { providerId: 'codex-cli', version: 'latest' },
+      { providerId: 'codex-cli', version: 'latest', executionHostId: 'alpha', allowInteractiveElevation: true },
+      { providerId: 'codex-cli', version: 'latest', allowInteractiveElevation: true },
       { providerId: 'unknown-provider', executionHostId: 'beta' },
     ])
     testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, cliVersionManager: { providers: [], remoteProviders: [] } } })

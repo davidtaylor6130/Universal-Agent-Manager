@@ -150,15 +150,21 @@ export function useUpdateMonitor() {
           entry.providerId === providerId && (entry.executionHostId || 'local') === (executionHostId || 'local'))
         const homebrew = state?.installMethod === 'homebrew-formula' || state?.installMethod === 'homebrew-cask'
         const selectedVersion = homebrew ? 'latest' : version
-        if (state?.status === 'installing' && state.selectedVersion === selectedVersion && state.lastInstallStatus === 'running') started = true
-        if (!admitted || !started || state?.running) return
+        if (state?.selectedVersion === selectedVersion && (state.lastInstallStatus === 'awaiting-verification' ||
+          (state.status === 'installing' && state.lastInstallStatus === 'running'))) started = true
+        if (!admitted || !started || state?.running || state?.lastInstallStatus === 'awaiting-verification') return
         finish(state?.lastInstallStatus === 'succeeded' && !state.checkError &&
           Boolean(state.installedVersion) && (selectedVersion === 'latest' || state.installedVersion === version))
       }
       // Subscribe before admission: CEF can push both startup and completion before replying.
       const unsubscribe = useAppStore.subscribe(observe)
-      // Native installation is bounded at 15 minutes, followed by a 30-second version probe.
-      const timer = window.setTimeout(() => finish(false), 16 * 60 * 1000)
+      // Background updates have a deadline; terminal input stays pending until verified or canceled.
+      const timer = window.setTimeout(() => {
+        const manager = useAppStore.getState().cliVersionManager
+        const state = [...manager.providers, ...(manager.remoteProviders ?? [])].find((entry) =>
+          entry.providerId === providerId && (entry.executionHostId || 'local') === (executionHostId || 'local'))
+        if (state?.lastInstallStatus !== 'awaiting-verification') finish(false)
+      }, 16 * 60 * 1000)
       signal.addEventListener('abort', abort, { once: true })
       void applyCliProviderVersion(providerId, version, executionHostId).then((accepted) => {
         if (!accepted) finish(false)
@@ -174,7 +180,7 @@ export function useUpdateMonitor() {
       if (!update.providerId || !update.installable || update.remoteHostId) continue
       const state = providerStates.find((entry) => entry.providerId === update.providerId &&
         (entry.executionHostId || 'local') === (update.executionHostId || 'local'))
-      if (!state || state.running || state.blockingChatIds?.length || state.checkError) continue
+      if (!state || state.running || state.lastInstallStatus === 'awaiting-verification' || state.blockingChatIds?.length || state.checkError) continue
       const attempt = JSON.stringify([update.id, update.latestVersion])
       if (autoInstallAttempts.current.has(attempt)) continue
       autoInstallAttempts.current.add(attempt)
@@ -187,16 +193,17 @@ export function useUpdateMonitor() {
   }, [automaticProviderUpdates, cefStateHydrated, checking, updates, providerStates, applyCliProviderVersion])
 
   const requestCliProviderUpdate = useCallback(async (providerId: string, version: string, executionHostId?: string) => {
-    return sendToCEF({ action: 'applyCliProviderVersion', payload: { providerId, version, ...(executionHostId ? { executionHostId } : {}) } })
+    return sendToCEF({ action: 'applyCliProviderVersion', payload: { providerId, version, allowInteractiveElevation: true, ...(executionHostId ? { executionHostId } : {}) } })
   }, [])
 
   const stopSessionsAndUpdate = useCallback(async (providerId: string, version: string, executionHostId?: string) => {
-    const response = await sendToCEF({ action: 'applyCliProviderVersion', payload: { providerId, version, executionHostId, stopSessions: true } })
+    const response = await sendToCEF({ action: 'applyCliProviderVersion', payload: { providerId, version, executionHostId, stopSessions: true, allowInteractiveElevation: true } })
     return response
   }, [])
 
   const installProviderUpdates = useCallback(async (targets: { providerId: string; latestVersion: string; executionHostId?: string }[]) => {
     const response = await sendToCEF({ action: 'applyCliProviderVersions', payload: {
+      allowInteractiveElevation: true,
       targets: targets.map((target) => ({ providerId: target.providerId, version: target.latestVersion, ...(target.executionHostId ? { executionHostId: target.executionHostId } : {}) })),
     } })
     return response

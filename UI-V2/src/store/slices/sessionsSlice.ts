@@ -2157,7 +2157,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'applyCliProviderVersion',
-          payload: { providerId: targetProviderId, version: targetVersion, ...(executionHostId?.trim() ? { executionHostId: executionHostId.trim() } : {}) },
+          payload: { providerId: targetProviderId, version: targetVersion, allowInteractiveElevation: true, ...(executionHostId?.trim() ? { executionHostId: executionHostId.trim() } : {}) },
           requestId: createRequestId('applyCliProviderVersion'),
         })
         return response.ok

@@ -1183,6 +1183,7 @@ export function sanitizeCliVersionProviderState(value: unknown): CliVersionProvi
   const lastInstallStatus = stringOr(value.lastInstallStatus)
   const normalizedLastInstallStatus: NonNullable<CliVersionProviderState['lastInstallStatus']> =
     lastInstallStatus === 'running' ||
+    lastInstallStatus === 'awaiting-verification' ||
     lastInstallStatus === 'succeeded' ||
     lastInstallStatus === 'failed'
       ? lastInstallStatus

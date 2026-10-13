@@ -6,6 +6,8 @@
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
 #include "remote/runner_client.h"
+#include "remote/runner_proxy.h"
+#include "remote/cli_maintenance_lock.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
@@ -24,6 +26,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <memory>
 #include <optional>
 #include <string>
@@ -35,6 +38,9 @@
 namespace
 {
 	constexpr const char* kLatestVersion = "latest";
+	constexpr std::string_view kInteractiveInstallMarker = "[UAM INTERACTIVE NPM UPDATE] ";
+	constexpr std::string_view kInteractiveConsentMarker = "Explicit interactive npm elevation allowed";
+	constexpr std::string_view kInteractivePreparedMarker = "[UAM INTERACTIVE NPM PREPARED] ";
 	constexpr const char* kCommandFailurePrefix = "Failed to run command: ";
 	constexpr const char* kProviderCliTimedOutSuffix = "\n\n[Provider CLI command timed out]";
 	constexpr const char* kProviderCliCanceledSuffix = "\n\n[Provider CLI command canceled]";
@@ -112,7 +118,7 @@ namespace
 	ProcessExecutionResult RunCliCommand(const ExecutionHost& host, const std::string& provider_id,
 	    const std::string& command, bool installing, int timeout_ms, std::stop_token stop_token,
 	    const std::string& previous_probe, const std::string& install_manager,
-	    const std::vector<std::pair<std::string, std::string>>& additional_probes, std::optional<bool>* remote_connected_out)
+	    const std::vector<std::pair<std::string, std::string>>& additional_probes, std::optional<bool>* remote_connected_out, bool allow_interactive_elevation)
 	{
 		if (remote_connected_out != nullptr) *remote_connected_out = std::nullopt;
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
@@ -168,7 +174,28 @@ namespace
 				}
 			}
 		}
-		const std::vector<std::string> argv = BuildRemoteCliCommandArgv(host, command, installing, install_manager);
+		std::vector<std::string> argv = BuildRemoteCliCommandArgv(host, command, installing, install_manager);
+		if (host.platform == "linux" && installing && install_manager == "npm")
+		{
+			std::vector<std::pair<std::string, std::string>> probes = additional_probes;
+			probes.insert(probes.begin(), {provider_id, previous_probe});
+			const std::string nonce = service.GenerateUuid();
+			const std::string script = BuildLinuxNpmMaintenanceScript(command, probes, nonce,
+			    host.cli_updates_as_admin, host.cli_updates_as_admin && allow_interactive_elevation);
+			if (script.empty()) { result.ok = false; result.error = "The npm update installation could not be validated."; return finish(); }
+			argv = {"sh", "-lc", script};
+			if (host.cli_updates_as_admin && allow_interactive_elevation)
+			{
+				result.ok = true;
+				result.exit_code = 0;
+				result.output = std::string(kInteractivePreparedMarker);
+				return finish();
+			}
+		}
+		else if (!installing && host.platform == "linux")
+		{
+			argv = {"sh", "-lc", uam::remote::LinuxCliMaintenanceStatusScript() + command};
+		}
 		if (argv.empty())
 		{
 			result.ok = false;
@@ -184,19 +211,20 @@ namespace
 	}
 
 	void StartAsyncCommandTask(uam::AsyncCommandTask& task, const ExecutionHost& host, const std::string& provider_id, const std::string& command, bool installing, int timeout_ms, const std::string& previous_probe = {}, const std::string& install_manager = {},
-	    const std::vector<std::pair<std::string, std::string>>& additional_probes = {})
+	    const std::vector<std::pair<std::string, std::string>>& additional_probes = {}, bool allow_interactive_elevation = false)
 	{
 		uam::ResetAsyncCommandTask(task);
 		task.running = true;
+		task.allow_interactive_elevation = installing && allow_interactive_elevation && host.cli_updates_as_admin && host.platform == "linux";
 		task.execution_host = host;
 		task.command_preview = command;
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		std::shared_ptr<AsyncProcessTaskState> state = task.state;
 		task.worker = std::make_unique<std::jthread>(
-		    [host, provider_id, command, installing, timeout_ms, previous_probe, install_manager, additional_probes, state](std::stop_token stop_token)
+		    [host, provider_id, command, installing, timeout_ms, previous_probe, install_manager, additional_probes, state, allow_interactive_elevation](std::stop_token stop_token)
 		    {
 			    state->result = RunCliCommand(host, provider_id, command, installing, timeout_ms,
-			        stop_token, previous_probe, install_manager, additional_probes, &state->remote_helper_connected);
+			        stop_token, previous_probe, install_manager, additional_probes, &state->remote_helper_connected, allow_interactive_elevation);
 
 			    if (!state->result.error.empty() && state->result.output.empty())
 			    {
@@ -722,6 +750,9 @@ std::string ProviderCliLaunchBlockReason(const uam::AppState& app, std::string_v
 {
 	const std::string key = CliProviderVersionStateKey(provider_id, execution_host_id);
 	if (app.pending_cli_updates.contains(key)) return "This provider is stopping for an update. Retry when the update finishes.";
+	const auto installation = app.runtime_cli_versions_by_provider_id.find(key);
+	if (installation != app.runtime_cli_versions_by_provider_id.end() && installation->second.last_install_status == "awaiting-verification")
+		return "This provider update needs a fresh check on this machine before new work can start.";
 	const auto task = app.runtime_cli_install_tasks.find(key);
 	return task != app.runtime_cli_install_tasks.end() && task->second.running
 	    ? "This provider is being updated on this machine. Retry when the update finishes." : "";
@@ -782,7 +813,10 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, execution_host_id);
 	if (host == nullptr || !IsReadyCliHost(*host))
 		return FailProviderCliInstall(error_out, "The selected SSH helper is unavailable. Reconnect it and check again.");
-	if (app.runtime_cli_version_check_task.running || !ProviderCliLaunchBlockReason(app, normalized_provider_id, host->id).empty())
+	const auto installation = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(normalized_provider_id, host->id));
+	const bool awaiting_verification = installation != app.runtime_cli_versions_by_provider_id.end() &&
+	    installation->second.last_install_status == "awaiting-verification";
+	if (app.runtime_cli_version_check_task.running || (!awaiting_verification && !ProviderCliLaunchBlockReason(app, normalized_provider_id, host->id).empty()))
 		return FailProviderCliInstall(error_out, "A provider CLI command is already running.");
 	const ProviderCliPolicy* policy = FindProviderCliPolicy(normalized_provider_id);
 	if (policy == nullptr)
@@ -802,7 +836,7 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	return true;
 }
 
-bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out, std::string_view execution_host_id, bool stop_sessions, bool prepare_only) const
+bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState& app, std::string_view provider_id, std::string_view version, std::string* error_out, std::string_view execution_host_id, bool stop_sessions, bool prepare_only, bool allow_interactive_elevation) const
 {
 	const OptionalProviderCliPolicy resolved = ResolveKnownProviderCliPolicy(provider_id);
 	const std::string unsupported_provider_id = uam::strings::NonEmptyOrFallback(resolved.provider_id, uam::strings::TrimAsciiView(provider_id));
@@ -873,6 +907,7 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 		provider_state.selected_version.assign(install_version);
 		provider_state.last_install_status = "running";
 		provider_state.message = "Stopping provider sessions before installing the update.";
+		provider_state.install_output = allow_interactive_elevation ? std::string(kInteractiveConsentMarker) : "";
 		for (const std::string& chat_id : blocking)
 		{
 			(void)uam::StopAcpSession(app, chat_id, uam::AcpStopPurpose::ProviderUpdate);
@@ -892,7 +927,7 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	provider_state.install_output.clear();
 	provider_state.last_install_status = "running";
 	if (prepare_only) return true;
-	StartAsyncCommandTask(app.runtime_cli_install_tasks[CliProviderVersionStateKey(resolved.provider_id, host->id)], *host, resolved.provider_id, command, true, kProviderCliInstallTimeoutMs, provider_state.raw_output, InstallManager(provider_state.install_method));
+	StartAsyncCommandTask(app.runtime_cli_install_tasks[CliProviderVersionStateKey(resolved.provider_id, host->id)], *host, resolved.provider_id, command, true, kProviderCliInstallTimeoutMs, provider_state.raw_output, InstallManager(provider_state.install_method), {}, allow_interactive_elevation);
 	app.status_line = ProviderTitleMessage("Running ", ProviderTitle(app, resolved.provider_id), " install command...");
 	return true;
 }
@@ -933,13 +968,13 @@ std::string BuildBulkHomebrewUpgradeCommand(const std::vector<std::pair<std::str
 }
 
 void ProviderCliCompatibilityService::StartInstallProviderVersions(uam::AppState& app,
-    const std::vector<std::tuple<std::string, std::string, std::string>>& targets) const
+    const std::vector<std::tuple<std::string, std::string, std::string>>& targets, bool allow_interactive_elevation) const
 {
 	std::unordered_map<std::string, std::vector<std::string>> groups;
 	for (const auto& [provider, version, host_id] : targets)
 	{
 		std::string error;
-		if (!StartInstallProviderVersion(app, provider, version, &error, host_id, false, true))
+		if (!StartInstallProviderVersion(app, provider, version, &error, host_id, false, true, allow_interactive_elevation))
 		{
 			uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider, host_id)];
 			state.provider_id = uam::provider_ids::CanonicalCliProviderLookupId(provider);
@@ -973,11 +1008,12 @@ void ProviderCliCompatibilityService::StartInstallProviderVersions(uam::AppState
 		    manager == "homebrew" ? BuildBulkHomebrewUpgradeCommand(methods) : leader_state.install_command;
 		uam::AsyncCommandTask& leader = app.runtime_cli_install_tasks[keys.front()];
 		StartAsyncCommandTask(leader, leader_state.execution_host, leader_state.provider_id, command, true,
-		    kProviderCliInstallTimeoutMs, leader_state.raw_output, manager, probes);
+		    kProviderCliInstallTimeoutMs, leader_state.raw_output, manager, probes, allow_interactive_elevation);
 		for (std::size_t index = 1; index < keys.size(); ++index)
 		{
 			uam::AsyncCommandTask& task = app.runtime_cli_install_tasks[keys[index]];
 			task.running = true;
+			task.allow_interactive_elevation = leader.allow_interactive_elevation;
 			task.execution_host = leader.execution_host;
 			task.command_preview = command;
 			task.state = leader.state;
@@ -1019,7 +1055,8 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		std::string error;
 		if (!host_matches(pending.execution_host)) error = "Machine configuration changed. Check its CLI version again.";
 		else if (!stopped) error = "Provider session shutdown could not be confirmed. The update was not installed. Stop the session and retry.";
-		else if (StartInstallProviderVersion(app, pending.provider_id, pending.version, &error, pending.execution_host.id)) continue;
+		else if (StartInstallProviderVersion(app, pending.provider_id, pending.version, &error, pending.execution_host.id, false, false,
+		    app.runtime_cli_versions_by_provider_id[key].install_output == kInteractiveConsentMarker)) continue;
 		auto& state = app.runtime_cli_versions_by_provider_id[key];
 		state.last_install_status = "failed";
 		state.message = error;
@@ -1036,6 +1073,8 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		if (host_matches(check_host))
 		{
 			uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, check_host.id)];
+			const bool interactive_verification = provider_state.last_install_status == "awaiting-verification";
+			const std::string previous_probe = provider_state.raw_output;
 			provider_state.install_method = InstallMethodFromProbeOutput(output, check_host.id != "local");
 			const std::string probe_output = output;
 			output = StripProbePathLine(std::move(output));
@@ -1055,7 +1094,7 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			else if (parsed)
 			{
 				provider_state.installed_version = *parsed;
-				if (provider_state.selected_version != "latest" && !provider_state.install_output.empty())
+				if (!interactive_verification && provider_state.selected_version != "latest" && !provider_state.install_output.empty())
 				{
 					if (provider_state.installed_version == provider_state.selected_version) provider_state.last_install_status = "succeeded";
 					else if (provider_state.last_install_status == "succeeded")
@@ -1093,6 +1132,39 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			{
 				provider_state.message = UnparsedVersionOutputMessage(ProviderTitle(app, provider_id), output);
 			}
+			if (interactive_verification)
+			{
+				const std::size_t nonce_end = provider_state.install_output.find('\n', kInteractiveInstallMarker.size());
+				const std::string nonce = provider_state.install_output.starts_with(kInteractiveInstallMarker)
+				    ? provider_state.install_output.substr(kInteractiveInstallMarker.size(), nonce_end - kInteractiveInstallMarker.size()) : "";
+				const std::string completion = std::string(uam::remote::kCliMaintenanceMarker) + "completed " + nonce + " ";
+				std::optional<int> receipt_status;
+				if (!nonce.empty() && probe_output.starts_with(completion))
+				{
+					const std::string_view code = std::string_view(probe_output).substr(completion.size(), probe_output.find('\n') - completion.size());
+					int exit_code = -1;
+					const auto [end, error] = std::from_chars(code.data(), code.data() + code.size(), exit_code);
+					if (error == std::errc{} && end == code.data() + code.size() && exit_code >= 0 && exit_code <= 255) receipt_status = exit_code;
+				}
+				std::string identity_error;
+				if (receipt_status && *receipt_status != 0)
+				{
+					provider_state.last_install_status = "failed";
+					provider_state.message = "The terminal update failed. Review its output in the terminal.";
+				}
+				else if (receipt_status == 0 && parsed &&
+				    ValidateRemoteInstallProbe(previous_probe, probe_output, check_host.platform, &identity_error) &&
+				    (provider_state.selected_version == "latest" || *parsed == provider_state.selected_version))
+				{
+					provider_state.last_install_status = "succeeded";
+					provider_state.message = "Update verified on this host.";
+				}
+				else
+				{
+					provider_state.raw_output = previous_probe;
+					provider_state.message = "Update not verified. Finish it in the terminal and check this host again.";
+				}
+			}
 			const bool confirmed_missing = ProbeIdentity(probe_output).starts_with('|') && OutputIndicatesCommandMissing(output);
 			provider_state.check_error = (command_failed || !parsed) && !confirmed_missing ? provider_state.message : "";
 		}
@@ -1110,6 +1182,9 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	for (auto& [key, task] : app.runtime_cli_install_tasks)
 	{
 		const ExecutionHost install_host = task.execution_host;
+		const bool interactive_allowed = task.allow_interactive_elevation;
+		const std::string install_command = task.command_preview;
+		const std::shared_ptr<AsyncProcessTaskState> original_state = task.state;
 		std::optional<bool> install_connected;
 		if (TryConsumeAsyncCommandTaskOutput(task, output, &install_connected))
 		{
@@ -1121,8 +1196,70 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			}
 			const std::string provider_id = key.substr(key.find_last_of('/') == std::string::npos ? 0 : key.find_last_of('/') + 1);
 			uam::CliProviderVersionState& provider_state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, install_host.id)];
+			if (interactive_allowed && output == kInteractivePreparedMarker && install_host.cli_updates_as_admin && install_host.platform == "linux")
+			{
+				std::vector<std::pair<std::string, std::string>> probes;
+				probes.emplace_back(provider_id, provider_state.raw_output);
+				for (const auto& [other_key, other_task] : app.runtime_cli_install_tasks)
+				{
+					if (other_key == key || other_task.state != original_state) continue;
+					const auto other = app.runtime_cli_versions_by_provider_id.find(other_key);
+					if (other != app.runtime_cli_versions_by_provider_id.end() && host_matches(other->second.execution_host))
+						probes.emplace_back(other->second.provider_id, other->second.raw_output);
+				}
+				const std::string nonce = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+				const std::string script = BuildLinuxNpmMaintenanceScript(install_command, probes, nonce, true, true);
+				const std::vector<std::string> terminal = script.empty() ? std::vector<std::string>{} :
+				    uam::remote::BuildRemoteTerminalSshArgv(install_host.ssh_alias, install_host.platform,
+				        install_host.runner_version, std::filesystem::path("/"), {"sh", "-lc", script}, install_host.runner_directory);
+				if (terminal.empty()) output = std::string(kCommandFailurePrefix) + "The native update command could not be validated.";
+				else
+				{
+					task.running = true;
+					task.allow_interactive_elevation = true;
+					task.execution_host = install_host;
+					task.command_preview = install_command;
+					task.state = std::make_shared<AsyncProcessTaskState>();
+					const std::shared_ptr<AsyncProcessTaskState> launch_state = task.state;
+					task.worker = std::make_unique<std::jthread>([terminal, nonce, launch_state](std::stop_token stop)
+					{
+						if (stop.stop_requested())
+						{
+							launch_state->result.canceled = true;
+							launch_state->result.output = std::string(kCommandFailurePrefix) + "The native update terminal launch was canceled.";
+						}
+						else if (PlatformServicesFactory::Instance().process_service.LaunchTerminalCommand(terminal, &launch_state->result.error))
+						{
+							launch_state->result.ok = true;
+							launch_state->result.exit_code = 0;
+							launch_state->result.output = std::string(kInteractiveInstallMarker) + nonce + "\nComplete the update in the terminal, then check this host's CLI version.";
+						}
+						else launch_state->result.output = std::string(kCommandFailurePrefix) + "The native update terminal could not be opened.";
+						launch_state->completed.store(true, std::memory_order_release);
+					});
+					for (auto& [other_key, other_task] : app.runtime_cli_install_tasks)
+					{
+						if (other_key != key && other_task.state == original_state)
+						{
+							other_task.running = true;
+							other_task.allow_interactive_elevation = true;
+							other_task.state = launch_state;
+						}
+					}
+					continue;
+				}
+			}
+			if (!interactive_allowed && (output.starts_with(kInteractivePreparedMarker) || output.starts_with(kInteractiveInstallMarker)))
+				output = std::string(kCommandFailurePrefix) + "The installer returned an unexpected maintenance status.";
 			provider_state.install_output = output;
 
+			if (interactive_allowed && output.starts_with(kInteractiveInstallMarker))
+			{
+				provider_state.last_install_status = "awaiting-verification";
+				provider_state.message = "Complete the update in the terminal, then check this host's CLI version.";
+				app.status_line = provider_state.message;
+				continue;
+			}
 			if (OutputIndicatesCommandFailure(output))
 			{
 				app.status_line = "Provider CLI update command failed. Review its output in Updates.";
@@ -1316,7 +1453,7 @@ std::vector<std::string> BuildRemoteCliCommandArgv(const ExecutionHost& host, co
 	if (installing && host.cli_updates_as_admin)
 	{
 		if (host.transport != "ssh" || host.platform != "linux" || install_manager != "npm" || !command.starts_with("npm install -g ")) return {};
-		// SSH updates cannot collect a sudo password; never fall back to an unelevated install.
+		// Background SSH commands cannot collect a sudo password; never fall back to an unelevated install.
 		return {"sh", "-lc", "command -v sudo >/dev/null 2>&1 || { echo 'sudo is unavailable on this host.' >&2; exit 1; }; "
 		    "uam_update_prefix=$(npm prefix -g) || exit $?; "
 		    "case \"$uam_update_prefix\" in /*) ;; *) echo 'Could not identify the existing npm installation prefix.' >&2; exit 1;; esac; "
@@ -1325,4 +1462,60 @@ std::vector<std::string> BuildRemoteCliCommandArgv(const ExecutionHost& host, co
 	return host.platform == "windows"
 	    ? std::vector<std::string>{"cmd.exe", "/d", "/s", "/c", command}
 	    : std::vector<std::string>{"sh", "-lc", command};
+}
+
+std::string BuildLinuxNpmMaintenanceScript(const std::string& command,
+    const std::vector<std::pair<std::string, std::string>>& probes,
+    std::string_view nonce, bool elevated, bool interactive)
+{
+	if (!command.starts_with("npm install -g ") || probes.empty() || (interactive && !elevated)) return {};
+	std::string checks;
+	std::string prefix;
+	std::vector<std::pair<std::string, std::string>> targets;
+	std::string_view packages(command);
+	packages.remove_prefix(std::string_view("npm install -g ").size());
+	for (std::size_t index = 0; index < probes.size(); ++index)
+	{
+		const std::size_t space = packages.find(' ');
+		const std::string_view package = packages.substr(0, space);
+		const auto selected = std::ranges::find_if(probes, [package](const auto& probe)
+		{
+			const ProviderCliPolicy* policy = FindProviderCliPolicy(probe.first);
+			return policy != nullptr && !policy->npm_package.empty() && package.starts_with(std::string(policy->npm_package) + "@");
+		});
+		if (selected == probes.end()) return {};
+		const auto& [provider, previous] = *selected;
+		const ProviderCliPolicy* policy = FindProviderCliPolicy(provider);
+		if (policy == nullptr || policy->npm_package.empty() || InstallMethodFromProbeOutput(previous, true) != "npm") return {};
+		const std::string_view identity = ProbeIdentity(previous);
+		if (identity.size() > 8192 || std::ranges::any_of(identity, [](unsigned char character) { return character < 0x20 || character == 0x7f; })) return {};
+		const std::size_t separator = identity.find('|');
+		const std::string suffix = "/bin/" + std::string(policy->executable_name);
+		if (separator == std::string_view::npos || !identity.substr(0, separator).ends_with(suffix)) return {};
+		const std::string selected_prefix(identity.substr(0, separator - suffix.size()));
+		if (!uam::execution_hosts::IsAbsoluteRemotePath("linux", selected_prefix) || (!prefix.empty() && prefix != selected_prefix)) return {};
+		prefix = selected_prefix;
+		const std::string package_prefix = std::string(policy->npm_package) + "@";
+		if (!package.starts_with(package_prefix)) return {};
+		targets.emplace_back(provider, package.substr(package_prefix.size()));
+		packages = space == std::string_view::npos ? std::string_view{} : packages.substr(space + 1);
+		checks += "uam_probe=$(sh -c " + uam::remote::LinuxCliMaintenanceArgument(BuildInstallAwareProbeCommand(*policy, "linux")) + ") || exit 74; "
+		    "uam_identity=$(printf '%s\\n' \"$uam_probe\" | sed -n 's/^\\[UAM CLI PATH\\] //p'); "
+		    "uam_running=$(printf '%s\\n' \"$uam_probe\" | sed -n 's/^\\[UAM CLI RUNNING\\] //p'); "
+		    "test \"$uam_identity\" = " + uam::remote::LinuxCliMaintenanceArgument(identity) + " && test \"$uam_running\" = 0 || "
+		    "{ echo 'The selected CLI changed or still has running work. No update was started.' >&2; exit 74; }; ";
+	}
+	if (!packages.empty() || BuildBulkNpmInstallCommand(targets) != command) return {};
+	const std::string provider_checks = checks;
+	checks += "uam_update_prefix=$(npm prefix -g) || exit 74; test \"$uam_update_prefix\" = " + uam::remote::LinuxCliMaintenanceArgument(prefix) +
+	    " || { echo 'The selected npm prefix changed. No update was started.' >&2; exit 74; }; ";
+	if (elevated)
+	{
+		checks += "uam_npm=$(command -v npm) || exit 74; case \"$uam_npm\" in /*) ;; *) exit 74;; esac; "
+		    "uam_admin_prefix=$(sudo " + std::string(interactive ? "" : "-n ") + "-- \"$uam_npm\" prefix -g) || exit 74; "
+		    "test \"$uam_admin_prefix\" = \"$uam_update_prefix\" || { echo 'Elevated npm identifies another prefix. No update was started.' >&2; exit 74; }; " + provider_checks +
+		    "sudo " + std::string(interactive ? "" : "-n ") + "-- \"$uam_npm\" --prefix \"$uam_update_prefix\" " + command.substr(4);
+	}
+	else checks += "npm --prefix \"$uam_update_prefix\" " + command.substr(4);
+	return uam::remote::WrapLinuxCliMaintenanceCommand(checks, nonce);
 }

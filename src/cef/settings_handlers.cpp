@@ -529,7 +529,7 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 
 	const std::string version = uam::strings::Trim(payload.value("version", ""));
 	std::string error;
-	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id, payload.value("stopSessions", false)))
+	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id, payload.value("stopSessions", false), false, payload.value("allowInteractiveElevation", false)))
 	{
 		m_app.status_line = FailureDetailOrFallback(error, "Failed to start provider CLI install.");
 		uam::PushStateUpdateIfChanged(browser, m_app);
@@ -670,7 +670,7 @@ void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> brows
 		}
 		targets.emplace_back(provider, target["version"].get<std::string>(), host);
 	}
-	ProviderCliCompatibilityService().StartInstallProviderVersions(m_app, targets);
+	ProviderCliCompatibilityService().StartInstallProviderVersions(m_app, targets, payload.value("allowInteractiveElevation", false));
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
