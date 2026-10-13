@@ -367,6 +367,8 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 | Providers and settings | Bugfix | Actionable Model Warning | Exact unsupported-model responses advise refreshing settings or restarting while unrelated provider errors keep their diagnostics. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Providers and settings | Performance | Scoped Model Picker Reuse | The model picker reuses matching populated catalogues and refreshes changed or empty scopes without dropping manual refresh. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
 
+| Native provider policy | Bugfix | Antigravity Native Modes | Both Antigravity launch paths map explicit Plan and Accept Edits modes while Plan rejects conflicting expert overrides before positional data. | Implementation Verified; Claude Review; Un-Reviewed; Not User Tested |
+
 ## Incomplete Work
 
 This is the shared outstanding-work register; the remaining-work rows above are summaries, and ownership is maintained here. These entries include unfinished implementation, unresolved incidents and acceptance gates, not claims that every item is a reproduced bug. Historical resource observations must be rechecked before treating them as current blockers.

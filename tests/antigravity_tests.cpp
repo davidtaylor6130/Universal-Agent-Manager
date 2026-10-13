@@ -23,6 +23,56 @@ UAM_TEST(AntigravityStructuredLaunchUsesNativeStreamAndSavedConversation)
 	UAM_ASSERT_EQ(runtime.OnAcpBuildPrompt(session, 4, "hello", chat, method), (nlohmann::json{{"event", "user"}, {"message", {{"content", "hello"}}}}));
 }
 
+UAM_TEST(AntigravityNativeLaunchModesPreserveCliPolicyAndIdentity)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	const ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	ChatSession chat;
+	chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+	chat.model_id = "private-model";
+	AppSettings settings;
+	settings.provider_extra_flags = "--effort high";
+	for (const std::string mode : {"default", "unknown", "plan", "acceptEdits"})
+	{
+		chat.approval_mode = mode;
+		std::vector<std::string> terminal = {"agy", "--conversation", chat.native_session_id, "--model", chat.model_id, "--effort", "high"};
+		std::vector<std::string> structured = {"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--conversation", chat.native_session_id, "--model", chat.model_id};
+		if (mode == "plan" || mode == "acceptEdits")
+		{
+			const std::string native_mode = mode == "plan" ? "plan" : "accept-edits";
+			terminal.insert(terminal.end(), {"--mode", native_mode});
+			structured.insert(structured.end(), {"--mode", native_mode});
+		}
+		UAM_ASSERT_EQ(runtime.BuildInteractiveArgv(profile, chat, settings), terminal);
+		UAM_ASSERT_EQ(runtime.BuildStructuredLaunchArgv(profile, chat), structured);
+	}
+}
+
+UAM_TEST(AntigravityPlanLaunchCannotBeWeakenedByExplicitExpertFlags)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	for (const std::string flags : {"--mode accept-edits --dangerously-skip-permissions --effort high", "--mode=accept-edits --dangerously-skip-permissions=true --effort high", "-mode accept-edits -dangerously-skip-permissions --effort high", "--mode --effort high", "-mode -dangerously-skip-permissions --effort high"})
+	{
+		ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+		ChatSession chat;
+		chat.approval_mode = "plan";
+		AppSettings settings;
+		settings.provider_extra_flags = flags + " -- literal --mode accept-edits --dangerously-skip-permissions";
+		UAM_ASSERT_EQ(runtime.BuildInteractiveArgv(profile, chat, settings),
+		    (std::vector<std::string>{"agy", "--effort", "high", "--mode", "plan", "--", "literal", "--mode", "accept-edits", "--dangerously-skip-permissions"}));
+		profile.interactive_command = "agy " + flags;
+		UAM_ASSERT_EQ(runtime.BuildStructuredLaunchArgv(profile, chat),
+		    (std::vector<std::string>{"agy", "--effort", "high", "--input-format", "stream-json", "--output-format", "stream-json", "--mode", "plan"}));
+	}
+	ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	ChatSession ordinary;
+	ordinary.approval_mode = "default";
+	AppSettings expert;
+	expert.provider_extra_flags = "--dangerously-skip-permissions --mode accept-edits";
+	UAM_ASSERT_EQ(runtime.BuildInteractiveArgv(profile, ordinary, expert),
+	    (std::vector<std::string>{"agy", "--dangerously-skip-permissions", "--mode", "accept-edits"}));
+}
+
 UAM_TEST(AntigravityCapturedNativeStreamPersistsIdentityAndAvoidsDuplicateAnswer)
 {
 	TempDir temp("uam-agy-stream");
