@@ -30,6 +30,7 @@ Patterns:
 - Settings page: page title + one-line muted subtitle; sections = semibold 13–14px heading + muted one-line description; label above field; actions right-aligned; secondary buttons outlined. Sections separated by spacing/hairline, not heavy boxes inside boxes.
 - Lists/rows: identity line (text), detail line (mono, --text-3, for ids/paths), status line (StatusDot + semantic colour); icon-only actions on the right with Tooltip + aria-label.
 - Notices: tinted, calm, plain-language consequence; collapsible/dismissible where long.
+- Empty new chat: a short heading and the composer centre in the pane; the first send moves the composer down to its normal position (FLIP, transform only; reduced motion jumps).
 
 UX rules (enforce):
 1. One clear primary action per section; rest secondary/ghost.

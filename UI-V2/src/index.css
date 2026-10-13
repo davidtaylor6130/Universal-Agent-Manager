@@ -283,6 +283,21 @@
   pointer-events: auto;
 }
 
+/* Empty chat: heading and composer float to the middle of the pane. ChatView FLIPs the composer when this toggles. */
+.uam-composer-dock--centred {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+
+.uam-composer-centre-heading {
+  padding-bottom: var(--sp-3);
+  text-align: center;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+
 @keyframes uam-side-panel-in {
   from { opacity: 0; transform: translateX(12px); }
   to { opacity: 1; transform: translateX(0); }

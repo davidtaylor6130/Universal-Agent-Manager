@@ -58,16 +58,38 @@ describe('ChatView', () => {
         useAppStore.setState((state) => ({ messages: { 'chat-1': [] }, sessions: state.sessions.map((session) => ({ ...session, messageCount: 0 })) }))
         render()
       })
-      expect(host.textContent).toContain('No messages yet')
+      expect(host.textContent).toContain('What would you like to work on?')
       expect(host.querySelector('.uam-message-list')?.getAttribute('aria-busy')).toBe('false')
       act(() => useAppStore.setState({ chatHistoryErrorBySessionId: { 'chat-1': 'Could not read the saved transcript.' } }))
       expect(host.textContent).toContain('Chat history unavailable')
-      expect(host.textContent).not.toContain('No messages yet')
+      expect(host.textContent).not.toContain('What would you like to work on?')
       await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Retry')!.click())
       expect(loadSessionMessages).toHaveBeenCalledWith('chat-1', true)
     } finally {
       act(() => root.unmount()); host.remove()
       useAppStore.setState({ loadSessionMessages: previousLoad, chatHistoryErrorBySessionId: {} })
+    }
+  })
+
+  it('centres the composer for an empty new chat, keeps the same textarea when the first message moves it down, and not for an existing chat still loading', () => {
+    const dockCentred = (host: HTMLElement) => host.querySelector('.uam-composer-dock')!.classList.contains('uam-composer-dock--centred')
+    useAppStore.setState((state) => ({ messages: {}, chatHistoryErrorBySessionId: {}, loadSessionMessages: vi.fn(),
+      sessions: state.sessions.map((session) => ({ ...session, messageCount: 0 })) }))
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(dockCentred(host)).toBe(true)
+      const input = host.querySelector('textarea')
+      act(() => useAppStore.setState({ messages: { 'chat-1': [{ id: 'first', role: 'user', content: 'Hello', createdAt: new Date() }] } }))
+      expect(dockCentred(host)).toBe(false)
+      expect(host.querySelector('textarea')).toBe(input)
+      act(() => useAppStore.setState((state) => ({ messages: {}, sessions: state.sessions.map((session) => ({ ...session, messageCount: 50 })) })))
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(dockCentred(host)).toBe(false)
+    } finally {
+      act(() => root.unmount()); host.remove()
+      useAppStore.setState({ chatHistoryErrorBySessionId: {} })
     }
   })
 

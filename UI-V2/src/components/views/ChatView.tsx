@@ -6,7 +6,7 @@ import { SubagentWaitStatus } from '../chat/SubagentWaitStatus'
 import { InlinePromptQueue } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
-import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import type { ComputerUseActionResult, Session } from '../../types/session'
@@ -513,6 +513,28 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const historyLoading = messages.length === 0 && !chatHistoryError && (
     (historyPageMissing && (session.messageCount ?? 0) > 0) || chatHistoryRetryingIds.has(session.id)
   )
+  // Empty chat with no history to wait for (a new chat, even while its first history request is in flight): the composer centres.
+  const composerCentred = messages.length === 0 && !chatHistoryError && !historyLoading
+  const composerFormRef = useRef<HTMLFormElement>(null)
+  const composerCentredRef = useRef(composerCentred)
+  const composerTopRef = useRef(0)
+  // FLIP: when the composer moves between centred and bottom, animate the delta from its previous top.
+  useLayoutEffect(() => {
+    const form = composerFormRef.current
+    if (!form) return
+    const top = form.getBoundingClientRect().top
+    const delta = composerTopRef.current - top
+    const moved = composerCentredRef.current !== composerCentred
+    composerCentredRef.current = composerCentred
+    composerTopRef.current = top
+    if (!moved || Math.abs(delta) < 1 || (typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return
+    form.style.transition = 'none'
+    form.style.transform = `translateY(${delta}px)`
+    void form.offsetHeight
+    form.style.transition = 'transform var(--dur-base) var(--ease-out-soft)'
+    form.style.transform = ''
+    form.addEventListener('transitionend', () => { form.style.transition = '' }, { once: true })
+  })
   const loadSessionMessages = useAppStore((s) => s.loadSessionMessages)
   const loadOlderSessionMessages = useAppStore((s) => s.loadOlderSessionMessages)
   const retryChatHistory = useCallback(async (chatId: string) => {
@@ -2347,8 +2369,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               <SubAgentDisclosureProvider key={session.id}>
               <div className="uam-message-list space-y-1.5" aria-busy={historyLoading}>
-              {messages.length === 0 && !chatHistoryError && <div role="status" className="conversation-empty">
-                {historyLoading && <div className="conversation-skeleton" aria-hidden>
+              {historyLoading && <div role="status" className="conversation-empty">
+                <div className="conversation-skeleton" aria-hidden>
                   <span className="conversation-skeleton__bubble" />
                   <div className="conversation-skeleton__text">
                     <span className="conversation-skeleton__line" />
@@ -2361,8 +2383,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     <span className="conversation-skeleton__line" />
                     <span className="conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
-                </div>}
-                <span>{historyLoading ? 'Loading chat history…' : 'No messages yet'}</span>
+                </div>
+                <span>Loading chat history…</span>
               </div>}
               {(earliestRenderedMessageIndex > 0 || historyStartIndex > 0) && (
                 <div className="flex justify-center">
@@ -2661,7 +2683,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           )}
         </div>
 
-        <div ref={composerDockRef} className="uam-composer-dock">
+        <div ref={composerDockRef} className={`uam-composer-dock${composerCentred ? ' uam-composer-dock--centred' : ''}`}>
         {displayedGoal && goalsPopupOpen && (
           <ViewportMenu ref={goalsPopupRef} anchorRef={goalsTriggerRef} side="top" role="region" aria-label="Chat goals" id={goalsPopupId} manageFocus={false}
             onKeyDownCapture={(event) => {
@@ -2690,7 +2712,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
           </ViewportMenu>
         )}
 
+        {composerCentred && <div role="status" className="uam-composer-region uam-composer-centre-heading">What would you like to work on?</div>}
         <form
+          ref={composerFormRef}
           onSubmit={submit}
           className="flex-shrink-0"
         >
