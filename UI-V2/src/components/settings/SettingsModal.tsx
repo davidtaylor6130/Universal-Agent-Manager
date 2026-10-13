@@ -575,8 +575,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const searchable = `${group.label} ${section.label} ${SETTINGS_SEARCH_TERMS[id] ?? (id.startsWith('provider:') ? 'CLI recommended latest version installation models visibility MCP setup connection' : 'providers status overview installed MCP')}`.toLocaleLowerCase()
     return searchTerms.every(term => searchable.includes(term))
   })})).filter(group => group.sections.length > 0)
-  const [providerSettingsHostId, setProviderSettingsHostId] = useState('local')
-  const effectiveProviderSettingsHostId = executionHosts.some(host => host.id === providerSettingsHostId) || providerSettingsHostId === 'local' ? providerSettingsHostId : 'local'
   const [openMemoryMenu, setOpenMemoryMenu] = useState<string | null>(null)
   const [openEditorMenu, setOpenEditorMenu] = useState<string | null>(null)
   const [openCliVersionMenu, setOpenCliVersionMenu] = useState<string | null>(null)
@@ -1588,24 +1586,30 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
 
   const selectedSettingsSection = selectedSection
-  // Settings scope: saves on per-computer pages go to the selected SSH host only when the backend supports it.
+  // One computer choice for Settings: the scope bar. Provider pages use it for per-computer actions (CLI, MCP toggles).
+  // Saves of defaults and MCP lists are sent per host only when the backend supports scoped settings.
   const settingsScopeHostId = useAppStore((s) => s.settingsScopeHostId)
   const setSettingsScopeHostId = useAppStore((s) => s.setSettingsScopeHostId)
   const hostScopedSettings = useAppStore((s) => s.hostScopedSettings === true)
-  const settingsScope = hostScopedSettings && executionHosts.some((host) => host.transport === 'ssh' && host.id === settingsScopeHostId) ? settingsScopeHostId : SETTINGS_ALL_ENVIRONMENTS
-  const scopeBarVisible = SSH_ENABLED && executionHosts.some((host) => host.transport === 'ssh') && (selectedSection === 'defaults' || selectedSection === 'mcp-servers' || selectedSection.startsWith('provider:'))
-  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={settingsScope} supported={hostScopedSettings} onChange={setSettingsScopeHostId} /> : null
-  const handleProviderSettingsHostChange = (hostId: string) => {
+  const hasSshHosts = SSH_ENABLED && executionHosts.some((host) => host.transport === 'ssh')
+  const storedScopeHostId = executionHosts.some((host) => host.transport === 'ssh' && host.id === settingsScopeHostId) ? settingsScopeHostId : SETTINGS_ALL_ENVIRONMENTS
+  const onProviderPage = selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')
+  const scopeBarVisible = hasSshHosts && (onProviderPage || selectedSection === 'defaults' || selectedSection === 'mcp-servers')
+  const scopeValue = onProviderPage || hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
+  const settingsScope = hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
+  const effectiveProviderSettingsHostId = scopeValue === SETTINGS_ALL_ENVIRONMENTS ? 'local' : scopeValue
+  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={setSettingsScopeHostId} /> : null
+  // A pending CLI install or open version menu belongs to the computer it was started for.
+  useEffect(() => {
     setPendingCliInstall(null)
     setOpenCliVersionMenu(null)
-    setProviderSettingsHostId(hostId)
-  }
+  }, [settingsScopeHostId])
   const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
     const selectedSection = sectionOverride ?? selectedSettingsSection
-    if (selectedSection === 'provider-summary') return <ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onHostChange={handleProviderSettingsHostChange} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />
+    if (selectedSection === 'provider-summary') return <ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
-      return <div className="grid">{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<SettingsSection title="Connection and MCP" description="Live connection status and which MCP servers this provider loads in new sessions." flush><div className="p-3"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onHostChange={handleProviderSettingsHostChange} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div></SettingsSection></div>
+      return <div className="grid">{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<SettingsSection title="Connection and MCP" description="Live connection status and which MCP servers this provider loads in new sessions." flush><div className="p-3"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div></SettingsSection></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
@@ -2351,6 +2355,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             title={scopedProviderId ? `Installation on ${effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find(host => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId}` : "Provider CLIs"}
           >
             <div ref={cliVersionMenuRef} className="space-y-3">
+              {scopedProviderId && hasSshHosts && scopeValue === SETTINGS_ALL_ENVIRONMENTS && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Choose a computer above to manage its CLI version.</p>}
               {!(effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).some(manager => !scopedProviderId || manager.providerId === scopedProviderId) && (
                 <div className="uam-set-card text-xs" style={{ color: 'var(--text-3)', padding: '14px 16px' }}>
                   No CLI installation information is available. Check the provider on this host.

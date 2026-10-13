@@ -11,11 +11,11 @@ const hosts = [
   { id: 'box-1', label: 'Build box', transport: 'ssh', sshAlias: 'build' },
 ] as ExecutionHost[]
 
-function render(props: { value: string; supported: boolean; onChange?: (id: string) => void }) {
+function render(props: { value: string; supported: boolean; selectorEnabled?: boolean; onChange?: (id: string) => void }) {
   const host = document.createElement('div')
   document.body.appendChild(host)
   const root = createRoot(host)
-  act(() => root.render(createElement(SettingsScopeBar, { hosts, onChange: vi.fn(), ...props })))
+  act(() => root.render(createElement(SettingsScopeBar, { hosts, onChange: vi.fn(), selectorEnabled: props.supported, ...props })))
   return { host, root, cleanup: () => { act(() => root.unmount()); host.remove() } }
 }
 
@@ -37,6 +37,15 @@ describe('SettingsScopeBar', () => {
       expect(trigger.disabled).toBe(false)
       expect(trigger.textContent).toContain('Build box')
       expect(view.host.textContent).toContain('Changes here apply only to Build box.')
+    } finally { view.cleanup() }
+  })
+
+  it('stays enabled on provider pages while saves remain unscoped without the backend flag', () => {
+    const view = render({ value: 'box-1', supported: false, selectorEnabled: true })
+    try {
+      const trigger = view.host.querySelector('button#settings-scope') as HTMLButtonElement
+      expect(trigger.disabled).toBe(false)
+      expect(view.host.textContent).toContain('Defaults and MCP lists still apply to all environments')
     } finally { view.cleanup() }
   })
 
