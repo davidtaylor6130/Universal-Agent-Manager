@@ -174,7 +174,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     if (!embedded) return
     let mounted = true
     setRefreshing(true)
-    // Strict-mode double mount supersedes the first request (returns false); the store already carries real load errors.
+    // Strict-mode double mount supersedes the first request; the newer refresh owns loading and error state.
     void refresh().catch(() => false).then(() => { if (mounted) setRefreshing(false) })
     return () => { mounted = false }
   }, [embedded, refresh])

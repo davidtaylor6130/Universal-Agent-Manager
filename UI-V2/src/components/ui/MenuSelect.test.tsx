@@ -5,6 +5,18 @@ import { MenuSelect } from './MenuSelect'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+describe('MenuSelect id', () => {
+  it('applies the id to the trigger so a label htmlFor can reach it', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(createElement(MenuSelect, { id: 'picker', label: 'Provider', value: 'a', options: [{ value: 'a', label: 'A' }], onChange: vi.fn() })))
+      expect(host.querySelector('button#picker')?.getAttribute('role')).toBe('combobox')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+})
+
 describe('MenuSelect disabled options', () => {
   it('rejects hidden options and skips them during keyboard navigation', () => {
     const host = document.createElement('div')

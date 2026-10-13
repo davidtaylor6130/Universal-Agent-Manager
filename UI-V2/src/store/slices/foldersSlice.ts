@@ -425,7 +425,8 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
           payload: { requestId },
           requestId,
         })
-        if (!isLatestPendingRequest(requestKey, response.requestId)) return false
+        // Superseded is not a failure; the newer refresh owns loading and error state.
+        if (!isLatestPendingRequest(requestKey, response.requestId)) return true
         clearPendingRequest(requestKey, response.requestId)
         if (!response.ok) {
           set({
