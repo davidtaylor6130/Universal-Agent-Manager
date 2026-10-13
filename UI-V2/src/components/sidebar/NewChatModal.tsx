@@ -1,4 +1,4 @@
-import { ExecutionRoutingDialog } from '../modals/ExecutionRoutingDialog'
+import { ExecutionRoutingDialog, RUNNER_STATUS } from '../modals/ExecutionRoutingDialog'
 import { canRouteAutomatically } from '../../types/executionRouting'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback } from 'react'
@@ -344,6 +344,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               id: host.id,
               label: host.label,
               icon: <Monitor size={18} aria-hidden />,
+              detail: host.transport === 'ssh' ? host.sshAlias : undefined,
+              tone: host.transport === 'ssh' ? RUNNER_STATUS[host.runnerStatus].tone : undefined,
               disabled: creatingChat || (host.transport === 'ssh' && host.runnerStatus !== 'ready'),
               issues: host.transport === 'ssh' && host.runnerStatus !== 'ready'
                 ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
@@ -351,7 +353,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) setRoutingMode('automatic'); else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
           </div>
-          {SSH_ENABLED && <div className="-mt-2 flex justify-end"><Button variant="ghost" size="sm" leadingIcon={<Route size={13} />} disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button></div>}
+          {SSH_ENABLED && <div className="-mt-1 flex justify-end"><Button variant="ghost" size="sm" leadingIcon={<Route size={13} />} disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button></div>}
           {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{hostIssue}</p>}
 
           {/* Folder */}

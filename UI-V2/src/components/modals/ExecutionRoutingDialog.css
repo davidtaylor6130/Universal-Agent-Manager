@@ -1,0 +1,48 @@
+/* SSH routing dialog: hierarchy is automatic routing → computer → remote folders. */
+.uam-rt-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: 85vh;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--r-lg);
+  box-shadow: var(--elev-3);
+}
+.uam-rt-dialog:focus { outline: none; }
+.uam-rt-dialog__head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-4) var(--sp-4) var(--sp-3); }
+.uam-rt-dialog__title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
+.uam-rt-dialog__desc { margin-top: 2px; font-size: var(--fs-sm); color: var(--text-3); line-height: 1.45; }
+.uam-rt-dialog__body { display: grid; gap: var(--sp-4); min-width: 0; min-height: 0; margin: 0; padding: 0 var(--sp-4) var(--sp-4); border: 0; overflow-y: auto; }
+.uam-rt-dialog__body:disabled { opacity: .7; }
+.uam-rt-dialog__foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); border-top: 1px solid var(--border); }
+.uam-rt-dialog__error { margin: 0 auto 0 0; font-size: var(--fs-sm); color: var(--error); }
+.uam-rt-dialog__empty { margin: 0; font-size: var(--fs-sm); color: var(--text-3); }
+.uam-rt-alias { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); overflow-wrap: anywhere; }
+.uam-rt-status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-2); }
+
+/* Progressive disclosure: height animates via grid rows; closed content is inert. */
+.uam-rt-disclosure__toggle {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px;
+  padding: 0; background: none; border: 0; border-radius: var(--r-sm);
+  color: var(--text-2); font-size: var(--fs-sm); font-weight: var(--fw-medium); text-align: left; cursor: pointer;
+  transition: color var(--dur-fast) var(--ease);
+}
+.uam-rt-disclosure__toggle:hover { color: var(--text); }
+.uam-rt-disclosure__toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.uam-rt-disclosure__toggle svg { flex-shrink: 0; transition: transform var(--dur-base) var(--ease-out-soft); }
+.uam-rt-disclosure[data-open="true"] .uam-rt-disclosure__toggle svg { transform: rotate(90deg); }
+.uam-rt-disclosure__summary { margin-left: auto; font-weight: 400; color: var(--text-3); }
+.uam-rt-disclosure__body {
+  display: grid; grid-template-rows: 0fr; opacity: 0;
+  transition: grid-template-rows var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+.uam-rt-disclosure[data-open="true"] .uam-rt-disclosure__body {
+  grid-template-rows: 1fr; opacity: 1;
+  transition: grid-template-rows var(--dur-base) var(--ease-out-soft), opacity var(--dur-base) var(--ease-out-soft);
+}
+.uam-rt-disclosure__inner { min-height: 0; overflow: hidden; padding: 2px 2px var(--sp-2); }
+@media (prefers-reduced-motion: reduce) {
+  .uam-rt-disclosure__body, .uam-rt-disclosure__toggle svg { transition: none; }
+}
