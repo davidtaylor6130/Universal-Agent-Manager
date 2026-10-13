@@ -1,5 +1,6 @@
 #include "common/provider/antigravity/cli/antigravity_cli_provider_runtime.h"
 
+#include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 
@@ -11,6 +12,36 @@
 #include <algorithm>
 #include <limits>
 #include <set>
+
+namespace
+{
+	/// <summary>Preserves expert arguments while enforcing a required native Plan ceiling before positional data.</summary>
+	void AppendAntigravityModeArgs(std::vector<std::string>& argv, const ChatSession& chat)
+	{
+		const std::string mode = uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode);
+		if (mode != uam::approval_modes::kPlanApprovalMode && mode != uam::approval_modes::kAcceptEditsApprovalMode) return;
+		if (mode == uam::approval_modes::kPlanApprovalMode)
+		{
+			for (std::size_t index = 1; index < argv.size() && argv[index] != "--";)
+			{
+				const std::string& argument = argv[index];
+				const bool mode_flag = argument == "--mode" || argument == "-mode";
+				const bool inline_mode = argument.starts_with("--mode=") || argument.starts_with("-mode=");
+				const bool skip_flag = argument == "--dangerously-skip-permissions" || argument == "-dangerously-skip-permissions" ||
+				    argument.starts_with("--dangerously-skip-permissions=") || argument.starts_with("-dangerously-skip-permissions=");
+				if (!mode_flag && !inline_mode && !skip_flag)
+				{
+					++index;
+					continue;
+				}
+				const std::size_t count = mode_flag && index + 1 < argv.size() && !argv[index + 1].starts_with('-') ? 2 : 1;
+				argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(index), argv.begin() + static_cast<std::ptrdiff_t>(index + count));
+			}
+		}
+		const std::vector<std::string>::iterator positional = std::find(argv.begin() + std::min(std::size_t{1}, argv.size()), argv.end(), "--");
+		argv.insert(positional, {"--mode", mode == uam::approval_modes::kPlanApprovalMode ? "plan" : "accept-edits"});
+	}
+}
 
 const char* AntigravityCliProviderRuntime::RuntimeId() const
 {
@@ -24,8 +55,8 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(con
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 	const AppSettings merged = uam::provider_runtime_internal::MergeProviderSettings(profile, settings);
-	// Permission policy remains with the CLI. Keep explicit extra flags in the existing launch contract.
 	uam::provider_runtime_internal::AppendArgs(argv, uam::command_line::SplitWords(merged.provider_extra_flags));
+	AppendAntigravityModeArgs(argv, chat);
 	return argv;
 }
 
@@ -116,7 +147,7 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildStructuredLaunchArg
 	argv.insert(argv.end(), {"--input-format", "stream-json", "--output-format", "stream-json"});
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
-	if (chat.approval_mode == "plan") argv.insert(argv.end(), {"--mode", "plan"});
+	AppendAntigravityModeArgs(argv, chat);
 	return argv;
 }
 

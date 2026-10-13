@@ -1,3 +1,4 @@
+#include "app/worktree_launch_preparation_service.h"
 #include "common/runtime/terminal/terminal_output_cursor.h"
 #include "test_harness.h"
 #include "app/runtime_activity.h"
@@ -584,16 +585,22 @@ UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
 	chat.title = "Terminal task";
 	chat.workspace_directory = source.string();
 	chat.native_session_id = "ses_worktreefixture";
-	uam::CliTerminalState terminal;
-	const bool launched = uam::StartCliTerminalForChat(app, terminal, chat, 24, 80);
+	app.chats.push_back(chat);
+	uam::CliTerminalState& terminal = uam::EnsureCliTerminalForChat(app, app.chats.front());
+	const bool launched = uam::StartCliTerminalForChat(app, terminal, app.chats.front(), 24, 80);
 	const std::string launch_error = terminal.last_error;
+	// Start accepts asynchronous preparation; production polling adopts its durable workspace before dispatch.
 	for (int attempt = 0; launched && !fs::exists(marker) && attempt < 100; ++attempt)
+	{
+		(void)uam::PollAllCliTerminals(nullptr, app);
+		uam::FlushPendingChatSaves(app);
 		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
 	uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit);
 	if (!launched) throw std::runtime_error("Default worktree terminal launch failed: " + launch_error);
-	UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string("gitWorktree"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string("gitWorktree"));
 	UAM_ASSERT(fs::exists(marker));
-	UAM_ASSERT(fs::equivalent(uam::paths::PathFromUtf8(ReadFile(marker)), uam::paths::PathFromUtf8(chat.workspace_worktree_directory)));
+	UAM_ASSERT(fs::equivalent(uam::paths::PathFromUtf8(ReadFile(marker)), uam::paths::PathFromUtf8(app.chats.front().workspace_worktree_directory)));
 	UAM_ASSERT_EQ(ReadFile(source / "app.txt"), std::string("source\n"));
 	UAM_ASSERT(!fs::exists(source / ".git"));
 	fs::remove(marker);
@@ -609,12 +616,19 @@ UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
 	std::string error;
 	const bool sent = uam::SendAcpPrompt(app, structured.id, "Check this workspace", &error);
 	for (int attempt = 0; sent && !fs::exists(marker) && attempt < 100; ++attempt)
+	{
+		(void)uam::PollWorktreeLaunchPreparations(app);
+		(void)uam::PollAllAcpSessions(app, nullptr);
+		uam::FlushPendingChatSaves(app);
 		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
 	(void)uam::StopAcpSession(app, structured.id);
 	if (!sent) throw std::runtime_error("Default worktree ACP launch failed: " + error);
 	UAM_ASSERT(fs::exists(marker));
-	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string("gitWorktree"));
-	UAM_ASSERT(fs::equivalent(uam::paths::PathFromUtf8(ReadFile(marker)), uam::paths::PathFromUtf8(app.chats.front().workspace_worktree_directory)));
+	ChatSession* prepared_structured = ChatDomainService().FindChatById(app, structured.id);
+	UAM_ASSERT(prepared_structured != nullptr);
+	UAM_ASSERT_EQ(prepared_structured->workspace_isolation_kind, std::string("gitWorktree"));
+	UAM_ASSERT(fs::equivalent(uam::paths::PathFromUtf8(ReadFile(marker)), uam::paths::PathFromUtf8(prepared_structured->workspace_worktree_directory)));
 #endif
 }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createRequestId, isCefContext, sendToCEF } from '../ipc/cefBridge'
-import { parseUsageHistory, type UsageHistory, type UsagePriceOverride, type UsageWindow } from '../services/usageHistory'
+import { assembleUsageHistory, parseUsageHistory, type UsageHistory, type UsagePriceOverride, type UsageWindow } from '../services/usageHistory'
 
 interface HistoryState {
   data: UsageHistory | null
@@ -15,7 +15,7 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
   const [refreshIndex, setRefreshIndex] = useState(0)
   const [state, setState] = useState<HistoryState>({ data: null, loading: true, error: '', scope: '', dataScope: '' })
   const priceKey = JSON.stringify(prices)
-  const scope = JSON.stringify([executionHostId, window.startMs, window.endMs, priceKey, refreshIndex])
+  const scope = JSON.stringify([executionHostId, window.startMs, window.endMs, window.days, priceKey, refreshIndex])
   const refresh = useCallback(() => setRefreshIndex(index => index + 1), [])
   useEffect(() => {
     if (!enabled) return
@@ -25,11 +25,23 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
     const refreshId = createRequestId('usage')
     setState(previous => ({ ...previous, loading: true, error: '', scope }))
     const load = async () => {
+      let expired = false
       try {
         if (!isCefContext()) throw new Error('Usage history is available in the desktop app. This preview has no provider history.')
+        const payload = { refreshId, executionHostId, startMs: window.startMs, endMs: window.endMs, windowDays: window.days, priceOverrides: JSON.parse(priceKey) }
         const reply = await Promise.race([
-          sendToCEF({ action: 'getUsageHistory', payload: { refreshId, executionHostId, startMs: window.startMs, endMs: window.endMs, windowDays: window.days, priceOverrides: JSON.parse(priceKey) } }, false),
-          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error('Usage history took too long to load. Refresh to try again.')), 30000) }),
+          (async () => {
+            const response = await sendToCEF({ action: 'getUsageHistory', payload }, false)
+            if (!response.ok) return response
+            const data = await assembleUsageHistory(response.data, refreshId, async (snapshotId, offset) => {
+              if (obsolete || expired) throw new Error('Usage history loading was cancelled.')
+              const continuation = await sendToCEF({ action: 'getUsageHistory', payload: { ...payload, snapshotId, offset } }, false)
+              if (!continuation.ok) throw new Error(continuation.error || 'Could not load usage history.')
+              return continuation.data
+            }, () => obsolete || expired)
+            return { ...response, data }
+          })(),
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => { expired = true; reject(new Error('Usage history took too long to load. Refresh to try again.')) }, 30000) }),
         ])
         clearTimeout(timeout)
         if (obsolete) return

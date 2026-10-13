@@ -6,6 +6,7 @@
 #include "app/git_worktree_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/vcs_commit_service.h"
+#include "app/workspace_vcs_context_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
@@ -103,6 +104,11 @@ namespace
 		json["status"] = SerializeGitWorktreeStatus(result.status);
 		json["message"] = result.message;
 		json["patchPath"] = result.patch_path.empty() ? "" : uam::paths::Utf8PathString(result.patch_path);
+		if (!result.port_state.empty())
+		{
+			json["portState"] = result.port_state;
+			json["operationReceipt"] = uam::paths::Utf8PathString(result.operation_receipt);
+		}
 		return json;
 	}
 
@@ -381,6 +387,76 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 	if (ChatRuntimeBusy(m_app, chat->id))
 	{
 		cb->Failure(409, "Stop the chat runtime before porting worktree changes.");
+		return;
+	}
+
+	if (m_app.settings.git_port_method != GitPortMethod::Patch)
+	{
+		if (m_app.worktree_operation_chat_ids.contains(chat->id) || m_app.git_port_requests.contains(chat->id))
+		{ cb->Failure(409, "Wait for the current workspace operation to finish."); return; }
+		const std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
+		if (!lease) { cb->Failure(409, "Workspace cleanup is finishing. Retry porting changes."); return; }
+		ChatSession captured = uam::CaptureVcsChatContext(*chat);
+		captured.created_at = chat->created_at;
+		captured.metadata_incarnation = chat->metadata_incarnation;
+		captured.workspace_base_ref = chat->workspace_base_ref;
+		const std::string chat_id = chat->id;
+		const std::filesystem::path root = m_app.data_root;
+		const AppSettings settings = m_app.settings;
+		const std::shared_ptr<const ChatSession> expected = std::make_shared<const ChatSession>(std::move(captured));
+		const std::shared_ptr<uam::AppState::GitPortRequest> request = std::make_shared<uam::AppState::GitPortRequest>();
+		request->lease = lease;
+		request->handler_lifetime = m_asyncLifetime; request->lifetime_bound = true;
+		request->root = root; request->incarnation = expected->metadata_incarnation;
+		request->workspace = expected->workspace_directory; request->source = expected->workspace_source_directory;
+		request->worktree = expected->workspace_worktree_directory; request->branch = expected->workspace_branch_name; request->base = expected->workspace_base_ref;
+		m_app.git_port_requests[chat_id] = request;
+		m_app.worktree_operation_chat_ids.insert(chat_id);
+		if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [expected, root, settings, request]() mutable
+		    {
+			    if (request->handler_lifetime.expired()) request->cancellation->request_stop();
+			    uam::AppState::GitPortRequest::WorkerState queued = uam::AppState::GitPortRequest::WorkerState::Queued;
+			    if (!request->worker_state.compare_exchange_strong(queued, uam::AppState::GitPortRequest::WorkerState::Running))
+			        return AsyncFailure(409, "Port request was canceled before staging.");
+			    struct FinishPortWorker
+			    {
+				    std::shared_ptr<uam::AppState::GitPortRequest> request;
+				    ~FinishPortWorker() { request->worker_state.store(uam::AppState::GitPortRequest::WorkerState::Finished); }
+			    } finished{request};
+			    if (request->cancellation->stop_requested()) return AsyncFailure(409, "Port request was canceled before staging.");
+			    uam::AppState snapshot;
+			    snapshot.data_root = root;
+			    snapshot.settings = settings;
+			    ChatSession context = *expected;
+			    const uam::GitWorktreeOperationResult port = uam::GitWorktreeService().PortCommittedChanges(snapshot, context, request->cancellation->get_token());
+			    // Conflicts are a durable Git result and must retain their recovery receipt in the response.
+			    if (!port.ok && port.port_state.empty()) return AsyncFailure(400, port.message);
+			    return AsyncSuccess(SerializeGitWorktreeResult(port));
+		    },
+		    [this, expected, root, chat_id, request](AsyncCefResult& result)
+		    {
+			    const std::unordered_map<std::string, std::shared_ptr<uam::AppState::GitPortRequest>>::iterator owner = m_app.git_port_requests.find(chat_id);
+			    if ((owner == m_app.git_port_requests.end() && !request->gui_settled) || (owner != m_app.git_port_requests.end() && owner->second != request))
+			    { result = AsyncFailure(409, "Port request ownership changed. Inspect the operation receipt."); return; }
+			    if (owner != m_app.git_port_requests.end())
+			    {
+				    request->gui_settled = true;
+				    request->lease.reset();
+				    m_app.git_port_requests.erase(owner);
+				    m_app.worktree_operation_chat_ids.erase(chat_id);
+			    }
+			    const ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			    if (request->cancellation->stop_requested() || !current || m_app.data_root != root || current->metadata_incarnation != expected->metadata_incarnation ||
+			        current->workspace_directory != expected->workspace_directory || current->workspace_source_directory != expected->workspace_source_directory ||
+			        current->workspace_worktree_directory != expected->workspace_worktree_directory || current->workspace_branch_name != expected->workspace_branch_name ||
+			        current->workspace_base_ref != expected->workspace_base_ref || current->execution_host_id != expected->execution_host_id)
+			        result = AsyncFailure(409, "The chat workspace changed during porting. Inspect the source Git workspace and port receipt.");
+		    }))
+		{
+			m_app.git_port_requests.erase(chat_id);
+			m_app.worktree_operation_chat_ids.erase(chat_id);
+		}
 		return;
 	}
 
@@ -674,4 +750,44 @@ void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*bro
 		                     },
 		                     request_id));
 	                 });
+}
+
+void UamQueryHandler::HandleGetWorkspaceVcsContext(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string folder_id(uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "folderId"));
+	const ChatFolder* folder = ChatDomainService().FindFolderById(m_app, folder_id);
+	if (!folder || folder->directory.empty())
+	{ cb->Failure(400, "Choose an existing workspace folder."); return; }
+	if (!folder->execution_host_id.empty() && folder->execution_host_id != "local")
+	{ cb->Failure(400, "Local repository context requires a local workspace."); return; }
+	if (m_workspaceDeletionPending)
+	{ cb->Failure(409, "The workspace is changing. Try again shortly."); return; }
+	std::shared_ptr<void> slot = uam::AcquireWorkspaceVcsContextSlot(m_pendingWorkspaceVcsContexts);
+	if (!slot) { cb->Failure(429, "Repository context is busy. Try again shortly."); return; }
+	const std::string directory = folder->directory;
+	const std::string host = folder->execution_host_id;
+	const std::filesystem::path root = m_app.data_root;
+	const bool git_enabled = m_app.settings.git_enabled;
+	const bool svn_enabled = m_app.settings.svn_enabled;
+	RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [directory, git_enabled, svn_enabled, slot = std::move(slot)]() mutable
+	    {
+		    const std::shared_ptr<void> active_slot = std::move(slot);
+		    const uam::WorkspaceVcsContext context = uam::ReadWorkspaceVcsContext(uam::paths::PathFromUtf8(directory), git_enabled, svn_enabled);
+		    if (!context.error.empty()) return AsyncFailure(409, context.error);
+		    nlohmann::json branches = nlohmann::json::array();
+		    for (const uam::WorkspaceGitBranch& branch : context.local_branches)
+			    branches.push_back({{"name", branch.name}, {"commit", branch.commit}});
+		    return AsyncSuccess({{"vcs", context.vcs}, {"currentBranch", context.current_branch},
+		        {"currentCommit", context.current_commit}, {"detached", context.detached},
+		        {"localBranches", std::move(branches)}, {"checkoutUrl", context.checkout_url}, {"revision", context.revision}});
+	    },
+	    [this, folder_id, directory, host, root, git_enabled, svn_enabled](AsyncCefResult& result)
+	    {
+		    const ChatFolder* current = ChatDomainService().FindFolderById(m_app, folder_id);
+		    if (!current || m_app.data_root != root || m_workspaceDeletionPending ||
+		        current->directory != directory || current->execution_host_id != host ||
+		        m_app.settings.git_enabled != git_enabled || m_app.settings.svn_enabled != svn_enabled)
+			    result = AsyncFailure(409, "The workspace changed while its repository context was loading.");
+	    });
 }

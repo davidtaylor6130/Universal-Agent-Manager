@@ -21,7 +21,7 @@ namespace uam
 		static bool Attach(const std::filesystem::path& data_root, const ChatSession& chat, const std::shared_ptr<PreparedChatSave>& prepared);
 		static std::shared_ptr<PreparedChatSave> Prepare(const std::filesystem::path& data_root, const ChatSession& chat);
 		static std::optional<nlohmann::json> Read(const std::filesystem::path& data_root, std::string_view chat_id,
-		    std::size_t expected_count, std::string_view expected_digest, std::size_t limit, std::string_view known_digest = {});
+		    std::size_t expected_count, std::string_view expected_digest, std::size_t limit, std::string_view known_digest = {}, const ChatSession* expected_owner = nullptr);
 	};
 
 	struct ManagedAgentTranscriptReadIdentity

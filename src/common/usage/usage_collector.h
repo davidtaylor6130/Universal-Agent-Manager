@@ -21,6 +21,8 @@ namespace uam::usage
 		/// <summary>Returns immutable bounded wire chunks; never reads provider files or accounting storage.</summary>
 		nlohmann::json ExportAccounting(std::size_t offset = 0, std::string_view fingerprint = {}) const;
 		std::shared_ptr<const std::string> AccountingSnapshot() const;
+		std::shared_ptr<const ReceiptSnapshot> Receipts() const;
+		nlohmann::json ExportReceipts(std::uint64_t offset = 0, std::string_view fingerprint = {}) const;
 		std::pair<bool, std::string> CollectionStatus() const;
 		/// <summary>Prices an immutable combined ledger using the locally cached catalog, without I/O.</summary>
 		nlohmann::json Render(const Ledger& ledger, nlohmann::json metadata, int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
@@ -40,6 +42,8 @@ namespace uam::usage
 		mutable std::mutex m_mutex;
 		std::shared_ptr<const Ledger> m_ledger;
 		std::shared_ptr<const std::string> m_accountingBytes;
+		std::shared_ptr<const ReceiptSnapshot> m_receipts;
+		mutable std::map<std::string, std::pair<std::shared_ptr<const ReceiptSnapshot>, std::chrono::steady_clock::time_point>> m_receiptExports;
 		std::string m_accountingFingerprint;
 		nlohmann::json m_metadata;
 		std::string m_error;

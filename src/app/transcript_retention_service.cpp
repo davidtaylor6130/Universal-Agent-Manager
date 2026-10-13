@@ -91,7 +91,7 @@ namespace uam
 	catch (const std::exception&) { return nullptr; }
 
 	std::optional<nlohmann::json> MessageTailCache::Read(const std::filesystem::path& data_root, std::string_view chat_id,
-	    std::size_t expected_count, std::string_view expected_digest, std::size_t limit, std::string_view known_digest)
+	    std::size_t expected_count, std::string_view expected_digest, std::size_t limit, std::string_view known_digest, const ChatSession* expected_owner)
 	try
 	{
 		if (limit == 0 || limit > 50) return std::nullopt;
@@ -105,6 +105,15 @@ namespace uam
 		    !summary.contains("frontendMessageTail")) return std::nullopt;
 		const nlohmann::json& tail = summary["frontendMessageTail"];
 		if (!tail.is_object() || tail.value("version", 0) != 2 || tail.value("sourceRevision", "") != *revision || !tail.contains("page")) return std::nullopt;
+		if (expected_owner)
+		{
+			const std::optional<ChatSession> owner = ChatRepository::LoadLocalChatSummaryReadOnly(data_root, chat_id);
+			if (!owner) return std::nullopt;
+			ChatMessagePage identity;
+			identity.chat = *owner;
+			identity.total_count = expected_count;
+			if (!ChatRepository::MatchesMessagePage(*expected_owner, identity)) return std::nullopt;
+		}
 		nlohmann::json page = tail["page"];
 		if (!page.is_object() || !page.contains("messages") || !page["messages"].is_array() ||
 		    page.value("totalCount", std::size_t(0)) != expected_count || page["messages"].size() > std::min(expected_count, std::size_t(50)) ||

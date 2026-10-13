@@ -77,7 +77,7 @@ namespace uam
 	{
 		return ConfigurationIdentity(nlohmann::json::array({host.id, host.transport, host.ssh_alias,
 		    host.platform, host.architecture, host.runner_version, host.runner_protocol_version,
-		    host.runner_directory, host.instruction_file}));
+		    host.runner_directory, host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)}));
 	}
 
 	std::string ExecutionRoutingProviderIdentity(const AppState& app, const ProviderProfile& provider)

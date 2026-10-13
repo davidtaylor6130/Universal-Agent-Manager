@@ -27,6 +27,9 @@
 #include "common/state/app_state.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/shell_escape.h"
+#include "common/utils/io_utils.h"
+#include <chrono>
 #include "common/runtime/app_time.h"
 
 #include <nlohmann/json.hpp>
@@ -369,23 +372,40 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		const auto data_root = m_app.data_root;
 		const std::size_t expected_count = chat->persisted_message_count;
 		const std::string expected_digest = chat->persisted_messages_digest;
+		const ChatSession expected = *chat;
+		const std::weak_ptr<void> lifetime = m_asyncLifetime;
+		auto indexed = std::make_shared<std::optional<ChatMessagePage>>();
 		auto loaded = std::make_shared<std::optional<ChatSession>>();
 		auto tail = std::make_shared<std::shared_ptr<PreparedChatSave>>();
 		auto cached_revision = std::make_shared<std::optional<std::string>>();
 		// Opening history must not queue behind background VCS subprocess checks.
 		uam::query_handler_async::RunAsyncCefQuery(
 		    m_asyncLifetime, cb,
-		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded, tail, cached_revision, expected_count, expected_digest]()
+		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded, tail, cached_revision, expected_count, expected_digest, expected, indexed, lifetime]()
 		    {
 			    if (page && !page->second && page->first <= 50 && defer_tool_call_content && !search_target)
 			    {
 				    *cached_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
-				    const std::optional<nlohmann::json> cached = uam::MessageTailCache::Read(data_root, chat_id, expected_count, expected_digest, page->first, known_digest);
+				    const std::optional<nlohmann::json> cached = uam::MessageTailCache::Read(data_root, chat_id, expected_count, expected_digest, page->first, known_digest, &expected);
 				    if (cached && *cached_revision == ChatRepository::ChatStorageRevision(data_root, chat_id))
 					    return uam::query_handler_async::AsyncSuccess(*cached);
 				    cached_revision->reset();
 			    }
 			    std::string warning;
+			    if (page)
+			    {
+				    *indexed = ChatRepository::ReadMessagePage(data_root, expected, page->first, page->second, &warning, [lifetime]() { return lifetime.expired(); });
+				    if (!*indexed) return uam::query_handler_async::AsyncFailure(500,
+				        uam::query_handler_internal::FailureDetailOrFallback(warning, "Failed to load chat messages."));
+				    if (search_target && (search_target->first != (*indexed)->messages_digest ||
+				        search_target->second >= (*indexed)->total_count))
+					    return uam::query_handler_async::AsyncFailure(409, "Chat history changed. Search again to select this message.");
+				    if (search_target && (search_target->second < (*indexed)->start_index ||
+				        search_target->second >= (*indexed)->start_index + (*indexed)->chat.messages.size()))
+					    return uam::query_handler_async::AsyncFailure(400, "The requested page does not contain the selected search message.");
+				    return uam::query_handler_async::AsyncSuccess(uam::StateSerializer::SerializeDetachedMessagePage(
+				        **indexed, defer_tool_call_content, known_digest, !page->second));
+			    }
 			    *loaded = ChatRepository::LoadLocalChat(data_root, chat_id, true, &warning);
 			    if (!loaded->has_value())
 				    return uam::query_handler_async::AsyncFailure(500,
@@ -394,7 +414,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    return SerializeGuardedChatMessagesResult(**loaded, known_digest, page, defer_tool_call_content, search_target);
 		    },
 		    [this, chat_id, known_digest, page, defer_tool_call_content, search_target, expected_count,
-		     expected_digest, loaded, tail, cached_revision, data_root](uam::query_handler_async::AsyncCefResult& response)
+		     expected_digest, loaded, tail, cached_revision, data_root, indexed, expected](uam::query_handler_async::AsyncCefResult& response)
 		    {
 			    bool publish_tail = false;
 			    const std::function<void()> complete = [&]()
@@ -411,9 +431,19 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 					    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, search_target, ChatDomainService().SelectedChatId(m_app) == current->id);
 					    return;
 				    }
+				    if (*indexed)
+				    {
+					    if (!ChatRepository::MatchesMessagePage(*current, **indexed) ||
+					        m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.worktree_operation_chat_ids.contains(chat_id) ||
+					        ChatRepository::ChatStorageRevision(data_root, chat_id) != (*indexed)->storage_revision)
+						    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
+					    return;
+				    }
 				    if (cached_revision->has_value())
 				    {
-					    if (current->persisted_message_count != expected_count || current->persisted_messages_digest != expected_digest ||
+					    ChatMessagePage identity;
+					    identity.chat = expected; identity.total_count = expected_count;
+					    if (!ChatRepository::MatchesMessagePage(*current, identity) ||
 					        m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.worktree_operation_chat_ids.contains(chat_id) ||
 					        ChatRepository::ChatStorageRevision(data_root, chat_id) != *cached_revision)
 						    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
@@ -427,13 +457,14 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    };
 			    const std::function<void()> dispose = [&]()
 			    {
-				    if (!loaded->has_value() && !*tail) return;
+				    if (!loaded->has_value() && !*tail && !*indexed) return;
 				    // Publish revision-guarded cache files and dispose large buffers off the GUI thread.
-				    uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr, [loaded, tail, publish_tail]()
+				    uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, nullptr, [loaded, tail, publish_tail, indexed]()
 				    {
 					    if (publish_tail) (void)ChatRepository::PublishPreparedChatSave(*tail);
 					    tail->reset();
 					    loaded->reset();
+					    indexed->reset();
 					    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
 				    });
 			    };
@@ -724,11 +755,117 @@ void UamQueryHandler::HandleGetToolCallContent(CefRefPtr<CefBrowser> /*browser*/
 	    *match, offset).dump());
 }
 
+namespace
+{
+	/// Captures workspace ownership without copying a transcript or blocking a live CLI.
+	std::string SelectedWorktreeFingerprint(const ChatSession& chat)
+	{
+		return nlohmann::json::array({chat.id, chat.created_at, chat.folder_id, chat.provider_id,
+		    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local"), chat.workspace_directory,
+		    chat.workspace_isolation_kind, chat.workspace_source_directory, chat.workspace_base_ref,
+		    chat.workspace_branch_name, chat.workspace_worktree_directory, chat.imported_read_only,
+		    chat.agent_run_id, chat.goal_owner_chat_id, chat.temporary_parent_chat_id}).dump();
+	}
+
+	bool SelectedWorktreeBusy(const uam::AppState& app, const ChatSession& source)
+	{
+		for (const ChatSession& chat : app.chats)
+		{
+			if (chat.id != source.id && (chat.workspace_worktree_directory != source.workspace_worktree_directory ||
+			    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local") != uam::strings::NonEmptyOrFallback(source.execution_host_id, "local"))) continue;
+			if (app.worktree_operation_chat_ids.contains(chat.id) || app.worktree_launch_preparations.contains(chat.id) ||
+			    app.git_port_requests.contains(chat.id)) return true;
+		}
+		return false;
+	}
+
+	/// Read-only linked-worktree verification runs only on the CEF background thread.
+	bool ValidateSelectedWorktree(const ChatSession& source,
+	    const std::string& folder_directory, const std::filesystem::path& data_root)
+	{
+		const std::filesystem::path worktree = uam::paths::PathFromUtf8(source.workspace_worktree_directory);
+		const std::filesystem::path original = uam::paths::PathFromUtf8(source.workspace_source_directory);
+		std::error_code error;
+		const std::filesystem::path physical = std::filesystem::canonical(worktree, error);
+		if (error || uam::paths::IsLinkOrReparsePointNoThrow(worktree)) return false;
+		const std::filesystem::path owned_root = std::filesystem::canonical(data_root / "worktrees", error);
+		if (error || uam::paths::IsLinkOrReparsePointNoThrow(data_root / "worktrees")) return false;
+		const std::filesystem::path relative = physical.lexically_relative(owned_root);
+		if (relative.empty() || relative == "." || relative.is_absolute() || *relative.begin() == "..") return false;
+		const std::filesystem::path source_path = std::filesystem::canonical(original, error);
+		if (error || uam::paths::IsLinkOrReparsePointNoThrow(original)) return false;
+		const std::filesystem::path folder_path = std::filesystem::canonical(uam::paths::PathFromUtf8(folder_directory), error);
+		if (error || source_path != folder_path) return false;
+		const std::filesystem::file_status marker = std::filesystem::symlink_status(worktree / ".git", error);
+		if (error || !std::filesystem::is_regular_file(marker) || uam::paths::IsLinkOrReparsePointNoThrow(worktree / ".git")) return false;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		const std::function<bool(const std::filesystem::path&, const std::string&, std::string&)> query = [deadline](const std::filesystem::path& directory, const std::string& args, std::string& output)
+		{
+			const int remaining = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+			if (remaining <= 0) return false;
+			const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+			    "git --no-optional-locks -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " " + args,
+			    std::min(1500, remaining));
+			if (!result.ok || result.timed_out || result.canceled || result.exit_code != 0 || result.output_truncated || result.output.size() > 8192) return false;
+			output = uam::strings::Trim(result.output);
+			return !output.empty();
+		};
+		std::string common, expected_common, top, branch, admin;
+		if (!query(original, "rev-parse --path-format=absolute --git-common-dir", expected_common)) return false;
+		if (!query(worktree, "rev-parse --path-format=absolute --git-common-dir", common) ||
+		    !query(worktree, "rev-parse --show-toplevel", top) || !query(worktree, "symbolic-ref --short HEAD", branch) ||
+		    !query(worktree, "rev-parse --absolute-git-dir", admin) || branch != source.workspace_branch_name) return false;
+		const std::filesystem::path actual_common = std::filesystem::canonical(uam::paths::PathFromUtf8(common), error);
+		if (error) return false;
+		const std::filesystem::path source_common = std::filesystem::canonical(uam::paths::PathFromUtf8(expected_common), error);
+		if (error || actual_common != source_common) return false;
+		const std::filesystem::path actual_top = std::filesystem::canonical(uam::paths::PathFromUtf8(top), error);
+		if (error || actual_top != physical) return false;
+		const std::filesystem::path administrative = std::filesystem::canonical(uam::paths::PathFromUtf8(admin), error);
+		if (error || administrative.parent_path() != actual_common / "worktrees" || uam::paths::IsLinkOrReparsePointNoThrow(administrative)) return false;
+		const std::filesystem::path pointer = administrative / "gitdir";
+		if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(pointer, error)) || error ||
+		    std::filesystem::file_size(pointer, error) > 8192 || error) return false;
+		const std::filesystem::path back_pointer = std::filesystem::canonical(
+		    uam::paths::PathFromUtf8(uam::strings::Trim(uam::io::ReadTextFile(pointer))), error);
+		if (error) return false;
+		const std::filesystem::path expected_pointer = std::filesystem::canonical(worktree / ".git", error);
+		return !error && back_pointer == expected_pointer;
+	}
+}
+
 void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string title = payload.value("title", "New Chat");
 	const std::string requested_folder_id = payload.value("folderId", "");
 	const std::string routing_mode = payload.value("routingMode", "explicit");
+	const bool selected_worktree = payload.contains("sourceChatId") || payload.contains("expectedWorkspaceDirectory") || payload.contains("expectedExecutionHostId");
+	std::string source_chat_id, expected_workspace, expected_host;
+	if (selected_worktree)
+	{
+		for (const char* field : {"sourceChatId", "expectedWorkspaceDirectory", "expectedExecutionHostId"})
+		{
+			if (!payload.contains(field) || !payload[field].is_string() || payload[field].get_ref<const std::string&>().empty() ||
+			    payload[field].get_ref<const std::string&>().size() > 8192)
+			{ cb->Failure(400, "Choose an existing chat worktree."); return; }
+		}
+		source_chat_id = payload["sourceChatId"].get<std::string>();
+		expected_workspace = payload["expectedWorkspaceDirectory"].get<std::string>();
+		expected_host = payload["expectedExecutionHostId"].get<std::string>();
+		if (routing_mode != "explicit" || payload.contains("gitBaseBranch") || requested_folder_id.empty() || expected_host != "local")
+		{ cb->Failure(400, "Choose an existing local workspace without automatic routing or a Git base override."); return; }
+	}
+	std::optional<std::string> git_base_branch_override;
+	if (payload.contains("gitBaseBranch"))
+	{
+		const nlohmann::json* value = uam::nlohmann_json::FindStringField(payload, "gitBaseBranch");
+		if (!value || value->get_ref<const std::string&>().size() > 255 ||
+		    std::ranges::any_of(value->get_ref<const std::string&>(), [](unsigned char c) { return c < 32 || c == 127; }))
+		{ cb->Failure(400, "Choose a valid local Git base branch."); return; }
+		git_base_branch_override = uam::strings::Trim(value->get<std::string>());
+		if (!m_app.settings.git_enabled || !m_app.settings.git_auto_worktree || routing_mode != "explicit")
+		{ cb->Failure(400, "A Git base override requires automatic local worktree creation."); return; }
+	}
 	if (routing_mode != "explicit" && routing_mode != "automatic")
 	{
 		cb->Failure(400, "Routing mode must be explicit or automatic.");
@@ -752,6 +889,8 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 		cb->Failure(400, "The selected execution host no longer exists.");
 		return;
 	}
+	if (git_base_branch_override && (execution_host->id != uam::execution_hosts::kLocalHostId || requested_folder_id.empty()))
+	{ cb->Failure(400, "Choose an existing local Git workspace for the base override."); return; }
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(m_app);
 	std::string requested_workspace = uam::strings::Trim(payload.value("workspaceDirectory", ""));
 	std::string auto_created_folder_id;
@@ -808,64 +947,128 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 		else target_folder_id = auto_created_folder_id;
 	}
 
-	ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id);
-	chat.execution_host_id = execution_host->id;
-	chat.routing_mode = routing_mode;
-	if (routing_mode == "automatic")
-	{
-		chat.routing_source_folder_id = target_folder_id;
-		chat.routing_source_directory = requested_workspace;
-	}
-	if (!title.empty())
-	{
-		chat.title = title;
-	}
-	if (execution_host->id == uam::execution_hosts::kLocalHostId)
-	{
-		chat.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, chat));
-	}
-	else
-	{
-		chat.workspace_directory = requested_workspace;
-	}
 	const nlohmann::json* payload_defaults = uam::nlohmann_json::FindObjectField(payload, "defaults");
-	uam::query_handler_internal::ApplyProviderDefaultsToChat(m_app.settings, chat, payload_defaults);
-
-	m_app.chats.push_back(std::move(chat));
-
-	ChatSession& created_chat = m_app.chats.back();
-	const std::string created_chat_id = created_chat.id;
-	if (payload.value("selectChat", true))
-		ChatDomainService().SelectChatById(m_app, created_chat_id);
-
-	ChatHistorySyncService sync;
-	if (!sync.SaveChatWithStatus(m_app, created_chat, "", ""))
+	const std::optional<nlohmann::json> defaults = payload_defaults ? std::optional<nlohmann::json>(*payload_defaults) : std::nullopt;
+	const bool select_chat = payload.value("selectChat", true);
+	const std::function<void(const ChatSession*)> create = [this, browser, cb, target_folder_id, provider_id,
+	    git_base_branch_override, execution_host_id, routing_mode, requested_workspace, title,
+	    defaults, select_chat, previous_selected_chat_id, auto_created_folder_id](const ChatSession* validated_source)
 	{
-		const std::string failure = uam::query_handler_internal::FailureDetailOrFallback(
-		    m_app.status_line, "Failed to persist new chat.");
-		uam::query_handler_internal::RollbackCreatedChat(m_app, created_chat_id, previous_selected_chat_id, false);
-		if (!auto_created_folder_id.empty()) (void)DeleteFolderById(m_app, auto_created_folder_id);
-		cb->Failure(500, failure);
-		return;
-	}
+		ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id, validated_source == nullptr && m_app.settings.git_enabled && m_app.settings.git_auto_worktree, git_base_branch_override);
+		chat.execution_host_id = execution_host_id;
+		chat.routing_mode = routing_mode;
+		if (routing_mode == "automatic")
+		{
+			chat.routing_source_folder_id = target_folder_id;
+			chat.routing_source_directory = requested_workspace;
+		}
+		if (!title.empty())
+		{
+			chat.title = title;
+		}
+		if (execution_host_id == uam::execution_hosts::kLocalHostId)
+		{
+			chat.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, chat));
+		}
+		else
+		{
+			chat.workspace_directory = requested_workspace;
+		}
+		if (validated_source)
+		{
+			chat.workspace_directory = validated_source->workspace_worktree_directory;
+			chat.workspace_isolation_kind = validated_source->workspace_isolation_kind;
+			chat.workspace_source_directory = validated_source->workspace_source_directory;
+			chat.workspace_base_ref = validated_source->workspace_base_ref;
+			chat.workspace_branch_name = validated_source->workspace_branch_name;
+			chat.workspace_worktree_directory = validated_source->workspace_worktree_directory;
+		}
+		uam::query_handler_internal::ApplyProviderDefaultsToChat(m_app.settings, chat, defaults ? &*defaults : nullptr);
 
-	if (!PersistenceCoordinator().SaveSettings(m_app))
-	{
-		const std::string failure = uam::query_handler_internal::FailureDetailOrFallback(
-		    m_app.status_line, "Failed to persist new chat settings.");
-		uam::query_handler_internal::RollbackCreatedChat(m_app, created_chat_id, previous_selected_chat_id, true);
-		if (!auto_created_folder_id.empty()) (void)DeleteFolderById(m_app, auto_created_folder_id);
-		cb->Failure(500, failure);
-		return;
-	}
+		m_app.chats.push_back(std::move(chat));
 
-	if (const ChatSession* selected = ChatDomainService().SelectedChat(m_app); selected != nullptr && selected->id == created_chat_id && ProviderResolutionService().ChatUsesCliOutput(m_app, *selected))
-	{
-		uam::MarkSelectedCliTerminalForLaunch(m_app);
-	}
+		ChatSession& created_chat = m_app.chats.back();
+		const std::string created_chat_id = created_chat.id;
+		if (select_chat)
+			ChatDomainService().SelectChatById(m_app, created_chat_id);
 
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"chatId", created_chat_id}}.dump());
+		ChatHistorySyncService sync;
+		if (!sync.SaveChatWithStatus(m_app, created_chat, "", ""))
+		{
+			const std::string failure = uam::query_handler_internal::FailureDetailOrFallback(
+			    m_app.status_line, "Failed to persist new chat.");
+			uam::query_handler_internal::RollbackCreatedChat(m_app, created_chat_id, previous_selected_chat_id, false);
+			if (!auto_created_folder_id.empty()) (void)DeleteFolderById(m_app, auto_created_folder_id);
+			cb->Failure(500, failure);
+			return;
+		}
+
+		if (!PersistenceCoordinator().SaveSettings(m_app))
+		{
+			const std::string failure = uam::query_handler_internal::FailureDetailOrFallback(
+			    m_app.status_line, "Failed to persist new chat settings.");
+			uam::query_handler_internal::RollbackCreatedChat(m_app, created_chat_id, previous_selected_chat_id, true);
+			if (!auto_created_folder_id.empty()) (void)DeleteFolderById(m_app, auto_created_folder_id);
+			cb->Failure(500, failure);
+			return;
+		}
+
+		if (const ChatSession* selected = ChatDomainService().SelectedChat(m_app); selected != nullptr && selected->id == created_chat_id && ProviderResolutionService().ChatUsesCliOutput(m_app, *selected))
+		{
+			uam::MarkSelectedCliTerminalForLaunch(m_app);
+		}
+
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(nlohmann::json{{"chatId", created_chat_id}}.dump());
+	};
+	if (!selected_worktree) { create(nullptr); return; }
+	ChatSession* source = ChatDomainService().FindChatById(m_app, source_chat_id);
+	const ChatFolder* folder = ChatDomainService().FindFolderById(m_app, target_folder_id);
+	if (!source || !folder || expected_host != uam::execution_hosts::kLocalHostId || execution_host_id != expected_host ||
+	    source->folder_id != target_folder_id || uam::strings::NonEmptyOrFallback(source->execution_host_id, "local") != expected_host ||
+	    source->workspace_worktree_directory != expected_workspace || !uam::paths::IsGitWorktreeIsolated(*source) ||
+	    source->workspace_source_directory.empty() || source->workspace_branch_name.empty() || source->workspace_base_ref.empty() ||
+	    source->imported_read_only || !source->agent_run_id.empty() || !source->goal_owner_chat_id.empty() ||
+	    !source->temporary_parent_chat_id.empty() || SelectedWorktreeBusy(m_app, *source))
+	{ cb->Failure(409, "The selected chat worktree is unavailable or changed."); return; }
+	const std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
+	if (!lease) { cb->Failure(409, "Workspace cleanup is finishing. Try again shortly."); return; }
+	ChatSession metadata;
+	metadata.id = source->id;
+	metadata.workspace_directory = source->workspace_directory;
+	metadata.workspace_isolation_kind = source->workspace_isolation_kind;
+	metadata.workspace_source_directory = source->workspace_source_directory;
+	metadata.workspace_base_ref = source->workspace_base_ref;
+	metadata.workspace_branch_name = source->workspace_branch_name;
+	metadata.workspace_worktree_directory = source->workspace_worktree_directory;
+	const std::filesystem::path root = m_app.data_root;
+	const std::shared_ptr<const std::uint8_t> parent = source->metadata_incarnation;
+	const std::string fingerprint = SelectedWorktreeFingerprint(*source);
+	const std::string folder_directory = folder->directory;
+	const ExecutionHost host_snapshot = *execution_host;
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [metadata, folder_directory, root, lease]()
+	    {
+		if (!ValidateSelectedWorktree(metadata, folder_directory, root))
+			return uam::query_handler_async::AsyncFailure(409, "The selected worktree requires an existing Git source and its recorded branch.");
+		return uam::query_handler_async::AsyncSuccess("{}");
+	    },
+	    [this, root, source_chat_id, parent, fingerprint, folder_directory, target_folder_id,
+	        host_snapshot, metadata, lease, create](uam::query_handler_async::AsyncCefResult& result)
+	    {
+		if (!result.ok) return;
+		const ChatSession* current = ChatDomainService().FindChatById(m_app, source_chat_id);
+		const ChatFolder* folder = ChatDomainService().FindFolderById(m_app, target_folder_id);
+		const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_snapshot.id);
+		if (m_app.data_root != root || !current || current->metadata_incarnation != parent ||
+		    fingerprint != SelectedWorktreeFingerprint(*current) || !folder || folder->directory != folder_directory ||
+		    uam::strings::NonEmptyOrFallback(folder->execution_host_id, "local") != host_snapshot.id ||
+		    !host || *host != host_snapshot || SelectedWorktreeBusy(m_app, *current))
+		{ result = uam::query_handler_async::AsyncFailure(409, "The selected chat worktree changed before creation."); return; }
+		create(&metadata);
+		// Publication owns the callback; the async wrapper must not answer it a second time.
+		result.callback_deferred = true;
+	    }, TID_FILE_USER_BLOCKING);
 }
 
 void UamQueryHandler::HandleRetryFailedMessage(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -879,7 +1082,50 @@ void UamQueryHandler::HandleRetryFailedMessage(CefRefPtr<CefBrowser> browser, co
 		return;
 	}
 	const std::string chat_id = payload["chatId"].get<std::string>();
-	if (uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat no longer exists.") == nullptr) return;
+	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, chat_id, cb, "Chat no longer exists.");
+	if (chat == nullptr) return;
+	using namespace uam::query_handler_async;
+	const ChatDomainService domain;
+	const auto pending = m_app.branch_preparations.find(chat_id);
+	if (pending != m_app.branch_preparations.end() && !pending->second.expired())
+	{
+		cb->Failure(409, "Chat preparation is still running. Wait before retrying the prompt.");
+		return;
+	}
+	if (!chat->messages_loaded)
+	{
+		const std::shared_ptr<ChatDomainService::ColdHistoryPreparation> preparation = domain.BeginColdHistoryPreparation(m_app, chat_id);
+		if (!preparation)
+		{
+			cb->Failure(409, "Chat history is changing. Retry after it settles.");
+			return;
+		}
+		const bool queued = RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [domain, preparation]()
+		    {
+			    std::string error;
+			    return domain.LoadColdHistoryPreparation(*preparation, error)
+			        ? AsyncSuccess(nlohmann::json::object())
+			        : AsyncFailure(409, uam::query_handler_internal::FailureDetailOrFallback(error, "Chat history changed or preparation was stopped."));
+		    },
+		    [this, browser, payload, cb, domain, preparation](AsyncCefResult& result)
+		    {
+			    if (!result.ok)
+			    {
+				    (void)domain.ConsumeBranchPreparation(m_app, preparation->identity.chat_id, preparation->ownership);
+				    return;
+			    }
+			    if (!domain.CompleteColdHistoryPreparation(m_app, *preparation))
+			    {
+				    result = AsyncFailure(409, "Chat history changed or preparation was stopped. Retry the prompt.");
+				    return;
+			    }
+			    HandleRetryFailedMessage(browser, payload, cb);
+			    result.callback_deferred = true;
+		    }, TID_FILE_USER_BLOCKING);
+		if (!queued) (void)domain.ConsumeBranchPreparation(m_app, chat_id, preparation->ownership);
+		return;
+	}
 	std::string error;
 	if (!uam::RetryFailedAcpMessage(m_app, chat_id, *message_index, &error))
 	{
@@ -1316,14 +1562,112 @@ void UamQueryHandler::HandleSetChatSettled(CefRefPtr<CefBrowser> browser, const 
 
 void UamQueryHandler::HandleCreateSideChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	std::string id;
-	if (!uam::CreateTemporarySideChat(m_app, payload.value("chatId", ""), &id))
+	using namespace uam::query_handler_async;
+	const std::string parent_id = payload.value("chatId", "");
+	ChatSession* parent = ChatDomainService().FindChatById(m_app, parent_id);
+	if (parent == nullptr || !parent->temporary_parent_chat_id.empty() || parent->imported_read_only)
+	{
+		cb->Failure(409, "Choose an editable main chat to start a side chat.");
+		return;
+	}
+	const std::string key = "side-context:" + parent_id;
+	const std::unordered_map<std::string, std::shared_ptr<std::stop_source>>::const_iterator previous = m_nativeHistoryRequests.find(key);
+	if (previous != m_nativeHistoryRequests.end())
+	{
+		previous->second->request_stop();
+		m_nativeHistoryRequests.erase(previous);
+	}
+	const bool context_loaded = parent->messages_loaded;
+	std::optional<ChatSession> candidate = uam::BuildTemporarySideChatCandidate(m_app, parent_id, nullptr, !context_loaded);
+	if (!candidate)
 	{
 		cb->Failure(409, uam::query_handler_internal::FailureDetailOrFallback(m_app.status_line, "Could not create a side chat."));
 		return;
 	}
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"chatId", id}}.dump());
+	ChatSession snapshot;
+	snapshot.metadata_incarnation = parent->metadata_incarnation;
+	snapshot.id = parent->id;
+	snapshot.created_at = parent->created_at;
+	snapshot.updated_at = parent->updated_at;
+	snapshot.provider_id = parent->provider_id;
+	snapshot.native_session_id = parent->native_session_id;
+	snapshot.execution_host_id = parent->execution_host_id;
+	snapshot.folder_id = parent->folder_id;
+	snapshot.workspace_directory = parent->workspace_directory;
+	snapshot.workspace_isolation_kind = parent->workspace_isolation_kind;
+	snapshot.workspace_source_directory = parent->workspace_source_directory;
+	snapshot.workspace_base_ref = parent->workspace_base_ref;
+	snapshot.workspace_branch_name = parent->workspace_branch_name;
+	snapshot.workspace_worktree_directory = parent->workspace_worktree_directory;
+	snapshot.imported_read_only = parent->imported_read_only;
+	snapshot.messages_loaded = false;
+	snapshot.persisted_message_count = parent->persisted_message_count;
+	snapshot.persisted_messages_digest = parent->persisted_messages_digest;
+	const ChatDomainService::BranchHistoryIdentity identity = ChatDomainService().CaptureBranchHistoryIdentity(*parent);
+	const std::string workspace = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *parent));
+	const std::filesystem::path data_root = m_app.data_root;
+	const std::weak_ptr<void> lifetime = m_asyncLifetime;
+	const std::shared_ptr<std::stop_source> request = std::make_shared<std::stop_source>();
+	m_nativeHistoryRequests[key] = request;
+	const std::shared_ptr<std::optional<uam::TemporarySideChatContext>> prepared = std::make_shared<std::optional<uam::TemporarySideChatContext>>();
+	const std::shared_ptr<ChatSession> child = std::make_shared<ChatSession>(std::move(*candidate));
+	const std::shared_ptr<std::string> receipt = std::make_shared<std::string>();
+	const std::function<void()> cleanup = [data_root, child, receipt]()
+	{
+		// Independent lifetime permits stale-result cleanup after the originating query is cancelled.
+		const std::shared_ptr<int> cleanup_lifetime = std::make_shared<int>(0);
+		(void)RunAsyncCefQuery(cleanup_lifetime, nullptr, [cleanup_lifetime, data_root, child, receipt]()
+		{
+			(void)ChatRepository::DeleteTemporaryChatIfRevision(data_root, child->id, child->temporary_parent_chat_id, *receipt);
+			return AsyncSuccess({});
+		});
+	};
+	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [data_root, snapshot, context_loaded, child, receipt, request, prepared, lifetime]()
+	    {
+		    const std::function<bool()> cancelled = [request, lifetime]() { return request->stop_requested() || lifetime.expired(); };
+		    if (!context_loaded)
+		    {
+			    *prepared = uam::PrepareTemporarySideChatContext(data_root, snapshot, cancelled);
+			    if (!prepared->has_value()) return AsyncFailure(409, "The main chat context changed or could not be loaded.");
+			    child->provider_handoff_context = prepared->value().reference;
+		    }
+		    if (cancelled()) return AsyncFailure(409, "A newer side chat context was requested.");
+		    if (!ChatRepository::SaveChatIfAbsent(data_root, *child, receipt.get())) return AsyncFailure(409, "Could not save the temporary side chat.");
+		    if (cancelled())
+		    {
+			    (void)ChatRepository::DeleteTemporaryChatIfRevision(data_root, child->id, child->temporary_parent_chat_id, *receipt);
+			    return AsyncFailure(409, "A newer side chat context was requested.");
+		    }
+		    if (!ChatRepository::MatchesTemporaryChatSaveReceipt(data_root, child->id, *receipt))
+		    {
+			    (void)ChatRepository::DeleteTemporaryChatIfRevision(data_root, child->id, child->temporary_parent_chat_id, *receipt);
+			    return AsyncFailure(409, "Could not save the temporary side chat.");
+		    }
+		    return AsyncSuccess({});
+	    },
+	    [this, browser, parent_id, identity, workspace, snapshot, data_root, context_loaded, key, request, prepared, child, receipt, cleanup](AsyncCefResult& result)
+	    {
+		    const std::unordered_map<std::string, std::shared_ptr<std::stop_source>>::const_iterator current_request = m_nativeHistoryRequests.find(key);
+		    if (current_request == m_nativeHistoryRequests.end() || current_request->second != request || request->stop_requested())
+		    { cleanup(); result = AsyncFailure(409, "A newer side chat context was requested."); return; }
+		    m_nativeHistoryRequests.erase(current_request);
+		    if (!result.ok) return;
+		    const ChatSession* current = ChatDomainService().FindChatById(m_app, parent_id);
+		    if (m_app.data_root != data_root || current == nullptr || current->metadata_incarnation != snapshot.metadata_incarnation ||
+		        current->messages_loaded != context_loaded ||
+		        current->folder_id != snapshot.folder_id || !ChatDomainService().MatchesBranchHistoryIdentity(*current, identity) ||
+		        uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *current)) != workspace ||
+		        (!context_loaded && !prepared->has_value()))
+		    { cleanup(); result = AsyncFailure(409, "The main chat changed while preparing the side chat. Retry."); return; }
+		    if (!uam::AdoptTemporarySideChat(m_app, *child, data_root, *receipt, snapshot.metadata_incarnation, context_loaded ? nullptr : &prepared->value()))
+		    { cleanup(); result = AsyncFailure(409, "The main chat changed while preparing the side chat. Retry."); return; }
+		    uam::PushStateUpdateIfChanged(browser, m_app);
+		    result = AsyncSuccess({{"chatId", child->id}});
+	    }))
+	{
+		m_nativeHistoryRequests.erase(key);
+	}
 }
 
 void UamQueryHandler::HandleDismissSideChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

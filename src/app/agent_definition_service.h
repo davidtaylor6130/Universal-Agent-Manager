@@ -29,6 +29,15 @@ namespace uam
 		std::vector<std::string> errors;
 	};
 
+	/** Worker-validated primary definition and the source revision required for admission. */
+	struct SelectedPrimaryAgentSnapshot
+	{
+		AgentDefinition definition;
+		std::filesystem::path data_root;
+		std::filesystem::path workspace_root;
+		std::string scope_revision;
+	};
+
 	struct ProviderAgentImportPreview
 	{
 		std::string provider_id;
@@ -70,6 +79,10 @@ namespace uam
 	  public:
 		static AgentDefinitionCatalog Load(const std::filesystem::path& data_root,
 		                                   const std::filesystem::path& workspace_root);
+		static bool CaptureSelectedPrimary(const std::filesystem::path& data_root,
+		    const std::filesystem::path& workspace_root, const std::string& agent_id,
+		    SelectedPrimaryAgentSnapshot& snapshot, std::string& error);
+		static bool SelectedPrimaryIsCurrent(const SelectedPrimaryAgentSnapshot& snapshot);
 		static ProviderAgentImportPreview PreviewProviderAgentImport(
 		    const std::string& provider_id, const std::filesystem::path& source_path);
 		static bool ImportProviderAgent(const std::filesystem::path& data_root,

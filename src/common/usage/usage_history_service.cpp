@@ -285,8 +285,15 @@ namespace uam::usage
 		return RefreshImpl(refresh_id, start_ms, end_ms, {}, cancelled, sink);
 	}
 
-	nlohmann::json HistoryService::RefreshImpl(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, const std::function<bool()>& cancelled, const AccountingSink& sink)
+	nlohmann::json HistoryService::CollectStream(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const StreamingAccountingSink& sink, const std::function<bool()>& cancelled)
 	{
+		return RefreshImpl(refresh_id, start_ms, end_ms, {}, cancelled, {}, sink);
+	}
+
+	nlohmann::json HistoryService::RefreshImpl(std::string_view refresh_id, std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, const std::function<bool()>& cancelled, const AccountingSink& legacy_sink, const StreamingAccountingSink& stream)
+	{
+		const bool streaming = bool(stream);
+		const bool sink = streaming || bool(legacy_sink);
 		const std::function<bool(const std::pair<std::string, std::filesystem::path>&, const std::vector<Record>&, bool, std::string&)> account = [&](const std::pair<std::string, std::filesystem::path>& source, const std::vector<Record>& records, bool reset, std::string& error)
 		{
 			if (!sink) return true;
@@ -294,11 +301,26 @@ namespace uam::usage
 			if (reset || position > records.size()) position = 0;
 			const std::u8string utf8 = source.second.u8string();
 			const std::string identity(reinterpret_cast<const char*>(utf8.data()), utf8.size());
-			if (position < records.size() && !sink(identity, records, position, error)) return false;
+			if (position < records.size())
+			{
+				std::size_t base = 0;
+				if (streaming)
+				{
+					const std::map<std::pair<std::string, std::filesystem::path>, TranscriptScan>::const_iterator transcript = m_cache.find(source);
+					if (transcript != m_cache.end()) base = transcript->second.RecordBase();
+					if (source.first == provider_ids::kOpenCodeCli)
+					{
+						const std::map<std::filesystem::path, OpenCodeHistoryScan>::const_iterator database = m_databaseCache.find(source.second);
+						if (database != m_databaseCache.end()) base = database->second.RecordBase();
+					}
+					if (!stream(identity, records, position, base, error)) return false;
+				}
+				else if (!legacy_sink(identity, records, position, error)) return false;
+			}
 			const std::size_t prior_position = position;
 			position = records.size();
 			// Future-dated receipts stay pending until the collector window reaches them.
-			for (std::size_t index = prior_position; index < records.size(); ++index)
+			for (std::size_t index = prior_position; !streaming && index < records.size(); ++index)
 				if (records[index].timestamp_ms >= end_ms) { position = index; break; }
 			return true;
 		};
@@ -328,16 +350,23 @@ namespace uam::usage
 			const std::pair<std::string, std::filesystem::path>& file = m_files[m_nextFile];
 			const std::pair<std::map<std::pair<std::string, std::filesystem::path>, TranscriptScan>::iterator, bool> entry = m_cache.try_emplace(file, file.first);
 			ScanOptions options;
-			options.byte_budget = byte_budget - bytes_read;
-			const ScanResult scanned = entry.first->second.Refresh(file.second, options, cancelled);
+			options.byte_budget = streaming ? std::min<std::size_t>(1024 * 1024, byte_budget - bytes_read) : byte_budget - bytes_read;
+			options.stream_batches = streaming;
+			if (streaming) options.max_records = 4096;
+			const std::function<bool(const std::vector<Record>&, std::size_t, std::string&)> snapshot_sink = streaming ? std::function<bool(const std::vector<Record>&, std::size_t, std::string&)>([&](const std::vector<Record>& records, std::size_t base, std::string& error)
+			{
+				return stream(paths::Utf8PathString(file.second), records, 0, base, error);
+			}) : std::function<bool(const std::vector<Record>&, std::size_t, std::string&)>{};
+			const ScanResult scanned = entry.first->second.Refresh(file.second, options, cancelled, snapshot_sink);
 			bytes_read += scanned.bytes_read;
 			++files_checked;
 			if (scanned.cancelled) return {{"cancelled", true}};
 			std::string accounting_error;
 			if (!account(file, entry.first->second.Records(), scanned.reset, accounting_error)) return {{"error", accounting_error}};
+			if (streaming) { entry.first->second.ConsumeRecords(); m_accountedPositions[file] = 0; }
 			if (!scanned.error.empty()) ++m_sourceErrors[file.first];
 			// A stable unfinished tail is cached and resumed on the next refresh, not spun on immediately.
-			if (scanned.complete || !scanned.error.empty() || scanned.bytes_read < options.byte_budget) ++m_nextFile;
+			if (!scanned.batch_full && (scanned.complete || !scanned.error.empty() || scanned.bytes_read < options.byte_budget)) ++m_nextFile;
 			else break;
 		}
 		if (m_nextFile == m_files.size() && m_nextDatabase < m_databases.size())
@@ -359,12 +388,13 @@ namespace uam::usage
 					m_accountedPositions.erase({provider_ids::kOpenCodeCli, path});
 					m_databaseScanRefreshIds[path] = std::string(refresh_id);
 				}
-				const ScanResult scanned = scan.Refresh(path, start_ms, end_ms, cancelled);
+				const ScanResult scanned = scan.Refresh(path, start_ms, streaming ? kMaxExactTokenCount : end_ms, cancelled);
 				if (scanned.reset) m_pendingDatabaseFingerprints[path] = fingerprint;
 				bytes_read += scanned.bytes_read;
 				if (scanned.cancelled) return {{"cancelled", true}};
 				std::string accounting_error;
 				if (!account({provider_ids::kOpenCodeCli, path}, scan.Records(), scanned.reset, accounting_error)) return {{"error", accounting_error}};
+				if (streaming) { scan.ConsumeRecords(); m_accountedPositions[{provider_ids::kOpenCodeCli, path}] = 0; }
 				if (!scanned.error.empty()) ++m_sourceErrors[provider_ids::kOpenCodeCli];
 				if (sink && scanned.complete && scanned.error.empty()) m_completedDatabaseFingerprints[path] = m_pendingDatabaseFingerprints[path];
 				if (scanned.complete || !scanned.error.empty()) ++m_nextDatabase;
@@ -374,7 +404,11 @@ namespace uam::usage
 		{
 			const std::filesystem::path& path = m_antigravityDatabases[m_nextAntigravityDatabase];
 			AntigravityHistoryScan& scan = m_antigravityCache[path];
-			const ScanResult scanned = scan.Refresh(path, cancelled);
+			const std::function<bool(const std::vector<Record>&, std::string&)> candidate_sink = streaming ? std::function<bool(const std::vector<Record>&, std::string&)>([&](const std::vector<Record>& records, std::string& error)
+			{
+				return stream(paths::Utf8PathString(path), records, 0, 0, error);
+			}) : std::function<bool(const std::vector<Record>&, std::string&)>{};
+			const ScanResult scanned = scan.Refresh(path, cancelled, candidate_sink);
 			bytes_read += scanned.bytes_read;
 			if (scanned.cancelled) return {{"cancelled", true}};
 			if (!scanned.error.empty()) ++m_sourceErrors[provider_ids::kAntigravityCli];
@@ -419,7 +453,7 @@ namespace uam::usage
 			if (!antigravity_records) return {{"error", "Antigravity accounting aliases exceed supported limits."}};
 			for (const Record& record : *antigravity_records) records.push_back(&record);
 		}
-		else if (m_nextAntigravityDatabase == m_antigravityDatabases.size() && m_antigravityAccountedRefreshId != refresh_id)
+		else if (!streaming && m_nextAntigravityDatabase == m_antigravityDatabases.size() && m_antigravityAccountedRefreshId != refresh_id)
 		{
 			std::vector<Record> accounting;
 			std::size_t accounting_bytes = 0;

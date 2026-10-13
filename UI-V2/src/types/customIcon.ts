@@ -1,4 +1,4 @@
-export type CustomIconTarget = 'workspace' | 'host' | 'collection' | 'desktop-app'
+export type CustomIconTarget = 'chat' | 'workspace' | 'host' | 'collection' | 'desktop-app'
 export type CustomIconInput = { type: 'text'; value: string } | { type: 'png'; base64: string } | null
 
 export type CustomIcon = { type: 'text'; value: string } | { type: 'png'; value: string; dataUrl?: string }

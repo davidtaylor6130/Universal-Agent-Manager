@@ -1,3 +1,5 @@
+#include "app/storage_retention_service.h"
+#include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
 #include "common/config/settings_store.h"
 #include "common/config/provider_availability.h"
@@ -528,7 +530,7 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 
 	const std::string version = uam::strings::Trim(payload.value("version", ""));
 	std::string error;
-	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id, payload.value("stopSessions", false)))
+	if (!ProviderCliCompatibilityService().StartInstallProviderVersion(m_app, provider_id, version, &error, execution_host_id, payload.value("stopSessions", false), false, payload.value("allowInteractiveElevation", false)))
 	{
 		m_app.status_line = FailureDetailOrFallback(error, "Failed to start provider CLI install.");
 		uam::PushStateUpdateIfChanged(browser, m_app);
@@ -669,7 +671,7 @@ void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> brows
 		}
 		targets.emplace_back(provider, target["version"].get<std::string>(), host);
 	}
-	ProviderCliCompatibilityService().StartInstallProviderVersions(m_app, targets);
+	ProviderCliCompatibilityService().StartInstallProviderVersions(m_app, targets, payload.value("allowInteractiveElevation", false));
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -944,14 +946,80 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 	}
 }
 
+void UamQueryHandler::HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<int> logs = uam::nlohmann_json::IntFieldStrict(payload, "backupLogRetentionDays");
+	const std::optional<int> cache = uam::nlohmann_json::IntFieldStrict(payload, "httpCacheClearIntervalDays");
+	if (!logs || !cache || *logs < 0 || *logs > 3650 || *cache < 0 || *cache > 3650)
+	{ cb->Failure(400, "Storage policy requires integer day values from 0 to 3650; zero disables cleanup."); return; }
+	if (!m_app.storage_retention_service)
+	{ cb->Failure(409, "Storage policy is still loading."); return; }
+	m_app.storage_retention_service->Poll(m_app);
+	const std::weak_ptr<void> lifetime = m_asyncLifetime;
+	if (!m_app.storage_retention_service->RequestPolicy(m_app.data_root, {*logs, *cache}, lifetime,
+	    [this, browser, cb, lifetime](bool saved, const std::string& error)
+	    {
+		    if (lifetime.expired()) return;
+		    if (!saved) { cb->Failure(500, error); return; }
+		    uam::PushStateUpdateIfChanged(browser, m_app);
+		    cb->Success("{}");
+	    })) cb->Failure(409, "Storage policy publication is busy or still loading. Retry shortly.");
+}
+
 void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::optional<bool> git_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "gitEnabled");
 	const std::optional<bool> svn_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "svnEnabled");
 	if (!git_enabled || !svn_enabled) { cb->Failure(400, "VCS settings must be booleans."); return; }
+	const std::optional<bool> pull_before_chat = uam::nlohmann_json::BoolFieldStrict(payload, "gitPullBeforeChat");
+	if (payload.contains("gitPullBeforeChat") && !pull_before_chat)
+	{
+		cb->Failure(400, "Pull before chat requires a boolean."); return;
+	}
+	const nlohmann::json* port_value = uam::nlohmann_json::FindStringField(payload, "gitPortMethod");
+	const std::string port_method = port_value ? port_value->get<std::string>() : std::string();
+	if (payload.contains("gitPortMethod") && (!port_value || (port_method != "patch" && port_method != "merge" && port_method != "squash")))
+	{
+		cb->Failure(400, "Git port method must be patch, merge or squash."); return;
+	}
+	const std::optional<bool> automatic_worktree = uam::nlohmann_json::BoolFieldStrict(payload, "gitAutoWorktree");
+	const nlohmann::json* base_value = uam::nlohmann_json::FindStringField(payload, "gitDefaultBaseBranch");
+	const std::string base_branch = base_value == nullptr ? std::string() : uam::strings::Trim(base_value->get<std::string>());
+	if ((payload.contains("gitAutoWorktree") && !automatic_worktree) ||
+	    (payload.contains("gitDefaultBaseBranch") && (!base_value || base_branch.size() > 255 ||
+	    std::ranges::any_of(base_branch, [](unsigned char c) { return c < 32 || c == 127; }))))
+	{
+		cb->Failure(400, "Automatic worktrees require a boolean and the default Git branch requires a short branch name.");
+		return;
+	}
+	const bool has_cleanup = payload.contains("worktreeCleanupEnabled");
+	const bool has_days = payload.contains("worktreeRetentionDays");
+	const std::optional<bool> cleanup_enabled = uam::nlohmann_json::BoolFieldStrict(payload, "worktreeCleanupEnabled");
+	const std::optional<int> retention_days = uam::nlohmann_json::IntFieldStrict(payload, "worktreeRetentionDays");
+	if ((has_cleanup && !cleanup_enabled) || (has_days && (!retention_days || *retention_days < 1 || *retention_days > 3650)))
+	{
+		cb->Failure(400, "Worktree cleanup requires a boolean and retention from 1 to 3650 days.");
+		return;
+	}
+	// Accepted policy changes cannot race an exclusive background removal.
+	const bool policy_changed = m_app.settings.git_enabled != *git_enabled ||
+	    (cleanup_enabled && m_app.settings.worktree_cleanup_enabled != *cleanup_enabled) ||
+	    (retention_days && m_app.settings.worktree_retention_days != *retention_days);
+	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease;
+	if (policy_changed)
+	{
+		lease = m_app.worktree_retention_gate.TryAcquireMutation();
+		if (!lease) { cb->Failure(409, "Worktree cleanup is finishing. Retry the settings change."); return; }
+	}
 	const AppSettings previous = m_app.settings;
 	m_app.settings.git_enabled = *git_enabled;
 	m_app.settings.svn_enabled = *svn_enabled;
+	if (automatic_worktree) m_app.settings.git_auto_worktree = *automatic_worktree;
+	if (pull_before_chat) m_app.settings.git_pull_before_chat = *pull_before_chat;
+	if (port_value) m_app.settings.git_port_method = port_method == "merge" ? GitPortMethod::Merge : port_method == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;
+	if (base_value) m_app.settings.git_default_base_branch = base_branch;
+	if (cleanup_enabled) m_app.settings.worktree_cleanup_enabled = *cleanup_enabled;
+	if (retention_days) m_app.settings.worktree_retention_days = *retention_days;
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
 		m_app.settings = previous;
@@ -984,6 +1052,38 @@ void UamQueryHandler::HandleSetProviderAvailability(CefRefPtr<CefBrowser> browse
 	{
 		m_app.settings = previous;
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Could not save provider availability."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetVoiceInputSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	AppSettings next = m_app.settings;
+	next.voice_input_mode = uam::voice_input::NormalizeMode(payload.value("mode", next.voice_input_mode));
+	next.voice_input_server_base_url = uam::strings::Trim(payload.value("serverBaseUrl", next.voice_input_server_base_url));
+	next.voice_input_server_endpoint = uam::strings::Trim(payload.value("serverEndpoint", next.voice_input_server_endpoint));
+	next.voice_input_server_model = uam::strings::Trim(payload.value("serverModel", next.voice_input_server_model));
+	next.voice_input_api_key_env = uam::strings::Trim(payload.value("apiKeyEnv", next.voice_input_api_key_env));
+
+	if (next.voice_input_mode == uam::voice_input::kServerMode)
+	{
+		std::string error;
+		if (!uam::voice_input::ValidateServerSettings(next.voice_input_server_base_url, next.voice_input_server_endpoint,
+		                                                    next.voice_input_server_model, next.voice_input_api_key_env, &error))
+		{
+			cb->Failure(400, error);
+			return;
+		}
+	}
+
+	const AppSettings previous = m_app.settings;
+	m_app.settings = std::move(next);
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist voice input settings."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);

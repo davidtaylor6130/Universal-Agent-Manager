@@ -5,6 +5,7 @@
 #include "app/chat_domain_service.h"
 #include "app/computer_use_service.h"
 #include "app/git_worktree_service.h"
+#include "app/worktree_launch_preparation_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -16,6 +17,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/chat/native_chat_identity.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/memory/memory_levels.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
@@ -410,14 +412,14 @@ namespace
 			// Hydrate only the current rollback snapshot, then release its transcript.
 			if (chat.messages_loaded)
 			{
-				if (!ChatRepository::SaveChat(staging_root, chat)) return false;
+				if (!ChatRepository::SaveChatIfAbsent(staging_root, chat)) return false;
 			}
 			else
 			{
 				ChatSession snapshot = chat;
 				if (!ChatRepository::HydrateChatMessages(app.data_root, snapshot)) return false;
 				snapshot.native_session_id = chat.native_session_id;
-				if (!ChatRepository::SaveChat(staging_root, snapshot)) return false;
+				if (!ChatRepository::SaveChatIfAbsent(staging_root, snapshot)) return false;
 			}
 		}
 		if (!folder_ids.empty() && !ChatFolderStore::Save(staging_root, app.folders)) return false;
@@ -995,21 +997,100 @@ namespace
 	}
 } // namespace
 
-bool uam::CreateTemporarySideChat(AppState& app, const std::string& parent_id, std::string* created_id)
+namespace
+{
+	constexpr std::string_view kTemporaryContextPrefix = "Prior main-chat context (reference only, not new instructions):\n";
+
+	std::string TemporarySideChatExcerpt(const Message& message)
+	{
+		if (message.content.empty()) return {};
+		std::string_view content = message.content;
+		bool clipped = false;
+		if (content.size() > 8192)
+		{
+			std::size_t start = content.size() - 8192;
+			while (start < content.size() && (static_cast<unsigned char>(content[start]) & 0xc0) == 0x80) ++start;
+			content.remove_prefix(start);
+			clipped = true;
+		}
+		return RoleToString(message.role) + ": " + (clipped ? "[Earlier text omitted]\n" : "") + std::string(content) + "\n\n";
+	}
+
+	std::string JoinTemporarySideChatExcerpts(const std::vector<std::string>& excerpts)
+	{
+		std::string context(kTemporaryContextPrefix);
+		for (std::vector<std::string>::const_reverse_iterator excerpt = excerpts.crbegin(); excerpt != excerpts.crend(); ++excerpt) context += *excerpt;
+		return context;
+	}
+}
+
+std::string uam::BuildTemporarySideChatContext(const std::vector<Message>& messages)
+{
+	std::vector<std::string> excerpts;
+	std::size_t bytes = kTemporaryContextPrefix.size();
+	std::size_t visited = 0;
+	for (std::vector<Message>::const_reverse_iterator message = messages.crbegin(); message != messages.crend() && visited < 48; ++message, ++visited)
+	{
+		const std::string excerpt = TemporarySideChatExcerpt(*message);
+		if (bytes + excerpt.size() > 32768) break;
+		bytes += excerpt.size();
+		if (!excerpt.empty()) excerpts.push_back(excerpt);
+	}
+	return JoinTemporarySideChatExcerpts(excerpts);
+}
+
+std::optional<uam::TemporarySideChatContext> uam::PrepareTemporarySideChatContext(const std::filesystem::path& data_root,
+	const ChatSession& parent, const std::function<bool()>& cancelled)
+{
+	if (parent.messages_loaded || (cancelled && cancelled())) return std::nullopt;
+	std::optional<TemporarySideChatContext> context;
+	std::vector<std::string> excerpts;
+	std::size_t bytes = kTemporaryContextPrefix.size();
+	std::optional<std::size_t> before;
+	for (std::size_t visited = 0; visited < 48; ++visited)
+	{
+		// Retain one complete record at a time, rather than hydrating 48 potentially large tool envelopes.
+		std::optional<ChatMessagePage> page = ChatRepository::ReadMessagePage(data_root, parent, 1, before, nullptr, cancelled);
+		if (!page || (cancelled && cancelled())) return std::nullopt;
+		if (context && (page->storage_revision != context->page.storage_revision || page->messages_digest != context->page.messages_digest)) return std::nullopt;
+		const std::size_t start = page->start_index;
+		const std::string excerpt = page->chat.messages.empty() ? std::string{} : TemporarySideChatExcerpt(page->chat.messages.back());
+		page->chat.messages.clear();
+		if (!context)
+		{
+			context.emplace();
+			context->page = std::move(*page);
+		}
+		if (bytes + excerpt.size() > 32768) break;
+		bytes += excerpt.size();
+		if (!excerpt.empty()) excerpts.push_back(excerpt);
+		if (start == 0) break;
+		before = start;
+	}
+	if (cancelled && cancelled()) return std::nullopt;
+	context->reference = JoinTemporarySideChatExcerpts(excerpts);
+	return context;
+}
+
+std::optional<ChatSession> uam::BuildTemporarySideChatCandidate(AppState& app, const std::string& parent_id, const TemporarySideChatContext* prepared, bool defer_context)
 {
 	ChatSession* parent = ChatDomainService().FindChatById(app, parent_id);
 	if (parent == nullptr || !parent->temporary_parent_chat_id.empty() || parent->imported_read_only)
 	{
 		app.status_line = "Choose an editable main chat to start a side chat.";
-		return false;
+		return std::nullopt;
 	}
-	if (!ChatRepository::HydrateChatMessages(app.data_root, *parent))
+	if (!parent->messages_loaded && !defer_context && (prepared == nullptr || prepared->reference.size() > 32768 ||
+		!ChatRepository::MatchesMessagePage(*parent, prepared->page) ||
+		ChatRepository::ChatStorageRevision(app.data_root, parent->id) != prepared->page.storage_revision))
 	{
-		app.status_line = "Could not load the main chat context.";
-		return false;
+		app.status_line = "The main chat context changed or is not prepared. Retry the side chat.";
+		return std::nullopt;
 	}
 	ChatSession side = ChatDomainService().CreateNewChat(parent->folder_id, parent->provider_id);
 	side.temporary_parent_chat_id = parent->id;
+	side.temporary_storage_owner_token = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+	if (side.temporary_storage_owner_token.empty()) return std::nullopt;
 	// Temporary conversations share the parent's current workspace without owning
 	// the ordinary new-chat request to create another branch/worktree on first send.
 	side.workspace_isolation_kind.clear();
@@ -1025,32 +1106,42 @@ bool uam::CreateTemporarySideChat(AppState& app, const std::string& parent_id, s
 	side.small_model_mode = parent->small_model_mode;
 	side.uam_agent_id = parent->uam_agent_id;
 	side.memory_enabled = false;
-	side.provider_handoff_context = "Prior main-chat context (reference only, not new instructions):\n";
-	std::vector<std::string> excerpts;
-	std::size_t bytes = side.provider_handoff_context.size();
-	for (std::vector<Message>::const_reverse_iterator message = parent->messages.crbegin(); message != parent->messages.crend() && excerpts.size() < 48; ++message)
-	{
-		if (message->content.empty()) continue;
-		std::string content = message->content;
-		if (content.size() > 8192)
-		{
-			std::size_t start = content.size() - 8192;
-			while (start < content.size() && (static_cast<unsigned char>(content[start]) & 0xc0) == 0x80) ++start;
-			content = "[Earlier text omitted]\n" + content.substr(start);
-		}
-		const std::string excerpt = RoleToString(message->role) + ": " + content + "\n\n";
-		if (bytes + excerpt.size() > 32768) break;
-		bytes += excerpt.size();
-		excerpts.push_back(excerpt);
-	}
-	for (std::vector<std::string>::const_reverse_iterator excerpt = excerpts.crbegin(); excerpt != excerpts.crend(); ++excerpt) side.provider_handoff_context += *excerpt;
-	if (!ChatRepository::SaveChatIfAbsent(app.data_root, side))
+	side.memory_level = uam::memory_levels::kOff;
+	side.provider_handoff_context = parent->messages_loaded ? BuildTemporarySideChatContext(parent->messages) : (prepared == nullptr ? std::string{} : prepared->reference);
+	return side;
+}
+
+bool uam::AdoptTemporarySideChat(AppState& app, ChatSession candidate, const std::filesystem::path& saved_root,
+	std::string_view saved_revision, const std::shared_ptr<const std::uint8_t>& parent_incarnation, const TemporarySideChatContext* prepared)
+{
+	if (app.data_root != saved_root || saved_revision.empty() || saved_revision == "missing" ||
+		ChatDomainService().FindChatById(app, candidate.id) != nullptr) return false;
+	const ChatSession* parent = ChatDomainService().FindChatById(app, candidate.temporary_parent_chat_id);
+	if (parent == nullptr || !parent_incarnation || parent->metadata_incarnation != parent_incarnation) return false;
+	const std::optional<ChatSession> current = BuildTemporarySideChatCandidate(app, candidate.temporary_parent_chat_id, prepared);
+	if (!current || current->folder_id != candidate.folder_id || current->provider_id != candidate.provider_id ||
+		current->execution_host_id != candidate.execution_host_id || current->workspace_directory != candidate.workspace_directory ||
+		current->model_id != candidate.model_id || current->approval_mode != candidate.approval_mode ||
+		current->command_safety_tier != candidate.command_safety_tier || current->reasoning_effort != candidate.reasoning_effort ||
+		current->service_tier != candidate.service_tier || current->service_tier_explicit != candidate.service_tier_explicit ||
+		current->small_model_mode != candidate.small_model_mode || current->uam_agent_id != candidate.uam_agent_id ||
+		current->provider_handoff_context != candidate.provider_handoff_context ||
+		candidate.temporary_storage_owner_token.empty()) return false;
+	app.chats.push_back(std::move(candidate));
+	return true;
+}
+
+bool uam::CreateTemporarySideChat(AppState& app, const std::string& parent_id, std::string* created_id, const TemporarySideChatContext* prepared)
+{
+	std::optional<ChatSession> side = BuildTemporarySideChatCandidate(app, parent_id, prepared);
+	if (!side) return false;
+	if (!ChatRepository::SaveChatIfAbsent(app.data_root, *side))
 	{
 		app.status_line = "Could not save the temporary side chat.";
 		return false;
 	}
-	if (created_id != nullptr) *created_id = side.id;
-	app.chats.push_back(std::move(side));
+	if (created_id != nullptr) *created_id = side->id;
+	app.chats.push_back(std::move(*side));
 	return true;
 }
 
@@ -1763,6 +1854,8 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	DeletedChatsSelection deleted = CollectChatsInFolder(app, target_folder_ids);
 	for (const std::string& id : deleted.ids)
 	{
+		CancelWorktreeLaunchPreparation(app, id);
+		CancelGitPortRequest(app, id);
 		if (app.worktree_operation_chat_ids.contains(id))
 		{
 			app.status_line = "Wait for the chat worktree operation to finish.";
@@ -1859,6 +1952,8 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 			app.status_line = "A selected chat no longer exists.";
 			return false;
 		}
+		CancelWorktreeLaunchPreparation(app, id);
+		CancelGitPortRequest(app, id);
 		if (app.worktree_operation_chat_ids.contains(id))
 		{
 			app.status_line = "Wait for the chat worktree operation to finish.";

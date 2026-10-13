@@ -355,6 +355,84 @@ UAM_TEST(PermissionReviewUnreviewableAndSensitiveProviderInputsStayManual)
 #endif
 }
 
+UAM_TEST(GenericAcpPermissionRetainsOriginalReviewInputAndMethod)
+{
+	TempDir temp("uam-generic-review-provenance");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "generic-review-provenance";
+	chat.provider_id = "opencode-cli";
+	chat.command_safety_tier = "off";
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	const nlohmann::json input = {{"command", "git status"}, {"cwd", "/private-fixture"}, {"network", false}};
+	nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 91}, {"method", "session/request_permission"},
+	    {"params", {{"toolCall", {{"toolCallId", "complete-input"}, {"title", "Inspect fixture"}, {"kind", "execute"}, {"rawInput", input}}}}}};
+	frame["params"]["toolCall"]["content"] = nlohmann::json::array({{{"type", "text"}, {"text", "Complete sibling context"}}});
+	frame["params"]["toolCall"]["locations"] = nlohmann::json::array({{{"path", "/fixture/file"}, {"line", 7}}});
+	frame["params"]["toolCall"]["_meta"] = {{"scope", "fixture"}};
+	frame["params"]["options"] = nlohmann::json::array({{{"optionId", "allow-once"}, {"kind", "allow_once"}}});
+	frame["params"]["_meta"] = {{"source", "fixture-provider"}};
+	uam::acp_detail::HandlePermissionRequest(app, session, chat, frame);
+	UAM_ASSERT_EQ(session.pending_permission.content, std::string("git status"));
+	UAM_ASSERT_EQ(session.pending_permission.provider_request_method, std::string("session/request_permission"));
+	UAM_ASSERT_EQ(nlohmann::json::parse(session.pending_permission.provider_input_json), input);
+	const std::string prompt = uam::acp_detail::BuildPermissionReviewPrompt(session.pending_permission);
+	UAM_ASSERT(!prompt.empty());
+	const std::size_t marker = prompt.find("Request:\n");
+	UAM_ASSERT(marker != std::string::npos);
+	const nlohmann::json request = nlohmann::json::parse(prompt.substr(marker + 9));
+	UAM_ASSERT_EQ(request["providerInput"], input);
+	UAM_ASSERT_EQ(request["providerRequestParams"], frame["params"]);
+	UAM_ASSERT_EQ(nlohmann::json::parse(session.pending_permission.provider_request_params_json), frame["params"]);
+	UAM_ASSERT_EQ(request["providerMethod"], frame["method"]);
+}
+
+UAM_TEST(GenericAcpMixedSecretAndUnreviewableInputsNeverLaunchReviewer)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	for (const std::string scenario : {"secret", "oversized", "escaped", "array", "string", "null", "secret-content", "secret-locations", "secret-metadata", "oversized-sibling", "escaped-sibling"})
+	{
+		TempDir temp("uam-generic-review-gate");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "generic-review-gate";
+		chat.provider_id = "opencode-cli";
+		chat.command_safety_tier = "aiReview";
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.running = true;
+		nlohmann::json input = {{"command", "git status"}};
+		if (scenario == "secret") input["password"] = "fixture-private";
+		if (scenario == "oversized") input["context"] = std::string(12 * 1024, 'x');
+		if (scenario == "escaped") input["context"] = std::string(10 * 1024, '\n');
+		if (scenario == "array") input = nlohmann::json::array({"git status"});
+		if (scenario == "string") input = "git status";
+		if (scenario == "null") input = nullptr;
+		nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 92}, {"method", "session/request_permission"},
+		    {"params", {{"toolCall", {{"toolCallId", "manual-input"}, {"title", "Inspect fixture"}, {"kind", "execute"}, {"rawInput", input}}}}}};
+		frame["params"]["options"] = nlohmann::json::array({{{"optionId", "allow-once"}, {"kind", "allow_once"}}});
+		if (scenario == "secret-content") frame["params"]["toolCall"]["content"] = {{{"password", "fixture-private"}}};
+		if (scenario == "secret-locations") frame["params"]["toolCall"]["locations"] = {{{"password", "fixture-private"}}};
+		if (scenario == "secret-metadata") frame["params"]["_meta"] = {{"password", "fixture-private"}};
+		if (scenario == "oversized-sibling") frame["params"]["toolCall"]["content"] = std::string(12 * 1024, 'x');
+		if (scenario == "escaped-sibling") frame["params"]["toolCall"]["content"] = std::string(10 * 1024, '\n');
+		uam::acp_detail::HandlePermissionRequest(app, session, chat, frame);
+		UAM_ASSERT(session.waiting_for_permission);
+		UAM_ASSERT_EQ(session.pending_permission.request_id_json, std::string("92"));
+		UAM_ASSERT(app.permission_review_tasks.empty());
+		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [&scenario](const uam::AcpDiagnosticEntryState& entry)
+		{
+			return entry.reason == (scenario.starts_with("secret") ? "sensitive_input" : "input_not_reviewable");
+		}));
+	}
+#endif
+}
+
 UAM_TEST(CodexWriterOwnershipProtectsBusyAliasesAcrossWorkspaces)
 {
 	uam::AppState app;
@@ -2101,6 +2179,8 @@ done
 	for (int attempt = 0; attempt < 500; ++attempt)
 	{
 		(void)uam::PollAllAcpSessions(app);
+		// Match the application tick: advance owned persistence after runtime polling.
+		(void)uam::FlushPendingChatSaves(app);
 		if (app.acp_sessions.front()->session_ready &&
 		    !app.acp_sessions.front()->processing && app.chats.front().messages.size() >= 2)
 			break;
@@ -4394,6 +4474,80 @@ UAM_TEST(AcpMissingSessionIdRecordsDiagnostics)
 	UAM_ASSERT(raw_session->diagnostics.back().detail.find("result={}") != std::string::npos);
 }
 
+UAM_TEST(GeminiAcpAcceptEditsUsesAdvertisedWireSpellingAndUnchangedCliFlag)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("gemini-cli");
+	ChatSession chat;
+	chat.provider_id = "gemini-cli";
+	chat.approval_mode = "acceptEdits";
+	const std::vector<std::string> launch = runtime.BuildStructuredLaunchArgv(ProviderProfileStore::DefaultGeminiProfile(), chat);
+	const std::vector<std::string>::const_iterator flag = std::find(launch.begin(), launch.end(), "--approval-mode");
+	UAM_ASSERT(flag != launch.end() && std::next(flag) != launch.end());
+	UAM_ASSERT_EQ(*std::next(flag), std::string("auto_edit"));
+	for (const std::string wire_id : {"autoEdit", "auto_edit"})
+	{
+		uam::AcpSessionState session;
+		session.provider_id = chat.provider_id;
+		session.session_id = "gemini-private-mode";
+		const nlohmann::json modes = {{"currentModeId", wire_id}, {"availableModes", nlohmann::json::array({
+		    {{"id", "default"}, {"name", "Default"}}, {{"id", wire_id}, {"name", "Auto Edit"}}, {{"id", "plan"}, {"name", "Plan"}}})}};
+		uam::acp_detail::UpdateAcpModesFromJson(session, modes);
+		UAM_ASSERT_EQ(session.current_mode_id, std::string("acceptEdits"));
+		UAM_ASSERT_EQ(session.available_modes[1].id, std::string("acceptEdits"));
+		const nlohmann::json request = uam::acp_detail::BuildSetModeRequest(41, session.session_id,
+		    uam::acp_detail::ProviderApprovalModeId(session, "acceptEdits"));
+		UAM_ASSERT_EQ(request["params"]["modeId"], nlohmann::json(wire_id));
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "plan"), std::string("plan"));
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "default"), std::string("default"));
+	}
+#endif
+}
+
+UAM_TEST(GeminiAcpNegotiationPreservesAdvertisedAliasesAndSafeFallbacks)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	for (const std::vector<std::string> aliases : {std::vector<std::string>{"autoEdit", "auto_edit"}, std::vector<std::string>{"auto_edit", "autoEdit"}})
+	{
+		uam::AcpSessionState session;
+		session.provider_id = "gemini-cli";
+		nlohmann::json advertised = nlohmann::json::array();
+		for (const std::string& alias : aliases) advertised.push_back({{"id", alias}, {"name", "Auto Edit"}});
+		advertised.push_back({{"id", "yolo"}, {"name", "YOLO"}});
+		advertised.push_back({{"id", "unknown-mode"}, {"name", "Unknown"}});
+		uam::acp_detail::UpdateAcpModesFromJson(session, {{"availableModes", advertised}});
+		UAM_ASSERT_EQ(session.available_modes.size(), std::size_t{3});
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "acceptEdits"), aliases.front());
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "unknown-mode"), std::string("unknown-mode"));
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "default"), std::string("default"));
+		UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "plan"), std::string("plan"));
+	}
+	uam::AcpSessionState unadvertised;
+	unadvertised.provider_id = "gemini-cli";
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(unadvertised, "acceptEdits"), std::string("autoEdit"));
+	// Legacy in-memory rows carry no provider ID and use the current provider fallback.
+	unadvertised.available_modes.push_back({"acceptEdits", "Auto Edit", ""});
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(unadvertised, "acceptEdits"), std::string("autoEdit"));
+	unadvertised.available_modes.push_back({"default", "Suppressed", "", "yolo"});
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(unadvertised, "default"), std::string("default"));
+	unadvertised.available_modes.push_back({"plan", "Invalid alias", "", "default"});
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(unadvertised, "plan"), std::string("plan"));
+#endif
+}
+
+UAM_TEST(NonGeminiModeOverridesRemainAuthoritativeOverAdvertisedAliases)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	uam::AcpSessionState session;
+	session.provider_id = "copilot-cli";
+	uam::acp_detail::UpdateAcpModesFromJson(session, {{"availableModes", nlohmann::json::array({
+	    {{"id", "autoEdit"}, {"name", "Auto Edit"}}, {{"id", "plan"}, {"name", "Plan"}}})}});
+	UAM_ASSERT_EQ(session.available_modes.front().id, std::string("acceptEdits"));
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "acceptEdits"), std::string(uam::approval_modes::kAcpAgentMode));
+	UAM_ASSERT_EQ(uam::acp_detail::ProviderApprovalModeId(session, "plan"), std::string(uam::approval_modes::kAcpPlanMode));
+#endif
+}
+
 UAM_TEST(AcpSessionNewParsesModesModelsAndModeUpdates)
 {
 	TempDir temp("uam-acp-modes-models");
@@ -4919,6 +5073,7 @@ UAM_TEST(OpenCodeAcpBlocksStaleStartupModelWithoutRetry)
 	UAM_ASSERT(!uam::acp_detail::SendQueuedPromptIfReady(app, *raw_session, app.chats.front()));
 	UAM_ASSERT_EQ(raw_session->next_request_id, 1);
 	UAM_ASSERT(raw_session->last_error.find("no longer offers") != std::string::npos);
+	UAM_ASSERT(raw_session->last_error.find("Refresh models in Settings or restart UAM") != std::string::npos);
 	UAM_ASSERT(!uam::AcpSessionHasCancelableWork(*raw_session));
 	UAM_ASSERT(raw_session->queued_prompt.empty());
 	UAM_ASSERT_EQ(app.chats.front().model_id, std::string("inferdeck/Normal"));
@@ -11042,6 +11197,8 @@ UAM_TEST(AcpRejectedModelChangeRestoresPersistedAndRuntimeModel)
 	    ",\"error\":{\"code\":-32602,\"message\":\"Unsupported model\"}}";
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), rejection));
 
+	UAM_ASSERT(raw_session->last_error.find("Refresh models in Settings or restart UAM") != std::string::npos);
+
 	UAM_ASSERT_EQ(raw_session->current_model_id, std::string("model-old"));
 	UAM_ASSERT_EQ(raw_session->model_change_request_id, 0);
 	UAM_ASSERT(app.chats.front().model_id.empty());
@@ -13369,4 +13526,41 @@ UAM_TEST(AcpPromptDispatchPreservesSettingsOverridesAndLoadedHistoryAcrossProvid
 	}
 	UAM_ASSERT(tested_providers > 0);
 	std::cout << "[COVERAGE] prompt_dispatch_providers=" << tested_providers << '\n';
+}
+
+
+UAM_TEST(UnavailableModelGuidanceOnlyClassifiesExactModelRejections)
+{
+	const std::vector<std::pair<int, std::string>> failures = {
+		{-32602, "Unsupported model"}, {-32603, "Unsupported model"},
+		{-32602, "Authentication required"}, {-32602, "Rate limit exceeded"},
+		{-32602, "Permission denied"}, {-32602, "Context length exceeded"}
+	};
+	for (const std::pair<int, std::string>& failure : failures)
+	{
+		TempDir temp("uam-model-refresh-guidance");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "model-guidance";
+		chat.provider_id = "gemini-cli";
+		chat.model_id = "model-new";
+		app.chats.push_back(chat);
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.model_change_request_id = 7;
+		session.model_change_requested_id = "model-new";
+		session.model_change_previous_id = "model-old";
+		session.model_change_previous_chat_id = "model-old";
+		session.current_model_id = "model-new";
+		session.pending_request_methods[7] = "session/set_model";
+		const nlohmann::json response = {{"jsonrpc", "2.0"}, {"id", 7}, {"error", {{"code", failure.first}, {"message", failure.second}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, app.chats.front(), response.dump()));
+		UAM_ASSERT(session.last_error.find(failure.second) != std::string::npos);
+		const bool unavailable_model = failure.first == -32602 && failure.second == "Unsupported model";
+		UAM_ASSERT_EQ(session.last_error.find("Refresh models in Settings or restart UAM") != std::string::npos, unavailable_model);
+		UAM_ASSERT_EQ(session.current_model_id, std::string("model-old"));
+		UAM_ASSERT_EQ(app.chats.front().model_id, std::string("model-old"));
+	}
 }

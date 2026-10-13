@@ -120,6 +120,10 @@ React/UI changes follow `docs/ui/design-language.md`; settings pages also follow
 - Memory service: `src/app/memory_service.cpp`
 - Data storage: `<data-root>/chats/` JSON files plus optional `<data-root>/memory/`
 
+## System documentation
+
+Use [docs/README.md](docs/README.md) to find the system pages, existing architecture diagrams, and UI rules. Update the relevant system page when its implementation changes; keep recorded decisions separate from pending implementation.
+
 ## Data Root Resolution
 
 1. `UAM_DATA_DIR` env var

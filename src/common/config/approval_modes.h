@@ -16,6 +16,7 @@ namespace uam::approval_modes
 	inline constexpr const char* kLegacyYoloApprovalMode = "yolo";
 	inline constexpr const char* kProviderAutoApprovalMode = "auto";
 	inline constexpr const char* kProviderAutoEditApprovalMode = "auto_edit";
+	inline constexpr const char* kGeminiAcpAutoEditApprovalMode = "autoEdit";
 
 	inline constexpr const char* kAcpAgentMode = "https://agentclientprotocol.com/protocol/session-modes#agent";
 	inline constexpr const char* kAcpPlanMode = "https://agentclientprotocol.com/protocol/session-modes#plan";
@@ -115,7 +116,7 @@ namespace uam::approval_modes
 		{
 			return kDefaultApprovalMode;
 		}
-		if (normalized == kProviderAutoEditApprovalMode)
+		if (normalized == kProviderAutoEditApprovalMode || normalized == kGeminiAcpAutoEditApprovalMode)
 		{
 			return kAcceptEditsApprovalMode;
 		}

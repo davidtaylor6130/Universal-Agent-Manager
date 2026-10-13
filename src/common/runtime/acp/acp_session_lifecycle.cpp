@@ -1,8 +1,13 @@
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/config/provider_availability.h"
+#include "common/config/settings_frontend_json.h"
+#include <atomic>
+#include <thread>
 #include "common/provider/provider_setup_input.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "app/execution_routing_integration.h"
 #include "app/provider_configuration_service.h"
+#include "app/worktree_launch_preparation_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
@@ -28,6 +33,7 @@
 #include "remote/runner_proxy.h"
 #include "remote/host_context.h"
 #include "common/memory/memory_levels.h"
+#include "common/memory/memory_policy.h"
 #include "remote/runner_protocol.h"
 
 #include <cstring>
@@ -40,6 +46,23 @@
 
 namespace uam
 {
+	/** Immutable configuration work retained by the app after its launch authority is revoked. */
+	struct PendingLocalAcpLaunch
+	{
+		std::shared_ptr<const std::uint8_t> incarnation;
+		std::filesystem::path root;
+		ExecutionHost host;
+		std::string ownership;
+		std::vector<std::string> argv;
+		uam::provider_setup::Environment environment;
+		ProviderConfigurationBundle bundle;
+		std::string instructions;
+		std::string error;
+		bool success = false;
+		std::atomic<bool> finished{false};
+		std::unique_ptr<std::jthread> worker;
+	};
+
 	struct PendingAcpPromptDelivery
 	{
 		nlohmann::json message;
@@ -54,26 +77,142 @@ namespace uam
 		std::string configuration;
 		std::vector<std::size_t> unsent_messages;
 		std::vector<std::pair<std::size_t, std::string>> user_messages;
-		std::optional<bool> saved;
+		std::string created_at;
+		std::string process_id;
+		std::string active_goal_id;
+		std::string goal_revision;
+		bool small_model_mode = false;
+		std::string native_session_id;
+		std::optional<ExecutionHost> remote_host;
+		std::optional<AcpQueuedUserPromptState> remote_prepared_head;
+		std::string delivery_session_id;
+		std::string delivery_id;
+		std::string delivery_payload;
+		std::string proxy_token;
+		int proxy_protocol = 0;
+		acp_detail::DurableAdmissionState admission = acp_detail::DurableAdmissionState::Pending;
 	};
 }
 
 namespace uam::acp_detail
 {
 
+namespace
+{
+	/** Copies launch metadata while keeping the complete transcript exclusively on the GUI thread. */
+	ChatSession LocalLaunchMetadata(ChatSession& chat)
+	{
+		struct RestoreTranscript
+		{
+			ChatSession& owner;
+			std::vector<Message> messages;
+			std::vector<AcpQueuedUserPromptState> queued;
+			std::string handoff;
+			std::vector<Goal> goals;
+			std::vector<AcpRemotePendingRequestState> remote_requests;
+			std::vector<UamControlAuditRecord> audit;
+			std::vector<std::string> linked_files;
+			~RestoreTranscript()
+			{
+				owner.messages = std::move(messages);
+				owner.acp_queued_prompts = std::move(queued);
+				owner.provider_handoff_context = std::move(handoff);
+				owner.goals = std::move(goals);
+				owner.remote_pending_requests = std::move(remote_requests);
+				owner.uam_control_audit = std::move(audit);
+				owner.linked_files = std::move(linked_files);
+			}
+		} restore{chat, std::move(chat.messages), std::move(chat.acp_queued_prompts), std::move(chat.provider_handoff_context),
+		    std::move(chat.goals), std::move(chat.remote_pending_requests), std::move(chat.uam_control_audit), std::move(chat.linked_files)};
+		return chat;
+	}
+	std::string LocalLaunchOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+	{
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+		return nlohmann::json::array({provider.id, provider.interactive_command, provider.runtime_flags, provider.resume_argument,
+		    provider.supports_structured, provider.structured_protocol, provider.execution_mode, provider.output_mode,
+		    provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.git_auto_worktree,
+		    chat.workspace_base_ref,
+		    chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr), chat.workspace_branch_name, chat.id, chat.created_at, chat.provider_id, chat.native_session_id,
+		    chat.execution_host_id, chat.workspace_directory, chat.workspace_source_directory,
+		    chat.workspace_worktree_directory, chat.workspace_isolation_kind, chat.routing_mode,
+		    chat.routing_assigned_connection_identity, chat.model_id, chat.approval_mode, chat.extra_flags,
+		    chat.active_goal_id, chat.goal_command_revision, chat.uam_agent_id, chat.small_model_mode,
+		    chat.reasoning_effort, chat.service_tier, chat.command_safety_tier, session.goal_turn_model_id,
+		    session.active_uam_agent_id, session.active_uam_agent_definition_hash,
+		    session.active_uam_agent_instructions, session.active_uam_agent_execution_capability,
+		    session.active_uam_agent_workspace_access, session.last_process_id, session.session_id, AcpProcessHandleLabel(session),
+		    session.model_discovery_only, session.goal_internal_session, session.recovering_remote_turn, session.recovering_remote_process,
+		    settings_frontend_json::SerializeFingerprintSettingsFields(app.settings),
+		    PromptDeliveryConfiguration(app, session, chat)}).dump();
+	}
+}
+
+std::string LocalSessionReceiptOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	return LocalLaunchOwnership(app, session, chat);
+}
+
+void ReapLocalAcpLaunchTasks(AppState& app)
+{
+	std::erase_if(app.local_acp_launch_tasks, [](const std::shared_ptr<PendingLocalAcpLaunch>& task)
+	{
+		if (!task->finished.load(std::memory_order_acquire) || task.use_count() != 1) return false;
+		// All work is finished; releasing the thread handle must not wait for scheduling.
+		if (task->worker && task->worker->joinable()) task->worker->detach();
+		return true;
+	});
+}
+
 std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 {
 	return nlohmann::json::array({chat.model_id, chat.reasoning_effort, chat.service_tier, chat.service_tier_explicit,
 	    chat.approval_mode, chat.command_safety_tier, session.current_model_id,
 	    session.current_mode_id, session.goal_turn_model_id, session.active_uam_agent_id,
-	    session.active_uam_agent_definition_hash, chat.memory_level, chat.memory_enabled,
-	    app.settings.memory_recall_budget_bytes, chat.computer_use_enabled,
+	    session.active_uam_agent_definition_hash, chat.memory_level, memory_policy::Resolve(app.settings, chat),
+	    app.settings.memory_recall_budget_bytes, app.settings.computer_use_globally_enabled, chat.computer_use_enabled,
 	    chat.computer_use_backend, chat.computer_use_target_id,
-	    chat.computer_use_target_process_id, chat.computer_use_target_input_mode}).dump();
+	    chat.computer_use_target_process_id, chat.computer_use_target_input_mode,
+	    chat.claude_quota_continuation.id, chat.claude_quota_continuation.state,
+	    chat.claude_quota_continuation.chat_id, chat.claude_quota_continuation.native_session_id,
+	    chat.claude_quota_continuation.context, chat.claude_quota_continuation.accepted_message_digest,
+	    chat.claude_quota_continuation.agent_id, chat.claude_quota_continuation.agent_definition_hash,
+	    chat.claude_quota_continuation.agent_workspace_access, chat.claude_quota_continuation.agent_execution_capability,
+	    chat.claude_quota_continuation.observed_at_epoch_s, chat.claude_quota_continuation.resets_at_epoch_s,
+	    chat.claude_quota_continuation.user_message_index, chat.claude_quota_continuation.message_count}).dump();
 }
 
 namespace
 {
+	bool OwnsPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
+	    const PendingAcpPromptDelivery& packet)
+	{
+		const bool remote = packet.remote_host.has_value();
+		const ExecutionHost* host = remote ? execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id) : nullptr;
+		const bool remote_owned = !remote || (host != nullptr && execution_hosts::SameConnection(*host, *packet.remote_host) &&
+		    host->runner_protocol_version == packet.proxy_protocol && session.remote_runner_protocol_version == packet.proxy_protocol &&
+		    session.remote_output_delivery_token == packet.proxy_token && session.process_execution_host_id == host->id &&
+		    session.prompt_request_id == 0 && chat.remote_turn_reconnect_pending && chat.remote_prompt_delivery_session_id == packet.delivery_session_id &&
+		    chat.remote_prompt_delivery_id == packet.delivery_id && chat.remote_prompt_delivery_payload == packet.delivery_payload &&
+		    std::ranges::any_of(chat.remote_pending_requests, [&packet](const AcpRemotePendingRequestState& request)
+		    { return request.request_id == packet.request_id && request.turn_serial == packet.turn_serial && request.method == packet.method && !request.response_consumed; }));
+		return packet.turn_serial == session.turn_serial && packet.prompt == session.queued_prompt &&
+		    session.processing && !session.cancel_requested && packet.data_root == app.data_root &&
+		    packet.created_at == chat.created_at && packet.provider_id == session.provider_id &&
+		    packet.provider_id == chat.provider_id && packet.session_id == session.session_id &&
+		    packet.process_id == AcpProcessHandleLabel(session) && packet.workspace == chat.workspace_directory &&
+		    (remote ? remote_owned : chat.execution_host_id == execution_hosts::kLocalHostId) &&
+		    packet.native_session_id == chat.native_session_id && packet.active_goal_id == chat.active_goal_id &&
+		    packet.goal_revision == chat.goal_command_revision && packet.small_model_mode == chat.small_model_mode &&
+		    packet.configuration == PromptDeliveryConfiguration(app, session, chat) &&
+		    provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id) &&
+		    std::ranges::all_of(packet.user_messages, [&chat](const std::pair<std::size_t, std::string>& user)
+		    {
+			    return user.first < chat.messages.size() && chat.messages[user.first].role == MessageRole::User &&
+			        chat.messages[user.first].content == user.second && !chat.messages[user.first].acp_prompt_not_sent;
+		    });
+	}
+
 	bool ConfigureRemoteUamControlRelay(AppState& app, AcpSessionState& session,
 	                                    ChatSession& chat, const ExecutionHost& execution_host,
 	                                    std::string_view method,
@@ -350,6 +489,7 @@ bool SendInitialize(AcpSessionState& session, std::string* error_out)
 
 void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	session.pending_local_launch.reset();
 	AbandonPendingLocalSteers(session);
 	RestorePendingPromptDelivery(session, chat);
 	session.defer_prompt_save = false;
@@ -400,6 +540,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.turn_serial = chat.execution_host_id == uam::execution_hosts::kLocalHostId
 	    ? 0 : std::max(session.turn_serial, chat.remote_turn_serial);
 	session.queued_prompt.clear();
+	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
 	session.memory_recall_preparation.reset();
@@ -589,8 +730,66 @@ bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSessi
 	return false;
 }
 
+bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat)
+{
+	if (session.pending_prompt_delivery || app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
+	    !chat.remote_turn_reconnect_pending || chat.remote_prompt_delivery_id.empty() || chat.remote_prompt_delivery_payload.empty())
+	{
+		session.last_error = "Remote prompt is waiting for its committed recovery marker.";
+		return false;
+	}
+	const std::string line = uam::remote::BuildRemoteInputDeliveryLine(
+	    session.remote_output_delivery_token, chat.remote_prompt_delivery_id, chat.remote_prompt_delivery_payload);
+	std::string error;
+	if (!line.empty() && PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(session, line.data(), line.size(), &error)) return true;
+	session.last_error = "Remote prompt could not be queued for confirmed delivery: " +
+	    uam::strings::NonEmptyOrFallback(error, "transport unavailable");
+	return false;
+}
+
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out)
 {
+	const std::shared_ptr<PendingLocalAcpLaunch> prepared = session.pending_local_launch;
+	if (prepared)
+	{
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		const std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>>::const_iterator workspace_preparation = app.worktree_launch_preparations.find(chat.id);
+		if (prepared->incarnation != chat.metadata_incarnation || prepared->root != app.data_root ||
+		    host == nullptr || !execution_hosts::SameConnection(prepared->host, *host) ||
+		    prepared->ownership != LocalLaunchOwnership(app, session, chat) ||
+		    app.worktree_operation_chat_ids.contains(chat.id) || app.branch_preparations.contains(chat.id) ||
+		    (workspace_preparation != app.worktree_launch_preparations.end() &&
+		     !(workspace_preparation->second->saved && *workspace_preparation->second->saved)))
+		{
+			session.pending_local_launch.reset();
+			session.last_error = "Local launch ownership changed during configuration preparation.";
+			session.lifecycle_state = kAcpLifecycleError;
+			if (error_out) *error_out = session.last_error;
+			return false;
+		}
+		if (!prepared->finished.load(std::memory_order_acquire)) return true;
+		if (!prepared->success)
+		{
+			session.pending_local_launch.reset();
+			session.last_error = prepared->error;
+			session.lifecycle_state = kAcpLifecycleError;
+			if (error_out) *error_out = session.last_error;
+			return false;
+		}
+	}
+
+	if (session.pending_prompt_delivery && session.pending_prompt_delivery->remote_host)
+	{
+		const std::shared_ptr<PendingAcpPromptDelivery> packet = session.pending_prompt_delivery;
+		if (!OwnsPromptAdmission(app, session, chat, *packet) || packet->admission == DurableAdmissionState::Failed)
+		{
+			RestorePendingPromptDelivery(session, chat);
+			ScheduleChatSave(app, chat, 0.0);
+		}
+		if (error_out != nullptr) *error_out = "Remote prompt is waiting for its owned durable receipt.";
+		return false;
+	}
+
 	if (session.local_stop_pending)
 	{
 		if (error_out != nullptr) *error_out = "The provider is stopping.";
@@ -751,9 +950,11 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		session.stdout_poll_pending = false;
 		session.stderr_poll_pending = false;
 	}
-	else
+	else if (!prepared)
 	{
 		ResetAcpRuntimeState(app, session, chat);
+		// The selected launch model must survive transport reset before async ownership is captured.
+		session.goal_turn_model_id = goal_turn_model_id;
 	}
 	if (retrying_undelivered_prompt || recovering_remote_turn || recovering_remote_process)
 	{
@@ -795,18 +996,22 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 
 	std::string startup_error;
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
-	ChatSession launch_chat = chat;
+	ChatSession launch_chat = remote ? chat : LocalLaunchMetadata(chat);
+	launch_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	if (session.active_uam_agent_execution_capability == "uam-central-native-setup") launch_chat.uam_agent_id = session.active_uam_agent_id;
 	if (session.active_uam_agent_workspace_access == "read") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) launch_chat.model_id = session.goal_turn_model_id;
-	std::vector<std::string> launch_argv = BuildAcpLaunchArgv(provider, launch_chat);
+	const bool defer_configuration = !remote && !session.model_discovery_only &&
+	    !session.recovering_remote_turn && !session.recovering_remote_process &&
+	    app.settings.central_provider_configuration.enabled;
+	std::vector<std::string> launch_argv = defer_configuration ? std::vector<std::string>{} : BuildAcpLaunchArgv(provider, launch_chat);
 	std::vector<std::pair<std::string, std::string>> launch_environment =
-	    uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(provider);
+	    defer_configuration ? uam::provider_setup::Environment{} : uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(provider);
 	const std::vector<std::pair<std::string, std::string>> runtime_environment =
-	    runtime.BuildStructuredLaunchEnvironment(provider, launch_chat);
+	    defer_configuration ? uam::provider_setup::Environment{} : runtime.BuildStructuredLaunchEnvironment(provider, launch_chat);
 	launch_environment.insert(launch_environment.end(), runtime_environment.begin(), runtime_environment.end());
-	session.active_uam_agent_adapter_directory.clear();
-	if (!session.model_discovery_only && !session.active_uam_agent_instructions.empty() &&
+	if (!prepared) session.active_uam_agent_adapter_directory.clear();
+	if (!prepared && !session.model_discovery_only && !session.active_uam_agent_instructions.empty() &&
 	    session.active_uam_agent_execution_capability != "uam-central-native-setup")
 	{
 		if (remote)
@@ -834,7 +1039,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	nlohmann::json launch_control_servers = nlohmann::json::array();
 	AppSettings configuration_settings = app.settings;
-	if (!session.model_discovery_only && (provider.id == uam::provider_ids::kClaudeCli || provider.id == uam::provider_ids::kAntigravityCli) && UamControlService::EnabledForChat(app.settings, chat))
+	if (!prepared && !session.model_discovery_only && (provider.id == uam::provider_ids::kClaudeCli || provider.id == uam::provider_ids::kAntigravityCli) && UamControlService::EnabledForChat(app.settings, chat))
 	{
 		nlohmann::json control_request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
 		if (!UamControlService::AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, control_request, &startup_error))
@@ -878,7 +1083,70 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		}
 	}
 	ProviderConfigurationBundle configuration_bundle;
-	if (!session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process &&
+	if (defer_configuration && !prepared)
+	{
+		const std::shared_ptr<PendingLocalAcpLaunch> task = std::make_shared<PendingLocalAcpLaunch>();
+		task->incarnation = chat.metadata_incarnation;
+		task->root = app.data_root;
+		task->host = *execution_host;
+		task->ownership = LocalLaunchOwnership(app, session, chat);
+		const bool central_native = session.active_uam_agent_execution_capability == "uam-central-native-setup";
+		const std::string central_instructions = session.active_uam_agent_instructions;
+		session.pending_local_launch = task;
+		app.local_acp_launch_tasks.push_back(task);
+		PendingLocalAcpLaunch* result = task.get();
+		try
+		{
+			task->worker = std::make_unique<std::jthread>([result, provider, launch_chat = std::move(launch_chat), configuration_settings,
+			    workspace_root, launch_argv = std::move(launch_argv), launch_environment = std::move(launch_environment),
+			    launch_control_servers, central_native, central_instructions](std::stop_token) mutable
+			{
+				try
+				{
+					result->argv = BuildAcpLaunchArgv(provider, launch_chat);
+					result->argv.insert(result->argv.end(), launch_argv.begin(), launch_argv.end());
+					result->environment = uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(provider);
+					const uam::provider_setup::Environment runtime_environment = ProviderRuntimeRegistry::ResolveById(provider.id).BuildStructuredLaunchEnvironment(provider, launch_chat);
+					result->environment.insert(result->environment.end(), runtime_environment.begin(), runtime_environment.end());
+					result->environment.insert(result->environment.end(), launch_environment.begin(), launch_environment.end());
+					result->success = PrepareProviderConfiguration(result->root, configuration_settings, launch_chat, result->host,
+					    workspace_root, result->bundle, result->error, central_native ? &central_instructions : nullptr) &&
+					    (result->bundle.local_directory.empty() || uam::provider_setup::Apply(provider.id, result->bundle.local_directory,
+					        workspace_root, result->argv, result->environment, result->error, launch_control_servers, &result->instructions));
+				}
+				catch (const std::exception& exception) { result->error = std::string("Local configuration preparation failed: ") + exception.what(); }
+				catch (...) { result->error = "Local configuration preparation failed."; }
+				result->bundle.files.clear();
+				result->finished.store(true, std::memory_order_release);
+			});
+		}
+		catch (const std::exception& exception)
+		{
+			task->error = std::string("Could not start local configuration preparation: ") + exception.what();
+			task->finished.store(true, std::memory_order_release);
+			session.pending_local_launch.reset();
+			session.last_error = task->error;
+			if (error_out) *error_out = session.last_error;
+			return false;
+		}
+		return true;
+	}
+	if (prepared)
+	{
+		if (prepared->ownership != LocalLaunchOwnership(app, session, chat))
+		{
+			session.pending_local_launch.reset();
+			session.last_error = "Local launch ownership changed before process creation.";
+			if (error_out) *error_out = session.last_error;
+			return false;
+		}
+		launch_argv = prepared->argv;
+		launch_environment = prepared->environment;
+		configuration_bundle = std::move(prepared->bundle);
+		session.provider_protocol_instructions = prepared->instructions;
+		session.pending_local_launch.reset();
+	}
+	if (!prepared && !session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process &&
 	    (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error,
 	                                  session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr) ||
 	     (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers, &session.provider_protocol_instructions))))
@@ -1019,13 +1287,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		    !chat.remote_prompt_delivery_id.empty() &&
 		    !chat.remote_prompt_delivery_payload.empty())
 		{
-			const std::string delivery_line = uam::remote::BuildRemoteInputDeliveryLine(
-			    session.remote_output_delivery_token, chat.remote_prompt_delivery_id,
-			    chat.remote_prompt_delivery_payload);
-			std::string delivery_error;
-			if (delivery_line.empty() ||
-			    !PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
-			        session, delivery_line.data(), delivery_line.size(), &delivery_error))
+			if (!WriteCommittedRemotePrompt(app, session, chat))
 			{
 				session.last_error = "Remote prompt replay could not be queued for delivery.";
 				if (error_out != nullptr) *error_out = session.last_error;
@@ -1081,6 +1343,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	const std::string resolved_resume_id = session.goal_internal_session ? std::string{} : ResolvedAcpResumeIdForChat(app, chat);
 
 	ChatSession resume_chat = chat;
+	resume_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	resume_chat.native_session_id = resume_id.empty() ? resolved_resume_id : resume_id;
 	if (session.provider_id == uam::provider_ids::kCodexCli)
 	{
@@ -1180,7 +1443,9 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 	session.ignore_session_updates_until_ready = false;
 	session.lifecycle_state = kAcpLifecycleStarting;
 
-	nlohmann::json retry_request = BuildNewSessionRequest(retry_id, cwd, &chat);
+	ChatSession retry_chat = chat;
+	retry_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
+	nlohmann::json retry_request = BuildNewSessionRequest(retry_id, cwd, &retry_chat);
 	if (!AddWorkspaceMcpServers(app, session, uam::acp_methods::kSessionNew, cwd,
 	                            retry_request))
 	{
@@ -1256,7 +1521,7 @@ bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	if (model_option != session.available_config_options.end() &&
 	    std::ranges::none_of(model_option->choices, [&](const AcpConfigOptionChoiceState& choice) { return choice.value == model_id; }))
 	{
-		FailAcpTurnOrSession(session, nullptr, "The provider no longer offers the saved model '" + model_id + "'. Select an available model before retrying.");
+		FailAcpTurnOrSession(session, nullptr, "The provider no longer offers the saved model '" + model_id + "'. Refresh models in Settings or restart UAM, then select an available model before retrying.");
 		return true;
 	}
 
@@ -1287,7 +1552,7 @@ static MemoryRecallIdentity MemoryRecallSnapshot(const AppState& app, const AcpS
 	return {app.data_root, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)),
 	    chat.id, session.provider_id, session.session_id, session.queued_prompt, session.memory_recall_query,
 	    session.memory_recall_position.value_or(0), session.turn_serial, app.settings.memory_recall_budget_bytes,
-	    memory_levels::Normalize(chat.memory_level, chat.memory_enabled), chat.small_model_mode};
+	    memory_policy::Resolve(app.settings, chat), chat.small_model_mode};
 }
 
 static std::string PreparedPromptText(const AcpSessionState& session)
@@ -1318,25 +1583,90 @@ void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat)
 {
 	const std::shared_ptr<PendingAcpPromptDelivery> packet = std::move(session.pending_prompt_delivery);
 	if (!packet) return;
+	if (packet->remote_host && packet->created_at == chat.created_at &&
+	    packet->delivery_id == chat.remote_prompt_delivery_id && packet->delivery_payload == chat.remote_prompt_delivery_payload)
+	{
+		std::erase_if(chat.remote_pending_requests, [&packet](const AcpRemotePendingRequestState& request)
+		{ return request.request_id == packet->request_id && request.turn_serial == packet->turn_serial && request.method == packet->method; });
+		chat.remote_turn_reconnect_pending = false;
+		chat.remote_prompt_delivery_session_id.clear();
+		chat.remote_prompt_delivery_id.clear();
+		chat.remote_prompt_delivery_payload.clear();
+		if (packet->remote_prepared_head && std::ranges::none_of(chat.acp_queued_prompts, [&packet](const AcpQueuedUserPromptState& prompt)
+		    { return prompt.id == packet->remote_prepared_head->id && prompt.text == packet->remote_prepared_head->text; }))
+		{
+			chat.acp_queued_prompts.insert(chat.acp_queued_prompts.begin(), std::move(*packet->remote_prepared_head));
+			chat.acp_dispatched_queued_prompt_count = 1;
+		}
+	}
 	for (const std::pair<std::size_t, std::string>& user : packet->user_messages)
 		if (user.first < chat.messages.size() && chat.messages[user.first].role == MessageRole::User &&
 		    chat.messages[user.first].content == user.second)
 			chat.messages[user.first].acp_prompt_not_sent = true;
 }
 
+/// <summary>Retains one immutable packet until its owned full-save receipt authorizes transport.</summary>
+static std::shared_ptr<PendingAcpPromptDelivery> StagePromptAdmission(AppState& app, AcpSessionState& session,
+    ChatSession& chat, const nlohmann::json& msg, const std::string& method, int id,
+    const std::vector<std::size_t>& unsent_messages, std::optional<AcpQueuedUserPromptState>* remote_head = nullptr)
+{
+	std::shared_ptr<PendingAcpPromptDelivery> packet = std::make_shared<PendingAcpPromptDelivery>();
+	packet->message = msg;
+	packet->method = method;
+	packet->request_id = id;
+	packet->turn_serial = session.turn_serial;
+	packet->data_root = app.data_root;
+	packet->provider_id = session.provider_id;
+	packet->session_id = session.session_id;
+	packet->workspace = chat.workspace_directory;
+	packet->prompt = session.queued_prompt;
+	packet->configuration = PromptDeliveryConfiguration(app, session, chat);
+	packet->unsent_messages = unsent_messages;
+	for (const std::size_t index : unsent_messages)
+		packet->user_messages.emplace_back(index, chat.messages[index].content);
+	session.pending_prompt_delivery = packet;
+	packet->created_at = chat.created_at;
+	packet->process_id = AcpProcessHandleLabel(session);
+	packet->active_goal_id = chat.active_goal_id;
+	packet->goal_revision = chat.goal_command_revision;
+	packet->small_model_mode = chat.small_model_mode;
+	packet->native_session_id = chat.native_session_id;
+	if (remote_head != nullptr)
+	{
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		if (host == nullptr) { packet->admission = DurableAdmissionState::Failed; return packet; }
+		packet->remote_host = *host;
+		packet->remote_prepared_head = std::move(*remote_head);
+		packet->delivery_session_id = chat.remote_prompt_delivery_session_id;
+		packet->delivery_id = chat.remote_prompt_delivery_id;
+		packet->delivery_payload = chat.remote_prompt_delivery_payload;
+		packet->proxy_token = session.remote_output_delivery_token;
+		packet->proxy_protocol = session.remote_runner_protocol_version;
+	}
+	const std::weak_ptr<PendingAcpPromptDelivery> weak = packet;
+	const std::string chat_id = chat.id;
+	packet->admission = BeginDurableAdmission(app, chat, [&app, chat_id, weak]()
+	{
+		const std::shared_ptr<PendingAcpPromptDelivery> pending = weak.lock();
+		const ChatSession* current = ChatDomainService().FindChatById(app, chat_id);
+		const AcpSessionState* owner = FindAcpSessionForChat(app, chat_id);
+		return pending && current != nullptr && owner != nullptr && owner->pending_prompt_delivery == pending &&
+		    OwnsPromptAdmission(app, *owner, *current, *pending);
+	}, [weak](DurableAdmissionState state)
+	{
+		if (const std::shared_ptr<PendingAcpPromptDelivery> pending = weak.lock()) pending->admission = state;
+	});
+	return packet;
+}
+
 /// <summary>Releases an already prepared packet after its durable barrier; never allocates another ID.</summary>
 static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
                                   const nlohmann::json& msg, const std::string& method, int id,
-                                  const std::vector<std::size_t>& unsent_messages)
+                                  const std::vector<std::size_t>& unsent_messages, bool marker_committed = false)
 {
 	const std::string prompt = session.queued_prompt;
-	if (!method.empty())
-	{
-		session.pending_request_methods[id] = method;
-		session.prompt_request_id = id;
-	}
 	const bool remote = chat.execution_host_id != uam::execution_hosts::kLocalHostId;
-	if (remote)
+	if (remote && !marker_committed)
 	{
 		const bool staged_prompt = chat.acp_dispatched_queued_prompt_count == 1 &&
 		    !chat.acp_queued_prompts.empty() &&
@@ -1357,6 +1687,10 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 		// Persist intent before the transport write. A process write can succeed even
 		// when the manager dies before observing its result; the durable marker makes
 		// restart choose reattach rather than issuing the prompt a second time.
+		chat.remote_next_request_id = std::max(chat.remote_next_request_id, session.next_request_id);
+		chat.remote_turn_serial = std::max(chat.remote_turn_serial, session.turn_serial);
+		chat.remote_turn_user_message_index = session.turn_user_message_index;
+		chat.remote_active_turn_id = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpTurnIdentity(session);
 		chat.remote_turn_reconnect_pending = true;
 		chat.remote_restart_pending = false;
 		session.restart_after_remote_stop_cleanup = false;
@@ -1370,6 +1704,13 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 				    uam::time::SteadyEpochNanosecondsTokenNow();
 			chat.remote_prompt_delivery_payload = msg.dump();
 			chat.remote_prompt_delivery_payload.push_back('\n');
+		}
+		if (CanDeferRemotePromptAdmission(app, session, chat))
+		{
+			std::optional<AcpQueuedUserPromptState> head;
+			if (staged_prompt) head = std::move(staged_entry);
+			(void)StagePromptAdmission(app, session, chat, msg, method, id, unsent_messages, &head);
+			return true;
 		}
 		if (!SaveChatQuietly(app, chat))
 		{
@@ -1396,22 +1737,16 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 		}
 	}
 
+	if (!method.empty())
+	{
+		session.pending_request_methods[id] = method;
+		session.prompt_request_id = id;
+	}
+
 	bool prompt_written = false;
 	if (remote && session.remote_runner_protocol_version >= 3)
 	{
-		const std::string delivery_line = uam::remote::BuildRemoteInputDeliveryLine(
-		    session.remote_output_delivery_token, chat.remote_prompt_delivery_id,
-		    chat.remote_prompt_delivery_payload);
-		std::string write_error;
-		prompt_written = !delivery_line.empty() &&
-		    PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(
-		        session, delivery_line.data(), delivery_line.size(), &write_error);
-		if (!prompt_written)
-		{
-			session.last_error = write_error.empty()
-			    ? "Failed to queue the remote prompt for confirmed delivery."
-			    : "Failed to queue the remote prompt for confirmed delivery: " + write_error;
-		}
+		prompt_written = WriteCommittedRemotePrompt(app, session, chat);
 	}
 	else
 	{
@@ -1456,6 +1791,7 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
 	session.queued_prompt.clear();
+	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
 	session.memory_recall_preparation.reset();
@@ -1475,13 +1811,56 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 	return true;
 }
 
+bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	return chat.execution_host_id != execution_hosts::kLocalHostId && !chat.small_model_mode &&
+	    app.claude_quota_dispatch_id.empty() && session.remote_runner_protocol_version >= 3 &&
+	    session.running && session.session_ready && host != nullptr && host->runner_protocol_version == session.remote_runner_protocol_version &&
+	    session.process_execution_host_id == host->id && !session.remote_output_delivery_token.empty();
+}
+
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (session.turn_computer_use_mode && (!app.settings.computer_use_globally_enabled ||
+	    !chat.computer_use_enabled || !uam::computer_use::AvailableForChat(chat)))
+	{
+		session.last_error = "Computer Use was disabled before prompt delivery.";
+		session.queue_held = chat.acp_queue_held = true;
+		return false;
+	}
+	if ((session.goal_queue_admission == AcpSessionState::GoalQueueAdmission::Pending ||
+	     session.goal_queue_admission == AcpSessionState::GoalQueueAdmission::Held) &&
+	    session.goal_queue_admission_turn_serial == session.turn_serial) return false;
+	if (session.pending_local_session_receipt) return false;
+	// Reject stale intent even while a revoked worker save is still pending.
+	const bool pending_owned = !session.pending_prompt_delivery || OwnsPromptAdmission(app, session, chat, *session.pending_prompt_delivery);
+	if (session.pending_prompt_delivery && (!pending_owned ||
+	    session.pending_prompt_delivery->admission == DurableAdmissionState::Failed))
+	{
+		const bool remote = session.pending_prompt_delivery->remote_host.has_value();
+		const bool same_turn = session.pending_prompt_delivery->turn_serial == session.turn_serial &&
+		    session.pending_prompt_delivery->prompt == session.queued_prompt;
+		RestorePendingPromptDelivery(session, chat);
+		if (same_turn && remote)
+		{
+			session.last_error = "Remote prompt was not sent because its owned durable receipt was not confirmed.";
+			session.queue_held = chat.acp_queue_held = true;
+			session.goal_resume_suppressed = true;
+			CompletePromptTurn(session, kAcpLifecycleError);
+		}
+		else if (same_turn) FailAcpTurnOrSession(session, &chat, pending_owned
+		    ? "Prompt is waiting for its delivery intent to be saved."
+		    : "Prompt ownership changed before delivery.");
+		ScheduleChatSave(app, chat, 0.0);
+		return true;
+	}
+
 	if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return false;
 	if (app.pending_chat_save_at_by_chat_id.contains(chat.id)) return false;
 	if (session.memory_recall_preparation != nullptr &&
 	    (!paths::IsControllerLocalWorkspace(chat) || !session.memory_recall_position.has_value() ||
-	     session.queued_prompt.empty() || !memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) ||
+	     session.queued_prompt.empty() || !memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat)) ||
 	     app.settings.memory_recall_budget_bytes <= 0 ||
 	     session.memory_recall_preparation->state->identity != MemoryRecallSnapshot(app, session, chat)))
 		session.memory_recall_preparation.reset();
@@ -1489,13 +1868,14 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	if (session.remote_context_preparation != nullptr)
 	{
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
-		const int memory_budget = session.turn_first_user_message_index <= 0 && memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled)
+		const int memory_budget = session.turn_first_user_message_index <= 0 && memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat))
 		    ? app.settings.memory_recall_budget_bytes : 0;
 		const std::shared_ptr<RemoteContextPreparation>& preparation = session.remote_context_preparation;
 		if (chat.execution_host_id == execution_hosts::kLocalHostId || host == nullptr ||
 		    !execution_hosts::SameConnection(preparation->host, *host) ||
 		    preparation->workspace != paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)) ||
-		    preparation->prompt != session.queued_prompt || preparation->memory_budget != memory_budget)
+		    preparation->prompt != session.queued_prompt || preparation->memory_budget != memory_budget ||
+		    preparation->memory_level != memory_policy::Resolve(app.settings, chat))
 		{
 			preparation->cancel.request_stop();
 			session.remote_context_preparation.reset();
@@ -1523,6 +1903,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			RestorePendingPromptDelivery(session, chat);
 			ScheduleChatSave(app, chat, 0.0);
 			session.queued_prompt.clear();
+			session.turn_computer_use_mode = false;
 			session.memory_recall_position.reset();
 			session.memory_recall_query.clear();
 			session.memory_recall_preparation.reset();
@@ -1568,17 +1949,8 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		const std::shared_ptr<PendingAcpPromptDelivery> packet = session.pending_prompt_delivery;
 		const bool same_turn = packet->turn_serial == session.turn_serial && packet->prompt == session.queued_prompt;
-		const bool same_users = std::ranges::all_of(packet->user_messages, [&chat](const std::pair<std::size_t, std::string>& user)
-		{
-			return user.first < chat.messages.size() && chat.messages[user.first].role == MessageRole::User &&
-			    chat.messages[user.first].content == user.second && !chat.messages[user.first].acp_prompt_not_sent;
-		});
-		const bool owned = same_turn && session.processing && !session.cancel_requested &&
-		    packet->data_root == app.data_root && packet->provider_id == session.provider_id &&
-		    packet->provider_id == chat.provider_id && packet->session_id == session.session_id &&
-		    packet->workspace == chat.workspace_directory && chat.execution_host_id == execution_hosts::kLocalHostId &&
-		    same_users && packet->configuration == PromptDeliveryConfiguration(app, session, chat);
-		if (!owned || (packet->saved.has_value() && !*packet->saved))
+		const bool owned = OwnsPromptAdmission(app, session, chat, *packet);
+		if (!owned || packet->admission == DurableAdmissionState::Failed)
 		{
 			RestorePendingPromptDelivery(session, chat);
 			if (same_turn) FailAcpTurnOrSession(session, &chat, owned
@@ -1587,13 +1959,13 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			ScheduleChatSave(app, chat, 0.0);
 			return true;
 		}
-		if (!packet->saved.has_value()) return false;
+		if (packet->admission == DurableAdmissionState::Pending) return false;
 		session.pending_prompt_delivery.reset();
 		return DeliverPreparedPrompt(app, session, chat, packet->message, packet->method,
-		                             packet->request_id, packet->unsent_messages);
+		                             packet->request_id, packet->unsent_messages, packet->remote_host.has_value());
 	}
 	if (paths::IsControllerLocalWorkspace(chat) && session.memory_recall_position.has_value() &&
-	    memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled) && app.settings.memory_recall_budget_bytes > 0)
+	    memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat)) && app.settings.memory_recall_budget_bytes > 0)
 	{
 		if (*session.memory_recall_position > session.queued_prompt.size())
 		{
@@ -1647,18 +2019,19 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const std::string workspace = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
 		const bool first_prompt = session.turn_first_user_message_index <= 0;
-		const int memory_budget = first_prompt && memory_levels::IsEnabled(chat.memory_level, chat.memory_enabled)
+		const int memory_budget = first_prompt && memory_levels::IsEnabled(memory_policy::Resolve(app.settings, chat))
 		    ? app.settings.memory_recall_budget_bytes : 0;
 		if (host == nullptr)
 		{
 			FailAcpTurnOrSession(session, &chat, "The SSH host no longer exists.");
 			return true;
 		}
-		if (!host->instruction_file.empty() || memory_budget > 0)
+		if ((host->instruction_text ? !host->instruction_text->empty() : !host->instruction_file.empty()) || memory_budget > 0)
 		{
 			std::shared_ptr<RemoteContextPreparation>& preparation = session.remote_context_preparation;
 			if (preparation != nullptr && (!execution_hosts::SameConnection(preparation->host, *host) ||
-			    preparation->workspace != workspace || preparation->prompt != prompt))
+			    preparation->workspace != workspace || preparation->prompt != prompt ||
+		    preparation->memory_budget != memory_budget || preparation->memory_level != memory_policy::Resolve(app.settings, chat)))
 			{
 				preparation->cancel.request_stop();
 				preparation.reset();
@@ -1668,6 +2041,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 				preparation = std::make_shared<RemoteContextPreparation>();
 				preparation->host = *host; preparation->workspace = workspace; preparation->prompt = prompt;
 				preparation->memory_budget = memory_budget;
+				preparation->memory_level = memory_policy::Resolve(app.settings, chat);
 				RemoteContextTask task;
 				task.state = preparation;
 				task.worker = std::make_unique<std::jthread>([state = preparation, memory_budget](std::stop_token shutdown)
@@ -1791,30 +2165,10 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	}
 	if (session.defer_prompt_save && chat.execution_host_id == execution_hosts::kLocalHostId)
 	{
-		std::shared_ptr<PendingAcpPromptDelivery> packet = std::make_shared<PendingAcpPromptDelivery>();
-		packet->message = std::move(msg);
-		packet->method = method;
-		packet->request_id = id;
-		packet->turn_serial = session.turn_serial;
-		packet->data_root = app.data_root;
-		packet->provider_id = session.provider_id;
-		packet->session_id = session.session_id;
-		packet->workspace = chat.workspace_directory;
-		packet->prompt = session.queued_prompt;
-		packet->configuration = PromptDeliveryConfiguration(app, session, chat);
-		packet->unsent_messages = unsent_messages;
-		for (const std::size_t index : unsent_messages)
-			packet->user_messages.emplace_back(index, chat.messages[index].content);
-		session.pending_prompt_delivery = packet;
-		ScheduleChatSave(app, chat, 0.0);
-		const std::weak_ptr<PendingAcpPromptDelivery> weak = packet;
-		(void)DeferChatSaveResult(app, chat.id, [weak](bool saved)
-		{
-			if (const std::shared_ptr<PendingAcpPromptDelivery> owned = weak.lock()) owned->saved = saved;
-		});
+		(void)StagePromptAdmission(app, session, chat, msg, method, id, unsent_messages);
 		return true;
 	}
-	if (!unsent_messages.empty() && !SaveChatQuietly(app, chat))
+	if (!CanDeferRemotePromptAdmission(app, session, chat) && !unsent_messages.empty() && !SaveChatQuietly(app, chat))
 	{
 		for (const std::size_t index : unsent_messages) chat.messages[index].acp_prompt_not_sent = true;
 		session.last_error = "Prompt is waiting for its delivery intent to be saved.";
@@ -1908,6 +2262,7 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds)
 {
+	NoteChatSaveScheduled(app, chat);
 	// Streaming may retain a scoped admission; queue, owner changes and force barriers revoke it.
 	InvalidatePendingChatSave(app, chat.id, true);
 	const double now = GetAppTimeSeconds();
@@ -1976,6 +2331,7 @@ void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, 
 
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state)
 {
+	session.pending_local_launch.reset();
 	AbandonPendingLocalSteers(session);
 	if (session.processing) session.interaction_at = uam::time::InteractionTimestampNow();
 	// A completion notification can arrive before the prompt request's reply.
@@ -1997,6 +2353,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.cancel_requested_time_s = 0.0;
 	session.inactivity_timeout_pending = false;
 	session.queued_prompt.clear();
+	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
 	session.memory_recall_preparation.reset();
@@ -2013,8 +2370,20 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 
 bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
                              const std::string& prompt, bool review_turn,
-                             const std::string& model_id, bool fresh_session)
+                             const std::string& model_id, bool fresh_session, std::function<bool()> continuation_owned,
+                             std::function<void(bool, std::string)> completion)
 {
+	const bool async_receipt = static_cast<bool>(continuation_owned) && static_cast<bool>(completion);
+	if (static_cast<bool>(continuation_owned) != static_cast<bool>(completion) || (async_receipt && !continuation_owned())) return false;
+	if (async_receipt && session.goal_queue_admission == AcpSessionState::GoalQueueAdmission::Held &&
+	    session.goal_queue_admission_turn_serial == session.turn_serial && session.queued_prompt == prompt)
+	{
+		// Only a newly admitted explicit control can retry its retained exact queued intent.
+		session.queued_prompt.clear();
+		session.turn_computer_use_mode = false;
+	}
+	if (!async_receipt && session.goal_queue_admission != AcpSessionState::GoalQueueAdmission::None &&
+	    session.goal_queue_admission_turn_serial == session.turn_serial) return false;
 	const bool fresh_context_busy = session.processing || session.waiting_for_permission ||
 	                                session.waiting_for_user_input || session.cancel_requested ||
 	                                session.prompt_request_id != 0 || session.cancel_request_id != 0 ||
@@ -2068,6 +2437,72 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	session.last_runtime_activity_time_s = session.turn_started_time_s;
 	session.last_error.clear();
 	session.lifecycle_state = kAcpLifecycleProcessing;
+	if (async_receipt)
+	{
+		session.goal_queue_admission = AcpSessionState::GoalQueueAdmission::Pending;
+		session.goal_queue_admission_turn_serial = session.turn_serial;
+		session.goal_resume_suppressed = true;
+		const std::filesystem::path root = app.data_root;
+		const std::string chat_id = chat.id;
+		const std::shared_ptr<const std::uint8_t> incarnation = chat.metadata_incarnation;
+		const std::string process = session.last_process_id;
+		const std::string actual_process = AcpProcessHandleLabel(session);
+		const std::string thread = session.session_id;
+		const int serial = session.turn_serial;
+		const std::string revision = chat.goal_command_revision;
+		const std::string configuration = PromptDeliveryConfiguration(app, session, chat);
+		const std::shared_ptr<bool> finished = std::make_shared<bool>(false);
+		const std::function<bool()> owned = [&app, continuation_owned, finished, root, chat_id, incarnation,
+		    process, actual_process, thread, serial, revision, configuration, prompt, model_id]()
+		{
+			if (*finished || !continuation_owned()) return false;
+			const AcpSessionState* current = FindAcpSessionForChat(app, chat_id);
+			const ChatSession* stored = ChatDomainService().FindChatById(app, chat_id);
+			return app.data_root == root && stored && current && stored->metadata_incarnation == incarnation &&
+			    stored->goal_command_revision == revision && current->last_process_id == process && AcpProcessHandleLabel(*current) == actual_process &&
+			    current->session_id == thread && current->turn_serial == serial && !current->cancel_requested &&
+			    current->goal_queue_admission == AcpSessionState::GoalQueueAdmission::Pending && current->goal_queue_admission_turn_serial == serial &&
+			    current->queued_prompt == prompt && current->goal_turn_model_id == uam::strings::Trim(model_id) &&
+			    configuration == PromptDeliveryConfiguration(app, *current, *stored);
+		};
+		const std::function<void(DurableAdmissionState)> settle = [&app, owned, finished, chat_id,
+		    fresh_session, remote_stop_deferred, completion](DurableAdmissionState state)
+		{
+			if (*finished) return;
+			const bool current = owned();
+			*finished = true;
+			if (!current) { completion(false, "Goal context changed before queue publication."); return; }
+			AcpSessionState* native = FindAcpSessionForChat(app, chat_id);
+			ChatSession* stored = ChatDomainService().FindChatById(app, chat_id);
+			if (state != DurableAdmissionState::Committed)
+			{
+				native->processing = false;
+				native->goal_queue_admission = AcpSessionState::GoalQueueAdmission::Held;
+				native->goal_resume_suppressed = true;
+				native->last_error = "Failed to persist the goal continuation.";
+				completion(false, native->last_error);
+				return;
+			}
+			native->goal_queue_admission = AcpSessionState::GoalQueueAdmission::None;
+			native->goal_resume_suppressed = false;
+			if (fresh_session && !remote_stop_deferred && !StartAcpProcessForChat(app, *native, *stored))
+			{
+				FailAcpTurnOrSession(*native, stored, uam::strings::NonEmptyOrFallback(native->last_error, "Failed to start the private goal context."));
+				ScheduleChatSave(app, *stored, 0.0);
+				completion(false, native->last_error);
+				return;
+			}
+			(void)ScheduleTurnCheckpointPreflight(app, *native, *stored);
+			ScheduleChatSave(app, *stored, 0.0);
+			(void)SendQueuedPromptIfReady(app, *native, *stored);
+			ScheduleChatSave(app, *stored, 0.0);
+			completion(true, "");
+		};
+		const DurableAdmissionState admission = BeginDurableAdmission(app, chat, owned, settle,
+		    DurableAdmissionFailurePurpose::BindingOnly);
+		if (admission == DurableAdmissionState::Failed) settle(admission);
+		return true;
+	}
 	if (fresh_session && !remote_stop_deferred &&
 	    !StartAcpProcessForChat(app, session, chat))
 	{

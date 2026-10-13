@@ -177,6 +177,26 @@ namespace uam::acp_detail
 		return SaveChatQuietly(app, chat);
 	}
 
+	bool PrepareClaudeQuotaCancellationForManualAdmission(AppState& app, ChatSession& chat)
+	{
+		AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		const bool waiting = chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "cancelled";
+		bool usable = session != nullptr && session->running && session->session_ready;
+#if defined(_WIN32)
+		usable = usable && session->stdin_write != INVALID_HANDLE_VALUE && session->stdin_write != nullptr;
+#else
+		usable = usable && session->stdin_write_fd >= 0;
+#endif
+		if (!waiting || !usable || chat.provider_id != "claude-cli" || chat.execution_host_id != "local" ||
+		    !app.claude_quota_dispatch_id.empty()) return CancelClaudeQuotaWait(app, chat);
+		// This tombstone stops the in-memory scheduler; the subsequent full receipt makes it durable.
+		chat.claude_quota_continuation.state = "cancelled";
+		session->claude_quota_reset_epoch_s = 0;
+		session->claude_quota_evidence_turn_serial = 0;
+		ScheduleChatSave(app, chat, 0.0);
+		return true;
+	}
+
 	bool PollClaudeQuotaContinuations(AppState& app, int64_t now_epoch_s)
 	{
 		bool changed = false;

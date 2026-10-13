@@ -229,6 +229,29 @@ std::string PromptLengthDetail(const nlohmann::json& params);
 std::string AcpMessageDetailForDiagnostics(const nlohmann::json& message);
 
 // Protocol request builders
+/// <summary>Captures volatile receipt scope; only the validated native-goal entry point authorizes transport.</summary>
+AcpSessionState::CodexGoalOwner CaptureCodexNativeGoalOwner(const AcpSessionState& session, const ChatSession& chat,
+    const Goal& goal, bool replace_native = false);
+/// <summary>Captures the current configured delivery boundary for authorized native goal actions.</summary>
+AcpSessionState::CodexGoalOwner CaptureCodexNativeGoalOwner(const AppState& app, const AcpSessionState& session,
+    const ChatSession& chat, const Goal& goal, bool replace_native = false);
+bool CodexGoalReceiptMatchesOwner(const AcpSessionState& session, const ChatSession& chat,
+	const AcpSessionState::CodexGoalOwner& owner, const std::string& thread_id, bool require_active = true);
+bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& chat, Goal& goal, bool user_action, std::string* error_out, bool replace_native = false);
+bool CodexGoalOwnsNativeTurn(const AcpSessionState& session, const ChatSession& chat, const std::string& thread_id);
+void DrainQueuedCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& chat);
+bool StopCodexNativeGoal(AcpSessionState& session, const ChatSession& chat, bool user_action = false, const std::string& goal_id = {}, bool clear_native = true);
+void StartPendingCodexNativeGoalTurn(AppState& app, AcpSessionState& session, ChatSession& chat);
+bool HandleCodexGoalResult(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& method,
+	const std::string& request_id, const nlohmann::json& result);
+bool HandleCodexGoalError(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpFailureDetails& failure);
+enum class CodexGoalReceiptMode { Running, Preparing, Stopping };
+bool ApplyCodexNativeGoalReceipt(AcpSessionState& session, ChatSession& chat, const nlohmann::json& native_goal, CodexGoalReceiptMode mode = CodexGoalReceiptMode::Running);
+nlohmann::json BuildCodexGoalGetRequest(int request_id, const std::string& thread_id);
+nlohmann::json BuildCodexGoalSetRequest(int request_id, const std::string& thread_id, const std::string& objective,
+	const std::string& status, std::int64_t token_budget, bool user_origin);
+nlohmann::json BuildCodexGoalClearRequest(int request_id, const std::string& thread_id, bool user_origin);
+nlohmann::json BuildCodexGoalStatusRequest(int request_id, const std::string& thread_id, const std::string& status, bool user_origin);
 nlohmann::json BuildNewSessionRequest(int request_id, const std::string& cwd, const ChatSession* chat = nullptr);
 nlohmann::json BuildLoadSessionRequest(int request_id, const std::string& session_id, const std::string& cwd, const ChatSession* chat = nullptr);
 nlohmann::json BuildResumeSessionRequest(int request_id, const std::string& session_id,
@@ -283,23 +306,41 @@ void RetireRemoteAcpRequests(AppState& app, AcpSessionState& session, ChatSessio
 bool WriteRemoteAcpRequest(AcpSessionState& session, const AcpRemotePendingRequestState& request);
 bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
+void ReapLocalAcpLaunchTasks(AppState& app);
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpResponseFailureDetails& details);
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// <summary>Confirmed remote v3 admission retains legacy and quota compatibility barriers.</summary>
+bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+/// <summary>Writes only a committed stable marker; initial delivery and reconnect share deduplication identity.</summary>
+bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// <summary>Blocks local prompt transport until the full native-binding receipt commits.</summary>
+bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSession& chat);
+std::string LocalSessionReceiptOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Save immediately, clear satisfied deferred writes, and retry failures for owned chats.</summary>
 bool SaveChatQuietly(AppState& app, const ChatSession& chat);
+/// <summary>Pending input may be retained locally; only Committed authorizes transport.</summary>
+enum class DurableAdmissionState { Pending, Committed, Failed };
+/// <summary>Binding receipts cannot reject an unrelated undelivered prompt on save failure.</summary>
+enum class DurableAdmissionFailurePurpose { Prompt, BindingOnly };
+DurableAdmissionState BeginDurableAdmission(AppState& app, const ChatSession& chat,
+    std::function<bool()> owned, std::function<void(DurableAdmissionState)> completion,
+    DurableAdmissionFailurePurpose failure_purpose = DurableAdmissionFailurePurpose::Prompt);
 void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id);
 /// <summary>Revokes a background publication before a newer synchronous command can replace its storage.</summary>
 void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);
 void AbandonPendingLocalSteers(AcpSessionState& session);
+bool AgentInputPreparationReady(const AcpSessionState& session);
 std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Persists removal of a rejected resume ID; failure restores it and invalidates transport without losing queued work.</summary>
 bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// <summary>Changes scheduled-save ownership without altering the debounce deadline.</summary>
+void NoteChatSaveScheduled(AppState& app, const ChatSession& chat);
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
@@ -307,7 +348,8 @@ void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat);
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
 bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
                              const std::string& prompt, bool review_turn,
-                             const std::string& model_id = {}, bool fresh_session = false);
+                             const std::string& model_id = {}, bool fresh_session = false, std::function<bool()> continuation_owned = {},
+    std::function<void(bool, std::string)> completion = {});
 bool ScheduleTurnCheckpointPreflight(AppState& app, AcpSessionState& session, const ChatSession& chat);
 void ClearGoalReviewState(AcpSessionState& session);
 void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,

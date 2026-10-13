@@ -22,12 +22,20 @@ namespace uam::remote
 			error = "The remote workspace must be an absolute path on this host.";
 			return false;
 		}
-		if (host.instruction_file.empty() && memory_budget <= 0) return true;
+		if (host.instruction_text && host.instruction_text->size() > execution_hosts::kMaxInstructionTextBytes)
+		{
+			error = "Host instruction text exceeds 256 KiB.";
+			return false;
+		}
+		if (host.instruction_text && !host.instruction_text->empty())
+			context = "--- BEGIN HOST INSTRUCTIONS ---\n" + *host.instruction_text + "\n--- END HOST INSTRUCTIONS ---\n\n";
+		const bool read_instruction_file = !host.instruction_text && !host.instruction_file.empty();
+		if (!read_instruction_file && memory_budget <= 0) return true;
 		RunnerClient client(service, SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
 		    host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
 		if (!client.Connect(&error, stop_token)) return false;
 		std::string text;
-		if (!host.instruction_file.empty())
+		if (read_instruction_file)
 		{
 			if (!execution_hosts::IsAbsoluteRemotePath(host.platform, host.instruction_file))
 			{

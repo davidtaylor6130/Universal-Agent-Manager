@@ -991,12 +991,12 @@ describe('useAppStore Gemini CLI slice', () => {
     initial.cliVersionManager = { providers: [], remoteProviders: [{
       providerId: 'codex-cli', executionHostId: 'alpha', executionHostName: 'Alpha',
       installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest',
-      status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '',
+      status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'awaiting-verification',
     }] }
     testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
     const { useAppStore: cefStore } = await import('./useAppStore')
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(cefStore.getState().cliVersionManager.remoteProviders?.[0]).toMatchObject({ executionHostId: 'alpha', executionHostName: 'Alpha', providerId: 'codex-cli' })
+    expect(cefStore.getState().cliVersionManager.remoteProviders?.[0]).toMatchObject({ executionHostId: 'alpha', executionHostName: 'Alpha', providerId: 'codex-cli', lastInstallStatus: 'awaiting-verification' })
     const requests: { action: string; payload?: unknown }[] = []
     testWindow.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
     await cefStore.getState().refreshCliProviderVersion('codex-cli', 'alpha')
@@ -1005,8 +1005,8 @@ describe('useAppStore Gemini CLI slice', () => {
     await cefStore.getState().refreshCliProviderVersion('unknown-provider', 'beta')
     expect(requests.map((request) => request.payload)).toEqual([
       { providerId: 'codex-cli', executionHostId: 'alpha' },
-      { providerId: 'codex-cli', version: 'latest', executionHostId: 'alpha' },
-      { providerId: 'codex-cli', version: 'latest' },
+      { providerId: 'codex-cli', version: 'latest', executionHostId: 'alpha', allowInteractiveElevation: true },
+      { providerId: 'codex-cli', version: 'latest', allowInteractiveElevation: true },
       { providerId: 'unknown-provider', executionHostId: 'beta' },
     ])
     testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, cliVersionManager: { providers: [], remoteProviders: [] } } })
@@ -5747,13 +5747,34 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState()).toMatchObject({ gitEnabled: true, svnEnabled: true })
   })
 
-  it('keeps VCS switches absent from unrelated or malformed settings patches', () => {
-    expect(sanitizeCppStatePatch({ stateRevision: 2, settings: { theme: 'focus' } })?.settings)
-      .toMatchObject({ gitEnabled: undefined, svnEnabled: undefined })
-    expect(sanitizeCppStatePatch({ stateRevision: 3, settings: { gitEnabled: false, svnEnabled: true } })?.settings)
-      .toMatchObject({ gitEnabled: false, svnEnabled: true })
-    expect(sanitizeCppStatePatch({ stateRevision: 4, settings: { gitEnabled: 'false', svnEnabled: null } })?.settings)
-      .toMatchObject({ gitEnabled: undefined, svnEnabled: undefined })
+  it('keeps VCS switches absent from unrelated or malformed settings patches', async () => {
+    const unrelated = sanitizeCppStatePatch({ stateRevision: 2, settings: { theme: 'focus' } })!
+    const valid = sanitizeCppStatePatch({ stateRevision: 3, settings: { gitEnabled: true, svnEnabled: false } })!
+    const malformed = sanitizeCppStatePatch({ stateRevision: 4, settings: { gitEnabled: 'false', svnEnabled: null } })!
+    expect(unrelated.settings).toEqual({ theme: 'focus' })
+    expect(valid.settings).toEqual({ gitEnabled: true, svnEnabled: false })
+    expect(malformed.settings).toEqual({})
+    for (const patch of [unrelated, malformed]) {
+      expect(Object.prototype.hasOwnProperty.call(patch.settings, 'gitEnabled')).toBe(false)
+      expect(Object.prototype.hasOwnProperty.call(patch.settings, 'svnEnabled')).toBe(false)
+    }
+
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.settings.gitEnabled = false
+    initial.settings.svnEnabled = true
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(testWindow.uamPush).toBeTypeOf('function')
+    testWindow.uamPush!({ type: 'statePatch', data: unrelated })
+    expect(cefStore.getState()).toMatchObject({ gitEnabled: false, svnEnabled: true })
+    testWindow.uamPush!({ type: 'statePatch', data: valid })
+    expect(cefStore.getState()).toMatchObject({ gitEnabled: true, svnEnabled: false })
+    testWindow.uamPush!({ type: 'statePatch', data: malformed })
+    expect(cefStore.getState()).toMatchObject({ gitEnabled: true, svnEnabled: false })
   })
 
   it('saves and applies shell actions through CEF', async () => {

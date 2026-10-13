@@ -297,7 +297,7 @@ void ProviderModelCatalogService::SetExecutionHostContext(const std::vector<Exec
 		if (host.id.empty() || host.id == "local" || host.transport != "ssh") continue;
 		const nlohmann::json connection = nlohmann::json::array({host.id, host.transport,
 		    host.ssh_alias, host.platform, host.architecture, host.runner_version,
-		    host.runner_protocol_version, host.runner_directory, host.instruction_file});
+		    host.runner_protocol_version, host.runner_directory, host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)});
 		m_connection_key_by_host_id[host.id] = StableCatalogFingerprint(connection.dump());
 	}
 	for (auto scope = m_scope_by_catalog_key.begin(); scope != m_scope_by_catalog_key.end();)

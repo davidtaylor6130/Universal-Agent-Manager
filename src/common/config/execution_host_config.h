@@ -17,6 +17,7 @@
 namespace uam::execution_hosts
 {
 	inline constexpr std::string_view kLocalHostId = "local";
+	inline constexpr std::size_t kMaxInstructionTextBytes = 256 * 1024;
 	inline constexpr std::size_t kLinuxRunnerSocketPathCapacity = 108;
 
 	inline ExecutionHost LocalHost()
@@ -67,7 +68,7 @@ namespace uam::execution_hosts
 		       left.ssh_alias == right.ssh_alias && left.platform == right.platform &&
 		       left.architecture == right.architecture && left.runner_version == right.runner_version &&
 		       left.runner_protocol_version == right.runner_protocol_version &&
-		       left.runner_directory == right.runner_directory && left.instruction_file == right.instruction_file;
+		       left.runner_directory == right.runner_directory && left.instruction_file == right.instruction_file && left.instruction_text == right.instruction_text;
 	}
 
 	inline bool IsPortableId(std::string_view value)
@@ -219,6 +220,11 @@ namespace uam::execution_hosts
 			if (error != nullptr) *error = "Use an absolute instruction file path on this host.";
 			return false;
 		}
+		if (host.instruction_text && host.instruction_text->size() > kMaxInstructionTextBytes)
+		{
+			if (error != nullptr) *error = "Host instruction text exceeds 256 KiB.";
+			return false;
+		}
 		std::ranges::replace(host.runner_directory, '\\', '/');
 		return true;
 	}
@@ -269,6 +275,7 @@ namespace uam::execution_hosts
 			    {"runnerDirectory", host.runner_directory},
 			    {"runnerProtocolVersion", host.runner_protocol_version},
 			    {"instructionFile", host.instruction_file},
+		    {"instructionText", host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)},
 			    {"startupEnabled", host.startup_enabled}, {"startupStatus", host.startup_status},
 			    {"cliUpdatesAsAdmin", host.cli_updates_as_admin},
 			    {"customIcon", uam::icons::Serialize(host.custom_icon)},
@@ -285,6 +292,8 @@ namespace uam::execution_hosts
 			for (const nlohmann::json& entry : value)
 			{
 				if (!entry.is_object()) continue;
+				if (entry.contains("instructionText") && !entry["instructionText"].is_null() &&
+				    (!entry["instructionText"].is_string() || entry["instructionText"].get_ref<const std::string&>().size() > kMaxInstructionTextBytes)) continue;
 				hosts.push_back({
 				    entry.value("id", ""), entry.value("label", ""), entry.value("transport", "ssh"),
 				    entry.value("sshAlias", ""), entry.value("runnerStatus", "uninstalled"),
@@ -296,6 +305,8 @@ namespace uam::execution_hosts
 				    entry.value("startupStatus", "disabled"),
 				    uam::icons::Parse(entry.value("customIcon", nlohmann::json(nullptr))),
 				    entry.value("cliUpdatesAsAdmin", false),
+				    entry.contains("instructionText") && entry["instructionText"].is_string()
+				        ? std::optional<std::string>(entry["instructionText"].get<std::string>()) : std::nullopt,
 				});
 			}
 		}

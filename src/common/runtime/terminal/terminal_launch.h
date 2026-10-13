@@ -9,6 +9,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/git_worktree_service.h"
+#include "app/worktree_launch_preparation_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "app/runtime_orchestration_services.h"
@@ -95,7 +96,7 @@ namespace uam
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
-		if (terminal.context_preparation == nullptr) StopCliTerminal(terminal);
+		if (terminal.context_preparation == nullptr && !terminal.worktree_launch_pending) StopCliTerminal(terminal);
 		if (terminal.running)
 		{
 			terminal.last_error = "The previous terminal is still stopping.";
@@ -156,6 +157,26 @@ namespace uam
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, permission_flag_error);
 		}
 
+		const WorktreeLaunchPreparationResult workspace = PrepareWorktreeForLaunch(app, chat);
+		if (workspace.state == WorktreeLaunchPreparationState::Pending)
+		{
+			terminal.native_session_setup_cancel = workspace.cancellation ? workspace.cancellation : std::make_shared<std::stop_source>();
+			terminal.worktree_launch_pending = true;
+			terminal.worktree_launch_cancellation = terminal.native_session_setup_cancel;
+			terminal.should_launch = true;
+			return true;
+		}
+		if (workspace.state == WorktreeLaunchPreparationState::Failed)
+		{
+			terminal.should_launch = false;
+			terminal.worktree_launch_pending = false;
+			terminal.worktree_launch_cancellation.reset();
+			terminal.native_session_setup_cancel.reset();
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, workspace.error);
+		}
+		if (terminal.worktree_launch_pending) terminal.native_session_setup_cancel.reset();
+		terminal.worktree_launch_pending = false;
+		terminal.worktree_launch_cancellation.reset();
 		std::string runtime_handoff_error;
 		if (!PrepareAcpSessionForCliTerminalLaunch(app, chat, &runtime_handoff_error))
 		{

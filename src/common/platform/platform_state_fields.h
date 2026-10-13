@@ -64,6 +64,10 @@ namespace uam::platform
 		pid_t watchdog_pid = -1;
 		// macOS reaps before output drainage finishes; retain status with process ownership.
 		int reaped_exit_code = -1;
+#if defined(__linux__)
+		// Deferred reap retains observable completion after callers reset their fields.
+		std::shared_ptr<std::atomic<bool>> deferred_reap_complete;
+#endif
 #else
 #error "StdioProcessPlatformFields is only supported on Windows, macOS, and Linux."
 #endif

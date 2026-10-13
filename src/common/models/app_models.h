@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -95,6 +96,9 @@ namespace uam
 		std::vector<std::string> markdown_store_prompt_blocks;
 		std::vector<MessageAttachment> attachments;
 		bool append_user_message = true;
+		/// <summary>Optional exact durable raw row reused by prepared agent input instead of appending it twice.</summary>
+		int existing_user_message_index = -1;
+		std::string existing_user_message_created_at;
 		bool prepared_for_delivery = false;
 		std::string claude_quota_continuation_id;
 		int prepared_user_message_count = 0;
@@ -178,6 +182,37 @@ enum class GoalStatus
 	Paused
 };
 
+/// <summary>Persists the first objective row; Attempted denotes transport ambiguity rather than provider acceptance.</summary>
+struct NativeGoalInitialDelivery
+{
+	enum class State { Pending, Attempted, Accepted };
+	std::int64_t user_message_index = -1;
+	std::string user_message_created_at;
+	State state = State::Pending;
+	std::string turn_id;
+	bool operator==(const NativeGoalInitialDelivery&) const = default;
+};
+
+/// <summary>Receipt evidence for explicit native resume; creation time is not a unique provider ID or CAS token.</summary>
+struct NativeGoalBinding
+{
+	int version = 1;
+	std::string provider_id;
+	std::string execution_host_id;
+	std::string thread_id;
+	std::string uam_chat_id;
+	std::string uam_goal_id;
+	std::string objective;
+	std::int64_t created_at = 0;
+	std::int64_t last_updated_at = 0;
+	std::int64_t uam_tokens_at_creation = 0;
+	std::int64_t uam_budget_at_creation = 0;
+	std::optional<std::int64_t> native_token_budget;
+	std::int64_t last_native_tokens_used = 0;
+	std::optional<NativeGoalInitialDelivery> initial_delivery;
+	bool operator==(const NativeGoalBinding&) const = default;
+};
+
 /// <summary>
 /// A thread-level goal that persists the agent across turns until it
 /// self-detects completion or gets stuck (>= 3 consecutive blocker turns).
@@ -207,6 +242,7 @@ struct Goal
 	std::string updated_at;
 	std::string execution_owner = "uam";
 	std::string provider_command;
+	std::optional<NativeGoalBinding> native_binding;
 	std::string worker_model_id;
 	std::string reviewer_model_id;
 	std::string creator = "user";
@@ -296,8 +332,18 @@ struct ClaudeQuotaContinuation
 	bool operator==(const ClaudeQuotaContinuation&) const = default;
 };
 
+/// <summary>Portable custom icon metadata. PNG values name assets under the data root.</summary>
+struct CustomIcon
+{
+	std::string type;
+	std::string value;
+	bool operator==(const CustomIcon&) const = default;
+};
+
 struct ChatSession
 {
+	/// <summary>Runtime identity retained by copies; a recreated chat receives a fresh tag.</summary>
+	std::shared_ptr<const std::uint8_t> metadata_incarnation = std::make_shared<const std::uint8_t>(0);
 	std::string id;
 	std::string execution_host_id = "local";
 	std::string routing_mode = "explicit";
@@ -356,6 +402,8 @@ struct ChatSession
 	bool acp_queue_held = false;
 	std::size_t acp_dispatched_queued_prompt_count = 0;
 	std::string temporary_parent_chat_id;
+	/// <summary>Storage incarnation for temporary children, independent of provider identity.</summary>
+	std::string temporary_storage_owner_token;
 	bool side_cleanup_requested = false;
 	double side_cleanup_retry_time_s = 0.0;
 	std::shared_ptr<std::atomic<bool>> side_cleanup_stop_finished;
@@ -367,6 +415,7 @@ struct ChatSession
 	std::string branch_retry_error;
 	std::string folder_id;
 	std::string title;
+	CustomIcon custom_icon;
 	std::string created_at;
 	std::string updated_at;
 	std::string last_opened_at;
@@ -393,6 +442,8 @@ struct ChatSession
 	std::string workspace_isolation_kind;
 	std::string workspace_source_directory;
 	std::string workspace_base_ref;
+	/// <summary>Absent inherits Settings; empty explicitly starts at HEAD without switching source.</summary>
+	std::optional<std::string> git_base_branch_override;
 	std::string workspace_branch_name;
 	std::string workspace_worktree_directory;
 	bool imported_read_only = false;
@@ -417,6 +468,8 @@ struct ChatSession
 	std::string command_safety_tier = "off";
 	// Enablement and the selected OS target are intentionally runtime-only.
 	// Only the backend preference is persisted with the chat.
+	/// <summary>Launch-only policy snapshot; global consent is persisted in AppSettings.</summary>
+	bool computer_use_globally_enabled = true;
 	bool computer_use_enabled = false;
 	std::string computer_use_backend = "auto";
 	std::string computer_use_target_kind = "window";
@@ -473,14 +526,6 @@ struct ProviderChatDefaults
 /// <summary>
 /// User-defined chat folder metadata.
 /// </summary>
-/// <summary>Portable custom icon metadata. PNG values name assets under the data root.</summary>
-struct CustomIcon
-{
-	std::string type;
-	std::string value;
-	bool operator==(const CustomIcon&) const = default;
-};
-
 struct ChatFolder
 {
 	std::string id;
@@ -596,6 +641,8 @@ struct ExecutionHost
 	std::string startup_status = "disabled";
 	CustomIcon custom_icon;
 	bool cli_updates_as_admin = false;
+	/// Absent uses the legacy remote file; an empty value explicitly disables host instructions.
+	std::optional<std::string> instruction_text;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
@@ -637,8 +684,17 @@ struct ProviderAvailabilityOverride
 	bool enabled = true;
 };
 
+enum class GitPortMethod { Patch, Merge, Squash };
+
 struct AppSettings
 {
+	std::string voice_input_mode = "system";
+	std::string voice_input_server_base_url = "https://api.openai.com";
+	std::string voice_input_server_endpoint = "/v1/audio/transcriptions";
+	std::string voice_input_server_model = "whisper-1";
+	std::string voice_input_api_key_env = "OPENAI_API_KEY";
+
+	bool computer_use_globally_enabled = true;
 	bool computer_use_allowlist_enabled = false;
 	std::vector<ComputerUseApplicationRule> computer_use_allowed_applications;
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();
@@ -649,6 +705,14 @@ struct AppSettings
 	bool show_provider_icons_in_sidebar = true;
 	bool show_worktree_path_in_sidebar = true;
 	bool git_enabled = true;
+	bool git_auto_worktree = true;
+	bool git_pull_before_chat = false;
+	GitPortMethod git_port_method = GitPortMethod::Patch;
+	std::string git_default_base_branch;
+	bool worktree_cleanup_enabled = true;
+	int worktree_retention_days = 14;
+	int backup_log_retention_days = 14;
+	int http_cache_clear_interval_days = 0;
 	bool svn_enabled = true;
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;

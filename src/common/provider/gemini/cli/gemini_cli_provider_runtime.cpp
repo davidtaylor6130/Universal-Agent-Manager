@@ -360,3 +360,10 @@ std::vector<std::string> GeminiCliProviderRuntime::BuildStructuredLaunchArgv(con
 	uam::computer_use::AppendGeminiMcpLaunchArguments(argv, chat);
 	return argv;
 }
+
+std::string GeminiCliProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const
+{
+	const std::string_view normalized = uam::strings::TrimAsciiView(mode_id);
+	return normalized == uam::approval_modes::kAcceptEditsApprovalMode
+	    ? std::string(uam::approval_modes::kGeminiAcpAutoEditApprovalMode) : std::string(normalized);
+}

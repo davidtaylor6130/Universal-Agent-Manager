@@ -1,4 +1,5 @@
 #include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/provider/provider_ids.h"
@@ -15,9 +16,11 @@
 #include <functional>
 #include <optional>
 #include "common/runtime/acp/acp_protocol_methods.h"
+#include "common/runtime/acp/acp_statuses.h"
 #include "common/usage/transcript_usage.h"
 #include "common/utils/time_utils.h"
 #include <thread>
+#include <unordered_set>
 #include "remote/runner_client.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 
@@ -78,6 +81,72 @@ bool OpenCodeCliProviderRuntime::AcpPermissionRequiresUserDecision(const uam::Ac
 {
 	// OpenCode asks whether to continue identical repeated calls; this is not action authorization.
 	return uam::strings::ToLowerAscii(uam::strings::Trim(pending.title)) == "doom_loop";
+}
+
+std::size_t OpenCodeCliProviderRuntime::AcpBackgroundTaskCount(const uam::AcpSessionState& session) const
+{
+	if (!session.running || session.last_process_id.empty() || session.session_id.empty()) return 0;
+	std::unordered_set<std::string> children;
+	for (const std::pair<const std::string, uam::AcpSessionState::OpenCodeChildActivity>& entry : session.opencode_child_activity_by_tool)
+	{
+		const uam::AcpSessionState::OpenCodeChildActivity& child = entry.second;
+		if (child.process_id == session.last_process_id && child.parent_session_id == session.session_id &&
+			child.native_session_id != session.session_id && child.native_session_id.starts_with("ses_") &&
+			uam::execution_hosts::IsPortableId(child.native_session_id) && uam::acp_statuses::IsActiveStatus(child.status))
+			children.insert(child.native_session_id);
+	}
+	return children.size();
+}
+
+nlohmann::json OpenCodeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const
+{
+	// Initialization is a new receipt incarnation even when an OS PID/runner ID is reused.
+	session.opencode_child_activity_by_tool.clear();
+	return IProviderRuntime::OnAcpBuildInitialize(session, request_id);
+}
+
+bool OpenCodeCliProviderRuntime::OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
+	const nlohmann::json& message, const CefRefPtr<CefBrowser>&) const
+{
+	using uam::nlohmann_json::StringViewOrEmpty;
+	if (!session.running || !session.session_ready || session.last_process_id.empty() || session.session_id.empty() ||
+		StringViewOrEmpty(message, "method") != "session/update") return false;
+	bool replaying = session.manual_compaction_pending || session.context_compaction_in_progress;
+	for (const std::pair<const int, std::string>& request : session.pending_request_methods)
+		if (request.second == "session/load" || request.second == "session/fork") replaying = true;
+	const nlohmann::json* params = uam::nlohmann_json::FindObjectField(message, "params");
+	if (params == nullptr || StringViewOrEmpty(*params, "sessionId") != session.session_id) return false;
+	const nlohmann::json* update = uam::nlohmann_json::FindObjectField(*params, "update");
+	if (update == nullptr) return false;
+	const std::string_view kind = StringViewOrEmpty(*update, "sessionUpdate");
+	if (kind != "tool_call" && kind != "tool_call_update") return false;
+	const std::string_view tool_id = StringViewOrEmpty(*update, "toolCallId");
+	const std::string_view status = StringViewOrEmpty(*update, "status");
+	if (tool_id.empty() || (!uam::acp_statuses::IsActiveStatus(status) && status != "completed" &&
+		status != "failed" && status != "cancelled" && status != "canceled" && status != "paused")) return false;
+	const nlohmann::json* output = uam::nlohmann_json::FindObjectField(*update, "rawOutput");
+	const nlohmann::json* metadata = output == nullptr ? nullptr : uam::nlohmann_json::FindObjectField(*output, "metadata");
+	const std::string_view child_id = metadata == nullptr ? std::string_view{} : StringViewOrEmpty(*metadata, "sessionId");
+	std::unordered_map<std::string, uam::AcpSessionState::OpenCodeChildActivity>::iterator found = session.opencode_child_activity_by_tool.find(std::string(tool_id));
+	// Historical frames cannot establish current liveness or settlement, even for a known tool ID.
+	if (replaying) return false;
+	if (status == "completed" || status == "failed" || status == "cancelled" || status == "canceled")
+	{
+		if (found != session.opencode_child_activity_by_tool.end() && found->second.parent_session_id == session.session_id &&
+			found->second.process_id == session.last_process_id)
+			session.opencode_child_activity_by_tool.erase(found);
+		return false;
+	}
+	if (child_id.starts_with("ses_") && child_id != session.session_id && uam::execution_hosts::IsPortableId(child_id))
+	{
+		session.opencode_child_activity_by_tool[std::string(tool_id)] = {std::string(child_id), std::string(status), session.session_id, session.last_process_id};
+	}
+	else if (found != session.opencode_child_activity_by_tool.end() && found->second.parent_session_id == session.session_id &&
+		found->second.process_id == session.last_process_id)
+	{
+		found->second.status = status;
+	}
+	return false; // Preserve generic ACP tool projection and transcript handling.
 }
 
 namespace
@@ -292,11 +361,13 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildStructuredLaunchArgv(c
 	return argv;
 }
 
-std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::BuildStructuredLaunchEnvironment(const ProviderProfile&, const ChatSession&) const
+std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::BuildStructuredLaunchEnvironment(const ProviderProfile&, const ChatSession& chat) const
 {
 	// OpenCode ACP does not reliably forward child-session permission requests, so
 	// disable Task until the provider can mediate those requests without hanging.
 	// UAM's own native target grant is the approval boundary for these exact tools.
+	if (!uam::computer_use::AvailableForChat(chat))
+		return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny","uam-computer_computer_observe":"deny","uam-computer_computer_action":"deny"})"}};
 	return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny","uam-computer_computer_observe":"allow","uam-computer_computer_action":"allow"})"}};
 }
 

@@ -522,7 +522,8 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool
 	constexpr double kShutdownFallbackSeconds = 2.5;
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const double now = GetAppTimeSeconds();
-	bool changed = false;
+	uam::PollGitPortRequests(app);
+	bool changed = uam::PollWorktreeLaunchPreparations(app);
 
 	for (auto& terminal : app.cli_terminals)
 	{
@@ -582,6 +583,20 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool
 				(void)StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols);
 			}
 			else StopCliTerminal(*terminal);
+			changed = true;
+		}
+		if (!terminal->running && terminal->worktree_launch_pending)
+		{
+			if (!terminal->native_session_setup_cancel || terminal->native_session_setup_cancel->stop_requested())
+			{
+				uam::CancelWorktreeLaunchPreparation(app, terminal->frontend_chat_id, terminal->worktree_launch_cancellation);
+				terminal->worktree_launch_pending = false;
+				terminal->worktree_launch_cancellation.reset();
+				terminal->should_launch = false;
+			}
+			else if (terminal->should_launch)
+				if (ChatSession* chat = FindChatForCliTerminal(app, *terminal); chat != nullptr)
+					(void)StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols);
 			changed = true;
 		}
 		if (!terminal->running)

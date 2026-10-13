@@ -3,14 +3,6 @@ import type { CppChat, CppMessage } from './types'
 import { messageBlocksEquivalent, sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
 import { sanitizeCppAppState, sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
-describe('createSessionFromSourceChat capability', () => {
-  it('is true only when the backend advertises it', () => {
-    expect(sanitizeCppAppState({ createSessionFromSourceChat: true })?.createSessionFromSourceChat).toBe(true)
-    expect(sanitizeCppAppState({ createSessionFromSourceChat: 'yes' })?.createSessionFromSourceChat).toBe(false)
-    expect(sanitizeCppAppState({})?.createSessionFromSourceChat).toBe(false)
-  })
-})
-
 describe('Computer Use settings sanitization', () => {
   it('canonicalizes backend identity kinds during persisted settings roundtrip', () => {
     expect(sanitizeCppSettings({
@@ -488,5 +480,21 @@ describe('remote host startup applied state sanitization', () => {
   it('drops unknown applied states', () => {
     const [entry] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerStartupApplied: 'exploded' }] }).executionHosts!.slice(1)
     expect(entry).not.toHaveProperty('runnerStartupApplied')
+  })
+})
+
+describe('chat custom icon data', () => {
+  it('reconciles icon-only changes, removal and owned image changes without discarding unchanged sessions', () => {
+    const chat = sanitizeCppChat({ id: 'icon-chat', title: 'Icon chat', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' })!
+    const first = sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '📌' } }, undefined, [])
+    expect(first.customIcon).toEqual({ type: 'text', value: '📌' })
+    expect(sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '📌' } }, first, [])).toBe(first)
+    const changed = sessionFromCppChat({ ...chat, customIcon: { type: 'text', value: '🚀' } }, first, [])
+    expect(changed).not.toBe(first); expect(changed.customIcon?.value).toBe('🚀')
+    const removed = sessionFromCppChat(chat, changed, [])
+    expect(removed).not.toBe(changed); expect(removed.customIcon).toBeUndefined()
+    const png = { type: 'png' as const, value: '12345678-1234-1234-1234-123456789abc.png', dataUrl: 'data:image/png;base64,YQ==' }
+    const image = sessionFromCppChat({ ...chat, customIcon: png }, removed, [])
+    expect(sessionFromCppChat({ ...chat, customIcon: { ...png, dataUrl: undefined } }, image, [])).not.toBe(image)
   })
 })

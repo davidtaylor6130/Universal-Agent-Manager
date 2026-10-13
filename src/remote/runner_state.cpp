@@ -105,20 +105,34 @@ namespace uam::remote
 			    std::memory_order_release);
 		}
 
-		void CleanupProcess(const std::shared_ptr<RunnerState::Process>& process)
+		bool CleanupProcess(const std::shared_ptr<RunnerState::Process>& process, bool nonblocking = false)
 		{
-			process->drainer.request_stop();
+			bool observed = false;
 			{
-				std::scoped_lock lock(process->mutex);
-				if (!process->exited.load(std::memory_order_acquire))
+				std::unique_lock lock(process->mutex, std::defer_lock);
+				if (nonblocking)
+				{
+					if (!lock.try_lock()) return false;
+				}
+				else lock.lock();
+				process->drainer.request_stop();
+				int exit_code = -1;
+				observed = ProcessService().PollStdioProcessExited(process->fields, &exit_code);
+				if (!observed)
+				{
 					ProcessService().TerminateStdioProcess(process->fields, true);
-				process->exited.store(true, std::memory_order_release);
+					observed = ProcessService().PollStdioProcessExited(process->fields, &exit_code);
+				}
+				if (observed) process->exited.store(true, std::memory_order_release);
 			}
 			if (process->drainer.joinable()) process->drainer.join();
+			if (!observed) return false;
 			ProcessService().CloseStdioProcessHandles(process->fields);
-			std::error_code remove_error;
-			std::filesystem::remove(process->stdout_spool, remove_error);
-			std::filesystem::remove(process->stderr_spool, remove_error);
+			std::error_code stdout_error;
+			std::error_code stderr_error;
+			std::filesystem::remove(process->stdout_spool, stdout_error);
+			std::filesystem::remove(process->stderr_spool, stderr_error);
+			return !stdout_error && !stderr_error;
 		}
 
 		bool IsBoundedText(std::string_view value, std::size_t maximum, bool allow_empty = false)
@@ -518,6 +532,11 @@ namespace uam::remote
 			(void)session_id;
 			CleanupProcess(process);
 		}
+		for (const auto& [session_id, process] : m_retiringProcesses)
+		{
+			(void)session_id;
+			CleanupProcess(process);
+		}
 		for (const auto& [upload_id, upload] : m_uploads)
 		{
 			(void)upload_id;
@@ -533,13 +552,13 @@ namespace uam::remote
 	{
 		SweepExpiredTransientProcesses();
 		std::scoped_lock lock(m_stateMutex);
-		return !m_processes.empty() || !m_textWorkers.empty() || std::any_of(m_channels.begin(), m_channels.end(),
+		return !m_processes.empty() || !m_retiringProcesses.empty() || !m_textWorkers.empty() || std::any_of(m_channels.begin(), m_channels.end(),
 		    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; });
 	}
 
 	void RunnerState::SweepExpiredTransientProcesses()
 	{
-		std::vector<std::shared_ptr<Process>> expired;
+		std::vector<std::pair<std::string, std::shared_ptr<Process>>> expired;
 		const std::int64_t now = LeaseClockMilliseconds();
 		{
 			std::scoped_lock lock(m_stateMutex);
@@ -547,23 +566,13 @@ namespace uam::remote
 			{
 				return entry.second.expires_at_ms != 0 && now >= entry.second.expires_at_ms;
 			});
-			for (auto iterator = m_textWorkers.begin(); iterator != m_textWorkers.end();)
-			{
-				if (now >= iterator->second.expires_at_ms && !m_processes.contains(iterator->first))
-				{
-					std::error_code error;
-					std::filesystem::remove_all(iterator->second.directory, error);
-					iterator = m_textWorkers.erase(iterator);
-				}
-				else ++iterator;
-			}
 			for (auto iterator = m_processes.begin(); iterator != m_processes.end();)
 			{
 				const std::shared_ptr<Process>& process = iterator->second;
 				if (process->transient_lease &&
 				    now >= process->lease_deadline_ms.load(std::memory_order_acquire))
 				{
-					expired.push_back(process);
+					m_retiringProcesses.emplace(iterator->first, process);
 					iterator = m_processes.erase(iterator);
 				}
 				else
@@ -571,8 +580,40 @@ namespace uam::remote
 					++iterator;
 				}
 			}
+			expired.assign(m_retiringProcesses.begin(), m_retiringProcesses.end());
 		}
-		for (const std::shared_ptr<Process>& process : expired) CleanupProcess(process);
+		for (const auto& [session_id, process] : expired)
+		{
+			{
+				std::scoped_lock lock(m_stateMutex);
+				const auto found = m_retiringProcesses.find(session_id);
+				bool expected = false;
+				if (found == m_retiringProcesses.end() || found->second != process ||
+				    !process->retirement_cleanup_active.compare_exchange_strong(expected, true)) continue;
+			}
+			struct CleanupClaim
+			{
+				std::atomic<bool>& active;
+				~CleanupClaim() { active.store(false, std::memory_order_release); }
+			} claim{process->retirement_cleanup_active};
+			if (!CleanupProcess(process, true)) continue;
+			std::scoped_lock lock(m_stateMutex);
+			const auto found = m_retiringProcesses.find(session_id);
+			if (found != m_retiringProcesses.end() && found->second == process)
+				m_retiringProcesses.erase(found);
+		}
+		std::scoped_lock lock(m_stateMutex);
+		for (auto iterator = m_textWorkers.begin(); iterator != m_textWorkers.end();)
+		{
+			if (now >= iterator->second.expires_at_ms && !m_processes.contains(iterator->first) && !m_retiringProcesses.contains(iterator->first))
+			{
+				std::error_code error;
+				std::filesystem::remove_all(iterator->second.directory, error);
+				if (!error) iterator = m_textWorkers.erase(iterator);
+				else ++iterator;
+			}
+			else ++iterator;
+		}
 	}
 
 	nlohmann::json RunnerState::HandleStartupRequest(const nlohmann::json& request, std::string_view runner_version)
@@ -604,7 +645,8 @@ namespace uam::remote
 		const std::string type = request["type"].get<std::string>();
 		if (type == "usage.accounting")
 		{
-			if ((request.contains("offset") && (!request["offset"].is_number_integer() || request["offset"] < 0 || request["offset"] > 64 * 1024 * 1024)) ||
+			const bool streamed = request.value("format", nlohmann::json{}) == "jsonl-v3";
+			if ((request.contains("format") && !streamed) || (request.contains("offset") && (!request["offset"].is_number_integer() || request["offset"] < 0 || request["offset"] > (streamed ? uam::usage::kMaxExactTokenCount : 64 * 1024 * 1024))) ||
 			    (request.contains("fingerprint") && (!request["fingerprint"].is_string() || request["fingerprint"].get_ref<const std::string&>().size() != 16)))
 				return ProcessError(request, "invalid_request", "Choose a valid usage accounting offset and snapshot.");
 			if (!m_usageHistory)
@@ -616,7 +658,7 @@ namespace uam::remote
 			}
 			const std::shared_ptr<uam::usage::Collector> history = m_usageHistory;
 			state_lock.unlock();
-			nlohmann::json result = history->ExportAccounting(request.value("offset", std::size_t{0}), request.value("fingerprint", std::string{}));
+			nlohmann::json result = streamed ? history->ExportReceipts(request.value("offset", std::uint64_t{0}), request.value("fingerprint", std::string{})) : history->ExportAccounting(request.value("offset", std::size_t{0}), request.value("fingerprint", std::string{}));
 			if (result.contains("error")) return ProcessError(request, "usage_snapshot_changed", result["error"].get<std::string>());
 			return ProcessSuccess(request, std::move(result));
 		}
@@ -1308,6 +1350,8 @@ namespace uam::remote
 					return ProcessError(request, "invalid_request",
 					                    "The transient process lease is out of range.");
 			}
+			if (const auto retiring = m_retiringProcesses.find(session_id); retiring != m_retiringProcesses.end())
+				return ProcessError(request, retiring->second->control_token == control_token ? "process_retiring" : "unauthorized", "The remote process cleanup is not yet confirmed.");
 			if (const auto existing = m_processes.find(session_id); existing != m_processes.end())
 			{
 				if (existing->second->control_token != control_token)
@@ -1397,6 +1441,8 @@ namespace uam::remote
 			return ProcessError(request, "invalid_request",
 			                    "A portable bounded sessionId is required.");
 		const std::string session_id = request["sessionId"].get<std::string>();
+		if (const auto retiring = m_retiringProcesses.find(session_id); retiring != m_retiringProcesses.end())
+			return ProcessError(request, request.contains("controlToken") && request["controlToken"].is_string() && request["controlToken"].get_ref<const std::string&>() == retiring->second->control_token ? "process_retiring" : "unauthorized", "The remote process cleanup is not yet confirmed.");
 		const auto found = m_processes.find(session_id);
 		if (found == m_processes.end())
 			return ProcessError(request, "session_not_found", "The remote process does not exist.");

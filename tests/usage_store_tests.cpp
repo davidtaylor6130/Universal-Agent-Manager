@@ -1,5 +1,7 @@
 #include "test_harness.h"
 #include "common/usage/usage_store.h"
+#include "common/usage/usage_history_service.h"
+#include "common/usage/antigravity_accounting.h"
 #include <sqlite3.h>
 #include <unordered_set>
 
@@ -304,4 +306,101 @@ UAM_TEST(UsageLifetimeReadCombinesArchiveAndRecentReceiptsAcrossRestart)
 	UAM_ASSERT(!store.ReadLifetimeRecords(kStoreAsOf, error, [] { return true; }));
 	UAM_ASSERT_EQ(store.ReadRecords(kStoreAsOf, error)->size(), std::size_t{1});
 	UAM_ASSERT_EQ(store.ReadLifetimeRecords(kStoreAsOf + 2LL * 86400000, error)->size(), std::size_t{3});
+}
+
+UAM_TEST(UsageStoreStreamedSnapshotExceedsDocumentCapWithoutLosingOldNativeReceipts)
+{
+	TempDir temp("uam-usage-streamed-large"); uam::usage::Store store(temp.root); std::string error;
+	for (int batch_index = 0; batch_index < 5; ++batch_index)
+	{
+		std::vector<uam::usage::Record> records;
+		for (int index = 0; index < 1800; ++index)
+		{
+			uam::usage::Record record = StoreEvent(std::string(8000, 'r') + std::to_string(batch_index * 1800 + index)); record.timestamp_ms = kStoreAsOf - 180LL * 86400000;
+			records.push_back(std::move(record));
+		}
+		std::vector<uam::usage::SourceRecord> references;
+		for (const uam::usage::Record& record : records) references.push_back({&record, "fixture", 0});
+		UAM_ASSERT(store.Import(references, error));
+	}
+	const std::optional<uam::usage::Ledger> ledger = store.ReadLifetimeLedger(kStoreAsOf, error);
+	UAM_ASSERT(ledger); UAM_ASSERT_EQ(ledger->Rows(), std::size_t{1});
+	const std::optional<uam::usage::Summary> totals = ledger->Query(0, kStoreAsOf);
+	UAM_ASSERT(totals); UAM_ASSERT_EQ(totals->total.records, std::size_t{9000}); UAM_ASSERT_EQ(totals->total.tokens.Total(), 315000LL);
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = store.WriteReceiptSnapshot(kStoreAsOf, uam::usage::EmptyHistoryMetadata(), error);
+	UAM_ASSERT(snapshot); UAM_ASSERT(snapshot->bytes > 64 * 1024 * 1024);
+	std::size_t count = 0; UAM_ASSERT(snapshot->Visit([&](const uam::usage::AccountingRecord&) { ++count; return true; }, error)); UAM_ASSERT_EQ(count, std::size_t{9000});
+	UAM_ASSERT(!store.ReadLifetimeLedger(kStoreAsOf, error, [] { return true; }));
+	UAM_ASSERT_EQ(store.ReadLifetimeLedger(kStoreAsOf, error)->Query(0, kStoreAsOf)->total.records, std::size_t{9000});
+	const fs::path snapshot_path = snapshot->path;
+	UAM_ASSERT(fs::exists(snapshot_path));
+}
+
+UAM_TEST(UsageStorePeerMergeRetainsUnidentifiedHostRowsAndFirstEqualTimeNativeReceipt)
+{
+	TempDir temp("uam-usage-streamed-merge"); uam::usage::Store store(temp.root); std::string error;
+	uam::usage::Record native = StoreEvent("same");
+	uam::usage::Record unidentified = native; unidentified.dedupe_key.clear();
+	const uam::usage::AccountingRecord first{nlohmann::json::array({"native", native.provider_id, native.dedupe_key}).dump(), native};
+	const uam::usage::AccountingRecord unknown{nlohmann::json::array({"source", unidentified.provider_id, "same-source", 0, unidentified.timestamp_ms}).dump(), unidentified};
+	UAM_ASSERT(store.ImportAccounting({first, unknown}, "host-one", error));
+	uam::usage::AccountingRecord copied = first; copied.record.tokens.output = 999;
+	UAM_ASSERT(store.ImportAccounting({copied, unknown}, "host-two", error));
+	const std::optional<uam::usage::Ledger> ledger = store.ReadLifetimeLedger(kStoreAsOf, error); UAM_ASSERT(ledger);
+	const std::optional<uam::usage::Summary> totals = ledger->Query(0, kStoreAsOf); UAM_ASSERT(totals);
+	UAM_ASSERT_EQ(totals->total.records, std::size_t{3}); UAM_ASSERT_EQ(totals->total.tokens.Total(), 105LL); UAM_ASSERT_EQ(totals->unidentified_records, std::size_t{2}); UAM_ASSERT_EQ(totals->duplicates, std::size_t{1});
+	copied.record.timestamp_ms -= 86400000; copied.record.tokens.output = 40;
+	UAM_ASSERT(store.ImportAccounting({copied}, "host-three", error));
+	UAM_ASSERT_EQ(store.ReadLifetimeLedger(kStoreAsOf, error)->Query(0, kStoreAsOf)->total.tokens.Total(), 125LL);
+}
+
+UAM_TEST(UsageStoreDiskAliasReductionMatchesExistingCohortsAndPriceProvenance)
+{
+	TempDir temp("uam-usage-disk-aliases"); uam::usage::Store store(temp.root); std::string error;
+	std::vector<uam::usage::Record> records;
+	for (int index = 0; index < 80; ++index)
+	{
+		uam::usage::AntigravityUsageCandidate candidate;
+		candidate.record.provider_id = "antigravity-cli"; candidate.record.model_id = index % 4 ? "model" : "antigravity-unknown";
+		candidate.record.session_id = "session-" + std::to_string(index % 5); candidate.record.timestamp_ms = kStoreAsOf - (100LL + index % 9) * 86400000 + index;
+		candidate.record.tokens = {index + 1, index % 3, index % 2, 10, 2}; candidate.timestamp_quality = index % 3; candidate.is_step = index % 2;
+		candidate.location_id = nlohmann::json::array({"antigravity", candidate.record.session_id, candidate.is_step ? "step" : "generation", index % 7, 0}).dump();
+		if (index % 6) candidate.aliases = {nlohmann::json::array({12, "request-" + std::to_string(index % 11)}).dump()};
+		if (index % 10 == 1) candidate.aliases.push_back(nlohmann::json::array({7, "bridge-" + std::to_string(index % 3)}).dump());
+		std::sort(candidate.aliases.begin(), candidate.aliases.end());
+		const std::optional<uam::usage::Record> record = uam::usage::EncodeAntigravityAccountingRecord(candidate); UAM_ASSERT(record); records.push_back(*record);
+	}
+	for (int index = 0; index < 4; ++index)
+	{
+		uam::usage::Record record = StoreEvent("ordinary-" + std::to_string(index)); record.timestamp_ms -= 180LL * 86400000;
+		record.tokens.input = index % 2 ? 0 : 10; record.tokens.cached_input = index % 2 ? 5 : 0;
+		if (index < 2) record.reported_cost_usd = 0.125; else if (index == 2) record.estimated_cost_usd.reset();
+		records.push_back(record);
+	}
+	std::vector<uam::usage::SourceRecord> references;
+	for (const uam::usage::Record& record : records) references.push_back({&record, "fixture", 0});
+	UAM_ASSERT(store.Import(references, error));
+	const std::optional<std::vector<uam::usage::AccountingRecord>> prior = store.ReadLifetimeRecords(kStoreAsOf, error); UAM_ASSERT(prior);
+	std::vector<const uam::usage::Record*> expected_rows; for (const uam::usage::AccountingRecord& entry : *prior) expected_rows.push_back(&entry.record);
+	const std::optional<uam::usage::Ledger> expected = uam::usage::Ledger::Create(expected_rows, kStoreAsOf, uam::usage::LedgerRange::AllRecorded);
+	const std::optional<uam::usage::Ledger> actual = store.ReadLifetimeLedger(kStoreAsOf, error); UAM_ASSERT(expected); UAM_ASSERT(actual);
+	UAM_ASSERT_EQ(actual->Encode(), expected->Encode());
+	std::map<uam::usage::ModelKey, uam::usage::ModelPrices> prices;
+	prices[{"opencode-cli", "qwen3.8-27b", "standard"}] = {2.0, std::nullopt, std::nullopt, 5.0};
+	const std::optional<uam::usage::Summary> first = expected->Query(0, kStoreAsOf, prices), second = actual->Query(0, kStoreAsOf, prices);
+	UAM_ASSERT(first); UAM_ASSERT(second); UAM_ASSERT_EQ(first->total.reported_cost_usd, second->total.reported_cost_usd); UAM_ASSERT_EQ(first->total.estimated_cost_usd, second->total.estimated_cost_usd); UAM_ASSERT_EQ(first->total.unpriced_tokens, second->total.unpriced_tokens); UAM_ASSERT_EQ(first->total.sessions, second->total.sessions);
+}
+
+UAM_TEST(UsageStreamedReceiptsRejectDuplicateIdentitiesAndMalformedCoverage)
+{
+	TempDir temp("uam-usage-streamed-validation"); uam::usage::Store store(temp.root); std::string error; uam::usage::Record record = StoreEvent("same");
+	UAM_ASSERT(store.Import({{&record, "fixture", 0}}, error));
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> original = store.WriteReceiptSnapshot(kStoreAsOf, uam::usage::EmptyHistoryMetadata(), error); UAM_ASSERT(original);
+	std::string bytes = ReadFile(original->path); const std::size_t first = bytes.find('\n'); UAM_ASSERT(first != std::string::npos);
+	const fs::path duplicate = temp.root / "duplicate.jsonl"; UAM_ASSERT(uam::io::WriteTextFile(duplicate, bytes + bytes.substr(first + 1)));
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> duplicated = uam::usage::ReadReceiptSnapshot(duplicate, error); UAM_ASSERT(duplicated);
+	UAM_ASSERT(!duplicated->Visit([](const uam::usage::AccountingRecord&) { return true; }, error)); UAM_ASSERT(error.find("duplicate") != std::string::npos);
+	nlohmann::json header = nlohmann::json::parse(bytes.substr(0, first)); header["metadata"]["providers"][0]["providerId"] = "unknown-provider";
+	UAM_ASSERT(uam::io::WriteTextFile(duplicate, header.dump() + "\n" + bytes.substr(first + 1))); UAM_ASSERT(!uam::usage::ReadReceiptSnapshot(duplicate, error));
+	UAM_ASSERT(original->Visit([](const uam::usage::AccountingRecord&) { return true; }, error));
 }

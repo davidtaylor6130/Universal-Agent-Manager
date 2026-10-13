@@ -2,6 +2,7 @@
 
 #include "common/usage/usage_aggregation.h"
 #include <nlohmann/json.hpp>
+#include <functional>
 
 namespace uam::usage
 {
@@ -16,9 +17,11 @@ namespace uam::usage
 	{
 	public:
 		static std::optional<Ledger> Create(const std::vector<const Record*>& records, std::int64_t generated_ms, LedgerRange range = LedgerRange::Rolling90Days);
+		/// <summary>Consumes canonical receipts incrementally after disk-backed identity and alias reduction.</summary>
+		static std::optional<Ledger> CreateCanonical(const std::function<bool(const std::function<bool(const Record&)>&)>& stream, std::int64_t generated_ms, std::size_t duplicates = 0);
 		static std::optional<Ledger> Decode(const nlohmann::json& payload);
 		nlohmann::json Encode() const;
-		std::optional<Summary> Query(std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices = {}) const;
+		std::optional<Summary> Query(std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices = {}, bool bounded_chart = false) const;
 		std::int64_t WindowStart(int days) const;
 		std::int64_t GeneratedMs() const { return m_generatedMs; }
 		bool IncludesLifetime() const { return m_range == LedgerRange::AllRecorded; }

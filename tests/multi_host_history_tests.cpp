@@ -2,6 +2,7 @@
 #include "common/usage/multi_host_history.h"
 #include "common/usage/antigravity_accounting.h"
 #include <atomic>
+#include "common/utils/hash_utils.h"
 #include <thread>
 
 using namespace uam_test;
@@ -227,4 +228,55 @@ UAM_TEST(UsageMultiHostLifetimeDeduplicatesOldReceiptsAndRejectsLegacyScope)
 	UAM_ASSERT(old_runner.Query("legacy", 0).contains("error"));
 	UAM_ASSERT(old_runner.Query("*", 0).contains("error"));
 	UAM_ASSERT_EQ(old_runner.Query("legacy", 7)["totals"]["totalTokens"].get<int>(), 15);
+}
+
+UAM_TEST(UsageMultiHostStreamedLifetimeDeduplicatesPeersBeyondCombinedDocumentCap)
+{
+	TempDir temp("uam-usage-streamed-peers"); uam::usage::Store store(temp.root / "fixture"); std::string error;
+	const std::int64_t now = UsageNow();
+	for (int batch_index = 0; batch_index < 3; ++batch_index)
+	{
+		std::vector<uam::usage::Record> records;
+		for (int index = 0; index < 1500; ++index)
+		{
+			uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "old-model"; record.session_id = "one-session"; record.dedupe_key = std::string(8000, 'r') + std::to_string(batch_index * 1500 + index);
+			record.timestamp_ms = now - 180LL * 86400000; record.tokens.input = 2; records.push_back(std::move(record));
+		}
+		std::vector<uam::usage::SourceRecord> references; for (const uam::usage::Record& record : records) references.push_back({&record, "fixture", 0}); UAM_ASSERT(store.Import(references, error));
+	}
+	nlohmann::json metadata = uam::usage::EmptyHistoryMetadata(); metadata["complete"] = true;
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = store.WriteReceiptSnapshot(now, metadata, error); UAM_ASSERT(snapshot); UAM_ASSERT(2 * snapshot->bytes > 64 * 1024 * 1024);
+	const std::vector<ExecutionHost> hosts{UsageHost("one"), UsageHost("two")};
+	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), hosts,
+	    [&](const ExecutionHost& host, std::stop_token, std::string&) -> std::optional<nlohmann::json>
+	    {
+		    const std::string scope = "host-" + host.id + "-" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(nlohmann::json::array({host.ssh_alias, host.platform, host.runner_directory}).dump()));
+		    const fs::path path = temp.root / "usage" / "remote" / scope / "snapshot-v3.jsonl"; fs::create_directories(path.parent_path()); fs::copy_file(snapshot->path, path, fs::copy_options::overwrite_existing);
+		    return nlohmann::json{{"receiptSnapshotPath", uam::paths::Utf8PathString(path)}};
+	    });
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20); nlohmann::json total;
+	do { total = history.Query("*", 0); if (total.contains("totals") && total.value("complete", false) && !total.value("collecting", true)) break; std::this_thread::sleep_for(std::chrono::milliseconds(5)); } while (std::chrono::steady_clock::now() < deadline);
+	UAM_ASSERT(total.contains("totals")); UAM_ASSERT(total.value("complete", false)); UAM_ASSERT_EQ(total["totals"]["totalTokens"].get<std::int64_t>(), 9000LL); UAM_ASSERT_EQ(total["totals"]["records"].get<std::size_t>(), std::size_t{4500}); UAM_ASSERT_EQ(total["duplicates"].get<std::size_t>(), std::size_t{4500}); UAM_ASSERT_EQ(total["totals"]["sessions"].get<std::size_t>(), std::size_t{1});
+	UAM_ASSERT_EQ(history.Query("*", 90)["totals"]["totalTokens"].get<std::int64_t>(), 0LL);
+}
+
+UAM_TEST(UsageMultiHostPinsLastGoodStreamedReceiptsWhenCacheReplacementFailsCollection)
+{
+	TempDir temp("uam-usage-pinned-cache"); uam::usage::Store store(temp.root / "fixture"); std::string error;
+	uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "model"; record.session_id = "session"; record.dedupe_key = "receipt"; record.timestamp_ms = UsageNow() - 3LL * 86400000; record.tokens.input = 15;
+	UAM_ASSERT(store.Import({{&record, "fixture", 0}}, error)); nlohmann::json metadata = uam::usage::EmptyHistoryMetadata(); metadata["complete"] = true;
+	const std::shared_ptr<const uam::usage::ReceiptSnapshot> snapshot = store.WriteReceiptSnapshot(UsageNow(), metadata, error); UAM_ASSERT(snapshot);
+	ExecutionHost host = UsageHost("peer"); std::atomic<bool> fail{false};
+	uam::usage::MultiHostHistory history(temp.root, EmptyLocal(temp.root), {host},
+	    [&](const ExecutionHost& peer, std::stop_token, std::string& fetch_error) -> std::optional<nlohmann::json>
+	    {
+		    const std::string scope = "host-" + peer.id + "-" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(nlohmann::json::array({peer.ssh_alias, peer.platform, peer.runner_directory}).dump()));
+		    const fs::path path = temp.root / "usage" / "remote" / scope / "snapshot-v3.jsonl"; fs::create_directories(path.parent_path());
+		    if (fail) { UAM_ASSERT(uam::io::AtomicWriteFile(path, "invalid replacement")); fetch_error = "Offline"; return std::nullopt; }
+		    fs::copy_file(snapshot->path, path, fs::copy_options::overwrite_existing); fs::last_write_time(path, fs::file_time_type::clock::now() - std::chrono::hours(48)); return nlohmann::json{{"receiptSnapshotPath", uam::paths::Utf8PathString(path)}};
+	    });
+	UAM_ASSERT(WaitUsage(history, "peer", [](const nlohmann::json& value) { return value.contains("totals"); }).contains("totals"));
+	fail = true; host.runner_version = "changed"; history.SetHosts({host});
+	const nlohmann::json cached = WaitUsage(history, "peer", [](const nlohmann::json& value) { return !value.value("collectionError", "").empty(); });
+	UAM_ASSERT(cached.contains("totals")); UAM_ASSERT_EQ(cached["totals"]["totalTokens"].get<std::int64_t>(), 15LL); UAM_ASSERT_EQ(cached["coverage"][0]["status"].get<std::string>(), std::string("cached"));
 }

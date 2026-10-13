@@ -4,7 +4,9 @@
 
 Universal Agent Manager (UAM) is a native desktop AI chat and agent application. The C++ backend owns provider runtimes, local persistence, process management, and the CEF window. The React frontend in `UI-V2/` is loaded from bundled files inside CEF and talks to C++ through `window.cefQuery` and `window.uamPush`.
 
-Five CLI provider runtimes are enabled by default: Gemini CLI, Codex CLI, Claude Code, OpenCode, and GitHub Copilot CLI. Each has a structured chat path through an ACP-style stdio runtime (Gemini ACP, Codex app-server, Claude stream-json, and generic ACP for OpenCode/Copilot) and an xterm.js CLI fallback path.
+System design pages and the repository documentation map are indexed in [docs/README.md](docs/README.md). Keep them aligned with the source, and preserve the UI contract in `docs/ui/design-language.md` and `docs/ui/settings.md`.
+
+UAM has structured chat routes for Gemini CLI, Codex CLI, Claude Code, OpenCode and GitHub Copilot through provider-specific stdio protocols (Gemini ACP, Codex app-server, Claude stream-json and generic ACP for OpenCode/Copilot). All six supported CLIs have an xterm.js terminal path; Antigravity is terminal-only.
 
 ## Architecture
 
@@ -77,6 +79,7 @@ Current bridge actions, grouped by domain (the live dispatch table is `UamQueryH
 | `getInitialState` | Return full serialized app state |
 | `selectSession` | Select a chat |
 | `getChatMessages` | Return messages for a chat |
+| `getUsageHistory` | Query host-scoped usage history with immutable byte-bounded snapshot continuation |
 | `createSession` | Create a chat in a workspace folder with a provider |
 | `openNativeSessionChat` | Open a chat backed by a discovered native session |
 | `renameSession` | Rename a chat |
@@ -140,6 +143,10 @@ Current bridge actions, grouped by domain (the live dispatch table is `UamQueryH
 | `removeGoal` | Remove a goal |
 
 C++ returns raw JSON in `cb->Success()`. `UI-V2/src/ipc/cefBridge.ts` wraps that into the frontend response shape.
+
+`getUsageHistory` starts with `refreshId`, `executionHostId` (`local`, a configured host ID, or `*` for all machines), `startMs`, `endMs`, `windowDays` (0, 1, 7, 30 or 90), and optional `priceOverrides`. All Time (`windowDays: 0`) requires `startMs: 0`. The handler returns complete usage JSON when it fits the 2 MiB response bound; otherwise it returns `usagePage: 1`, `snapshotId`, `refreshId`, `offset`, `nextOffset`, `totalBytes` and a UTF-8 `chunk` of at most 256 KiB.
+
+For continuation, repeat the original query payload with the returned `snapshotId` and exact `nextOffset` as `offset`; stop when `nextOffset` is null, assemble every chunk, then parse the complete JSON. Snapshot ownership includes the browser, original query, configured host connection and data root; snapshots expire after 120 seconds, and a newer initial query replaces that browser's snapshot. Invalid continuation shapes fail with 400; stale, expired or changed ownership fails with 409 and requires a fresh query. Contract sources: `src/cef/usage_handlers.cpp`, `src/common/usage/history_transport.h`, and `UI-V2/src/services/usageHistory.ts`.
 
 ### C++ to JS
 

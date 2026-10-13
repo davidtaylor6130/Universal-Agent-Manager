@@ -1,3 +1,5 @@
+#include "common/chat/chat_repository.h"
+#include "common/chat/chat_message_page_index.h"
 #include "app/startup_native_import_service.h"
 #include "app/execution_routing_integration.h"
 #include "cef/state_serializer.h"
@@ -8,6 +10,7 @@
 #include "app/provider_model_catalog_service.h"
 #include "app/uam_control_service.h"
 #include "common/memory/memory_levels.h"
+#include "common/memory/memory_policy.h"
 
 #include "common/chat/message_attachment_json.h"
 #include "common/constants/app_constants.h"
@@ -220,7 +223,6 @@ namespace uam
 			{
 				if (!scope.is_object()) continue;
 				const std::string host = scope.value("executionHostId", "local");
-				if (host == uam::execution_hosts::kLocalHostId) continue;
 				append_catalog(scope.value("providerId", ""),
 				    scope.value("workspaceDirectory", ""), host);
 			}
@@ -253,6 +255,7 @@ namespace uam
 			chat_json["workspaceIsolationKind"] = chat.workspace_isolation_kind;
 			chat_json["workspaceSourceDirectory"] = chat.workspace_source_directory;
 			chat_json["workspaceBaseRef"] = chat.workspace_base_ref;
+			chat_json["gitBaseBranch"] = chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr);
 			chat_json["workspaceBranchName"] = chat.workspace_branch_name;
 			chat_json["workspaceWorktreeDirectory"] = chat.workspace_worktree_directory;
 		}
@@ -270,6 +273,7 @@ namespace uam
 			session_json["routingAssignedConnectionIdentity"] = session.routing_assigned_connection_identity;
 			session_json["routingAssignedProviderConfigurationIdentity"] = session.routing_assigned_provider_configuration_identity;
 			session_json["title"] = session.title;
+			session_json["customIcon"] = uam::icons::Serialize(session.custom_icon);
 			session_json["folderId"] = session.folder_id;
 			session_json["pinned"] = session.pinned;
 			session_json["providerId"] = session.provider_id;
@@ -296,7 +300,7 @@ namespace uam
 			session_json["computerUseTargetId"] = session.computer_use_target_id;
 			session_json["computerUseTargetTitle"] = session.computer_use_target_title;
 			session_json["computerUseTargetInputMode"] = session.computer_use_target_input_mode;
-			session_json["memoryLevel"] = uam::memory_levels::Normalize(session.memory_level, session.memory_enabled);
+			session_json["memoryLevel"] = uam::memory_levels::NormalizeSelection(session.memory_level, session.memory_enabled);
 			session_json["memoryEnabled"] = uam::memory_levels::IsEnabled(session.memory_level, session.memory_enabled);
 			session_json["smallModelMode"] = session.small_model_mode;
 			session_json["memoryLastProcessedMessageCount"] = session.memory_last_processed_message_count;
@@ -550,30 +554,6 @@ namespace uam
 			return message_json;
 		}
 
-		void FingerprintHashBytes(std::uint64_t& hash, const unsigned char* data, std::size_t len)
-		{
-			uam::hashing::UpdateFnv1a64(hash, data, len);
-		}
-
-		void FingerprintHashString(std::uint64_t& hash, const std::string& value)
-		{
-			// Process-local change tokens allow platform-native string hashing.
-			// Uncached suffixes still scan full strings; exact baseline equality protects in-place edits.
-			const std::uint64_t value_hash = std::hash<std::string>{}(value);
-			FingerprintHashBytes(hash, reinterpret_cast<const unsigned char*>(&value_hash), sizeof(value_hash));
-		}
-
-		void FingerprintHashBool(std::uint64_t& hash, bool value)
-		{
-			const unsigned char byte = value ? 1u : 0u;
-			FingerprintHashBytes(hash, &byte, 1);
-		}
-
-		std::string FingerprintHashHex(std::uint64_t hash)
-		{
-			return uam::hashing::Hex64Padded(hash);
-		}
-
 		std::string MessageDigestForFingerprint(const ChatSession& session, bool cache_selected)
 		{
 			SelectedHistoryDigestCache* cache = cache_selected ? &g_selected_history_digest : nullptr;
@@ -613,78 +593,7 @@ namespace uam
 			for (std::size_t index = prefix; index < session.messages.size(); ++index)
 			{
 				const Message& message = session.messages[index];
-				FingerprintHashString(hash, RoleStr(message.role));
-				FingerprintHashString(hash, message.created_at);
-				FingerprintHashString(hash, message.provider);
-				FingerprintHashString(hash, message.model_id);
-				FingerprintHashString(hash, message.content);
-				FingerprintHashString(hash, std::to_string(message.processing_time_ms));
-				FingerprintHashString(hash, message.checkpoint_sha);
-				FingerprintHashString(hash, message.checkpoint_parent_sha);
-				FingerprintHashString(hash, message.thoughts);
-				FingerprintHashString(hash, message.plan_summary);
-				FingerprintHashString(hash, std::to_string(message.tool_calls.size()));
-				for (const ToolCall& tool_call : message.tool_calls)
-				{
-					FingerprintHashString(hash, tool_call.id);
-					FingerprintHashString(hash, tool_call.name);
-					FingerprintHashString(hash, tool_call.kind);
-					FingerprintHashString(hash, tool_call.approval_status);
-					FingerprintHashString(hash, tool_call.task_id);
-					FingerprintHashString(hash, tool_call.child_activity);
-					FingerprintHashString(hash, tool_call.status);
-					// The native refresh guard needs content changes even when output is deferred.
-					FingerprintHashString(hash, tool_call.args_json);
-					FingerprintHashString(hash, tool_call.result_text);
-					FingerprintHashBool(hash, tool_call.is_sub_agent);
-					FingerprintHashString(hash, tool_call.sub_agent_id);
-					FingerprintHashString(hash, tool_call.sub_agent_title);
-				}
-				FingerprintHashString(hash, std::to_string(message.plan_entries.size()));
-				for (const MessagePlanEntry& entry : message.plan_entries)
-				{
-					FingerprintHashString(hash, entry.content);
-					FingerprintHashString(hash, entry.priority);
-					FingerprintHashString(hash, entry.status);
-				}
-				FingerprintHashString(hash, std::to_string(message.blocks.size()));
-				for (const MessageBlock& block : message.blocks)
-				{
-					FingerprintHashString(hash, block.type);
-					FingerprintHashString(hash, block.text);
-					FingerprintHashString(hash, block.tool_call_id);
-					FingerprintHashString(hash, block.request_id_json);
-					FingerprintHashString(hash, std::to_string(block.compaction_tokens_before));
-					FingerprintHashString(hash, std::to_string(block.compaction_tokens_after));
-				}
-				FingerprintHashString(hash, std::to_string(message.markdown_store_files.size()));
-				for (const std::string& file : message.markdown_store_files)
-				{
-					FingerprintHashString(hash, file);
-				}
-				FingerprintHashString(hash, std::to_string(message.markdown_store_prompt_blocks.size()));
-				for (const std::string& prompt_block : message.markdown_store_prompt_blocks)
-				{
-					FingerprintHashString(hash, prompt_block);
-				}
-				FingerprintHashString(hash, std::to_string(message.attachments.size()));
-				for (const MessageAttachment& attachment : message.attachments)
-				{
-					FingerprintHashString(hash, attachment.id);
-					FingerprintHashString(hash, attachment.name);
-					FingerprintHashString(hash, attachment.kind);
-					FingerprintHashString(hash, attachment.mime_type);
-					FingerprintHashString(hash, attachment.path);
-					FingerprintHashString(hash, std::to_string(attachment.size_bytes));
-					FingerprintHashBool(hash, attachment.copied);
-					FingerprintHashString(hash, attachment.preview_key);
-					FingerprintHashString(hash, attachment.preview_origin_path);
-				}
-				FingerprintHashBool(hash, message.interrupted);
-				FingerprintHashString(hash, message.stop_reason);
-				FingerprintHashBool(hash, message.acp_prompt_not_sent);
-				FingerprintHashBool(hash, message.priority_steer);
-				FingerprintHashBool(hash, message.continues_turn);
+				chat_pages::AppendMessageDigest(hash, message);
 				if (cache != nullptr)
 				{
 					cache->messages.push_back(message);
@@ -694,7 +603,7 @@ namespace uam
 			}
 
 			// Count belongs after the cached body prefixes so appends do not invalidate settled history.
-			FingerprintHashString(hash, std::to_string(session.messages.size()));
+
 			const auto finished = std::chrono::steady_clock::now();
 			const auto elapsed = finished - started;
 			static auto last_slow_digest_report = std::chrono::steady_clock::time_point::min();
@@ -707,7 +616,7 @@ namespace uam
 					" ms across " + std::to_string(session.messages.size()) + " messages.");
 				last_slow_digest_report = finished;
 			}
-			return FingerprintHashHex(hash);
+			return chat_pages::FinishMessageDigest(hash, session.messages.size());
 		}
 
 		std::size_t MessageCountForFrontend(const ChatSession& session)
@@ -1143,7 +1052,7 @@ namespace uam
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing || (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held");
 			acp_json["compacting"] = session->running && (session->manual_compaction_pending || session->context_compaction_in_progress);
-			acp_json["backgroundTaskCount"] = session->claude_live_background_task_ids.size() + session->codex_live_background_thread_ids.size() + ManagedChildRunCountForChat(app, chat);
+			acp_json["backgroundTaskCount"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) + ManagedChildRunCountForChat(app, chat);
 			if (AcpSessionCanIdleShutdown(*session, chat))
 				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 			acp_json["readySinceLastSelect"] = ready_since_last_select;
@@ -1214,6 +1123,7 @@ namespace uam
 		{
 			nlohmann::json chat_json;
 			AddSessionSummaryFields(chat_json, chat, uam::paths::Utf8PathString(WorkspaceSnapshotForChat(app, chat, cache)), cache_selected);
+			chat_json["memoryEnabled"] = uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, chat));
 			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 			chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
@@ -1628,6 +1538,7 @@ namespace uam
 			if (selected_chat && chat.messages_loaded && !summary_only)
 			{
 				chat_json = SerializeSession(chat, chat.id == selected_chat_id);
+				chat_json["memoryEnabled"] = uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, chat));
 				const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 				chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
@@ -1641,6 +1552,7 @@ namespace uam
 				chat_json = SerializeFingerprintSession(app, chat, catalog_cache, chat.id == selected_chat_id);
 			}
 			chat_json["attentionRevision"] = ChatDomainService().AttentionRevision(app, chat);
+			uam::icons::AddFrontendAsset(chat_json, app.data_root, chat.custom_icon);
 			chats_arr.push_back(std::move(chat_json));
 		}
 		j["chats"] = std::move(chats_arr);
@@ -1832,6 +1744,20 @@ namespace uam
 		    {"totalCount", total_count},
 		    {"messagesDigest", digest},
 		};
+	}
+
+	nlohmann::json StateSerializer::SerializeDetachedMessagePage(const ChatMessagePage& page,
+	    bool defer_tool_call_content, std::string_view known_digest, bool allow_unchanged)
+	{
+		nlohmann::json result{{"chatId", page.chat.id}, {"startIndex", page.start_index},
+		    {"totalCount", page.total_count}, {"messagesDigest", page.messages_digest},
+		    {"unchanged", allow_unchanged && !known_digest.empty() && known_digest == page.messages_digest}};
+		if (result["unchanged"].get<bool>()) return result;
+		result["userMessageIndices"] = page.user_message_indices ? nlohmann::json(*page.user_message_indices) : nlohmann::json(nullptr);
+		nlohmann::json messages = JsonArrayWithCapacity(page.chat.messages.size());
+		for (const Message& message : page.chat.messages) messages.push_back(SerializeMessageForFrontend(message, defer_tool_call_content));
+		result["messages"] = std::move(messages);
+		return result;
 	}
 
 	std::string StateSerializer::ToolCallContentForFrontend(const ToolCall& tool_call)

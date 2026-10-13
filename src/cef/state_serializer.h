@@ -10,6 +10,8 @@
 #include <optional>
 #include <string_view>
 
+struct ChatMessagePage;
+
 namespace uam
 {
 struct StartupNativeImportSnapshot;
@@ -54,6 +56,9 @@ class StateSerializer
 	static std::string ToolCallContentForFrontend(const AcpToolCallState& tool_call);
 
 	/// Return one bounded, UTF-8-safe page of tool-call output.
+	/// <summary>Serializes detached global page coordinates without digesting or hydrating the full transcript.</summary>
+	static nlohmann::json SerializeDetachedMessagePage(const ChatMessagePage& page,
+	    bool defer_tool_call_content, std::string_view known_digest = {}, bool allow_unchanged = true);
 	static nlohmann::json ToolCallContentPageForFrontend(std::string_view content,
 	                                                     std::size_t offset);
 	static nlohmann::json ToolCallContentPageForFrontend(const ToolCall& tool, std::size_t offset);

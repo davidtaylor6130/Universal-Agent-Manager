@@ -29,6 +29,7 @@ namespace uam::usage
 	struct AntigravityHistoryScan::State
 	{
 		std::unique_ptr<sqlite3, decltype(&sqlite3_close_v2)> database{nullptr, sqlite3_close_v2};
+		std::unique_ptr<sqlite3, decltype(&sqlite3_close_v2)> model_database{nullptr, sqlite3_close_v2};
 		std::string revision;
 		std::int64_t fallback_ms = 0;
 		std::optional<std::int64_t> trajectory_ms;
@@ -41,7 +42,7 @@ namespace uam::usage
 	AntigravityHistoryScan::AntigravityHistoryScan() = default;
 	AntigravityHistoryScan::~AntigravityHistoryScan() = default;
 
-	ScanResult AntigravityHistoryScan::Refresh(const std::filesystem::path& path, const std::function<bool()>& cancelled)
+	ScanResult AntigravityHistoryScan::Refresh(const std::filesystem::path& path, const std::function<bool()>& cancelled, const std::function<bool(const std::vector<Record>&, std::string&)>& sink)
 	{
 		ScanResult result;
 		if (cancelled && cancelled()) { m_state.reset(); result.cancelled = true; return result; }
@@ -53,6 +54,13 @@ namespace uam::usage
 		if (!m_state)
 		{
 			m_state = std::make_unique<State>(); m_state->revision = *revision;
+			if (sink)
+			{
+				sqlite3* models = nullptr;
+				if (sqlite3_open("", &models) != SQLITE_OK) { sqlite3_close(models); return fail("Could not stage Antigravity model lookup."); }
+				m_state->model_database.reset(models);
+				if (sqlite3_exec(models, "PRAGMA cache_size=-1024; CREATE TABLE models(id INTEGER PRIMARY KEY,model TEXT); BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) return fail("Could not stage Antigravity model lookup.");
+			}
 			std::error_code error;
 			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, error);
 			if (error) return fail("Could not inspect Antigravity history time.");
@@ -95,7 +103,7 @@ namespace uam::usage
 			{
 				if (cancelled && cancelled()) { statement.reset(); probe.reset(); m_state.reset(); result.cancelled=true; return result; }
 				state.cursor=sqlite3_column_int64(raw,0); ++batch_rows;
-				if (++state.rows > 100000) return fail("Antigravity history exceeds the row limit.");
+				if (++state.rows > 100000 && !sink) return fail("Antigravity history exceeds the row limit.");
 				const int size=sqlite3_column_bytes(raw,2);
 				result.bytes_read += std::max(0,size)+1;
 				if (sqlite3_column_type(raw,1)!=SQLITE_INTEGER || sqlite3_column_int64(raw,1)<0 || sqlite3_column_type(raw,2)!=SQLITE_BLOB || size<=0 || size>8*1024*1024)
@@ -111,10 +119,26 @@ namespace uam::usage
 				{
 					const std::int64_t index=sqlite3_column_int64(raw,1);
 					const std::u8string stem=path.stem().u8string(); const std::string session(reinterpret_cast<const char*>(stem.data()),stem.size());
-					const std::string model=state.models.contains(index) ? state.models.at(index) : "";
+					std::string model=state.models.contains(index) ? state.models.at(index) : "";
+					if (sink && state.phase == 2)
+					{
+						sqlite3_stmt* model_raw = nullptr;
+						if (sqlite3_prepare_v2(state.model_database.get(), "SELECT model FROM models WHERE id=?1", -1, &model_raw, nullptr) != SQLITE_OK) return fail("Could not read Antigravity model lookup.");
+						Statement model_statement(model_raw, sqlite3_finalize); sqlite3_bind_int64(model_raw, 1, index);
+						const int model_status = sqlite3_step(model_raw);
+						if (model_status == SQLITE_ROW) model = reinterpret_cast<const char*>(sqlite3_column_text(model_raw, 0));
+						else if (model_status != SQLITE_DONE) return fail("Could not read Antigravity model lookup.");
+					}
 					std::optional<AntigravityMetadata> metadata=DecodeAntigravityMetadata(blob,session,index,state.phase==2,state.fallback_ms,state.trajectory_ms,model);
 					if (!metadata) { ++state.invalid_rows; continue; }
-					if (state.phase==1)
+					if (state.phase == 1 && sink)
+					{
+						sqlite3_stmt* model_raw = nullptr;
+						if (sqlite3_prepare_v2(state.model_database.get(), "INSERT OR REPLACE INTO models VALUES(?1,?2)", -1, &model_raw, nullptr) != SQLITE_OK) return fail("Could not stage Antigravity model lookup.");
+						Statement model_statement(model_raw, sqlite3_finalize); sqlite3_bind_int64(model_raw, 1, index); sqlite3_bind_text(model_raw, 2, metadata->model.c_str(), -1, SQLITE_TRANSIENT);
+						if (sqlite3_step(model_raw) != SQLITE_DONE) return fail("Could not stage Antigravity model lookup.");
+					}
+					if (state.phase==1 && !sink)
 					{
 						std::size_t model_bytes=metadata->model.size();
 						const std::map<std::int64_t,std::string>::iterator existing=state.models.find(index);
@@ -123,8 +147,22 @@ namespace uam::usage
 						if (model_bytes>64*1024*1024-state.bytes) return fail("Antigravity model lookup exceeds the accounting limit.");
 						state.bytes+=model_bytes; state.models[index]=metadata->model;
 					}
+					if (sink)
+					{
+						std::vector<Record> records;
+						for (const AntigravityUsageCandidate& candidate : metadata->candidates)
+						{
+							std::optional<Record> record = EncodeAntigravityAccountingRecord(candidate);
+							if (!record) return fail("Antigravity accounting identity is invalid.");
+							records.push_back(std::move(*record));
+						}
+						std::string sink_error;
+						if (!records.empty() && !sink(records, sink_error))
+						{ ScanResult failure = fail("Could not import Antigravity receipts."); if (!sink_error.empty()) failure.error = sink_error; return failure; }
+					}
 					for (AntigravityUsageCandidate& candidate : metadata->candidates)
 					{
+						if (sink) break;
 						std::size_t weight=sizeof(candidate)+candidate.record.model_id.size()+candidate.record.session_id.size()+candidate.record.dedupe_key.size()+candidate.location_id.size();
 						for (const std::string& alias : candidate.aliases) weight+=alias.size();
 						if (state.candidates.size()+state.generations.size()==100000 || weight>64*1024*1024-state.bytes) return fail("Antigravity history exceeds the accounting limit.");

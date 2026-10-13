@@ -6,7 +6,7 @@ import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw,
+  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -23,7 +23,6 @@ import {
 import { providerShortName } from '../../utils/providerMetadata'
 import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
-import { reportAppFailure } from '../../utils/appFailure'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon } from '../shared/CustomIcon'
@@ -238,7 +237,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const isPinned = sessionSummary.isPinned
   const showProviderIcon = useAppStore((s) => s.showProviderIconsInSidebar)
   const showWorktreePath = useAppStore((s) => s.showWorktreePathInSidebar)
-  const createSessionFromSourceChat = useAppStore((s) => s.createSessionFromSourceChat)
   const addSession = useAppStore((s) => s.addSession)
   const familySessionIds = useAppStore(useShallow((s) => providedFamilySessionIds ?? s.sessions
     .filter((candidate) => (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === sessionId)
@@ -272,23 +270,42 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         : null
       const preferredChatId = preferredFamilyChat(branchRootId, familySessionIds) ?? activeFamilyChatId
       const preferredChat = preferredChatId ? sessions.find((candidate) => candidate.id === preferredChatId) : undefined
-      const compareLength = (a: Session, b: Session) =>
-        (a.messageCount ?? 0) - (b.messageCount ?? 0) ||
-        (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0) ||
-        b.id.localeCompare(a.id)
-      const familyIds = familySessionIds.length > 0 ? new Set(familySessionIds) : undefined
-      let longestChat: Session | undefined = preferredChat
-      if (!longestChat) {
+      let deepestChat: Session | undefined = preferredChat
+      if (!deepestChat) {
+        const familyIds = familySessionIds.length > 0 ? new Set(familySessionIds) : undefined
+        const family = new Map<string, Session>()
         for (const candidate of sessions) {
-          const isInFamily = familyIds
-            ? familyIds.has(candidate.id)
-            : (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId
-          if (isInFamily && (!longestChat || compareLength(candidate, longestChat) > 0)) {
-            longestChat = candidate
+          if (familyIds ? familyIds.has(candidate.id) : (candidate.branchRootChatId || candidate.parentChatId || candidate.id) === branchRootId) family.set(candidate.id, candidate)
+        }
+        const depths = new Map<string, number>([[branchRootId, 0]])
+        const depth = (chat: Session): number => {
+          const path: string[] = []
+          const visited = new Set<string>()
+          let current: Session | undefined = chat
+          while (current && !depths.has(current.id) && !visited.has(current.id)) {
+            visited.add(current.id)
+            path.push(current.id)
+            current = current.parentChatId ? family.get(current.parentChatId) : undefined
+          }
+          let value = current ? depths.get(current.id) ?? -1 : -1
+          for (let index = path.length - 1; index >= 0; index--) {
+            if (value >= 0) value++
+            depths.set(path[index], value)
+          }
+          return depths.get(chat.id) ?? -1
+        }
+        const compareDepth = (a: Session, b: Session) =>
+          depth(a) - depth(b) ||
+          (a.messageCount ?? 0) - (b.messageCount ?? 0) ||
+          (a.updatedAt?.getTime() ?? 0) - (b.updatedAt?.getTime() ?? 0) ||
+          b.id.localeCompare(a.id)
+        for (const candidate of family.values()) {
+          if (!deepestChat || compareDepth(candidate, deepestChat) > 0) {
+            deepestChat = candidate
           }
         }
       }
-      const chatId = longestChat?.id ?? sessionId
+      const chatId = deepestChat?.id ?? sessionId
       activateExistingChatPane(chatId)
       if (state.activeSessionId !== chatId) setActiveSession(chatId)
       return
@@ -299,17 +316,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const setSessionPinned = useAppStore((s) => s.setSessionPinned)
   const renameSession = useAppStore((s) => s.renameSession)
   const deleteSessions = useAppStore((s) => s.deleteSessions)
-  const canNewChatOnBranch = createSessionFromSourceChat && Boolean(sessionSummary.folderId || sessionSummary.workspaceDirectory)
-  const newChatOnBranch = () => {
-    setMenuPos(null)
-    void addSession('New chat', sessionSummary.folderId, sessionSummary.providerId, undefined, undefined, 'chat', sessionSummary.executionHostId, sessionSummary.workspaceDirectory, 'explicit', sessionId)
-      .then((created) => { if (!created) reportAppFailure('Could not start a chat on this branch.', 'Check the workspace and try again.') })
-  }
 
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(sessionName)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
   // Context/overflow menu anchored to a viewport position (cursor or button).
+  const canReuseWorktree = useAppStore((state) => {
+    const source = state.sessions.find((candidate) => candidate.id === sessionId)
+    return Boolean(source && !source.importedReadOnly && source.workspaceIsolationKind === 'gitWorktree' && source.workspaceWorktreeDirectory && source.folderId && (source.executionHostId || 'local') === 'local')
+  })
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -745,6 +760,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             boxShadow: 'var(--elev-2)',
           }}
         >
+          <button type="button" role="menuitem" className="uam-sb-menu-item"
+            disabled={!canReuseWorktree}
+            onClick={() => {
+              const current = useAppStore.getState()
+              const source = current.sessions.find((candidate) => candidate.id === sessionId)
+              if (!source || source.importedReadOnly || source.workspaceIsolationKind !== 'gitWorktree' || !source.workspaceWorktreeDirectory || !source.folderId || (source.executionHostId || 'local') !== 'local') return
+              setMenuPos(null)
+              current.setNewChatModalOpen(true, source.folderId, { sourceChatId: source.id, expectedWorkspaceDirectory: source.workspaceWorktreeDirectory, expectedExecutionHostId: source.executionHostId || 'local' })
+            }}><MessageSquarePlus size={13} aria-hidden />New chat in this worktree</button>
           <button
             role="menuitem"
             className="uam-sb-menu-item"
@@ -783,10 +807,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           {copyState && <p role={copyState === 'failed' ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: copyState === 'failed' ? 'var(--error)' : 'var(--text-2)' }}>
             {copyState === 'failed' ? 'Could not copy. Try again.' : copyState === 'id' ? 'Chat ID copied.' : 'Chat name copied.'}
           </p>}
-          {canNewChatOnBranch && <button type="button" role="menuitem" className="uam-sb-menu-item" onClick={newChatOnBranch}>
-            <GitBranch size={13} aria-hidden />
-            {sessionSummary.branchName.trim() ? `New chat on ${sessionSummary.branchName.trim()}` : 'New chat on this branch'}
-          </button>}
           <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={sessionSummary.snoozedUntilMs} />
           <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <button

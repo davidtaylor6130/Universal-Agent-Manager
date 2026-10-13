@@ -4,7 +4,7 @@ import type { Provider } from '../../types/provider'
 import type { ProviderModelCatalog } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
 import { useModelPickerStore } from '../../store/modelPickerStore'
-import { COPILOT_CLI_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
+import { COPILOT_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import '../layout/panels.css'
 import { buildModelOptions, searchModelOptions, type ModelOption } from './modelOptions'
@@ -13,13 +13,19 @@ const ROW_HEIGHT = 52
 const LIST_HEIGHT = 360
 type PickerModel = ModelOption & { providerId: string }
 
+/** Keep catalogue lookups and automatic requests on the same provider, host and workspace identity. */
+function modelCatalogKey(providerId: string, hostId: string, workspace: string, platform = ''): string {
+  const windowsPath = platform.toLowerCase() === 'windows' || (!platform && /^[a-z]:[\\/]/i.test(workspace))
+  const slashPath = windowsPath || (!platform && workspace.startsWith('\\\\')) ? workspace.replace(/\\/g, '/') : workspace
+  const path = windowsPath ? slashPath.toLowerCase() : slashPath
+  const normalizedPath = path.replace(/\/+$/, '') || (path.startsWith('/') ? '/' : '')
+  return JSON.stringify([normalizeCliProviderIdAlias(providerId) || providerId, hostId.trim() || 'local', normalizedPath])
+}
+
 /** Catalogues are owned by a provider, execution host and exact workspace. */
-export function matchingModelCatalog(catalogs: ProviderModelCatalog[], providerId: string, hostId: string, workspace: string): ProviderModelCatalog | undefined {
-  const key = (path: string) => {
-    const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
-    return /^[a-z]:\//i.test(normalized) ? normalized.toLowerCase() : normalized
-  }
-  return catalogs.find((catalog) => catalog.providerId === providerId && (catalog.executionHostId || 'local') === hostId && key(catalog.workspaceDirectory) === key(workspace))
+export function matchingModelCatalog(catalogs: ProviderModelCatalog[], providerId: string, hostId: string, workspace: string, platform = ''): ProviderModelCatalog | undefined {
+  const key = modelCatalogKey(providerId, hostId, workspace, platform)
+  return catalogs.find((catalog) => modelCatalogKey(catalog.providerId, catalog.executionHostId, catalog.workspaceDirectory, platform) === key)
 }
 
 /** T3-style provider rail and model list; browsing never changes the running provider. */
@@ -39,6 +45,8 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   onClose: () => void
 }) {
   const catalogs = useAppStore((state) => state.providerModelCatalogs)
+  const executionHosts = useAppStore((state) => state.executionHosts)
+  const hostPlatform = executionHosts.find((host) => host.id === (executionHostId.trim() || 'local'))?.platform ?? ''
   const defaults = useAppStore((state) => state.providerChatDefaults)
   const discover = useAppStore((state) => state.discoverProviderModels)
   const favorites = useModelPickerStore((state) => state.favorites)
@@ -55,11 +63,11 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   const pendingFocus = useRef(false)
   const requestedCatalogs = useRef(new Set<string>())
   const optionsByProvider = useMemo(() => new Map(providers.map((provider) => {
-    const catalog = matchingModelCatalog(catalogs, provider.id, executionHostId, workspaceDirectory)
+    const catalog = matchingModelCatalog(catalogs, provider.id, executionHostId, workspaceDirectory, hostPlatform)
     const options = provider.id === providerId ? activeOptions
       : buildModelOptions(catalog, '', provider, provider.id, true, defaults[provider.id])
     return [provider.id, options.map((option) => ({ ...option, providerId: provider.id }))]
-  })), [providers, catalogs, executionHostId, workspaceDirectory, providerId, activeOptions, defaults])
+  })), [providers, catalogs, executionHostId, workspaceDirectory, providerId, activeOptions, defaults, hostPlatform])
   const models = useMemo(() => {
     const candidates = selectedProvider === 'favorites'
       ? favorites.flatMap((favorite) => {
@@ -71,7 +79,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
     const matching = new Set(searchModelOptions(candidates, query).map((option) => option))
     return candidates.filter((option) => matching.has(option))
   }, [selectedProvider, favorites, optionsByProvider, query])
-  const catalog = matchingModelCatalog(catalogs, selectedProvider, executionHostId, workspaceDirectory)
+  const catalog = matchingModelCatalog(catalogs, selectedProvider, executionHostId, workspaceDirectory, hostPlatform)
   const loading = selectedProvider === providerId ? activeLoading : catalog?.modelsLoading
   const error = selectedProvider === providerId ? activeError : catalog?.modelRefreshError
   const disabled = (option: PickerModel) => Boolean(option.disabled || modelDisabled || (option.providerId !== providerId && !canChangeProvider))
@@ -98,8 +106,11 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
     setHighlight(0)
     setScrollTop(0)
     if (listRef.current) listRef.current.scrollTop = 0
-    if (id !== 'favorites' && id !== providerId && !requestedCatalogs.current.has(id)) {
-      requestedCatalogs.current.add(id)
+    const scopedCatalog = matchingModelCatalog(catalogs, id, executionHostId, workspaceDirectory, hostPlatform)
+    const cachedChoices = Boolean(scopedCatalog?.availableModels.length || scopedCatalog?.configOptions?.some((option) => (option.category === 'model' || option.id === 'model') && option.options.length))
+    const scopeKey = modelCatalogKey(id, executionHostId, workspaceDirectory, hostPlatform)
+    if (id !== 'favorites' && id !== providerId && !cachedChoices && !scopedCatalog?.modelsLoading && !requestedCatalogs.current.has(scopeKey)) {
+      requestedCatalogs.current.add(scopeKey)
       void discover('', id, workspaceDirectory, executionHostId)
     }
   }

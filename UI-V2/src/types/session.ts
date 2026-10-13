@@ -65,6 +65,7 @@ export interface ComputerUseState {
 }
 
 export interface Session {
+  gitBaseBranch?: string | null
   routingMode?: 'explicit' | 'automatic'
   routingSourceFolderId?: string
   routingSourceDirectory?: string
@@ -78,6 +79,7 @@ export interface Session {
   executionHostId?: string
   remoteRecoveryEnabled?: boolean
   remoteRecoveryState?: string
+  customIcon?: CustomIcon
   name: string
   viewMode: ViewMode
   folderId: string | null

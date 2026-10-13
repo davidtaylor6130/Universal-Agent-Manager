@@ -15,6 +15,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/memory/memory_categories.h"
 #include "common/memory/memory_levels.h"
+#include "common/memory/memory_policy.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
@@ -111,9 +112,22 @@ namespace
 		return uam::memory_levels::Normalize(chat.memory_level, chat.memory_enabled);
 	}
 
-	bool MemoryEnabled(const ChatSession& chat)
+	std::string MemoryLevel(const uam::AppState& app, const ChatSession& chat)
 	{
-		return uam::memory_levels::IsEnabled(MemoryLevel(chat));
+		return uam::memory_policy::Resolve(app.settings, chat);
+	}
+
+	bool MemoryEnabled(const uam::AppState& app, const ChatSession& chat)
+	{
+		return uam::memory_levels::IsEnabled(MemoryLevel(app, chat));
+	}
+
+	ChatSession CaptureResolvedMemoryInput(const uam::AppState& app, const ChatSession& chat, int start_message_index)
+	{
+		ChatSession input = MemoryService::CaptureWorkerInput(chat, start_message_index);
+		input.memory_level = MemoryLevel(app, chat);
+		input.memory_enabled = uam::memory_levels::IsEnabled(input.memory_level);
+		return input;
 	}
 
 	constexpr std::string_view kExplicitMemoryInstructionPhrases[] =
@@ -324,10 +338,10 @@ namespace
 		return uam::paths::IsControllerLocalWorkspace(chat) || uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id) != nullptr;
 	}
 
-	bool MemoryScanEligible(const ChatSession& chat)
+	bool MemoryScanEligible(const uam::AppState& app, const ChatSession& chat)
 	{
 		return !chat.imported_read_only &&
-		       uam::memory_levels::AllowsCreation(MemoryLevel(chat)) && MessageCount(chat) > 0;
+		       uam::memory_levels::AllowsCreation(MemoryLevel(app, chat)) && MessageCount(chat) > 0;
 	}
 
 	bool HasUnprocessedMessages(const ChatSession& chat)
@@ -421,13 +435,13 @@ namespace
 		return matched || predicate(chunk);
 	}
 
-	bool ShouldQueueAutomaticMemoryScan(const ChatSession& chat)
+	bool ShouldQueueAutomaticMemoryScan(const ChatSession& chat, std::string_view resolved_level = {})
 	{
 		if (static_cast<std::size_t>(std::max(0, chat.memory_last_processed_message_count)) >= chat.messages.size())
 		{
 			return false;
 		}
-		const std::string level = MemoryLevel(chat);
+		const std::string level = resolved_level.empty() ? MemoryLevel(chat) : std::string(resolved_level);
 		if (level == uam::memory_levels::kOpen)
 		{
 			return true;
@@ -982,9 +996,9 @@ namespace
 		return true;
 	}
 
-	bool QueuedMemoryWorkNoLongerEligible(const uam::QueuedMemoryExtractionTask& queued, const ChatSession& chat)
+	bool QueuedMemoryWorkNoLongerEligible(const uam::AppState& app, const uam::QueuedMemoryExtractionTask& queued, const ChatSession& chat)
 	{
-		return !MemoryScanEligible(chat) || (!queued.manual && !HasUnprocessedMessages(chat));
+		return !MemoryScanEligible(app, chat) || (!queued.manual && !HasUnprocessedMessages(chat));
 	}
 
 	void RequeueMemoryWork(uam::AppState& app, uam::QueuedMemoryExtractionTask queued)
@@ -1010,7 +1024,7 @@ namespace
 
 	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now)
 	{
-		return !MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat) ||
+		return !MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) ||
 		       !HasUnprocessedMessages(chat) || app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
 		       MemoryScanHasActiveWork(app, chat.id) ||
 		       !MemoryRetryDue(app, chat.id, now);
@@ -1271,7 +1285,7 @@ namespace
 		task.running = true;
 		task.chat_id = chat.id;
 		task.owner_provider_id = chat.provider_id;
-		task.memory_level = MemoryLevel(chat);
+		task.memory_level = MemoryLevel(app, chat);
 		task.message_count = MessageCount(chat);
 		task.prepared_from_cold = true;
 		task.source_persisted_message_count = chat.persisted_message_count;
@@ -1290,7 +1304,7 @@ namespace
 		auto state = task.state;
 		auto extraction_state = task.extraction_state;
 		task.worker = std::make_unique<std::jthread>(
-		    [state, extraction_state, preflight_error = std::move(preflight_error), data_root = app.data_root, chat_snapshot = chat, start_message_index](std::stop_token stop_token) mutable
+		    [state, extraction_state, preflight_error = std::move(preflight_error), data_root = app.data_root, chat_snapshot = CaptureResolvedMemoryInput(app, chat, start_message_index), start_message_index](std::stop_token stop_token) mutable
 		    {
 			    ChatSession worker_chat = std::move(chat_snapshot);
 			    std::string error;
@@ -1400,7 +1414,7 @@ namespace
 		task.running = true;
 		task.chat_id = chat.id;
 		task.owner_provider_id = chat.provider_id;
-		task.memory_level = MemoryLevel(chat);
+		task.memory_level = MemoryLevel(app, chat);
 		task.message_count = MessageCount(chat);
 		task.prepared_from_cold = !chat.messages_loaded;
 		task.source_persisted_message_count = chat.persisted_message_count;
@@ -1419,7 +1433,7 @@ namespace
 		const fs::path cwd = workspace_root.empty() ? uam::paths::CurrentPathOrDot() : workspace_root;
 		auto extraction_state = task.extraction_state;
 		task.worker = std::make_unique<std::jthread>(
-		    [state, extraction_state, invocation = std::move(invocation), cwd, workspace_root, data_root = app.data_root, chat_snapshot = MemoryService::CaptureWorkerInput(chat, start_message_index), start_message_index, remote_host, remote_workspace](std::stop_token stop_token) mutable
+		    [state, extraction_state, invocation = std::move(invocation), cwd, workspace_root, data_root = app.data_root, chat_snapshot = CaptureResolvedMemoryInput(app, chat, start_message_index), start_message_index, remote_host, remote_workspace](std::stop_token stop_token) mutable
 		    {
 			    ChatSession worker_chat = std::move(chat_snapshot);
 			    if (!worker_chat.messages_loaded)
@@ -1717,7 +1731,7 @@ bool MemoryService::EnsureMemoryLayout(const fs::path& root)
 
 std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt, std::stop_token stop_token)
 {
-	if (stop_token.stop_requested() || chat.execution_host_id != uam::execution_hosts::kLocalHostId || !MemoryEnabled(chat) || app.settings.memory_recall_budget_bytes <= 0)
+	if (stop_token.stop_requested() || chat.execution_host_id != uam::execution_hosts::kLocalHostId || !MemoryEnabled(app, chat) || app.settings.memory_recall_budget_bytes <= 0)
 	{
 		return "";
 	}
@@ -1767,6 +1781,8 @@ std::shared_ptr<PreparedMemoryOutput> MemoryService::PrepareWorkerOutput(const f
     int processed_message_count, std::string* error_out, std::stop_token stop_token)
 {
 	if (stop_token.stop_requested()) { SetError(error_out, "Memory preparation canceled."); return nullptr; }
+	if (uam::memory_levels::NormalizeSelection(chat.memory_level, chat.memory_enabled) == uam::memory_levels::kDefault)
+	{ SetError(error_out, "Memory preparation requires a resolved policy snapshot."); return nullptr; }
 	bool tools = false;
 	const std::optional<nlohmann::json> parsed = ExtractMemoryJsonObject(output, &tools);
 	if (tools || !parsed)
@@ -1782,10 +1798,10 @@ bool MemoryService::PublishPreparedWorkerOutput(uam::AppState& app, ChatSession&
     const fs::path& workspace_root, const std::shared_ptr<PreparedMemoryOutput>& prepared,
     std::string* error_out, bool refresh_counts_async)
 {
-	if (!uam::memory_levels::AllowsCreation(MemoryLevel(chat)) || !prepared || prepared->consumed || prepared->stop_token.stop_requested() || prepared->data_root != app.data_root || prepared->chat_id != chat.id ||
+	if (!uam::memory_levels::AllowsCreation(MemoryLevel(app, chat)) || !prepared || prepared->consumed || prepared->stop_token.stop_requested() || prepared->data_root != app.data_root || prepared->chat_id != chat.id ||
 	    prepared->folder_id != chat.folder_id || prepared->execution_host_id != chat.execution_host_id ||
 	    prepared->workspace_directory != chat.workspace_directory ||
-	    prepared->memory_level != MemoryLevel(chat) ||
+	    prepared->memory_level != MemoryLevel(app, chat) ||
 	    uam::paths::NormalizeExistingPath(prepared->workspace_root) != uam::paths::NormalizeExistingPath(workspace_root) ||
 	    MessageCount(chat) < prepared->message_count)
 	{
@@ -1817,7 +1833,7 @@ bool MemoryService::ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, con
     const std::string& output, int processed_message_count, std::string* error_out, bool refresh_counts_async)
 {
 	const std::shared_ptr<PreparedMemoryOutput> prepared =
-	    PrepareWorkerOutput(app.data_root, chat, workspace_root, output, processed_message_count, error_out);
+	    PrepareWorkerOutput(app.data_root, CaptureResolvedMemoryInput(app, chat, 0), workspace_root, output, processed_message_count, error_out);
 	return prepared && PublishPreparedWorkerOutput(app, chat, workspace_root, prepared, error_out, refresh_counts_async);
 }
 
@@ -1963,7 +1979,7 @@ std::vector<MemoryService::ManualScanCandidate> MemoryService::ListManualScanCan
 
 	for (const ChatSession& chat : app.chats)
 	{
-		if (!MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
+		if (!MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id) ||
 		    HasQueuedTaskForChat(app, chat.id))
 		{
 			continue;
@@ -1975,8 +1991,8 @@ std::vector<MemoryService::ManualScanCandidate> MemoryService::ListManualScanCan
 		candidate.folder_id = chat.folder_id;
 		candidate.provider_id = chat.provider_id;
 		candidate.message_count = MessageCount(chat);
-		candidate.memory_level = MemoryLevel(chat);
-		candidate.memory_enabled = MemoryEnabled(chat);
+		candidate.memory_level = MemoryLevel(app, chat);
+		candidate.memory_enabled = MemoryEnabled(app, chat);
 		candidate.memory_last_processed_at = chat.memory_last_processed_at;
 		candidate.already_fully_processed = !HasUnprocessedMessages(chat);
 		if (const ChatFolder* folder = chat_domain.FindFolderById(app, chat.folder_id); folder != nullptr)
@@ -2008,7 +2024,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		ChatSession& chat = *chat_ptr;
-		if (!MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
+		if (!MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat.id) || HasRunningTaskForChat(app, chat.id))
 		{
 			continue;
 		}
@@ -2061,9 +2077,9 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			if (task.remote_host && task.worker)
 			{
 				const ChatSession* owner = ChatDomainService().FindChatById(app, task.chat_id);
-				if (task.worker->get_stop_token().stop_requested() || task.data_root != app.data_root || !owner || !MemoryScanEligible(*owner) ||
+				if (task.worker->get_stop_token().stop_requested() || task.data_root != app.data_root || !owner || !MemoryScanEligible(app, *owner) ||
 				    !MemoryTaskStillOwnsWorkspace(app, *owner, task) || owner->provider_id != task.owner_provider_id ||
-				    MemoryLevel(*owner) != task.memory_level)
+				    MemoryLevel(app, *owner) != task.memory_level)
 					task.worker->request_stop();
 				else if (task.extraction_state && task.extraction_state->remote_publication_ready.load(std::memory_order_acquire))
 				{
@@ -2084,7 +2100,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		    (task.extraction_state && task.extraction_state->low_signal_skip)))
 		{
 			const ChatSession* owner = ChatDomainService().FindChatById(app, task.chat_id);
-			if (owner && MemoryScanEligible(*owner) && MemoryHostAvailable(app, *owner) &&
+			if (owner && MemoryScanEligible(app, *owner) && MemoryHostAvailable(app, *owner) &&
 			    MemoryTaskStillOwnsWorkspace(app, *owner, task))
 			{
 				++it;
@@ -2118,16 +2134,16 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		if (chat_ptr != nullptr)
 		{
 			ChatSession& chat = *chat_ptr;
-			const bool remote_policy_stale = task.remote_host &&
-			                                 (chat.provider_id != task.owner_provider_id || MemoryLevel(chat) != task.memory_level);
-			const bool workspace_stale = remote_policy_stale || ((task.prepared_from_cold || task.state->result.ok) && !MemoryTaskStillOwnsWorkspace(app, chat, task));
+			const bool memory_policy_stale = MemoryLevel(app, chat) != task.memory_level ||
+			                                 (task.remote_host && chat.provider_id != task.owner_provider_id);
+			const bool workspace_stale = memory_policy_stale || ((task.prepared_from_cold || task.state->result.ok) && !MemoryTaskStillOwnsWorkspace(app, chat, task));
 			const bool preparation_stale = task.prepared_from_cold &&
 			                               (chat.messages_loaded || chat.persisted_message_count != static_cast<std::size_t>(task.source_persisted_message_count) ||
 			                                chat.persisted_messages_digest != task.source_persisted_messages_digest);
 			if (workspace_stale || preparation_stale)
 			{
 				requeue_completed_task();
-				app.memory_last_status = workspace_stale ? "Memory scan deferred because its workspace changed." : "Memory scan deferred because chat history changed during preparation.";
+				app.memory_last_status = memory_policy_stale ? "Memory scan deferred because its policy changed." : workspace_stale ? "Memory scan deferred because its workspace changed." : "Memory scan deferred because chat history changed during preparation.";
 			}
 			else
 			{
@@ -2142,7 +2158,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 						chat.persisted_messages_digest = task.extraction_state->hydrated_messages_digest;
 					}
 				}
-				if (!MemoryScanEligible(chat) || !MemoryHostAvailable(app, chat))
+				if (!MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat))
 				{
 					RecordMemorySuccess(app, chat.id);
 					app.memory_last_status = kMemoryScanStoppedStatus;
@@ -2205,7 +2221,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			}
 
 			ChatSession& chat = *chat_ptr;
-			if (QueuedMemoryWorkNoLongerEligible(queued, chat) || !MemoryHostAvailable(app, chat))
+			if (QueuedMemoryWorkNoLongerEligible(app, queued, chat) || !MemoryHostAvailable(app, chat))
 			{
 				RecordMemorySuccess(app, chat.id);
 				app.memory_last_status = kMemoryScanStoppedStatus;
@@ -2227,14 +2243,14 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				continue;
 			}
 
-			if (QueuedMemoryWorkNoLongerEligible(queued, chat))
+			if (QueuedMemoryWorkNoLongerEligible(app, queued, chat))
 			{
 				RecordMemorySuccess(app, chat.id);
 				app.memory_last_status = "No messages need memory extraction.";
 				changed = true;
 				continue;
 			}
-			if (!queued.manual && chat.messages_loaded && !ShouldQueueAutomaticMemoryScan(chat))
+			if (!queued.manual && chat.messages_loaded && !ShouldQueueAutomaticMemoryScan(chat, MemoryLevel(app, chat)))
 			{
 				if (MarkLowSignalMemoryDeltaSkipped(app, chat))
 				{
@@ -2313,7 +2329,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			continue;
 		}
 
-		if (chat.messages_loaded && !ShouldQueueAutomaticMemoryScan(chat))
+		if (chat.messages_loaded && !ShouldQueueAutomaticMemoryScan(chat, MemoryLevel(app, chat)))
 		{
 			if (MarkLowSignalMemoryDeltaSkipped(app, chat))
 			{

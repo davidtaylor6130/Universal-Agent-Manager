@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "common/paths/workspace_root.h"
+#include "common/memory/memory_policy.h"
 
 using namespace uam_test;
 
@@ -33,6 +34,7 @@ UAM_TEST(MemoryWorkerCompletionRetainsWorkspaceOwnershipAcrossMovesAndWorktreeCh
 		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
+		task.memory_level = uam::memory_policy::Resolve(app.settings, app.chats.front());
 		task.message_count = 1;
 		task.workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
 		task.state = std::make_shared<AsyncProcessTaskState>();
@@ -89,6 +91,7 @@ UAM_TEST(ColdMemoryPreparationCannotMarkANewWorkspaceProcessedFromAnOldLowSignal
 	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = chat.id;
+	task.memory_level = uam::memory_policy::Resolve(app.settings, app.chats.front());
 	task.prepared_from_cold = true;
 	task.source_persisted_message_count = app.chats.front().persisted_message_count;
 	task.source_persisted_messages_digest = app.chats.front().persisted_messages_digest;

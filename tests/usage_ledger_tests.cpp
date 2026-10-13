@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "common/usage/usage_ledger.h"
+#include "common/usage/usage_history_service.h"
 #include <cmath>
 #include <limits>
 
@@ -248,4 +249,65 @@ UAM_TEST(UsageLifetimeLedgerRetainsOldCohortsAndRequiresExplicitSnapshotScope)
 	const std::optional<uam::usage::Ledger> legacy = uam::usage::Ledger::Decode(rolling->Encode());
 	UAM_ASSERT(legacy && !legacy->IncludesLifetime());
 	UAM_ASSERT(!legacy->Query(0, kAsOf));
+}
+
+UAM_TEST(UsageCanonicalStreamFoldsMoreThanHalfMillionLifetimeReceiptsWithoutDroppingCohorts)
+{
+	const std::int64_t now = 1800000000000LL;
+	std::size_t visited = 0;
+	const std::optional<uam::usage::Ledger> ledger = uam::usage::Ledger::CreateCanonical([&](const std::function<bool(const uam::usage::Record&)>& visitor)
+	{
+		uam::usage::Record record; record.provider_id = "codex-cli"; record.model_id = "model"; record.timestamp_ms = now - 180LL * 86400000; record.tokens.input = 2;
+		for (std::size_t index = 0; index < 500001; ++index)
+		{
+			record.session_id = "session-" + std::to_string(index % 3); record.dedupe_key = "receipt-" + std::to_string(index);
+			if (!visitor(record)) return false;
+			++visited;
+		}
+		return true;
+	}, now);
+	UAM_ASSERT(ledger); UAM_ASSERT_EQ(visited, std::size_t{500001}); UAM_ASSERT_EQ(ledger->Rows(), std::size_t{3});
+	const std::optional<uam::usage::Summary> lifetime = ledger->Query(0, now);
+	UAM_ASSERT(lifetime); UAM_ASSERT_EQ(lifetime->total.records, std::size_t{500001}); UAM_ASSERT_EQ(lifetime->total.tokens.input, 1000002LL); UAM_ASSERT_EQ(lifetime->total.sessions, std::size_t{3});
+	UAM_ASSERT_EQ(ledger->Query(ledger->WindowStart(90), now)->total.tokens.input, 0LL);
+}
+
+UAM_TEST(UsageLifetimeAdaptiveChartRetainsEveryDateAndExactDistinctSessions)
+{
+	std::vector<uam::usage::Record> records;
+	for (int age = 0; age < 1000; ++age)
+	{
+		for (const std::string& provider : {"codex-cli", "claude-cli", "gemini-cli", "opencode-cli", "copilot-cli", "antigravity-cli"})
+		{
+			uam::usage::Record record = LedgerEvent(age, "adaptive-" + std::to_string(age));
+			record.provider_id = provider;
+			record.session_id = age % 2 == 0 ? "shared-session" : "other-session";
+			record.reported_cost_usd = 0.01;
+			records.push_back(std::move(record));
+		}
+	}
+	std::vector<const uam::usage::Record*> references;
+	for (const uam::usage::Record& record : records) references.push_back(&record);
+	const std::optional<uam::usage::Ledger> ledger = uam::usage::Ledger::Create(references, kAsOf, uam::usage::LedgerRange::AllRecorded);
+	UAM_ASSERT(ledger);
+	const std::optional<uam::usage::Summary> daily = ledger->Query(0, kAsOf);
+	const std::optional<uam::usage::Summary> chart = ledger->Query(0, kAsOf, {}, true);
+	UAM_ASSERT(daily && chart); SameTotals(chart->total, daily->total);
+	UAM_ASSERT_EQ(chart->total.sessions, 12U);
+	UAM_ASSERT(chart->days.size() <= 90U); UAM_ASSERT_EQ(chart->chart_bucket_ms, 12 * kDayMs);
+	std::size_t count = 0;
+	for (const std::pair<const std::int64_t, uam::usage::Totals>& bucket : chart->days)
+	{
+		count += bucket.second.records;
+		UAM_ASSERT_EQ(bucket.second.sessions, 12U);
+		UAM_ASSERT_EQ(bucket.first, chart->chart_start_ms + (bucket.first - chart->chart_start_ms) / chart->chart_bucket_ms * chart->chart_bucket_ms);
+	}
+	UAM_ASSERT_EQ(count, 6000U); UAM_ASSERT_EQ(chart->days.begin()->first, records.back().timestamp_ms / kDayMs * kDayMs);
+	UAM_ASSERT(chart->hours.empty());
+	nlohmann::json result{{"providers", nlohmann::json::array()}};
+	for (const std::pair<const std::string, uam::usage::Totals>& provider : chart->providers) result["providers"].push_back({{"providerId", provider.first}});
+	uam::usage::ApplyUsageSummary(result, *chart, 0, kAsOf);
+	UAM_ASSERT(result.dump().size() < 2 * 1024 * 1024);
+	UAM_ASSERT_EQ(result["totals"]["sessions"].get<int>(), 12);
+	UAM_ASSERT_EQ(result["totals"]["records"].get<int>(), 6000);
 }

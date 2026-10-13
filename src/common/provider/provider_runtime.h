@@ -311,6 +311,9 @@ class IProviderRuntime
 	virtual bool OnAcpHandleError(uam::AppState&, uam::AcpSessionState&, ChatSession&,
 	    const uam::acp_detail::AcpResponseFailureDetails&) const { return false; }
 
+	/// <summary>Projects provider-owned child activity; managed UAM child runs are counted separately.</summary>
+	virtual std::size_t AcpBackgroundTaskCount(const uam::AcpSessionState& session) const;
+
 	/// <summary>Consumes provider-specific stream messages; false delegates to shared ACP dispatch.</summary>
 	virtual bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState&, ChatSession&,
 	    const nlohmann::json&, const CefRefPtr<CefBrowser>&) const { return false; }

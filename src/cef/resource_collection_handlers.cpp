@@ -1,6 +1,9 @@
 #include "cef/uam_query_handler.h"
 
 #include "app/resource_collection_service.h"
+#include "app/chat_domain_service.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_internal.h"
 #include "app/persistence_coordinator.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/config/custom_icon.h"
@@ -177,7 +180,13 @@ void UamQueryHandler::HandleSetCustomIcon(CefRefPtr<CefBrowser> browser, const n
 	const std::string type = payload.value("targetType", "");
 	const std::string id = payload.value("targetId", "");
 	CustomIcon* target = nullptr;
-	if (type == "workspace")
+	ChatSession* chat_target = nullptr;
+	if (type == "chat")
+	{
+		chat_target = ChatDomainService().FindChatById(m_app, id);
+		if (chat_target) target = &chat_target->custom_icon;
+	}
+	else if (type == "workspace")
 	{
 		for (ChatFolder& folder : m_app.folders) if (folder.id == id) target = &folder.custom_icon;
 	}
@@ -257,6 +266,55 @@ void UamQueryHandler::HandleSetCustomIcon(CefRefPtr<CefBrowser> browser, const n
 	}
 	const CustomIcon previous = *target;
 	*target = icon;
+	if (chat_target)
+	{
+		const std::weak_ptr<void> lifetime = m_asyncLifetime;
+		const std::filesystem::path data_root = m_app.data_root;
+		const std::shared_ptr<const std::uint8_t> incarnation = chat_target->metadata_incarnation;
+		const std::shared_ptr<ChatIconOperation> operation = std::make_shared<ChatIconOperation>();
+		m_chatIconOperations[id] = operation;
+		const std::function<bool()> owns_intent = [this, lifetime, data_root, id, incarnation, operation, icon]()
+		{
+			if (lifetime.expired() || m_app.data_root != data_root) return false;
+			const std::unordered_map<std::string, std::shared_ptr<ChatIconOperation>>::const_iterator current = m_chatIconOperations.find(id);
+			const ChatSession* chat = ChatDomainService().FindChatById(m_app, id);
+			return current != m_chatIconOperations.end() && current->second == operation && chat &&
+			    chat->metadata_incarnation == incarnation && chat->custom_icon == icon;
+		};
+		const std::unordered_map<Callback*, ChatIconQueryIdentity>::const_iterator request = m_chatIconQueryIdentities.find(cb.get());
+		const std::optional<ChatIconQueryIdentity> query = request == m_chatIconQueryIdentities.end() ? std::nullopt : std::optional<ChatIconQueryIdentity>(request->second);
+		const std::function<bool()> owned = [owns_intent, operation]() { return !operation->finished.load() && !operation->cancelled.load() && owns_intent(); };
+		const std::function<void(bool)> complete = [this, lifetime, browser, cb, id, operation, previous, imported_file, owns_intent, query](bool saved)
+		{
+			if (operation->finished.exchange(true)) return;
+			if (lifetime.expired()) { if (!operation->cancelled.load()) cb->Failure(409, "Chat icon update was cancelled."); return; }
+			const bool current = owns_intent();
+			if (!saved && current)
+			{
+				ChatSession* chat = ChatDomainService().FindChatById(m_app, id);
+				chat->custom_icon = previous;
+				uam::acp_detail::InvalidatePendingChatSave(m_app, id);
+				uam::acp_detail::ScheduleChatSave(m_app, *chat, 0.0);
+				if (!imported_file.empty())
+				{
+					std::error_code error;
+					std::filesystem::remove(imported_file, error);
+				}
+			}
+			const std::unordered_map<std::string, std::shared_ptr<ChatIconOperation>>::iterator token = m_chatIconOperations.find(id);
+			if (token != m_chatIconOperations.end() && token->second == operation) m_chatIconOperations.erase(token);
+			if (query) m_chatIconCancellations.erase(*query);
+			uam::PushStateUpdateIfChanged(browser, m_app);
+			if (operation->cancelled.load()) return;
+			if (saved && current) cb->Success("{}");
+			else cb->Failure(current ? 500 : 409, current ? "Could not save the chat icon." : "Chat changed before the icon could be saved.");
+		};
+		if (query) m_chatIconCancellations[*query] = [operation, complete]() { operation->cancelled.store(true); complete(false); };
+		uam::acp_detail::ScheduleChatSave(m_app, *chat_target, 0.0);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		if (!uam::DeferChatIconSaveResult(m_app, id, icon, owned, complete)) complete(false);
+		return;
+	}
 	const bool saved = type == "workspace" ? ChatFolderStore::Save(m_app.data_root, m_app.folders)
 	    : type == "host" ? PersistenceCoordinator().SaveSettings(m_app)
 	    : uam::ResourceCollectionService::Save(m_app.data_root, m_app.resource_collections);

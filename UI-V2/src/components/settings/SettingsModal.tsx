@@ -1,4 +1,5 @@
-import { VcsSettings } from './VcsSettings'
+import { VcsSettingsSection } from './VcsSettingsSection'
+import { StorageCleanupSettingsSection } from './StorageCleanupSettingsSection'
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
@@ -13,7 +14,7 @@ import { NumberField } from './NumberField'
 import { ProviderAgentImport } from './ProviderAgentImport'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import {
   MAX_MEMORY_IDLE_DELAY_SECONDS,
   MAX_MEMORY_RECALL_BUDGET_BYTES,
@@ -45,7 +46,9 @@ import {
 import { MOTION_SPEEDS, applyMotionSpeed, readStoredMotion, writeStoredMotion, type MotionSpeed } from '../../utils/motionStorage'
 import type { Provider } from '../../types/provider'
 import type { ComputerUseBackend, ExecutionHost, Session } from '../../types/session'
-import { MEMORY_LEVEL_OPTIONS } from '../../types/memory'
+import type { MemoryLevel } from '../../types/memory'
+import { sanitizeVoiceInputSettings } from '../../store/cpp/sanitizers'
+import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
 import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
@@ -66,6 +69,151 @@ import {
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, buildModelOptions, reasoningEffortForModel, selectedRuntimeModel, titleFromModelId } from '../chat/modelOptions'
 import './settings-motion.css'
 import './settings-shell.css'
+
+const MEMORY_POLICY_CHOICES: Array<{ id: MemoryLevel; label: string; detail: string }> = [
+  { id: 'default', label: 'Default', detail: 'Inherit the current default.' },
+  { id: 'off', label: 'Off', detail: 'Do not recall or create memories.' },
+  { id: 'readOnly', label: 'Read Only', detail: 'Recall existing memories without creating new ones.' },
+  { id: 'strict', label: 'Strict Creation', detail: 'Save only critical, high-confidence memories.' },
+  { id: 'balanced', label: 'Balanced Creation', detail: 'Save useful medium- and high-confidence memories.' },
+  { id: 'open', label: 'Remember Everything', detail: 'Save every valid, non-sensitive memory candidate.' },
+]
+
+function selectPolicyWithArrowKeys(event: ReactKeyboardEvent<HTMLDivElement>) {
+  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+  const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]:not(:disabled)'))
+  if (!buttons.length) return
+  const index = Math.max(0, buttons.indexOf(document.activeElement as HTMLButtonElement))
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+    : (index + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length
+  event.preventDefault(); buttons[next].focus(); buttons[next].click()
+}
+
+interface SettingsDraftHandle { requestLeave: (next: () => void) => void }
+
+const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputControls(_props, ref) {
+  const saved = useAppStore(useShallow((state) => ({
+    mode: state.voiceInputMode ?? 'system', serverBaseUrl: state.voiceInputServerBaseUrl ?? '',
+    serverEndpoint: state.voiceInputServerEndpoint ?? '/v1/audio/transcriptions', serverModel: state.voiceInputServerModel ?? 'whisper-1',
+    apiKeyEnv: state.voiceInputApiKeyEnv ?? 'OPENAI_API_KEY',
+  })))
+  const capabilities = useAppStore((state) => state.voiceInputCapabilities)
+  const saveSettings = useAppStore((state) => state.setVoiceInputSettings)
+  const [draft, setDraft] = useState<VoiceInputSettingsRequest>(saved)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [exit, setExit] = useState<(() => void) | null>(null)
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved)
+  const draftRef = useRef(draft)
+  const savedRef = useRef(saved)
+  useEffect(() => {
+    if (JSON.stringify(draftRef.current) === JSON.stringify(savedRef.current)) { setDraft(saved); draftRef.current = saved }
+    savedRef.current = saved
+  }, [saved])
+  const edit = (next: VoiceInputSettingsRequest) => { draftRef.current = next; setDraft(next); setError('') }
+  useEffect(() => {
+    if (!dirty) return
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [dirty])
+  useImperativeHandle(ref, () => ({ requestLeave: (next) => { if (saving) return; if (dirty) setExit(() => next); else next() } }))
+  const projected = { voiceInputMode: draft.mode, voiceInputServerBaseUrl: draft.serverBaseUrl, voiceInputServerEndpoint: draft.serverEndpoint, voiceInputServerModel: draft.serverModel, voiceInputApiKeyEnv: draft.apiKeyEnv }
+  const valid = sanitizeVoiceInputSettings(projected)
+  const supported = capabilities?.[draft.mode]?.supported === true
+  const validationError = draft.mode !== 'server' ? ''
+    : valid.voiceInputServerBaseUrl === undefined ? 'Use HTTPS, or HTTP for localhost.'
+    : valid.voiceInputServerEndpoint === undefined ? 'Enter an absolute endpoint path without a query or fragment.'
+    : valid.voiceInputServerModel === undefined ? 'Enter a transcription model, up to 256 bytes.'
+    : valid.voiceInputApiKeyEnv === undefined ? 'Enter an environment variable name, or leave it empty.' : ''
+  const save = async (next?: () => void) => {
+    if (saving || !supported || validationError) return
+    setSaving(true); setError('')
+    try {
+      // Server configuration remains a draft until the native save succeeds.
+      const payload = draft.mode === 'server' ? draft : { mode: draft.mode }
+      if (!await saveSettings(payload)) { setError('Could not save voice settings. Try again.'); return }
+      const current = useAppStore.getState()
+      edit({ mode: current.voiceInputMode ?? draft.mode, serverBaseUrl: current.voiceInputServerBaseUrl ?? '', serverEndpoint: current.voiceInputServerEndpoint ?? '/v1/audio/transcriptions', serverModel: current.voiceInputServerModel ?? 'whisper-1', apiKeyEnv: current.voiceInputApiKeyEnv ?? 'OPENAI_API_KEY' })
+      if (next) { setExit(null); next() }
+    } catch { setError('Could not save voice settings. Try again.') }
+    finally { setSaving(false) }
+  }
+  return <>
+    <SettingsSection title="Dictation" description="Speak a message instead of typing it.">
+      <SettingRow title="Transcription service" description="Server mode sends your recording to the configured server." control={
+        <div role="radiogroup" aria-label="Transcription service" className="flex gap-1" onKeyDown={selectPolicyWithArrowKeys}>
+          {([{ id: 'system', label: 'System' }, { id: 'server', label: 'Server' }, { id: 'local', label: 'Local AI' }] as const).map((option) =>
+            <Button key={option.id} size="sm" variant={draft.mode === option.id ? 'primary' : 'secondary'} role="radio" aria-checked={draft.mode === option.id}
+              disabled={saving || capabilities?.[option.id]?.supported !== true} title={capabilities?.[option.id]?.reason || (capabilities?.[option.id] ? undefined : 'Support has not been reported.')}
+              onClick={() => edit({ ...draft, mode: option.id })}>{option.label}</Button>)}
+        </div>
+      } />
+      <SettingRow title="Supported modes" description="System uses the operating system speech service. Local AI is not supported."
+        status={draft.mode === 'server' ? (supported ? 'Recording is sent to your server.' : capabilities?.server?.reason || 'Server support has not been reported.') : 'Start dictation with the microphone button in the message box.'} />
+      {draft.mode === 'server' && <div className="grid gap-3 p-3">
+        {([{ key: 'serverBaseUrl', label: 'Server URL' }, { key: 'serverEndpoint', label: 'Endpoint' }, { key: 'serverModel', label: 'Model' }, { key: 'apiKeyEnv', label: 'API key environment variable' }] as const).map((field) =>
+          <SettingsField key={field.key} label={field.label} htmlFor={`voice-${field.key}`} hint={field.key === 'apiKeyEnv' ? 'The key is read from this environment variable when recording is sent.' : undefined}>
+            <input id={`voice-${field.key}`} aria-label={field.label} className="uam-field w-full" value={draft[field.key] ?? ''} disabled={saving} autoComplete="off" spellCheck={false} onChange={(event) => edit({ ...draft, [field.key]: event.currentTarget.value })} />
+          </SettingsField>)}
+      </div>}
+      {(error || validationError) && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error || validationError}</p>}
+      <div className="flex justify-end gap-2 p-3">
+        <Button size="sm" disabled={saving || !dirty} onClick={() => edit(saved)}>Discard</Button>
+        <Button size="sm" variant="primary" disabled={saving || !dirty || !supported || Boolean(validationError)} onClick={() => void save()}>{saving ? 'Saving…' : 'Save voice settings'}</Button>
+      </div>
+    </SettingsSection>
+    {exit && <UnsavedChangesDialog title="Unsaved voice settings" busy={saving} error={error || validationError} onStay={() => setExit(null)}
+      onDiscard={() => { const next = exit; edit(saved); setExit(null); next() }} onSave={supported && !validationError ? () => void save(exit) : undefined} />}
+  </>
+})
+
+const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers: Provider[]; hostId: string; hostLabel: string }>(function ProviderAvailabilityControls({ providers, hostId, hostLabel }, ref) {
+  const overrides = useAppStore((state) => state.providerAvailability)
+  const saveSettings = useAppStore((state) => state.setProviderAvailability)
+  const saved = Object.fromEntries(providers.map((provider) => [provider.id, overrides.find((entry) => entry.providerId === provider.id && entry.executionHostId === hostId)?.enabled ?? true]))
+  const [draft, setDraft] = useState(saved)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [exit, setExit] = useState<(() => void) | null>(null)
+  const dirty = providers.some((provider) => draft[provider.id] !== saved[provider.id])
+  const previousSaved = useRef(saved)
+  useEffect(() => {
+    setDraft((current) => Object.fromEntries(providers.map((provider) => [provider.id, current[provider.id] === previousSaved.current[provider.id] ? saved[provider.id] : current[provider.id]])))
+    previousSaved.current = saved
+  }, [overrides])
+  useEffect(() => {
+    if (!dirty) return
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [dirty])
+  useImperativeHandle(ref, () => ({ requestLeave: (next) => { if (saving) return; if (dirty) setExit(() => next); else next() } }))
+  const save = async (next?: () => void) => {
+    if (saving) return
+    setSaving(true); setError('')
+    try {
+      const results = await Promise.all(providers.filter((provider) => draft[provider.id] !== saved[provider.id]).map((provider) => saveSettings({ providerId: provider.id, executionHostId: hostId, enabled: draft[provider.id] })))
+      if (results.some((ok) => !ok)) { setError('Could not save provider settings. Try again.'); return }
+      const currentOverrides = useAppStore.getState().providerAvailability
+      setDraft(Object.fromEntries(providers.map((provider) => [provider.id, currentOverrides.find((entry) => entry.providerId === provider.id && entry.executionHostId === hostId)?.enabled ?? true])))
+      if (next) { setExit(null); next() }
+    } catch { setError('Could not save provider settings. Try again.') }
+    finally { setSaving(false) }
+  }
+  return <>
+    <SettingsSection title="Provider availability" description={`Choose which providers can start new sessions on ${hostLabel}.`}>
+      {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)} description={provider.id === 'antigravity-cli' ? 'Allow terminal sessions on the selected host.' : 'Allow new sessions on the selected host.'}
+        control={<MenuSelect label={`${providerShortName(provider, provider.id)} availability`} value={draft[provider.id] ? 'enabled' : 'disabled'} disabled={saving}
+          options={[{ value: 'enabled', label: 'Enabled' }, { value: 'disabled', label: 'Disabled' }]}
+          onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
+      {error && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
+      <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
+        <Button size="sm" variant="primary" disabled={saving || !dirty} onClick={() => void save()}>{saving ? 'Saving…' : 'Save provider settings'}</Button></div>
+    </SettingsSection>
+    {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} error={error} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
+  </>
+})
 
 interface MemoryModelOption {
   id: string
@@ -207,7 +355,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'computer-use' | 'about'
+type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -249,6 +397,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'editors', label: 'Editors', icon: Pencil },
   { id: 'shell-actions', label: 'Shell Actions', icon: MousePointerClick },
   { id: 'chat-data', label: 'Chat Data', icon: Download },
+  { id: 'storage-cleanup', label: 'Storage Cleanup', icon: Trash2 },
     { id: 'about', label: 'About', icon: Info },
 ].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED) && (section.id !== 'phone' || MOBILE_COMPANION_ENABLED)) as SettingsSection[]
 
@@ -262,7 +411,7 @@ const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
   { label: 'Security', sections: ['permissions', 'computer-use'] },
   { label: 'Workspace', sections: ['vcs', 'editors'] },
-  { label: 'App', sections: ['chat-data', 'about'] },
+  { label: 'App', sections: ['chat-data', 'storage-cleanup', 'about'] },
 ]
 const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   appearance: 'Theme, sidebar, how agent activity is shown, and fonts.',
@@ -274,7 +423,8 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   'central-configuration': 'Instructions, skills and agents every provider gets, locally and over SSH.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
   'computer-use': 'Which apps agents may see and control.',
-  vcs: 'Enable Git and SVN integrations.',
+  vcs: 'Git and SVN integrations and new-chat worktree defaults.',
+  'storage-cleanup': 'Retention for unused worktrees, backup logs and the HTTP cache.',
   editors: 'Which app opens each kind of file, and the file explorer.',
   'shell-actions': 'Finder and Explorer actions for workspaces.',
   'memory-settings': 'What gets remembered between chats, and which models do it.',
@@ -290,7 +440,8 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
 // Terms name controls inside each page so searches work beyond sidebar titles.
 const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   permissions: 'privacy local network microphone speech recording accessibility authorization',
-  vcs: 'git svn source control version control worktrees checkpoints commits revisions',
+  vcs: 'git svn source control version control worktrees checkpoints commits revisions base branch merge squash patch pull',
+  'storage-cleanup': 'cleanup retention worktrees backup logs cache days',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity typography font fonts size text code monospace terminal message input',
   defaults: 'models reasoning providers permissions safety approval yolo memory defaults codex gemini claude copilot opencode reviewer',
   agents: 'agents agent store create edit delete helpers subagents instructions import providers codex gemini claude copilot opencode',
@@ -503,6 +654,18 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const discoverProviderModels = useAppStore((s) => s.discoverProviderModels)
   const memoryEnabledDefault = useAppStore((s) => s.memoryEnabledDefault)
   const memoryLevelDefault = useAppStore((s) => s.memoryLevelDefault)
+  const setSessionMemoryLevel = useAppStore((s) => s.setSessionMemoryLevel)
+  const [memoryPolicySaving, setMemoryPolicySaving] = useState<Record<string, boolean>>({})
+  const [memoryPolicyError, setMemoryPolicyError] = useState<Record<string, string>>({})
+  const saveMemoryPolicy = async (key: string, save: () => Promise<boolean>) => {
+    if (memoryPolicySaving[key]) return
+    setMemoryPolicySaving((current) => ({ ...current, [key]: true }))
+    setMemoryPolicyError((current) => ({ ...current, [key]: '' }))
+    try {
+      if (!await save()) setMemoryPolicyError((current) => ({ ...current, [key]: 'Could not save the memory policy. Try again.' }))
+    } catch { setMemoryPolicyError((current) => ({ ...current, [key]: 'Could not save the memory policy. Try again.' })) }
+    finally { setMemoryPolicySaving((current) => ({ ...current, [key]: false })) }
+  }
   const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
   const goalMaxLoopIterations = useAppStore((s) => s.goalMaxLoopIterations)
@@ -654,6 +817,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const memoryRef = useRef<MemoryLibraryHandle>(null)
   const shellRef = useRef<ShellActionsHandle>(null)
   const centralRef = useRef<CentralProviderSettingsHandle>(null)
+  const voiceRef = useRef<SettingsDraftHandle>(null)
+  const vcsRef = useRef<SettingsDraftHandle>(null)
+  const cleanupRef = useRef<SettingsDraftHandle>(null)
+  const providerAvailabilityRef = useRef<SettingsDraftHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
@@ -687,7 +854,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     else next()
   }
   const requestSectionExit = (next: () => void) => {
-    if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
+    if (selectedSection === 'vcs' && vcsRef.current) vcsRef.current.requestLeave(next)
+    else if (selectedSection === 'storage-cleanup' && cleanupRef.current) cleanupRef.current.requestLeave(next)
+    else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
+    else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
+    else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
     else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
     else if (selectedSection === 'mcp-servers' && mcpDraftDirty) { setDiscardExit(() => next); setConfirmDiscard(true) }
@@ -936,7 +1107,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       hiddenProviderIds: saved?.hiddenProviderIds ?? [],
       approvalMode: saved?.approvalMode ?? 'default',
       commandSafetyTier: saved?.commandSafetyTier ?? 'off',
-      memoryLevel: saved?.memoryLevel ?? memoryLevelDefault,
+      memoryLevel: saved?.memoryLevel ?? 'default',
       memoryEnabled: saved?.memoryEnabled ?? memoryEnabledDefault,
       smallModelMode: saved?.smallModelMode ?? false,
       reasoningEffort: saved?.reasoningEffort ?? '',
@@ -1598,7 +1769,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const scopeValue = onProviderPage || hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const settingsScope = hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const effectiveProviderSettingsHostId = scopeValue === SETTINGS_ALL_ENVIRONMENTS ? 'local' : scopeValue
-  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={setSettingsScopeHostId} /> : null
+  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={(hostId) => { if (providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(() => setSettingsScopeHostId(hostId)); else setSettingsScopeHostId(hostId) }} /> : null
   // A pending CLI install or open version menu belongs to the computer it was started for.
   useEffect(() => {
     setPendingCliInstall(null)
@@ -1606,10 +1777,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }, [settingsScopeHostId])
   const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
     const selectedSection = sectionOverride ?? selectedSettingsSection
-    if (selectedSection === 'provider-summary') return <ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} />
+    const availability = (ids?: string[]) => <ProviderAvailabilityControls key={`${effectiveProviderSettingsHostId}:${ids?.join(',') || 'all'}`} ref={providerAvailabilityRef} providers={providers.filter((provider) => !ids || ids.includes(provider.id))} hostId={effectiveProviderSettingsHostId} hostLabel={effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find((host) => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId} />
+    if (selectedSection === 'provider-summary') return <div className="grid">{availability()}<ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
-      return <div className="grid">{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<SettingsSection title="Connection and MCP" description="Live connection status and which MCP servers this provider loads in new sessions." flush><div className="p-3"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div></SettingsSection></div>
+      return <div className="grid">{availability([providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<SettingsSection title="Connection and MCP" description="Live connection status and which MCP servers this provider loads in new sessions." flush><div className="p-3"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div></SettingsSection></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
@@ -1766,7 +1938,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
-    if (selectedSection === 'vcs') return <VcsSettings />
+    if (selectedSection === 'vcs') return <VcsSettingsSection ref={vcsRef} />
+    if (selectedSection === 'storage-cleanup') return <StorageCleanupSettingsSection ref={cleanupRef} />
 
     if (selectedSection === 'defaults') {
       const reviewerProvider = providers.find((provider) => provider.id === permissionReviewerProviderId)
@@ -1984,17 +2157,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           </div>
                           <div className="grid gap-1 text-xs" style={{ color: 'var(--text-2)' }}>
                             <div>Memory</div>
-                            {renderDefaultsMenu(
-                              `${provider.id}:memory`,
-                              defaults.memoryLevel ?? 'off',
-                              `${providerName} default memory level`,
-                              MEMORY_LEVEL_OPTIONS,
-                              (memoryLevel) => updateProviderDefaults(provider.id, {
-                                ...defaults,
-                                memoryLevel: memoryLevel as ProviderChatDefaults['memoryLevel'],
-                                memoryEnabled: memoryLevel !== 'off',
-                              })
-                            )}
+                            <MenuSelect label={`${providerName} default memory level`} value={defaults.memoryLevel ?? 'default'} disabled={memoryPolicySaving[provider.id]}
+                              options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.id === 'default' ? 'Use the current app default.' : option.detail }))}
+                              onChange={(memoryLevel) => void saveMemoryPolicy(provider.id, () => setProviderChatDefaults({ providerChatDefaults: {
+                                ...providerChatDefaults, [provider.id]: { ...defaults, memoryLevel: memoryLevel as MemoryLevel,
+                                  memoryEnabled: memoryLevel === 'default' ? memoryEnabledDefault : memoryLevel !== 'off' },
+                              } }, settingsScope))} />
+                            {memoryPolicyError[provider.id] && <p role="alert" style={{ color: 'var(--error)' }}>{memoryPolicyError[provider.id]}</p>}
                           </div>
                         </div>
                         {pendingDefaultYolo?.providerId === provider.id && (
@@ -2549,16 +2718,24 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingsSection title="Memory defaults" description="What new chats remember unless you change it for a chat.">
             <SettingRow
               title="Default memory level"
-              description={MEMORY_LEVEL_OPTIONS.find((option) => option.id === memoryLevelDefault)?.detail}
+              description={MEMORY_POLICY_CHOICES.find((option) => option.id === memoryLevelDefault)?.detail}
               control={
-                <div role="radiogroup" aria-label="Default memory level" className="grid grid-cols-4 overflow-hidden rounded-lg" style={{ border: '1px solid var(--border)', width: 340 }}>
-                  {MEMORY_LEVEL_OPTIONS.map((option) => {
+                <div role="radiogroup" aria-label="Default memory level" className="flex flex-wrap gap-1" onKeyDown={selectPolicyWithArrowKeys}>
+                  {MEMORY_POLICY_CHOICES.filter((option) => option.id !== 'default').map((option) => {
                     const selected = option.id === memoryLevelDefault
-                    return <button key={option.id} type="button" role="radio" aria-checked={selected} onClick={() => void setMemorySettings({ memoryLevelDefault: option.id })} className="uam-segment-button px-3 py-2 text-xs" style={{ border: 0, borderRight: option.id === 'open' ? 0 : '1px solid var(--border)', background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--accent)' : 'var(--text-2)' }}>{option.label}</button>
+                    return <button key={option.id} type="button" role="radio" aria-checked={selected} disabled={memoryPolicySaving.app} onClick={() => void saveMemoryPolicy('app', () => setMemorySettings({ memoryLevelDefault: option.id }))} className="uam-segment-button rounded-md px-3 py-2 text-xs" style={{ border: '1px solid var(--border)', background: selected ? 'var(--accent-dim)' : 'transparent', color: selected ? 'var(--accent)' : 'var(--text-2)' }}>{option.label}</button>
                   })}
                 </div>
               }
             />
+            {memoryPolicyError.app && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{memoryPolicyError.app}</p>}
+            {sessions.find((session) => session.id === activeSessionId) && <SettingRow title="Current chat memory" description="Default inherits this provider's current policy."
+              status={memoryPolicySaving.chat ? 'Saving…' : undefined}
+              control={<MenuSelect label="Current chat memory policy" value={sessions.find((session) => session.id === activeSessionId)?.memoryLevel ?? 'default'} disabled={memoryPolicySaving.chat}
+                options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                onChange={(level) => { if (activeSessionId) void saveMemoryPolicy('chat', () => setSessionMemoryLevel(activeSessionId, level as MemoryLevel)) }} />}>
+              {memoryPolicyError.chat && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{memoryPolicyError.chat}</p>}
+            </SettingRow>}
             <SettingRow
               title="Idle delay (seconds)"
               description="Seconds a chat must sit idle before its memory is processed."
@@ -2774,17 +2951,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
 
-    if (selectedSection === 'voice-input') {
-      return (
-        <SettingsSection title="Dictation" description="Speak a message instead of typing it.">
-          <SettingRow
-            icon={<Mic size={16} aria-hidden />}
-            title="System speech recognition"
-            description="Dictation stays on the native system speech service. Start it with the microphone button in the message box."
-          />
-        </SettingsSection>
-      )
-    }
+    if (selectedSection === 'voice-input') return <VoiceInputControls ref={voiceRef} />
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     if (selectedSection === 'markdown-store' && !markdownStoreDirectory) return <div className="mx-auto w-full" style={{maxWidth:800}}>

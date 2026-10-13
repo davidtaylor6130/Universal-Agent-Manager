@@ -13,6 +13,7 @@ namespace uam::usage
 		std::size_t byte_budget = 32 * 1024 * 1024;
 		std::size_t max_line_bytes = 8 * 1024 * 1024;
 		std::size_t max_records = 100000;
+		bool stream_batches = false;
 	};
 
 	struct ScanResult
@@ -22,6 +23,7 @@ namespace uam::usage
 		bool reset = false;
 		bool complete = false;
 		bool cancelled = false;
+		bool batch_full = false;
 	};
 
 	/// <summary>Worker-owned incremental JSONL cursor. Only newline-terminated events enter the usage cache.</summary>
@@ -29,7 +31,9 @@ namespace uam::usage
 	{
 	public:
 		explicit TranscriptScan(std::string provider_id);
-		ScanResult Refresh(const std::filesystem::path& path, const ScanOptions& options = {}, const std::function<bool()>& cancelled = {});
+		ScanResult Refresh(const std::filesystem::path& path, const ScanOptions& options = {}, const std::function<bool()>& cancelled = {}, const std::function<bool(const std::vector<Record>&, std::size_t, std::string&)>& snapshot_sink = {});
+		void ConsumeRecords() { m_recordBase += m_records.size(); m_records.clear(); }
+		std::size_t RecordBase() const { return m_recordBase; }
 		const std::vector<Record>& Records() const { return m_records; }
 		std::size_t InvalidLines() const { return m_invalidLines + m_copilotState.rejected_snapshots; }
 		std::size_t OversizedLines() const { return m_oversizedLines; }
@@ -57,5 +61,6 @@ namespace uam::usage
 		CopilotScanState m_copilotState;
 		std::string m_geminiSessionId;
 		std::vector<Record> m_records;
+		std::size_t m_recordBase = 0;
 	};
 }

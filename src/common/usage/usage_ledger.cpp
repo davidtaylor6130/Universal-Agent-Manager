@@ -127,6 +127,52 @@ namespace uam::usage
 		return ledger;
 	}
 
+	std::optional<Ledger> Ledger::CreateCanonical(const std::function<bool(const std::function<bool(const Record&)>&)>& stream, std::int64_t generated_ms, std::size_t duplicates)
+	{
+		if (!stream || generated_ms <= 0 || generated_ms > kMaxExactTokenCount || duplicates > static_cast<std::size_t>(kMaxExactTokenCount)) return std::nullopt;
+		Ledger ledger;
+		ledger.m_generatedMs = generated_ms; ledger.m_range = LedgerRange::AllRecorded; ledger.m_duplicates = duplicates;
+		std::map<CohortKey, Record> cohorts;
+		TokenCounts total;
+		std::size_t count = 0;
+		const std::int64_t cutoff = ledger.WindowStart(1);
+		const bool consumed = stream([&](const Record& record)
+		{
+			if (record.record_count != 1 || record.unidentified_records || record.timestamp_ms < 0 || record.timestamp_ms >= kMaxExactTokenCount ||
+			    !provider_ids::IsKnownCliProviderId(record.provider_id) || record.model_id.empty() || record.model_id.size() > 512 || record.session_id.size() > 8192 || record.dedupe_key.size() > 8192 ||
+			    (record.speed != "standard" && record.speed != "fast" && record.speed != "ultrafast")) return false;
+			for (const std::int64_t value : {record.tokens.input, record.tokens.cached_input, record.tokens.cache_write, record.tokens.output, record.tokens.reasoning})
+				if (value < 0 || value > kMaxExactTokenCount) return false;
+			for (const std::optional<double> cost : {record.reported_cost_usd, record.estimated_cost_usd}) if (cost && (!std::isfinite(*cost) || *cost < 0)) return false;
+			if (record.tokens.Total() > kMaxExactTokenCount || record.tokens.reasoning > record.tokens.output) return false;
+			if (record.timestamp_ms >= generated_ms) return true;
+			if (record.tokens.Total() > kMaxExactTokenCount - total.Total() || count == static_cast<std::size_t>(kMaxExactTokenCount)) return false;
+			total.input += record.tokens.input; total.cached_input += record.tokens.cached_input; total.cache_write += record.tokens.cache_write;
+			total.output += record.tokens.output; total.reasoning += record.tokens.reasoning; ++count;
+			if (record.timestamp_ms >= cutoff) { ledger.m_records.push_back(record); return true; }
+			const CohortKey key = Cohort(record);
+			const std::pair<std::map<CohortKey, Record>::iterator, bool> entry = cohorts.try_emplace(key, record);
+			Record& cohort = entry.first->second;
+			if (entry.second)
+			{
+				cohort.timestamp_ms = std::get<0>(key); cohort.unidentified_records = record.dedupe_key.empty() ? 1 : 0; cohort.dedupe_key.clear();
+			}
+			else
+			{
+				cohort.tokens.input += record.tokens.input; cohort.tokens.cached_input += record.tokens.cached_input; cohort.tokens.cache_write += record.tokens.cache_write;
+				cohort.tokens.output += record.tokens.output; cohort.tokens.reasoning += record.tokens.reasoning; ++cohort.record_count;
+				*cohort.unidentified_records += record.dedupe_key.empty() ? 1 : 0;
+				if (cohort.reported_cost_usd) *cohort.reported_cost_usd += *record.reported_cost_usd;
+				else if (cohort.estimated_cost_usd) *cohort.estimated_cost_usd += *record.estimated_cost_usd;
+			}
+			return true;
+		});
+		if (!consumed) return std::nullopt;
+		for (std::pair<const CohortKey, Record>& cohort : cohorts) ledger.m_records.push_back(std::move(cohort.second));
+		if (!Aggregate(ledger.m_records, 0, generated_ms)) return std::nullopt;
+		return ledger;
+	}
+
 	std::int64_t Ledger::WindowStart(int days) const
 	{
 		if (days == 0) return IncludesLifetime() ? 0 : -1;
@@ -135,11 +181,20 @@ namespace uam::usage
 		return std::max<std::int64_t>(0, m_generatedMs / kDayMs * kDayMs - (days - 1LL) * kDayMs);
 	}
 
-	std::optional<Summary> Ledger::Query(std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices) const
+	std::optional<Summary> Ledger::Query(std::int64_t start_ms, std::int64_t end_ms, const std::map<ModelKey, ModelPrices>& prices, bool bounded_chart) const
 	{
 		const std::int64_t cutoff = WindowStart(1);
 		if (start_ms < (IncludesLifetime() ? 0 : WindowStart(90)) || end_ms > m_generatedMs || (start_ms < cutoff && start_ms % kDayMs != 0) || (end_ms < cutoff && end_ms % kDayMs != 0)) return std::nullopt;
-		std::optional<Summary> summary = Aggregate(m_records, start_ms, end_ms, prices);
+		std::int64_t chart_start = start_ms / kDayMs * kDayMs, chart_width = kDayMs;
+		if (bounded_chart)
+		{
+			chart_start = (end_ms - 1) / kDayMs * kDayMs;
+			for (const Record& record : m_records)
+				if (record.timestamp_ms >= start_ms && record.timestamp_ms < end_ms) chart_start = std::min(chart_start, record.timestamp_ms / kDayMs * kDayMs);
+			const std::int64_t day_count = (end_ms - chart_start + kDayMs - 1) / kDayMs;
+			chart_width = std::max<std::int64_t>(1, (day_count + 89) / 90) * kDayMs;
+		}
+		std::optional<Summary> summary = Aggregate(m_records, start_ms, end_ms, prices, chart_start, chart_width);
 		if (summary) summary->duplicates += m_duplicates;
 		return summary;
 	}

@@ -303,17 +303,20 @@ namespace uam::provider_mcp_settings
 			if (found == app.chats.end() || found->execution_host_id != host) throw std::runtime_error("Chat no longer belongs to the selected execution host.");
 			selected = &*found;
 		}
-		const std::vector<McpServerConfiguration> servers = mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, workspace, host);
 		for (const char* provider : provider_ids::kAllCliProviderIds)
 		{
 			if (selected != nullptr && selected->provider_id != provider) continue;
+			std::vector<McpServerConfiguration> candidates = app.settings.mcp_servers;
+			for (McpServerConfiguration& server : candidates)
+				server.enabled = central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, server.id, server.enabled);
+			const std::vector<McpServerConfiguration> servers = mcp_server_config::SelectForWorkspace(candidates, workspace, host);
 			const bool enabled = (selected == nullptr || !selected->uam_control_explicitly_disabled) && central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, "uam-mcp", selected != nullptr ? selected->uam_control_enabled : app.settings.central_provider_configuration.uam_control_enabled);
 			std::size_t active = 0, configured = 0, connected = 0, live = 0;
 			bool provider_failed = false;
 			const auto observe = [&](const AcpSessionState& session, bool running)
 			{
 				const auto chat = std::ranges::find(app.chats, session.chat_id, &ChatSession::id);
-				if (session.model_discovery_only || session.provider_id != provider || (!session.process_execution_host_id.empty() && session.process_execution_host_id != host) || chat == app.chats.end() || chat->execution_host_id != host ||
+				if (session.model_discovery_only || session.provider_id != provider || (session.process_execution_host_id.empty() ? host != "local" : session.process_execution_host_id != host) || chat == app.chats.end() || chat->execution_host_id != host ||
 				    (selected != nullptr && session.chat_id != chat_id)) return;
 				if (!running) { provider_failed = provider_failed || !session.last_error.empty(); return; }
 				++active;

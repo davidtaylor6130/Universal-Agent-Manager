@@ -64,7 +64,7 @@ namespace uam::provider_chat_defaults
 		defaults.command_safety_tier = uam::command_safety::NormalizeTier(defaults.command_safety_tier);
 		defaults.reasoning_effort = NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
-		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
+		defaults.memory_level = uam::memory_levels::NormalizeSelection(defaults.memory_level, defaults.memory_enabled);
 		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
 	}

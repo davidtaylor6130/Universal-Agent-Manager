@@ -1,9 +1,10 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
 import { SessionItem } from './SessionItem'
+import { setPreferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -472,7 +473,7 @@ describe('SessionItem status icons', () => {
     expect(row.getAttribute('role')).toBe('button')
     expect(row.tabIndex).toBe(0)
     act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
-    expect(setActiveSession).toHaveBeenCalledWith('chat-1')
+    expect(setActiveSession).toHaveBeenCalledWith('chat-branch')
 
     row.focus()
     act(() => row.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true })))
@@ -913,6 +914,28 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it.each(['fallback', 'active parent', 'preferred sibling', 'missing parent', 'cycle', 'parent cycle', 'foreign parent', 'preferred over active'] as const)('selects the deepest descendant with safe %s handling', (scenario) => {
+    const setActiveSession = vi.fn()
+    const rootSession = { ...makeSession(), id: 'depth-root', branchRootChatId: 'depth-root', messageCount: 100 }
+    const parent = { ...makeSession(), id: 'depth-parent', parentChatId: rootSession.id, branchRootChatId: rootSession.id, messageCount: 80 }
+    const sibling = { ...parent, id: 'depth-sibling', messageCount: 90 }
+    const deepest = { ...parent, id: 'depth-child', parentChatId: parent.id, messageCount: 2 }
+    const malformed = { ...deepest, id: 'depth-malformed', messageCount: 1000, parentChatId: scenario === 'cycle' ? 'depth-malformed' : scenario === 'parent cycle' ? 'cycle-parent' : scenario === 'foreign parent' ? 'foreign-parent' : 'absent-parent' }
+    const foreign = { ...parent, id: 'foreign-parent', parentChatId: deepest.id, branchRootChatId: 'another-root' }
+    const cycleParent = { ...malformed, id: 'cycle-parent', parentChatId: malformed.id }
+    if (scenario === 'preferred sibling' || scenario === 'preferred over active') setPreferredFamilyChat(rootSession.id, sibling.id)
+    useAppStore.setState({ sessions: [rootSession, parent, sibling, deepest, malformed, foreign, cycleParent], activeSessionId: scenario === 'active parent' || scenario === 'preferred over active' ? parent.id : 'unrelated', setActiveSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId={rootSession.id} session={rootSession} familySessionIds={[rootSession.id, parent.id, sibling.id, deepest.id, malformed.id, cycleParent.id]} />))
+    act(() => host.querySelector<HTMLElement>('[data-testid="session-row-depth-root"]')!.click())
+    if (scenario === 'active parent') expect(setActiveSession).not.toHaveBeenCalled()
+    else expect(setActiveSession).toHaveBeenCalledWith(scenario === 'preferred sibling' || scenario === 'preferred over active' ? sibling.id : deepest.id)
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('hides pane assignment noise in single-chat view', () => {
     writeChatGridLayout(defaultChatGridLayout)
     const { host, root } = renderSessionItem()
@@ -945,78 +968,20 @@ describe('SessionItem status icons', () => {
     act(() => root.unmount())
     host.remove()
   })
-})
-
-describe('New chat on this branch', () => {
-  const folder = { id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: now }
-
-  afterEach(() => {
-    delete (window as Window & { cefQuery?: Window['cefQuery'] }).cefQuery
-  })
-
-  function openMenu(session: Session) {
-    useAppStore.setState({ folders: [folder], sessions: [session] })
+  it('opens new chat from the right-clicked worktree even while another chat is active or processing', () => {
+    const source = { ...makeSession(), workspaceIsolationKind: 'gitWorktree', workspaceWorktreeDirectory: '/tmp/selected-worktree', executionHostId: 'local' }
+    useAppStore.setState({ sessions: [source], activeSessionId: 'other-chat', acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true }) }, newChatWorktreeContext: null })
     const { host, root } = renderSessionItem()
-    act(() => host.querySelector<HTMLElement>('[data-session-id="chat-1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
-    const items = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
-    return { items, cleanup: () => { act(() => root.unmount()); host.remove() } }
-  }
-
-  it('is hidden unless the backend advertises the capability', () => {
-    const menu = openMenu({ ...makeSession(), workspaceBranchName: 'feature/x' })
     try {
-      expect(menu.items().some((item) => item.textContent?.includes('New chat on'))).toBe(false)
-    } finally {
-      menu.cleanup()
-    }
+      act(() => host.querySelector('[data-testid="session-row-chat-1"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })))
+      const menu = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Actions for Chat 1"]')!
+      const create = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('New chat in this worktree'))!
+      expect(create.disabled).toBe(false)
+      act(() => create.click())
+      expect(useAppStore.getState()).toMatchObject({ isNewChatModalOpen: true, newChatFolderId: 'project', newChatWorktreeContext: { sourceChatId: 'chat-1', expectedWorkspaceDirectory: '/tmp/selected-worktree', expectedExecutionHostId: 'local' } })
+      act(() => useAppStore.getState().setNewChatModalOpen(false))
+      expect(useAppStore.getState().newChatWorktreeContext).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
-  it('is hidden for chats without a workspace', () => {
-    useAppStore.setState({ createSessionFromSourceChat: true })
-    const menu = openMenu({ ...makeSession(), folderId: null })
-    try {
-      expect(menu.items().some((item) => item.textContent?.includes('New chat on'))).toBe(false)
-    } finally {
-      menu.cleanup()
-    }
-  })
-
-  it('labels the item with the known branch name', () => {
-    useAppStore.setState({ createSessionFromSourceChat: true })
-    const menu = openMenu({ ...makeSession(), workspaceBranchName: 'feature/x' })
-    try {
-      expect(menu.items().find((item) => item.textContent?.trim() === 'New chat on feature/x')).toBeTruthy()
-    } finally {
-      menu.cleanup()
-    }
-  })
-
-  it('falls back to a generic label when the branch is unknown', () => {
-    useAppStore.setState({ createSessionFromSourceChat: true })
-    const menu = openMenu(makeSession())
-    try {
-      expect(menu.items().find((item) => item.textContent?.trim() === 'New chat on this branch')).toBeTruthy()
-    } finally {
-      menu.cleanup()
-    }
-  })
-
-  it('creates a chat in the same workspace with the source chat id and provider', async () => {
-    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
-    window.cefQuery = ({ request, onSuccess }) => {
-      const message = JSON.parse(request)
-      requests.push(message)
-      onSuccess('{"chatId":"chat-3"}')
-    }
-    useAppStore.setState({ createSessionFromSourceChat: true })
-    const menu = openMenu({ ...makeSession(), providerId: 'codex-cli', workspaceBranchName: 'feature/x' })
-    try {
-      await act(async () => menu.items().find((item) => item.textContent?.includes('New chat on'))!.click())
-      const create = requests.find((request) => request.action === 'createSession')
-      expect(create?.payload).toMatchObject({ folderId: 'project', sourceChatId: 'chat-1' })
-      expect(create?.payload).not.toHaveProperty('workspaceDirectory')
-    } finally {
-      menu.cleanup()
-    }
-  })
 })

@@ -21,6 +21,7 @@ import {
   normalizeCodexReasoningEffort,
   normalizeCodexServiceTier,
   normalizeMemoryLevel,
+  memoryEnabledForLevel,
 } from './sanitizers'
 import {
   pendingModelByChatId,
@@ -142,7 +143,8 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 }
 
 export function sessionsEquivalent(previous: Session, next: Session): boolean {
-  return (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
+  return previous.gitBaseBranch === next.gitBaseBranch &&
+    (previous.uamControlEnabled ?? false) === (next.uamControlEnabled ?? false) &&
     (previous.executionHostId ?? 'local') === (next.executionHostId ?? 'local') &&
     (previous.remoteRecoveryEnabled ?? false) === (next.remoteRecoveryEnabled ?? false) &&
     (previous.remoteRecoveryState ?? '') === (next.remoteRecoveryState ?? '') &&
@@ -155,6 +157,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.routingReservationPending === next.routingReservationPending &&
     previous.routingUnresolvedReservation === next.routingUnresolvedReservation &&
     previous.name === next.name &&
+    customIconsEqual(previous.customIcon, next.customIcon) &&
     previous.folderId === next.folderId &&
     (previous.isPinned ?? false) === (next.isPinned ?? false) &&
     (previous.providerId ?? GEMINI_CLI_PROVIDER_ID) === next.providerId &&
@@ -219,11 +222,13 @@ export function sessionFromCppChat(
   if (pendingViewMode) pendingViewModeBySessionId.delete(chat.id)
   const nextSession: Session = {
     uamControlEnabled: chat.uamControlEnabled ?? false,
+    gitBaseBranch: chat.gitBaseBranch === undefined ? previous?.gitBaseBranch : chat.gitBaseBranch,
     id: chat.id,
     executionHostId: chat.executionHostId ?? 'local',
     remoteRecoveryEnabled: chat.remoteRecoveryEnabled ?? false,
     remoteRecoveryState: chat.remoteRecoveryState ?? '',
     name: chat.title || 'Untitled',
+    customIcon: chat.customIcon,
     viewMode: pendingViewMode ?? readChatViewMode(chat.id) ?? previous?.viewMode ?? 'chat',
     folderId: chat.folderId || null,
     isPinned: chat.pinned ?? false,
@@ -252,7 +257,7 @@ export function sessionFromCppChat(
     computerUseTargetInputMode: chat.computerUseTargetInputMode ?? 'foreground',
     computerUse: chat.computerUse,
     memoryLevel: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
-    memoryEnabled: normalizeMemoryLevel(chat.memoryLevel, chat.memoryEnabled ?? true) !== 'off',
+    memoryEnabled: memoryEnabledForLevel(chat.memoryLevel, chat.memoryEnabled ?? true),
     smallModelMode: chat.smallModelMode ?? false,
     memoryLastProcessedMessageCount: chat.memoryLastProcessedMessageCount ?? 0,
     memoryLastProcessedAt: chat.memoryLastProcessedAt ?? '',

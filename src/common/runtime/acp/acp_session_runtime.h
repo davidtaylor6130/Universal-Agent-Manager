@@ -78,6 +78,15 @@ bool ResolveAcpUserInput(AppState& app,
 	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 	std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 	bool FlushPendingChatSaves(AppState& app, bool force = false);
+	struct WorkspaceChatSaveTicket;
+	enum class WorkspaceChatSaveRevocation { OwnedRevoked, ForeignNewer, NotOwned };
+	/// <summary>Schedules a full workspace save with an independently owned acknowledgement.</summary>
+	std::shared_ptr<WorkspaceChatSaveTicket> ScheduleWorkspaceChatSave(AppState& app, const ChatSession& chat, std::function<void(bool)> completion);
+	/// <summary>Revokes only an unchanged captured workspace publication or its own failed retry; returns NotOwned before full snapshot capture, including unstarted force barriers.</summary>
+	WorkspaceChatSaveRevocation RevokeWorkspaceChatSave(AppState& app, const std::shared_ptr<WorkspaceChatSaveTicket>& ticket);
+
+	/// <summary>Acknowledges an icon intent only after a matching full snapshot is published.</summary>
+	bool DeferChatIconSaveResult(AppState& app, const std::string& chat_id, const CustomIcon& expected, std::function<bool()> owned, std::function<void(bool)> completion);
 	/// <summary>Defers an admission acknowledgement until the owning input is durable in its snapshot or queue journal.</summary>
 	bool DeferChatSaveResult(AppState& app, const std::string& chat_id, std::function<void(bool)> completion, bool queued_admission = false);
 	void ResolvePendingChatSaveResults(AppState& app, const std::string& chat_id, bool saved);

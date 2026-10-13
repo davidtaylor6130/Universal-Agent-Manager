@@ -1346,6 +1346,11 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	const bool enabled = payload.value("enabled", false);
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr) return;
+	if (enabled && !m_app.settings.computer_use_globally_enabled)
+	{
+		cb->Failure(409, "Computer Use is disabled globally.");
+		return;
+	}
 	if (enabled && !uam::computer_use::AvailableForChat(*chat))
 	{
 		cb->Failure(409, "Computer Use is disabled for remote execution hosts.");
@@ -1497,11 +1502,12 @@ void UamQueryHandler::HandleGetComputerUseSettings(CefRefPtr<CefBrowser> browser
 	nlohmann::json allowed = nlohmann::json::array();
 	for (const auto& rule : m_app.settings.computer_use_allowed_applications)
 		allowed.push_back({{"identityKind", rule.identity_kind}, {"identity", rule.identity}});
-	cb->Success(nlohmann::json{{"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}, {"allowedApplications", allowed}}.dump());
+	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}, {"allowedApplications", allowed}}.dump());
 }
 
 void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	if (payload.contains("computerUseGloballyEnabled") && !payload["computerUseGloballyEnabled"].is_boolean()) { cb->Failure(400, "computerUseGloballyEnabled must be a boolean."); return; }
 	if (payload.contains("allowlistEnabled") && !payload["allowlistEnabled"].is_boolean()) { cb->Failure(400, "allowlistEnabled must be a boolean."); return; }
 	AppSettings previous = m_app.settings;
 	const bool enabled = payload.value("allowlistEnabled", m_app.settings.computer_use_allowlist_enabled);
@@ -1516,11 +1522,40 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 			allowed.push_back({item.value("identityKind", ""), item.value("identity", "")});
 		}
 	}
+	const bool globally_enabled = payload.value("computerUseGloballyEnabled", previous.computer_use_globally_enabled);
+	if (globally_enabled && !previous.computer_use_globally_enabled && !uam::ComputerUseService::ResetControlsForStartup(m_app))
+	{
+		cb->Failure(500, "Computer Use cannot be re-enabled until its previous control grants are cleared.");
+		return;
+	}
+	m_app.settings.computer_use_globally_enabled = globally_enabled;
 	m_app.settings.computer_use_allowlist_enabled = enabled;
 	m_app.settings.computer_use_allowed_applications = std::move(allowed);
 	if (!PersistenceCoordinator().SaveSettings(m_app)) { m_app.settings = previous; cb->Failure(500, "Failed to persist Computer Use Settings."); return; }
+	bool revoked = true;
+	if (!m_app.settings.computer_use_globally_enabled)
+	{
+		for (ChatSession& chat : m_app.chats)
+		{
+			const bool was_enabled = chat.computer_use_enabled;
+			chat.computer_use_enabled = false;
+			if (!uam::computer_use::AvailableForChat(chat)) continue;
+			if (was_enabled || uam::AcpStopInProgress(m_app, chat.id))
+			{
+				revoked = uam::StopAcpSession(m_app, chat.id) && revoked;
+				revoked = uam::StopAndEraseCliTerminalForChat(m_app, chat.id) && revoked;
+			}
+		}
+		revoked = uam::ComputerUseService::ResetControlsForStartup(m_app) && revoked;
+	}
+	if (!revoked)
+	{
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Failure(500, "Computer Use is disabled globally; some runtime controls are still stopping. Retry disabling to verify they stopped.");
+		return;
+	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(nlohmann::json{{"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}}.dump());
+	cb->Success(nlohmann::json{{"computerUseGloballyEnabled", m_app.settings.computer_use_globally_enabled}, {"allowlistEnabled", m_app.settings.computer_use_allowlist_enabled}}.dump());
 }
 
 void UamQueryHandler::HandleListComputerUseApplications(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
@@ -1552,6 +1587,11 @@ void UamQueryHandler::HandleCheckComputerUsePermissions(CefRefPtr<CefBrowser>, c
 
 void UamQueryHandler::HandleRequestComputerUsePermission(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	if (!m_app.settings.computer_use_globally_enabled)
+	{
+		cb->Failure(409, "Computer Use is disabled globally.");
+		return;
+	}
 	const std::string permission = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("permission", "")));
 	if (permission != "screenrecording" && permission != "accessibility") { cb->Failure(400, "permission must be screenRecording or accessibility."); return; }
 	const std::string helper_permission = permission == "screenrecording" ? "screenRecording" : "accessibility";
@@ -1564,7 +1604,7 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const bool enabled = payload.value("enabled", true);
-	const std::string requested_level = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(payload, "memoryLevel", ""), enabled);
+	const std::string requested_level = uam::memory_levels::NormalizeSelection(uam::nlohmann_json::TrimmedStringValueOr(payload, "memoryLevel", ""), enabled);
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr)
 	{

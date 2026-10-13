@@ -119,6 +119,11 @@ namespace uam::platform_linux_impl
 						return false;
 					}
 				}
+				if (process.deferred_reap_complete && !process.deferred_reap_complete->load(std::memory_order_acquire))
+				{
+					if (error_out != nullptr) *error_out = "The previous process exit has not been observed.";
+					return false;
+				}
 				int input[2] = {-1, -1};
 				int output[2] = {-1, -1};
 				int diagnostic[2] = {-1, -1};
@@ -174,6 +179,7 @@ namespace uam::platform_linux_impl
 				process.stdout_read_fd = output[0];
 				process.stderr_read_fd = diagnostic[0];
 				process.child_pid = child;
+				process.deferred_reap_complete.reset();
 				for (const int descriptor : {process.stdout_read_fd, process.stderr_read_fd})
 				{
 					const int flags = fcntl(descriptor, F_GETFL, 0);
@@ -256,12 +262,21 @@ namespace uam::platform_linux_impl
 					signal_process(SIGKILL);
 					(void)wait_bounded();
 				}
-				if (waitpid(child, &status, WNOHANG) == 0)
-					std::thread([child]
+				const pid_t final_result = waitpid(child, &status, WNOHANG);
+				if (final_result == 0 || (final_result < 0 && errno != ECHILD))
+				{
+					process.deferred_reap_complete = std::make_shared<std::atomic<bool>>(false);
+					const std::shared_ptr<std::atomic<bool>> completion = process.deferred_reap_complete;
+					std::thread([child, completion]
 					{
 						int child_status = 0;
-						while (waitpid(child, &child_status, 0) < 0 && errno == EINTR) {}
+						pid_t result;
+						do { result = waitpid(child, &child_status, 0); } while (result < 0 && errno == EINTR);
+						if (result == child || (result < 0 && errno == ECHILD))
+							completion->store(true, std::memory_order_release);
 					}).detach();
+				}
+
 				process.child_pid = -1;
 			}
 			void StopStdioProcess(uam::platform::StdioProcessPlatformFields& process,
@@ -285,7 +300,8 @@ namespace uam::platform_linux_impl
 			bool PollStdioProcessExited(uam::platform::StdioProcessPlatformFields& process,
 			                            int* exit_code_out) const override
 			{
-				if (process.child_pid <= 0) return true;
+				if (process.child_pid <= 0)
+					return !process.deferred_reap_complete || process.deferred_reap_complete->load(std::memory_order_acquire);
 				int status = 0;
 				const pid_t result = waitpid(process.child_pid, &status, WNOHANG);
 				if (result == 0) return false;

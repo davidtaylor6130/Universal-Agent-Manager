@@ -21,6 +21,7 @@ namespace uam
 	void WorktreeRetentionService::Stop()
 	{
 		m_stop.request_stop();
+		m_policyStop.request_stop();
 		if (m_worker.valid())
 		{
 			try { (void)m_worker.get(); }
@@ -31,9 +32,11 @@ namespace uam
 
 	bool WorktreeRetentionService::Capture(const AppState& app, Snapshot& snapshot)
 	{
-		if (app.data_root.empty() || !app.settings.git_enabled || !app.worktree_operation_chat_ids.empty() ||
+		if (app.data_root.empty() || !app.settings.git_enabled || !app.settings.worktree_cleanup_enabled ||
+		    app.settings.worktree_retention_days < 1 || app.settings.worktree_retention_days > 3650 || !app.worktree_operation_chat_ids.empty() ||
 		    (app.startup_native_import_service && app.startup_native_import_service->ImportPending())) return false;
 		snapshot.data_root = app.data_root;
+		snapshot.retention_days = app.settings.worktree_retention_days;
 		std::unordered_set<std::string> chat_ids;
 		for (const ChatSession& chat : app.chats)
 		{
@@ -154,7 +157,7 @@ namespace uam
 					const std::filesystem::file_status marker = std::filesystem::symlink_status(path / ".git", list_error);
 					if (list_error || !std::filesystem::is_regular_file(marker)) { list_error.clear(); continue; }
 					const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path / ".git", list_error);
-					if (list_error || modified >= std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * 14)) { list_error.clear(); continue; }
+					if (list_error || modified >= std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * snapshot.retention_days)) { list_error.clear(); continue; }
 					// Recover the original source even after its last sidebar folder was deleted. NUL records preserve quoted/Unicode paths.
 					const ProcessExecutionResult registration = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
 					    "git --no-optional-locks -C " + shell::EscapeArg(paths::Utf8PathString(path)) + " worktree list --porcelain -z", 2000, stop);
@@ -171,7 +174,7 @@ namespace uam
 						if (hashing::Hex64(hashing::Fnv1a64(paths::NormalizedPortablePathString(source))) != key ||
 						    paths::IsSameOrInsideRoot(path, source)) continue;
 						GitWorktreeRetentionCandidate candidate;
-						if (worktrees.InspectRetentionCandidate(snapshot.data_root, source, path, protected_paths, candidate, stop))
+						if (worktrees.InspectRetentionCandidate(snapshot.data_root, source, path, protected_paths, candidate, stop, snapshot.retention_days))
 							result.candidates.push_back({source, std::move(candidate)});
 						break;
 					}
@@ -184,17 +187,30 @@ namespace uam
 	void WorktreeRetentionService::Poll(const AppState& app, std::chrono::steady_clock::time_point now)
 	{
 		if (m_stop.stop_requested()) return;
+		if (m_policyRoot != app.data_root || m_policyDays != app.settings.worktree_retention_days ||
+		    m_policyEnabled != app.settings.worktree_cleanup_enabled || m_policyGitEnabled != app.settings.git_enabled)
+		{
+			m_policyStop.request_stop();
+			m_candidates.clear();
+			m_policyRoot = app.data_root;
+			m_policyDays = app.settings.worktree_retention_days;
+			m_policyEnabled = app.settings.worktree_cleanup_enabled;
+			m_policyGitEnabled = app.settings.git_enabled;
+			++m_policyRevision;
+			if (m_policyRevision > 1) m_nextScan = now;
+		}
 		if (m_worker.valid())
 		{
 			if (m_worker.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
 			try
 			{
 				Result result = m_worker.get();
-				if (!m_removing) m_candidates = std::move(result.candidates);
+				if (!m_removing && m_workerRevision == m_policyRevision) m_candidates = std::move(result.candidates);
 			}
 			catch (const std::exception& exception) { diagnostics::Write("[retention] Cleanup failed: " + std::string(exception.what())); }
 			m_removing = false;
 		}
+		if (!app.settings.git_enabled || !app.settings.worktree_cleanup_enabled) return;
 		Snapshot snapshot;
 		if (m_candidates.empty() && now < m_nextScan) return;
 		std::shared_ptr<WorkspaceLeaseGate::Lease> lease;
@@ -206,22 +222,24 @@ namespace uam
 		if (!Capture(app, snapshot)) return;
 		try
 		{
+			m_policyStop = std::stop_source();
+			m_workerRevision = m_policyRevision;
 			if (m_candidates.empty())
 			{
 				m_nextScan = now + std::chrono::hours(6);
-				m_worker = std::async(std::launch::async, [snapshot = std::move(snapshot), stop = m_stop.get_token()]() { return Discover(snapshot, stop); });
+				m_worker = std::async(std::launch::async, [snapshot = std::move(snapshot), stop = m_policyStop.get_token()]() { return Discover(snapshot, stop); });
 			}
 			else
 			{
 				Candidate candidate = std::move(m_candidates.back());
 				m_candidates.pop_back();
 				m_removing = true;
-				m_worker = std::async(std::launch::async, [snapshot = std::move(snapshot), candidate = std::move(candidate), lease = std::move(lease), stop = m_stop.get_token()]() mutable
+				m_worker = std::async(std::launch::async, [snapshot = std::move(snapshot), candidate = std::move(candidate), lease = std::move(lease), stop = m_policyStop.get_token()]() mutable
 				{
 					std::shared_ptr<WorkspaceLeaseGate::Lease> active = std::move(lease);
 					Result result;
 					if (ProtectProcessWorkspace(snapshot.data_root, snapshot.protected_paths) && ProtectStoredWorkspaces(snapshot, snapshot.protected_paths, stop))
-						result.removed = GitWorktreeService().RemoveRetentionCandidate(snapshot.data_root, candidate.source, candidate.worktree, snapshot.protected_paths, *active, stop);
+						result.removed = GitWorktreeService().RemoveRetentionCandidate(snapshot.data_root, candidate.source, candidate.worktree, snapshot.protected_paths, *active, stop, snapshot.retention_days);
 					diagnostics::Write(std::string("[retention] ") + (result.removed ? "Removed " : "Preserved ") +
 					    paths::Utf8PathString(candidate.worktree.directory) + "; branch " + candidate.worktree.branch_name +
 					    (result.removed ? " remains." : " remains after validation or removal failed."));

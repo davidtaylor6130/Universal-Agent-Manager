@@ -152,13 +152,13 @@ std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending
 {
 	if (pending.title.size() > 1024 || pending.kind.size() > 256 || pending.content.size() > 12 * 1024 ||
 	    pending.provider_request_method.size() > 256 || pending.provider_request_kind.size() > 256 ||
-	    pending.provider_input_json.size() > 12 * 1024 || pending.codex_approval_payload_json.size() > 12 * 1024) return {};
+	    pending.provider_input_json.size() > 12 * 1024 || pending.provider_request_params_json.size() > 12 * 1024 || pending.codex_approval_payload_json.size() > 12 * 1024) return {};
 	try
 	{
 		nlohmann::json request = {{"title", pending.title}, {"kind", pending.kind}, {"content", pending.content},
 		    {"providerMethod", pending.provider_request_method}, {"providerRequestKind", pending.provider_request_kind}};
-		const std::array<std::pair<const char*, const std::string*>, 2> originals{{
-		    {"providerInput", &pending.provider_input_json}, {"codexApprovalPayload", &pending.codex_approval_payload_json}}};
+		const std::array<std::pair<const char*, const std::string*>, 3> originals{{
+		    {"providerInput", &pending.provider_input_json}, {"providerRequestParams", &pending.provider_request_params_json}, {"codexApprovalPayload", &pending.codex_approval_payload_json}}};
 		for (const std::pair<const char*, const std::string*>& original : originals)
 		{
 			if (original.second->empty()) continue;
@@ -707,6 +707,10 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 	AcpPendingPermissionState pending;
 	pending.request_id_json = JsonRpcIdToStableString(JsonRpcIdOrNull(message));
 	pending.tool_call_id = JsonDiagnosticStringValue(tool_call, "toolCallId");
+	pending.provider_request_method = JsonDiagnosticStringValue(message, "method");
+	const nlohmann::json* raw_input = uam::nlohmann_json::FindField(tool_call, "rawInput");
+	pending.provider_input_json = (raw_input != nullptr ? *raw_input : tool_call).dump();
+	pending.provider_request_params_json = params.dump();
 	pending.title = JsonDiagnosticStringValueOr(tool_call, "title", "Permission required");
 	pending.kind = JsonDiagnosticStringValueOr(tool_call, "kind", uam::acp_tool_kinds::kOther);
 	pending.status = JsonDiagnosticStringValueOr(tool_call, "status", std::string(uam::acp_statuses::kPending));

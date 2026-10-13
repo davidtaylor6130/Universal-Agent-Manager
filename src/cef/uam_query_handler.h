@@ -1,6 +1,10 @@
 #pragma once
 
 #include <set>
+#include <atomic>
+#include <map>
+#include <tuple>
+#include <functional>
 
 #include "common/config/build_features.h"
 #if UAM_ENABLE_MOBILE_COMPANION
@@ -21,7 +25,7 @@
 
 namespace uam::query_handler_async { struct AsyncCefResult; }
 namespace uam { struct WorkspaceDeletionTask; }
-namespace uam::usage { class MultiHostHistory; }
+namespace uam::usage { class MultiHostHistory; class HistoryTransport; }
 
 /// <summary>
 /// Handles all window.cefQuery() requests from the React frontend.
@@ -43,20 +47,46 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id) override;
 
   private:
+	friend struct ChatIconHandlerTestAccess;
+	friend struct GoalHandlerTestAccess;
+	void BeginChatIconQuery(Callback* callback, int browser_id, const std::string& frame_id, int64_t query_id);
+	void CancelChatIconQuery(int browser_id, const std::string& frame_id, int64_t query_id);
 	uam::AppState& m_app;
 	uam::TranscriptRetentionService m_transcriptRetention;
 	std::shared_ptr<uam::usage::MultiHostHistory> m_usageHistory;
 	CefRefPtr<CefThread> m_usageQueries;
+	std::shared_ptr<uam::usage::HistoryTransport> m_usageTransport;
 	CefRefPtr<CefThread> m_titleQueries;
 	CefRefPtr<CefThread> m_snoozeQueries;
 	std::set<std::string> m_snoozeRequests;
 	std::size_t m_pendingFilePreviews = 0;
+	std::shared_ptr<std::atomic<unsigned>> m_pendingWorkspaceVcsContexts = std::make_shared<std::atomic<unsigned>>(0);
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
 #if UAM_ENABLE_MOBILE_COMPANION
 	CefRefPtr<UamCompanionServer> m_companion;
 #endif
 	// Workers hold weak references so queued callbacks cannot outlive this handler.
 	std::shared_ptr<void> m_asyncLifetime = std::make_shared<char>();
+	struct ChatIconOperation
+	{
+		std::atomic<bool> cancelled{false};
+		std::atomic<bool> finished{false};
+	};
+	using ChatIconQueryIdentity = std::tuple<int, std::string, int64_t>;
+	std::unordered_map<std::string, std::shared_ptr<ChatIconOperation>> m_chatIconOperations;
+	std::unordered_map<Callback*, ChatIconQueryIdentity> m_chatIconQueryIdentities;
+	std::map<ChatIconQueryIdentity, std::function<void()>> m_chatIconCancellations;
+	struct GoalMutationOperation
+	{
+		bool cancelled = false;
+		bool finished = false;
+	};
+	std::unordered_map<std::string, std::shared_ptr<GoalMutationOperation>> m_goalMutations;
+	std::unordered_map<Callback*, ChatIconQueryIdentity> m_goalQueryIdentities;
+	std::map<ChatIconQueryIdentity, std::weak_ptr<GoalMutationOperation>> m_goalQueryOperations;
+	void PersistGoalMutation(CefRefPtr<CefBrowser> browser, const std::string& chat_id,
+	    std::function<void()> rollback, std::function<bool(std::string*, std::function<bool()>, std::function<bool()>, std::function<void(bool, std::string)>)> execute,
+	    CefRefPtr<Callback> callback, std::string success = "{}");
 	std::shared_ptr<std::atomic<std::uint64_t>> m_searchGeneration = std::make_shared<std::atomic<std::uint64_t>>(0);
 	std::int64_t m_searchQueryId = -1;
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_nativeHistoryRequests;
@@ -137,6 +167,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetUamAgentPreferences(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetProviderAvailability(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -211,6 +242,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandlePreviewChatTurnRollback(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetWorkspaceVcsContext(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetWorkspaceFilePreview(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetVcsFileDiff(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -225,6 +257,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSteerCliTerminal(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleResizeCli(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetVoiceInputSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleStartDictation(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleStopDictation(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

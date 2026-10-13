@@ -1,3 +1,4 @@
+#include "common/config/voice_input_settings.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
 
@@ -50,6 +51,12 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
 	constexpr std::string_view kGitEnabledKey = "git_enabled";
+	constexpr std::string_view kGitAutoWorktreeKey = "git_auto_worktree";
+	constexpr std::string_view kGitPortMethodKey = "git_port_method";
+	constexpr std::string_view kGitPullBeforeChatKey = "git_pull_before_chat";
+	constexpr std::string_view kGitDefaultBaseBranchKey = "git_default_base_branch";
+	constexpr std::string_view kWorktreeCleanupEnabledKey = "worktree_cleanup_enabled";
+	constexpr std::string_view kWorktreeRetentionDaysKey = "worktree_retention_days";
 	constexpr std::string_view kSvnEnabledKey = "svn_enabled";
 	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
 	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
@@ -60,6 +67,11 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kWindowWidthKey = "window_width";
 	constexpr std::string_view kWindowHeightKey = "window_height";
 	constexpr std::string_view kWindowMaximizedKey = "window_maximized";
+	constexpr std::string_view kVoiceInputModeKey = "voice_input_mode";
+	constexpr std::string_view kVoiceInputServerBaseUrlKey = "voice_input_server_base_url";
+	constexpr std::string_view kVoiceInputServerEndpointKey = "voice_input_server_endpoint";
+	constexpr std::string_view kVoiceInputServerModelKey = "voice_input_server_model";
+	constexpr std::string_view kVoiceInputApiKeyEnvKey = "voice_input_api_key_env";
 	constexpr std::string_view kMemoryEnabledDefaultKey = "memory_enabled_default";
 	constexpr std::string_view kMemoryLevelDefaultKey = "memory_level_default";
 	constexpr std::string_view kMemoryIdleDelaySecondsKey = "memory_idle_delay_seconds";
@@ -85,6 +97,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kExecutionRoutingKey = "execution_routing";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
+	constexpr std::string_view kComputerUseGloballyEnabledKey = "computer_use_globally_enabled";
 	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
 	constexpr std::string_view kComputerUseAllowedApplicationsKey = "computer_use_allowed_applications";
 
@@ -312,7 +325,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		defaults.command_safety_tier = uam::command_safety::NormalizeTier(defaults.command_safety_tier);
 		defaults.reasoning_effort = uam::provider_chat_defaults::NormalizeReasoningEffort(provider_id, defaults.reasoning_effort);
 		defaults.service_tier = uam::codex::NormalizeServiceTier(defaults.service_tier);
-		defaults.memory_level = uam::memory_levels::Normalize(defaults.memory_level, defaults.memory_enabled);
+		defaults.memory_level = uam::memory_levels::NormalizeSelection(defaults.memory_level, defaults.memory_enabled);
 		defaults.memory_enabled = uam::memory_levels::IsEnabled(defaults.memory_level);
 		return defaults;
 	}
@@ -398,7 +411,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 			defaults.memory_enabled = BoolFieldOr(fields, 4, true);
 			defaults.reasoning_effort = uam::DecodedLineFieldOr(fields, 5, "");
 			defaults.service_tier = uam::DecodedLineFieldOr(fields, 6, "");
-			defaults.memory_level = uam::memory_levels::Normalize(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
+			defaults.memory_level = uam::memory_levels::NormalizeSelection(uam::DecodedLineFieldOr(fields, 7, ""), defaults.memory_enabled);
 			defaults.small_model_mode = BoolFieldOr(fields, 8, false);
 			defaults.reviewer_model_id = uam::DecodedLineFieldOr(fields, 9, "");
 			defaults.feature_preference = uam::DecodedLineFieldOr(fields, 10, "uam");
@@ -518,10 +531,18 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 	void ClampSettings(AppSettings& settings)
 	{
+		settings.voice_input_mode = uam::voice_input::NormalizeMode(settings.voice_input_mode);
+		settings.voice_input_server_base_url = uam::strings::Trim(settings.voice_input_server_base_url);
+		settings.voice_input_server_endpoint = uam::strings::Trim(settings.voice_input_server_endpoint);
+		settings.voice_input_server_model = uam::strings::Trim(settings.voice_input_server_model);
+		settings.voice_input_api_key_env = uam::strings::Trim(settings.voice_input_api_key_env);
+
 		settings.active_provider_id = uam::strings::NonEmptyOrFallback(NormalizeProviderId(settings.active_provider_id), provider_build_config::FirstEnabledProviderId());
 		settings.default_new_chat_provider_id = uam::strings::NonEmptyOrFallback(
 		    NormalizeProviderId(settings.default_new_chat_provider_id), settings.active_provider_id);
 		uam::settings::ClampRuntimeTimeoutSettings(settings);
+		settings.git_default_base_branch = uam::strings::Trim(settings.git_default_base_branch);
+		if (settings.worktree_retention_days < 1 || settings.worktree_retention_days > 3650) settings.worktree_retention_days = 14;
 		settings.ui_theme = uam::settings::NormalizeThemeId(settings.ui_theme);
 		uam::settings::ClampWindowSettings(settings);
 		uam::settings::ClampMemorySettings(settings);
@@ -589,6 +610,12 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
 	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
 	WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
+	WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
+	WriteBoolSetting(lines, kGitPullBeforeChatKey, normalized.git_pull_before_chat);
+	WriteRawSetting(lines, kGitPortMethodKey, normalized.git_port_method == GitPortMethod::Merge ? "merge" : normalized.git_port_method == GitPortMethod::Squash ? "squash" : "patch");
+	WriteEncodedSetting(lines, kGitDefaultBaseBranchKey, normalized.git_default_base_branch);
+	WriteBoolSetting(lines, kWorktreeCleanupEnabledKey, normalized.worktree_cleanup_enabled);
+	WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
 	WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
 	WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
 	WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
@@ -599,6 +626,11 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteSettingValue(lines, kWindowWidthKey, normalized.window_width);
 	WriteSettingValue(lines, kWindowHeightKey, normalized.window_height);
 	WriteBoolSetting(lines, kWindowMaximizedKey, normalized.window_maximized);
+	WriteEncodedSetting(lines, kVoiceInputModeKey, normalized.voice_input_mode);
+	WriteEncodedSetting(lines, kVoiceInputServerBaseUrlKey, normalized.voice_input_server_base_url);
+	WriteEncodedSetting(lines, kVoiceInputServerEndpointKey, normalized.voice_input_server_endpoint);
+	WriteEncodedSetting(lines, kVoiceInputServerModelKey, normalized.voice_input_server_model);
+	WriteEncodedSetting(lines, kVoiceInputApiKeyEnvKey, normalized.voice_input_api_key_env);
 	WriteBoolSetting(lines, kMemoryEnabledDefaultKey, normalized.memory_enabled_default);
 	WriteEncodedSetting(lines, kMemoryLevelDefaultKey, normalized.memory_level_default);
 	WriteSettingValue(lines, kMemoryIdleDelaySecondsKey, normalized.memory_idle_delay_seconds);
@@ -626,6 +658,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
 	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
+	WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
 	WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
 	nlohmann::json allowed = nlohmann::json::array();
 	for (const auto& rule : normalized.computer_use_allowed_applications)
@@ -729,6 +762,30 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		{
 			settings.git_enabled = uam::parse::BoolOr(value, settings.git_enabled);
 		}
+		else if (key == kGitAutoWorktreeKey)
+		{
+			settings.git_auto_worktree = uam::parse::BoolOr(value, settings.git_auto_worktree);
+		}
+		else if (key == kGitPortMethodKey)
+		{
+			settings.git_port_method = value == "merge" ? GitPortMethod::Merge : value == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;
+		}
+		else if (key == kGitPullBeforeChatKey)
+		{
+			settings.git_pull_before_chat = uam::parse::BoolOr(value, settings.git_pull_before_chat);
+		}
+		else if (key == kGitDefaultBaseBranchKey)
+		{
+			settings.git_default_base_branch = uam::DecodeLineValue(value);
+		}
+		else if (key == kWorktreeCleanupEnabledKey)
+		{
+			settings.worktree_cleanup_enabled = uam::parse::BoolOr(value, settings.worktree_cleanup_enabled);
+		}
+		else if (key == kWorktreeRetentionDaysKey)
+		{
+			settings.worktree_retention_days = uam::parse::IntOr(value, settings.worktree_retention_days);
+		}
 		else if (key == kSvnEnabledKey)
 		{
 			settings.svn_enabled = uam::parse::BoolOr(value, settings.svn_enabled);
@@ -768,6 +825,26 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kWindowMaximizedKey)
 		{
 			settings.window_maximized = uam::parse::BoolOr(value, settings.window_maximized);
+		}
+		else if (key == kVoiceInputModeKey)
+		{
+			settings.voice_input_mode = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerBaseUrlKey)
+		{
+			settings.voice_input_server_base_url = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerEndpointKey)
+		{
+			settings.voice_input_server_endpoint = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputServerModelKey)
+		{
+			settings.voice_input_server_model = uam::DecodeLineValue(value);
+		}
+		else if (key == kVoiceInputApiKeyEnvKey)
+		{
+			settings.voice_input_api_key_env = uam::DecodeLineValue(value);
 		}
 		else if (key == kMemoryEnabledDefaultKey)
 		{
@@ -880,6 +957,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kUamAgentCycleShortcutKey)
 		{
 			settings.uam_agent_cycle_shortcut = decoded_value;
+		}
+		else if (key == kComputerUseGloballyEnabledKey)
+		{
+			settings.computer_use_globally_enabled = uam::parse::BoolOr(value, false);
 		}
 		else if (key == kComputerUseAllowlistEnabledKey)
 		{

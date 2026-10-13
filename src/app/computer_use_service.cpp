@@ -212,7 +212,7 @@ namespace uam
 			std::shared_ptr<Scan> scan;
 			try { scan = m_scan.get(); }
 			catch (const std::exception& error) { diagnostics::Write(std::string("Computer-use background scan failed: ") + error.what()); m_nextScanTime = GetAppTimeSeconds() + 1.0; }
-			if (scan && !scan->changed_indices.empty() && scan->state.data_root == app.data_root)
+			if (scan && app.settings.computer_use_globally_enabled && !scan->changed_indices.empty() && scan->state.data_root == app.data_root)
 			{
 				std::unordered_map<std::string, ChatSession*> current_by_id;
 				current_by_id.reserve(app.chats.size());
@@ -254,6 +254,7 @@ namespace uam
 		{
 			std::shared_ptr<Scan> scan = std::make_shared<Scan>();
 			scan->state.data_root = app.data_root;
+			scan->state.settings.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 			scan->state.computer_use_by_chat_id = app.computer_use_by_chat_id;
 			scan->baseline.reserve(app.chats.size());
 			scan->signatures.reserve(app.chats.size());
@@ -333,8 +334,9 @@ namespace uam
 		for (ChatSession& chat : app.chats)
 		{
 			if (!chat_id.empty() && chat.id != chat_id) continue;
-			if (!uam::computer_use::AvailableForChat(chat))
+			if (!app.settings.computer_use_globally_enabled || !uam::computer_use::AvailableForChat(chat))
 			{
+				changed = chat.computer_use_enabled || changed;
 				chat.computer_use_enabled = false;
 				changed = app.computer_use_by_chat_id.erase(chat.id) > 0 || changed;
 				continue;
@@ -394,6 +396,11 @@ namespace uam
 	bool ComputerUseService::SetControlState(AppState& app, const std::string& chat_id,
 	    std::string_view state, std::string* error)
 	{
+		if (!app.settings.computer_use_globally_enabled && state != "stopped")
+		{
+			if (error != nullptr) *error = "Computer Use is disabled globally.";
+			return false;
+		}
 		if (state != "armed" && state != "running" && state != "paused" && state != "stopped")
 		{
 			if (error != nullptr) *error = "Computer-use state must be armed, running, paused, or stopped.";
@@ -445,7 +452,7 @@ namespace uam
 		}
 		const auto chat = std::ranges::find_if(app.chats,
 		    [&chat_id](const ChatSession& candidate) { return candidate.id == chat_id; });
-		if (chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat) ||
+		if (!app.settings.computer_use_globally_enabled || chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat) ||
 		    !uam::computer_use::UsesUamBackend(*chat) || !chat->computer_use_enabled)
 		{
 			if (error != nullptr) *error = "Computer Use is not enabled for this local chat.";

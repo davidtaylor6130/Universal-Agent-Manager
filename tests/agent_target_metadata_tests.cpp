@@ -1,6 +1,9 @@
 #include "test_harness.h"
+#include "app/agent_definition_service.h"
 #include "app/uam_control_service.h"
+#include "common/provider/provider_ids.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
+#include "common/utils/io_utils.h"
 
 using namespace uam_test;
 
@@ -111,4 +114,41 @@ UAM_TEST(AgentListRejectsStaleHostVersionAndUnreadyOrUpdatingTargetMetadata)
 	fixture.Ready("codex-cli");
 	fixture.app.settings.execution_hosts.front().runner_status = "disconnected";
 	UAM_ASSERT(!fixture.Targets()[0].value("eligible", true));
+}
+
+UAM_TEST(OpenCodeAgentImportDefaultsOmittedModeToBoth)
+{
+	TempDir temp("uam-opencode-agent-default-mode");
+	const fs::path source_root = temp.root / "native";
+	fs::create_directories(source_root);
+	const fs::path source = source_root / "reviewer.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source,
+	    "---\ndescription: Reviews code\n---\nReview the code and report findings.\n"));
+
+	const uam::ProviderAgentImportPreview preview =
+	    uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kOpenCodeCli, source);
+	UAM_ASSERT(preview.supported);
+	UAM_ASSERT_EQ(preview.mode, std::string("both"));
+
+	uam::ProviderAgentImportRequest request;
+	request.provider_id = uam::provider_ids::kOpenCodeCli;
+	request.source_path = source;
+	request.workspace_access = "read";
+	uam::AgentDefinition imported;
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(
+	    temp.root / "data", {}, request, &imported, &error));
+	UAM_ASSERT_EQ(imported.mode, std::string("both"));
+
+	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(temp.root / "data", {});
+	const auto loaded = std::ranges::find(catalog.definitions, std::string("reviewer"), &uam::AgentDefinition::id);
+	UAM_ASSERT(loaded != catalog.definitions.end());
+	UAM_ASSERT_EQ(loaded->mode, std::string("both"));
+
+	const fs::path empty_mode_source = source_root / "empty-mode.md";
+	UAM_ASSERT(uam::io::WriteTextFile(empty_mode_source,
+	    "---\ndescription: Invalid mode\nmode:\n---\nReview.\n"));
+	const uam::ProviderAgentImportPreview empty_mode_preview =
+	    uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kOpenCodeCli, empty_mode_source);
+	UAM_ASSERT(!empty_mode_preview.supported);
 }

@@ -125,6 +125,7 @@ namespace uam::remote
 		bool ReadWorkspaceFile(const std::string& workspace, const std::string& path, nlohmann::json& file,
 		                       std::string* error_out = nullptr, std::stop_token stop_token = {});
 		/// <summary>Fetches one immutable accounting snapshot; pending collection returns a pending object.</summary>
+		bool ReadUsageAccountingFile(const std::filesystem::path& path, nlohmann::json& progress, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadUsageAccounting(nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
 		                  std::string* error_out = nullptr, std::stop_token stop_token = {});
@@ -157,6 +158,7 @@ namespace uam::remote
 		bool m_contextRead = false;
 		bool m_workspaceFileRead = false;
 		bool m_usageAccounting = false;
+		bool m_usageAccountingStream = false;
 		bool m_projectMemory = false;
 		bool m_isolatedTextWorkers = false;
 		bool m_runnerStartup = false;

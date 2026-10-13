@@ -7,6 +7,7 @@
 
 namespace uam::memory_levels
 {
+	inline constexpr const char* kDefault = "default";
 	inline constexpr const char* kOff = "off";
 	inline constexpr const char* kReadOnly = "readOnly";
 	inline constexpr const char* kStrict = "strict";
@@ -26,6 +27,13 @@ namespace uam::memory_levels
 			return normalized;
 		}
 		return legacy_enabled ? kStrict : kOff;
+	}
+
+	/// <summary>Keep inheritance as a persisted selection; legacy booleans apply only to concrete levels.</summary>
+	inline std::string NormalizeSelection(std::string_view value, bool legacy_enabled = true)
+	{
+		if (uam::strings::TrimAndLowerAscii(value) == kDefault) return kDefault;
+		return Normalize(value, legacy_enabled);
 	}
 
 	inline bool IsEnabled(std::string_view value, bool legacy_enabled = true)

@@ -29,6 +29,7 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool UsesGeminiPathBootstrap(const ProviderProfile& profile) const override;
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
 	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
+	std::string OnAcpMapApprovalModeId(const std::string& mode_id) const override;
 	ProviderDiscoveryResult DiscoverChatSources(const ProviderProfile& profile) const override;
 };
 

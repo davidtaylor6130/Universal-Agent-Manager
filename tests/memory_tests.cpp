@@ -2,6 +2,7 @@
 #include <future>
 #include "common/provider/provider_text_worker.h"
 #include "common/memory/memory_levels.h"
+#include "common/memory/memory_policy.h"
 
 using namespace uam_test;
 
@@ -1683,6 +1684,7 @@ UAM_TEST(MemoryServiceFailedWorkerRecordsBackoffAndStatus)
 	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = chat.id;
+	task.memory_level = uam::memory_policy::Resolve(app.settings, chat);
 	task.message_count = 1;
 	task.workspace_root = folder.directory;
 	task.state = std::make_shared<AsyncProcessTaskState>();
@@ -1730,6 +1732,7 @@ UAM_TEST(MemoryServiceFailedWorkerKeepsCachedEntryCountsWithoutRescanningRoots)
 	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = chat.id;
+	task.memory_level = uam::memory_policy::Resolve(app.settings, chat);
 	task.workspace_root = chat.workspace_directory;
 	task.state = std::make_shared<AsyncProcessTaskState>();
 	task.state->provider_id = chat.provider_id;
@@ -1775,6 +1778,7 @@ UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = failed.id;
+	task.memory_level = uam::memory_policy::Resolve(app.settings, failed);
 	task.message_count = 1;
 	task.state = std::make_shared<AsyncProcessTaskState>();
 	task.state->provider_id = failed.provider_id;
@@ -1795,6 +1799,7 @@ UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 	success.data_root = app.data_root;
 	success.running = true;
 	success.chat_id = failed.id;
+	success.memory_level = uam::memory_policy::Resolve(app.settings, failed);
 	success.message_count = 1;
 	success.workspace_root = temp.root;
 	success.state = std::make_shared<AsyncProcessTaskState>();
@@ -1855,6 +1860,7 @@ UAM_TEST(MemoryServiceFailedWorkerReportsCommandNotFound)
 	task.data_root = app.data_root;
 	task.running = true;
 	task.chat_id = chat.id;
+	task.memory_level = uam::memory_policy::Resolve(app.settings, chat);
 	task.message_count = 1;
 	task.workspace_root = folder.directory;
 	task.state = std::make_shared<AsyncProcessTaskState>();
@@ -2020,6 +2026,7 @@ UAM_TEST(MemoryServiceManualRescansRetainRetryIntentAfterFailures)
 		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
+		task.memory_level = uam::memory_policy::Resolve(app.settings, chat);
 		task.message_count = 1;
 		task.scan_start_message_index = 0;
 		task.workspace_root = temp.root;
@@ -2240,6 +2247,7 @@ UAM_TEST(CodexMemoryCompletionCannotPersistReasoningWhenAssistantRefuses)
 		task.data_root = app.data_root;
 		task.running = true;
 		task.chat_id = chat.id;
+		task.memory_level = uam::memory_policy::Resolve(app.settings, chat);
 		task.workspace_root = workspace;
 		task.message_count = 1;
 		task.state = std::make_shared<AsyncProcessTaskState>();
@@ -2570,6 +2578,7 @@ UAM_TEST(MemoryCompletedWorkerPublishesPreparedEntriesWithoutCancellingItsOwner)
 	uam::AsyncMemoryExtractionTask task;
 	task.data_root = app.data_root;
 	task.chat_id = source.id;
+	task.memory_level = uam::memory_policy::Resolve(app.settings, source);
 	task.workspace_root = source.workspace_directory;
 	task.message_count = 1;
 	task.running = true;

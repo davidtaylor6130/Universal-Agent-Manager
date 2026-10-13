@@ -1,8 +1,10 @@
 #pragma once
 
 #include "common/state/app_state.h"
+#include "common/chat/chat_repository.h"
 
 #include <optional>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -89,7 +91,26 @@ namespace uam
 	};
 
 	ChatProviderSwitchResult SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id);
-	bool CreateTemporarySideChat(AppState& app, const std::string& parent_id, std::string* created_id);
+	struct TemporarySideChatContext
+	{
+		ChatMessagePage page;
+		std::string reference;
+	};
+	/// <summary>Builds a bounded reference from recent messages without copying full message bodies.</summary>
+	std::string BuildTemporarySideChatContext(const std::vector<Message>& messages);
+	/// <summary>Reads a detached tail page on a worker; the parent remains unhydrated.</summary>
+	std::optional<TemporarySideChatContext> PrepareTemporarySideChatContext(const std::filesystem::path& data_root,
+	    const ChatSession& parent, const std::function<bool()>& cancelled = {});
+	/// <summary>Builds a small candidate on the GUI thread without waiting for storage publication.</summary>
+	std::optional<ChatSession> BuildTemporarySideChatCandidate(AppState& app, const std::string& parent_id,
+	    const TemporarySideChatContext* prepared = nullptr, bool defer_context = false);
+	/// <summary>Adopts a worker-verified durable candidate after current-parent checks, without reading primary JSON.</summary>
+	bool AdoptTemporarySideChat(AppState& app, ChatSession candidate, const std::filesystem::path& saved_root,
+	    std::string_view saved_revision, const std::shared_ptr<const std::uint8_t>& parent_incarnation,
+	    const TemporarySideChatContext* prepared = nullptr);
+	/// <summary>Synchronous durability helper; the GUI bridge uses candidate/background-save/adoption instead.</summary>
+	bool CreateTemporarySideChat(AppState& app, const std::string& parent_id, std::string* created_id,
+	    const TemporarySideChatContext* prepared = nullptr);
 	bool RequestTemporarySideChatCleanup(AppState& app, const std::string& chat_id);
 	bool PollTemporarySideChatCleanup(AppState& app);
 	bool MigrateWorkspaceFolderOwnership(AppState& app);
