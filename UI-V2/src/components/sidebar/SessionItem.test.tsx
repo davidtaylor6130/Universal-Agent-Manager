@@ -1,6 +1,6 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
 import { SessionItem } from './SessionItem'
@@ -984,4 +984,40 @@ describe('SessionItem status icons', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
+})
+
+describe('SessionItem snooze actions', () => {
+  const originalSnooze = useAppStore.getState().setChatSnoozedUntil
+  afterEach(() => { useAppStore.setState({ setChatSnoozedUntil: originalSnooze }) })
+
+  it('opens the snooze options from the Active row hover action beside Done', () => {
+    useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ readySinceLastSelect: true }) } })
+    const { host, root } = renderSessionItem(true)
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Snooze Chat 1"]')!.click())
+      const menu = document.body.querySelector('[role="menu"][aria-label="Snooze Chat 1"]')
+      expect(menu?.querySelector('button')?.textContent).toBe('Snooze')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('shows the wake time on a snoozed row and wakes it from the Unsnooze action', () => {
+    const setChatSnoozedUntil = vi.fn(async () => ({ ok: true }))
+    useAppStore.setState({ setChatSnoozedUntil } as never)
+    const session = { ...makeSession(), snoozedUntilMs: Date.now() + 3_600_000 }
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SessionItem sessionId="chat-1" session={session} />))
+    try {
+      expect(host.textContent).toContain('until ')
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Unsnooze Chat 1"]')!.click())
+      expect(setChatSnoozedUntil).toHaveBeenCalledWith('chat-1', 0)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
 })

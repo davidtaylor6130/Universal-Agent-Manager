@@ -6,12 +6,12 @@ import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus,
+  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../types/session'
-import { ConfirmDialog, Tooltip, ViewportMenu } from '../ui'
+import { ConfirmDialog, IconButton, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
   chatGridLeaves,
@@ -26,6 +26,7 @@ import { CollectionMenuItems } from './CollectionMenuItems'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon } from '../shared/CustomIcon'
+import { reportAppFailure } from '../../utils/appFailure'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
 
 export function formatWorkingDuration(elapsedMs: number): string {
@@ -188,6 +189,13 @@ export function sidebarStatusIcon(kind: AcpAttentionKind, size = 12) {
   }
 }
 
+/** Wake time for a snoozed row: clock only today, weekday added for later days. */
+function formatWakeTime(untilMs: number): string {
+  const wake = new Date(untilMs)
+  const time = wake.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return wake.toDateString() === new Date().toDateString() ? time : `${wake.toLocaleDateString([], { weekday: 'short' })} ${time}`
+}
+
 const HOVER_FADE = 'transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0'
 
 export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick }: SessionItemProps) {
@@ -326,6 +334,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     return Boolean(source && !source.importedReadOnly && source.workspaceIsolationKind === 'gitWorktree' && source.workspaceWorktreeDirectory && source.folderId && (source.executionHostId || 'local') === 'local')
   })
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null)
+  const [snoozePos, setSnoozePos] = useState<{ x: number; y: number } | null>(null)
+  const snoozeRef = useRef<HTMLDivElement>(null)
+  const setChatSnoozedUntil = useAppStore((s) => s.setChatSnoozedUntil)
+  const snoozedUntilMs = sessionSummary.snoozedUntilMs
+  const isSnoozed = snoozedUntilMs > Date.now()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
@@ -424,6 +437,23 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       document.removeEventListener('keydown', onKey)
     }
   }, [showMenu])
+
+  // Snooze popover closes on outside click or Escape, like the row menu.
+  useEffect(() => {
+    if (!snoozePos) return
+    snoozeRef.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    const handler = (e: MouseEvent) => {
+      if (e.target instanceof Element && e.target.closest('[data-viewport-menu]')) return
+      if (snoozeRef.current && !snoozeRef.current.contains(e.target as Node)) setSnoozePos(null)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setSnoozePos(null) }
+    document.addEventListener('mousedown', handler)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [snoozePos])
 
   const commitRename = () => {
     const trimmed = editValue.trim()
@@ -535,21 +565,38 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                     <span className="shrink-0 text-[11px] tabular-nums transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
                   )}
                   {!isCompanionContext() && (
-                    <button
-                      type="button"
-                      aria-label={`Mark ${sessionName} done`}
-                      className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-1 rounded px-1 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
-                      style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
-                        void setChatSettled(sessionId, true)
-                      }}
-                      onDoubleClick={(e) => e.stopPropagation()}
-                    >
-                      <Check size={12} aria-hidden />
-                      Done
-                    </button>
+                    <span className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
+                      <button
+                        type="button"
+                        aria-label={`Mark ${sessionName} done`}
+                        className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+                        style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
+                          void setChatSettled(sessionId, true)
+                        }}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                      >
+                        <Check size={12} aria-hidden />
+                        Done
+                      </button>
+                      <IconButton
+                        size="sm"
+                        label={`Snooze ${sessionName}`}
+                        tooltip="Snooze"
+                        icon={<Clock size={12} aria-hidden />}
+                        aria-haspopup="menu"
+                        aria-expanded={snoozePos !== null}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (snoozePos) { setSnoozePos(null); return }
+                          const r = e.currentTarget.getBoundingClientRect()
+                          setSnoozePos({ x: r.right, y: r.bottom + 4 })
+                        }}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                      />
+                    </span>
                   )}
                   </span>
                 </>
@@ -650,6 +697,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
 
         {!editing && (
           <>
+            {!activityLayout && isSnoozed && (
+              <span className="inline-flex shrink-0 items-center gap-1 text-[10px] tabular-nums" style={{ color: 'var(--text-3)' }} title={`Wakes ${new Date(snoozedUntilMs).toLocaleString()}`}>
+                <Clock size={11} aria-hidden />
+                until {formatWakeTime(snoozedUntilMs)}
+              </span>
+            )}
             {!activityLayout && <div className={`ml-auto flex items-center gap-1 ${HOVER_FADE}`}>
               {lastOpenedLabel && (
                 <span
@@ -688,6 +741,21 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
               }`}
             >
+              {isSnoozed && (
+                <IconButton
+                  size="sm"
+                  label={`Unsnooze ${sessionName}`}
+                  tooltip="Wake chat now"
+                  icon={<AlarmClockOff size={13} aria-hidden />}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void setChatSnoozedUntil(sessionId, 0).then((result) => {
+                      if (!result.ok) reportAppFailure(`Could not wake "${sessionName}".`, result.error || 'Wake request failed.')
+                    })
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                />
+              )}
               <Tooltip label={isPinned ? 'Unpin chat' : 'Pin chat'} side="top">
                 <button
                   type="button"
@@ -744,6 +812,19 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         )}
         </>)}
       </div>
+
+      {snoozePos && (
+        <ViewportMenu
+          ref={snoozeRef}
+          point={snoozePos}
+          role="menu"
+          aria-label={`Snooze ${sessionName}`}
+          className="fixed z-50 rounded-md py-1 animate-fade-in"
+          style={{ minWidth: 170, background: 'var(--surface-up)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}
+        >
+          <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={snoozedUntilMs} />
+        </ViewportMenu>
+      )}
 
       {/* Context menu — anchored at the cursor / trigger position */}
       {menuPos && (
