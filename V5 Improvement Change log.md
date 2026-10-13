@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Providers and MCP | Bugfix | OpenCode Agent Import Default | OpenCode agent file imports with omitted mode default to canonical `both` for primary and subagent targets. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Usage and accounting | Bugfix | Codex Allowance Field Updates | Codex allowance updates replace only supplied fields and preserve unknown percentages as unknown. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Composer and queue | Bugfix | Cold History Retry | Failed-message retry hydrates cold paged history through guarded background preparation while preserving latest-message checks. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Performance and durability | Bugfix | Selected Model Launch Ownership | The repeated launch error was reported against installed alpha-84, and the verified alpha-85 fix is now installed after an authorized graceful restart with live retry still pending. | Implementation Verified; Full Automated Verification Passed; Alpha-85 Build Verified; Alpha-85 Installed; Reported Again 2026-10-13 in Alpha-84; Live Retry Pending; Un-Reviewed; Not User Tested |
@@ -434,6 +435,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Providers and MCP | Bugfix | OpenCode Agent Import Default | Omitted mode defaults to canonical `both` for primary and subagent targets; live acceptance remains pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Usage and accounting | Bugfix | Codex Allowance Field Updates | Fieldwise Codex allowance updates pass focused checks without fabricating unknown percentages; provider acceptance remains pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Integration | Bugfix | Main Ancestry Reconciliation | Review and user-test the reconciled main safeguards and preserved V5 workflows after build and exact frontend inventory verification. | Implementation Verified; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
 | Performance | Performance | Settings Interaction Latency | Shell isolation and idempotent themes pass code-path checks while reported live settings, host and theme delays remain under investigation against the 250-ms ceiling. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |

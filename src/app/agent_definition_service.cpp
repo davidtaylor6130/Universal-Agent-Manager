@@ -596,7 +596,10 @@ namespace uam
 		preview.description = fields.contains("description") ? Unquote(fields["description"]) : std::string{};
 		if (preview.provider_id == provider_ids::kOpenCodeCli)
 		{
-			preview.mode = uam::strings::TrimAndLowerAscii(Unquote(fields["mode"]));
+			// OpenCode's documented default is `all`; the UAM schema calls this `both`.
+			preview.mode = fields.contains("mode")
+			                   ? uam::strings::TrimAndLowerAscii(Unquote(fields["mode"]))
+			                   : "both";
 			if (preview.mode == "all") preview.mode = "both";
 		}
 		else preview.mode = "subagent";
