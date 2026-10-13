@@ -1408,6 +1408,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			effective_prompt = queued.text;
 			if (queued.computer_use_mode)
 			{
+				if (!app.settings.computer_use_globally_enabled || !chat.computer_use_enabled || !uam::computer_use::AvailableForChat(chat))
+				{
+					if (error_out != nullptr) *error_out = "Computer Use is no longer enabled for this chat.";
+					return false;
+				}
 				const std::string_view instructions = uam::computer_use::UsesUamBackend(chat)
 				                                          ? kUamComputerUsePrompt
 				                                          : kProviderComputerUsePrompt;
@@ -1818,6 +1823,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.memory_recall_preparation.reset();
 			session.memory_recall_position = recall_position;
 			session.memory_recall_query = recall_position ? first.text : std::string{};
+			session.turn_computer_use_mode = std::ranges::any_of(batch, [](const AcpQueuedUserPromptState& prompt) { return prompt.computer_use_mode; });
 			session.queued_prompt = std::move(effective_prompt);
 			session.turn_checkpoint_eligible = false;
 			session.crash_restart_attempts = 0;
@@ -2165,9 +2171,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out != nullptr) *error_out = "Queued input recovery is held because its saved journal is unreadable or mismatched.";
 				return false;
 			}
-			if (!UAM_ENABLE_COMPUTER_USE && computer_use_mode)
+			if (computer_use_mode && (!UAM_ENABLE_COMPUTER_USE || !app.settings.computer_use_globally_enabled || !chat.computer_use_enabled))
 			{
-				if (error_out != nullptr) *error_out = "Computer use is disabled in this build.";
+				if (error_out != nullptr) *error_out = "Computer Use is disabled in this build, globally, or for this chat.";
 				return false;
 			}
 			if (chat.execution_host_id != uam::execution_hosts::kLocalHostId && computer_use_mode)
@@ -2373,6 +2379,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		ChatSession& chat = *chat_ptr;
+		if (computer_use_mode && (!app.settings.computer_use_globally_enabled || !chat.computer_use_enabled || !uam::computer_use::AvailableForChat(chat)))
+		{
+			if (error_out != nullptr) *error_out = "Computer Use is not enabled for this chat.";
+			return false;
+		}
 		AcpSessionState* preparing_session = FindAcpSessionForChat(app, chat.id);
 		if (preparing_session && preparing_session->pending_agent_input && !preparing_session->pending_agent_input->resuming)
 		{
@@ -3366,7 +3377,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		queued.markdown_store_prompt_blocks = message.markdown_store_prompt_blocks;
 		queued.attachments = message.attachments;
 		queued.append_user_message = false;
-		queued.computer_use_mode = chat->computer_use_enabled;
+		queued.computer_use_mode = app.settings.computer_use_globally_enabled && chat->computer_use_enabled;
 		if (const Goal* active_goal = GoalService::FindActiveGoal(app, chat_id); active_goal != nullptr)
 		{
 			queued.goal_mode = true;
@@ -3468,7 +3479,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		queued.markdown_store_prompt_blocks = message.markdown_store_prompt_blocks;
 		queued.attachments = message.attachments;
 		queued.append_user_message = false;
-		queued.computer_use_mode = chat->computer_use_enabled;
+		queued.computer_use_mode = app.settings.computer_use_globally_enabled && chat->computer_use_enabled;
 		if (!SnapshotSelectedUamAgent(app, *chat, queued, error_out)) return false;
 		Goal* active_goal = nullptr;
 		if (!ResolveSmallModelGoal(app, *chat, message.content, false, {}, active_goal, error_out)) return false;
@@ -3635,6 +3646,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		session->queued_prompt.clear();
+		session->turn_computer_use_mode = false;
 		session->memory_recall_position.reset();
 		session->memory_recall_query.clear();
 		session->memory_recall_preparation.reset();
@@ -4005,6 +4017,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.last_error.clear();
 		}
 		session.queued_prompt.clear();
+		session.turn_computer_use_mode = false;
 		session.memory_recall_position.reset();
 		session.memory_recall_query.clear();
 		session.memory_recall_preparation.reset();
@@ -4991,6 +5004,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				changed = true;
 			}
+
 			if (ResumeStalledGoalLoopIfNeeded(app, session, chat, browser, GetAppTimeSeconds()))
 			{
 				changed = true;

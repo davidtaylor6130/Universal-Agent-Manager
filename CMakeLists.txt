@@ -1298,6 +1298,7 @@ if(UAM_BUILD_TESTS)
     src/common/utils/diagnostic_log.cpp
     tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp
+    tests/computer_use_global_policy_tests.cpp
     tests/remote_runner_tests.cpp
     tests/runner_startup_rollback_tests.cpp
     tests/remote_cli_elevation_tests.cpp

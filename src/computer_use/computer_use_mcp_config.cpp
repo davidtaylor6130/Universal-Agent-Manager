@@ -58,7 +58,7 @@ namespace uam::computer_use
 
 	bool AvailableForChat(const ChatSession& chat)
 	{
-		return UAM_ENABLE_COMPUTER_USE && (chat.execution_host_id.empty() || chat.execution_host_id == "local");
+		return UAM_ENABLE_COMPUTER_USE && chat.computer_use_globally_enabled && (chat.execution_host_id.empty() || chat.execution_host_id == "local");
 	}
 
 	std::string EffectiveBackend(const ChatSession& chat)
@@ -124,6 +124,8 @@ namespace uam::computer_use
 
 	std::string ClaudeMcpConfig(const ChatSession& chat)
 	{
+		if (!AvailableForChat(chat) || !UsesUamBackend(chat) || !IsPortableMcpChatId(chat.id))
+			return nlohmann::json({{"mcpServers", nlohmann::json::object()}}).dump();
 		return nlohmann::json({{"mcpServers", {{kMcpServerName, ServerDefinition(chat)}}}}).dump();
 	}
 

@@ -1,4 +1,5 @@
 #include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/provider/provider_ids.h"
@@ -360,11 +361,13 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildStructuredLaunchArgv(c
 	return argv;
 }
 
-std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::BuildStructuredLaunchEnvironment(const ProviderProfile&, const ChatSession&) const
+std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::BuildStructuredLaunchEnvironment(const ProviderProfile&, const ChatSession& chat) const
 {
 	// OpenCode ACP does not reliably forward child-session permission requests, so
 	// disable Task until the provider can mediate those requests without hanging.
 	// UAM's own native target grant is the approval boundary for these exact tools.
+	if (!uam::computer_use::AvailableForChat(chat))
+		return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny","uam-computer_computer_observe":"deny","uam-computer_computer_action":"deny"})"}};
 	return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny","uam-computer_computer_observe":"allow","uam-computer_computer_action":"allow"})"}};
 }
 

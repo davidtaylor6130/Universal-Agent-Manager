@@ -656,6 +656,7 @@ namespace uam
 		std::string last_turn_outcome;
 		std::string last_turn_error;
 		double turn_started_time_s = 0.0;
+		bool turn_computer_use_mode = false;
 		std::string queued_prompt;
 		bool defer_prompt_save = false;
 		std::shared_ptr<PendingAcpPromptDelivery> pending_prompt_delivery;

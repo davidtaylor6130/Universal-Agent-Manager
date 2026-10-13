@@ -30,6 +30,7 @@ Initial statuses are deliberately unsigned: no entry has been marked Complete ba
 
 | Group | Type | Change | Summary | Status |
 |---|---|---|---|---|
+| Security and consent | Bugfix | Global Computer Use Policy | Disabling global Computer Use blocks consent, launch, injection and action execution. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Import and attachments | Bugfix | Uncapped OpenCode Transcripts | OpenCode chat imports accept more than 10,000 messages while retaining captured-output bounds and per-record validation. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Usage and accounting | Bugfix | Lossless Usage JSON Paging | Frontend usage paging reconstructs complete JSON across an arbitrary number of byte-bounded pages. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
 | Remote settings | Code Only | Remote Host Instruction Backend | The backend optionally supplies inline host instructions through existing instruction bundles while retaining legacy file behavior. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested |
@@ -441,6 +442,7 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 
 | Group | Type | Change | Summary | Status | Owner |
 |---|---|---|---|---|---|
+| Security and consent | Bugfix | Global Computer Use Policy | Focused checks verify global Off blocks consent, launch, injection and actions; live acceptance remains pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Import and attachments | Bugfix | Uncapped OpenCode Transcripts | Imports above 10,000 messages pass focused checks; the reported 63-chat batch and GUI/live acceptance remain pending separately. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Usage and accounting | Bugfix | Lossless Usage JSON Paging | Frontend checks pass for byte-bounded paging; live usage acceptance remains pending. | Focused Verification Passed; Alpha-86 Build Verified; Claude Review; Un-Reviewed; Not User Tested | chat-1791918211573-01cfe1 |
 | Remote settings | Code Only | Remote Host Instruction Backend | Optional inline host instructions use existing instruction bundles and retain legacy file behavior; host and GUI acceptance remain pending. | Focused Verification Passed; Alpha-86 Build Verified; Un-Reviewed; Claude Review; Not User Tested | chat-1791918211573-01cfe1 |

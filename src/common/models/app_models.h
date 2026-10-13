@@ -468,6 +468,8 @@ struct ChatSession
 	std::string command_safety_tier = "off";
 	// Enablement and the selected OS target are intentionally runtime-only.
 	// Only the backend preference is persisted with the chat.
+	/// <summary>Launch-only policy snapshot; global consent is persisted in AppSettings.</summary>
+	bool computer_use_globally_enabled = true;
 	bool computer_use_enabled = false;
 	std::string computer_use_backend = "auto";
 	std::string computer_use_target_kind = "window";
@@ -692,6 +694,7 @@ struct AppSettings
 	std::string voice_input_server_model = "whisper-1";
 	std::string voice_input_api_key_env = "OPENAI_API_KEY";
 
+	bool computer_use_globally_enabled = true;
 	bool computer_use_allowlist_enabled = false;
 	std::vector<ComputerUseApplicationRule> computer_use_allowed_applications;
 	std::string active_provider_id = provider_build_config::FirstEnabledProviderId();

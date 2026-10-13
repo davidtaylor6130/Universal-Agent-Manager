@@ -1,3 +1,4 @@
+#include "computer_use/computer_use_mcp_config.h"
 #include "common/config/provider_availability.h"
 #include "common/config/settings_frontend_json.h"
 #include <atomic>
@@ -169,7 +170,7 @@ std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionSta
 	    chat.approval_mode, chat.command_safety_tier, session.current_model_id,
 	    session.current_mode_id, session.goal_turn_model_id, session.active_uam_agent_id,
 	    session.active_uam_agent_definition_hash, chat.memory_level, memory_policy::Resolve(app.settings, chat),
-	    app.settings.memory_recall_budget_bytes, chat.computer_use_enabled,
+	    app.settings.memory_recall_budget_bytes, app.settings.computer_use_globally_enabled, chat.computer_use_enabled,
 	    chat.computer_use_backend, chat.computer_use_target_id,
 	    chat.computer_use_target_process_id, chat.computer_use_target_input_mode,
 	    chat.claude_quota_continuation.id, chat.claude_quota_continuation.state,
@@ -539,6 +540,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.turn_serial = chat.execution_host_id == uam::execution_hosts::kLocalHostId
 	    ? 0 : std::max(session.turn_serial, chat.remote_turn_serial);
 	session.queued_prompt.clear();
+	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
 	session.memory_recall_preparation.reset();
@@ -995,6 +997,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	std::string startup_error;
 	const std::filesystem::path workspace_root = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	ChatSession launch_chat = remote ? chat : LocalLaunchMetadata(chat);
+	launch_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	if (session.active_uam_agent_execution_capability == "uam-central-native-setup") launch_chat.uam_agent_id = session.active_uam_agent_id;
 	if (session.active_uam_agent_workspace_access == "read") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) launch_chat.model_id = session.goal_turn_model_id;
@@ -1340,6 +1343,7 @@ bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	const std::string resolved_resume_id = session.goal_internal_session ? std::string{} : ResolvedAcpResumeIdForChat(app, chat);
 
 	ChatSession resume_chat = chat;
+	resume_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 	resume_chat.native_session_id = resume_id.empty() ? resolved_resume_id : resume_id;
 	if (session.provider_id == uam::provider_ids::kCodexCli)
 	{
@@ -1439,7 +1443,9 @@ bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, Ch
 	session.ignore_session_updates_until_ready = false;
 	session.lifecycle_state = kAcpLifecycleStarting;
 
-	nlohmann::json retry_request = BuildNewSessionRequest(retry_id, cwd, &chat);
+	ChatSession retry_chat = chat;
+	retry_chat.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
+	nlohmann::json retry_request = BuildNewSessionRequest(retry_id, cwd, &retry_chat);
 	if (!AddWorkspaceMcpServers(app, session, uam::acp_methods::kSessionNew, cwd,
 	                            retry_request))
 	{
@@ -1785,6 +1791,7 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
 	session.queued_prompt.clear();
+	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
 	session.memory_recall_preparation.reset();
@@ -1815,6 +1822,13 @@ bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& s
 
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (session.turn_computer_use_mode && (!app.settings.computer_use_globally_enabled ||
+	    !chat.computer_use_enabled || !uam::computer_use::AvailableForChat(chat)))
+	{
+		session.last_error = "Computer Use was disabled before prompt delivery.";
+		session.queue_held = chat.acp_queue_held = true;
+		return false;
+	}
 	if ((session.goal_queue_admission == AcpSessionState::GoalQueueAdmission::Pending ||
 	     session.goal_queue_admission == AcpSessionState::GoalQueueAdmission::Held) &&
 	    session.goal_queue_admission_turn_serial == session.turn_serial) return false;
@@ -1889,6 +1903,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			RestorePendingPromptDelivery(session, chat);
 			ScheduleChatSave(app, chat, 0.0);
 			session.queued_prompt.clear();
+			session.turn_computer_use_mode = false;
 			session.memory_recall_position.reset();
 			session.memory_recall_query.clear();
 			session.memory_recall_preparation.reset();
@@ -2338,6 +2353,7 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.cancel_requested_time_s = 0.0;
 	session.inactivity_timeout_pending = false;
 	session.queued_prompt.clear();
+	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
 	session.memory_recall_preparation.reset();
@@ -2364,6 +2380,7 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		// Only a newly admitted explicit control can retry its retained exact queued intent.
 		session.queued_prompt.clear();
+		session.turn_computer_use_mode = false;
 	}
 	if (!async_receipt && session.goal_queue_admission != AcpSessionState::GoalQueueAdmission::None &&
 	    session.goal_queue_admission_turn_serial == session.turn_serial) return false;

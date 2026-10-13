@@ -284,6 +284,8 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", !chat.service_tier_explicit ? "" : service_tier.empty() ? "service_tier=null" : "service_tier=\"" + service_tier + "\"");
 
 	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
+	if (!settings.computer_use_globally_enabled || !uam::computer_use::AvailableForChat(chat))
+		uam::provider_runtime_internal::AppendLiteralArgs(argv, {"--disable", "computer_use"});
 	return argv;
 }
 

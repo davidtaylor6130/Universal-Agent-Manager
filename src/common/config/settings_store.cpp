@@ -97,6 +97,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kExecutionRoutingKey = "execution_routing";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
+	constexpr std::string_view kComputerUseGloballyEnabledKey = "computer_use_globally_enabled";
 	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
 	constexpr std::string_view kComputerUseAllowedApplicationsKey = "computer_use_allowed_applications";
 
@@ -657,6 +658,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
 	WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 	WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
+	WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
 	WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
 	nlohmann::json allowed = nlohmann::json::array();
 	for (const auto& rule : normalized.computer_use_allowed_applications)
@@ -955,6 +957,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kUamAgentCycleShortcutKey)
 		{
 			settings.uam_agent_cycle_shortcut = decoded_value;
+		}
+		else if (key == kComputerUseGloballyEnabledKey)
+		{
+			settings.computer_use_globally_enabled = uam::parse::BoolOr(value, false);
 		}
 		else if (key == kComputerUseAllowlistEnabledKey)
 		{

@@ -53,6 +53,13 @@ namespace uam::computer_use
 			return AppPaths::DefaultDataRootPath();
 		}
 
+		bool LoadLivePolicy(AppSettings& settings)
+		{
+			const SettingsLoadResult result = SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings);
+			// A recovery backup may contain an older grant, so live control fails closed.
+			return result.loaded && !result.recovered_from_backup;
+		}
+
 		nlohmann::json ObserveSchema()
 		{
 			return {
@@ -353,6 +360,11 @@ namespace uam::computer_use
 
 			std::string ControlState() const
 			{
+				// Re-read policy at each input cancellation boundary, including an already-running helper.
+				AppSettings settings;
+				if (!LoadLivePolicy(settings) ||
+				    !settings.computer_use_globally_enabled)
+					return "stopped";
 				std::string text;
 				if (!uam::io::TryReadTextFile(m_controlFile, text, kMaxControlBytes))
 					return "stopped";
@@ -473,6 +485,8 @@ namespace uam::computer_use
 
 			std::optional<std::string> ValidateTargetPolicy(const Target& target, const AppSettings& settings) const
 			{
+				if (!settings.computer_use_globally_enabled)
+					return "Computer Use is disabled globally.";
 				if (target.kind != "window")
 					return "Computer Use requires an application window. Whole-display fallback is not allowed.";
 				if (!settings.computer_use_allowlist_enabled)
@@ -489,7 +503,7 @@ namespace uam::computer_use
 			std::optional<std::string> ValidateTargetPolicy(const Target& target) const
 			{
 				AppSettings settings;
-				if (!SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings).loaded)
+				if (!LoadLivePolicy(settings))
 					return "Computer Use policy could not be read; control is blocked.";
 				if (const auto error = ValidateTargetPolicy(target, settings)) return error;
 				return ValidateApplicationScope(ApplicationIdentityForTarget(target.kind, target.id, target.process_id));
@@ -498,7 +512,7 @@ namespace uam::computer_use
 			std::vector<Target> VisibleTargets(const std::vector<Target>& targets) const
 			{
 				AppSettings settings;
-				if (!SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings).loaded)
+				if (!LoadLivePolicy(settings))
 					return {};
 				std::vector<Target> visible;
 				for (const Target& target : targets)
@@ -553,8 +567,10 @@ namespace uam::computer_use
 					if (!application) return error + (application_error.empty() ? "" : " " + application_error);
 					if (const auto scope_error = ValidateApplicationScope(*application, query)) return scope_error;
 					AppSettings settings;
-					if (!SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings).loaded)
+					if (!LoadLivePolicy(settings))
 						return "Computer Use settings could not be read; application launch was blocked.";
+					if (!settings.computer_use_globally_enabled || ControlState() != control_state)
+						return "Computer Use was disabled before opening the application.";
 					if (settings.computer_use_allowlist_enabled && !std::ranges::any_of(settings.computer_use_allowed_applications, [&application](const ComputerUseApplicationRule& rule) {
 						return (rule.identity_kind == "bundleid" || rule.identity_kind == "executablepath") && rule.identity == application->id;
 					})) return "This application is not allowed by Computer Use Settings.";
@@ -597,7 +613,7 @@ namespace uam::computer_use
 					return permission_error.empty() ? "Computer use permissions are unavailable." : permission_error;
 				}
 				AppSettings settings;
-				if (!SettingsStore::Load(AppPaths::SettingsFilePath(ResolveDataRoot()), settings).loaded)
+				if (!LoadLivePolicy(settings))
 					return "Computer Use policy could not be read; control is blocked.";
 				if (const auto policy_error = ValidateTargetPolicy(*requested, settings))
 					return *policy_error;
@@ -1174,6 +1190,13 @@ namespace uam::computer_use
 				    }
 					    else if (settings_action == "request")
 					    {
+						    AppSettings settings;
+						    if (!LoadLivePolicy(settings) || !settings.computer_use_globally_enabled)
+						    {
+							    result = {{"error", "Computer Use is disabled globally or its live policy is unavailable."}, {"granted", false}};
+							    std::cout << result.dump() << '\n' << std::flush;
+							    return 1;
+						    }
 						    const std::string permission = StringArgument(arguments, "--permission");
 						    if (permission != "screenRecording" && permission != "accessibility") { result = {{"error", "permission must be screenRecording or accessibility."}}; std::cout << result.dump() << '\n' << std::flush; return 1; }
 						    const bool granted = permission == "screenRecording" ? RequestCapturePermission(&error) : permission == "accessibility" ? RequestActionPermission(&error) : false;

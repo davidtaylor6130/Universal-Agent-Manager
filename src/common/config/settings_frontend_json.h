@@ -159,6 +159,7 @@ namespace uam::settings_frontend_json
 		settings_json["executionRouting"] = SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing);
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
 		settings_json["uamAgentCycleShortcut"] = settings.uam_agent_cycle_shortcut;
+		settings_json["computerUseGloballyEnabled"] = settings.computer_use_globally_enabled;
 		settings_json["computerUseAllowlistEnabled"] = settings.computer_use_allowlist_enabled;
 		settings_json["computerUseAllowedApplications"] = nlohmann::json::array();
 		for (const auto& rule : settings.computer_use_allowed_applications)

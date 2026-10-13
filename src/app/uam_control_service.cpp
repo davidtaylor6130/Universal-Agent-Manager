@@ -667,6 +667,8 @@ namespace uam
 			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root_chat, capability, true))
 				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			if (!app.settings.computer_use_globally_enabled)
+				return {.error = "Computer Use is disabled globally."};
 			if (!uam::computer_use::AvailableForChat(*chat) || !uam::computer_use::UsesUamBackend(*chat))
 				return {.error = "UAM Computer Use is unavailable for this chat or execution host."};
 			if (uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
@@ -1300,6 +1302,8 @@ namespace uam
 			}
 			else if (answer != "Allow" && answer != "Deny")
 				return fail("Choose Allow or Deny for this UAM request.");
+			if (computer_use && !app.settings.computer_use_globally_enabled)
+				return fail("Computer Use is disabled globally.");
 			ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 			ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (chat == nullptr || !ControlEnabled(root_chat, capability, true) ||

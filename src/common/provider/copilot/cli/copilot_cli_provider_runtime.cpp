@@ -370,7 +370,7 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildStructuredLaunchArgv(co
 {
 	std::vector<std::string> argv = {"copilot", "--acp", "--stdio"};
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--effort", NormalizeCopilotReasoningEffort(chat.reasoning_effort));
-	if (uam::computer_use::UsesUamBackend(chat) && uam::computer_use::IsPortableMcpChatId(chat.id))
+	if (uam::computer_use::AvailableForChat(chat) && uam::computer_use::UsesUamBackend(chat) && uam::computer_use::IsPortableMcpChatId(chat.id))
 	{
 		argv.push_back("--allow-tool=uam-computer(computer_observe),uam-computer(computer_action)");
 	}
