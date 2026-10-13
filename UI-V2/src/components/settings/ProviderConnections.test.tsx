@@ -14,11 +14,11 @@ const server = { id: 'docs', name: 'Docs', executionHostId: '', workspaceDirecto
 const status = (hostId = 'local') => ({ executionHostId: hostId, connectedProofAvailable: false, handshakeProofAvailable: false, computerUseBuiltInAvailable: hostId === 'local', providers: SUPPORTED_CLI_PROVIDER_IDS.map(providerId => ({ providerId, status: 'configured-unverified', detail: '', activeSessionCount: 0, configuredSessionCount: 0, uamControlEnabled: true, sharedSetupEnabled: true, mcpServers: [{ id: 'docs', name: 'Docs', enabled: true }] })) })
 beforeEach(() => {
   vi.mocked(sendToCEF).mockReset().mockImplementation(async request => ({ ok: true, data: status(request.payload?.executionHostId as string) }))
-  useAppStore.setState(state => ({ sessions: [], mcpServers: [server], providers: [], executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], centralProviderConfiguration: { ...state.centralProviderConfiguration, enabled: true, uamControlEnabled: true }, cliVersionManager: { providers: [], remoteProviders: [] } }))
+  useAppStore.setState(state => ({ settingsScopeHostId: '*', sessions: [], mcpServers: [server], providers: [], executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], centralProviderConfiguration: { ...state.centralProviderConfiguration, enabled: true, uamControlEnabled: true }, cliVersionManager: { providers: [], remoteProviders: [] } }))
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
 })
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers() })
-async function render(providerId?: string) { await act(async () => root.render(<ProviderConnections providerId={providerId} onMcpSelect={vi.fn()} onPreferencesSelect={vi.fn()} />)) }
+async function render(providerId?: string, selectedHostId?: string) { await act(async () => root.render(<ProviderConnections providerId={providerId} selectedHostId={selectedHostId} onMcpSelect={vi.fn()} onPreferencesSelect={vi.fn()} />)) }
 async function click(label: string) { await act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click()) }
 
 it('renders six compact provider rows with all server columns and no guessed connection success', async () => {
@@ -29,14 +29,14 @@ it('renders six compact provider rows with all server columns and no guessed con
   expect(host.textContent).not.toContain('enabled server definitions')
   expect(host.textContent).not.toContain('Connected')
   expect(host.querySelector('[role="checkbox"][aria-label="Codex Docs"]')?.getAttribute('aria-checked')).toBe('true')
-  expect(host.querySelector('[role="tablist"][aria-label="Provider settings host"]')).not.toBeNull()
+  expect(host.querySelector('[role="tablist"][aria-label="Provider settings host"]')).toBeNull()
 })
 
 it('shows installations and Computer Use availability for the selected host', async () => {
   useAppStore.setState({ cliVersionManager: { providers: [], remoteProviders: [{ providerId: 'codex-cli', executionHostId: 'ssh-lab', installedVersion: '9.1', installMethod: 'npm', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'verified', message: '', running: false, lastCommand: '', lastOutput: '' }] } })
   await render('codex-cli')
   expect(host.textContent).not.toContain('9.1')
-  await click('Lab')
+  await render('codex-cli', 'ssh-lab')
   expect(host.textContent).toContain('9.1')
   expect(host.textContent).not.toContain('npm')
   expect(host.querySelector('[aria-label="Codex Computer Use"]')?.getAttribute('aria-checked')).toBe('false')
@@ -88,7 +88,8 @@ it('refreshes manually, after configuration changes and on a modest mounted inte
 it('rejects stale host replies and wrong-host mutation replies', async () => {
   let finish!: (value: unknown) => void
   vi.mocked(sendToCEF).mockImplementationOnce(() => new Promise(resolve => { finish = resolve as typeof finish }))
-  await render('codex-cli'); await click('Lab')
+  await render('codex-cli')
+  await render('codex-cli', 'ssh-lab')
   const old = status(); old.providers.find(row => row.providerId === 'codex-cli')!.uamControlEnabled = false
   await act(async () => finish({ ok: true, data: old }))
   expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('true')

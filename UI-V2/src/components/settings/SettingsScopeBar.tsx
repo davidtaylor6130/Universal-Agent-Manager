@@ -4,13 +4,15 @@ import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 
 /**
  * Which computer the settings on this page apply to. Only SSH hosts are offered;
- * "This computer" is always covered by "All environments". Disabled until the backend
- * advertises per-computer settings, and the scope then stays "All environments".
+ * "This computer" is always covered by "All environments". The selector is enabled where
+ * per-computer actions exist; saves are only sent per host once the backend supports it.
  */
-export function SettingsScopeBar({ hosts, value, supported, onChange }: {
+export function SettingsScopeBar({ hosts, value, selectorEnabled, supported, onChange }: {
   hosts: ExecutionHost[]
   /** Effective scope: SETTINGS_ALL_ENVIRONMENTS or a host id. */
   value: string
+  selectorEnabled: boolean
+  /** Backend accepts scopeExecutionHostId on saves. */
   supported: boolean
   onChange: (hostId: string) => void
 }) {
@@ -24,13 +26,15 @@ export function SettingsScopeBar({ hosts, value, supported, onChange }: {
     <div className="mb-4 grid gap-1.5">
       <div className="flex flex-wrap items-center gap-3">
         <label htmlFor="settings-scope" className="text-xs font-medium" style={{ color: 'var(--text-2)' }}>Applying settings for</label>
-        <Tooltip label={supported ? undefined : 'Per-computer settings need an update to UAM'}>
+        <Tooltip label={selectorEnabled ? undefined : 'Per-computer settings need an update to UAM'}>
           <span className="inline-flex">
-            <MenuSelect id="settings-scope" label="Applying settings for" value={supported ? value : SETTINGS_ALL_ENVIRONMENTS} options={options} disabled={!supported} onChange={onChange} />
+            <MenuSelect id="settings-scope" label="Applying settings for" value={selectorEnabled ? value : SETTINGS_ALL_ENVIRONMENTS} options={options} disabled={!selectorEnabled} onChange={onChange} />
           </span>
         </Tooltip>
       </div>
-      {supported && selected && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Changes here apply only to {selected.label}.</p>}
+      {selectorEnabled && selected && (supported
+        ? <p className="text-xs" style={{ color: 'var(--text-3)' }}>Changes here apply only to {selected.label}.</p>
+        : <p className="text-xs" style={{ color: 'var(--text-3)' }}>Computer actions here use {selected.label}. Defaults and MCP lists still apply to all environments until UAM is updated.</p>)}
     </div>
   )
 }

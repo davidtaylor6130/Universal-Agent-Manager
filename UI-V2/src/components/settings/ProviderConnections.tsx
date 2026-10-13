@@ -21,24 +21,22 @@ const MAX_SERVER_COLUMNS = 3
 
 interface Props {
   providerId?: string
+  /** Computer whose provider status is shown; chosen with the Settings scope bar. */
   selectedHostId?: string
-  onHostChange?: (id: string) => void
   onProviderSelect?: (id: string) => void
   onMcpSelect: () => void
   onPreferencesSelect: () => void
 }
 
 /** Provider controls show effective next-launch configuration; connection status needs live evidence. */
-export function ProviderConnections({ providerId, selectedHostId, onHostChange, onProviderSelect, onMcpSelect, onPreferencesSelect }: Props) {
+export function ProviderConnections({ providerId, selectedHostId, onProviderSelect, onMcpSelect, onPreferencesSelect }: Props) {
   const hosts = useAppStore(useShallow(state => state.executionHosts))
   const runtimeProviders = useAppStore(useShallow(state => state.providers))
   const versions = useAppStore(state => state.cliVersionManager)
   const central = useAppStore(state => state.centralProviderConfiguration)
   const servers = useAppStore(useShallow(state => state.mcpServers))
   const computerUseEnabled = useAppStore(state => state.computerUseEnabled)
-  const [ownHostId, setOwnHostId] = useState('local')
-  const hostId = selectedHostId ?? ownHostId
-  const setHostId = onHostChange ?? setOwnHostId
+  const hostId = selectedHostId ?? 'local'
   const [busy, setBusy] = useState(false)
   /** The one switch whose save is in flight; only it shows the pending state. */
   const [pendingKey, setPendingKey] = useState('')
@@ -141,9 +139,6 @@ export function ProviderConnections({ providerId, selectedHostId, onHostChange, 
   const glyph = (label: string, available: boolean | undefined, title: string) => <button type="button" role="checkbox" disabled className="uam-prov-avail" data-state={available === undefined ? 'unknown' : available ? 'on' : 'off'} aria-label={available === undefined ? `${label} (unknown)` : label} aria-checked={available === undefined ? 'mixed' : available} title={title}>{available ? <Check size={13}/> : <Minus size={13}/>}</button>
   return <div className="space-y-3">
     <div className="flex items-center gap-2 flex-wrap">
-      <div role="tablist" aria-label="Provider settings host" className="uam-prov-seg">
-        {[{ id: 'local', label: 'This computer' }, ...hosts.filter(host => host.id !== 'local')].map(host => <button type="button" key={host.id} role="tab" className="uam-prov-seg__item" aria-label={host.label} aria-selected={host.id === activeHostId} onClick={() => setHostId(host.id)}>{host.label}</button>)}
-      </div>
       <IconButton size="sm" variant="ghost" label="Refresh provider connections" tooltip="Check connections again" disabled={busy} onClick={() => setRefresh(value => value + 1)} icon={<RefreshCw size={14} className={!status && !statusError ? 'uam-prov-spin' : undefined}/>}/>
       <div className="ml-auto flex gap-1">
         <Button size="sm" variant="ghost" onClick={onPreferencesSelect}>Shared agent preferences</Button>

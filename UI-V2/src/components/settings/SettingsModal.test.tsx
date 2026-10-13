@@ -13,6 +13,7 @@ describe('SettingsModal memory settings', () => {
     vi.restoreAllMocks()
     window.cefQuery = undefined
     useAppStore.setState({
+      settingsScopeHostId: '*',
 	  folders: [{ id: 'project', name: 'Project', parentId: null, directory: '/tmp/project', isExpanded: true, createdAt: new Date() }],
 	  providerModelCatalogs: [],
       providers: [
@@ -254,7 +255,7 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
     act(() => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'Download latest')!.click())
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeTruthy()
-    act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
+    act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeNull()
     expect(host.textContent).toContain('Installation on Lab')
     expect(host.textContent).toContain('8.0')
@@ -271,9 +272,9 @@ describe('SettingsModal memory settings', () => {
     }))
     const { host, root } = renderModal()
     act(() => host.querySelector<HTMLButtonElement>('nav [aria-label="Overview"]')!.click())
-    act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
+    act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Provider connection overview"] button')).find(button => button.querySelector('.uam-prov-provider__name')?.textContent === 'Codex')!.click())
-    expect(host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(useAppStore.getState().settingsScopeHostId).toBe('ssh-lab')
     expect(host.textContent).toContain('Installation on Lab')
     expect(host.textContent).toContain('8.0')
     act(() => root.unmount()); host.remove()
@@ -287,7 +288,7 @@ describe('SettingsModal memory settings', () => {
     }))
     const { host, root } = renderModal()
     openProviderSection(host, 'Codex')
-    act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
+    act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
     act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent === 'Download latest')!.click())
@@ -308,7 +309,7 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Codex CLI version settings"]')?.click())
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
     expect(host.textContent).toContain('Version check could not start.')
-    act(() => host.querySelector<HTMLButtonElement>('[role="tab"][aria-label="Lab"]')!.click())
+    act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
     expect(host.textContent).not.toContain('Version check could not start.')
     act(() => root.unmount()); host.remove()
   })
