@@ -101,7 +101,7 @@ function state(): Json {
     settings: {
       activeProviderId: 'claude-cli', theme: localStorage.getItem('uam-theme') ?? 'dark', memoryEnabledDefault: true, memoryIdleDelaySeconds: 60, memoryRecallBudgetBytes: 8192,
       goalMaxLoopIterations: 10, updateChecksEnabled: true, automaticProviderUpdates: false, updateLastCheckedAt: iso(3600000), dismissedUpdateVersions: {},
-      memoryLastStatus: '', memoryWorkerBindings: {}, gitEnabled: true, svnEnabled: false, executionHosts, computerUseEnabled, providerAgentImport: true, branchSwitching: true, hostScopedSettings: true,
+      memoryLastStatus: '', memoryWorkerBindings: {}, gitEnabled: true, svnEnabled: false, executionHosts, computerUseGloballyEnabled: computerUseEnabled, branchSwitching: true, hostScopedSettings: true,
       defaultNewChatProviderId: 'claude-cli',
       executionRouting: { enabled: false, hosts: [], repositoryMatching: true },
     },
@@ -162,13 +162,7 @@ async function handle(action: string, payload: Json): Promise<unknown> {
     case 'getChatMessages': return messagesResponse(payload.chatId as string)
     case 'selectSession': selectedChatId = payload.chatId as string; setTimeout(push, 0); return {}
     case 'getUsageHistory': return usage(payload)
-    case 'setComputerUseEnabled': await sleep(500); computerUseEnabled = Boolean(payload.enabled); setTimeout(push, 0); return {}
-    case 'listProviderAgents': await sleep(700); return { agents: [
-      { id: 'reviewer', name: 'Code reviewer', description: 'Reviews diffs for bugs and style', sourcePath: `~/.config/${payload.providerId}/agents/reviewer.md` },
-      { id: 'planner', name: 'Planner', description: 'Breaks work into steps', sourcePath: `~/.config/${payload.providerId}/agents/planner.md`, alreadyImported: true },
-      { id: 'docs', name: 'Docs writer', sourcePath: `~/.config/${payload.providerId}/agents/docs.md` },
-    ] }
-    case 'importProviderAgents': await sleep(600); return { imported: (payload.agentIds as string[]).length - 1, failed: [{ id: (payload.agentIds as string[])[0], error: 'File is not valid Markdown front matter.' }] }
+    case 'setComputerUseSettings': await sleep(500); if (typeof payload.computerUseGloballyEnabled === 'boolean') computerUseEnabled = payload.computerUseGloballyEnabled; setTimeout(push, 0); return { computerUseGloballyEnabled: computerUseEnabled, allowlistEnabled: false }
     case 'createSession': {
       const id = `c-${Date.now()}`
       messagesByChat[id] = []

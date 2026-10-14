@@ -682,11 +682,10 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
-  computerUseEnabled?: boolean
+  /** Global Computer Use consent (settings.computerUseGloballyEnabled). Off when absent. */
+  computerUseGloballyEnabled?: boolean
   computerUseAllowlistEnabled?: boolean
   computerUseAllowedApplications?: ComputerUseAllowedApplication[]
-  /** Backend supports importing agents from provider configuration. Hidden when absent or false. */
-  providerAgentImport?: boolean
 
   /** Backend supports listing and switching a chat workspace's git branch. Tab stays display-only when absent or false. */
   branchSwitching?: boolean

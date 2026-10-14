@@ -1705,6 +1705,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
         instructionFile: stringOr(entry.instructionFile),
+        instructionText: typeof entry.instructionText === 'string' ? entry.instructionText : undefined,
         startupEnabled: booleanOr(entry.startupEnabled, false),
         cliUpdatesAsAdmin: booleanOr(entry.cliUpdatesAsAdmin, false),
         startupStatus: stringOr(entry.startupStatus, 'disabled'),
@@ -1754,9 +1755,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     executionHosts,
     favoriteUamAgentIds,
     uamAgentCycleShortcut,
-    computerUseEnabled: typeof value.computerUseEnabled === 'boolean' ? value.computerUseEnabled : undefined,
+    computerUseGloballyEnabled: typeof value.computerUseGloballyEnabled === 'boolean' ? value.computerUseGloballyEnabled : undefined,
     computerUseAllowlistEnabled: booleanOr(value.computerUseAllowlistEnabled, false),
-    providerAgentImport: typeof value.providerAgentImport === 'boolean' ? value.providerAgentImport : undefined,
     branchSwitching: typeof value.branchSwitching === 'boolean' ? value.branchSwitching : undefined,
     hostScopedSettings: typeof value.hostScopedSettings === 'boolean' ? value.hostScopedSettings : undefined,
     computerUseAllowedApplications: Array.isArray(value.computerUseAllowedApplications)

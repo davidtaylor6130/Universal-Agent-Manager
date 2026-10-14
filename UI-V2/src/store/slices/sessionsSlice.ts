@@ -1697,7 +1697,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         payload: options,
       })
       if (!response.ok) return false
-      await get().refreshUamAgents(options.chatId)
+      if (options.chatId) await get().refreshUamAgents(options.chatId)
       return true
     },
 

@@ -21,6 +21,8 @@ export interface ExecutionHost {
   runnerDirectory?: string
   runnerProtocolVersion?: number
   instructionFile?: string
+  /** Inline host instructions. Absent or null keeps the legacy instruction file; an explicit empty string suppresses it. */
+  instructionText?: string | null
   cliUpdatesAsAdmin?: boolean
   startupEnabled?: boolean
   startupStatus?: string

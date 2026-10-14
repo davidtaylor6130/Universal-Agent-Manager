@@ -274,7 +274,7 @@ it('switches Computer Use from the built-in row, disables it in flight and repor
   let finish!: (value: unknown) => void
   vi.mocked(sendToCEF).mockImplementationOnce((() => new Promise(resolve => { finish = resolve })) as never)
   await act(async () => toggle.click())
-  expect(sendToCEF).toHaveBeenCalledWith({ action: 'setComputerUseEnabled', payload: { enabled: false } })
+  expect(sendToCEF).toHaveBeenCalledWith({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: false } })
   expect(toggle.disabled).toBe(true)
   await act(async () => finish({ ok: false, error: 'Computer Use could not be turned off.' }))
   expect(toggle.disabled).toBe(false)
