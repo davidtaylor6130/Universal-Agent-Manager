@@ -322,7 +322,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         aria-modal="true"
         aria-label="New chat"
         tabIndex={-1}
-        className="flex max-h-[calc(100vh-32px)] w-full max-w-lg flex-col overflow-hidden mx-4"
+        className="flex max-h-[calc(100vh-32px)] w-full max-w-4xl flex-col overflow-hidden mx-4"
         style={{
           background: 'var(--surface)',
           borderRadius: 'var(--r-lg)',
@@ -332,7 +332,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
       >
         {/* Header */}
         <div
-          className="flex shrink-0 items-center justify-between px-5 py-4"
+          className="flex shrink-0 items-center justify-between px-5 py-3"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
           <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
@@ -341,7 +341,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <IconButton icon={<X size={16} />} label="Close new chat" disabled={creatingChat} onClick={requestClose} />
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-5">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3 md:grid md:grid-cols-2 md:items-start md:gap-x-5 md:space-y-0">
+          <div className="min-w-0 space-y-3">
           {/* Name */}
           <div>
             <input
@@ -364,7 +365,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             />
           </div>
 
-          <section aria-label="Workspace" className="space-y-4">
+          <section aria-label="Workspace" className="space-y-3">
           <h3 className="-mb-2 font-medium uppercase" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)', letterSpacing: '0.08em' }}>Workspace</h3>
           <div>
           <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Runs on</div>
@@ -384,7 +385,6 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) { if (newChatWorktreeContext) setNewChatModalOpen(true, folderId, null); setSourceContextInvalid(false); setChatError(''); setRoutingMode('automatic') } else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
           </div>
-          {SSH_ENABLED && <div className="-mt-1 flex justify-end"><Button variant="ghost" size="sm" leadingIcon={<Route size={13} />} disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button></div>}
           {hostIssue && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{hostIssue}</p>}
 
           {/* Folder */}
@@ -446,7 +446,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
                 )}
               </div>
 			  <p className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>
-				{selectedFolder ? 'This path is owned by the selected workspace.' : `Enter an absolute path interpreted only by ${selectedExecutionHost?.label}.`} Computer Use is disabled for remote chats.
+				{selectedFolder ? 'Owned by the selected workspace.' : `Read only by ${selectedExecutionHost?.label}.`} Computer Use is off for remote chats.
               </p>
             </div>
           )}
@@ -457,8 +457,17 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             </Button>
           </div>}
           {workspaceError && <p id="new-chat-workspace-error" role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{workspaceError}</p>}
+          {SSH_ENABLED && (
+            <details className="-mt-1">
+              <summary className="cursor-pointer select-none text-xs" style={{ color: 'var(--text-3)' }}>More options</summary>
+              <div className="mt-2 flex justify-start">
+                <Button variant="ghost" size="sm" leadingIcon={<Route size={13} />} disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button>
+              </div>
+            </details>
+          )}
           </section>
-          <section aria-label="Provider and model" className="space-y-4">
+          </div>
+          <section aria-label="Provider and model" className="flex min-w-0 flex-col gap-3">
           <div className="-mb-2 flex items-center justify-between gap-2">
             <h3 className="font-medium uppercase" style={{ color: 'var(--text-3)', fontSize: 'var(--fs-xs)', letterSpacing: '0.08em' }}>Provider and model</h3>
             <IconButton
@@ -471,7 +480,6 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <div
             className="overflow-hidden"
             style={{
-              height: 320,
               border: '1px solid var(--border)',
               borderRadius: 'var(--r-md)',
               opacity: routingMode === 'automatic' ? 0.5 : 1,
@@ -482,7 +490,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               providers={providers} providerId={providerId} currentModelId={selectedModelId}
               activeOptions={modelOptions} activeLoading={cachedAcp?.modelsLoading} activeError={cachedAcp?.modelRefreshError}
               modelDisabled={routingMode === 'automatic'} canChangeProvider={routingMode !== 'automatic'}
-              workspaceDirectory={selectedWorkspace} executionHostId={executionHostId} listHeight={240}
+              workspaceDirectory={selectedWorkspace} executionHostId={executionHostId} listHeight={400}
               onClose={requestClose}
               onSelect={(nextProviderId, nextModelId) => {
                 if (nextProviderId !== providerId) {
@@ -544,7 +552,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         {/* Footer */}
         {chatError && <div role="alert" className="px-5 pt-3 text-xs" style={{ color: 'var(--error)' }}>{chatError}</div>}
         <div
-          className="flex shrink-0 items-center justify-end gap-2 px-5 py-4"
+          className="flex shrink-0 items-center justify-end gap-2 px-5 py-3"
           style={{ borderTop: '1px solid var(--border)' }}
         >
           <Button variant="ghost" size="md" disabled={creatingChat} onClick={requestClose}>Cancel</Button>
