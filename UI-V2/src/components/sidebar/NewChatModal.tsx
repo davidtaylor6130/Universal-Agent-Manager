@@ -1,5 +1,6 @@
 import { ExecutionRoutingDialog, RUNNER_STATUS } from '../modals/ExecutionRoutingDialog'
-import { canRouteAutomatically } from '../../types/executionRouting'
+import { canRouteAutomatically, sanitizeRepositoryMatches, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
+import { sendToCEF } from '../../ipc/cefBridge'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
@@ -43,6 +44,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     .find((candidate) => candidate !== null && candidate !== undefined && folders.some((folder) => folder.id === candidate)) ?? null
   const initialFolder = folders.find((folder) => folder.id === initialFolderId) ?? null
   const executionRouting = useAppStore((state) => state.executionRouting)
+  const repositoryMatching = executionRouting.repositoryMatching === true
+  const [repositories, setRepositories] = useState<WorkspaceRepositoryMatches[]>([])
   const [routingOpen, setRoutingOpen] = useState(false)
   const [routingMode, setRoutingMode] = useState<'explicit' | 'automatic'>('explicit')
   const [name, setName] = useState('')
@@ -77,6 +80,16 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   useEffect(() => {
     nameRef.current?.focus()
   }, [])
+
+  // One match request per open: this modal mounts per open, so the list is cached for its lifetime.
+  useEffect(() => {
+    if (!repositoryMatching) return
+    let cancelled = false
+    void sendToCEF({ action: 'listRepositoryMatches', payload: {} }).then((response) => {
+      if (!cancelled && response.ok) setRepositories(sanitizeRepositoryMatches(response.data))
+    })
+    return () => { cancelled = true }
+  }, [repositoryMatching])
 
   useEffect(() => {
     if (folders.length === 0) {
@@ -134,7 +147,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
-  const automaticAvailable = canRouteAutomatically(executionRouting, selectedFolder ?? undefined, providerId)
+  const automaticAvailable = canRouteAutomatically(executionRouting, selectedFolder ?? undefined, providerId, repositories.find((item) => item.folderId === selectedFolder?.id))
   useEffect(() => { if (!automaticAvailable) setRoutingMode('explicit') }, [automaticAvailable])
   useEffect(() => {
     if (!newChatWorktreeContext) return

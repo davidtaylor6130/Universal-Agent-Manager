@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canRouteAutomatically, routingConfigurationError, sanitizeExecutionRouting, type ExecutionRoutingSettings } from './executionRouting'
+import { canRouteAutomatically, routingConfigurationError, sanitizeExecutionRouting, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings } from './executionRouting'
 import type { ExecutionHost, Folder } from './session'
 import { sanitizeCppChat } from '../store/cpp/sanitizers'
 import { sessionFromCppChat } from '../store/cpp/reconcile'
@@ -33,5 +33,35 @@ describe('execution routing contracts', () => {
     const clean = sanitizeExecutionRouting({ ...settings, extra: 'secret', hosts: [{ ...settings.hosts[0], extra: 'secret', providers: [{ ...settings.hosts[0].providers[0], confirm: true, extra: 'secret' }] }] })
     expect(clean).toEqual(settings)
     expect(sanitizeExecutionRouting({ enabled: true, hosts: [{ ...settings.hosts[0], maxActiveTurns: Infinity }] }).hosts).toEqual([])
+  })
+})
+
+describe('repository matching contracts', () => {
+  it('shortens git and svn identities and keeps only well-formed matches', () => {
+    expect(shortRepositoryIdentity('git@github.com:owner/repo.git')).toBe('github.com/owner/repo')
+    expect(shortRepositoryIdentity('https://github.com/owner/repo.git')).toBe('github.com/owner/repo')
+    expect(shortRepositoryIdentity('svn://svn.example.com/repos/app/')).toBe('svn.example.com/repos/app')
+    expect(sanitizeRepositoryMatches({ workspaces: [
+      { folderId: 'a', repository: { kind: 'hg', identity: 'x' }, matches: [{ executionHostId: 'ssh-a', remoteDirectory: '/r', source: 'automatic' }, { executionHostId: '', source: 'manual' }] },
+      { folderId: '', repository: null, matches: [] },
+    ] })).toEqual([{ folderId: 'a', repository: null, matches: [{ executionHostId: 'ssh-a', remoteDirectory: '/r', source: 'automatic' }] }])
+    expect(sanitizeRepositoryMatches(null)).toEqual([])
+    expect(sanitizeExecutionRouting({ enabled: true, hosts: [], repositoryMatching: true }).repositoryMatching).toBe(true)
+    expect(sanitizeExecutionRouting({ enabled: true, hosts: [], repositoryMatching: 'yes' })).not.toHaveProperty('repositoryMatching')
+  })
+  it('routes by automatic repository match only when the capability is on, and manual overrides still count', () => {
+    const match = { folderId: 'source', repository: null, matches: [{ executionHostId: 'ssh-a', remoteDirectory: '/remote', source: 'automatic' as const }] }
+    const bare = { ...settings, hosts: [{ ...settings.hosts[0], workspaceMappings: [] }] }
+    expect(canRouteAutomatically(bare, folders[0], 'codex-cli', match)).toBe(false)
+    expect(canRouteAutomatically({ ...bare, repositoryMatching: true }, folders[0], 'codex-cli', match)).toBe(true)
+    expect(canRouteAutomatically({ ...bare, repositoryMatching: true }, folders[0], 'codex-cli')).toBe(false)
+    expect(canRouteAutomatically({ ...bare, repositoryMatching: false }, folders[0], 'codex-cli', match)).toBe(false)
+    expect(canRouteAutomatically({ ...bare, repositoryMatching: true }, folders[0], 'codex-cli', { ...match, matches: [{ ...match.matches[0], source: 'manual' }] })).toBe(false)
+    expect(canRouteAutomatically({ ...settings, repositoryMatching: true }, folders[0], 'codex-cli')).toBe(true)
+  })
+  it('treats a cleared automatic-match entry as no override', () => {
+    const cleared = { ...settings, hosts: [{ ...settings.hosts[0], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: '', useAutomaticMatch: true as const }] }] }
+    expect(routingConfigurationError(cleared, hosts, folders)).toBe('')
+    expect(canRouteAutomatically(cleared, folders[0], 'codex-cli')).toBe(false)
   })
 })

@@ -22,6 +22,20 @@
 .uam-rt-alias { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); overflow-wrap: anywhere; }
 .uam-rt-status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-2); }
 
+/* Repository matching: one row per local workspace, identity line + match line with overrides. */
+.uam-rt-workspace { display: grid; gap: 4px; padding: var(--sp-2) 0; border-top: 1px solid var(--border); }
+.uam-rt-workspace:first-child { border-top: 0; }
+.uam-rt-workspace__head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); min-width: 0; }
+.uam-rt-workspace__name { font-size: var(--fs-base); font-weight: var(--fw-medium); color: var(--text); overflow-wrap: anywhere; }
+.uam-rt-workspace__none { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
+.uam-rt-match { display: flex; align-items: center; gap: var(--sp-2); min-height: 32px; font-size: var(--fs-sm); color: var(--text-2); }
+.uam-rt-match__text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.uam-rt-match__text--muted { color: var(--text-3); }
+.uam-rt-match__actions { display: inline-flex; gap: 2px; flex-shrink: 0; }
+.uam-rt-pick { display: flex; align-items: center; gap: var(--sp-2); animation: uam-rt-pick-in var(--dur-fast) var(--ease-out-soft); }
+@keyframes uam-rt-pick-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .uam-rt-pick { animation: none; } }
+
 /* Progressive disclosure: height animates via grid rows; closed content is inert. */
 .uam-rt-disclosure__toggle {
   display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px;
