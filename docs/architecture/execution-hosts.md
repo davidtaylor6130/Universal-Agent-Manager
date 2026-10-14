@@ -30,3 +30,9 @@ An automatic assignment is rechecked against fresh source and destination identi
 Saved `startupEnabled` expresses the desired setting; transient `runnerStartupApplied` separately reports `pending`, `enabled`, `disabled` or `failed`, with a bounded `runnerStartupError` where available. Missing applied state means unknown. Loading settings or changing runner installation identity clears confirmation.
 
 `startup.observe` reads registration without modifying it. Linux checks the managed user unit, enablement and fragment path, including a missing unit; Windows checks the helper's exact per-user Run value. macOS advertises no runner startup support. Applying startup requires both `runnerStartup` and `runnerStartupObservation` capabilities and a matching confirmed result, so older runners cannot establish applied state by echoing the desired flag. Registration observation does not verify a real login session.
+
+## Windows installation isolation
+
+Windows service pipes, mutexes and shutdown events include the physical installation root's volume and file identity alongside the user, runner version and protocol. Separate managed roots can run concurrently; case, short-path and junction aliases of one root share its endpoint. Missing user or directory identity fails closed. An explicit `UAM_RUNNER_SERVICE_NAMESPACE` retains the prior namespace-based identity for isolated acceptance services.
+
+When updating alongside a service that still owns provider processes, install into a new managed root and verify it before changing the host's `runnerDirectory`. Preserve the older service and its processes; changing the configured directory does not migrate them. Startup registration must point to the verified new executable, with any previous owned registration backed up before replacement.

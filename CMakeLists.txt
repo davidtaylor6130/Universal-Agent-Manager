@@ -1238,6 +1238,7 @@ if(UAM_BUILD_TESTS)
     tests/deletion_progress_tests.cpp
     tests/manual_compaction_startup_tests.cpp
     tests/runner_startup_observation_tests.cpp
+    tests/runner_endpoint_identity_tests.cpp
     tests/provider_model_metadata_tests.cpp
     tests/claude_model_metadata_tests.cpp
     tests/svn_commit_scheduling_tests.cpp
