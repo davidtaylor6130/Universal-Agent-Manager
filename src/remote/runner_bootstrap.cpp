@@ -319,7 +319,7 @@ namespace uam::remote
 			if (keep_new_runner)
 				command = PowerShellCommand("$backup=Join-Path $HOME '" + backup +
 				    "'; $marker=Join-Path $HOME '" + marker +
-				    "'; Remove-Item -LiteralPath $backup,$marker -Force -ErrorAction SilentlyContinue");
+				    "'; foreach ($optional in @($backup,$marker)) { if (Test-Path -LiteralPath $optional) { Remove-Item -LiteralPath $optional -Force -ErrorAction Stop } }");
 			else
 			{
 				std::string script = "$installed=Join-Path $HOME '" + installed +
@@ -329,7 +329,7 @@ namespace uam::remote
 				    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop } "
 				    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop } }; "
 				    "if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker -Force -ErrorAction Stop }; "
-				    "Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue; ";
+				    "if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction Stop }; ";
 				command = wrap_powershell ? PowerShellCommand(script) : script;
 			}
 		}
@@ -429,8 +429,8 @@ namespace uam::remote
 			    "((Get-Item -LiteralPath $file).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Transaction files cannot be links.' } }; "
 			    "if (Test-Path -LiteralPath $installed) { & $installed stop | Out-Null }; "
 			    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force; & $installed start | Out-Null; "
-			    "if ($LASTEXITCODE -ne 0) { throw 'The previous runner could not restart.' } } else { Remove-Item -LiteralPath $installed -Force -ErrorAction SilentlyContinue }; "
-			    "Remove-Item -LiteralPath $marker,$backup -Force -ErrorAction SilentlyContinue }; Remove-Item -LiteralPath $journal -Force }; ";
+			    "if ($LASTEXITCODE -ne 0) { throw 'The previous runner could not restart.' } } elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop }; "
+			    "foreach ($optional in @($marker,$backup)) { if (Test-Path -LiteralPath $optional) { Remove-Item -LiteralPath $optional -Force -ErrorAction Stop } } }; Remove-Item -LiteralPath $journal -Force -ErrorAction Stop }; ";
 			command = PowerShellUtf8Command("$ErrorActionPreference='Stop'; $root=Join-Path $HOME '" + root + "'; "
 			    "New-Item -ItemType Directory -Path $root -Force | Out-Null; $path=Join-Path $root 'install.lock'; "
 			    "if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'The helper lock cannot be a link.' }; "
@@ -440,7 +440,7 @@ namespace uam::remote
 			    "$release=Join-Path $root 'install.release-" + plan.nonce + "'; $deadline=[DateTime]::UtcNow.AddMinutes(10); "
 			    "while (-not (Test-Path -LiteralPath $release) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 } } "
 			    "finally { try { " + rollback + " } finally { $lock.Dispose(); "
-			    "Remove-Item -LiteralPath (Join-Path $root 'install.release-" + plan.nonce + "') -Force -ErrorAction SilentlyContinue } }");
+			    "if ($release -and (Test-Path -LiteralPath $release)) { Remove-Item -LiteralPath $release -Force -ErrorAction Stop } } }");
 		}
 		return SshCommand(plan.ssh_alias, std::move(command));
 	}
@@ -658,7 +658,7 @@ namespace uam::remote
 			    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop } "
 			    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop }; "
 			    "Remove-Item -LiteralPath $marker -Force -ErrorAction Stop; "
-			    "Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }; throw $failed } "
+			    "if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction Stop } }; throw $failed } "
 			    "finally { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } }");
 			install_steps = {
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,

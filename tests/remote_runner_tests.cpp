@@ -1610,6 +1610,7 @@ esac
 	UAM_ASSERT(result.ok);
 	UAM_ASSERT_EQ(result.platform, std::string("windows"));
 	UAM_ASSERT_EQ(result.architecture, std::string("x86_64"));
+	UAM_ASSERT(uam::remote::FinalizeBootstrapPlan(plan, result, true, &error));
 	const std::string commands = uam::io::ReadTextFile(log);
 	UAM_ASSERT(commands.find("-EncodedCommand") != std::string::npos);
 	UAM_ASSERT(commands.find("-Command \"") == std::string::npos);
@@ -1627,6 +1628,9 @@ esac
 		decoded_commands.push_back('\n');
 	}
 	UAM_ASSERT(decoded_commands.find("Get-FileHash") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("foreach ($optional in @($backup,$marker))") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("if (Test-Path -LiteralPath $optional) { Remove-Item -LiteralPath $optional -Force -ErrorAction Stop }") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Remove-Item -LiteralPath $backup,$marker -Force -ErrorAction SilentlyContinue") == std::string::npos);
 	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $installed -Destination $backup") !=
 	           std::string::npos);
 	UAM_ASSERT(decoded_commands.find("New-Item -ItemType File -Path $marker") !=
