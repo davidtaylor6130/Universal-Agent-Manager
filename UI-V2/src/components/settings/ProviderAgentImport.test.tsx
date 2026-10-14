@@ -69,7 +69,7 @@ it('shows a plain empty state when the provider has no agents', async () => {
   vi.spyOn(bridge, 'sendToCEF').mockResolvedValueOnce({ ok: true, data: { agents: [] } })
   await act(async () => root.render(<ProviderAgentImport />))
   await click('Find agents')
-  expect(host.textContent).toContain('OpenCode has no agent files on this computer.')
+  expect(host.textContent).toContain('No agent files on this computer.')
 })
 
 it('shows the failure to read agents instead of an empty list', async () => {

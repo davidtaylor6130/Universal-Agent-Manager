@@ -50,20 +50,18 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       onClick={() => change(value)}>{value ? 'Enabled' : 'Disabled'}</Button>)}
   </div>
   return <div className="grid gap-6">
-    <SettingsSection title="Git defaults">
-      <SettingRow title="Git" description="Use Git tools for local workspaces." control={modes('Git', draft.gitEnabled, (value) => edit({ gitEnabled: value }))} />
-      <SettingRow title="Automatic isolation" description="Create a separate worktree before a new chat starts." control={modes('Automatic isolation', draft.gitAutoWorktree, (value) => edit({ gitAutoWorktree: value }), !draft.gitEnabled)} />
-      <SettingRow title="Default base branch" description="Empty uses HEAD. Named branches must exist locally. Applies to new worktrees." control={<input className="uam-input" aria-label="Default local Git base branch" placeholder="HEAD" value={draft.gitDefaultBaseBranch} disabled={saving || !draft.gitEnabled} spellCheck={false} onChange={(event) => edit({ gitDefaultBaseBranch: event.currentTarget.value })} />} />
-      <SettingRow title="Port changes" description="Merge and Squash stage committed changes for you to commit manually." control={<div className="flex gap-1" role="group" aria-label="Port method">
+    <SettingsSection title="Git and SVN">
+      <SettingRow title="Git" control={modes('Git', draft.gitEnabled, (value) => edit({ gitEnabled: value }))} />
+      <SettingRow title="Automatic isolation" description="Separate worktree before each new chat." control={modes('Automatic isolation', draft.gitAutoWorktree, (value) => edit({ gitAutoWorktree: value }), !draft.gitEnabled)} />
+      <SettingRow title="Default base branch" description="Empty uses HEAD. Must exist locally." control={<input className="uam-input" aria-label="Default local Git base branch" placeholder="HEAD" value={draft.gitDefaultBaseBranch} disabled={saving || !draft.gitEnabled} spellCheck={false} onChange={(event) => edit({ gitDefaultBaseBranch: event.currentTarget.value })} />} />
+      <SettingRow title="Port changes" description="Merge and Squash stage changes for you to commit." control={<div className="flex gap-1" role="group" aria-label="Port method">
         {(['patch', 'merge', 'squash'] as const).map((method) => <Button key={method} size="sm" disabled={saving || !draft.gitEnabled} aria-pressed={draft.gitPortMethod === method}
           style={draft.gitPortMethod === method ? { borderColor: 'var(--text)', background: 'var(--surface-high)' } : undefined}
           onClick={() => edit({ gitPortMethod: method })}>{method.charAt(0).toUpperCase() + method.slice(1)}</Button>)}
       </div>} />
-      <SettingRow title="Pull before first chat" description="Fast-forward the checked-out base only, with a clean tree and an upstream." control={modes('Pull before first chat', draft.gitPullBeforeChat, (value) => edit({ gitPullBeforeChat: value }), !draft.gitEnabled || !draft.gitAutoWorktree)} />
-    </SettingsSection>
-    <SettingsSection title="SVN">
-      <SettingRow title="SVN" description="Use supported SVN status and commit tools." control={modes('SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
-      <SettingRow title="SVN branch and merge defaults" description="SVN branch selection, switching and merge defaults are not supported." control={<Button size="sm" disabled>Not supported</Button>} />
+      <SettingRow title="Pull before first chat" description="Fast-forward only, on a clean tree with an upstream." control={modes('Pull before first chat', draft.gitPullBeforeChat, (value) => edit({ gitPullBeforeChat: value }), !draft.gitEnabled || !draft.gitAutoWorktree)} />
+      <SettingRow title="SVN" control={modes('SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
+      <SettingRow title="SVN branch and merge defaults" control={<Button size="sm" disabled>Not supported</Button>} />
     </SettingsSection>
     {(error || validation) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error || validation}</p>}
     <div className="flex justify-end gap-2">

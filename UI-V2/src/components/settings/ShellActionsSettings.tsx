@@ -157,9 +157,9 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
         </Overlay>
       </Presence>
 
-      <SettingsSection title="Actions" description="Right-click files or folders in Finder or Explorer to start a chat with a preset prompt or a skill."
+      <SettingsSection title="Actions"
         actions={<Button size="sm" leadingIcon={<Plus size={14} />} aria-label="Add shell action" disabled={applying} onClick={() => { const action = newAction(); setExpandedActions(current => ({ ...current, [action.id]: true })); setActions(current => [action, ...current]) }}>Add action</Button>}>
-        {actions.length === 0 && <SettingRow title="No shell actions yet" description="Add an action to start a chat from Finder or Explorer with a preset prompt." />}
+        {actions.length === 0 && <SettingRow title="No shell actions yet" description="Add one to start chats from Finder or Explorer." />}
         <fieldset disabled={applying} style={{ display: 'contents', border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <legend className="sr-only">Shell actions</legend>
         {actions.map((action) => {

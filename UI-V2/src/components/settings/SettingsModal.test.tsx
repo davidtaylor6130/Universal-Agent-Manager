@@ -1425,7 +1425,7 @@ describe('SettingsModal memory settings', () => {
       aboutSectionButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(host.querySelector('[aria-label="Universal Agent Manager"]')).toBeTruthy()
+    expect(host.querySelector('[aria-label="Updates"]')).toBeTruthy()
     expect(host.textContent).toContain(`V${packageVersion}`)
     expect(host.textContent).not.toContain('Gemini chats')
 

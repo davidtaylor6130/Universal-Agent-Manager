@@ -59,23 +59,23 @@ export function ProviderAgentImport() {
   const toggleAll = () => setSelected(agents && !allSelected ? agents.map(agent => agent.id) : [])
 
   return <>
-    <SettingsSection title="Import from a provider" description="Agents already set up in another CLI on this computer. Pick the ones to add to UAM."
+    <SettingsSection title="Import from a provider"
       actions={<Button size="sm" variant={agents === null ? 'primary' : 'secondary'} loading={busy === 'find'} disabled={busy !== null} onClick={() => void findAgents()}>Find agents</Button>}>
-      <SettingRow title="Provider" description="The CLI whose agent files to read." htmlFor="provider-agent-import-provider"
+      <SettingRow title="Provider" htmlFor="provider-agent-import-provider"
         control={<MenuSelect id="provider-agent-import-provider" label="Provider" value={providerId} disabled={busy !== null} options={PROVIDERS} onChange={changeProvider} />} />
       {error && <SettingRow title="Could not read agents" description={<span role="alert" style={{ color: 'var(--error)' }}>{error}</span>} />}
     </SettingsSection>
 
     {busy === 'find' && <SettingsLoading label="Looking for agents" rows={3} />}
 
-    {busy !== 'find' && agents !== null && <SettingsSection title="Agents found" description={`Found in ${providerLabel} on this computer.`}
+    {busy !== 'find' && agents !== null && <SettingsSection title={`Agents in ${providerLabel}`}
       actions={<>
         {agents.length > 0 && <Button size="sm" variant="ghost" disabled={busy !== null} onClick={toggleAll}>{allSelected ? 'Clear selection' : 'Select all'}</Button>}
         <Button size="sm" variant="primary" loading={busy === 'import'} disabled={busy !== null || selected.length === 0} onClick={() => void importSelected()}>
           {selected.length > 0 ? `Import ${selected.length}` : 'Import'}
         </Button>
       </>}>
-      {agents.length === 0 && <SettingRow title="No agents found" description={`${providerLabel} has no agent files on this computer.`} />}
+      {agents.length === 0 && <SettingRow title="No agents found" description="No agent files on this computer." />}
       {agents.map(agent => <SettingRow key={agent.id} icon={<Bot size={15} aria-hidden />} title={agent.name}
         description={<>
           <div>{agent.description || 'No description'}</div>
@@ -84,7 +84,7 @@ export function ProviderAgentImport() {
         status={agent.alreadyImported ? 'Already in UAM' : undefined}
         control={<Switch hideLabel label={`Import ${agent.name}`} checked={selected.includes(agent.id)} disabled={busy !== null} onChange={() => toggle(agent.id)} />} />)}
       {result && <SettingRow title={result.imported === 1 ? 'Imported 1 agent' : `Imported ${result.imported} agents`}
-        description={result.failed?.length ? 'Some agents could not be imported. They stay ticked so you can try again.' : undefined}>
+        description={result.failed?.length ? 'Failed agents stay ticked.' : undefined}>
         {result.failed?.map(item => <div key={item.id} className="text-xs" style={{ color: 'var(--error)' }}><span className="font-mono">{item.id}</span>: {item.error}</div>)}
       </SettingRow>}
     </SettingsSection>}

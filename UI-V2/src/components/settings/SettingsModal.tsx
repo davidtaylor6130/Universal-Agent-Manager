@@ -418,22 +418,9 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   defaults: 'Default provider and permission reviewer for new chats.',
   'voice-input': 'Dictation for the message box.',
   'cli-version': 'Installed provider CLIs and their versions.',
-  agents: 'Favourites, the cycle shortcut and importing agents from other tools.',
   'remote-hosts': 'Computers that can run workspaces over SSH.',
-  'central-configuration': 'Instructions, skills and agents every provider gets, locally and over SSH.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
-  'computer-use': 'Which apps agents may see and control.',
-  vcs: 'Git and SVN integrations and new-chat worktree defaults.',
-  'storage-cleanup': 'Retention for unused worktrees, backup logs and the HTTP cache.',
-  editors: 'Which app opens each kind of file, and the file explorer.',
-  'shell-actions': 'Finder and Explorer actions for workspaces.',
-  'memory-settings': 'What gets remembered between chats, and which models do it.',
-  'memory-store': 'Browse, add and remove saved memories.',
-  'markdown-store': 'Reusable prompts you can insert with a slash command.',
-  'goal-loops': 'Limits for long-running goal mode.',
-  'chat-data': 'Export and manage stored chats.',
   phone: 'Use UAM from your phone on the same network.',
-  about: 'Version and build information.',
 }
 
 
@@ -1655,14 +1642,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       ['Accessibility', 'accessibility', computerUseStatus?.accessibility],
     ] as const
     return <div className="grid gap-0">
-      <SettingsSection title="Control method" description="How agents control apps in the active chat.">
+      <SettingsSection title="Control method">
         <SettingRow
           title="Computer Use backend"
           description={activeSession
             ? activeSession.computerUseEnabled
-              ? 'Turn Computer Use off in the active chat before changing its backend.'
-              : 'Applies to the active local chat. Target approval still appears only when the AI requests a target.'
-            : 'Open a local chat to choose its Computer Use backend.'}
+              ? 'Turn Computer Use off in this chat first.'
+              : 'Applies to the active local chat.'
+            : 'Open a local chat to choose a backend.'}
           control={
             <div id="computer-use-backend-settings" style={{ width: 220 }}>
               <MenuSelect
@@ -1689,8 +1676,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         <SettingRow
           title="Allow UAM Control requests"
           description={activeUamControlSupported
-            ? 'Lets the agent ask a question, request goal creation, and use Computer Use through UAM Control. Each request appears in the chat for approval.'
-            : 'UAM Control is available for supported local structured chats.'}
+            ? 'Agent requests appear in the chat for approval.'
+            : 'Supported local structured chats only.'}
           control={
             <Switch
               hideLabel
@@ -1714,13 +1701,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </SettingsSection>
       <SettingsSection
         title="Readiness"
-        description={`Operating system permissions UAM needs on ${computerUseOsLabel}. When a check fails, Computer Use stays stopped until the permission is granted.`}
         actions={<Button size="sm" variant="secondary" disabled={computerUseBusy} onClick={() => void checkComputerUsePermissions()}>Check permissions</Button>}
       >
         {statusRows.map(([label, permission, state]) => <SettingRow
           key={permission}
           title={label}
-          description={permission === 'screenRecording' ? 'Lets UAM see the screen.' : 'Lets UAM click and type in apps.'}
           status={<span className="inline-flex items-center gap-1.5" style={{ color: state ? (state.available ? 'var(--success)' : 'var(--error)') : 'var(--text-3)' }}>
             <StatusDot tone={state ? (state.available ? 'success' : 'error') : 'neutral'} />
             {state ? (state.available ? 'Available' : state.error || 'Not available') : 'Not checked'}
@@ -1734,15 +1719,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </SettingsSection>
       <SettingsSection
         title="Allowed targets"
-        description="Limit which apps agents can target. Without a list, each chat still asks before it targets an app."
         actions={<Button size="sm" variant="secondary" onClick={() => void loadComputerUseApplications()}>Refresh applications</Button>}
       >
         <SettingRow
           title="Only listed apps"
-          description={computerUseAllowlistEnabled ? `Only applications listed here can be selected. ${computerUseOsLabel} permissions are still required.` : 'No list is applied, so each chat asks for explicit target consent.'}
+          description={computerUseAllowlistEnabled ? 'Only listed apps can be targeted.' : 'Each chat asks before targeting an app.'}
           control={<Switch hideLabel label="Restrict Computer Use to allowed applications" checked={computerUseAllowlistEnabled} disabled={computerUseSaveBusy} onChange={(event) => void saveComputerUseSettings(event.target.checked, computerUseAllowedApplications)} />}
         />
-        {computerUseApps.length === 0 && <SettingRow title="No applications loaded" description="Refresh applications to list the apps UAM can target." />}
+        {computerUseApps.length === 0 && <SettingRow title="No applications loaded" description="Refresh to list apps UAM can target." />}
         {computerUseApps.map((app) => {
           const allowed = computerUseAllowedApplications.some((item) => item.identityKind === app.identityKind && item.identity === app.identity)
           return <SettingRow
@@ -2304,32 +2288,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       }
       return (
         <div className="space-y-4">
-          <SettingsSection title="Composer agents" description="Which agent the composer cycles through when you press the shortcut.">
-            <SettingRow
-              title="Agent cycle shortcut"
-              description="Press this in the composer to move to the next agent. Disabled turns the shortcut off."
-              htmlFor="agent-cycle-shortcut"
-              control={
-                <MenuSelect
-                  id="agent-cycle-shortcut"
-                  label="Agent cycle shortcut"
-                  value={uamAgentCycleShortcut}
-                  options={[
-                    { value: 'shift+tab', label: 'Shift+Tab' },
-                    { value: 'control+shift+tab', label: 'Ctrl+Shift+Tab' },
-                    { value: 'alt+shift+tab', label: 'Alt+Shift+Tab' },
-                    { value: 'meta+shift+tab', label: 'Command+Shift+Tab' },
-                    { value: 'disabled', label: 'Disabled' },
-                  ]}
-                  onChange={(value) => updatePreferences(favoriteUamAgentIds, value as UamAgentCycleShortcut)}
-                />
-              }
-            />
-          </SettingsSection>
-
           <SettingsSection
-            title="Favourites"
-            description="Cycled in this order, after Build and Plan."
+            title="Agent cycle"
             actions={
               <>
                 <div className="w-[220px] max-w-full">
@@ -2356,8 +2316,28 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </>
             }
           >
+            <SettingRow
+              title="Cycle shortcut"
+              description="Moves to the next agent in the composer."
+              htmlFor="agent-cycle-shortcut"
+              control={
+                <MenuSelect
+                  id="agent-cycle-shortcut"
+                  label="Agent cycle shortcut"
+                  value={uamAgentCycleShortcut}
+                  options={[
+                    { value: 'shift+tab', label: 'Shift+Tab' },
+                    { value: 'control+shift+tab', label: 'Ctrl+Shift+Tab' },
+                    { value: 'alt+shift+tab', label: 'Alt+Shift+Tab' },
+                    { value: 'meta+shift+tab', label: 'Command+Shift+Tab' },
+                    { value: 'disabled', label: 'Disabled' },
+                  ]}
+                  onChange={(value) => updatePreferences(favoriteUamAgentIds, value as UamAgentCycleShortcut)}
+                />
+              }
+            />
             {favoriteUamAgentIds.length === 0 && (
-              <SettingRow title="No custom favourites" description="The cycle is Build, then Plan. Add a favourite from the menu above." />
+              <SettingRow title="No custom favourites" description="The cycle is Build, then Plan." />
             )}
             {favoriteUamAgentIds.map((agentId, index) => {
               const available = activeUamAgents.some((agent) => agent.id === agentId)
@@ -2384,11 +2364,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
           <SettingsSection
             title={providerAgentImport ? 'Import from a Markdown file' : 'Import from a provider'}
-            description={providerAgentImport ? 'Turn one agent file into a UAM agent. Use this for a file outside the provider folders.' : 'Turn an agent defined for another CLI into a UAM agent.'}
           >
             <SettingRow
               title="Source provider"
-              description="The CLI the agent file was written for."
               htmlFor="agent-import-source-provider"
               control={
                 <MenuSelect
@@ -2409,7 +2387,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }
             />
             <div className="grid gap-3">
-              <SettingsField label="Native Markdown file" htmlFor="agent-import-path" hint="Path to the agent's .md file on this computer.">
+              <SettingsField label="Native Markdown file" htmlFor="agent-import-path">
                 <div className="flex gap-2">
                   <input
                     id="agent-import-path"
@@ -2715,7 +2693,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'memory-settings') {
       return (
         <div className="grid gap-0">
-          <SettingsSection title="Memory defaults" description="What new chats remember unless you change it for a chat.">
+          <SettingsSection title="Memory defaults">
             <SettingRow
               title="Default memory level"
               description={MEMORY_POLICY_CHOICES.find((option) => option.id === memoryLevelDefault)?.detail}
@@ -2729,7 +2707,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               }
             />
             {memoryPolicyError.app && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{memoryPolicyError.app}</p>}
-            {sessions.find((session) => session.id === activeSessionId) && <SettingRow title="Current chat memory" description="Default inherits this provider's current policy."
+            {sessions.find((session) => session.id === activeSessionId) && <SettingRow title="Current chat memory" description="Default follows the provider policy."
               status={memoryPolicySaving.chat ? 'Saving…' : undefined}
               control={<MenuSelect label="Current chat memory policy" value={sessions.find((session) => session.id === activeSessionId)?.memoryLevel ?? 'default'} disabled={memoryPolicySaving.chat}
                 options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
@@ -2738,7 +2716,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             </SettingRow>}
             <SettingRow
               title="Idle delay (seconds)"
-              description="Seconds a chat must sit idle before its memory is processed."
+              description="Idle time before a chat's memory is processed."
               htmlFor="memory-idle-delay"
               control={
                 <input
@@ -2755,7 +2733,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             />
             <SettingRow
               title="Recall budget (bytes)"
-              description="Largest amount of saved memory added to a new prompt."
+              description="Most saved memory added to each prompt."
               htmlFor="memory-recall-budget"
               control={
                 <input
@@ -2773,7 +2751,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             />
           </SettingsSection>
 
-          <SettingsSection title="Memory workers" description="The model that saves and recalls memory for each provider's chats.">
+          <SettingsSection title="Memory workers">
             <div ref={memoryMenuRef}>
               {providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => {
                 const binding = memoryWorkerBindings[provider.id] ?? { workerProviderId: provider.id, workerModelId: '' }
@@ -2790,7 +2768,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     key={provider.id}
                     icon={<ProviderLogo providerId={provider.id} />}
                     title={`${providerDisplayName(provider, provider.id)} chats`}
-                    description="Memory worker provider and model."
                     control={
                     <div className="grid grid-cols-2 gap-2" style={{ width: 380 }}>
                       <div className="relative">
@@ -2955,16 +2932,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     if (selectedSection === 'markdown-store' && !markdownStoreDirectory) return <div className="mx-auto w-full" style={{maxWidth:800}}>
-      <SectionCard title="Skills folder">
-        <div className="grid gap-3 text-xs" style={{color:'var(--text-2)'}}>
-          <p>Skills are Markdown files in a folder you choose. Pick one to start creating and importing skills.</p>
+      <SettingsSection title="Skills folder">
+        <div className="grid gap-3 p-3 text-xs" style={{color:'var(--text-2)'}}>
+          <p>Skills are Markdown files in one folder.</p>
           <div><Button size="sm" variant="primary" leadingIcon={<FolderOpen size={14} aria-hidden/>} onClick={() => void browseMarkdownStoreDirectory(markdownStoreDraftDirectory).then(selected => { if (selected) void setMarkdownStoreDirectory(selected) })}>Choose folder…</Button></div>
           <div className="flex items-center gap-2">
             <input aria-label="Skills directory" value={markdownStoreDraftDirectory} onChange={event => setMarkdownStoreDraftDirectory(event.target.value)} placeholder="Or type a folder path" className="uam-field min-w-0 flex-1"/>
             <Button size="sm" disabled={!markdownStoreDraftDirectory.trim()} onClick={() => void setMarkdownStoreDirectory(markdownStoreDraftDirectory)}>Use path</Button>
           </div>
         </div>
-      </SectionCard>
+      </SettingsSection>
     </div>
     if (selectedSection === 'markdown-store') return <div className="h-full min-h-0 flex flex-col gap-3">
       <details className="uam-skill-folder shrink-0 order-last">
@@ -2980,10 +2957,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'goal-loops') {
       return (
-        <SettingsSection title="Goal loop safety" description="Limits that keep long-running goals bounded.">
+        <SettingsSection title="Goal loop safety">
           <SettingRow
             title="Maximum iterations"
-            description="How many loops a goal may run before it stops. Always between 1 and 200."
+            description="Loops a goal may run before it stops (1–200)."
             control={
               <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
                 <IconButton icon={<Minus size={14} />} label="Decrease maximum goal loop iterations" size="sm" disabled={goalMaxLoopIterations <= 1} onClick={() => void setMemorySettings({ goalMaxLoopIterations: Math.max(1, goalMaxLoopIterations - 1) })} />
@@ -2994,7 +2971,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           />
           <SettingRow
             title="Provider setup timeout"
-            description="Restarts a provider only after no setup activity for this long."
+            description="Restarts a provider after this long with no setup activity."
             htmlFor="acp-setup-timeout"
             control={
               <MenuSelect
@@ -3015,7 +2992,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           />
           <SettingRow
             title="Turn output limit"
-            description="Largest output one provider turn may produce. Resets for every worker or review turn; startup history is excluded."
+            description="Largest output per provider turn, excluding startup history."
             control={
               <MenuSelect
                 label="Provider turn output ceiling"
@@ -3038,10 +3015,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'editors') {
       return (
         <div className="grid gap-0">
-          <SettingsSection title="Default editor" description="Opens any file that is not in a file type group below.">
+          <SettingsSection title="Open with">
             <SettingRow
-              title="Editor"
-              description="Used for files outside every group."
+              title="Default editor"
+              description="Opens files outside every file type group."
               control={renderEditorPresetMenu(
                 'default-editor',
                 defaultEditorDraft,
@@ -3051,7 +3028,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             />
           </SettingsSection>
 
-          <SettingsSection title="File types" description="Groups of file extensions, and the editor each group opens in." actions={renderAddEditor()}>
+          <SettingsSection title="File types" actions={renderAddEditor()}>
             <div ref={editorMenuRef}>
               {editorAssociationsDraft.map((association) => {
                 const groupName = association.name.trim() || 'File group'
@@ -3120,9 +3097,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             {editorError && <p role="alert" className="pt-2 text-xs" style={{color:'var(--error)'}}>{editorError}</p>}
           </SettingsSection>
 
-          <SettingsSection title="File explorer" description="The app used by the Open workspace and Reveal actions.">
+          <SettingsSection title="Open with">
             <SettingRow
-              title="Application"
+              title="File explorer"
               description={customExplorer ? 'A custom application opens folders.' : 'Your system file manager opens folders.'}
               control={<MenuSelect label="File explorer" disabled={editorSaving} value={customExplorer ? 'custom' : 'system'} options={[{ value: 'system', label: 'System default' }, { value: 'custom', label: 'Custom application' }]} onChange={(value) => { setCustomExplorer(value === 'custom'); if (value === 'system') void saveExplorer('') }} />}
             >
@@ -3148,10 +3125,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'chat-data') {
       return (
         <div className="grid gap-0">
-          <SettingsSection title="Chat bundle" description="Export writes a readable folder with a manifest and one JSON file per chat. Import checks the whole bundle first.">
+          <SettingsSection title="Chat bundle">
             <SettingRow
               title="Export all chats"
-              description="Writes every chat to a new or empty folder you choose."
+              description="Writes to a new or empty folder."
               status={chatDataFolder ? <span className="break-all font-mono">Last folder: {chatDataFolder}</span> : undefined}
               control={
                 <Button
@@ -3167,7 +3144,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             />
             <SettingRow
               title="Import a chat bundle"
-              description="Adds chats from a folder exported by UAM. Chats that clash get new local IDs."
+              description="Clashing chats are copied with new IDs."
               control={
                 <Button
                   size="sm"
@@ -3200,13 +3177,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     return (
       <div className="grid gap-0">
-        <SettingsSection title="Universal Agent Manager">
+        <SettingsSection title="Updates">
           <SettingRow title="Version" control={<span style={{ color: 'var(--text)' }}>{displayedVersion}</span>} />
-        </SettingsSection>
-        <SettingsSection title="Updates" description="Check for newer UAM releases.">
           <SettingRow
             title="Check for updates automatically"
-            description="Look for newer UAM releases in the background."
             control={<Switch hideLabel label="Automatically check for updates" checked={updateChecksEnabled} onChange={(event) => { void setUpdateSettings({ updateChecksEnabled: event.target.checked }) }} />}
           />
         </SettingsSection>

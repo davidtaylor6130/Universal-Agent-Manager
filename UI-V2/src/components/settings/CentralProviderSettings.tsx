@@ -153,31 +153,25 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   return <div className="grid gap-6" style={{ color: 'var(--text)' }}>
     {leaveDialog}
     <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} error={message?.tone === 'error' ? message.text : undefined} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
-    <SettingsSection title="Shared instructions" description="AGENTS.md files on this computer. Their contents go to every agent on every provider, not into your messages."
+    <SettingsSection title="Shared instructions" description="Sent to every agent, not into your messages."
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
-      {instructionFiles.length === 0 && <SettingRow title="No instruction files" description="Choose an AGENTS.md file to share its instructions with every agent." />}
+      {instructionFiles.length === 0 && <SettingRow title="No instruction files" description="Choose an AGENTS.md file to share." />}
       {instructionFiles.map(path => <SettingRow key={path} icon={<FileText size={15} aria-hidden />} title={fileName(path)}
         description={<span className="uam-prov-detail">{path}</span>}
         control={<IconButton size="sm" icon={<X size={14} />} label={`Remove ${fileName(path)}`} disabled={busy} onClick={() => setInstructionFiles(instructionFiles.filter(item => item !== path))} />} />)}
-      {saved.instructions && <SettingRow title="Older typed instructions" description="Still applied to every agent. Choosing files does not remove them." />}
+      {saved.instructions && <SettingRow title="Older typed instructions" description="Still applied. Choosing files does not remove them." />}
     </SettingsSection>
 
-    <SettingsSection title="Default agent" description="Preselected when you start a new chat.">
-      <SettingRow title="Default agent for new chats" description="Chat agents from the agent store."
+    <SettingsSection title="Defaults">
+      <SettingRow title="Default agent for new chats"
         control={<MenuSelect label="Default agent for new chats" value={defaultAgentId} disabled={busy} options={defaultAgentChoices} onChange={setDefaultAgentId} />} />
-    </SettingsSection>
-
-    <SettingsSection title="Default skills" description="Skills every agent always has. Agents also get any skills listed on the agent itself.">
       {skills.length === 0
         ? <SettingRow title="No skills yet" description="Add skills in the Skills page first." />
-        : <SettingRow title="Skills on every agent" description={defaultSkills.length ? undefined : 'None chosen. Pick from the Skills store.'}
+        : <SettingRow title="Skills on every agent" description={defaultSkills.length ? undefined : 'None chosen.'}
           control={<ChipAdd label="skill" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} />}>
           {defaultSkills.length > 0 && <ChipList label="default skills" values={defaultSkills} options={skillOptions} onChange={setDefaultSkills} disabled={busy} />}
         </SettingRow>}
-    </SettingsSection>
-
-    <SettingsSection title="Default agents" description="Agents from the UAM agent store every provider gets. Build, Plan and the chat's own agent are always included.">
-      <SettingRow title="Agents on every provider" description={defaultAgents.length ? undefined : 'None chosen. Pick from the agent store below.'}
+      <SettingRow title="Agents on every provider" description={defaultAgents.length ? undefined : 'None chosen.'}
         control={<ChipAdd label="agent" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} />}>
         {defaultAgents.length > 0 && <ChipList label="default agents" values={defaultAgents} options={agentOptions} onChange={setDefaultAgents} disabled={busy} />}
       </SettingRow>
@@ -188,10 +182,10 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       <Button size="sm" variant="primary" loading={busy} onClick={() => void saveDefaults()}>Save</Button>
     </div>
 
-    <SettingsSection title="Agent store" description="Saved to the UAM agent store and installed for every provider. Built-in agents are read only."
+    <SettingsSection title="Agent store" description="Installed for every provider. Built-in agents are read only."
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing({ draft: blankAgent(), isNew: true })}>Add agent</Button>}>
       {agentErrors.map(error => <SettingRow key={error} title="Some agents could not be read" description={<span style={{ color: 'var(--error)' }}>{error}</span>} />)}
-      {agents.length === 0 && <SettingRow title="No agents yet" description="Add an agent to give every provider a specialised helper." />}
+      {agents.length === 0 && <SettingRow title="No agents yet" description="Add one to give every provider a helper." />}
       {agents.map(agent => {
         const usedAs = USED_AS.find(option => option.value === agent.mode)
         return <SettingRow key={agent.id} icon={<Bot size={15} aria-hidden />}
@@ -216,7 +210,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
             <header className="uam-central-dialog__head">
               <div className="min-w-0">
                 <strong className="text-sm">{isNew ? 'New agent' : builtIn ? draft.id : `Edit ${draft.id}`}</strong>
-                <p className="uam-prov-sub">{builtIn ? 'Built in. You can view its settings but not change them.' : 'Agents are installed for every provider. Changes apply to new chats.'}</p>
+                <p className="uam-prov-sub">{builtIn ? 'Built in, read only.' : 'Changes apply to new chats.'}</p>
               </div>
               <IconButton size="sm" icon={<X size={14} />} label="Close agent editor" disabled={busy} onClick={closeEditor} />
             </header>

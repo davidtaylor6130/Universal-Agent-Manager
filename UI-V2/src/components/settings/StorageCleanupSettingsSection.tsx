@@ -62,16 +62,16 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
     setDraft((value) => ({ ...value, ...patch })); setBaseline((value) => ({ ...value, ...patch })); setError('')
   }
   return <div className="grid gap-6">
-    <SettingsSection title="Worktree cleanup">
-      <SettingRow title="Worktree cleanup" description="Remove eligible old worktrees when Git is enabled, after ownership, activity and change checks." control={modes('Worktree cleanup', draft.enabled, ['Enabled', 'Disabled'], (value) => edit({ enabled: value }))} />
-      <SettingRow title="Worktree age" description="Branches and their commits are retained. Use 1–3650 days." control={number('Worktree retention age', draft.worktree, 1, (value) => edit({ worktree: value }), !draft.enabled)} />
+    <SettingsSection title="Worktrees">
+      <SettingRow title="Worktree cleanup" description="Removes old worktrees only after safety checks." control={modes('Worktree cleanup', draft.enabled, ['Enabled', 'Disabled'], (value) => edit({ enabled: value }))} />
+      <SettingRow title="Worktree age" description="Branches and commits are kept. 1–3650 days." control={number('Worktree retention age', draft.worktree, 1, (value) => edit({ worktree: value }), !draft.enabled)} />
       {!worktreeValid && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>Worktree age must be a whole number from 1 to 3650.</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !worktreeDirty} onClick={() => discard('worktree')}>Discard worktree changes</Button><Button size="sm" variant="primary" disabled={Boolean(saving) || !worktreeDirty || !worktreeValid} onClick={() => void save('worktree')}>{saving === 'worktree' ? 'Saving…' : 'Save worktree settings'}</Button></div>
     </SettingsSection>
-    <SettingsSection title="Backup logs and browser cache">
-      <SettingRow title="Backup log retention" description="Current app, CEF and crash-recovery logs stay. Zero keeps all backups." control={number('Backup log retention', draft.logs, 0, (value) => edit({ logs: value }))} />
-      <SettingRow title="HTTP cache clearing" description="Clear the HTTP cache periodically. Profiles and sign-in data stay." control={modes('HTTP cache clearing', draft.periodic, ['Periodic', 'Disabled'], (value) => edit({ periodic: value, cache: value ? (Number(draft.cache) > 0 ? draft.cache : '30') : '0' }))} />
-      <SettingRow title="Cache interval" description="Enabling starts the interval without clearing immediately. Use 1–3650 days." control={number('HTTP cache interval', draft.cache, 1, (value) => edit({ cache: value }), !draft.periodic)} />
+    <SettingsSection title="Logs and cache">
+      <SettingRow title="Backup log retention" description="Current logs are kept. 0 keeps all backups." control={number('Backup log retention', draft.logs, 0, (value) => edit({ logs: value }))} />
+      <SettingRow title="HTTP cache clearing" description="Profiles and sign-in data are kept." control={modes('HTTP cache clearing', draft.periodic, ['Periodic', 'Disabled'], (value) => edit({ periodic: value, cache: value ? (Number(draft.cache) > 0 ? draft.cache : '30') : '0' }))} />
+      <SettingRow title="Cache interval" description="Starts counting without clearing at once. 1–3650 days." control={number('HTTP cache interval', draft.cache, 1, (value) => edit({ cache: value }), !draft.periodic)} />
       {!storageValid && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>Backup days must be a whole number from 0 to 3650; periodic cache days from 1 to 3650.</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={Boolean(saving) || !storageDirty} onClick={() => discard('storage')}>Discard backup and cache changes</Button><Button size="sm" variant="primary" disabled={Boolean(saving) || !storageDirty || !storageValid} onClick={() => void save('storage')}>{saving === 'storage' ? 'Saving…' : 'Save backup and cache policy'}</Button></div>
     </SettingsSection>
