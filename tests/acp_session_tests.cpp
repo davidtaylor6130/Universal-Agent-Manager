@@ -11,8 +11,146 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/acp/acp_polling.h"
 #include "remote/runner_proxy.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
 
 using namespace uam_test;
+
+namespace
+{
+	std::string BoundOpenCodeAgentSnapshot()
+	{
+		return "---\nversion: 1\nname: reviewer\ndescription: Inspect code\nmode: primary\nworkspaceAccess: read\nskills: []\ndelegates: []\nopenCodePermission: {\"edit\":\"deny\",\"bash\":\"ask\"}\n---\nInspect code.\n";
+	}
+}
+
+UAM_TEST(ImportedOpenCodePolicyChecksEffectiveRouteBeforeLaunch)
+{
+	for (const std::string& route : {"local", "ssh", "central", "scoped-central", "provider", "codex", "injected"})
+	{
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "private-bound-policy";
+		chat.provider_id = route == "codex" ? "codex-cli" : "opencode-cli";
+		chat.execution_host_id = route == "ssh" ? "private-host" : "local";
+		app.settings.central_provider_configuration.enabled = route == "central";
+		if (route == "scoped-central")
+			app.settings.central_provider_configuration.mcp_overrides.push_back({chat.provider_id, "local", "shared-setup", true});
+		if (route == "provider") app.settings.provider_chat_defaults[chat.provider_id].feature_preference = "provider";
+		std::string error;
+		const bool allowed = uam::acp_detail::ValidateCapturedAcpAgentPolicy(app, chat, "reviewer",
+		    BoundOpenCodeAgentSnapshot(), route == "injected" ? "uam-prompt-injected" : "opencode-native-agent-config", &error);
+		UAM_ASSERT_EQ(allowed, route == "local");
+		UAM_ASSERT_EQ(error.empty(), allowed);
+		UAM_ASSERT(uam::acp_detail::ValidateCapturedAcpAgentPolicy(app, chat, "build", "builtin:build:v1", "uam-prompt-injected", &error));
+	}
+}
+
+UAM_TEST(ImportedOpenCodePolicyBlocksExistingRuntimeAndKeepsQueuedInput)
+{
+	TempDir temp("uam-bound-policy-queue");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.id = "private-bound-policy";
+	chat.provider_id = "opencode-cli";
+	chat.execution_host_id = "local";
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.running = session.session_ready = true;
+	session.active_uam_agent_id = "reviewer";
+	session.active_uam_agent_definition_snapshot = BoundOpenCodeAgentSnapshot();
+	session.active_uam_agent_execution_capability = "opencode-native-agent-config";
+	uam::AcpQueuedUserPromptState prompt;
+	prompt.id = "private-prompt";
+	prompt.text = "Inspect without losing this input.";
+	prompt.uam_agent_id = session.active_uam_agent_id;
+	prompt.uam_agent_definition_snapshot = session.active_uam_agent_definition_snapshot;
+	prompt.uam_agent_execution_capability = session.active_uam_agent_execution_capability;
+	session.queued_user_prompts.push_back(prompt);
+	app.chats.front().acp_queued_prompts.push_back(prompt);
+	std::string error;
+	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+	UAM_ASSERT(error.find("imported permission policy") != std::string::npos);
+	UAM_ASSERT(session.running);
+	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, session, app.chats.front()));
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(session.queued_user_prompts.front().text, prompt.text);
+	UAM_ASSERT(app.chats.front().messages.empty());
+	UAM_ASSERT_EQ(session.prompt_request_id, 0);
+}
+
+UAM_TEST(ImportedOpenCodePolicyCannotStartTerminalFallback)
+{
+	TempDir temp("uam-bound-policy-terminal");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	fs::create_directories(app.data_root / "agents");
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root / "agents" / "reviewer.md", BoundOpenCodeAgentSnapshot()));
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "private-bound-policy";
+	chat.provider_id = "opencode-cli";
+	chat.uam_agent_id = "reviewer";
+	chat.workspace_directory = temp.root.string();
+	std::string error;
+	UAM_ASSERT(!uam::PrepareAcpSessionForCliTerminalLaunch(app, chat, &error));
+	UAM_ASSERT(error.find("imported permission policy") != std::string::npos);
+	UAM_ASSERT(app.cli_terminals.empty());
+}
+
+#if !defined(_WIN32)
+UAM_TEST(ImportedOpenCodePolicyReachesActualChildEnvironment)
+{
+	TempDir temp("uam-bound-policy-child");
+	const fs::path script = temp.root / "capture.sh";
+	const fs::path captured = temp.root / "permission.json";
+	UAM_ASSERT(uam::io::WriteTextFile(script,
+	    "#!/bin/sh\nprintf '%s' \"$OPENCODE_PERMISSION\" > \"$1\"\nIFS= read -r line\n"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.central_provider_configuration.enabled = false;
+	ProviderProfile provider = ProviderProfileStore::DefaultOpenCodeProfile();
+	provider.interactive_command = "/bin/sh \"" + script.string() + "\" \"" + captured.string() + "\"";
+	app.provider_profiles.push_back(provider);
+	ChatSession chat;
+	chat.id = "private-bound-policy-child";
+	chat.provider_id = provider.id;
+	chat.workspace_directory = temp.root.string();
+	chat.execution_host_id = "local";
+	chat.uam_control_enabled = false;
+	app.chats.push_back(chat);
+	uam::AcpSessionState session;
+	session.active_uam_agent_id = "reviewer";
+	session.active_uam_agent_definition_snapshot = BoundOpenCodeAgentSnapshot();
+	session.active_uam_agent_execution_capability = "opencode-native-agent-config";
+	session.active_uam_agent_instructions = "Inspect code.";
+	session.active_uam_agent_workspace_access = "read";
+	std::string error;
+	(void)uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error);
+	std::string bytes;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	while (std::chrono::steady_clock::now() < deadline && bytes.empty())
+	{
+		(void)uam::io::TryReadTextFile(captured, bytes);
+		if (bytes.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	auto& process_service = PlatformServicesFactory::Instance().process_service;
+	process_service.StopStdioProcess(session, true);
+	process_service.CloseStdioProcessHandles(session);
+	const nlohmann::json permission = nlohmann::json::parse(bytes, nullptr, false);
+	UAM_ASSERT(permission.is_object());
+	UAM_ASSERT_EQ(permission["edit"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(permission["bash"], nlohmann::json("ask"));
+	UAM_ASSERT_EQ(permission["task"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(permission["uam-computer_computer_observe"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(permission["uam-computer_computer_action"], nlohmann::json("deny"));
+}
+#endif
 
 UAM_TEST(GenericAcpPermissionReviewPreservesNonObjectJsonInput)
 {

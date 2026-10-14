@@ -1321,6 +1321,30 @@ namespace uam
 		{
 			if (uam::provider_chat_defaults::ForProvider(app.settings, chat.provider_id, chat.execution_host_id).feature_preference == "provider")
 			{
+				if (!chat.agent_run_id.empty())
+				{
+					const auto run = std::ranges::find(app.agent_runs, chat.agent_run_id, &AgentRun::id);
+					if (run == app.agent_runs.end())
+					{
+						if (error_out) *error_out = "Managed agent definition snapshot is unavailable.";
+						return false;
+					}
+					if (!ValidateCapturedAcpAgentPolicy(app, chat,
+					        run->agent_id, run->definition_snapshot, "provider-native", error_out)) return false;
+				}
+				else if (!chat.uam_agent_id.empty() && chat.uam_agent_id != "build" && chat.uam_agent_id != "plan")
+				{
+					SelectedPrimaryAgentSnapshot snapshot;
+					std::string error;
+					if (!AgentDefinitionService::CaptureSelectedPrimary(app.data_root,
+					        uam::paths::ResolveControllerWorkspaceRootPath(app, chat), chat.uam_agent_id, snapshot, error))
+					{
+						if (error_out) *error_out = error;
+						return false;
+					}
+					if (!ValidateCapturedAcpAgentPolicy(app, chat, snapshot.definition.id,
+					        snapshot.definition.markdown_snapshot, "provider-native", error_out)) return false;
+				}
 				queued.uam_agent_id = "build";
 				queued.uam_agent_execution_capability = "provider-native";
 				return true;
@@ -1347,7 +1371,8 @@ namespace uam
 					queued.uam_agent_execution_capability = "uam-prompt-injected";
 				if (app.settings.central_provider_configuration.enabled)
 					queued.uam_agent_execution_capability = "uam-central-native-setup";
-				return true;
+				return ValidateCapturedAcpAgentPolicy(app, chat, queued.uam_agent_id,
+				    queued.uam_agent_definition_snapshot, queued.uam_agent_execution_capability, error_out);
 			}
 			const AcpSessionState* preparing_session = FindAcpSessionForChat(app, chat.id);
 			const std::shared_ptr<PendingAgentInputPreparation> preparation = preparing_session ? preparing_session->pending_agent_input : nullptr;
@@ -1388,7 +1413,8 @@ namespace uam
 			        : "uam-prompt-injected";
 			if (app.settings.central_provider_configuration.enabled)
 				queued.uam_agent_execution_capability = "uam-central-native-setup";
-			return true;
+			return ValidateCapturedAcpAgentPolicy(app, chat, queued.uam_agent_id,
+			    queued.uam_agent_definition_snapshot, queued.uam_agent_execution_capability, error_out);
 		}
 
 		bool ResolveSmallModelGoal(AppState& app, ChatSession& chat, const std::string& objective,
@@ -1698,11 +1724,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				return false;
 			}
+			const AcpQueuedUserPromptState& first = batch.front();
+			if (!ValidateCapturedAcpAgentPolicy(app, chat, first.uam_agent_id,
+			        first.uam_agent_definition_snapshot, first.uam_agent_execution_capability, error_out)) return false;
 			if (!PrepareCliTerminalForAcpPrompt(app, session, chat.id, error_out))
 			{
 				return false;
 			}
-			const AcpQueuedUserPromptState& first = batch.front();
 			if (!ReferencedQueuedRowsMatch(chat, batch))
 			{
 				if (error_out) *error_out = "Queued input's original unsent message changed or is not loaded.";

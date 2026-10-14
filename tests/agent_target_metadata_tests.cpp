@@ -6,6 +6,8 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/utils/io_utils.h"
 
+#include <cstdlib>
+
 using namespace uam_test;
 
 namespace
@@ -235,5 +237,187 @@ UAM_TEST(ProviderAgentAliasesImportGloballyWithSelectedSkillsAndExplicitAccess)
 		UAM_ASSERT_EQ(imported.skills, request.skills);
 		UAM_ASSERT_EQ(imported.workspace_access, std::string("read"));
 		UAM_ASSERT_EQ(imported.source_path, temp.root / provider / "agents" / "agent.md");
+	}
+}
+
+namespace
+{
+	std::string BoundAgentMarkdown(const std::string& policy = R"({"edit":"deny","bash":"ask"})")
+	{
+		return "---\nversion: 1\nname: reviewer\ndescription: Review\nmode: primary\nworkspaceAccess: read\nskills: []\ndelegates: []\nopenCodePermission: " + policy + "\n---\nReview code.\n";
+	}
+}
+
+UAM_TEST(OpenCodePermissionImportPreservesSourceRulesAndRequiresExplicitReadAccess)
+{
+	TempDir temp("uam-opencode-policy-import");
+	const fs::path source = temp.root / "reviewer.md";
+	const std::string original = "---\nname: read-only\ndescription: Reviews code\nmode: primary\npermission:\n  bash: ask\n  edit: deny\n---\nReview code.\n";
+	UAM_ASSERT(uam::io::WriteTextFile(source, original));
+	const uam::ProviderAgentImportPreview preview = uam::AgentDefinitionService::PreviewProviderAgentImport("opencode", source);
+	UAM_ASSERT(preview.supported);
+	UAM_ASSERT(preview.security_fields.empty());
+	UAM_ASSERT_EQ(preview.ignored_fields, std::vector<std::string>{"name"});
+	UAM_ASSERT_EQ(preview.open_code_permission_json, std::string(R"({"bash":"ask","edit":"deny"})"));
+	uam::ProviderAgentImportRequest request;
+	request.provider_id = "opencode";
+	request.source_path = source;
+	request.workspace_access = "read";
+	std::string error;
+	UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, nullptr, &error));
+	request.acknowledge_ignored_fields = true;
+	request.workspace_access = "write";
+	UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, nullptr, &error));
+	UAM_ASSERT(!fs::exists(temp.root / "data" / "agents" / "reviewer.md"));
+	request.workspace_access = "read";
+	uam::AgentDefinition imported;
+	UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, &imported, &error));
+	UAM_ASSERT_EQ(imported.open_code_permission_json, preview.open_code_permission_json);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(source), original);
+	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(temp.root / "data", {});
+	const auto loaded = std::ranges::find(catalog.definitions, std::string("reviewer"), &uam::AgentDefinition::id);
+	UAM_ASSERT(loaded != catalog.definitions.end());
+	UAM_ASSERT_EQ(loaded->open_code_permission_json, imported.open_code_permission_json);
+	// Re-preview the source, rather than trusting a previously displayed supported preview.
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Review\npermission:\n  edit: allow\n---\nReview.\n"));
+	request.replace_existing = true;
+	const std::string previous = uam::io::ReadTextFile(imported.source_path);
+	UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, nullptr, &error));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(imported.source_path), previous);
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Review\n---\nReview.\n"));
+	UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, nullptr, &error));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(imported.source_path), previous);
+}
+
+UAM_TEST(OpenCodePermissionImportRejectsUnsupportedYamlAndOtherSecurityFields)
+{
+	TempDir temp("uam-opencode-policy-rejections");
+	const fs::path source = temp.root / "reviewer.md";
+	const std::vector<std::string> rules{
+	    "permission:\n  edit: allow", "permission:\n  bash: deny", "permission: deny",
+	    "permission:\n  edit: deny\n  edit: allow", "permission:\n  edit:\n    '*': deny",
+	    "permission:\n  edit: deny\n  bash:\n    '*': ask", "permission:\n  edit: deny\n  bash: allow",
+	    "permission: &policy\n  edit: deny", "permission: *policy", "permission:\n  <<: *policy\n  edit: deny",
+	    "permission:\n  edit: deny\n  task: deny", "permission:\n\tedit: deny", "permission:\n    edit: deny",
+	    "permission:\n  edit: deny # unsupported comments", "permission:\n  edit: deny\ntools: [read]",
+	    "  permission:\n    edit: deny", "'permission': deny",
+	    R"("\u0070ermission": { edit: deny })", R"("\u0074ools": [read])",
+	    R"("permission\u002dmode": plan)"};
+	for (const std::string& rule : rules)
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Review\n" + rule + "\n---\nReview.\n"));
+		const uam::ProviderAgentImportPreview blocked = uam::AgentDefinitionService::PreviewProviderAgentImport("opencode", source);
+		UAM_ASSERT(!blocked.supported);
+		if (rule.starts_with("permission:"))
+		{
+			UAM_ASSERT(!blocked.security_fields.empty());
+			UAM_ASSERT(blocked.error.find("security/tool fields") != std::string::npos);
+		}
+	}
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Review\npermission:\n  edit: deny\n---\nReview.\n"));
+	UAM_ASSERT(uam::AgentDefinitionService::PreviewProviderAgentImport("opencode", source).supported);
+	for (const std::string& provider : {"claude", "copilot", "gemini"})
+		UAM_ASSERT(!uam::AgentDefinitionService::PreviewProviderAgentImport(provider, source).supported);
+}
+
+UAM_TEST(CapturedOpenCodePermissionFailsClosedForMalformedSnapshotsAndIncompatibleRoutes)
+{
+	std::string permission, error;
+	const std::string valid = BoundAgentMarkdown();
+	UAM_ASSERT(uam::AgentDefinitionService::CapturedOpenCodePermission("reviewer", valid, permission, &error));
+	UAM_ASSERT_EQ(permission, std::string(R"({"edit":"deny","bash":"ask"})"));
+	UAM_ASSERT(uam::AgentDefinitionService::ValidateCapturedRuntimePolicy("reviewer", valid, "open-code", "opencode-native-agent-config", &error));
+	for (const std::string& capability : {"uam-prompt-injected", "uam-central-native-setup", "terminal", "copilot-native-agent-plugin"})
+		UAM_ASSERT(!uam::AgentDefinitionService::ValidateCapturedRuntimePolicy("reviewer", valid, "opencode", capability, &error));
+	UAM_ASSERT(!uam::AgentDefinitionService::ValidateCapturedRuntimePolicy("reviewer", valid, "codex", "opencode-native-agent-config", &error));
+	UAM_ASSERT(!uam::AgentDefinitionService::CapturedOpenCodePermission("wrong-id", valid, permission, &error));
+	UAM_ASSERT(!uam::AgentDefinitionService::CapturedOpenCodePermission("../reviewer", valid, permission, &error));
+	UAM_ASSERT(!uam::AgentDefinitionService::CapturedOpenCodePermission("reviewer", "openCodePermission: {}", permission, &error));
+	for (const std::string& invalid : {R"({"edit":"deny","edit":"allow"})", R"({"edit":"allow"})", R"({"edit":{"*":"deny"}})", "null", "[]", "broken"})
+		UAM_ASSERT(!uam::AgentDefinitionService::CapturedOpenCodePermission("reviewer", BoundAgentMarkdown(invalid), permission, &error));
+	std::string duplicate = valid;
+	duplicate.insert(duplicate.find("openCodePermission:"), "openCodePermission: {}\n");
+	UAM_ASSERT(!uam::AgentDefinitionService::CapturedOpenCodePermission("reviewer", duplicate, permission, &error));
+	std::string writable = valid;
+	writable.replace(writable.find("workspaceAccess: read"), std::string("workspaceAccess: read").size(), "workspaceAccess: write");
+	UAM_ASSERT(!uam::AgentDefinitionService::CapturedOpenCodePermission("reviewer", writable, permission, &error));
+	UAM_ASSERT(uam::AgentDefinitionService::CapturedOpenCodePermission("build", "builtin:build:v1", permission, &error));
+	UAM_ASSERT(permission.empty());
+}
+
+UAM_TEST(EditingImportedOpenCodeAgentPreservesPolicyAndRejectsWidening)
+{
+	TempDir temp("uam-opencode-policy-edit");
+	const fs::path root = temp.root / "agents";
+	fs::create_directories(root);
+	const fs::path target = root / "reviewer.md";
+	UAM_ASSERT(uam::io::WriteTextFile(target, BoundAgentMarkdown()));
+	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(temp.root, {});
+	const auto loaded = std::ranges::find(catalog.definitions, std::string("reviewer"), &uam::AgentDefinition::id);
+	UAM_ASSERT(loaded != catalog.definitions.end());
+	uam::AgentDefinition edited = *loaded;
+	edited.open_code_permission_json.clear(); // Older editor DTO has no policy property.
+	edited.description = "Updated review";
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(temp.root, edited, &error));
+	std::string retained;
+	UAM_ASSERT(uam::AgentDefinitionService::CapturedOpenCodePermission("reviewer", uam::io::ReadTextFile(target), retained, &error));
+	UAM_ASSERT_EQ(retained, loaded->open_code_permission_json);
+	const std::string previous = uam::io::ReadTextFile(target);
+	edited.workspace_access = "write";
+	UAM_ASSERT(!uam::AgentDefinitionService::SaveGlobalAgent(temp.root, edited, &error));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), previous);
+	edited.workspace_access = "read";
+	edited.open_code_permission_json = R"({"edit":"deny","bash":"deny"})";
+	UAM_ASSERT(!uam::AgentDefinitionService::SaveGlobalAgent(temp.root, edited, &error));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), previous);
+}
+
+UAM_TEST(OpenCodeImportedPolicyAdapterUsesCapturedRulesWithoutBroaderWildcardOverrides)
+{
+	TempDir temp("uam-opencode-policy-adapter");
+	const std::string snapshot = BoundAgentMarkdown(R"({"bash":"deny","edit":"deny"})");
+	uam::ProviderAgentRuntimeAdapter adapter;
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat", "opencode", "reviewer", "Captured instructions.", &adapter, &error, &snapshot));
+	const nlohmann::ordered_json config = nlohmann::ordered_json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	const nlohmann::ordered_json& permission = config.at("permission");
+	UAM_ASSERT_EQ(permission.begin().key(), std::string("bash"));
+	UAM_ASSERT_EQ(permission.at("edit").get<std::string>(), std::string("deny"));
+	UAM_ASSERT_EQ(permission.at("bash").get<std::string>(), std::string("deny"));
+	UAM_ASSERT_EQ(permission.at("task").get<std::string>(), std::string("deny"));
+	UAM_ASSERT_EQ(permission.at("uam-computer_computer_action").get<std::string>(), std::string("deny"));
+	UAM_ASSERT(!permission.contains("*"));
+	const std::string agent = uam::io::ReadTextFile(adapter.directory / "agent" / (config.at("default_agent").get<std::string>() + ".md"));
+	UAM_ASSERT(agent.find("permission: " + permission.dump()) != std::string::npos);
+	UAM_ASSERT(!adapter.inject_in_prompt);
+	UAM_ASSERT(!uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "other", "copilot", "reviewer", "Instructions.", &adapter, &error, &snapshot));
+	UAM_ASSERT(!fs::exists(temp.root / "runtime" / "agent-adapters" / "other"));
+}
+
+UAM_TEST(OpenCodeBoundPolicyRejectsInheritedInlineAgentOverridesWithoutChangingConfiguration)
+{
+	const std::string snapshot = BoundAgentMarkdown();
+	std::string error;
+	const std::vector<std::string> blocked{
+	    R"({"agent":{"uam-fixture":{"permission":{"edit":"allow"}}}})",
+	    R"({"default_agent":"build"})", R"({"mode":{"review":{"permission":{"edit":"allow"}}}})",
+	    R"({"\u0061gent":{}})", "broken", "[]", "null", std::string(16 * 1024 + 1, ' ')};
+	for (const std::string& config : blocked)
+	{
+		ScopedEnvVar inline_config{"OPENCODE_CONFIG_CONTENT", config};
+		UAM_ASSERT(!uam::AgentDefinitionService::ValidateCapturedRuntimePolicy("reviewer", snapshot, "opencode", "opencode-native-agent-config", &error));
+		UAM_ASSERT(error.find("OPENCODE_CONFIG_CONTENT") != std::string::npos);
+		UAM_ASSERT_EQ(std::string(std::getenv("OPENCODE_CONFIG_CONTENT")), config);
+		// Unbound agents retain their existing inline configuration behavior.
+		UAM_ASSERT(uam::AgentDefinitionService::ValidateCapturedRuntimePolicy("build", "builtin:build:v1", "opencode", "opencode-native-agent-config", &error));
+	}
+	for (const std::string& config : {"", "{}", R"({"permission":{"edit":"allow","bash":"allow"}})",
+	                                 R"({"mcp":{"fixture":{"type":"local","command":["fixture"]}}})"})
+	{
+		ScopedEnvVar inline_config{"OPENCODE_CONFIG_CONTENT", config};
+		UAM_ASSERT(uam::AgentDefinitionService::ValidateCapturedRuntimePolicy("reviewer", snapshot, "opencode", "opencode-native-agent-config", &error));
+		const char* retained = std::getenv("OPENCODE_CONFIG_CONTENT");
+		UAM_ASSERT_EQ(retained == nullptr ? std::string{} : std::string(retained), config);
 	}
 }

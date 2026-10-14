@@ -12,6 +12,14 @@ The agreed notification direction routes app-wide messages through the notificat
 
 `UI-V2/src/services/updateCatalog.ts` normalizes the first 10,000 characters of UAM and managed-provider release bodies into optional plain-text `releaseNotesExcerpt` values capped at 500 characters. Provider notes come from exact official release tags matching the npm or Homebrew version, with duplicate versions sharing a request and drafts or mismatched tags omitted. Failed optional notes preserve independently obtained update versions; the existing 15-second deadline covers both version and note requests, with five provider groups active at most. Validated caching and local/remote update projection preserve each installation method's own excerpt. GUI rendering remains pending.
 
+## Provider-bound agent imports
+
+OpenCode Markdown imports support only a flat permission subset: `edit: deny` is required, with optional `bash: ask` or `bash: deny`, and import requires read workspace access. Nested or path-pattern rules, aliases, merges, duplicate keys and other security fields remain rejected. Literal and simple quoted top-level keys are recognized; escaped or complex keys and unsupported indentation fail before security classification. Source descriptions do not establish a universal no-write guarantee: `bash: ask` retains its native approval semantics.
+
+The canonical ordered `openCodePermission` policy travels inside the immutable agent Markdown snapshot. Generic edits preserve it even when an older frontend DTO omits it, and cannot widen or change it; replacement imports cannot strip or change the existing binding. Provider-only metadata omission still requires acknowledgment. Import validates the definition before atomic publication.
+
+A bound policy can launch only through the local structured OpenCode ACP isolated adapter. SSH, central-native setup, provider preferences, terminal launches and other providers reject it rather than falling back to a weaker representation. Both adapter config and native-agent policy retain the source edit/bash rules plus task and computer-action denials, without a generic permissive wildcard. Existing generic agent adapters keep their previous behavior. Inherited `OPENCODE_CONFIG_CONTENT` is rejected for a bound policy when invalid, non-object, larger than 16 KiB, or containing agent, default-agent or legacy-mode overrides; the value is neither rewritten nor logged. Compatible permission-only and MCP-only inline configuration remains supported, with the bound native-agent policy retaining precedence. This is a scoped launch guard, not general inline-configuration sanitization.
+
 ## Ownership and checks
 
 - Permission policy and ACP decisions: `src/common/config/approval_modes.h`, `src/common/security/`, `src/common/runtime/acp/acp_permission_handlers.cpp`, `src/app/computer_use_service.*`.

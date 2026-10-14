@@ -207,6 +207,10 @@ namespace uam
 		const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(
 		    app, {}, m_import, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
 		m_imported_count += result.imported_count;
+		std::erase_if(m_selected, [&](const Candidate& candidate)
+		{
+			return std::ranges::find(result.confirmed_empty_native_keys, chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)) != result.confirmed_empty_native_keys.end();
+		});
 		for (const std::string& error : result.errors) AddError(error);
 		if (!m_import.Pending()) FinishImport(app);
 		return result.imported_count > 0 || !result.errors.empty() || m_phase != "importing";
@@ -292,6 +296,7 @@ namespace uam
 		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, declined_chats, added_keys))
 			return reject("Declined history could not be saved. No decisions were applied.");
 		const std::unordered_set<std::string> selected(selected_candidates.begin(), selected_candidates.end());
+		m_import.preparation_stop = std::stop_source{};
 		for (Candidate& candidate : m_candidates)
 		{
 			if (!selected.contains(candidate.summary.candidate_id)) continue;

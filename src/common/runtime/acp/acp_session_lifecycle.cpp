@@ -23,6 +23,7 @@
 #include "app/uam_control_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
+#include "common/config/provider_chat_defaults.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/mcp_server_config.h"
 #include "common/paths/workspace_root.h"
@@ -149,6 +150,23 @@ namespace
 		    settings_frontend_json::SerializeFingerprintSettingsFields(app.settings),
 		    PromptDeliveryConfiguration(app, session, chat)}).dump();
 	}
+}
+
+bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat,
+    const std::string& agent_id, const std::string& snapshot, const std::string& capability,
+    std::string* error_out)
+{
+	std::string effective_capability = capability;
+	if (chat.execution_host_id != execution_hosts::kLocalHostId)
+		effective_capability = "uam-prompt-injected";
+	if (app.settings.central_provider_configuration.enabled ||
+	    central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id,
+	        chat.execution_host_id, "shared-setup", app.settings.central_provider_configuration.enabled))
+		effective_capability = "uam-central-native-setup";
+	if (provider_chat_defaults::ForProvider(app.settings, chat.provider_id, chat.execution_host_id).feature_preference == "provider")
+		effective_capability = "provider-native";
+	return AgentDefinitionService::ValidateCapturedRuntimePolicy(agent_id, snapshot, chat.provider_id,
+	    effective_capability, error_out);
 }
 
 bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
@@ -932,6 +950,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (error_out != nullptr) *error_out = update_error;
 		return false;
 	}
+	if (!session.model_discovery_only && !ValidateCapturedAcpAgentPolicy(app, chat,
+	        session.active_uam_agent_id, session.active_uam_agent_definition_snapshot,
+	        session.active_uam_agent_execution_capability, error_out)) return false;
 	if (session.running)
 	{
 		return true;
@@ -1114,7 +1135,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			ProviderAgentRuntimeAdapter adapter;
 			if (!AgentDefinitionService::PrepareRuntimeAdapter(
 			        app.data_root, chat.id, provider.id, session.active_uam_agent_id,
-			        session.active_uam_agent_instructions, &adapter, &startup_error))
+			        session.active_uam_agent_instructions, &adapter, &startup_error,
+			        &session.active_uam_agent_definition_snapshot))
 			{
 				session.lifecycle_state = kAcpLifecycleError;
 				session.last_error = startup_error;
@@ -1126,6 +1148,36 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			launch_argv.insert(launch_argv.end(), adapter.launch_arguments.begin(), adapter.launch_arguments.end());
 			launch_environment.insert(launch_environment.end(), adapter.launch_environment.begin(),
 			                          adapter.launch_environment.end());
+			std::string permission_json;
+			if (!AgentDefinitionService::CapturedOpenCodePermission(session.active_uam_agent_id,
+			        session.active_uam_agent_definition_snapshot, permission_json, &startup_error))
+			{
+				if (error_out) *error_out = startup_error;
+				return false;
+			}
+			if (!permission_json.empty())
+			{
+				const nlohmann::ordered_json source_permission = nlohmann::ordered_json::parse(permission_json);
+				const auto permission_entry = std::find_if(launch_environment.rbegin(), launch_environment.rend(),
+				    [](const std::pair<std::string, std::string>& entry) { return entry.first == "OPENCODE_PERMISSION"; });
+				if (permission_entry == launch_environment.rend())
+				{
+					if (error_out) *error_out = "The native OpenCode permission boundary is unavailable.";
+					return false;
+				}
+				nlohmann::ordered_json permission = nlohmann::ordered_json::parse(permission_entry->second, nullptr, false);
+				if (!permission.is_object())
+				{
+					if (error_out) *error_out = "The native OpenCode permission boundary is invalid.";
+					return false;
+				}
+				for (const auto& rule : source_permission.items())
+					if (!permission.contains(rule.key()) || permission[rule.key()] != "deny") permission[rule.key()] = rule.value();
+				permission["task"] = "deny";
+				permission["uam-computer_computer_observe"] = "deny";
+				permission["uam-computer_computer_action"] = "deny";
+				permission_entry->second = permission.dump();
+			}
 		}
 	}
 	nlohmann::json launch_control_servers = nlohmann::json::array();

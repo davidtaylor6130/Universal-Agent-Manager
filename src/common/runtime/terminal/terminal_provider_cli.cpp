@@ -95,6 +95,31 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	}
 
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	const std::string agent_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.uam_agent_id), "build");
+	if (agent_id != "build" && agent_id != "plan")
+	{
+		SelectedPrimaryAgentSnapshot snapshot;
+		std::string error;
+		if (!AgentDefinitionService::CaptureSelectedPrimary(app.data_root,
+		        uam::paths::ResolveControllerWorkspaceRootPath(app, chat), agent_id, snapshot, error))
+		{
+			if (error_out) *error_out = error;
+			return false;
+		}
+		if (!AgentDefinitionService::ValidateCapturedRuntimePolicy(agent_id, snapshot.definition.markdown_snapshot,
+		        provider.id, "terminal", error_out)) return false;
+	}
+	if (!chat.agent_run_id.empty())
+	{
+		const auto run = std::ranges::find(app.agent_runs, chat.agent_run_id, &AgentRun::id);
+		if (run == app.agent_runs.end())
+		{
+			if (error_out) *error_out = "Managed agent definition snapshot is unavailable.";
+			return false;
+		}
+		if (!AgentDefinitionService::ValidateCapturedRuntimePolicy(run->agent_id, run->definition_snapshot,
+		        provider.id, "terminal", error_out)) return false;
+	}
 	if (!provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
 	{
 		if (error_out != nullptr) *error_out = provider_availability::DisabledReason();

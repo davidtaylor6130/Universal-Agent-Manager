@@ -21,6 +21,7 @@ namespace uam
 		std::filesystem::path source_path;
 		bool workspace_override = false;
 		bool built_in = false;
+		std::string open_code_permission_json;
 	};
 
 	struct AgentDefinitionCatalog
@@ -50,6 +51,7 @@ namespace uam
 		std::vector<std::string> ignored_fields;
 		std::string error;
 		bool supported = false;
+		std::string open_code_permission_json;
 	};
 
 	struct ProviderAgentImportRequest
@@ -94,12 +96,19 @@ namespace uam
 		static bool SaveGlobalAgent(const std::filesystem::path& data_root, const AgentDefinition& agent, std::string* error_out = nullptr);
 		static bool DeleteGlobalAgent(const std::filesystem::path& data_root, const std::string& id, std::string* error_out = nullptr);
 		static std::string ExecutionCapabilityForProvider(const std::string& provider_id);
+		/// <summary>Read a validated provider-bound policy from the immutable canonical snapshot.</summary>
+		static bool CapturedOpenCodePermission(const std::string& agent_id, const std::string& snapshot,
+		                                      std::string& permission_json, std::string* error_out = nullptr);
+		static bool ValidateCapturedRuntimePolicy(const std::string& agent_id, const std::string& snapshot,
+		                                         const std::string& provider_id, const std::string& execution_capability,
+		                                         std::string* error_out = nullptr);
 		static bool PrepareRuntimeAdapter(const std::filesystem::path& data_root,
 		                                  const std::string& chat_id,
 		                                  const std::string& provider_id,
 		                                  const std::string& agent_id,
 		                                  const std::string& instructions,
 		                                  ProviderAgentRuntimeAdapter* adapter_out,
-		                                  std::string* error_out = nullptr);
+		                                  std::string* error_out = nullptr,
+		                                  const std::string* definition_snapshot = nullptr);
 	};
 } // namespace uam

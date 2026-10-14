@@ -583,6 +583,7 @@ namespace
 		chat.folder_id = folder;
 		chat.workspace_directory = path;
 		chat.title = "Remote fixture " + id;
+		chat.messages.push_back(Message{MessageRole::User, "Verified fixture transcript"});
 		return chat;
 	}
 }

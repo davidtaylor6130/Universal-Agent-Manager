@@ -312,6 +312,10 @@ bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSessi
 void ReapLocalAcpLaunchTasks(AppState& app);
 /// <summary>Keeps model binding and worker launch ownership on the same effective setup scope.</summary>
 bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+/// <summary>Reject native permission snapshots on launch paths that cannot enforce them.</summary>
+bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat,
+    const std::string& agent_id, const std::string& snapshot, const std::string& capability,
+    std::string* error_out = nullptr);
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpResponseFailureDetails& details);
