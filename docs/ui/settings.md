@@ -16,6 +16,7 @@ Rules:
 4. Status vs configuration: live state (connected, running, installed version, failed) is a `status` line or StatusDot text, never a control.
 5. Disclosure/collapsible blocks only when content is genuinely optional/advanced ("Advanced" at the bottom). Primary settings are always visible.
 6. Copy: plain language, describe the consequence, sentence case. Every row has a description unless trivially obvious.
+   - Copy diet (2026-10-14): page header is title only; section labels are one short word or phrase with no description; row descriptions are one line (about 60 characters) and never repeat the title; no wrapper card that only adds a heading; sections with 1-2 rows merge into a neighbour.
 7. Lists (hosts, servers, agents, skills, editors): each item is a SettingRow (icon + name + mono detail in description + status) with icon-only actions in control; "Add …" is a section action button; add/edit flows that are multi-field open in a modal (Overlay + Presence, like the import dialog), not inline.
 8. Empty states: one muted sentence + the add action.
 9. Motion: sections fade/rise in (built into primitives); expand/collapse uses the existing presence/grid-rows pattern; no flashing of whole lists on refresh (keep previous data while refreshing; disable only the control being saved).

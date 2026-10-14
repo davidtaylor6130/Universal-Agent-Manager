@@ -66,7 +66,7 @@ export function PermissionsSettings() {
   ]
   const toneFor = (status?: string): StatusTone => status === 'allowed' ? 'success' : status === 'denied' || status === 'restricted' ? 'error' : status === 'system_managed' ? 'warning' : 'neutral'
   return <div className="grid gap-6">
-    <SettingsSection title="App permissions" description="macOS asks for these when a feature needs them. Change them here or in System Settings."
+    <SettingsSection title="App permissions"
       actions={<Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>Refresh</Button>}>
       {rows.map((row) => <SettingRow key={row.id} title={row.label} description={row.purpose}
         status={<span className="uam-prov-status" data-tone={toneFor(row.status)}><StatusDot tone={toneFor(row.status)}/>{row.status ? labels[row.status] ?? 'Not checked' : busy ? 'Checking…' : 'Not checked'}</span>}
@@ -74,7 +74,7 @@ export function PermissionsSettings() {
           {row.status !== 'allowed' && <Button size="sm" variant="secondary" disabled={busy || permissions?.platform !== 'macos' || row.status === 'restricted' || row.status === 'unsupported'} onClick={() => void act(row.id, row.helper, true)}>Request</Button>}
           <Button size="sm" variant="ghost" disabled={busy || permissions?.platform !== 'macos'} onClick={() => void act(row.id, row.helper, false)}>System settings</Button>
         </>} />)}
-      {MOBILE_COMPANION_ENABLED && <SettingRow title="Local Network decision" description="macOS does not expose the saved decision. Check it in System Settings." />}
+      {MOBILE_COMPANION_ENABLED && <SettingRow title="Local Network decision" description="Check the saved choice in System Settings." />}
       {message && <SettingRow title="Last action" description={<span role="status">{message}</span>} />}
     </SettingsSection>
   </div>
