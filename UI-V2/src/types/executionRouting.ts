@@ -97,10 +97,15 @@ export function routingConfigurationError(settings: ExecutionRoutingSettings, ho
   return ''
 }
 
-export function canRouteAutomatically(settings: ExecutionRoutingSettings, folder: Folder | undefined, providerId: string): boolean {
-  return Boolean(settings.enabled && folder && settings.hosts.some((host) => host.enabled && host.maxActiveTurns > 0 &&
+/** With repository matching on, a computer qualifies by an automatic repository match or a manual override (override wins). Without it, manual mappings only. */
+export function canRouteAutomatically(settings: ExecutionRoutingSettings, folder: Folder | undefined, providerId: string, workspace?: WorkspaceRepositoryMatches): boolean {
+  if (!settings.enabled || !folder) return false
+  const automaticHosts = settings.repositoryMatching === true
+    ? new Set(workspace?.matches.filter((match) => match.source === 'automatic' && match.remoteDirectory).map((match) => match.executionHostId))
+    : new Set<string>()
+  return settings.hosts.some((host) => host.enabled && host.maxActiveTurns > 0 &&
     host.providers.some((provider) => provider.providerId === providerId && provider.connectionIdentity && provider.providerConfigurationIdentity) &&
-    host.workspaceMappings.some((mapping) => !mapping.useAutomaticMatch && mapping.sourceFolderId === folder.id && mapping.sourceDirectory === folder.directory)))
+    (automaticHosts.has(host.hostId) || host.workspaceMappings.some((mapping) => !mapping.useAutomaticMatch && mapping.sourceFolderId === folder.id && mapping.sourceDirectory === folder.directory)))
 }
 
 export function routingReservation(session: Session): RoutingReservation | null {

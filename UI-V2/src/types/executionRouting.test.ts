@@ -49,6 +49,16 @@ describe('repository matching contracts', () => {
     expect(sanitizeExecutionRouting({ enabled: true, hosts: [], repositoryMatching: true }).repositoryMatching).toBe(true)
     expect(sanitizeExecutionRouting({ enabled: true, hosts: [], repositoryMatching: 'yes' })).not.toHaveProperty('repositoryMatching')
   })
+  it('routes by automatic repository match only when the capability is on, and manual overrides still count', () => {
+    const match = { folderId: 'source', repository: null, matches: [{ executionHostId: 'ssh-a', remoteDirectory: '/remote', source: 'automatic' as const }] }
+    const bare = { ...settings, hosts: [{ ...settings.hosts[0], workspaceMappings: [] }] }
+    expect(canRouteAutomatically(bare, folders[0], 'codex-cli', match)).toBe(false)
+    expect(canRouteAutomatically({ ...bare, repositoryMatching: true }, folders[0], 'codex-cli', match)).toBe(true)
+    expect(canRouteAutomatically({ ...bare, repositoryMatching: true }, folders[0], 'codex-cli')).toBe(false)
+    expect(canRouteAutomatically({ ...bare, repositoryMatching: false }, folders[0], 'codex-cli', match)).toBe(false)
+    expect(canRouteAutomatically({ ...bare, repositoryMatching: true }, folders[0], 'codex-cli', { ...match, matches: [{ ...match.matches[0], source: 'manual' }] })).toBe(false)
+    expect(canRouteAutomatically({ ...settings, repositoryMatching: true }, folders[0], 'codex-cli')).toBe(true)
+  })
   it('treats a cleared automatic-match entry as no override', () => {
     const cleared = { ...settings, hosts: [{ ...settings.hosts[0], workspaceMappings: [{ sourceFolderId: 'source', sourceDirectory: '/source', destinationFolderId: '', useAutomaticMatch: true as const }] }] }
     expect(routingConfigurationError(cleared, hosts, folders)).toBe('')
