@@ -475,6 +475,7 @@ namespace uam
 			if (message.interrupted) message_json["interrupted"] = true;
 			if (!message.stop_reason.empty()) message_json["stopReason"] = message.stop_reason;
 			if (message.acp_prompt_not_sent) message_json["acpPromptNotSent"] = true;
+			if (message.acp_prompt_discarded) message_json["acpPromptDiscarded"] = true;
 			if (message.priority_steer) message_json["prioritySteer"] = true;
 			if (message.continues_turn) message_json["continuesTurn"] = true;
 			if (message.processing_time_ms > 0)
@@ -1746,7 +1747,7 @@ namespace uam
 		nlohmann::json user_message_indices = nlohmann::json::array();
 		for (std::size_t index = 0; index < total_count; ++index)
 		{
-			if (session.messages[index].role != MessageRole::User) continue;
+			if (session.messages[index].role != MessageRole::User || session.messages[index].acp_prompt_discarded) continue;
 			user_message_indices.push_back(index);
 			// Keep the navigation detail within the existing bounded tail-cache budget.
 			if (user_message_indices.size() > 32768) { user_message_indices = nullptr; break; }

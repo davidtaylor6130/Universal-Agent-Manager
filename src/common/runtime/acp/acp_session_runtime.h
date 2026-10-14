@@ -39,6 +39,7 @@ bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* 
 std::vector<int> KnownUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
 /// <summary>Latest legacy draft authorized for explicit fresh-session retry without replaying any earlier draft.</summary>
 std::vector<int> RecoverableUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
+bool DiscardUnsentAcpMessage(AppState& app, const std::string& chat_id, int message_index, const std::string& expected_messages_digest, std::string* error_out = nullptr);
 bool RetryFailedAcpMessage(AppState& app, const std::string& chat_id, int message_index, std::string* error_out = nullptr);
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSession& chat);

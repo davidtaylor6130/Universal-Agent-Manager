@@ -3193,104 +3193,107 @@ UAM_TEST(OptInRealRemoteOpenCodeTurnRecoversAfterLocalRelayLoss)
 #if defined(__APPLE__)
 UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 {
-	TempDir temp("uam-remote-acp-e2e");
-	const fs::path runner =
-	    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
-	        .parent_path() / "uam-runner";
-	const fs::path ssh = temp.root / "ssh";
-	const fs::path opencode = temp.root / "opencode";
-	UAM_ASSERT(uam::io::WriteTextFile(
-	    ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
-	UAM_ASSERT(uam::io::WriteTextFile(opencode, R"(#!/bin/sh
-while IFS= read -r line; do
-  case "$line" in
-    *'"method":"initialize"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"remote-test","title":"Remote Test","version":"1"},"agentCapabilities":{"loadSession":true}}}'
-      ;;
-    *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"remote-session-1"}}'
-      ;;
-    *'"method":"session/prompt"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"remote-acp-ok"}}}}'
-      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
-      ;;
-  esac
-done
-)"));
-	fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
-	                         fs::perms::owner_exec);
-	fs::permissions(opencode, fs::perms::owner_read | fs::perms::owner_write |
-	                              fs::perms::owner_exec);
-	const std::string inherited_path =
-	    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
-	ScopedEnvVar path("PATH", temp.root.string() + ":" + inherited_path);
-	ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
-
-	uam::AppState app;
-	app.data_root = temp.root / "data";
-	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
-	app.settings.provider_chat_defaults[uam::provider_ids::kOpenCodeCli].feature_preference = "uam";
-	ExecutionHost host;
-	host.id = "lab";
-	host.label = "Lab";
-	host.transport = "ssh";
-	host.ssh_alias = "home-lab";
-	host.runner_status = "ready";
-	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
-	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
-	host.platform = "linux";
-	host.architecture = "arm64";
-	app.settings.execution_hosts = {host};
-	uam::execution_hosts::Normalize(app.settings.execution_hosts);
-
-	ChatSession chat;
-	chat.id = "remote-e2e";
-	chat.provider_id = uam::provider_ids::kOpenCodeCli;
-	chat.execution_host_id = host.id;
-	chat.workspace_directory = temp.root.string();
-	app.chats.push_back(std::move(chat));
-
-	std::string error;
-	UAM_ASSERT(uam::SendAcpPrompt(app, "remote-e2e", "Answer through the runner.", {}, {},
-	                              false, &error));
-	for (int attempt = 0; attempt < 500; ++attempt)
+	for (const std::string& cached_status : {"ready", "error", "offline"})
 	{
-		(void)uam::PollAllAcpSessions(app);
-		// Match the application tick: advance owned persistence after runtime polling.
-		(void)uam::FlushPendingChatSaves(app);
-		if (app.acp_sessions.front()->session_ready &&
-		    !app.acp_sessions.front()->processing && app.chats.front().messages.size() >= 2)
-			break;
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
-	UAM_ASSERT(app.acp_sessions.front()->session_ready);
-	UAM_ASSERT(!app.acp_sessions.front()->processing);
-	UAM_ASSERT_EQ(app.chats.front().messages.back().role, MessageRole::Assistant);
-	UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("remote-acp-ok"));
-	UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_execution_capability,
-	              std::string("uam-prompt-injected"));
-	UAM_ASSERT(!uam::StopAcpSession(app, "remote-e2e"));
-	for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
-	{
-		(void)uam::PollAllAcpSessions(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
-	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		TempDir temp("uam-remote-acp-e2e");
+		const fs::path runner =
+		    PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath()
+		        .parent_path() / "uam-runner";
+		const fs::path ssh = temp.root / "ssh";
+		const fs::path opencode = temp.root / "opencode";
+		UAM_ASSERT(uam::io::WriteTextFile(
+		    ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(opencode, R"(#!/bin/sh
+	while IFS= read -r line; do
+	  case "$line" in
+	    *'"method":"initialize"'*)
+	      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"remote-test","title":"Remote Test","version":"1"},"agentCapabilities":{"loadSession":true}}}'
+	      ;;
+	    *'"method":"session/new"'*)
+	      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"remote-session-1"}}'
+	      ;;
+	    *'"method":"session/prompt"'*)
+	      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"remote-acp-ok"}}}}'
+	      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+	      ;;
+	  esac
+	done
+	)"));
+		fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write |
+		                         fs::perms::owner_exec);
+		fs::permissions(opencode, fs::perms::owner_read | fs::perms::owner_write |
+		                              fs::perms::owner_exec);
+		const std::string inherited_path =
+		    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+		ScopedEnvVar path("PATH", temp.root.string() + ":" + inherited_path);
+		ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
 
-	uam::AcpSessionState& recovery = *app.acp_sessions.front();
-	recovery.managed_agent_run_id = "11111111-1111-4111-8111-111111111111";
-	recovery.managed_launch_attempted = true;
-	recovery.recovering_remote_turn = true;
-	recovery.recent_stderr = "The remote process does not exist.\n";
-	app.chats.front().remote_turn_reconnect_pending = true;
-	error.clear();
-	UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(
-	    app, recovery, app.chats.front(), &error));
-	UAM_ASSERT(recovery.recent_stderr.find("The remote process does not exist.") ==
-	           std::string::npos);
-	PlatformServicesFactory::Instance().process_service.StopStdioProcess(recovery, true);
-	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(recovery);
-	recovery.running = false;
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.settings.provider_chat_defaults[uam::provider_ids::kOpenCodeCli].feature_preference = "uam";
+		ExecutionHost host;
+		host.id = "lab";
+		host.label = "Lab";
+		host.transport = "ssh";
+		host.ssh_alias = "home-lab";
+		host.runner_status = cached_status;
+		host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+		host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+		host.platform = "linux";
+		host.architecture = "arm64";
+		app.settings.execution_hosts = {host};
+		uam::execution_hosts::Normalize(app.settings.execution_hosts);
+
+		ChatSession chat;
+		chat.id = "remote-e2e";
+		chat.provider_id = uam::provider_ids::kOpenCodeCli;
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = temp.root.string();
+		app.chats.push_back(std::move(chat));
+
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, "remote-e2e", "Answer through the runner.", {}, {},
+		                              false, &error));
+		for (int attempt = 0; attempt < 500; ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			// Match the application tick: advance owned persistence after runtime polling.
+			(void)uam::FlushPendingChatSaves(app);
+			if (app.acp_sessions.front()->session_ready &&
+			    !app.acp_sessions.front()->processing && app.chats.front().messages.size() >= 2)
+				break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(app.acp_sessions.front()->session_ready);
+		UAM_ASSERT(!app.acp_sessions.front()->processing);
+		UAM_ASSERT_EQ(app.chats.front().messages.back().role, MessageRole::Assistant);
+		UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string("remote-acp-ok"));
+		UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_execution_capability,
+		              std::string("uam-prompt-injected"));
+		UAM_ASSERT(!uam::StopAcpSession(app, "remote-e2e"));
+		for (int attempt = 0; attempt < 100 && !app.pending_acp_remote_stops.empty(); ++attempt)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+
+		uam::AcpSessionState& recovery = *app.acp_sessions.front();
+		recovery.managed_agent_run_id = "11111111-1111-4111-8111-111111111111";
+		recovery.managed_launch_attempted = true;
+		recovery.recovering_remote_turn = true;
+		recovery.recent_stderr = "The remote process does not exist.\n";
+		app.chats.front().remote_turn_reconnect_pending = true;
+		error.clear();
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(
+		    app, recovery, app.chats.front(), &error));
+		UAM_ASSERT(recovery.recent_stderr.find("The remote process does not exist.") ==
+		           std::string::npos);
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(recovery, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(recovery);
+		recovery.running = false;
+	}
 }
 
 UAM_TEST(RemoteModelDiscoveryUsesTheSelectedRunnerAndCachesOnlyItsCatalog)

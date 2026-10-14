@@ -61,6 +61,7 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 			log << request.dump() << '\n';
 		}
 		const std::string type = request.value("type", "");
+		if (mode == "handshake-offline" && type == "hello") return 0;
 		nlohmann::json result = nlohmann::json::object();
 		if (mode == "command-lost-start" && type == "process.start") return 0;
 		if (mode == "teardown-lost-reply" && type == "process.closeInput") return 0;
@@ -128,6 +129,8 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
 		    : nlohmann::json{{"id", request["id"]}, {"ok", true}, {"result", result}};
 		if (mode == "old-context-capability" && type == "hello") response["capabilities"].erase("providerNativeContext");
+		if (mode == "handshake-version" && type == "hello") response["runnerVersion"] = "incompatible";
+		if (mode == "handshake-protocol" && type == "hello") response["protocolVersion"] = 99;
 		if (mode == "startup-write-exited" && type == "process.write")
 			response = {{"id", request["id"]}, {"ok", false},
 			            {"error", {{"code", "process_exited"}, {"message", "The remote process has exited."}}}};
@@ -135,6 +138,107 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		std::cout.flush();
 	}
 	return 0;
+}
+
+UAM_TEST(RemoteRunnerConnectionAttemptsIgnoreCachedHealthButRejectInvalidConfiguration)
+{
+	ExecutionHost host{"lab", "Lab", "ssh", "lab", "error", "development", "linux", "x86_64", "", "runner", uam::remote::kRunnerProtocolVersion};
+	for (const std::string status : {"ready", "error", "offline"})
+	{
+		host.runner_status = status;
+		UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+	}
+	const ExecutionHost installed = host;
+	for (int change = 0; change < 10; ++change)
+	{
+		host = installed;
+		switch (change)
+		{
+		case 0: host.runner_status = "uninstalled"; break;
+		case 1: host.runner_status = "installing"; break;
+		case 2: host.runner_status = "disabled"; break;
+		case 3: host.runner_version.clear(); break;
+		case 4: host.runner_protocol_version = 0; break;
+		case 5: host.runner_protocol_version = uam::remote::kRunnerProtocolVersion + 1; break;
+		case 6: host.ssh_alias = "-foreign"; break;
+		case 7: host.runner_directory = "../foreign"; break;
+		case 8: host.transport = "foreign"; break;
+		case 9: host.platform = "foreign"; break;
+		}
+		UAM_ASSERT(!uam::remote::CanAttemptRunnerConnection(host));
+	}
+}
+
+UAM_TEST(RemoteRunnerCachedErrorsStillRequireACompatibleLiveHandshake)
+{
+	TempDir temp("uam-cached-health-handshake");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	for (const std::string status : {"ready", "error", "offline"})
+	for (const std::string mode : {"healthy", "handshake-offline", "handshake-version", "handshake-protocol"})
+	{
+		ExecutionHost host{"lab", "Lab", "ssh", "lab", status, "development", "linux", "x86_64", "", "runner", uam::remote::kRunnerProtocolVersion};
+		UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+		const fs::path log = temp.root / (status + "-" + mode + ".jsonl");
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", mode);
+		uam::remote::RunnerClient client(service,
+		    {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"}, host.runner_version, host.runner_protocol_version);
+		std::string error;
+		UAM_ASSERT_EQ(client.Connect(&error), mode == "healthy");
+		UAM_ASSERT_EQ(client.IsConnected(), mode == "healthy");
+		client.Disconnect();
+		std::istringstream requests(ReadFile(log));
+		std::string line;
+		int hellos = 0;
+		while (std::getline(requests, line))
+		{
+			UAM_ASSERT_EQ(nlohmann::json::parse(line).at("type").get<std::string>(), "hello");
+			++hellos;
+		}
+		UAM_ASSERT_EQ(hellos, 1);
+	}
+}
+
+UAM_TEST(RemoteCliVersionRecheckCanRecoverAnInstalledHelperWithCachedErrors)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-cached-health-cli-check");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+	// Keep this private fixture's executable path independent of the machine's login profile.
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sh", "#!/bin/sh\nexec /bin/sh -c \"$2\"\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "codex", "#!/bin/sh\nprintf 'checked\\n' >> \"$UAM_TEST_CLI_CHECK_LOG\"\nprintf 'codex-cli 0.162.1\\n'\n"));
+	for (const char* executable : {"ssh", "sh", "codex"})
+		fs::permissions(temp.root / executable, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
+	ScopedEnvVar check_log("UAM_TEST_CLI_CHECK_LOG", (temp.root / "checks.txt").string());
+	for (const std::string status : {"error", "offline"})
+	{
+		uam::AppState app;
+		app.data_root = temp.root / status;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host{"lab", "Lab", "ssh", "lab", status,
+		    std::string(uam::constants::kAppVersion).substr(1), "macos", "arm64", "", "runner", uam::remote::kRunnerProtocolVersion};
+		app.settings.execution_hosts = {host};
+		std::string error;
+		ProviderCliCompatibilityService compatibility;
+		UAM_ASSERT(compatibility.StartProviderVersionCheck(app, uam::provider_ids::kCodexCli, true, host.id, &error));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (app.runtime_cli_version_check_task.running && std::chrono::steady_clock::now() < deadline)
+		{
+			compatibility.Poll(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!app.runtime_cli_version_check_task.running);
+		const auto& version = app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey(uam::provider_ids::kCodexCli, host.id));
+		UAM_ASSERT_EQ(version.installed_version, "0.162.1");
+		UAM_ASSERT(version.check_error.empty());
+		UAM_ASSERT_EQ(app.settings.execution_hosts.front().runner_status, "ready");
+	}
+	UAM_ASSERT_EQ(ReadFile(temp.root / "checks.txt"), "checked\nchecked\n");
+#endif
 }
 
 UAM_TEST(RemoteCommandRecoversLostStartWithoutReplayingAndPreservesOutputAndExit)

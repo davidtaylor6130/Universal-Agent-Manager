@@ -17,6 +17,7 @@
 
 class IPlatformProcessService;
 struct ProcessExecutionResult;
+struct ExecutionHost;
 
 namespace uam::remote
 {
@@ -45,6 +46,9 @@ namespace uam::remote
 	                                       const std::string& version,
 	                                       const std::string& runner_directory = {},
 	                                       int protocol_version = kRunnerProtocolVersion);
+
+	/// Cached health may be stale; the connection handshake still validates the installed helper.
+	bool CanAttemptRunnerConnection(const ExecutionHost& host);
 
 	class RunnerClient
 	{

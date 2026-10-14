@@ -25,6 +25,12 @@ Repository matching reads VCS identity on background workers for saved workspace
 
 An automatic assignment is rechecked against fresh source and destination identity before launch. The check belongs to the chat incarnation and assigned connection; a changed or failed match blocks launch rather than silently using another repository. A successful launch check is reusable for two seconds, with at most four concurrent checks.
 
+## Cached health and connection attempts
+
+A configured SSH runner with cached `ready`, `error` or `offline` status may attempt a fresh connection when its alias, platform, installation directory, version and protocol form a valid existing bridge command. Cached health is an observation, not permanent proof that the runner is unavailable. Unsupported protocols, unsafe or missing connection fields, and uninstalled, installing or disabled runners remain rejected.
+
+`remote::CanAttemptRunnerConnection` applies this admission rule to explicit provider, terminal, worker, history and CLI operations; automatic routing still uses its health selection. The actual runner connection must independently pass nonce, version, protocol and capability checks. This does not install a runner, switch its configured directory, migrate existing processes or perform an additional SSH probe on the UI thread.
+
 ## Runner startup observation
 
 Saved `startupEnabled` expresses the desired setting; transient `runnerStartupApplied` separately reports `pending`, `enabled`, `disabled` or `failed`, with a bounded `runnerStartupError` where available. Missing applied state means unknown. Loading settings or changing runner installation identity clears confirmation.

@@ -25,6 +25,7 @@
 #include "app/transcript_retention_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/chat_message_page_index.h"
 #include "common/chat/native_chat_identity.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include <cstring>
@@ -60,6 +61,7 @@
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "remote/runner_proxy.h"
+#include "remote/runner_client.h"
 
 #include "common/runtime/terminal/terminal_lifecycle.h"
 
@@ -287,7 +289,7 @@ namespace uam
 			    !app.claude_quota_dispatch_id.empty() || !chat.active_goal_id.empty() || !chat.goal_owner_chat_id.empty() ||
 			    !session.running || session.session_ready || !session.processing || session.prompt_request_id != 0 ||
 			    session.queued_prompt.empty() || session.remote_runner_protocol_version < 3 || host == nullptr ||
-			    host->runner_status != "ready" || host->runner_protocol_version != session.remote_runner_protocol_version ||
+			    !remote::CanAttemptRunnerConnection(*host) || host->runner_protocol_version != session.remote_runner_protocol_version ||
 			    session.process_execution_host_id != host->id || session.remote_output_delivery_token.empty() ||
 			    AcpSessionHasPendingCancel(session) || session.local_stop_pending || session.remote_stop_pending || session.remote_stop_unconfirmed ||
 			    session.recovering_remote_turn || session.recovering_remote_process || session.remote_source_exit_reported ||
@@ -346,7 +348,7 @@ namespace uam
 					const AcpSessionState* owner = FindAcpSessionForChat(app, chat_id);
 					const ExecutionHost* connection = current ? execution_hosts::Find(app.settings.execution_hosts, current->execution_host_id) : nullptr;
 					return current && current->metadata_incarnation == incarnation && app.data_root == root && owner == original &&
-					    connection && execution_hosts::SameConnection(host, *connection) && connection->runner_status == "ready" &&
+					    connection && execution_hosts::SameConnection(host, *connection) && remote::CanAttemptRunnerConnection(*connection) &&
 					    connection->runner_protocol_version == host.runner_protocol_version &&
 					    owner->remote_runner_protocol_version == host.runner_protocol_version && owner->process_execution_host_id == host.id &&
 					    owner->running && owner->processing && !owner->remote_source_exit_reported &&
@@ -585,7 +587,7 @@ namespace uam
 				if (prompt.append_user_message || !chat.messages_loaded || index >= chat.messages.size() ||
 				    chat.messages[index].role != MessageRole::User || chat.messages[index].content != prompt.text ||
 				    chat.messages[index].created_at != prompt.existing_user_message_created_at ||
-				    !chat.messages[index].acp_prompt_not_sent) return false;
+				    !chat.messages[index].acp_prompt_not_sent || chat.messages[index].acp_prompt_discarded) return false;
 			}
 			return true;
 		}
@@ -3554,7 +3556,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 	std::vector<int> KnownUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat)
 	{
 		std::vector<int> indices;
-		if (chat.imported_read_only || !chat.messages_loaded) return indices;
+		if (!chat.messages_loaded) return indices;
+		if (chat.imported_read_only)
+		{
+			for (std::size_t index = 0; index < chat.messages.size(); ++index)
+				if (chat.messages[index].acp_prompt_discarded) indices.push_back(static_cast<int>(index));
+			return indices;
+		}
 		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 		int remote_last = chat.remote_turn_user_message_index;
 		int remote_first = remote_last;
@@ -3577,6 +3585,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 		for (std::size_t index = 0; index < chat.messages.size(); ++index)
 		{
 			const Message& row = chat.messages[index];
+			if (row.role == MessageRole::User && row.acp_prompt_discarded)
+			{
+				indices.push_back(static_cast<int>(index));
+				continue;
+			}
 			if (row.role != MessageRole::User || !row.acp_prompt_not_sent ||
 			    (!row.provider.empty() && row.provider != chat.provider_id) ||
 			    !row.tool_calls.empty() || !row.thoughts.empty() || !row.plan_entries.empty() ||
@@ -3602,6 +3615,40 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (no_output) indices.push_back(static_cast<int>(index));
 		}
 		return indices;
+	}
+
+	/// <summary>Discard a proven unsent row without moving native indices or changing later delivery ownership.</summary>
+	bool DiscardUnsentAcpMessage(AppState& app, const std::string& chat_id, int message_index,
+	    const std::string& expected_messages_digest, std::string* error_out)
+	{
+		const auto reject = [&](const std::string& error)
+		{
+			if (error_out) *error_out = error;
+			return false;
+		};
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (!chat || !chat->messages_loaded || chat->imported_read_only || chat->acp_queue_storage_error ||
+		    chat->side_cleanup_requested || message_index < 0 || static_cast<std::size_t>(message_index) >= chat->messages.size() ||
+		    expected_messages_digest.size() != 16 || app.pending_chat_save_at_by_chat_id.contains(chat_id) ||
+		    app.pending_chat_save_tasks.contains(chat_id) || app.worktree_operation_chat_ids.contains(chat_id) || AcpStopInProgress(app, chat_id))
+			return reject("The unsent prompt changed or is being saved. Refresh before removing it.");
+		std::uint64_t hash = hashing::kFnv1a64OffsetBasis;
+		for (const Message& row : chat->messages) chat_pages::AppendMessageDigest(hash, row);
+		if (chat_pages::FinishMessageDigest(hash, chat->messages.size()) != expected_messages_digest)
+			return reject("Chat history changed. Refresh before removing the unsent prompt.");
+		Message& row = chat->messages[static_cast<std::size_t>(message_index)];
+		const std::vector<int> known = KnownUnsentAcpMessageIndices(app, *chat);
+		const AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
+		const auto pending = [message_index](const AcpQueuedUserPromptState& prompt)
+		{ return prompt.prepared_for_delivery || prompt.existing_user_message_index == message_index; };
+		if (row.acp_prompt_discarded || std::ranges::find(known, message_index) == known.end() ||
+		    chat->acp_dispatched_queued_prompt_count != 0 || std::ranges::any_of(chat->acp_queued_prompts, pending) ||
+		    (session && (session->provider_id != chat->provider_id || std::ranges::any_of(session->queued_user_prompts, pending))))
+			return reject("This input has pending delivery or is part of provider history and cannot be removed as an unsent prompt.");
+		row.acp_prompt_discarded = true;
+		if (ChatRepository::SaveChat(app.data_root, *chat)) return true;
+		row.acp_prompt_discarded = false;
+		return reject("The unsent prompt could not be removed because its saved state could not be updated.");
 	}
 
 	static bool HasOriginalAcpRetrySession(const ChatSession& chat, const AcpSessionState* session)
@@ -3687,7 +3734,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const std::vector<int> known = KnownUnsentAcpMessageIndices(app, chat);
 		if (known.empty()) return {};
 		const std::vector<Message>::const_reverse_iterator latest_user = std::ranges::find(chat.messages.rbegin(), chat.messages.rend(), MessageRole::User, &Message::role);
-		if (latest_user == chat.messages.rend() || known.back() != static_cast<int>(chat.messages.rend() - latest_user - 1)) return {};
+		if (latest_user == chat.messages.rend() || latest_user->acp_prompt_discarded || known.back() != static_cast<int>(chat.messages.rend() - latest_user - 1)) return {};
 		const bool held_prepared = session && HeldPreparedAcpPrefixMatches(app, chat, *session, known.back());
 		if ((!chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0) && !held_prepared) return {};
 		if (!chat.native_session_id.empty())
@@ -3729,7 +3776,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (chat->imported_read_only)
 			return reject("Imported transcripts are read-only. Create a new chat in a workspace to continue.");
 		const Message message = chat->messages[user_index];
-		if (message.role != MessageRole::User)
+		if (message.role != MessageRole::User || message.acp_prompt_discarded)
 			return reject("Retry requires a user message with no assistant output.");
 		if (!message.provider.empty() && message.provider != chat->provider_id)
 			return reject("Reconnect the original native session before retrying.");
@@ -3852,7 +3899,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
-		if (chat == nullptr || chat->messages.empty() || chat->messages.back().role != MessageRole::User)
+		if (chat == nullptr || chat->messages.empty() || chat->messages.back().role != MessageRole::User || chat->messages.back().acp_prompt_discarded)
 		{
 			if (error_out != nullptr)
 			{
@@ -3877,7 +3924,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			bool has_prior_context = false;
 			for (auto prior = chat->messages.begin(); prior != chat->messages.end() - 1; ++prior)
 			{
-				if (std::binary_search(known_unsent.begin(), known_unsent.end(), static_cast<int>(prior - chat->messages.begin()))) continue;
+				if (prior->acp_prompt_discarded || std::binary_search(known_unsent.begin(), known_unsent.end(), static_cast<int>(prior - chat->messages.begin()))) continue;
 				if (prior->role == MessageRole::User)
 				{
 					if (!prior->markdown_store_files.empty() &&

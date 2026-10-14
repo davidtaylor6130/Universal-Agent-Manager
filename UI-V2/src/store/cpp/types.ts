@@ -48,6 +48,7 @@ export interface CppMessage {
 	interrupted?: boolean
   stopReason?: string
 	acpPromptNotSent?: boolean
+	acpPromptDiscarded?: boolean
 	prioritySteer?: boolean
 	continuesTurn?: boolean
   checkpointSha?: string

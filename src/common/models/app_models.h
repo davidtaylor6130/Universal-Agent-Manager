@@ -169,6 +169,7 @@ struct Message
 	std::string model_id;
 	bool continues_turn = false;
 	bool acp_prompt_not_sent = false;
+	bool acp_prompt_discarded = false;
 	bool operator==(const Message&) const = default;
 };
 

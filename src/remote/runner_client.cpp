@@ -128,6 +128,14 @@ namespace uam::remote
 		        "ServerAliveCountMax=2", ssh_alias, std::move(command)};
 	}
 
+	bool CanAttemptRunnerConnection(const ExecutionHost& host)
+	{
+		return UAM_ENABLE_SSH && host.transport == "ssh" &&
+		       (host.runner_status == "ready" || host.runner_status == "error" || host.runner_status == "offline") &&
+		       !SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+		                      host.runner_directory, host.runner_protocol_version).empty();
+	}
+
 	RunnerClient::RunnerClient(IPlatformProcessService& process_service,
 	                           std::vector<std::string> bridge_argv,
 	                           std::string expected_version,

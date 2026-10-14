@@ -179,6 +179,7 @@ std::string BuildProviderHandoffContext(const ChatSession& chat, std::stop_token
 	for (std::vector<Message>::const_reverse_iterator message = chat.messages.crbegin(); message != chat.messages.crend(); ++message)
 	{
 		if (stop_token.stop_requested()) return {};
+		if (message->acp_prompt_discarded) continue;
 		if (message->role == MessageRole::User || message->role == MessageRole::Assistant)
 			append(message->role == MessageRole::User ? "User: " : "Assistant: ", message->content);
 		for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)

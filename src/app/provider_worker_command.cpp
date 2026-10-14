@@ -337,7 +337,7 @@ namespace uam
 		if (remote_host == nullptr) return ExecuteProviderWorkerInvocation(invocation, {}, timeout_ms, stop_token);
 		ProcessExecutionResult result;
 		if (stop_token.stop_requested()) { result.canceled = true; return result; }
-		if (remote_host->runner_status != "ready") { result.error = "The selected remote runner is not ready. Recheck it in Settings."; return result; }
+		if (!uam::remote::CanAttemptRunnerConnection(*remote_host)) { result.error = "The selected remote runner is not ready. Recheck it in Settings."; return result; }
 		if (!invocation.direct_process || invocation.argv.empty()) { result.error = "This provider cannot run an isolated remote text worker."; return result; }
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 		uam::remote::RunnerClient client(service, uam::remote::SshBridgeArgv(remote_host->ssh_alias, remote_host->platform, remote_host->runner_version, remote_host->runner_directory, remote_host->runner_protocol_version), remote_host->runner_version, remote_host->runner_protocol_version);

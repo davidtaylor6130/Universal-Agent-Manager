@@ -557,7 +557,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	{
 		const ExecutionHost* host = uam::execution_hosts::Find(
 		    m_app.settings.execution_hosts, execution_host_id);
-		if (host == nullptr || host->runner_status != "ready")
+		if (host == nullptr || !uam::remote::CanAttemptRunnerConnection(*host))
 		{
 			cb->Failure(409, "The chat's remote helper is not ready.");
 			return;

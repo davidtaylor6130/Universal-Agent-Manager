@@ -570,7 +570,20 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 	}
 	std::string error;
 	bool ok = false;
-	if (operation == "edit")
+	if (operation == "discardUnsent")
+	{
+		if (!payload.contains("messageIndex") || !payload["messageIndex"].is_number_integer() ||
+		    payload["messageIndex"] < 0 || payload["messageIndex"] > std::numeric_limits<int>::max() ||
+		    !payload.contains("expectedMessagesDigest") || !payload["expectedMessagesDigest"].is_string() ||
+		    payload["expectedMessagesDigest"].get_ref<const std::string&>().size() != 16)
+		{
+			cb->Failure(400, "Invalid unsent prompt removal.");
+			return;
+		}
+		ok = uam::DiscardUnsentAcpMessage(m_app, chat_id, payload["messageIndex"].get<int>(),
+		    payload["expectedMessagesDigest"].get<std::string>(), &error);
+	}
+	else if (operation == "edit")
 	{
 		if (!payload.contains("promptId") || !payload["promptId"].is_string() ||
 		    !payload.contains("expectedRevision") || !payload["expectedRevision"].is_number_integer() ||

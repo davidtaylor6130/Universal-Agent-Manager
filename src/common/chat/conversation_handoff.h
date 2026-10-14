@@ -13,6 +13,7 @@ namespace uam::chat
 		std::string snapshot;
 		for (const Message& message : source.messages)
 		{
+			if (message.acp_prompt_discarded) continue;
 			for (const MessageBlock& block : message.blocks)
 			{
 				if (block.type == "context_compaction" && !strings::IsBlank(block.text))

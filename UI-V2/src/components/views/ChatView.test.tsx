@@ -1861,6 +1861,51 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it.each(['chat-1791274259986-d110b3', 'chat-1792011220733-48d847'])('removes a legacy unsent input from the displayed family member %s while preserving its branch history', async (chatId) => {
+    const previous = useAppStore.getState()
+    let finish!: (ok: boolean) => void
+    const discard = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve }))
+    const original = { ...previous.messages['chat-1'][0], sessionId: chatId, content: 'Explain this please!', acpPromptNotSent: true, interrupted: true }
+    const later = { ...original, id: 'later', content: 'Delivered branch request', acpPromptNotSent: false, interrupted: false }
+    const session = { ...previous.sessions[0], id: chatId, messagesDigest: 'old-digest', userMessageIndices: [0, 1] }
+    useAppStore.setState({ sessions: [session], activeSessionId: chatId, discardUnsentMessage: discard,
+      messages: { [chatId]: [original, later] }, acpBindingBySessionId: { [chatId]: { ...previous.acpBindingBySessionId['chat-1'],
+        sessionId: 'native', running: true, processing: false, lifecycleState: 'error', turnEvents: [], toolCalls: [],
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [0], recoverableUnsentMessageIndices: [], queuedPrompts: [] } } })
+    writeChatComposerDraft(chatId, { text: 'Independent composer draft', attachments: [] })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      const render = () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+      act(render)
+      const remove = host.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')!
+      expect(remove.disabled).toBe(false)
+      act(() => { remove.click(); remove.click() })
+      expect(discard).toHaveBeenCalledExactlyOnceWith(chatId, 0, original.id)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).toContain(original.content)
+      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(original.content)
+      act(() => {
+        useAppStore.setState({ messages: { [chatId]: [{ ...original, acpPromptDiscarded: true }, later] },
+          sessions: [{ ...session, messagesDigest: 'new-digest' }] })
+        render()
+      })
+      await act(async () => finish(true))
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(original.content)
+      expect(host.querySelector('[data-message-index="1"]')?.textContent).toContain(later.content)
+      expect(useAppStore.getState().messages[chatId]).toHaveLength(2)
+      expect(readChatComposerDraft(chatId).text).toBe('Independent composer draft')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ discardUnsentMessage: previous.discardUnsentMessage }) }
+  })
+
+  it('keeps an explicitly discarded cold portable row hidden without runtime recovery authority', () => {
+    const original = { ...useAppStore.getState().messages['chat-1'][0], acpPromptNotSent: true, acpPromptDiscarded: true }
+    const placeholder = { ...original, role: 'assistant' as const, content: '', acpPromptNotSent: false, acpPromptDiscarded: false }
+    const later = { ...original, id: 'later', content: 'Delivered branch request', acpPromptNotSent: false, acpPromptDiscarded: false }
+    const projection = projectUnsentPrompts([original, placeholder, later], 0, [], [])
+    expect(projection.prompts).toEqual([])
+    expect([...projection.hiddenIndices]).toEqual([0, 1])
+  })
+
   it.each([{ readOnly: false, nativeSession: '' }, { readOnly: true, nativeSession: '' }, { readOnly: false, nativeSession: 'native-ready' }])('projects legacy unsent inputs outside history with exact recovery indices (readOnly=$readOnly, nativeSession=$nativeSession)', async ({ readOnly, nativeSession }) => {
     const previous = useAppStore.getState()
     const retry = vi.fn(async () => ({ ok: false, error: 'Delivery remains unconfirmed.' }))
@@ -1893,6 +1938,7 @@ describe('ChatView', () => {
       const retryButton = recovery.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')!
       expect(recovery.querySelectorAll('[aria-label="Retry message"]')).toHaveLength(1)
       expect(retryButton.disabled).toBe(readOnly)
+      expect(recovery.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')!.disabled).toBe(readOnly)
       expect(retry).not.toHaveBeenCalled()
       await act(async () => retryButton.click())
       if (readOnly) expect(retry).not.toHaveBeenCalled()
@@ -1931,6 +1977,7 @@ describe('ChatView', () => {
       expect(recovery.textContent).toContain('Companion unsent input')
       expect(recovery.querySelector('[aria-label="Edit message in new branch"]')).toBeNull()
       expect(recovery.querySelector('[aria-label="Retry message"]')).toBeNull()
+      expect(recovery.querySelector('[aria-label="Remove unsent prompt"]')).toBeNull()
       expect(host.querySelector('article[aria-label="You"]')).toBeNull()
     } finally { act(() => root.unmount()); host.remove(); window.history.pushState({}, '', previousPath); useAppStore.setState({ discoverProviderModels: previous.discoverProviderModels }) }
   })

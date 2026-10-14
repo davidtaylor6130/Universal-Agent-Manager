@@ -454,6 +454,7 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
 		interrupted: booleanOr(value.interrupted),
 		acpPromptNotSent: booleanOr(value.acpPromptNotSent),
+		acpPromptDiscarded: value.acpPromptDiscarded === true,
 		prioritySteer: booleanOr(value.prioritySteer),
 		continuesTurn: booleanOr(value.continuesTurn),
     checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,

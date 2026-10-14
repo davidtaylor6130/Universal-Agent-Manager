@@ -28,6 +28,7 @@
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
+#include "remote/runner_client.h"
 
 namespace uam
 {
@@ -139,7 +140,7 @@ namespace uam
 		    uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const bool remote = execution_host != nullptr &&
 		                    execution_host->id != uam::execution_hosts::kLocalHostId;
-		if (execution_host == nullptr || (remote && execution_host->runner_status != "ready"))
+		if (execution_host == nullptr || (remote && !uam::remote::CanAttemptRunnerConnection(*execution_host)))
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped,
 			                            remote ? "The selected remote runner is not ready. Recheck it in Settings."

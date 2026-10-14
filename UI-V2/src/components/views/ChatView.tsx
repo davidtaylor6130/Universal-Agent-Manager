@@ -190,7 +190,7 @@ function hasSubstantiveOutput(message: Message) {
 
 /** Native certainty owns recovery; keep original message positions for branch and retry requests. */
 export function projectUnsentPrompts(messages: Message[], historyStartIndex: number, knownIndices: readonly number[], retryIndices: readonly number[], heldPrompts: readonly AcpQueuedPrompt[] = []) {
-  if (knownIndices.length === 0) return { prompts: [] as UnsentPrompt[], hiddenIndices: new Set<number>() }
+  if (knownIndices.length === 0 && !messages.some((message) => message.acpPromptDiscarded === true)) return { prompts: [] as UnsentPrompt[], hiddenIndices: new Set<number>() }
   const known = new Set(knownIndices)
   const retryable = new Set(retryIndices)
   const hiddenIndices = new Set<number>()
@@ -198,14 +198,14 @@ export function projectUnsentPrompts(messages: Message[], historyStartIndex: num
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]
     const nativeIndex = historyStartIndex + index
-    if (message.role !== 'user' || !message.acpPromptNotSent || !known.has(nativeIndex)) continue
+    if (message.role !== 'user' || !message.acpPromptNotSent || (!message.acpPromptDiscarded && !known.has(nativeIndex))) continue
     let end = index + 1
     while (end < messages.length && messages[end].role !== 'user') end += 1
     if (messages.slice(index + 1, end).some((output) => output.role !== 'assistant' || hasSubstantiveOutput(output))) continue
     const representedByQueue = heldPrompts.some((prompt) => prompt.id && Number.isSafeInteger(prompt.revision) && prompt.revision! > 0 &&
       !prompt.prepared && prompt.existingUserMessageIndex === nativeIndex && prompt.text === message.content &&
       attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
-    if (!representedByQueue) prompts.push({ messageIndex: nativeIndex, text: message.content, attachments: message.attachments ?? [], retryable: retryable.has(nativeIndex) })
+    if (!representedByQueue && !message.acpPromptDiscarded) prompts.push({ messageIndex: nativeIndex, text: message.content, attachments: message.attachments ?? [], retryable: retryable.has(nativeIndex) })
     for (let hidden = index; hidden < end; hidden += 1) hiddenIndices.add(hidden)
   }
   return { prompts, hiddenIndices }
@@ -546,8 +546,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const unsentProjection = useMemo(() => projectUnsentPrompts(messages, historyStartIndex, acp?.unsentMessageIndices ?? [], acp?.recoverableUnsentMessageIndices ?? [], acp?.queueHeld ? acp.queuedPrompts ?? [] : []),
     [messages, historyStartIndex, acp?.unsentMessageIndices, acp?.recoverableUnsentMessageIndices, acp?.queueHeld, acp?.queuedPrompts])
   const navigableUserMessageIndices = useMemo(() => {
-    if (!acp?.unsentMessageIndices?.length) return session.userMessageIndices
-    const known = new Set(acp.unsentMessageIndices)
+    if (!acp?.unsentMessageIndices?.length && unsentProjection.hiddenIndices.size === 0) return session.userMessageIndices
+    const known = new Set(acp?.unsentMessageIndices ?? [])
     const indices = session.userMessageIndices ?? messages.flatMap((message, index) => message.role === 'user' ? [historyStartIndex + index] : [])
     return indices.filter((index) => {
       const loadedIndex = index - historyStartIndex
@@ -630,6 +630,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
+  const discardUnsentMessage = useAppStore((s) => s.discardUnsentMessage)
   const resumeQueuedAcpPrompts = useAppStore((s) => s.resumeQueuedAcpPrompts)
   const steerQueuedAcpPrompt = useAppStore((s) => s.steerQueuedAcpPrompt)
   const editQueuedAcpPrompt = useAppStore((s) => s.editQueuedAcpPrompt)
@@ -2919,6 +2920,10 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             <InlinePromptQueue key={session.id} unsentPrompts={unsentProjection.prompts}
               unsentActionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null}
               onEditUnsent={isCompanionContext() ? undefined : beginEditingMessage}
+              onRemoveUnsent={isCompanionContext() ? undefined : (index) => {
+                if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return Promise.resolve(false)
+                return discardUnsentMessage(session.id, index, messages[index - historyStartIndex]?.id ?? '')
+              }}
               onRetryUnsent={isCompanionContext() ? undefined : async (index) => {
                 if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
                 const generation = ++messageBranchGenerationRef.current

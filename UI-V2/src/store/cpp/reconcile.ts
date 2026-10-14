@@ -820,6 +820,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage, index: numbe
 		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
     existing.stopReason === next.stopReason &&
 		Boolean(existing.acpPromptNotSent) === Boolean(next.acpPromptNotSent) &&
+		Boolean(existing.acpPromptDiscarded) === Boolean(next.acpPromptDiscarded) &&
 		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
 		Boolean(existing.continuesTurn) === Boolean(next.continuesTurn) &&
     (existing.checkpointSha ?? '') === (next.checkpointSha ?? '') &&
@@ -854,6 +855,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
 		interrupted: Boolean(message.interrupted),
     stopReason: message.stopReason === 'timeout' || message.stopReason === 'provider-update' || message.stopReason === 'forced' || message.stopReason === 'failed' || message.stopReason === 'unknown' || message.stopReason === 'interrupt' ? message.stopReason : undefined,
 		acpPromptNotSent: Boolean(message.acpPromptNotSent),
+		acpPromptDiscarded: message.acpPromptDiscarded === true,
 		prioritySteer: Boolean(message.prioritySteer),
 		continuesTurn: Boolean(message.continuesTurn),
     checkpointSha: message.checkpointSha,

@@ -758,6 +758,41 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    discardUnsentMessage: async (id: string, messageIndex: number, expectedMessageId: string) => {
+      const state = get()
+      const chat = state.sessions.find((session) => session.id === id)
+      const binding = state.acpBindingBySessionId[id]
+      const message = state.messages[id]?.[messageIndex - (state.historyStartIndexBySessionId[id] ?? 0)]
+      if (!isCefContext() || isCompanionContext() || !chat || chat.importedReadOnly || !expectedMessageId || message?.id !== expectedMessageId ||
+          !Number.isSafeInteger(messageIndex) || messageIndex < 0 || !binding?.unsentMessageIndices?.includes(messageIndex) ||
+          message.role !== 'user' || !message.acpPromptNotSent || message.acpPromptDiscarded) return false
+      // Probe the clicked row without replacing a paged or search-anchored transcript with its tail.
+      const page = await sendToCEF<ChatMessagesResponse>({ action: 'getChatMessages', payload: {
+        chatId: id, limit: 1, before: messageIndex + 1, deferToolCallContent: true, messagesDigest: '',
+      } })
+      const data = page.data
+      const current = get()
+      if (!page.ok || !data?.messagesDigest || (data.chatId && data.chatId !== id) || data.startIndex !== messageIndex ||
+          !Number.isSafeInteger(data.totalCount) || data.totalCount! <= messageIndex || data.messages?.length !== 1 ||
+          reconcileCppMessages(id, [message], data.messages, true, messageIndex)[0] !== message ||
+          current.messages[id]?.[messageIndex - (current.historyStartIndexBySessionId[id] ?? 0)] !== message ||
+          !current.sessions.some((session) => session.id === id && !session.importedReadOnly) ||
+          !current.acpBindingBySessionId[id]?.unsentMessageIndices?.includes(messageIndex)) return false
+      const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: {
+        chatId: id, operation: 'discardUnsent', messageIndex, expectedMessagesDigest: data.messagesDigest,
+      } })
+      if (!response.ok) return false
+      loadedMessagesDigestByChatId.delete(id)
+      set((state) => {
+        const index = messageIndex - (state.historyStartIndexBySessionId[id] ?? 0)
+        if (state.messages[id]?.[index] !== message) return state
+        const messages = [...state.messages[id]]
+        messages[index] = { ...message, acpPromptDiscarded: true }
+        return { messages: { ...state.messages, [id]: messages } }
+      })
+      return true
+    },
+
     retryFailedMessage: async (id: string, messageIndex: number) => {
       if (!isCefContext()) return { ok: false, error: 'Retry requires the desktop runtime.' }
       const response = await sendToCEF({ action: 'retryFailedMessage', payload: { chatId: id, messageIndex } })

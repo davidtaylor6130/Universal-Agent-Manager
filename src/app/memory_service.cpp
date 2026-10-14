@@ -427,6 +427,7 @@ namespace
 		for (std::size_t index = start; index < chat.messages.size() && !matched && byte_limit > 0; ++index)
 		{
 			const Message& message = chat.messages[index];
+			if (message.acp_prompt_discarded) continue;
 			feed(RoleToString(message.role));
 			feed(": ");
 			feed(uam::strings::TrimAsciiView(message.content));
@@ -1272,6 +1273,7 @@ namespace
 		for (std::size_t i = start; i < chat.messages.size(); ++i)
 		{
 			const Message& message = chat.messages[i];
+			if (message.acp_prompt_discarded) continue;
 			out << RoleToString(message.role) << ": " << uam::strings::Trim(message.content) << "\n\n";
 		}
 		out << "</transcript>\n";
@@ -1965,7 +1967,8 @@ ChatSession MemoryService::CaptureWorkerInput(const ChatSession& chat, int start
 		const Message& source = chat.messages[index];
 		Message message;
 		message.role = source.role;
-		if (index >= start) message.content = source.content;
+		message.acp_prompt_discarded = source.acp_prompt_discarded;
+		if (index >= start && !source.acp_prompt_discarded) message.content = source.content;
 		result.messages.push_back(std::move(message));
 	}
 	return result;

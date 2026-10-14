@@ -351,7 +351,7 @@ namespace
 			if (chat->execution_host_id != uam::execution_hosts::kLocalHostId)
 			{
 				const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat->execution_host_id);
-				if (host == nullptr || host->runner_status != "ready")
+				if (host == nullptr || !uam::remote::CanAttemptRunnerConnection(*host))
 				{
 					session.last_error = "The selected remote runner is not ready.";
 					return false;
@@ -383,7 +383,7 @@ namespace
 		{
 			const ExecutionHost* execution_host = uam::execution_hosts::Find(
 			    app.settings.execution_hosts, chat->execution_host_id);
-			if (execution_host == nullptr || execution_host->runner_status != "ready")
+			if (execution_host == nullptr || !uam::remote::CanAttemptRunnerConnection(*execution_host))
 			{
 				session.last_error = "The selected remote runner is not ready.";
 				return false;
@@ -958,7 +958,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		return false;
 	}
 	if (execution_host == nullptr ||
-	    (remote && execution_host->runner_status != "ready" &&
+	    (remote && !uam::remote::CanAttemptRunnerConnection(*execution_host) &&
 	     !session.recovering_remote_turn && !session.recovering_remote_process))
 	{
 		const std::string startup_error = remote ? "The selected remote runner is not ready. Recheck it in Settings."
@@ -2326,7 +2326,7 @@ static std::optional<std::deque<AcpQueuedUserPromptState>> FailedAuthoredPromptR
 	for (int index = first; index <= last; ++index)
 	{
 		const Message& row = chat.messages[static_cast<std::size_t>(index)];
-		if (row.role != MessageRole::User || !row.acp_prompt_not_sent ||
+		if (row.role != MessageRole::User || !row.acp_prompt_not_sent || row.acp_prompt_discarded ||
 		    !row.tool_calls.empty() || !row.thoughts.empty() || !row.plan_entries.empty() ||
 		    !row.plan_summary.empty() || !row.blocks.empty() ||
 		    (!row.provider.empty() && row.provider != chat.provider_id) ||

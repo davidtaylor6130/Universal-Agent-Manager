@@ -624,7 +624,14 @@ namespace
 			if (!users.contains(key)) continue;
 			const std::pair<const Message*, std::size_t>& match = users.at(key);
 			if (match.first != nullptr && match.second == 1)
+			{
 				message.continues_turn = message.continues_turn || match.first->continues_turn;
+				if (match.first->acp_prompt_discarded)
+				{
+					message.acp_prompt_discarded = true;
+					message.acp_prompt_not_sent = true;
+				}
+			}
 		}
 	}
 

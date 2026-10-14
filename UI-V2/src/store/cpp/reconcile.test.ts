@@ -41,6 +41,15 @@ const message: CppMessage = {
 }
 
 describe('reconcileCppMessages attachments', () => {
+  it('adopts a persisted unsent discard without changing its native position or delivery flag', () => {
+    const original = sanitizeCppMessage({ ...message, acpPromptNotSent: true })!
+    const before = reconcileCppMessages('chat', undefined, [original], true, 7)
+    const discarded = sanitizeCppMessage({ ...original, acpPromptDiscarded: true })!
+    const after = reconcileCppMessages('chat', before, [discarded], true, 7)
+    expect(after[0]).not.toBe(before[0])
+    expect(after[0]).toMatchObject({ acpPromptDiscarded: true, acpPromptNotSent: true, nativeMessageIndex: 7, content: message.content })
+    expect(sanitizeCppMessage({ ...message, acpPromptDiscarded: 'true' })?.acpPromptDiscarded).toBe(false)
+  })
 	it('preserves persisted interruption and steering provenance', () => {
 		const sanitized = sanitizeCppMessage({ ...message, interrupted: true, prioritySteer: true, continuesTurn: true })
 		const reconciled = reconcileCppMessages('chat-1', undefined, [sanitized!])

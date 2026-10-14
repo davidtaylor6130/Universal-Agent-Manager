@@ -61,6 +61,7 @@ export interface Message {
 	interrupted?: boolean
   stopReason?: string
 	acpPromptNotSent?: boolean
+	acpPromptDiscarded?: boolean
 	prioritySteer?: boolean
 	continuesTurn?: boolean
   checkpointSha?: string
