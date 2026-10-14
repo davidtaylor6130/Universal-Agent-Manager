@@ -11,7 +11,6 @@ import { CentralProviderSettings, type CentralProviderSettingsHandle } from './C
 import { McpServerSetup } from './McpServerSetup'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
-import { ProviderAgentImport } from './ProviderAgentImport'
 import { COMPUTER_USE_ENABLED, SSH_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react'
@@ -702,7 +701,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const browseProviderAgentImport = useAppStore((s) => s.browseProviderAgentImport)
   const previewProviderAgentImport = useAppStore((s) => s.previewProviderAgentImport)
   const importProviderAgent = useAppStore((s) => s.importProviderAgent)
-  const providerAgentImport = useAppStore((s) => s.providerAgentImport === true)
   const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
   const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
   const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
@@ -2222,11 +2220,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setAgentImportBusy(false)
       }
       const runImport = async () => {
-        if (agentImportBusy || !activeSessionId || !agentImportPreview?.supported) return
+        if (agentImportBusy || importNeedsChat || !agentImportPreview?.supported) return
         const requestId = ++agentImportRequest.current
         setAgentImportBusy(true)
         const imported = await importProviderAgent({
-          chatId: activeSessionId,
+          chatId: activeSessionId ?? '',
           providerId: agentImportProvider,
           sourcePath: agentImportPath.trim(),
           canonicalId: agentImportId.trim(),
@@ -2244,6 +2242,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingsSection
             title="Agent cycle"
             actions={
+      // Only a workspace-scoped import needs a chat; a global import is admitted without one.
+      const importNeedsChat = agentImportWorkspaceScope && !activeSessionId
               <>
                 <div className="w-[220px] max-w-full">
                   <MenuSelect
@@ -2313,11 +2313,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             })}
           </SettingsSection>
 
-          {providerAgentImport && <ProviderAgentImport />}
-
-          <SettingsSection
-            title={providerAgentImport ? 'Import from a Markdown file' : 'Import from a provider'}
-          >
+          <SettingsSection title="Import from a provider">
             <SettingRow
               title="Source provider"
               htmlFor="agent-import-source-provider"
@@ -2430,7 +2426,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           size="sm"
                           variant="primary"
                           aria-busy={agentImportBusy || undefined}
-                          disabled={agentImportBusy || !activeSessionId || !agentImportId.trim() || (agentImportPreview.ignoredFields.length > 0 && !agentImportAcknowledged)}
+                          disabled={agentImportBusy || importNeedsChat || !agentImportId.trim() || (agentImportPreview.ignoredFields.length > 0 && !agentImportAcknowledged)}
                           onClick={() => void runImport()}
                         >Import agent</Button>
                       </div>
@@ -2439,7 +2435,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 </div>
               )}
               {agentImportMessage && <div role="status" className="text-xs" style={{ color: agentImportMessage.startsWith('Imported') ? 'var(--success)' : 'var(--error)' }}>{agentImportMessage}</div>}
-              {!activeSessionId && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat before importing.</div>}
+              {importNeedsChat && <div className="text-xs" style={{ color: 'var(--text-3)' }}>Open a workspace chat to import into this workspace, or choose All workspaces.</div>}
             </div>
           </SettingsSection>
         </div>

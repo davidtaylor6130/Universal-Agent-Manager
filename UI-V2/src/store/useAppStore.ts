@@ -138,7 +138,6 @@ function deserializeState(
     computerUseEnabled?: boolean
     computerUseAllowlistEnabled: boolean
     computerUseAllowedApplications: AppState['computerUseAllowedApplications']
-    providerAgentImport?: boolean
     branchSwitching?: boolean
     hostScopedSettings?: boolean
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
@@ -363,7 +362,6 @@ function deserializeState(
     computerUseEnabled: cpp.settings.computerUseGloballyEnabled,
     computerUseAllowlistEnabled: cpp.settings.computerUseAllowlistEnabled ?? false,
     computerUseAllowedApplications: cpp.settings.computerUseAllowedApplications ?? [],
-    providerAgentImport: cpp.settings.providerAgentImport,
     branchSwitching: cpp.settings.branchSwitching === true,
     hostScopedSettings: cpp.settings.hostScopedSettings,
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
@@ -585,7 +583,6 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     computerUseEnabled: patch.settings?.computerUseGloballyEnabled ?? current.computerUseEnabled,
     computerUseAllowlistEnabled: patch.settings?.computerUseAllowlistEnabled ?? current.computerUseAllowlistEnabled,
     computerUseAllowedApplications: patch.settings?.computerUseAllowedApplications ?? current.computerUseAllowedApplications,
-    providerAgentImport: patch.settings?.providerAgentImport ?? current.providerAgentImport,
     branchSwitching: patch.settings?.branchSwitching ?? current.branchSwitching,
     hostScopedSettings: patch.settings?.hostScopedSettings ?? current.hostScopedSettings,
     uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
@@ -797,7 +794,6 @@ export const useAppStore = create<AppState>((set, get) => {
             computerUseEnabled: current.computerUseEnabled,
             computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
             computerUseAllowedApplications: current.computerUseAllowedApplications,
-            providerAgentImport: current.providerAgentImport,
             branchSwitching: current.branchSwitching,
             hostScopedSettings: current.hostScopedSettings,
             uamAgentsBySessionId: current.uamAgentsBySessionId,
@@ -1127,7 +1123,6 @@ export const useAppStore = create<AppState>((set, get) => {
         computerUseEnabled: current.computerUseEnabled,
         computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
         computerUseAllowedApplications: current.computerUseAllowedApplications,
-        providerAgentImport: current.providerAgentImport,
         branchSwitching: current.branchSwitching,
         hostScopedSettings: current.hostScopedSettings,
         uamAgentsBySessionId: current.uamAgentsBySessionId,

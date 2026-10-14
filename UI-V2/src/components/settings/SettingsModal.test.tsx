@@ -698,22 +698,13 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('shows provider agent import only when the backend advertises it', async () => {
+  it('shows the path-based provider agent import without a capability flag', async () => {
     const { host, root } = renderModal()
-    useAppStore.setState({ providerAgentImport: undefined })
     openAgentsSection(host)
     expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Find agents')).toBe(false)
     expect(host.textContent).toContain('Import from a provider')
     act(() => root.unmount())
     host.remove()
-
-    const enabled = renderModal()
-    useAppStore.setState({ providerAgentImport: true })
-    openAgentsSection(enabled.host)
-    expect(Array.from(enabled.host.querySelectorAll('button')).some((button) => button.textContent === 'Find agents')).toBe(true)
-    expect(enabled.host.textContent).toContain('Import from a Markdown file')
-    act(() => enabled.root.unmount())
-    enabled.host.remove()
   })
 
   it('requires preview and acknowledgement before importing provider-only fields', async () => {
@@ -764,6 +755,7 @@ describe('SettingsModal memory settings', () => {
   })
 
   it.each(['path', 'provider'] as const)('ignores an obsolete agent preview after the %s changes', async (changedField) => {
+    expect(host.querySelector('input[aria-label="Native agent Markdown file"]')).not.toBeNull()
     type Preview = Awaited<ReturnType<ReturnType<typeof useAppStore.getState>['previewProviderAgentImport']>>
     const pending: Array<(preview: Preview) => void> = []
     const previewProviderAgentImport = vi.fn(() => new Promise<Preview>(resolve => pending.push(resolve)))
