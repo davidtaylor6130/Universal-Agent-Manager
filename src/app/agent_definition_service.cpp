@@ -1,6 +1,7 @@
 #include "app/agent_definition_service.h"
 
 #include "common/paths/path_utils.h"
+#include "common/platform/platform_services.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
@@ -158,43 +159,10 @@ namespace uam
 			return uam::paths::FileSizeNoThrow(path);
 		}
 
-		std::optional<AgentDefinition> ParseFile(const std::filesystem::path& root,
-		                                         const std::filesystem::path& path,
-		                                         bool workspace_override,
-		                                         std::uintmax_t* aggregate_bytes_read,
-		                                         std::string* error_out)
+		std::optional<AgentDefinition> ParseMarkdown(const std::filesystem::path& path,
+		                                              bool workspace_override, std::string text,
+		                                              std::string* error_out)
 		{
-			const std::optional<std::uintmax_t> size = ValidDefinitionFileSize(root, path);
-			if (!size.has_value())
-			{
-				*error_out = "Agent definition must be a direct regular file, not a link or traversal.";
-				return std::nullopt;
-			}
-			if (*size == 0 || *size > kMaxDefinitionBytes)
-			{
-				*error_out = "Agent definition must be between 1 byte and 256 KiB.";
-				return std::nullopt;
-			}
-			if (*aggregate_bytes_read > kMaxDefinitionBytesPerScope ||
-			    *size > kMaxDefinitionBytesPerScope - *aggregate_bytes_read)
-			{
-				*error_out = "Agent definition was not read because the agent directory exceeds the 8 MiB scan limit.";
-				return std::nullopt;
-			}
-			std::string text;
-			if (!uam::io::TryReadTextFile(path, text))
-			{
-				*error_out = "Agent definition could not be read.";
-				return std::nullopt;
-			}
-			const std::optional<std::uintmax_t> size_after_read = ValidDefinitionFileSize(root, path);
-			if (!size_after_read.has_value() || *size_after_read != *size || text.size() != *size || HasDisallowedControl(text))
-			{
-				*error_out = "Agent definition changed type, path, or size while reading, or contains control characters.";
-				return std::nullopt;
-			}
-			*aggregate_bytes_read += *size;
-
 			std::istringstream lines(text);
 			std::string line;
 			if (!std::getline(lines, line) || uam::strings::Trim(line) != "---")
@@ -260,6 +228,46 @@ namespace uam
 			result.source_path = path;
 			result.workspace_override = workspace_override;
 			return result;
+		}
+
+		std::optional<AgentDefinition> ParseFile(const std::filesystem::path& root,
+		                                         const std::filesystem::path& path,
+		                                         bool workspace_override,
+		                                         std::uintmax_t* aggregate_bytes_read,
+		                                         std::string* error_out)
+		{
+			const std::optional<std::uintmax_t> size = ValidDefinitionFileSize(root, path);
+			if (!size.has_value())
+			{
+				*error_out = "Agent definition must be a direct regular file, not a link or traversal.";
+				return std::nullopt;
+			}
+			if (*size == 0 || *size > kMaxDefinitionBytes)
+			{
+				*error_out = "Agent definition must be between 1 byte and 256 KiB.";
+				return std::nullopt;
+			}
+			if (*aggregate_bytes_read > kMaxDefinitionBytesPerScope ||
+			    *size > kMaxDefinitionBytesPerScope - *aggregate_bytes_read)
+			{
+				*error_out = "Agent definition was not read because the agent directory exceeds the 8 MiB scan limit.";
+				return std::nullopt;
+			}
+			std::string text;
+			if (!uam::io::TryReadTextFile(path, text))
+			{
+				*error_out = "Agent definition could not be read.";
+				return std::nullopt;
+			}
+			const std::optional<std::uintmax_t> size_after_read = ValidDefinitionFileSize(root, path);
+			if (!size_after_read.has_value() || *size_after_read != *size || text.size() != *size || HasDisallowedControl(text))
+			{
+				*error_out = "Agent definition changed type, path, or size while reading, or contains control characters.";
+				return std::nullopt;
+			}
+			*aggregate_bytes_read += *size;
+
+			return ParseMarkdown(path, workspace_override, std::move(text), error_out);
 		}
 
 		void LoadDirectory(const std::filesystem::path& scope_root,
@@ -521,7 +529,8 @@ namespace uam
 	{
 		ProviderAgentImportPreview preview;
 		preview.provider_id = NativeProviderId(provider_id);
-		preview.source_path = uam::paths::AbsolutePathNoThrow(source_path);
+		preview.source_path = uam::paths::AbsolutePathNoThrow(
+		    PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(uam::paths::Utf8PathString(source_path)));
 		if (preview.provider_id.empty())
 		{
 			preview.error = "Only OpenCode, Copilot CLI, Gemini CLI, and Claude Code Markdown agents are supported for import.";
@@ -699,17 +708,16 @@ namespace uam
 		                             "\nworkspaceAccess: " + request.workspace_access + "\nskills: " +
 		                             IdListMarkdown(request.skills) + "\ndelegates: []\n---\n" +
 		                             preview.instructions + "\n";
-		if (!uam::io::WriteTextFile(target, markdown))
-		{
-			if (error_out != nullptr) *error_out = "The imported UAM agent could not be written atomically.";
-			return false;
-		}
-		std::uintmax_t bytes = 0;
 		std::string parse_error;
-		const auto imported = ParseFile(root, target, request.workspace_scope, &bytes, &parse_error);
+		const auto imported = ParseMarkdown(target, request.workspace_scope, markdown, &parse_error);
 		if (!imported.has_value())
 		{
 			if (error_out != nullptr) *error_out = "The imported UAM agent failed canonical validation: " + parse_error;
+			return false;
+		}
+		if (!uam::io::WriteTextFile(target, markdown))
+		{
+			if (error_out != nullptr) *error_out = "The imported UAM agent could not be written atomically.";
 			return false;
 		}
 		if (imported_out != nullptr) *imported_out = *imported;

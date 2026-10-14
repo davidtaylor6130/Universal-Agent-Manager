@@ -25,7 +25,8 @@ configuration, persists only the backend preference, starts the provider, and
 writes or polls local control and history files. Enablement and the exact target
 grant are runtime-only. On startup UAM best-effort rewrites any known prior
 control file to `stopped` before providers can launch; a reset failure is shown
-as a warning. The companion captures the granted target,
+as a warning and leaves that chat blocked from polling, new tasks and re-enable
+until revocation cleanup succeeds. The companion captures the granted target,
 returns a bounded PNG and accessibility labels to the provider, receives one
 action at a time, and applies approved input through native OS APIs.
 
@@ -137,8 +138,21 @@ per-chat control directory, so the JSON state is a cooperative stop signal, not
 an authorization boundary. The one native target approval is the authorization
 boundary for the UAM companion; it grants observation and input only for that
 resolved target until revoked.
-Disabling the feature terminates the structured provider process first; a
-failure to update the cooperative control file cannot keep that process alive.
+Disabling the feature clears consent and attempts structured-provider shutdown,
+terminal shutdown and control-file revocation independently. If any step fails,
+the request reports failure and retains pending revocation ownership. Polling
+cannot restore a stale grant, and re-enable is blocked until cleanup succeeds.
+A failed shutdown acknowledgement does not establish that the process exited.
+
+Retry Off to finish pending cleanup. Global Off also retries owned resources
+whose chat was deleted, and leaves unrelated terminal chats alone. Repeating
+per-chat Off without a grant or pending cleanup does not stop ordinary runtimes.
+Armed, running and paused runtime grants remain owned after sidebar reloads
+reset the chat enablement flag. Terminal
+shutdown retains native history synchronization; cleanup uses copied chat IDs
+and resolves the current chat again after synchronization reloads the sidebar.
+A successful cleanup clears pending ownership. Failed startup control resets
+use the same pending ownership and can be recovered through global Off.
 
 UAM also disables the known Codex built-in controller whenever the UAM backend
 is selected, so those two controllers are never enabled together. This is not
@@ -153,9 +167,9 @@ provider permissions and host controls.
 Provider-native computer use has a different trust boundary. Its approvals,
 targeting, audit facilities, and kill switch are owned by the provider. UAM's
 selected target, Pause/Stop state, and UAM action history do not apply to a
-provider-native controller. Turning **Active** off always terminates that
-chat's structured provider process, for either backend and even when a turn is
-in progress, so the disabled process cannot retain a controller. The provider's
+provider-native controller. Turning **Active** off attempts to terminate that
+chat's structured provider process for either backend, including an active turn.
+An unconfirmed shutdown retains pending cleanup and blocks re-enable. The provider's
 own in-session controls remain its responsibility. Assess the provider's
 guarantees separately.
 
@@ -287,8 +301,8 @@ apply to Windows.
   computer use.
 - UAM does not isolate user-configured provider MCP servers or replace the
   provider's normal shell/tool sandbox.
-- Disabling computer use stops the chat's structured provider process; it does
-  not preserve an in-progress turn.
+- Disabling computer use attempts to stop the chat's structured provider process;
+  it does not preserve an in-progress turn, and an unconfirmed stop requires retry.
 - Pause and Stop are cooperative and are not a global emergency interrupt.
 - The UAM history file is bounded and redacted but not tamper-evident.
 - On macOS, keyboard input to a window grant may visibly raise and focus that

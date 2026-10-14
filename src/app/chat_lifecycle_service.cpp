@@ -1588,6 +1588,8 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	chat->provider_handoff_session_id.clear();
 	chat->provider_id = provider->id;
 	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);
+	chat->memory_level = previous_chat.memory_level;
+	chat->memory_enabled = previous_chat.memory_enabled;
 	for (Goal& goal : chat->goals)
 	{
 		if (goal.execution_owner != "provider")

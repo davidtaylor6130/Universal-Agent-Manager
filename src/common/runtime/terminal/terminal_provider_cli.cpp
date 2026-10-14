@@ -485,7 +485,8 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 	    uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host)), ContextConnectionIdentity(host)};
 	const bool prepare_cleanup = !chat.messages_loaded && !chat.provider_handoff_context.empty() &&
 	    !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location);
-	if (terminal.context_preparation == nullptr && (!prepare_history || history_prepared) && !app.settings.central_provider_configuration.enabled &&
+	if (terminal.context_preparation == nullptr && (!prepare_history || history_prepared) &&
+	    !uam::central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, host.id, "shared-setup", app.settings.central_provider_configuration.enabled) &&
 	    uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() &&
 	    (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() ||
 	    (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id))) return true;

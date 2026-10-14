@@ -1,5 +1,8 @@
 #include "test_harness.h"
 #include "cef/uam_query_handler.h"
+#include "app/agent_definition_service.h"
+#include "app/computer_use_service.h"
+#include "computer_use_terminal_runtime_fixture.h"
 #include "include/cef_app.h"
 #include "include/cef_task.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -28,6 +31,19 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleRetryFailedMessage(nullptr, {{"chatId", chat_id}, {"messageIndex", index}}, callback);
 	}
+	static void ComputerUseEnabled(UamQueryHandler& handler, const std::string& chat_id, bool enabled, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleSetChatComputerUseEnabled(nullptr, {{"chatId", chat_id}, {"enabled", enabled}}, callback);
+	}
+	static void ComputerUseSettings(UamQueryHandler& handler, bool enabled, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleSetComputerUseSettings(nullptr, {{"computerUseGloballyEnabled", enabled}}, callback);
+	}
+	static void ImportAgent(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleImportProviderAgent(nullptr, payload, callback);
+	}
+
 	static void Cancel(UamQueryHandler& handler, int browser, const std::string& frame, int64_t query)
 	{
 		handler.CancelChatIconQuery(browser, frame, query);
@@ -472,6 +488,114 @@ UAM_TEST(ChatRetryColdHistoryStillRejectsLaterAssistantOutput)
 	UAM_ASSERT(fixture.app.acp_sessions.empty());
 }
 
+
+UAM_TEST(ComputerUseHandlerOffWriteFailureCannotRestoreConsent)
+{
+	TempDir temp("uam-cu-handler-revoke-write");
+	uam::AppState app; app.data_root = temp.root;
+	ChatSession chat = HandlerChat("cu-write-failure");
+	chat.computer_use_backend = "uam"; chat.computer_use_enabled = true;
+	app.chats.push_back(chat);
+	const fs::path directory = temp.root / "computer-use" / chat.id;
+	fs::create_directories(directory);
+	const fs::path backing = directory / "stale-control.json";
+	UAM_ASSERT(uam::io::WriteTextFile(backing, "{\"state\":\"armed\"}\n"));
+	// Readable stale grant, but atomic writes reject a symlink destination.
+	fs::create_symlink(backing, directory / "control.json");
+	UamQueryHandler handler(app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseEnabled(handler, chat.id, false, callback);
+	UAM_ASSERT_EQ(callback->failures, 1); UAM_ASSERT_EQ(callback->successes, 0);
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	(void)uam::ComputerUseService::Poll(app);
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	UAM_ASSERT_EQ(ReadFile(backing), std::string("{\"state\":\"armed\"}\n"));
+	UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.contains(chat.id));
+	CefRefPtr<RecordingIconCallback> blocked = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseEnabled(handler, chat.id, true, blocked);
+	UAM_ASSERT_EQ(blocked->failures, 1); UAM_ASSERT_EQ(blocked->successes, 0);
+	UAM_ASSERT(fs::remove(directory / "control.json"));
+	CefRefPtr<RecordingIconCallback> retried = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseEnabled(handler, chat.id, false, retried);
+	UAM_ASSERT_EQ(retried->successes, 1); UAM_ASSERT_EQ(retried->failures, 0);
+	UAM_ASSERT(!app.computer_use_revocation_pending_chat_ids.contains(chat.id));
+	CefRefPtr<RecordingIconCallback> enabled = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseEnabled(handler, chat.id, true, enabled);
+	UAM_ASSERT_EQ(enabled->successes, 1); UAM_ASSERT_EQ(enabled->failures, 0);
+	for (const std::string state : {"armed", "running", "paused"})
+	{
+		TempDir map_temp("uam-cu-handler-map-owner");
+		uam::AppState map_app; map_app.data_root = map_temp.root;
+		map_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		map_app.chats.push_back(HandlerChat("map-owned"));
+		map_app.chats.push_back(HandlerChat("map-ordinary"));
+		for (const ChatSession& persisted : map_app.chats) UAM_ASSERT(ChatRepository::SaveChat(map_app.data_root, persisted));
+		map_app.computer_use_by_chat_id["map-owned"].state = state;
+		ComputerUseTerminalRuntimeFixture runtime;
+		runtime.AddTerminal(map_app, "map-owned"); runtime.AddTerminal(map_app, "map-ordinary");
+		UamQueryHandler map_handler(map_app, "file:///private/index.html");
+		CefRefPtr<RecordingIconCallback> map_off = new RecordingIconCallback;
+		ChatIconHandlerTestAccess::ComputerUseSettings(map_handler, false, map_off);
+		UAM_ASSERT_EQ(runtime.StopCount("map-owned"), 1);
+		UAM_ASSERT_EQ(runtime.StopCount("map-ordinary"), 0);
+		UAM_ASSERT_EQ(map_off->failures, 1); UAM_ASSERT_EQ(map_off->successes, 0);
+		UAM_ASSERT(map_app.computer_use_revocation_pending_chat_ids.contains("map-owned"));
+		runtime.ConfirmExit("map-owned");
+		CefRefPtr<RecordingIconCallback> map_retry = new RecordingIconCallback;
+		ChatIconHandlerTestAccess::ComputerUseSettings(map_handler, false, map_retry);
+		UAM_ASSERT_EQ(runtime.StopCount("map-owned"), 2);
+		UAM_ASSERT_EQ(runtime.StopCount("map-ordinary"), 0);
+		UAM_ASSERT_EQ(map_retry->successes, 1); UAM_ASSERT_EQ(map_retry->failures, 0);
+		UAM_ASSERT(map_app.computer_use_revocation_pending_chat_ids.empty());
+	}
+}
+
+UAM_TEST(ComputerUseHandlerGlobalOffRetriesOwnedTerminal)
+{
+	TempDir temp("uam-cu-handler-terminal-retry");
+	uam::AppState app; app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession controlled = HandlerChat("cu-owned"); controlled.computer_use_enabled = true;
+	app.chats.push_back(controlled); app.chats.push_back(HandlerChat("ordinary"));
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	// The linked test runtime retains real history synchronization without OS terminals.
+	ComputerUseTerminalRuntimeFixture runtime;
+	runtime.AddTerminal(app, "cu-owned"); runtime.AddTerminal(app, "ordinary");
+	UamQueryHandler handler(app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> ordinary_off = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseEnabled(handler, "ordinary", false, ordinary_off);
+	UAM_ASSERT_EQ(runtime.StopCount("ordinary"), 0);
+	UAM_ASSERT_EQ(ordinary_off->successes, 1); UAM_ASSERT_EQ(ordinary_off->failures, 0);
+	UAM_ASSERT(!app.computer_use_revocation_pending_chat_ids.contains("ordinary"));
+	for (int attempt = 1; attempt <= 2; ++attempt)
+	{
+		CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+		ChatIconHandlerTestAccess::ComputerUseSettings(handler, false, callback);
+		UAM_ASSERT_EQ(callback->failures, 1); UAM_ASSERT_EQ(callback->successes, 0);
+		UAM_ASSERT_EQ(runtime.StopCount("cu-owned"), attempt);
+		UAM_ASSERT_EQ(runtime.StopCount("ordinary"), 0);
+		UAM_ASSERT(!app.settings.computer_use_globally_enabled);
+		UAM_ASSERT(!app.chats.empty());
+		UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	}
+	CefRefPtr<RecordingIconCallback> blocked = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseSettings(handler, true, blocked);
+	UAM_ASSERT_EQ(blocked->failures, 1); UAM_ASSERT_EQ(blocked->successes, 0);
+	UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(app.data_root, "cu-owned").Failed());
+	std::erase_if(app.chats, [](const ChatSession& chat) { return chat.id == "cu-owned"; });
+	runtime.ConfirmExit("cu-owned");
+	CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseSettings(handler, false, callback);
+	UAM_ASSERT_EQ(callback->successes, 1); UAM_ASSERT_EQ(callback->failures, 0);
+	UAM_ASSERT_EQ(runtime.StopCount("cu-owned"), 3);
+	UAM_ASSERT_EQ(runtime.StopCount("ordinary"), 0);
+	UAM_ASSERT_EQ(app.cli_terminals.size(), std::size_t{1});
+	UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.empty());
+	CefRefPtr<RecordingIconCallback> enabled = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ComputerUseSettings(handler, true, enabled);
+	UAM_ASSERT_EQ(enabled->successes, 1); UAM_ASSERT_EQ(enabled->failures, 0);
+}
+
 int main(int argc, char** argv)
 {
 #if defined(__APPLE__)
@@ -489,13 +613,22 @@ int main(int argc, char** argv)
 	if (subprocess >= 0) return subprocess;
 	std::unique_ptr<CreationCefRuntime> cef;
 	bool initialization_attempted = false;
-	std::size_t passed = 0, icon_passed = 0, create_passed = 0, retry_passed = 0;
+	std::size_t selected = 0, passed = 0, icon_passed = 0, create_passed = 0, retry_passed = 0;
+	std::size_t icon_selected = 0, create_selected = 0, retry_selected = 0;
 	for (const TestCase& test : Registry())
 	{
+		bool requested = argc <= 1;
+		for (int index = 1; !requested && index < argc; ++index) requested = test.name == argv[index];
+		if (!requested) continue;
+		++selected;
+		const bool icon = test.name.rfind("ChatIcon", 0) == 0;
+		const bool creation = test.name.rfind("ChatCreate", 0) == 0;
+		const bool retry = test.name.rfind("ChatRetry", 0) == 0;
+		if (icon) ++icon_selected;
+		if (creation) ++create_selected;
+		if (retry) ++retry_selected;
 		try
 		{
-			const bool creation = test.name.rfind("ChatCreate", 0) == 0;
-			const bool retry = test.name.rfind("ChatRetry", 0) == 0;
 			if ((creation || retry) && !initialization_attempted)
 			{
 				initialization_attempted = true;
@@ -503,12 +636,59 @@ int main(int argc, char** argv)
 			}
 			if (creation || retry) UAM_ASSERT(cef != nullptr);
 			test.fn(); ++passed;
-			if (creation) ++create_passed; else if (retry) ++retry_passed; else ++icon_passed;
+			if (creation) ++create_passed; else if (retry) ++retry_passed; else if (icon) ++icon_passed;
 			std::cout << "PASS " << test.name << '\n';
 		}
 		catch (const std::exception& error) { std::cerr << "FAIL " << test.name << ": " << error.what() << '\n'; }
 	}
-	std::cout << icon_passed << "/6 connected icon cases passed\n" << create_passed << "/4 connected create cases passed\n" << retry_passed << "/3 connected retry cases passed\n";
+	std::cout << icon_passed << '/' << icon_selected << " connected icon cases passed\n" << create_passed << '/' << create_selected << " connected create cases passed\n" << retry_passed << '/' << retry_selected << " connected retry cases passed\n";
+	std::cout << passed << '/' << selected << " selected connected cases passed\n";
 	cef.reset();
-	return passed == Registry().size() && Registry().size() == 13 && icon_passed == 6 && create_passed == 4 && retry_passed == 3 ? 0 : 1;
+	return selected != 0 && passed == selected && (argc <= 1 || selected == static_cast<std::size_t>(argc - 1)) ? 0 : 1;
+}
+
+UAM_TEST(ChatAgentImportGlobalWithoutChatRetainsSelectedSkills)
+{
+	TempDir temp("uam-handler-agent-global");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path source = temp.root / "agent.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
+	UamQueryHandler handler(app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler,
+	    {{"providerId", "opencode"}, {"sourcePath", source.string()}, {"workspaceAccess", "read"},
+	     {"workspaceScope", false}, {"skills", {"review", "docs"}}}, callback);
+	UAM_ASSERT_EQ(callback->failures, 0);
+	UAM_ASSERT_EQ(callback->successes, 1);
+	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(app.data_root, {});
+	const std::vector<uam::AgentDefinition>::const_iterator imported = std::ranges::find(catalog.definitions, std::string("agent"), &uam::AgentDefinition::id);
+	UAM_ASSERT(imported != catalog.definitions.end());
+	UAM_ASSERT_EQ(imported->skills, std::vector<std::string>({"review", "docs"}));
+	UAM_ASSERT_EQ(imported->workspace_access, std::string("read"));
+	const fs::path target = app.data_root / "agents" / "agent.md";
+	const std::string previous = ReadFile(target);
+	CefRefPtr<RecordingIconCallback> malformed = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler,
+	    {{"providerId", "opencode"}, {"sourcePath", source.string()}, {"workspaceAccess", "read"},
+	     {"workspaceScope", false}, {"skills", {"review", 7}}}, malformed);
+	UAM_ASSERT_EQ(malformed->failures, 1); UAM_ASSERT_EQ(malformed->successes, 0);
+	UAM_ASSERT_EQ(malformed->last_failure, 400);
+	UAM_ASSERT_EQ(ReadFile(target), previous);
+}
+
+UAM_TEST(ChatAgentImportWorkspaceWithoutChatDoesNotPublish)
+{
+	TempDir temp("uam-handler-agent-no-workspace");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path source = temp.root / "agent.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
+	UamQueryHandler handler(app, "file:///private/index.html");
+	CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler,
+	    {{"providerId", "opencode"}, {"sourcePath", source.string()}, {"workspaceAccess", "read"}, {"workspaceScope", true}}, callback);
+	UAM_ASSERT_EQ(callback->failures, 1);
+	UAM_ASSERT_EQ(callback->successes, 0);
+	UAM_ASSERT(!fs::exists(app.data_root / "agents" / "agent.md"));
 }

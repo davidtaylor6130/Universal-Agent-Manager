@@ -565,6 +565,9 @@ namespace uam
 
 	struct AcpSessionState : public platform::StdioProcessPlatformFields
 	{
+		std::shared_ptr<const char> permission_review_incarnation = std::make_shared<const char>(0);
+		bool worktree_launch_pending = false;
+		std::shared_ptr<std::stop_source> worktree_launch_cancellation;
 		AcpStopPurpose stop_purpose = AcpStopPurpose::Interrupt;
 		platform::ProcessStopOutcome stop_outcome = platform::ProcessStopOutcome::Unknown;
 		bool local_stop_pending = false;
@@ -936,6 +939,7 @@ namespace uam
 
 	struct AsyncPermissionReviewTask
 	{
+		std::shared_ptr<const char> permission_review_incarnation;
 		std::string chat_id;
 		std::string request_id_json;
 		std::string command_preview;
@@ -1176,6 +1180,7 @@ namespace uam
 		int memory_global_failure_count = 0;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
+		std::unordered_set<std::string> computer_use_revocation_pending_chat_ids;
 		std::string memory_last_status;
 		MemoryActivityState memory_activity;
 		platform::AsyncNativeChatLoadTask native_chat_load_task;

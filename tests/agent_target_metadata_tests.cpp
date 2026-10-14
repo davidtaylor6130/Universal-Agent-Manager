@@ -2,6 +2,7 @@
 #include "app/agent_definition_service.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_ids.h"
+#include "common/platform/platform_services.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/utils/io_utils.h"
 
@@ -151,4 +152,88 @@ UAM_TEST(OpenCodeAgentImportDefaultsOmittedModeToBoth)
 	const uam::ProviderAgentImportPreview empty_mode_preview =
 	    uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kOpenCodeCli, empty_mode_source);
 	UAM_ASSERT(!empty_mode_preview.supported);
+}
+
+UAM_TEST(ProviderAgentImportRejectsDuplicateSkillsWithoutCreatingInvalidFile)
+{
+	TempDir temp("uam-agent-import-duplicate-skills");
+	const fs::path source = temp.root / "agent.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
+	uam::ProviderAgentImportRequest request;
+	request.provider_id = "opencode";
+	request.source_path = source;
+	request.workspace_access = "read";
+	request.skills = {"review", "review"};
+	std::string error;
+	UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, nullptr, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(!fs::exists(temp.root / "data" / "agents" / "agent.md"));
+}
+
+UAM_TEST(ProviderAgentImportFailedReplacementPreservesPreviousBytes)
+{
+	TempDir temp("uam-agent-import-preserve-replacement");
+	const fs::path source = temp.root / "agent.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
+	uam::ProviderAgentImportRequest request;
+	request.provider_id = "opencode";
+	request.source_path = source;
+	request.workspace_access = "read";
+	request.skills = {"review"};
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, nullptr, &error));
+	const fs::path target = temp.root / "data" / "agents" / "agent.md";
+	const std::string previous = uam::io::ReadTextFile(target);
+	request.replace_existing = true;
+	request.skills.push_back("review");
+	UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, nullptr, &error));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), previous);
+}
+
+UAM_TEST(ProviderAgentImportExpandsDirectHomeMarkdownPath)
+{
+	TempDir temp("uam-agent-import-home-path");
+	const std::optional<fs::path> home = PlatformServicesFactory::Instance().path_service.ResolveUserHomePath();
+	UAM_ASSERT(home.has_value());
+	const fs::path source = temp.root / "agent.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
+	const fs::path home_relative_source = fs::path("~") / source.lexically_relative(*home);
+	const uam::ProviderAgentImportPreview preview = uam::AgentDefinitionService::PreviewProviderAgentImport("open-code", home_relative_source);
+	UAM_ASSERT(preview.supported);
+	UAM_ASSERT_EQ(preview.source_path, source);
+	UAM_ASSERT_EQ(preview.suggested_id, std::string("agent"));
+	uam::ProviderAgentImportRequest request;
+	request.provider_id = "open-code";
+	request.source_path = home_relative_source;
+	request.workspace_access = "read";
+	uam::AgentDefinition imported;
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, &imported, &error));
+	UAM_ASSERT_EQ(imported.id, std::string("agent"));
+}
+
+UAM_TEST(ProviderAgentAliasesImportGloballyWithSelectedSkillsAndExplicitAccess)
+{
+	TempDir temp("uam-agent-import-aliases");
+	const fs::path source = temp.root / "agent.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source,
+	    "---\nname: agent\ndescription: Reviews code\n---\nReview.\n"));
+	for (const std::string& provider : {"opencode", "github-copilot", "gemini", "claude-code"})
+	{
+		const uam::ProviderAgentImportPreview preview = uam::AgentDefinitionService::PreviewProviderAgentImport(provider, source);
+		UAM_ASSERT(preview.supported);
+		UAM_ASSERT_EQ(preview.provider_id, uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider));
+		uam::ProviderAgentImportRequest request;
+		request.provider_id = provider;
+		request.source_path = source;
+		request.workspace_access = "read";
+		request.skills = {"review", "docs"};
+		request.acknowledge_ignored_fields = !preview.ignored_fields.empty();
+		uam::AgentDefinition imported;
+		std::string error;
+		UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(temp.root / provider, {}, request, &imported, &error));
+		UAM_ASSERT_EQ(imported.skills, request.skills);
+		UAM_ASSERT_EQ(imported.workspace_access, std::string("read"));
+		UAM_ASSERT_EQ(imported.source_path, temp.root / provider / "agents" / "agent.md");
+	}
 }

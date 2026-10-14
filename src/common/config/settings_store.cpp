@@ -58,6 +58,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kWorktreeCleanupEnabledKey = "worktree_cleanup_enabled";
 	constexpr std::string_view kWorktreeRetentionDaysKey = "worktree_retention_days";
 	constexpr std::string_view kSvnEnabledKey = "svn_enabled";
+	constexpr std::string_view kSvnUpdateBeforeChatKey = "svn_update_before_chat";
 	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
 	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
 	constexpr std::string_view kRememberLastChatKey = "remember_last_chat";
@@ -522,7 +523,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		const std::string provider_key(provider_id);
 		if (!settings.provider_chat_defaults.contains(provider_key))
 		{
-			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", settings.memory_enabled_default, "", "", settings.memory_level_default};
+			settings.provider_chat_defaults[provider_key] = ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", true, "", "", uam::memory_levels::kDefault};
 			return;
 		}
 
@@ -617,6 +618,7 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteBoolSetting(lines, kWorktreeCleanupEnabledKey, normalized.worktree_cleanup_enabled);
 	WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
 	WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
+	WriteBoolSetting(lines, kSvnUpdateBeforeChatKey, normalized.svn_update_before_chat);
 	WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
 	WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
 	WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
@@ -789,6 +791,10 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kSvnEnabledKey)
 		{
 			settings.svn_enabled = uam::parse::BoolOr(value, settings.svn_enabled);
+		}
+		else if (key == kSvnUpdateBeforeChatKey)
+		{
+			settings.svn_update_before_chat = uam::parse::BoolOr(value, settings.svn_update_before_chat);
 		}
 		else if (key == kConfirmDeleteChatKey)
 		{

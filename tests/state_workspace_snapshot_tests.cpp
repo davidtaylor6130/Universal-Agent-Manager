@@ -156,3 +156,42 @@ UAM_TEST(StateSerializerWorkspaceSnapshotsDoNotRetainPriorCurrentDirectory)
 	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["workspaceDirectory"], uam::paths::Utf8PathString(second));
 	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app, false)["chats"][0]["workspaceDirectory"], uam::paths::Utf8PathString(second));
 }
+
+
+UAM_TEST(StateSerializerPublishesPersistedWorktreeCatalogAfterLargeFolderProjection)
+{
+	TempDir temp("uam-worktree-catalog-large-folder-projection");
+	temp.root = fs::canonical(temp.root);
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+	for (std::size_t index = 0; index < 103; ++index)
+	{
+		ChatFolder folder;
+		folder.id = "folder-" + std::to_string(index);
+		folder.directory = uam::paths::Utf8PathString(temp.root / folder.id);
+		fs::create_directories(folder.directory);
+		app.folders.push_back(folder);
+	}
+	const std::string worktree = uam::paths::Utf8PathString(temp.root / "private-worktree");
+	fs::create_directories(worktree);
+	const nlohmann::json models = nlohmann::json::array({{{"id", "cached/worktree-model"}}});
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", models, worktree));
+	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+	for (const nlohmann::json result : {uam::StateSerializer::Serialize(app, false), uam::StateSerializer::SerializeFingerprint(app)})
+	{
+		const nlohmann::json& catalogs = result["providerModelCatalogs"];
+		UAM_ASSERT(catalogs.size() > std::size_t{512});
+		bool found = false;
+		for (std::size_t index = 512; index < catalogs.size(); ++index)
+		{
+			const nlohmann::json& catalog = catalogs[index];
+			if (catalog.value("providerId", "") != "claude-cli" || catalog.value("executionHostId", "") != "local" || catalog.value("workspaceDirectory", "") != worktree) continue;
+			UAM_ASSERT_EQ(catalog["availableModels"], models);
+			found = true;
+		}
+		UAM_ASSERT(found);
+	}
+}

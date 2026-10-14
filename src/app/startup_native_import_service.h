@@ -72,6 +72,7 @@ namespace uam
 			StartupNativeImportCandidate summary;
 			ChatSession chat;
 			std::filesystem::path rollout;
+			opencode_import::Spool open_code_export;
 			ChatFolder owner;
 			std::optional<ExecutionHost> host;
 		};

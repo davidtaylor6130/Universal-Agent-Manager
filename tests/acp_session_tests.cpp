@@ -13,6 +13,137 @@
 
 using namespace uam_test;
 
+UAM_TEST(GenericAcpPermissionReviewPreservesNonObjectJsonInput)
+{
+	for (const nlohmann::json input : {nlohmann::json("git status"), nlohmann::json::array({"git", "status"}), nlohmann::json(7), nlohmann::json(true), nlohmann::json(nullptr)})
+	{
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "review-json-input";
+		chat.provider_id = "gemini-cli";
+		chat.command_safety_tier = "off";
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		const nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 71}, {"method", "session/request_permission"},
+		    {"params", {{"toolCall", {{"toolCallId", "json-input"}, {"title", "Inspect input"}, {"kind", "read"}, {"rawInput", input}}},
+		        {"options", nlohmann::json::array({{{"optionId", "allow-once"}, {"kind", "allow_once"}}})}}}};
+		uam::acp_detail::HandlePermissionRequest(app, session, chat, frame);
+		const std::string prompt = uam::acp_detail::BuildPermissionReviewPrompt(session.pending_permission);
+		UAM_ASSERT(!prompt.empty());
+		const std::size_t marker = prompt.find("Request:\n");
+		UAM_ASSERT(marker != std::string::npos);
+		const nlohmann::json request = nlohmann::json::parse(prompt.substr(marker + 9));
+		UAM_ASSERT_EQ(request["providerInput"], input);
+		UAM_ASSERT_EQ(request["providerRequestParams"], frame["params"]);
+	}
+}
+
+namespace
+{
+	void AssertCompletedPermissionReviewOwnership(bool replace_session, bool persistent_choice)
+	{
+		TempDir temp("uam-review-one-time-owner");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "review-one-time-owner";
+		chat.provider_id = "gemini-cli";
+		chat.command_safety_tier = "aiReview";
+		app.chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->session_id = "original-native-session";
+		owned->pending_permission.request_id_json = "7";
+		app.acp_sessions.push_back(std::move(owned));
+		const std::string reviewed_native_session_id = app.acp_sessions.front()->session_id;
+		const uam::AcpSessionState* reviewed_runtime = app.acp_sessions.front().get();
+		uam::AsyncPermissionReviewTask task;
+		task.permission_review_incarnation = app.acp_sessions.front()->permission_review_incarnation;
+		task.chat_id = chat.id;
+		task.request_id_json = "7";
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->result.ok = true;
+		task.state->result.output = R"({"decision":"approve","reason":"Original request reviewed"})";
+		task.state->completed = true;
+		app.permission_review_tasks.push_back(std::move(task));
+		if (replace_session)
+		{
+			std::unique_ptr<uam::AcpSessionState> replacement = std::make_unique<uam::AcpSessionState>();
+			replacement->chat_id = chat.id;
+			replacement->provider_id = chat.provider_id;
+			replacement->session_id = reviewed_native_session_id;
+			app.acp_sessions.front() = std::move(replacement);
+		}
+		uam::AcpSessionState& session = *app.acp_sessions.front();
+		session.protocol_kind = "gemini-acp";
+		session.running = true;
+		session.processing = true;
+		session.waiting_for_permission = true;
+		session.pending_permission.request_id_json = "7";
+		session.pending_permission.tool_call_id = "current-tool";
+		session.pending_permission.kind = "read";
+		session.pending_permission.options = persistent_choice
+		    ? std::vector<uam::AcpPermissionOptionState>{{"allow", "Approve", "allow_persistent"}}
+		    : std::vector<uam::AcpPermissionOptionState>{{"allow-once", "Allow once", "allow_once"}};
+		UAM_ASSERT_EQ(session.session_id, reviewed_native_session_id);
+		UAM_ASSERT_EQ(&session == reviewed_runtime, !replace_session);
+		if (replace_session)
+		{
+			(void)uam::acp_detail::TryAutoApprovePendingPermission(app, session, app.chats.front());
+			UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
+			{
+				return entry.reason == "reviewer_unavailable";
+			}));
+		}
+#if defined(_WIN32)
+		const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+		const std::vector<std::string> sink = {"/bin/sh", "-c", "exec /bin/cat >/dev/null"};
+#endif
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		std::string error;
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, sink, &error));
+		(void)uam::acp_detail::PollPermissionReviewTasks(app);
+		const bool still_pending = session.waiting_for_permission && session.pending_permission.request_id_json == "7";
+		process.StopStdioProcess(session, true);
+		process.CloseStdioProcessHandles(session);
+		UAM_ASSERT_EQ(still_pending, replace_session || persistent_choice);
+		UAM_ASSERT(app.permission_review_tasks.empty());
+	}
+}
+
+UAM_TEST(AiPermissionReviewUnknownPersistentChoiceRemainsManual)
+{
+	AssertCompletedPermissionReviewOwnership(false, true);
+}
+
+UAM_TEST(PermissionReviewCompletionRejectsReplacementSessionWithReusedRequestId)
+{
+	AssertCompletedPermissionReviewOwnership(false, false);
+	AssertCompletedPermissionReviewOwnership(true, false);
+}
+
+UAM_TEST(CodexPermissionGrantResponsesPreserveOneTimeAndPersistentScope)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	uam::AcpSessionState session;
+	session.provider_id = "codex-cli";
+	session.pending_permission.request_id_json = "7";
+	session.pending_permission.provider_request_kind = "codex-permissions";
+	session.pending_permission.codex_approval_payload_json = R"({"permissions":{"network":{"enabled":true}}})";
+	session.pending_permission.options = {{"accept", "Allow once", "allow_once"}, {"acceptForSession", "Allow for session", "allow_always"}};
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
+	const nlohmann::json once = runtime.OnAcpBuildPermissionResponse(session, "accept", false);
+	UAM_ASSERT_EQ(once["result"]["scope"], nlohmann::json("turn"));
+	UAM_ASSERT_EQ(once["result"]["permissions"], nlohmann::json::parse(session.pending_permission.codex_approval_payload_json)["permissions"]);
+	const nlohmann::json persistent = runtime.OnAcpBuildPermissionResponse(session, "acceptForSession", false);
+	UAM_ASSERT_EQ(persistent["result"]["scope"], nlohmann::json("session"));
+	UAM_ASSERT_EQ(persistent["result"]["permissions"], once["result"]["permissions"]);
+#endif
+}
+
 namespace
 {
 	/// <summary>Pumps private save receipts without starting real providers or changing timeout budgets.</summary>
@@ -258,6 +389,7 @@ UAM_TEST(PermissionReviewCompletionRechecksNativeOwnershipAndReadOnlyCeilings)
 		session.running = true;
 		app.acp_sessions.push_back(std::move(owned));
 		uam::AsyncPermissionReviewTask task;
+		task.permission_review_incarnation = app.acp_sessions.front()->permission_review_incarnation;
 		task.chat_id = chat.id;
 		task.request_id_json = "7";
 		task.state = std::make_shared<AsyncProcessTaskState>();
@@ -393,7 +525,7 @@ UAM_TEST(GenericAcpPermissionRetainsOriginalReviewInputAndMethod)
 UAM_TEST(GenericAcpMixedSecretAndUnreviewableInputsNeverLaunchReviewer)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	for (const std::string scenario : {"secret", "oversized", "escaped", "array", "string", "null", "secret-content", "secret-locations", "secret-metadata", "oversized-sibling", "escaped-sibling"})
+	for (const std::string scenario : {"secret", "oversized", "escaped", "secret-array", "secret-string", "secret-content", "secret-locations", "secret-metadata", "oversized-sibling", "escaped-sibling"})
 	{
 		TempDir temp("uam-generic-review-gate");
 		uam::AppState app;
@@ -410,9 +542,8 @@ UAM_TEST(GenericAcpMixedSecretAndUnreviewableInputsNeverLaunchReviewer)
 		if (scenario == "secret") input["password"] = "fixture-private";
 		if (scenario == "oversized") input["context"] = std::string(12 * 1024, 'x');
 		if (scenario == "escaped") input["context"] = std::string(10 * 1024, '\n');
-		if (scenario == "array") input = nlohmann::json::array({"git status"});
-		if (scenario == "string") input = "git status";
-		if (scenario == "null") input = nullptr;
+		if (scenario == "secret-array") input = nlohmann::json::array({{{"password", "fixture-private"}}});
+		if (scenario == "secret-string") input = "password=fixture-private";
 		nlohmann::json frame = {{"jsonrpc", "2.0"}, {"id", 92}, {"method", "session/request_permission"},
 		    {"params", {{"toolCall", {{"toolCallId", "manual-input"}, {"title", "Inspect fixture"}, {"kind", "execute"}, {"rawInput", input}}}}}};
 		frame["params"]["options"] = nlohmann::json::array({{{"optionId", "allow-once"}, {"kind", "allow_once"}}});
@@ -7584,6 +7715,7 @@ UAM_TEST(AiPermissionReviewIsBoundedFailClosedAndUsesOnlyOneTimeChoices)
 		app.acp_sessions.push_back(std::move(session));
 
 		uam::AsyncPermissionReviewTask task;
+		task.permission_review_incarnation = app.acp_sessions.front()->permission_review_incarnation;
 		task.chat_id = chat.id;
 		task.request_id_json = "7";
 		task.state = std::make_shared<AsyncProcessTaskState>();
@@ -7675,6 +7807,7 @@ UAM_TEST(CodexPermissionReviewerUsesOnlyCompletedTextDecisionAndRejectsUnsafeStr
 		UAM_ASSERT(process.StartStdioProcess(*target, temp.root, sink, &error));
 		app.acp_sessions.push_back(std::move(session));
 		uam::AsyncPermissionReviewTask task;
+		task.permission_review_incarnation = app.acp_sessions.front()->permission_review_incarnation;
 		task.chat_id = chat.id;
 		task.request_id_json = "7";
 		task.state = std::make_shared<AsyncProcessTaskState>();
@@ -7836,6 +7969,7 @@ UAM_TEST(CancellingPermissionWaitRemovesReviewerTask)
 	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*raw_session, temp.root, sink_argv, &error));
 	app.acp_sessions.push_back(std::move(session));
 	uam::AsyncPermissionReviewTask task;
+	task.permission_review_incarnation = app.acp_sessions.front()->permission_review_incarnation;
 	task.chat_id = chat.id;
 	task.request_id_json = "7";
 	task.state = std::make_shared<AsyncProcessTaskState>();
@@ -12737,6 +12871,7 @@ UAM_TEST(ClaudeAiReviewMapsOneTimeDecisionsWithoutChangingToolInput)
 		UAM_ASSERT_EQ(allow["response"]["response"]["updatedInput"], nlohmann::json::parse(session.pending_permission.provider_input_json));
 		UAM_ASSERT_EQ(runtime.OnAcpBuildPermissionResponse(session, "deny", false)["response"]["response"]["behavior"], nlohmann::json("deny"));
 		uam::AsyncPermissionReviewTask task;
+		task.permission_review_incarnation = app.acp_sessions.front()->permission_review_incarnation;
 		task.chat_id = chat.id;
 		task.request_id_json = session.pending_permission.request_id_json;
 		task.state = std::make_shared<AsyncProcessTaskState>();

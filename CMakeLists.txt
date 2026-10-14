@@ -542,6 +542,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
   src/core/chat_import_utils.cpp
+  src/app/opencode_import_stream.cpp
   src/common/config/settings_store.cpp
   src/common/utils/command_line_words.cpp
   src/common/config/frontend_actions.cpp
@@ -1229,11 +1230,13 @@ if(UAM_BUILD_TESTS)
   add_executable(uam_core_tests
     tests/core_tests.cpp
     tests/native_import_failure_tests.cpp
+    tests/opencode_import_stream_tests.cpp
     tests/local_chat_bundle_tests.cpp
     tests/antigravity_tests.cpp
     tests/antigravity_mcp_tests.cpp
     tests/startup_native_import_tests.cpp
     tests/queued_prompt_tests.cpp
+    tests/acp_workspace_launch_tests.cpp
     tests/queued_prompt_hold_tests.cpp
     tests/agent_target_metadata_tests.cpp
     tests/turn_finalization_ownership_tests.cpp
@@ -1425,6 +1428,7 @@ if(UAM_BUILD_TESTS)
     src/common/runtime/terminal/terminal_lifecycle.cpp
     src/common/runtime/provider_cli_compatibility_service.cpp
     src/core/chat_import_utils.cpp
+    src/app/opencode_import_stream.cpp
     src/core/gemini_cli_compat.cpp
     ${UAM_PROVIDER_SOURCES}
     src/common/config/settings_store.cpp
@@ -1521,8 +1525,11 @@ if(UAM_BUILD_TESTS)
   # This target inherits compile/link settings only, never app packaging or startup.
   get_target_property(UAM_ICON_HANDLER_TEST_SOURCES universal_agent_manager SOURCES)
   list(REMOVE_ITEM UAM_ICON_HANDLER_TEST_SOURCES src/main.cpp)
+  set(UAM_CONNECTED_HANDLER_TEST_SOURCES ${UAM_ICON_HANDLER_TEST_SOURCES})
+  list(REMOVE_ITEM UAM_CONNECTED_HANDLER_TEST_SOURCES
+    src/common/platform/platform_pty_macos.cpp src/common/platform/platform_pty_windows.cpp)
   add_executable(uam_chat_icon_handler_tests EXCLUDE_FROM_ALL
-    tests/chat_icon_handler_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
+    tests/chat_icon_handler_tests.cpp tests/computer_use_terminal_runtime_fixture.cpp ${UAM_CONNECTED_HANDLER_TEST_SOURCES})
   set_target_properties(uam_chat_icon_handler_tests PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
   foreach(UAM_ICON_TEST_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)

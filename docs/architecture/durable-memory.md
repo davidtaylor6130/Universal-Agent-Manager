@@ -8,6 +8,14 @@ After eligible chat activity, `MemoryService` prepares extraction through a conf
 
 Memory settings include recall budget and worker bindings. Keep those limits normalized at load and save boundaries. If file ownership or workspace routing changes, update the focused tests for local and global roots.
 
+## Policy inheritance
+
+Policy resolution uses an explicit chat selection, then an explicit provider selection, then the app default. Missing provider defaults and new chats select `default`, so later changes to app or provider defaults apply through inheritance. Existing persisted concrete selections are retained because legacy automatically seeded values cannot be distinguished from intentional overrides.
+
+Off prevents future UAM recall and AI memory extraction. Read Only permits recall and prevents AI extraction. Local prepared output and remote publication admission check the current resolved policy before accepting worker results. These policies do not remove memory text already included in a resumed provider's conversation history.
+
+The provider-switch contract preserves an existing chat's memory selection: `default` follows the destination provider, while an explicit selection remains explicit. Creation inheritance and switch preservation pass focused native and frontend verification; live acceptance remains pending.
+
 ## Ownership and checks
 
 - Services: `src/app/memory_service.*`, `src/app/memory_library_service.*`.

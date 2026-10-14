@@ -359,6 +359,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     gitAutoWorktree: true,
     gitDefaultBaseBranch: '',
     gitPullBeforeChat: false,
+    svnUpdateBeforeChat: false,
     gitPortMethod: 'patch' as VcsStorageSettings['gitPortMethod'],
     worktreeCleanupEnabled: true,
     worktreeRetentionDays: 14,
@@ -692,8 +693,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         serviceTierExplicit: defaults.serviceTier !== '',
         approvalMode: defaults.approvalMode,
         commandSafetyTier: defaults.commandSafetyTier,
-        memoryLevel: defaults.memoryLevel,
-        memoryEnabled: defaults.memoryEnabled,
+        memoryLevel: 'default',
+        memoryEnabled: true,
         smallModelMode: defaults.smallModelMode,
         createdAt: now,
         updatedAt: now,
@@ -1255,8 +1256,6 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               serviceTierExplicit: providerCapabilities(requestedProviderId).hasServiceTier && defaults.serviceTier !== '',
               approvalMode: defaults.approvalMode,
               commandSafetyTier: defaults.commandSafetyTier,
-              memoryLevel: defaults.memoryLevel,
-              memoryEnabled: defaults.memoryEnabled,
               smallModelMode: defaults.smallModelMode,
               updatedAt: optimisticUpdatedAt,
             } : s
@@ -1758,7 +1757,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 	setSessionComputerUseEnabled: async (id: string, enabled: boolean): Promise<ComputerUseActionResult> => {
       const session = get().sessions.find((candidate) => candidate.id === id)
       if (!session) return computerUseFailure('Chat not found.')
-      if ((session.computerUseEnabled ?? false) === enabled) return computerUseSuccess
+      if (enabled && (session.computerUseEnabled ?? false)) return computerUseSuccess
       if (isCefContext()) {
         const response = await sendToCEF({ action: 'setChatComputerUseEnabled', payload: { chatId: id, enabled } })
         if (!response.ok) return computerUseFailure(response.error)

@@ -3,7 +3,7 @@ import type { AcpBinding } from './cpp/types'
 import { CppAppState, useAppStore } from './useAppStore'
 import { createUiSlice } from './slices/uiSlice'
 import { parseUamPushPayload } from './push/uamPush'
-import { sanitizeCppStatePatch } from './cpp/sanitizers'
+import { sanitizeCppAppState, sanitizeCppStatePatch } from './cpp/sanitizers'
 import { preferredFamilyChat, setPreferredFamilyChat } from '../utils/branchPreferenceStorage'
 
 type TestWindow = Window & typeof globalThis & {
@@ -6987,5 +6987,93 @@ describe('bulk workspace deletion', () => {
     } finally {
       testWindow.cefQuery = originalQuery
     }
+  })
+})
+
+
+describe('provider model catalogue transport capacity', () => {
+  const catalogs = Array.from({ length: 513 }, (_, index) => ({
+    providerId: 'claude-cli',
+    executionHostId: 'local',
+    workspaceDirectory: `/tmp/private-worktree-${index}`,
+    availableModels: [{ id: `cached-model-${index}`, name: `Cached ${index}`, description: '' }],
+    currentModelId: '',
+    modelsLoading: false,
+    modelRefreshError: '',
+  }))
+
+  it('retains the 513th persisted worktree catalogue during startup hydration', () => {
+    const state = sanitizeCppAppState({ ...makeCppState(1), providerModelCatalogs: catalogs })
+    expect(state).not.toBeNull()
+    useAppStore.getState().loadFromCef(state!)
+    expect(useAppStore.getState().providerModelCatalogs).toHaveLength(513)
+    expect(useAppStore.getState().providerModelCatalogs[512]).toMatchObject(catalogs[512])
+  })
+
+  it('retains the 513th persisted worktree catalogue in a state patch', () => {
+    const patch = sanitizeCppStatePatch({ stateRevision: 2, providerModelCatalogs: catalogs })
+    expect(patch?.providerModelCatalogs).toHaveLength(513)
+    expect(patch?.providerModelCatalogs?.[512]).toMatchObject(catalogs[512])
+  })
+})
+
+
+describe('SVN update settings transport', () => {
+  it('loads explicit SVN update values and preserves them through partial patches', () => {
+    const full = sanitizeCppAppState({ ...makeCppState(1), settings: { ...makeCppState(1).settings, svnUpdateBeforeChat: true } })
+    expect(full?.settings.svnUpdateBeforeChat).toBe(true)
+    const enabled = sanitizeCppStatePatch({ stateRevision: 2, settings: { svnUpdateBeforeChat: false } })
+    expect(enabled?.settings?.svnUpdateBeforeChat).toBe(false)
+    const unrelated = sanitizeCppStatePatch({ stateRevision: 3, settings: { gitEnabled: false } })
+    expect(unrelated?.settings).not.toHaveProperty('svnUpdateBeforeChat')
+    const malformed = sanitizeCppStatePatch({ stateRevision: 4, settings: { svnUpdateBeforeChat: 'true' } })
+    expect(malformed?.settings).not.toHaveProperty('svnUpdateBeforeChat')
+  })
+})
+
+
+describe('chat memory inheritance parity', () => {
+  it('creates mock chats with inherited memory and preserves explicit memory across provider switches', async () => {
+    delete window.cefQuery
+    useAppStore.setState({
+      providers: [
+        { id: 'gemini-cli', name: 'Gemini CLI', shortName: 'Gemini', color: '#fff', description: '' },
+        { id: 'codex-cli', name: 'Codex', shortName: 'Codex', color: '#fff', description: '' },
+      ],
+      executionHosts: [{ id: 'local', label: 'Local', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: '', lastSeenAt: '' }],
+      sessions: [],
+      folders: [{ id: 'memory-workspace', name: 'Private', parentId: null, directory: '/tmp/private-memory-workspace', isExpanded: true, createdAt: new Date() }],
+      providerChatDefaults: {
+        'gemini-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: false, memoryLevel: 'off', reasoningEffort: '', serviceTier: '' },
+        'codex-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, memoryLevel: 'strict', reasoningEffort: '', serviceTier: '' },
+      },
+      acpBindingBySessionId: {},
+      cliBindingBySessionId: {},
+    })
+    expect(await useAppStore.getState().addSession('Inherited', 'memory-workspace', 'gemini-cli')).toBe(true)
+    const id = useAppStore.getState().sessions[0].id
+    expect(useAppStore.getState().sessions[0]).toMatchObject({ memoryLevel: 'default', memoryEnabled: true })
+    expect(await useAppStore.getState().setSessionProvider(id, 'codex-cli')).toBe(true)
+    expect(useAppStore.getState().sessions[0]).toMatchObject({ memoryLevel: 'default', memoryEnabled: true })
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, memoryLevel: 'off' as const, memoryEnabled: false })) }))
+    expect(await useAppStore.getState().setSessionProvider(id, 'gemini-cli')).toBe(true)
+    expect(useAppStore.getState().sessions[0]).toMatchObject({ memoryLevel: 'off', memoryEnabled: false })
+  })
+})
+
+
+describe('computer use stop retry transport', () => {
+  it('retries Off through CEF after native revocation failed while redundant On remains a no-op', async () => {
+    const now = new Date()
+    useAppStore.setState({ sessions: [{ id: 'stop-retry', name: 'Private', viewMode: 'chat', folderId: 'private', computerUseEnabled: false, createdAt: now, updatedAt: now }] })
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onFailure }) => { requests.push(JSON.parse(request)); onFailure(500, 'Control revocation is still pending.') }
+    const result = await useAppStore.getState().setSessionComputerUseEnabled('stop-retry', false)
+    expect(requests).toEqual([expect.objectContaining({ action: 'setChatComputerUseEnabled', payload: { chatId: 'stop-retry', enabled: false } })])
+    expect(result).toEqual({ ok: false, error: 'Control revocation is still pending.' })
+    expect(useAppStore.getState().sessions[0].computerUseEnabled).toBe(false)
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, computerUseEnabled: true })) }))
+    expect(await useAppStore.getState().setSessionComputerUseEnabled('stop-retry', true)).toEqual({ ok: true })
+    expect(requests).toHaveLength(1)
   })
 })

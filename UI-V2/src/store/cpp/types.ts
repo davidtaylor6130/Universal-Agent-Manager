@@ -637,6 +637,7 @@ export interface VcsStorageSettings {
   gitAutoWorktree: boolean
   gitDefaultBaseBranch: string
   gitPullBeforeChat: boolean
+  svnUpdateBeforeChat: boolean
   gitPortMethod: 'patch' | 'merge' | 'squash'
   worktreeCleanupEnabled: boolean
   worktreeRetentionDays: number

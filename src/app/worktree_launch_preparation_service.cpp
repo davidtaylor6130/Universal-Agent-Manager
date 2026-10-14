@@ -10,11 +10,14 @@
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/shell_escape.h"
+#include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <sstream>
 
 namespace uam
 {
@@ -29,7 +32,7 @@ namespace uam
 
 		bool WorkspaceFieldsMatch(const ChatSession& a, const ChatSession& b)
 		{
-			return PhysicalWorkspaceFieldsMatch(a, b) && a.git_base_branch_override == b.git_base_branch_override;
+			return PhysicalWorkspaceFieldsMatch(a, b) && a.git_base_branch_override == b.git_base_branch_override && a.svn_update_pending == b.svn_update_pending;
 		}
 
 		bool Owns(const AppState& app, const ChatSession& chat, const WorktreeLaunchPreparationTask& task)
@@ -42,10 +45,111 @@ namespace uam
 			    chat.temporary_parent_chat_id != task.original.temporary_parent_chat_id ||
 			    chat.workspace_directory != task.original.workspace_directory || chat.folder_id != task.original.folder_id) return false;
 			if (app.settings.git_enabled != task.git_enabled || app.settings.git_auto_worktree != task.automatic_worktree ||
-			    app.settings.git_default_base_branch != task.base_branch || app.settings.git_pull_before_chat != task.pull_before_chat) return false;
+			    app.settings.git_default_base_branch != task.base_branch || app.settings.git_pull_before_chat != task.pull_before_chat ||
+			    app.settings.svn_enabled != task.svn_enabled || app.settings.svn_update_before_chat != task.svn_update_before_chat) return false;
 			if (task.merged) return task.prepared && WorkspaceFieldsMatch(chat, task.prepared->metadata);
-			return WorkspaceFieldsMatch(chat, task.original) && app.settings.git_enabled && app.settings.git_auto_worktree &&
+			return WorkspaceFieldsMatch(chat, task.original) && (task.update_only || (app.settings.git_enabled && app.settings.git_auto_worktree)) &&
 			    paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)) == task.resolved_source;
+		}
+
+		std::filesystem::path SvnCheckoutRoot(const std::filesystem::path& source)
+		{
+			for (std::filesystem::path directory = paths::NormalizeExistingOrAbsolutePath(source); !directory.empty(); directory = directory.parent_path())
+			{
+				if (paths::PathExistsNoThrow(directory / ".svn")) return directory;
+				if (paths::PathExistsNoThrow(directory / ".git") || directory == directory.parent_path()) break;
+			}
+			return {};
+		}
+
+		bool PrepareSvnUpdate(const std::filesystem::path& root, const ChatSession& metadata, bool validate_only,
+		    std::string& error, std::stop_token stop)
+		{
+			const std::filesystem::path source = paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(metadata.workspace_directory));
+			const std::filesystem::path directory = root / ".svn-launch";
+			const std::filesystem::path receipt = directory / (hashing::Hex64(hashing::Fnv1a64(metadata.id)) + ".json");
+			const std::filesystem::path checkout = SvnCheckoutRoot(source);
+			if (checkout.empty())
+			{
+				if (paths::PathExistsNoThrow(receipt)) { error = "The saved SVN update no longer matches this workspace."; return false; }
+				return true;
+			}
+			if (!paths::IsDirectoryNoThrow(source) || paths::IsLinkOrReparsePointNoThrow(checkout / ".svn"))
+			{ error = "The SVN workspace is unavailable or unsafe."; return false; }
+			const std::string target = shell::EscapeArg(paths::Utf8PathString(checkout));
+			bool command_uncertain = false;
+			const auto command = [&](const std::string& arguments, std::string& output, int timeout = 10000)
+			{
+				const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+				    "svn " + arguments + " --non-interactive -- " + target, timeout, stop);
+				command_uncertain = stop.stop_requested() || result.canceled || result.timed_out || result.output_truncated;
+				if (stop.stop_requested() || result.canceled) { error = "SVN update was canceled. Retry opening the chat."; return false; }
+				if (result.timed_out) { error = "SVN update timed out. Retry after checking the working copy."; return false; }
+				if (!result.ok || result.exit_code != 0 || result.output_truncated)
+				{ error = "SVN preparation failed. Check the working copy and authentication, then retry."; return false; }
+				output = strings::Trim(result.output);
+				return true;
+			};
+			std::string checkout_root, url, uuid;
+			if (!command("info --show-item wc-root", checkout_root) || !command("info --show-item url", url) ||
+			    !command("info --show-item repos-uuid", uuid) || url.empty() || uuid.empty() ||
+			    paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(checkout_root)) != checkout)
+			{ if (error.empty()) error = "SVN checkout ownership could not be verified."; return false; }
+			if (paths::IsLinkOrReparsePointNoThrow(root) || paths::IsLinkOrReparsePointNoThrow(directory) || paths::IsLinkOrReparsePointNoThrow(receipt))
+			{ error = "SVN update ownership storage is unsafe."; return false; }
+			std::string status;
+			const auto conflicts = [](const std::string& value)
+			{
+				std::istringstream lines(value);
+				std::string line;
+				while (std::getline(lines, line))
+					if ((!line.empty() && line[0] == 'C') || (line.size() > 1 && line[1] == 'C') || (line.size() > 6 && line[6] == 'C')) return true;
+				return false;
+			};
+			if (!command("status", status)) return false;
+			if (conflicts(status)) { error = "Resolve SVN conflicts before starting the chat."; return false; }
+			const nlohmann::json identity = {{"version", 1}, {"chatId", metadata.id}, {"createdAt", metadata.created_at},
+			    {"source", paths::Utf8PathString(source)}, {"checkout", paths::Utf8PathString(checkout)}, {"url", url}, {"uuid", uuid}};
+			std::error_code ec;
+			if (std::filesystem::exists(receipt, ec))
+			{
+				std::string text;
+				try
+				{
+					if (!io::TryReadTextFile(receipt, text, 64 * 1024))
+					{ error = "The saved SVN update receipt exceeded its size limit."; return false; }
+					nlohmann::json saved = nlohmann::json::parse(text);
+					const std::string state = saved.value("state", "");
+					saved.erase("state");
+					if (saved != identity)
+					{ error = "The saved SVN update belongs to a different workspace. The working copy was preserved."; return false; }
+					if (state == "complete") return true;
+					if (state != "failed" || validate_only)
+					{ error = "An interrupted SVN update needs working-copy verification before another update."; return false; }
+				}
+				catch (const std::exception&) { error = "The saved SVN update receipt could not be verified."; return false; }
+			}
+			if (ec || validate_only) { error = "The completed SVN update receipt is unavailable."; return false; }
+			const auto save_receipt = [&](const char* state)
+			{
+				nlohmann::json record = identity;
+				record["state"] = state;
+				return io::WriteTextFile(receipt, record.dump());
+			};
+			if (stop.stop_requested()) { error = "SVN update was canceled."; return false; }
+			if (!save_receipt("started")) { error = "Could not record SVN update ownership."; return false; }
+			std::string output;
+			if (!command("update --accept postpone", output, 120000))
+			{
+				if (!command_uncertain) (void)save_receipt("failed");
+				return false;
+			}
+			if (!command("status", status)) return false;
+			if (conflicts(status))
+			{ (void)save_receipt("failed"); error = "SVN update left conflicts. Resolve them before starting the chat."; return false; }
+			if (!save_receipt("complete"))
+			{ error = "SVN updated, but its completion could not be saved. Check the working copy before retrying."; return false; }
+			return true;
 		}
 
 		bool RecordIntent(const std::filesystem::path& root, const std::filesystem::path& receipt,
@@ -167,6 +271,7 @@ namespace uam
 			chat.workspace_worktree_directory = task->original.workspace_worktree_directory;
 			chat.workspace_branch_name = task->original.workspace_branch_name;
 			chat.workspace_base_ref = task->original.workspace_base_ref;
+			chat.svn_update_pending = task->original.svn_update_pending;
 			task->merged = false;
 			if (preserve_save) acp_detail::ScheduleChatSave(app, chat, 0.0);
 		}
@@ -184,9 +289,11 @@ namespace uam
 			task->saved.reset();
 			PreparedLaunchWorktree prepared = *task->prepared;
 			if (!task->merged) task->prepared.reset();
-			std::packaged_task<PreparedLaunchWorktree()> validation([root = task->data_root, receipt = task->receipt_file, prepared = std::move(prepared), cancellation = task->cancellation, lease]() mutable
+			std::packaged_task<PreparedLaunchWorktree()> validation([root = task->data_root, receipt = task->receipt_file, prepared = std::move(prepared), cancellation = task->cancellation, update_only = task->update_only, svn_update = task->svn_enabled && task->svn_update_before_chat && task->original.svn_update_pending, lease]() mutable
 			{
-				prepared.operation.ok = GitWorktreeService().ValidatePreparedWorkspace(root, receipt, prepared.metadata, prepared.operation.message, cancellation->get_token());
+				prepared.operation.ok = update_only
+				    ? (!svn_update || PrepareSvnUpdate(root, prepared.metadata, true, prepared.operation.message, cancellation->get_token()))
+				    : GitWorktreeService().ValidatePreparedWorkspace(root, receipt, prepared.metadata, prepared.operation.message, cancellation->get_token());
 				if (!prepared.operation.ok)
 				{
 					prepared.operation.message = "Prepared workspace ownership changed. The workspace was preserved.";
@@ -279,7 +386,7 @@ namespace uam
 			}
 			if (task->prepared && !task->merged && task->error.empty())
 			{
-				if (task->prepared->operation.ok && std::any_of(app.chats.begin(), app.chats.end(),
+				if (task->prepared->operation.ok && !task->update_only && std::any_of(app.chats.begin(), app.chats.end(),
 				    [&](const ChatSession& other) { return ReferencesPreparedWorkspace(other, task->prepared->metadata); }))
 				{
 					task->prepared->operation.ok = false;
@@ -294,6 +401,7 @@ namespace uam
 					chat->workspace_worktree_directory = metadata.workspace_worktree_directory;
 					chat->workspace_branch_name = metadata.workspace_branch_name;
 					chat->workspace_base_ref = metadata.workspace_base_ref;
+					chat->svn_update_pending = metadata.svn_update_pending;
 					chat->updated_at = metadata.updated_at;
 					task->merged = true;
 					BeginSave(app, *chat, task);
@@ -344,6 +452,8 @@ namespace uam
 					task->automatic_worktree = app.settings.git_auto_worktree;
 					task->base_branch = app.settings.git_default_base_branch;
 					task->pull_before_chat = app.settings.git_pull_before_chat;
+					task->svn_enabled = app.settings.svn_enabled;
+					task->svn_update_before_chat = app.settings.svn_update_before_chat;
 					task->original.provider_id = chat.provider_id;
 					task->original.execution_host_id = chat.execution_host_id;
 					task->original.native_session_id = chat.native_session_id;
@@ -362,15 +472,24 @@ namespace uam
 		if (paths::IsControllerLocalWorkspace(chat) && app.pending_chat_save_at_by_chat_id.contains(chat.id) &&
 		    (chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind || paths::IsGitWorktreeIsolated(chat)))
 			return {WorktreeLaunchPreparationState::Pending, {}, {}};
-		if (chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind || !paths::IsControllerLocalWorkspace(chat) ||
+		if ((chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind && !chat.svn_update_pending) || !paths::IsControllerLocalWorkspace(chat) ||
 		    chat.imported_read_only || !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() || !chat.temporary_parent_chat_id.empty()) return {};
-		if (!app.settings.git_enabled || !app.settings.git_auto_worktree)
+		if ((!app.settings.git_enabled || !app.settings.git_auto_worktree) && !chat.svn_update_pending)
 		{
 			chat.workspace_isolation_kind.clear();
 			return {};
 		}
 		if (app.worktree_operation_chat_ids.contains(chat.id)) return {WorktreeLaunchPreparationState::Failed, "Wait for the chat's workspace operation to finish.", {}};
 		if (app.data_root.empty()) return {WorktreeLaunchPreparationState::Failed, "Chat storage is unavailable.", {}};
+		if (chat.svn_update_pending && app.settings.svn_enabled && app.settings.svn_update_before_chat)
+		{
+			const std::filesystem::path checkout = SvnCheckoutRoot(paths::NormalizeExistingOrAbsolutePath(paths::ResolveWorkspaceRootPath(app, chat)));
+			if (!checkout.empty())
+				for (const auto& [id, operation] : app.worktree_launch_preparations)
+					if (id != chat.id && operation->lease && operation->svn_enabled && operation->svn_update_before_chat && operation->original.svn_update_pending &&
+					    SvnCheckoutRoot(paths::PathFromUtf8(operation->resolved_source)) == checkout)
+						return {WorktreeLaunchPreparationState::Pending, {}, {}};
+		}
 		const std::shared_ptr<WorkspaceLeaseGate::Lease> lease = app.worktree_retention_gate.TryAcquireMutation();
 		if (!lease) return {WorktreeLaunchPreparationState::Pending, {}, {}};
 		const std::shared_ptr<WorktreeLaunchPreparationTask> task = std::make_shared<WorktreeLaunchPreparationTask>();
@@ -390,11 +509,15 @@ namespace uam
 		task->pull_before_chat = app.settings.git_pull_before_chat;
 		task->git_enabled = app.settings.git_enabled;
 		task->automatic_worktree = app.settings.git_auto_worktree;
+		task->svn_enabled = app.settings.svn_enabled;
+		task->svn_update_before_chat = app.settings.svn_update_before_chat;
+		task->update_only = chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind || !task->git_enabled || !task->automatic_worktree;
 		task->lease = lease;
 		task->receipt_file = task->data_root / ".worktree-launch" / (hashing::Hex64(hashing::Fnv1a64(chat.id)) + "-" + time::SteadyEpochNanosecondsTokenNow() + ".json");
 		AppSettings settings;
 		settings.git_enabled = app.settings.git_enabled;
 		settings.svn_enabled = app.settings.svn_enabled;
+		settings.svn_update_before_chat = app.settings.svn_update_before_chat;
 		settings.git_auto_worktree = app.settings.git_auto_worktree;
 		settings.git_default_base_branch = app.settings.git_default_base_branch;
 		settings.git_pull_before_chat = app.settings.git_pull_before_chat;
@@ -408,6 +531,16 @@ namespace uam
 			AppState snapshot;
 			snapshot.data_root = root;
 			snapshot.settings = std::move(settings);
+			std::string update_error;
+			if (metadata.svn_update_pending && snapshot.settings.svn_enabled && snapshot.settings.svn_update_before_chat &&
+			    !PrepareSvnUpdate(root, metadata, false, update_error, cancellation->get_token()))
+				return PreparedLaunchWorktree{GitWorktreeOperationResult{.message = update_error}, std::move(metadata)};
+			metadata.svn_update_pending = false;
+			if (task->update_only)
+			{
+				if (metadata.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind) metadata.workspace_isolation_kind.clear();
+				return PreparedLaunchWorktree{GitWorktreeOperationResult{.ok = true}, std::move(metadata)};
+			}
 			const nlohmann::json policy = {{"version", 1}, {"requestedSource", metadata.workspace_directory}, {"baseBranch", snapshot.settings.git_default_base_branch},
 			    {"pullBeforeChat", snapshot.settings.git_pull_before_chat}, {"gitEnabled", snapshot.settings.git_enabled},
 			    {"automaticWorktree", snapshot.settings.git_auto_worktree},

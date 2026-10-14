@@ -523,3 +523,234 @@ UAM_TEST(WorktreeLaunchPreparationRestartRejectsChangedOwnership)
 		fixture.AssertForeignSurvivors();
 	}
 }
+
+#if !defined(_WIN32)
+namespace
+{
+	struct FakeSvnLaunchFixture
+	{
+		TempDir temporary{"uam-fake-svn-launch"};
+		uam::AppState app;
+		fs::path source = temporary.root / "source";
+		fs::path log = source / "updates.log";
+		std::unique_ptr<ScopedEnvVar> path;
+		std::unique_ptr<ScopedEnvVar> root;
+		std::unique_ptr<ScopedEnvVar> mode;
+
+		FakeSvnLaunchFixture(const std::string& behavior = "success")
+		{
+			fs::create_directories(source / ".svn");
+			UAM_ASSERT(uam::io::WriteTextFile(source / "source.txt", "baseline"));
+			const fs::path binary = temporary.root / "bin" / "svn";
+			UAM_ASSERT(uam::io::WriteTextFile(binary, R"SH(#!/bin/sh
+case "$1" in
+info)
+    case "$3" in
+    wc-root) printf '%s\n' "$UAM_TEST_SVN_ROOT" ;;
+    url) printf '%s\n' 'file:///private-fixture/trunk' ;;
+    repos-uuid) printf '%s\n' 'private-fixture-uuid' ;;
+    *) exit 2 ;;
+    esac ;;
+status)
+    if [ "$UAM_TEST_SVN_MODE" = conflict ] && [ -f "$UAM_TEST_SVN_ROOT/updates.log" ]; then
+        printf '%s\n' 'C       source.txt'
+    fi ;;
+update)
+    printf '%s\n' update >> "$UAM_TEST_SVN_ROOT/updates.log"
+    if [ "$UAM_TEST_SVN_MODE" = failure ]; then exit 1; fi
+    if [ "$UAM_TEST_SVN_MODE" = truncated ]; then /usr/bin/head -c 5000000 /dev/zero; exit 0; fi
+    if [ "$UAM_TEST_SVN_MODE" = blocked ]; then
+        while [ ! -f "$UAM_TEST_SVN_ROOT/release" ]; do /bin/sleep 0.02; done
+    fi
+    printf '%s' updated > "$UAM_TEST_SVN_ROOT/source.txt" ;;
+*) exit 2 ;;
+esac
+)SH"));
+			fs::permissions(binary, fs::perms::owner_all);
+			const char* existing = std::getenv("PATH");
+			path = std::make_unique<ScopedEnvVar>("PATH", binary.parent_path().string() + ":" + (existing ? existing : ""));
+			root = std::make_unique<ScopedEnvVar>("UAM_TEST_SVN_ROOT", source.string());
+			mode = std::make_unique<ScopedEnvVar>("UAM_TEST_SVN_MODE", behavior);
+			app.data_root = temporary.root / "data";
+			app.settings.git_enabled = false;
+			app.settings.svn_update_before_chat = true;
+			ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli", false);
+			chat.workspace_directory = source.string();
+			chat.svn_update_pending = true;
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+			app.chats.push_back(std::move(chat));
+		}
+
+		std::shared_ptr<uam::WorktreeLaunchPreparationTask> Start()
+		{
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(app, app.chats.front()).state, uam::WorktreeLaunchPreparationState::Pending);
+			return app.worktree_launch_preparations.at(app.chats.front().id);
+		}
+
+		void Wait(const std::shared_ptr<uam::WorktreeLaunchPreparationTask>& task)
+		{
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+			while (task->worker.wait_for(std::chrono::milliseconds(2)) != std::future_status::ready)
+				UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+			(void)uam::PollWorktreeLaunchPreparations(app);
+		}
+
+		void Save(const std::shared_ptr<uam::WorktreeLaunchPreparationTask>& task)
+		{
+			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+			while (!task->saved && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::FlushPendingChatSaves(app);
+				(void)uam::PollWorktreeLaunchPreparations(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			}
+			UAM_ASSERT(task->saved && *task->saved);
+			UAM_ASSERT(!app.chats.front().svn_update_pending);
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(app, app.chats.front()).state, uam::WorktreeLaunchPreparationState::Ready);
+		}
+	};
+}
+#endif
+
+UAM_TEST(SvnUpdateBeforeChatRunsOnceBeforeManagedIsolation)
+{
+#if !defined(_WIN32)
+	if (!GitAvailableForTests()) return;
+	FakeSvnLaunchFixture fixture;
+	fixture.app.settings.git_enabled = true;
+	fixture.app.chats.front().workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
+	const auto task = fixture.Start();
+	fixture.Wait(task);
+	UAM_ASSERT(task->merged);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::paths::PathFromUtf8(fixture.app.chats.front().workspace_worktree_directory) / "source.txt"), "updated");
+	fixture.Save(task);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id)->svn_update_pending);
+#endif
+}
+
+UAM_TEST(SvnUpdateBeforeChatOffResumeAndNonSvnSkipMutation)
+{
+#if !defined(_WIN32)
+	for (const std::string& control : {"off", "disabled", "resume", "non-svn"})
+	{
+		FakeSvnLaunchFixture fixture;
+		if (control == "off") fixture.app.settings.svn_update_before_chat = false;
+		if (control == "disabled") fixture.app.settings.svn_enabled = false;
+		if (control == "resume") fixture.app.chats.front().svn_update_pending = false;
+		if (control == "non-svn")
+		{
+			const fs::path plain = fixture.temporary.root / "plain";
+			fs::create_directories(plain);
+			fixture.app.chats.front().workspace_directory = plain.string();
+		}
+		if (control == "resume") UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Ready);
+		else
+		{
+			const auto task = fixture.Start();
+			fixture.Wait(task);
+			UAM_ASSERT(task->merged);
+			fixture.Save(task);
+		}
+		UAM_ASSERT(!fs::exists(fixture.log));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.source / "source.txt"), "baseline");
+	}
+#endif
+}
+
+UAM_TEST(SvnUpdateBeforeChatFailureAndConflictBlockLaunch)
+{
+#if !defined(_WIN32)
+	for (const std::string& behavior : {"failure", "conflict"})
+	{
+		FakeSvnLaunchFixture fixture(behavior);
+		const auto task = fixture.Start();
+		fixture.Wait(task);
+		UAM_ASSERT(!task->merged);
+		UAM_ASSERT(fixture.app.chats.front().svn_update_pending);
+		UAM_ASSERT(fixture.app.chats.front().workspace_worktree_directory.empty());
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
+		UAM_ASSERT(!task->error.empty());
+		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+	}
+#endif
+}
+
+UAM_TEST(SvnUpdateBeforeChatCancellationAndStaleSourceCannotPublish)
+{
+#if !defined(_WIN32)
+	for (const std::string& behavior : {"canceled", "stale", "truncated"})
+	{
+		FakeSvnLaunchFixture fixture(behavior == "truncated" ? "truncated" : "blocked");
+		const auto task = fixture.Start();
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (!fs::exists(fixture.log))
+		{
+			UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		ChatSession competing = fixture.app.chats.front();
+		competing.id = "same-checkout-chat";
+		fixture.app.chats.push_back(competing);
+		if (behavior != "truncated")
+		{
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.back()).state, uam::WorktreeLaunchPreparationState::Pending);
+			UAM_ASSERT(!fixture.app.worktree_launch_preparations.contains(competing.id));
+		}
+		if (behavior == "canceled") task->cancellation->request_stop();
+		else if (behavior == "stale")
+		{
+			fixture.app.chats.front().workspace_directory = (fixture.temporary.root / "changed-source").string();
+			UAM_ASSERT(uam::io::WriteTextFile(fixture.source / "release", "release"));
+		}
+		fixture.Wait(task);
+		UAM_ASSERT(!task->merged);
+		UAM_ASSERT(fixture.app.chats.front().svn_update_pending);
+		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
+		if (behavior != "stale")
+		{
+			if (behavior == "truncated")
+				UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
+			const auto retry = fixture.Start();
+			fixture.Wait(retry);
+			UAM_ASSERT(!retry->merged);
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
+		}
+	}
+#endif
+}
+
+UAM_TEST(SvnUpdateBeforeChatReceiptRecoveryNeverRepeatsCompletedUpdate)
+{
+#if !defined(_WIN32)
+	FakeSvnLaunchFixture fixture;
+	const auto task = fixture.Start();
+	fixture.Wait(task);
+	UAM_ASSERT(task->merged);
+	fixture.Save(task);
+	fixture.app.chats.front().svn_update_pending = true;
+	const auto recovered = fixture.Start();
+	fixture.Wait(recovered);
+	UAM_ASSERT(recovered->merged);
+	fixture.Save(recovered);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
+	{
+		ScopedEnvVar conflict("UAM_TEST_SVN_MODE", "conflict");
+		fixture.app.chats.front().svn_update_pending = true;
+		const auto conflicted = fixture.Start();
+		fixture.Wait(conflicted);
+		UAM_ASSERT(!conflicted->merged);
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
+	}
+	const fs::path changed = fixture.temporary.root / "changed-source";
+	fs::create_directories(changed);
+	fixture.app.chats.front().workspace_directory = changed.string();
+	const auto wrong_source = fixture.Start();
+	fixture.Wait(wrong_source);
+	UAM_ASSERT(!wrong_source->merged);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
+#endif
+}

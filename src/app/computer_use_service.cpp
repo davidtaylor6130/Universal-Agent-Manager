@@ -221,7 +221,7 @@ namespace uam
 				{
 					const ChatSession& baseline = scan->baseline[index];
 					const std::unordered_map<std::string, ChatSession*>::const_iterator found = current_by_id.find(baseline.id);
-					if (found == current_by_id.end()) continue;
+					if (found == current_by_id.end() || app.computer_use_revocation_pending_chat_ids.contains(baseline.id)) continue;
 					ChatSession* const current = found->second;
 					if (!SameControlIdentity(*current, baseline)) continue;
 					const auto prior = app.computer_use_by_chat_id.find(baseline.id);
@@ -256,6 +256,7 @@ namespace uam
 			scan->state.data_root = app.data_root;
 			scan->state.settings.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 			scan->state.computer_use_by_chat_id = app.computer_use_by_chat_id;
+			scan->state.computer_use_revocation_pending_chat_ids = app.computer_use_revocation_pending_chat_ids;
 			scan->baseline.reserve(app.chats.size());
 			scan->signatures.reserve(app.chats.size());
 			for (const ChatSession& chat : app.chats)
@@ -320,7 +321,10 @@ namespace uam
 			if (uam::paths::PathExistsNoThrow(control) &&
 			    !uam::io::WriteTextFile(control,
 			        nlohmann::json{{"state", "stopped"}}.dump() + "\n"))
+			{
+				app.computer_use_revocation_pending_chat_ids.insert(chat.id);
 				reset = false;
+			}
 		}
 		app.computer_use_by_chat_id.clear();
 		return reset;
@@ -334,7 +338,7 @@ namespace uam
 		for (ChatSession& chat : app.chats)
 		{
 			if (!chat_id.empty() && chat.id != chat_id) continue;
-			if (!app.settings.computer_use_globally_enabled || !uam::computer_use::AvailableForChat(chat))
+			if (!app.settings.computer_use_globally_enabled || app.computer_use_revocation_pending_chat_ids.contains(chat.id) || !uam::computer_use::AvailableForChat(chat))
 			{
 				changed = chat.computer_use_enabled || changed;
 				chat.computer_use_enabled = false;
@@ -396,9 +400,10 @@ namespace uam
 	bool ComputerUseService::SetControlState(AppState& app, const std::string& chat_id,
 	    std::string_view state, std::string* error)
 	{
-		if (!app.settings.computer_use_globally_enabled && state != "stopped")
+		if ((!app.settings.computer_use_globally_enabled || app.computer_use_revocation_pending_chat_ids.contains(chat_id)) && state != "stopped")
 		{
-			if (error != nullptr) *error = "Computer Use is disabled globally.";
+			if (error != nullptr) *error = app.settings.computer_use_globally_enabled ?
+			    "Computer Use revocation is pending; retry disabling it." : "Computer Use is disabled globally.";
 			return false;
 		}
 		if (state != "armed" && state != "running" && state != "paused" && state != "stopped")
@@ -414,7 +419,9 @@ namespace uam
 		}
 		const auto chat = std::ranges::find_if(app.chats,
 		    [&chat_id](const ChatSession& candidate) { return candidate.id == chat_id; });
-		if (chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat))
+		if ((chat == app.chats.end() && state != "stopped") ||
+		    (chat != app.chats.end() && !uam::computer_use::AvailableForChat(*chat) &&
+		     !(state == "stopped" && app.computer_use_revocation_pending_chat_ids.contains(chat_id))))
 		{
 			if (error != nullptr) *error = "Computer Use is disabled for remote execution hosts.";
 			return false;
@@ -435,6 +442,7 @@ namespace uam
 		if (path_error || !uam::io::WriteTextFile(directory / "control.json",
 		                      control.dump() + "\n"))
 		{
+			if (state == "stopped") app.computer_use_revocation_pending_chat_ids.insert(chat_id);
 			if (error != nullptr) *error = "Failed to update computer-use controls.";
 			return false;
 		}
@@ -452,7 +460,7 @@ namespace uam
 		}
 		const auto chat = std::ranges::find_if(app.chats,
 		    [&chat_id](const ChatSession& candidate) { return candidate.id == chat_id; });
-		if (!app.settings.computer_use_globally_enabled || chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat) ||
+		if (!app.settings.computer_use_globally_enabled || app.computer_use_revocation_pending_chat_ids.contains(chat_id) || chat == app.chats.end() || !uam::computer_use::AvailableForChat(*chat) ||
 		    !uam::computer_use::UsesUamBackend(*chat) || !chat->computer_use_enabled)
 		{
 			if (error != nullptr) *error = "Computer Use is not enabled for this local chat.";

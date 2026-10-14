@@ -446,6 +446,7 @@ struct ChatSession
 	std::optional<std::string> git_base_branch_override;
 	std::string workspace_branch_name;
 	std::string workspace_worktree_directory;
+	bool svn_update_pending = false;
 	bool imported_read_only = false;
 	std::string approval_mode;
 	std::string uam_agent_id = "build";
@@ -714,6 +715,7 @@ struct AppSettings
 	int backup_log_retention_days = 14;
 	int http_cache_clear_interval_days = 0;
 	bool svn_enabled = true;
+	bool svn_update_before_chat = false;
 	bool confirm_delete_chat = true;
 	bool confirm_delete_folder = true;
 	bool remember_last_chat = true;

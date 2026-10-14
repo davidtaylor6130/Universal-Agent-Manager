@@ -3663,3 +3663,44 @@ UAM_TEST(StatePushPublishesChangedCliLaunchDespiteSelectedSummaryThrottle)
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
 	UAM_ASSERT(!uam::HasDeferredStatePush());
 }
+
+UAM_TEST(TerminalSharedSetupOverridePreparesWithGlobalDisabled)
+{
+	for (const bool enabled : {false, true})
+	{
+		TempDir temp("uam-terminal-shared-override");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.settings.central_provider_configuration.enabled = false;
+		app.settings.central_provider_configuration.instructions = "PRIVATE_SHARED_OVERRIDE_MARKER";
+		app.settings.central_provider_configuration.mcp_overrides.push_back({"codex-cli", "local", "shared-setup", enabled});
+		ChatSession chat;
+		chat.id = "shared-override";
+		chat.provider_id = "codex-cli";
+		chat.messages_loaded = true;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		ExecutionHost host;
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{(temp.root / "must-not-start").string()};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel, error;
+		const bool prepared = PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error);
+		UAM_ASSERT_EQ(prepared, !enabled);
+		UAM_ASSERT(error.empty());
+		if (!enabled)
+		{
+			UAM_ASSERT(terminal.context_preparation == nullptr);
+			UAM_ASSERT(app.cli_context_preparation_tasks.empty());
+			UAM_ASSERT(!fs::exists(temp.root / "runtime" / "provider-setup"));
+			continue;
+		}
+		UAM_ASSERT(terminal.context_preparation != nullptr);
+		const std::shared_ptr<uam::CliContextPreparation> state = terminal.context_preparation;
+		app.cli_context_preparation_tasks.back().worker->join();
+		UAM_ASSERT(state->succeeded);
+		UAM_ASSERT_EQ(ReadFile(state->provider_configuration_directory / "AGENTS.md").find("PRIVATE_SHARED_OVERRIDE_MARKER") != std::string::npos, true);
+		UAM_ASSERT(PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(error.empty());
+		UAM_ASSERT(channel.empty());
+	}
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/state/app_state.h"
+#include "app/opencode_import_stream.h"
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -99,6 +100,7 @@ class ChatHistorySyncService
 		std::string expected_fingerprint;
 		std::shared_ptr<PreparedChatSave> files;
 		std::filesystem::path codex_rollout;
+		uam::opencode_import::Spool open_code_export;
 		std::string error;
 		bool retain_messages = false;
 		bool skipped = false;
@@ -113,6 +115,7 @@ class ChatHistorySyncService
 	struct LocalHistoryDiscovery
 	{
 		std::vector<ChatSession> chats;
+		std::map<std::string, uam::opencode_import::Spool> open_code_exports;
 		std::vector<std::pair<ChatSession, std::filesystem::path>> codex_rollouts;
 		ImportResult result;
 		std::shared_future<std::shared_ptr<PreparedHistoryBatch>> preparation;

@@ -11,7 +11,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
   const saved = useAppStore(useShallow((state) => ({
     gitEnabled: state.gitEnabled, svnEnabled: state.svnEnabled,
     gitAutoWorktree: state.gitAutoWorktree, gitDefaultBaseBranch: state.gitDefaultBaseBranch,
-    gitPortMethod: state.gitPortMethod, gitPullBeforeChat: state.gitPullBeforeChat,
+    gitPortMethod: state.gitPortMethod, gitPullBeforeChat: state.gitPullBeforeChat, svnUpdateBeforeChat: state.svnUpdateBeforeChat,
   })))
   const saveSettings = useAppStore((state) => state.setVcsSettings)
   const [draft, setDraft] = useState(saved)
@@ -39,7 +39,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       if (!await saveSettings({ ...draft, gitDefaultBaseBranch: base! })) { setError('Could not save VCS settings. Your changes are retained.'); return }
       const current = useAppStore.getState()
       const accepted = { gitEnabled: current.gitEnabled, svnEnabled: current.svnEnabled, gitAutoWorktree: current.gitAutoWorktree,
-        gitDefaultBaseBranch: current.gitDefaultBaseBranch, gitPortMethod: current.gitPortMethod, gitPullBeforeChat: current.gitPullBeforeChat }
+        gitDefaultBaseBranch: current.gitDefaultBaseBranch, gitPortMethod: current.gitPortMethod, gitPullBeforeChat: current.gitPullBeforeChat, svnUpdateBeforeChat: current.svnUpdateBeforeChat }
       setDraft(accepted); setBaseline(accepted)
     } catch { setError('Could not save VCS settings. Your changes are retained.') }
     finally { busy.current = false; setSaving(false) }
@@ -61,6 +61,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       </div>} />
       <SettingRow title="Pull before first chat" description="Fast-forward only, on a clean tree with an upstream." control={modes('Pull before first chat', draft.gitPullBeforeChat, (value) => edit({ gitPullBeforeChat: value }), !draft.gitEnabled || !draft.gitAutoWorktree)} />
       <SettingRow title="SVN" control={modes('SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
+      <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={modes('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
       <SettingRow title="SVN branch and merge defaults" control={<Button size="sm" disabled>Not supported</Button>} />
     </SettingsSection>
     {(error || validation) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error || validation}</p>}

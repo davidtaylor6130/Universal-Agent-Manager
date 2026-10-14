@@ -158,6 +158,7 @@ namespace
 	constexpr std::string_view kChatGitBaseBranchOverrideField = "git_base_branch_override";
 	constexpr std::string_view kChatWorkspaceBranchNameField = "workspace_branch_name";
 	constexpr std::string_view kChatWorkspaceWorktreeDirectoryField = "workspace_worktree_directory";
+	constexpr std::string_view kChatSvnUpdatePendingField = "svn_update_pending";
 	constexpr std::string_view kChatImportedReadOnlyField = "imported_read_only";
 	constexpr std::string_view kChatApprovalModeField = "approval_mode";
 	constexpr std::string_view kChatUamAgentIdField = "uam_agent_id";
@@ -1007,6 +1008,7 @@ namespace
 
 		return lhs.workspace_branch_name == rhs.workspace_branch_name &&
 		       lhs.workspace_worktree_directory == rhs.workspace_worktree_directory &&
+		       lhs.svn_update_pending == rhs.svn_update_pending &&
 		       lhs.imported_read_only == rhs.imported_read_only;
 	}
 
@@ -1599,6 +1601,7 @@ namespace
 		}
 		chat.workspace_branch_name = JsonStringOrEmpty(root.Find(kChatWorkspaceBranchNameField));
 		chat.workspace_worktree_directory = JsonStringOrEmpty(root.Find(kChatWorkspaceWorktreeDirectoryField));
+		chat.svn_update_pending = JsonBoolOrDefault(root.Find(kChatSvnUpdatePendingField), false);
 		chat.imported_read_only = JsonBoolOrDefault(root.Find(kChatImportedReadOnlyField), false);
 		if (chat.imported_read_only ||
 		    chat.execution_host_id == uam::execution_hosts::kLocalHostId)
@@ -2116,7 +2119,7 @@ namespace
 		    lhs.folder_id == rhs.folder_id && lhs.workspace_directory == rhs.workspace_directory &&
 		    lhs.workspace_isolation_kind == rhs.workspace_isolation_kind && lhs.workspace_source_directory == rhs.workspace_source_directory &&
 		    lhs.workspace_base_ref == rhs.workspace_base_ref && lhs.git_base_branch_override == rhs.git_base_branch_override && lhs.workspace_branch_name == rhs.workspace_branch_name &&
-		    lhs.workspace_worktree_directory == rhs.workspace_worktree_directory && lhs.imported_read_only == rhs.imported_read_only;
+		    lhs.workspace_worktree_directory == rhs.workspace_worktree_directory && lhs.svn_update_pending == rhs.svn_update_pending && lhs.imported_read_only == rhs.imported_read_only;
 	}
 
 }
@@ -2398,6 +2401,7 @@ try
 	uam::json::SetValue(root, kChatGitBaseBranchOverrideField, chat.git_base_branch_override ? uam::json::String(*chat.git_base_branch_override) : JsonValue{});
 	uam::json::SetString(root, kChatWorkspaceBranchNameField, chat.workspace_branch_name);
 	uam::json::SetString(root, kChatWorkspaceWorktreeDirectoryField, chat.workspace_worktree_directory);
+	uam::json::SetBool(root, kChatSvnUpdatePendingField, chat.svn_update_pending);
 	uam::json::SetBool(root, kChatImportedReadOnlyField, chat.imported_read_only);
 	uam::json::SetString(root, kChatApprovalModeField, chat.approval_mode);
 	uam::json::SetString(root, kChatUamAgentIdField, uam::strings::NonEmptyOrFallback(chat.uam_agent_id, "build"));
@@ -3278,6 +3282,7 @@ namespace
 		hydrated.git_base_branch_override = summary.git_base_branch_override;
 		hydrated.workspace_branch_name = summary.workspace_branch_name;
 		hydrated.workspace_worktree_directory = summary.workspace_worktree_directory;
+		hydrated.svn_update_pending = summary.svn_update_pending;
 		hydrated.imported_read_only = summary.imported_read_only;
 		hydrated.approval_mode = summary.approval_mode;
 		hydrated.uam_agent_id = summary.uam_agent_id;
