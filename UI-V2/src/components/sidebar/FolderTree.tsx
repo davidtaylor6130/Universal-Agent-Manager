@@ -1,7 +1,7 @@
 import { useSnoozeClock } from './useSnoozeClock'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { isCompanionContext } from '../../ipc/cefBridge'
-import { memo, useCallback, useEffect, useRef, useState, useMemo } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from 'react'
 import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
 import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Brain, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -352,9 +352,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       const previous = previousFamiliesRef.current.get(rootId)
       if (previous && shallow(previous, family)) families.set(rootId, previous)
     }
-    previousFamiliesRef.current = families
     return families
   }, [sessions])
+  useLayoutEffect(() => { previousFamiliesRef.current = familySessionIdsByRootId }, [familySessionIdsByRootId])
   const pendingDeleteFolder = useMemo(
     () => folders.find((folder) => folder.id === pendingDeleteFolderId) ?? null,
     [folders, pendingDeleteFolderId]
@@ -372,11 +372,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     .map((row) => row.dataset.sessionId ?? '').filter(Boolean), [visibleSessionRows])
 
   const handleSessionClick = useCallback((sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => {
-    setSelectedFolderIds(new Set())
+    setSelectedFolderIds((current) => current.size ? new Set<string>() : current)
     folderSelectionAnchorRef.current = null
     if (isCompanionContext() || !event.shiftKey) {
       selectionAnchorRowRef.current = event.currentTarget
-      setSelectedSessionIds(new Set())
+      setSelectedSessionIds((current) => current.size ? new Set<string>() : current)
       return false
     }
 

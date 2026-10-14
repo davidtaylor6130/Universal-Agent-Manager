@@ -11,7 +11,7 @@ export function useCountdownClock(enabled: boolean, startsAt: number | undefined
       const current = Date.now()
       setNow(current)
       if (current >= deadline) return
-      const delay = current < startsAt ? startsAt - current : Math.min(1000, deadline - current)
+      const delay = current < startsAt ? startsAt - current : ((deadline - current) % 1000) || 1000
       timer = setTimeout(tick, Math.min(delay, 2_147_483_647))
     }
     tick()

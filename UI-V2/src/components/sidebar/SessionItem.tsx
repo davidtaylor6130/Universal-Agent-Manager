@@ -1,7 +1,7 @@
 import { SnoozeMenu } from './SnoozeMenu'
 import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { useState, useRef, useEffect, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
@@ -448,7 +448,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     }
   }, [editing])
 
-  useEffect(() => {
+  // Rows consume only pane count and family indexes; other layout changes need no render.
+  useLayoutEffect(() => {
     const refresh = (layout: ReturnType<typeof readChatGridLayout>) => setGridLayout((previous) => {
       const oldLeaves = chatGridLeaves(previous.root)
       const nextLeaves = chatGridLeaves(layout.root)
