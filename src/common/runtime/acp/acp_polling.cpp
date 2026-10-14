@@ -781,6 +781,7 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 	                      bool has_exit_code, int exit_code,
 	                      bool preserve_active_turn)
 {
+	session.pending_compaction.reset();
 	if (has_exit_code)
 	{
 		session.has_last_exit_code = true;

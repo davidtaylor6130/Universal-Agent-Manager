@@ -772,6 +772,8 @@ namespace uam
 				    {"defaultReasoningEffort", uam::strings::Trim(model.default_reasoning_effort)},
 				    {"supportedReasoningEfforts", model.supported_reasoning_efforts},
 				    {"additionalSpeedTiers", model.additional_speed_tiers},
+				    {"contextWindowTokens", model.context_window_tokens ? nlohmann::json(*model.context_window_tokens) : nlohmann::json(nullptr)},
+				    {"maxOutputTokens", model.max_output_tokens ? nlohmann::json(*model.max_output_tokens) : nlohmann::json(nullptr)},
 				});
 			}
 			return models_json;
@@ -1051,7 +1053,7 @@ namespace uam
 			acp_json["threadId"] = session->codex_thread_id.empty() ? session->session_id : session->codex_thread_id;
 			acp_json["running"] = session->running;
 			acp_json["processing"] = session->processing || (chat.claude_quota_continuation.state == "waiting" || chat.claude_quota_continuation.state == "held");
-			acp_json["compacting"] = session->running && (session->manual_compaction_pending || session->context_compaction_in_progress);
+			acp_json["compacting"] = session->pending_compaction != nullptr || (session->running && (session->manual_compaction_pending || session->context_compaction_in_progress));
 			acp_json["backgroundTaskCount"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) + ManagedChildRunCountForChat(app, chat);
 			if (AcpSessionCanIdleShutdown(*session, chat))
 				SerializeIdleDeadline(acp_json, session->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
@@ -1335,7 +1337,7 @@ namespace uam
 			provider_json["canInstall"] = policy != nullptr && (!policy->npm_package.empty() || !policy->homebrew_package.empty() || !policy->winget_package.empty());
 			provider_json["routingConnectionIdentity"] = ExecutionRoutingConnectionIdentity(execution_host);
 			if (const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, provider_id); profile != nullptr)
-				provider_json["routingProviderConfigurationIdentity"] = ExecutionRoutingProviderIdentity(app, *profile);
+				provider_json["routingProviderConfigurationIdentity"] = ExecutionRoutingProviderIdentity(app, *profile, execution_host.id);
 			if (execution_host.id != execution_hosts::kLocalHostId)
 			{
 				provider_json["executionHostId"] = execution_host.id;
@@ -1520,6 +1522,11 @@ namespace uam
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
+		if (app.deletion_progress)
+		{
+			j["deletionProgress"] = {{"completed", app.deletion_progress->completed},
+			    {"total", app.deletion_progress->total}, {"currentLabel", app.deletion_progress->current_label}};
+		}
 		const StartupNativeImportSnapshot import_snapshot = app.startup_native_import_service
 		    ? app.startup_native_import_service->Snapshot(0, 0) : StartupNativeImportSnapshot{};
 		j["startupNativeImports"] = {{"phase", import_snapshot.phase}, {"generation", import_snapshot.generation},
@@ -1568,6 +1575,7 @@ namespace uam
 		// Settings slice that the UI cares about
 		{
 			j["settings"] = uam::settings_frontend_json::SerializeLiveSettingsFields(app.settings, app.memory_last_status);
+			j["settings"]["branchSwitching"] = true;
 			for (nlohmann::json& host : j["settings"]["executionHosts"])
 			{
 				const ExecutionHost* configured = uam::execution_hosts::Find(app.settings.execution_hosts, host.value("id", ""));
@@ -1588,6 +1596,11 @@ namespace uam
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
+		if (app.deletion_progress)
+		{
+			j["deletionProgress"] = {{"completed", app.deletion_progress->completed},
+			    {"total", app.deletion_progress->total}, {"currentLabel", app.deletion_progress->current_label}};
+		}
 		const StartupNativeImportSnapshot import_snapshot = app.startup_native_import_service
 		    ? app.startup_native_import_service->Snapshot(0, 0) : StartupNativeImportSnapshot{};
 		j["startupNativeImports"] = {{"phase", import_snapshot.phase}, {"generation", import_snapshot.generation},
@@ -1634,6 +1647,7 @@ namespace uam
 
 		{
 			j["settings"] = uam::settings_frontend_json::SerializeFingerprintSettingsFields(app.settings);
+			j["settings"]["branchSwitching"] = true;
 			for (nlohmann::json& host : j["settings"]["executionHosts"])
 			{
 				const ExecutionHost* configured = uam::execution_hosts::Find(app.settings.execution_hosts, host.value("id", ""));

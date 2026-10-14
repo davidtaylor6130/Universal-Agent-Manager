@@ -312,6 +312,19 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('reads effective provider memory defaults for the selected computer', () => {
+    useAppStore.setState({ hostScopedSettings: true, settingsScopeHostId: 'ssh-lab',
+      executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }],
+      hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: { 'codex-cli': { ...useAppStore.getState().providerChatDefaults['codex-cli'], memoryLevel: 'off' } }, mcpServers: [] } },
+    })
+    const { host, root } = renderModal()
+    openProviderSection(host, 'Codex')
+    expect(host.querySelector('[aria-label="Codex default memory level"]')?.textContent).toContain('Off')
+    act(() => useAppStore.setState({ executionHosts: [{ id: 'local', label: 'This computer', transport: 'local' }] }))
+    expect(host.querySelector('[aria-label="Codex default memory level"]')?.textContent).not.toContain('Off')
+    act(() => root.unmount()); host.remove()
+  })
+
   it('keeps CLI action errors scoped to the host where they occurred', async () => {
     const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
     useAppStore.setState(state => ({

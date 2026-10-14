@@ -1,4 +1,5 @@
 #pragma once
+#include <string_view>
 
 #include "app/execution_routing_service.h"
 #include "common/state/app_state.h"
@@ -6,7 +7,7 @@
 namespace uam
 {
 	std::string ExecutionRoutingConnectionIdentity(const ExecutionHost& host);
-	std::string ExecutionRoutingProviderIdentity(const AppState& app, const ProviderProfile& provider);
+	std::string ExecutionRoutingProviderIdentity(const AppState& app, const ProviderProfile& provider, std::string_view host_id = "local");
 	/// Persist assignment and its reservation before the caller starts any provider operation.
 	ExecutionRoutingDecision AdmitExecutionRouting(AppState& app, ChatSession& chat, bool terminal = false);
 	bool ExecutionRoutingOwnsWork(const AppState& app, const ChatSession& chat);

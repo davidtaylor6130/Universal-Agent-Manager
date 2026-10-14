@@ -431,7 +431,9 @@ function modelsEquivalent(existing: AcpModel[], next: AcpModel[]) {
       model.description === other.description &&
       (model.defaultReasoningEffort ?? '') === (other.defaultReasoningEffort ?? '') &&
       (model.supportedReasoningEfforts ?? []).join('|') === (other.supportedReasoningEfforts ?? []).join('|') &&
-      (model.additionalSpeedTiers ?? []).join('|') === (other.additionalSpeedTiers ?? []).join('|')
+      (model.additionalSpeedTiers ?? []).join('|') === (other.additionalSpeedTiers ?? []).join('|') &&
+      (model.contextWindowTokens ?? null) === (other.contextWindowTokens ?? null) &&
+      (model.maxOutputTokens ?? null) === (other.maxOutputTokens ?? null)
   })
 }
 

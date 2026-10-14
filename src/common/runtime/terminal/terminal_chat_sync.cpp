@@ -406,6 +406,12 @@ bool SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession> native_ch
 {
 	const std::string selected_before = ChatDomainService().SelectedChatId(app);
 	const std::string preferred_id = NormalizeChatSyncTargetId(preferred_chat_id);
+	std::string deletion_error;
+	if (!ChatHistorySyncService().FilterDeletedNativeHistory(app.data_root, native_chats, &deletion_error))
+	{
+		UpdateNativeChatRefreshError(app, preferred_id, deletion_error);
+		return false;
+	}
 	(void)ChatHistorySyncService().OverlayLocalHistory(app, native_chats, true);
 
 	// Only save the specifically requested chat (e.g. the one just discovered)

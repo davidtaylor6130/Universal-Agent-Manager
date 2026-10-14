@@ -144,12 +144,13 @@ export function mergeMcpImport(text: string, previous: McpServerConfiguration[])
 
 /** One list of MCP servers, edited as a form or as JSON, sent to every provider on launch (local and SSH). */
 export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHostId = SETTINGS_ALL_ENVIRONMENTS }: { onBusyChange: (busy: boolean) => void; onDirtyChange: (dirty: boolean) => void; scopeExecutionHostId?: string }) {
-  const savedServers = useAppStore(state => state.mcpServers)
+  const hosts = useAppStore(state => state.executionHosts)
+  const scoped = scopeExecutionHostId !== SETTINGS_ALL_ENVIRONMENTS && hosts.some(host => host.transport === 'ssh' && host.id === scopeExecutionHostId)
+  const savedServers = useAppStore(state => (scoped && state.hostScopedSettings && state.hostScopedSettingsValues?.[scopeExecutionHostId]?.mcpServers) || state.mcpServers)
   const savedUam = useAppStore(state => state.centralProviderConfiguration.uamControlEnabled)
   const computerUseEnabled = useAppStore(state => state.computerUseEnabled)
   const [computerUseBusy, setComputerUseBusy] = useState(false)
   const [computerUseError, setComputerUseError] = useState('')
-  const hosts = useAppStore(state => state.executionHosts)
   const [servers, setServers] = useState(savedServers)
   const [uamEnabled, setUamEnabled] = useState(savedUam)
   const [view, setView] = useState<'form' | 'json'>('form')
@@ -194,10 +195,13 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   }
   const save = async () => {
     if (setup !== null) { setMessage('Finish or cancel setup before saving.'); return }
+    const generation = importGeneration.current
+    const ownsSave = () => generation === importGeneration.current
     let next = servers, nextUam = uamEnabled
     if (view === 'json') {
       try { ({ servers: next, uamEnabled: nextUam } = fromJsonText(jsonText, servers)) } catch (error) { setMessage((error as Error).message); return }
     }
+    if (scoped && nextUam !== savedUam) { setMessage('Could not save MCP servers.'); return }
     next = next.map(server => ({ ...server, name: server.name.trim(), command: server.command.trim(), url: server.url.trim(), workspaceDirectory: server.workspaceDirectory.trim() }))
     const issue = next.map(problem).find(Boolean)
     if (issue) { setMessage(issue); return }
@@ -206,18 +210,20 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     setBusy(true); onBusyChange(true); setMessage('')
     try {
       const store = useAppStore.getState()
-      const result = await store.setMcpServers(next, scopeExecutionHostId)
+      const result = await store.setMcpServers(next, scoped ? scopeExecutionHostId : SETTINGS_ALL_ENVIRONMENTS)
+      if (!ownsSave()) return
       if (!result.ok) { setMessage(result.error || 'Could not save MCP servers.'); return }
       const currentStore = useAppStore.getState()
-      if (nextUam !== currentStore.centralProviderConfiguration.uamControlEnabled) {
+      if (!scoped && nextUam !== currentStore.centralProviderConfiguration.uamControlEnabled) {
         const central = await currentStore.setCentralProviderConfiguration({ ...currentStore.centralProviderConfiguration, uamControlEnabled: nextUam })
+        if (!ownsSave()) return
         if (!central.ok) { setMessage(central.error || 'Servers saved, but the UAM MCP setting was not.'); return }
       }
       setServers(next); setUamEnabled(nextUam)
       if (view === 'json') setJsonText(toJsonText(next, nextUam))
       setMessage('Saved. Gemini, Codex, Claude Code, OpenCode and Copilot get these servers the next time a chat or CLI starts, locally and over SSH.')
-    } catch { setMessage('Could not save MCP servers. Try again.') }
-    finally { setBusy(false); onBusyChange(false) }
+    } catch { if (ownsSave()) setMessage('Could not save MCP servers. Try again.') }
+    finally { if (ownsSave()) { setBusy(false); onBusyChange(false) } }
   }
 
   const text = (label: string, value: string, onChange: (value: string) => void, placeholder = '', help = '') => <label className="uam-set-field">
@@ -272,7 +278,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       </Overlay>
     </Presence>
 
-    {view === 'form' && <SettingsSection title="Built in">
+    {view === 'form' && !scoped && <SettingsSection title="Built in">
       <SettingRow title="UAM MCP service" description="Agent questions, goals and UAM skills."
         status={uamEnabled ? undefined : 'Off in this draft until you save.'}
         control={uamEnabled

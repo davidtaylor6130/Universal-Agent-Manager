@@ -153,6 +153,7 @@ namespace uam::opencode_import
 		const bool complete = io::WriteAndSyncAtomicTemp(*source, [&](const std::function<bool(std::string_view)>& append)
 		{
 			invocation.output_sink = append;
+			invocation.structured_stdout = true;
 			const ProcessExecutionResult result = ExecuteProviderWorkerInvocation(invocation, workspace, 30000, stop);
 			if (!result.ok || result.exit_code != 0 || stop.stop_requested())
 			{

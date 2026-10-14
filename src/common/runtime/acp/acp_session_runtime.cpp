@@ -29,6 +29,7 @@
 #include "computer_use/computer_use_mcp_config.h"
 #include <cstring>
 #include <future>
+#include <functional>
 #include <thread>
 #include "common/utils/diagnostic_log.h"
 #include <iterator>
@@ -92,6 +93,14 @@
 
 namespace uam
 {
+	struct PendingAcpCompaction
+	{
+		std::filesystem::path root;
+		std::shared_ptr<const std::uint8_t> incarnation;
+		nlohmann::json ownership;
+		std::shared_ptr<WorktreeLaunchPreparationTask> workspace_task;
+	};
+
 	/** Unbound input is persisted as an unsent user row until this immutable definition is validated. */
 	struct PendingAgentInputPreparation
 	{
@@ -1302,7 +1311,7 @@ namespace uam
 		bool SnapshotSelectedUamAgent(const AppState& app, const ChatSession& chat,
 		                              AcpQueuedUserPromptState& queued, std::string* error_out)
 		{
-			if (uam::provider_chat_defaults::ForProvider(app.settings, chat.provider_id).feature_preference == "provider")
+			if (uam::provider_chat_defaults::ForProvider(app.settings, chat.provider_id, chat.execution_host_id).feature_preference == "provider")
 			{
 				queued.uam_agent_id = "build";
 				queued.uam_agent_execution_capability = "provider-native";
@@ -2292,31 +2301,139 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	} // namespace
 
+	namespace
+	{
+		nlohmann::json CompactOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+		{
+			const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+			return {
+			    {"identity", nlohmann::json::array({chat.id, chat.created_at, chat.provider_id, session.provider_id,
+			        chat.execution_host_id, chat.model_id, chat.reasoning_effort, chat.service_tier, chat.approval_mode,
+			        chat.command_safety_tier, chat.routing_mode, chat.active_goal_id, chat.goal_command_revision, chat.uam_agent_id,
+			        provider.interactive_command, provider.runtime_flags, provider.resume_argument, provider.structured_protocol,
+			        settings_frontend_json::SerializeFingerprintSettingsFields(app.settings)})},
+			    {"workspace", nlohmann::json::array({chat.workspace_directory, chat.workspace_source_directory,
+			        chat.workspace_worktree_directory, chat.workspace_isolation_kind, chat.workspace_base_ref,
+			        chat.workspace_branch_name, chat.svn_update_pending,
+			        chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr)})},
+			    {"native", chat.native_session_id}};
+		}
+
+		bool PollPendingCompaction(AppState& app, AcpSessionState& session)
+		{
+			if (!session.pending_compaction) return false;
+			const bool running = session.running;
+			const std::string lifecycle = session.lifecycle_state;
+			std::string error;
+			if (!CompactAcpSession(app, session.chat_id, &error))
+			{
+				session.pending_compaction.reset();
+				session.last_error = error;
+				if (!session.running) session.lifecycle_state = acp_detail::kAcpLifecycleError;
+			}
+			return !session.pending_compaction || session.running != running || session.lifecycle_state != lifecycle;
+		}
+	}
+
 	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
-		const auto fail = [&](const std::string& error)
+		const std::shared_ptr<PendingAcpCompaction> pending = session ? session->pending_compaction : nullptr;
+		const bool queued = pending != nullptr;
+		const std::function<bool(const std::string&)> fail = [&](const std::string& error)
 		{
+			if (session) session->pending_compaction.reset();
 			if (error_out != nullptr) *error_out = error;
 			return false;
 		};
-		if (chat == nullptr || session == nullptr || !session->running || !session->session_ready)
-			return fail("Start this chat's provider session before compacting its context.");
-		if (AcpSessionHasActiveTurn(*session) || AcpSessionHasPendingCancel(*session) ||
-		    AcpSessionIsWaitingForInput(*session) || !session->queued_user_prompts.empty() ||
-		    !session->pending_request_methods.empty() || session->turn_checkpoint_preflight_pending ||
-		    session->turn_checkpoint_commit_pending || AcpStopInProgress(app, chat_id))
+		if (!chat) return fail("Chat not found: " + chat_id);
+		const std::string provider_id = !chat->provider_id.empty() ? chat->provider_id : session ? session->provider_id :
+		    ProviderResolutionService().ProviderForChatOrDefault(app, *chat).id;
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider_id);
+		if (!runtime.SupportsAcpCompaction())
+			return fail("This provider does not support manual compaction in structured chat. Use its native CLI if available.");
+		if ((!chat->execution_host_id.empty() && chat->execution_host_id != "local") ||
+		    (session && !session->process_execution_host_id.empty() && session->process_execution_host_id != "local"))
+			return fail("Manual compaction currently requires a local provider session.");
+		if (session && !chat->provider_id.empty() && session->provider_id != chat->provider_id)
+			return fail("The provider runtime no longer belongs to this chat. Restart the chat before compacting.");
+		if (chat->imported_read_only || chat->side_cleanup_requested)
+			return fail("This chat is read-only or closing.");
+		if (AcpStopInProgress(app, chat_id) || (session && (session->local_stop_pending || session->remote_stop_pending ||
+		    session->remote_stop_unconfirmed || AcpSessionHasPendingCancel(*session))))
+			return fail("Wait for the provider to finish stopping before compacting.");
+		if (!chat->acp_queued_prompts.empty() || chat->acp_queue_held || (session &&
+		    (AcpSessionHasActiveTurn(*session) || AcpSessionIsWaitingForInput(*session) || !session->queued_prompt.empty() ||
+		     !session->queued_user_prompts.empty() || session->queue_held || session->manual_compaction_pending ||
+		     session->context_compaction_in_progress || session->pending_agent_input || session->pending_prompt_delivery ||
+		     session->pending_queued_history || session->turn_checkpoint_preflight_pending || session->turn_checkpoint_commit_pending)))
 			return fail("Wait for the current turn, queued messages and pending controls before compacting.");
-		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+		const std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>>::const_iterator workspace =
+		    app.worktree_launch_preparations.find(chat_id);
+		if (!queued && (app.worktree_operation_chat_ids.contains(chat_id) || app.branch_preparations.contains(chat_id) ||
+		    (workspace != app.worktree_launch_preparations.end() && !(workspace->second->saved && *workspace->second->saved))))
+			return fail("Workspace preparation must finish and be saved before compacting.");
+		if (!session) session = &EnsureAcpSessionForChat(app, *chat);
+		if (queued)
+		{
+			nlohmann::json ownership = CompactOwnership(app, *session, *chat);
+			if (pending->workspace_task && ownership["workspace"] != pending->ownership["workspace"] &&
+			    !pending->workspace_task->cancellation->stop_requested() && pending->workspace_task->prepared &&
+			    pending->workspace_task->merged && pending->workspace_task->data_root == pending->root &&
+			    pending->workspace_task->original.metadata_incarnation == pending->incarnation &&
+			    CompactOwnership(app, *session, pending->workspace_task->original)["workspace"] == pending->ownership["workspace"] &&
+			    CompactOwnership(app, *session, pending->workspace_task->prepared->metadata)["workspace"] == ownership["workspace"])
+				pending->ownership["workspace"] = ownership["workspace"];
+			if (pending->ownership["native"] == "" && session->session_ready && !session->session_id.empty() &&
+			    chat->native_session_id == session->session_id && session->codex_thread_id == session->session_id)
+				pending->ownership["native"] = ownership["native"];
+			if (pending->root != app.data_root || pending->incarnation != chat->metadata_incarnation ||
+			    pending->ownership != ownership || app.branch_preparations.contains(chat_id) ||
+			    (pending->workspace_task && pending->workspace_task->cancellation->stop_requested()) ||
+			    (workspace != app.worktree_launch_preparations.end() && workspace->second != pending->workspace_task &&
+			     !(workspace->second->saved && *workspace->second->saved)))
+				return fail("Compaction ownership changed during provider preparation. Retry compaction.");
+		}
+		else if (!session->running || !session->session_ready)
+		{
+			session->pending_compaction = std::make_shared<PendingAcpCompaction>();
+			session->pending_compaction->root = app.data_root;
+			session->pending_compaction->incarnation = chat->metadata_incarnation;
+			session->pending_compaction->ownership = CompactOwnership(app, *session, *chat);
+		}
+		if (!session->running)
+		{
+			if (IsLocalCliCompatibilityCheckPending(app, provider_id) ||
+			    (app.runtime_cli_version_check_task.running && app.runtime_cli_version_provider_id == provider_id &&
+			     app.runtime_cli_version_check_task.execution_host.id == chat->execution_host_id)) return true;
+			if (!acp_detail::StartAcpProcessForChat(app, *session, *chat, error_out))
+			{
+				session->pending_compaction.reset();
+				return false;
+			}
+			const std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>>::const_iterator preparation =
+			    app.worktree_launch_preparations.find(chat_id);
+			if (session->pending_compaction && preparation != app.worktree_launch_preparations.end())
+				session->pending_compaction->workspace_task = preparation->second;
+			return true;
+		}
+		if (!session->session_ready)
+		{
+			if (session->lifecycle_state == acp_detail::kAcpLifecycleError)
+				return fail(session->last_error.empty() ? "Provider setup failed before compaction." : session->last_error);
+			return true;
+		}
+		if (!session->pending_request_methods.empty() || session->pending_local_session_receipt)
+		{
+			if (queued) return true;
+			return fail("Wait for pending provider controls before compacting.");
+		}
 		const int request_id = session->next_request_id;
 		std::string method;
 		const nlohmann::json request = runtime.OnAcpBuildCompact(*session, request_id, method);
-		if (request.is_null() || method.empty())
-			return fail("This provider does not support manual compaction in structured chat. Use its native CLI if available.");
-		if ((!chat->execution_host_id.empty() && chat->execution_host_id != "local") ||
-		    (!session->process_execution_host_id.empty() && session->process_execution_host_id != "local"))
-			return fail("Manual compaction currently requires a local provider session.");
+		if (request.is_null() || method.empty()) return fail("The provider context is not ready for manual compaction.");
+		session->pending_compaction.reset();
 		++session->next_request_id;
 		session->pending_request_methods[request_id] = method;
 		if (!acp_detail::WriteAcpMessage(*session, request, error_out))
@@ -2345,6 +2462,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool SendAcpPrompt(AppState& app, const std::string& chat_id, const std::string& text, const std::vector<std::string>& markdown_store_files, const std::vector<MessageAttachment>& attachments, bool goal_mode, std::string* error_out, const std::string& goal_id, bool computer_use_mode)
 	{
+		const AcpSessionState* maintenance_session = FindAcpSessionForChat(app, chat_id);
+		if (maintenance_session && maintenance_session->pending_compaction)
+		{
+			if (error_out != nullptr) *error_out = "Wait for context compaction to finish before sending prompts.";
+			return false;
+		}
+
 		const std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>>::const_iterator workspace_preparation = app.worktree_launch_preparations.find(chat_id);
 		if (app.worktree_operation_chat_ids.contains(chat_id) ||
 		    (workspace_preparation != app.worktree_launch_preparations.end() && !(workspace_preparation->second->saved && *workspace_preparation->second->saved)))
@@ -2457,7 +2581,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		    !chat.small_model_mode && app.claude_quota_dispatch_id.empty() &&
 		    chat.claude_quota_continuation.id.empty() && (!preparing_session || preparing_session->running || chat.acp_queued_prompts.empty()) && !chat.acp_queue_storage_error &&
 		    markdown_store_files.empty() && attachments.empty() && !goal_mode && goal_id.empty() && !computer_use_mode &&
-		    uam::provider_chat_defaults::ForProvider(app.settings, chat.provider_id).feature_preference != "provider")
+		    uam::provider_chat_defaults::ForProvider(app.settings, chat.provider_id, chat.execution_host_id).feature_preference != "provider")
 			return BeginAgentInputPreparation(app, chat, text, error_out);
 		AcpQueuedUserPromptState queued;
 		if (!BuildQueuedAcpUserPrompt(app, chat, text, markdown_store_files, attachments, goal_mode, goal_id, computer_use_mode, queued, error_out))
@@ -3319,10 +3443,23 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (chat == nullptr || !chat->messages_loaded || message_index < 0 ||
 		    static_cast<std::size_t>(message_index) >= chat->messages.size())
 			return reject("The failed message is no longer the latest message.");
-		const auto is_empty_assistant_placeholder = [](const Message& candidate)
+		// Match the frontend's JavaScript trim only for retry eligibility; unmatched UTF-8 stays substantive.
+		const auto is_retry_blank = [](std::string_view text)
 		{
-			return candidate.role == MessageRole::Assistant && uam::strings::IsBlank(candidate.content) &&
-			       candidate.thoughts.empty() && candidate.plan_summary.empty() &&
+			constexpr std::array<std::string_view, 19> unicode_whitespace = {"\xC2\xA0", "\xE1\x9A\x80", "\xE2\x80\x80", "\xE2\x80\x81", "\xE2\x80\x82", "\xE2\x80\x83", "\xE2\x80\x84", "\xE2\x80\x85", "\xE2\x80\x86", "\xE2\x80\x87", "\xE2\x80\x88", "\xE2\x80\x89", "\xE2\x80\x8A", "\xE2\x80\xA8", "\xE2\x80\xA9", "\xE2\x80\xAF", "\xE2\x81\x9F", "\xE3\x80\x80", "\xEF\xBB\xBF"};
+			while (!(text = uam::strings::TrimAsciiView(text)).empty())
+			{
+				const std::array<std::string_view, 19>::const_iterator whitespace = std::ranges::find_if(
+				    unicode_whitespace, [text](std::string_view candidate) { return text.starts_with(candidate); });
+				if (whitespace == unicode_whitespace.end()) return false;
+				text.remove_prefix(whitespace->size());
+			}
+			return true;
+		};
+		const auto is_empty_assistant_placeholder = [&is_retry_blank](const Message& candidate)
+		{
+			return candidate.role == MessageRole::Assistant && is_retry_blank(candidate.content) &&
+			       is_retry_blank(candidate.thoughts) && is_retry_blank(candidate.plan_summary) &&
 			       candidate.plan_entries.empty() && candidate.tool_calls.empty() &&
 			       candidate.blocks.empty() && candidate.attachments.empty();
 		};
@@ -3530,6 +3667,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		ChatDomainService().CancelBranchPreparations(app, chat_id);
 		if (AcpSessionState* owner = FindAcpSessionForChat(app, chat_id))
 		{
+			owner->pending_compaction.reset();
 			owner->pending_queued_history.reset();
 			owner->pending_referenced_queue_launch_fingerprint.clear();
 		}
@@ -3894,7 +4032,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		    {
 			    if (purpose == AcpStopPurpose::Timeout || observe_exit)
 				{
-					*result = platform::StopStdioProcessObserved(PlatformServicesFactory::Instance().process_service, *owned);
+					*result = platform::StopStdioProcessObserved(PlatformServicesFactory::Instance().process_service, *owned,
+				    std::chrono::milliseconds(800), purpose != AcpStopPurpose::WorkspaceChange);
 					if (result->exit_confirmed) PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*owned);
 				}
 				else if (confirm_writer_exit)
@@ -3972,7 +4111,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			                               : acp_detail::FinalizeActiveAcpToolCallsAsCancelled(*chat, session);
 			std::string reason = "interrupt";
 			if (session.lifecycle_state == kAcpLifecycleError || !session.last_error.empty()) reason = "failed";
-			else if (graceful_stop) reason = session.stop_purpose == AcpStopPurpose::Timeout ? "timeout" : "provider-update";
+			else if (graceful_stop) reason = session.stop_purpose == AcpStopPurpose::Timeout ? "timeout" :
+			    session.stop_purpose == AcpStopPurpose::WorkspaceChange ? "workspace-change" : "provider-update";
 			else if (session.stop_purpose == AcpStopPurpose::Timeout)
 				reason = session.stop_outcome == platform::ProcessStopOutcome::Forced ? "forced" :
 				         session.stop_outcome == platform::ProcessStopOutcome::Failed ? "failed" : "unknown";
@@ -4257,9 +4397,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const bool temporary = chat != nullptr && !chat->temporary_parent_chat_id.empty();
 			const bool native_children_live = ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) > 0;
 			QueueAcpProcessStop(app, *session, session->chat_id, session->stop_purpose,
-			                    temporary || native_children_live);
+			                    temporary || native_children_live || purpose == AcpStopPurpose::WorkspaceChange);
 			if (temporary) chat->side_cleanup_stop_finished = app.acp_process_stop_tasks.back().finished;
-			if (session->stop_purpose == AcpStopPurpose::Timeout || native_children_live)
+			if (session->stop_purpose == AcpStopPurpose::Timeout || native_children_live || purpose == AcpStopPurpose::WorkspaceChange)
 			{
 				session->running = false;
 				session->local_stop_pending = true;
@@ -4841,6 +4981,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 				}
 				else if (!task->preserve_session) continue;
 			}
+			if (session.pending_compaction && !session.running)
+			{
+				changed = PollPendingCompaction(app, session) || changed;
+				continue;
+			}
 			if (!session.running && session.pending_local_launch)
 			{
 				ChatSession* launch_chat = FindAcpRuntimeChatById(app, session.chat_id);
@@ -4994,6 +5139,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				changed = true;
 			}
+
+			if (session.pending_compaction)
+				changed = PollPendingCompaction(app, session) || changed;
 
 			// Completion can defer FIFO admission until its durable queue save settles.
 			if (session.session_ready && !session.processing && session.queued_prompt.empty() &&

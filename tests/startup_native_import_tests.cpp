@@ -1165,3 +1165,154 @@ UAM_TEST(StreamedAtomicWriterDoesNotCloseReusedHandlesAfterSyncHookThrows)
 	replacement.flush();
 	UAM_ASSERT(replacement.good());
 }
+
+UAM_TEST(StartupNativePartialOpenCodeScanRetainsContinuationOffset)
+{
+	TempDir temp("uam-startup-opencode-offset");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.open_code_history_scan_offset = 3;
+	uam::StartupNativeImportService service([](const uam::StartupNativeImportScanRequest& request, std::stop_token)
+	{
+		UAM_ASSERT_EQ(request.open_code_offset, std::size_t{3});
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.open_code_next_offset = 17;
+		discovery.result.Fail("OpenCode history scan stopped before all sessions were read; retry to continue.");
+		return discovery;
+	});
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(app.open_code_history_scan_offset, std::size_t{17});
+	UAM_ASSERT(app.chats.empty());
+	std::size_t resumed = 0;
+	uam::StartupNativeImportService next([&resumed](const uam::StartupNativeImportScanRequest& request, std::stop_token)
+	{
+		resumed = request.open_code_offset;
+		return ChatHistorySyncService::LocalHistoryDiscovery{};
+	});
+	next.Initialize(app);
+	WaitForStartup(next, app);
+	UAM_ASSERT_EQ(resumed, std::size_t{17});
+}
+
+UAM_TEST(StartupNativeOpenCodeAutomaticallyContinuesEmptyPartialPage)
+{
+	TempDir temp("uam-startup-opencode-pages");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	std::size_t calls = 0;
+	uam::StartupNativeImportService service([&](const uam::StartupNativeImportScanRequest& request, std::stop_token)
+	{
+		++calls;
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.open_code_session_count = 3;
+		discovery.open_code_list_fingerprint = "stable-fixture-list";
+		if (calls == 1)
+		{
+			UAM_ASSERT(!request.open_code_only);
+			discovery.open_code_scanned_count = 1;
+			discovery.open_code_next_offset = 1;
+		}
+		else
+		{
+			UAM_ASSERT_EQ(calls, std::size_t{2});
+			UAM_ASSERT(request.open_code_only && request.remote_scopes.empty());
+			UAM_ASSERT_EQ(request.open_code_offset, std::size_t{1});
+			UAM_ASSERT(request.open_code_remaining && *request.open_code_remaining == 2);
+			UAM_ASSERT_EQ(request.open_code_list_fingerprint, discovery.open_code_list_fingerprint);
+			discovery.open_code_scanned_count = 2;
+			discovery.open_code_next_offset = 0;
+			discovery.chats.push_back(StartupHistory(temp.root / "workspace", "later-page"));
+		}
+		return discovery;
+	});
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(calls, std::size_t{2});
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{1});
+	UAM_ASSERT(app.chats.empty());
+}
+
+UAM_TEST(StartupNativeOpenCodeContinuationStopsAfterFinalWrapAndDeduplicates)
+{
+	TempDir temp("uam-startup-opencode-wrap");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.open_code_history_scan_offset = 3;
+	std::size_t calls = 0;
+	uam::StartupNativeImportService service([&](const uam::StartupNativeImportScanRequest& request, std::stop_token)
+	{
+		++calls;
+		UAM_ASSERT(calls <= 2);
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.open_code_session_count = 4;
+		discovery.open_code_scanned_count = 2;
+		discovery.open_code_list_fingerprint = "stable-fixture-list";
+		discovery.open_code_next_offset = calls == 1 ? 1 : 3;
+		if (calls == 2) UAM_ASSERT(request.open_code_remaining && *request.open_code_remaining == 2);
+		discovery.chats.push_back(StartupHistory(temp.root / "workspace", "repeated-candidate"));
+		return discovery;
+	});
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(calls, std::size_t{2});
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.open_code_history_scan_offset, std::size_t{3});
+	UAM_ASSERT(app.chats.empty());
+}
+
+UAM_TEST(StartupNativeOpenCodeContinuationStopsOnChangedList)
+{
+	TempDir temp("uam-startup-opencode-change");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	std::size_t calls = 0;
+	uam::StartupNativeImportService service([&](const uam::StartupNativeImportScanRequest&, std::stop_token)
+	{
+		++calls;
+		UAM_ASSERT(calls <= 2);
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.open_code_session_count = 3;
+		discovery.open_code_scanned_count = 1;
+		discovery.open_code_next_offset = calls;
+		discovery.open_code_list_fingerprint = calls == 1 ? "first-list" : "changed-list";
+		return discovery;
+	});
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(calls, std::size_t{2});
+	UAM_ASSERT(!service.Snapshot().errors.empty());
+	UAM_ASSERT(app.chats.empty());
+}
+
+UAM_TEST(StartupNativeOpenCodeCancellationDoesNotScheduleContinuation)
+{
+	TempDir temp("uam-startup-opencode-cancel");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	std::atomic<std::size_t> calls{0};
+	std::promise<void> entered;
+	std::promise<void> completed;
+	uam::StartupNativeImportService service([&](const uam::StartupNativeImportScanRequest&, std::stop_token stop)
+	{
+		++calls;
+		entered.set_value();
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.open_code_session_count = 3;
+		discovery.open_code_scanned_count = 1;
+		discovery.open_code_next_offset = 1;
+		discovery.open_code_list_fingerprint = "stable-fixture-list";
+		completed.set_value();
+		return discovery;
+	});
+	service.Initialize(app);
+	UAM_ASSERT(entered.get_future().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+	service.Cancel();
+	UAM_ASSERT(completed.get_future().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+	service.Poll(app);
+	UAM_ASSERT_EQ(calls.load(), std::size_t{1});
+	UAM_ASSERT_EQ(service.Snapshot().phase, std::string("cancelled"));
+	UAM_ASSERT(app.chats.empty());
+}

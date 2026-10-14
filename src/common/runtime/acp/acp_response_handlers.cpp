@@ -352,6 +352,8 @@ nlohmann::json ModelsForPersistentCache(const std::vector<AcpModelState>& models
 		    {"defaultReasoningEffort", model.default_reasoning_effort},
 		    {"supportedReasoningEfforts", model.supported_reasoning_efforts},
 		    {"additionalSpeedTiers", model.additional_speed_tiers},
+		    {"contextWindowTokens", model.context_window_tokens ? nlohmann::json(*model.context_window_tokens) : nlohmann::json(nullptr)},
+		    {"maxOutputTokens", model.max_output_tokens ? nlohmann::json(*model.max_output_tokens) : nlohmann::json(nullptr)},
 		});
 	}
 	return result;

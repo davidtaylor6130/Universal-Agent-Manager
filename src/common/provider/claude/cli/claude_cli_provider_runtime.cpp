@@ -8,6 +8,7 @@
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_claude_stream.h"
+#include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/provider/claude/cli/claude_acp_message_handlers.h"
 #include "common/utils/range_utils.h"
@@ -182,7 +183,10 @@ void ClaudeCliProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& sessi
 		const std::string id = uam::nlohmann_json::TrimmedStringValue(model, {"value"});
 		if (id.empty())
 			continue;
-		session.available_models.push_back(uam::AcpModelState{id, uam::acp_detail::JsonDiagnosticStringValueOr(model, "displayName", id), uam::acp_detail::JsonDiagnosticStringValue(model, "description")});
+		uam::AcpModelState parsed{id, uam::acp_detail::JsonDiagnosticStringValueOr(model, "displayName", id), uam::acp_detail::JsonDiagnosticStringValue(model, "description")};
+		parsed.context_window_tokens = uam::acp_models::ModelTokenLimit(model, {"contextWindowTokens", "contextWindow"});
+		parsed.max_output_tokens = uam::acp_models::ModelTokenLimit(model, {"maxOutputTokens"});
+		session.available_models.push_back(std::move(parsed));
 	}
 	session.agent_name = "claude";
 	session.agent_title = "Claude Code";

@@ -702,8 +702,16 @@ namespace
 	bool CleanupDeletionTransaction(uam::AppState& app, const DeletionIntent& intent, const std::vector<ChatSession>& deleted_chats, bool& native_cleanup_failed,
 	                                const std::unordered_set<std::string>& retained_native_keys,
 	                                const std::unordered_set<std::string>& retained_workspace_keys,
-	                                const std::vector<uam::NativeDeletionOwner>& retained_native_owners)
+	                                const std::vector<uam::NativeDeletionOwner>& retained_native_owners,
+	                                const std::function<void(std::size_t, std::size_t, const std::string&)>& progress = {})
 	{
+		std::size_t completed_items = 0;
+		const std::size_t total_items = deleted_chats.size() + intent.folder_ids.size();
+		const std::function<void(const std::string&)> complete_item = [&](const std::string& label)
+		{
+			++completed_items;
+			if (progress) progress(completed_items, total_items, label);
+		};
 		for (const std::string& id : intent.chat_ids)
 		{
 			if (ChatRepository::DeleteChatStorageFiles(app.data_root, id).Failed()) return false;
@@ -723,24 +731,39 @@ namespace
 			{
 				if (!folder_ids.contains(uam::strings::Trim(folder.id))) continue;
 				if (retained_workspace_keys.contains(uam::paths::WorkspaceOwnershipKey(app, folder.execution_host_id, folder.directory)) ||
-				    (uam::paths::IsControllerLocalWorkspace(folder) && retained_stores.contains(NativeDeletionStore(folder.directory, stores_by_directory)))) continue;
+				    (uam::paths::IsControllerLocalWorkspace(folder) && retained_stores.contains(NativeDeletionStore(folder.directory, stores_by_directory))))
+				{
+					complete_item(folder.title);
+					continue;
+				}
 				std::error_code error;
 				ChatHistorySyncService().DeleteNativeWorkspaceHistoryForFolder(app, folder, &error);
 				native_cleanup_failed = native_cleanup_failed || static_cast<bool>(error);
+				if (!error) complete_item(folder.title);
 			}
 		}
 
 		if (native_cleanup_failed) return false;
 		for (const ChatSession& chat : deleted_chats)
 		{
-			if (retained_native_keys.contains(uam::chat_identity::NativeIdentityKeyForHistoryImport(chat))) continue;
+			if (retained_native_keys.contains(uam::chat_identity::NativeIdentityKeyForHistoryImport(chat)))
+			{
+				complete_item(chat.title);
+				continue;
+			}
 			const std::string directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
 			if (uam::paths::IsControllerLocalWorkspace(chat) &&
-			    retained_sessions.contains(NativeDeletionStore(directory, stores_by_directory) + "\n" + uam::strings::Trim(chat.native_session_id))) continue;
+			    retained_sessions.contains(NativeDeletionStore(directory, stores_by_directory) + "\n" + uam::strings::Trim(chat.native_session_id)))
+			{
+				complete_item(chat.title);
+				continue;
+			}
 			std::error_code error;
 			DeleteNativeHistoryForChatIfNeeded(app, chat, &error);
 			native_cleanup_failed = native_cleanup_failed || static_cast<bool>(error);
+			if (!error) complete_item(chat.title);
 		}
+		if (native_cleanup_failed) return false;
 		return RemoveDeletionTransactionFiles(app.data_root);
 	}
 
@@ -2072,7 +2095,7 @@ bool uam::CleanupWorkspaceDeletion(WorkspaceDeletionTask& task)
 {
 	bool native_cleanup_failed = false;
 	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
-	const bool completed = task.metadata_saved && CleanupDeletionTransaction(task.snapshot, intent, task.snapshot.chats, native_cleanup_failed, task.retained_native_keys, task.retained_workspace_keys, task.retained_native_owners);
+	const bool completed = task.metadata_saved && CleanupDeletionTransaction(task.snapshot, intent, task.snapshot.chats, native_cleanup_failed, task.retained_native_keys, task.retained_workspace_keys, task.retained_native_owners, task.progress);
 	task.snapshot.status_line = completed
 	    ? (task.deleting_chats
 	        ? std::to_string(task.deleted_ids.size()) + " chat(s) deleted." +

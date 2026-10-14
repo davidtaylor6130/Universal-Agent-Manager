@@ -10,7 +10,7 @@ import { setPreferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
-import { withSettingsScope } from '../../utils/settingsScope'
+import { defaultsForExecutionHost, withSettingsScope } from '../../utils/settingsScope'
 import type { Attachment, Message } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
@@ -367,6 +367,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     httpCacheClearIntervalDays: 0,
     centralProviderConfiguration: DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: [] as McpServerConfiguration[],
+    hostScopedSettingsValues: {},
     executionHosts: [{
       id: 'local', label: 'This computer', transport: 'local', sshAlias: '',
       runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '',
@@ -591,7 +592,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
     },
 
-    addSession: async (name: string, folderId: string | null, providerId = GEMINI_CLI_PROVIDER_ID, modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '', routingMode: 'explicit' | 'automatic' = 'explicit', options: CreateSessionOptions = {}) => {
+    addSession: async (name: string, folderId: string | null, providerId = '', modelId?: string, reasoningEffort?: string, viewMode: ViewMode = 'chat', executionHostId = 'local', workspaceDirectory = '', routingMode: 'explicit' | 'automatic' = 'explicit', options: CreateSessionOptions = {}) => {
       const current = get()
       const selectedFolderId = folderId && current.folders.some((folder) => folder.id === folderId)
         ? folderId
@@ -622,14 +623,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (hasBaseOverride && (gitBaseBranch === undefined || routingMode !== 'explicit' || isRemote ||
         !selectedFolder?.directory || !current.gitEnabled || !current.gitAutoWorktree || !isCefContext())) return false
       const normalizedProviderId = normalizeCliProviderIdAlias(providerId)
-      const normalizedDefaultProviderId = normalizeCliProviderIdAlias(current.defaultNewChatProviderId)
+      const effectiveDefaults = routingMode === 'explicit' ? defaultsForExecutionHost(current, executionHostId) : current
+      const normalizedDefaultProviderId = normalizeCliProviderIdAlias(effectiveDefaults.defaultNewChatProviderId)
       const requestedProviderId = current.providers.some((provider) => provider.id === normalizedProviderId)
         ? normalizedProviderId
         : current.providers.some((provider) => provider.id === normalizedDefaultProviderId)
           ? normalizedDefaultProviderId
           : GEMINI_CLI_PROVIDER_ID
       if (routingMode === 'automatic' && !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId)) return false
-      const defaults = providerChatDefaultsForNewChat(current, requestedProviderId)
+      const defaults = providerChatDefaultsForNewChat({ ...current, providerChatDefaults: effectiveDefaults.providerChatDefaults }, requestedProviderId)
       if (modelId !== undefined) defaults.modelId = modelId.trim()
 	  if (reasoningEffort !== undefined) defaults.reasoningEffort = normalizeCodexReasoningEffort(reasoningEffort)
 
@@ -2041,6 +2043,20 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setMcpServers: async (servers: McpServerConfiguration[], scopeExecutionHostId?: string): Promise<{ ok: boolean; error?: string }> => {
+      const scope = scopeExecutionHostId?.trim()
+      if (scope && scope !== '*') {
+        const requestKey = `setMcpServers:${scope}`
+        const requestId = createRequestId('setMcpServers')
+        rememberPendingRequest(requestKey, requestId)
+        const response = isCefContext() ? await sendToCEF<{ servers?: McpServerConfiguration[] }>({ action: 'setMcpServers', payload: { servers, scopeExecutionHostId: scope }, requestId }) : { ok: true, requestId, data: { servers } }
+        if (response.ok && isLatestPendingRequest(requestKey, requestId)) {
+          const current = get()
+          const previous = current.hostScopedSettingsValues[scope] ?? { defaultNewChatProviderId: current.defaultNewChatProviderId, providerChatDefaults: current.providerChatDefaults, mcpServers: current.mcpServers }
+          set({ hostScopedSettingsValues: { ...current.hostScopedSettingsValues, [scope]: { ...previous, mcpServers: response.data?.servers ?? servers } } })
+        }
+        clearPendingRequest(requestKey, requestId)
+        return { ok: response.ok, error: 'error' in response ? response.error : undefined }
+      }
       const previous = get().mcpServers
       const optimisticRevision = rememberOptimisticFields(['mcpServers'])
       set({ mcpServers: servers })
@@ -2094,6 +2110,27 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setProviderChatDefaults: async (settings: { defaultNewChatProviderId?: string; providerChatDefaults?: Record<string, ProviderChatDefaults> }, scopeExecutionHostId?: string): Promise<boolean> => {
+      const scope = scopeExecutionHostId?.trim()
+      if (scope && scope !== '*') {
+        const current = get()
+        const providerId = settings.defaultNewChatProviderId === undefined ? undefined : normalizeCliProviderIdAlias(settings.defaultNewChatProviderId)
+        if (providerId !== undefined && !current.providers.some(provider => provider.id === providerId)) return false
+        const defaults = settings.providerChatDefaults === undefined ? undefined : sanitizeProviderChatDefaultsMap(settings.providerChatDefaults)
+        for (const [id, value] of Object.entries(defaults ?? {})) {
+          if (!providerCapabilities(id).hasServiceTier) value.serviceTier = ''
+        }
+        const requestKey = `setProviderChatDefaults:${scope}`
+        const requestId = createRequestId('setProviderChatDefaults')
+        rememberPendingRequest(requestKey, requestId)
+        const response = isCefContext() ? await sendToCEF({ action: 'setProviderChatDefaults', payload: { scopeExecutionHostId: scope, ...(providerId !== undefined ? { defaultProviderId: providerId } : {}), ...(defaults !== undefined ? { defaults } : {}) }, requestId }) : { ok: true, requestId }
+        if (response.ok && isLatestPendingRequest(requestKey, requestId)) {
+          const latest = get()
+          const previous = latest.hostScopedSettingsValues[scope] ?? { defaultNewChatProviderId: latest.defaultNewChatProviderId, providerChatDefaults: latest.providerChatDefaults, mcpServers: latest.mcpServers }
+          set({ hostScopedSettingsValues: { ...latest.hostScopedSettingsValues, [scope]: { ...previous, ...(providerId !== undefined ? { defaultNewChatProviderId: providerId } : {}), providerChatDefaults: { ...previous.providerChatDefaults, ...defaults } } } })
+        }
+        clearPendingRequest(requestKey, requestId)
+        return response.ok
+      }
       const previous = {
         defaultNewChatProviderId: get().defaultNewChatProviderId,
         providerChatDefaults: get().providerChatDefaults,

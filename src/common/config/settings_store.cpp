@@ -8,6 +8,7 @@
 #include "common/config/line_value_codec.h"
 #include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
 #include "common/memory/memory_levels.h"
@@ -555,6 +556,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
+		std::erase_if(settings.host_scoped_settings, [&](const std::pair<const std::string, HostScopedSettings>& entry) { const ExecutionHost* host = uam::execution_hosts::Find(settings.execution_hosts, entry.first); return host == nullptr || host->transport != "ssh"; });
 		uam::provider_availability::Normalize(settings.provider_availability);
 		std::string routing_error;
 		ExecutionRoutingSettings validated_routing;
@@ -648,6 +650,17 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
 	WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id);
 	WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
+	nlohmann::json host_settings = nlohmann::json::object();
+	for (const std::pair<const std::string, HostScopedSettings>& entry : normalized.host_scoped_settings)
+	{
+		const ExecutionHost* host = uam::execution_hosts::Find(normalized.execution_hosts, entry.first);
+		if (host == nullptr || host->transport != "ssh") continue;
+		nlohmann::json scoped = {{"defaults", EncodeProviderChatDefaults(entry.second.provider_chat_defaults)}};
+		if (entry.second.default_new_chat_provider_id) scoped["defaultProviderId"] = *entry.second.default_new_chat_provider_id;
+		if (entry.second.mcp_servers) scoped["servers"] = uam::mcp_server_config::Serialize(*entry.second.mcp_servers);
+		host_settings[entry.first] = std::move(scoped);
+	}
+	WriteEncodedSetting(lines, "host_scoped_settings", host_settings.dump());
 	WriteEncodedSetting(lines, kMarkdownStoreDirectoryKey, normalized.markdown_store_directory);
 	WriteEncodedSetting(lines, kFileExplorerApplicationKey, normalized.file_explorer_application);
 	WriteEncodedSetting(lines, kDefaultEditorPresetIdKey, normalized.default_editor_preset_id);
@@ -937,6 +950,26 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 			std::string error;
 			(void)uam::central_configuration::Parse(nlohmann::json::parse(decoded_value, nullptr, false), settings.central_provider_configuration, error);
 		}
+		else if (key == "host_scoped_settings")
+		{
+			const nlohmann::json scoped = nlohmann::json::parse(decoded_value, nullptr, false);
+			if (scoped.is_object() && scoped.size() <= 256)
+			{
+				for (nlohmann::json::const_iterator entry = scoped.begin(); entry != scoped.end(); ++entry)
+				{
+					if (!entry.value().is_object()) continue;
+					HostScopedSettings next;
+					if (entry.value().contains("defaults") && entry.value()["defaults"].is_string()) DecodeProviderChatDefaults(entry.value()["defaults"].get<std::string>(), next.provider_chat_defaults);
+					if (entry.value().contains("defaultProviderId") && entry.value()["defaultProviderId"].is_string()) next.default_new_chat_provider_id = NormalizeProviderId(entry.value()["defaultProviderId"].get<std::string>());
+					if (entry.value().contains("servers") && entry.value()["servers"].is_array())
+					{
+						std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(entry.value()["servers"]);
+						if (uam::mcp_server_config::NormalizeAndValidate(servers)) next.mcp_servers = std::move(servers);
+					}
+					settings.host_scoped_settings[entry.key()] = std::move(next);
+				}
+			}
+		}
 		else if (key == kMcpServersKey)
 		{
 			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
@@ -1015,7 +1048,7 @@ nlohmann::json SettingsStore::SerializeExecutionRoutingSettings(const ExecutionR
 		hosts.push_back({{"hostId", host.host_id}, {"enabled", host.enabled}, {"maxActiveTurns", host.max_active_turns},
 		    {"providers", providers}, {"workspaceMappings", mappings}});
 	}
-	return {{"enabled", settings.enabled}, {"hosts", hosts}};
+	return {{"enabled", settings.enabled}, {"hosts", hosts}, {"repositoryMatching", true}};
 }
 
 bool SettingsStore::ParseExecutionRoutingSettings(const nlohmann::json& value, ExecutionRoutingSettings& settings, std::string& error)
@@ -1060,11 +1093,11 @@ bool SettingsStore::ParseExecutionRoutingSettings(const nlohmann::json& value, E
 			{
 				ExecutionRoutingWorkspaceMapping mapping{entry_mapping.at("sourceFolderId").get<std::string>(),
 				    entry_mapping.at("sourceDirectory").get<std::string>(), entry_mapping.at("destinationFolderId").get<std::string>()};
-				if (mapping.source_folder_id.empty() || mapping.source_folder_id.size() > 256 || mapping.destination_folder_id.empty() ||
+				if (mapping.source_folder_id.empty() || mapping.source_folder_id.size() > 256 || (!entry_mapping.value("useAutomaticMatch", false) && mapping.destination_folder_id.empty()) ||
 				    mapping.destination_folder_id.size() > 256 || mapping.source_directory.empty() || mapping.source_directory.size() > 4096 ||
 				    !workspace_ids.insert(mapping.source_folder_id + "\n" + mapping.source_directory).second)
 					throw std::runtime_error("Routing workspace mappings must be exact and unique.");
-				host.workspace_mappings.push_back(std::move(mapping));
+				if (!entry_mapping.value("useAutomaticMatch", false)) host.workspace_mappings.push_back(std::move(mapping));
 			}
 			parsed.hosts.push_back(std::move(host));
 		}

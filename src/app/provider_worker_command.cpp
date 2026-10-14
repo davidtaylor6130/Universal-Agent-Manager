@@ -141,15 +141,33 @@ namespace
 		}
 	}
 
+	ProviderWorkerReadStatus DrainStructuredWorkerDiagnostic(IPlatformProcessService& process_service, uam::platform::StdioProcessPlatformFields& process, ProcessExecutionResult& result)
+	{
+		std::array<char, 4096> buffer{};
+		std::string read_error;
+		const std::ptrdiff_t bytes = process_service.ReadStdioProcessStderr(process, buffer.data(), buffer.size(), &read_error);
+		if (bytes > 0) return ProviderWorkerReadStatus::Data;
+		if (bytes == 0) return ProviderWorkerReadStatus::Closed;
+		if (bytes == -2) return ProviderWorkerReadStatus::NoData;
+		result.error = "Failed to read provider worker diagnostics.";
+		return ProviderWorkerReadStatus::Error;
+	}
+
 	ProcessExecutionResult ExecuteProviderWorkerDirect(const uam::ProviderWorkerInvocation& invocation, const std::filesystem::path& working_directory, int timeout_ms, std::stop_token stop_token)
 	{
 		ProcessExecutionResult result;
 		auto& process_service = PlatformServicesFactory::Instance().process_service;
 		uam::platform::StdioProcessPlatformFields process;
-		if (!process_service.StartStdioProcessWithInput(process, working_directory, invocation.argv, invocation.standard_input, &result.error, invocation.environment_overrides))
+		if (invocation.structured_stdout && !invocation.standard_input.empty())
 		{
+			result.error = "Structured provider workers require empty input.";
 			return result;
 		}
+		const bool started = invocation.structured_stdout
+		    ? process_service.StartStdioProcess(process, working_directory, invocation.argv, &result.error, invocation.environment_overrides)
+		    : process_service.StartStdioProcessWithInput(process, working_directory, invocation.argv, invocation.standard_input, &result.error, invocation.environment_overrides);
+		if (!started) return result;
+		if (invocation.structured_stdout) process_service.CloseStdioProcessInput(process);
 
 		const auto deadline = timeout_ms >= 0 ? std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms) : std::chrono::steady_clock::time_point::max();
 
@@ -157,7 +175,9 @@ namespace
 		for (;;)
 		{
 			const ProviderWorkerReadStatus read_status = ReadProviderWorkerOutput(process_service, process, result, false, invocation.output_sink);
-			if (read_status == ProviderWorkerReadStatus::Error)
+			const ProviderWorkerReadStatus diagnostic_status = invocation.structured_stdout
+			    ? DrainStructuredWorkerDiagnostic(process_service, process, result) : ProviderWorkerReadStatus::Closed;
+			if (read_status == ProviderWorkerReadStatus::Error || diagnostic_status == ProviderWorkerReadStatus::Error)
 			{
 				process_service.TerminateStdioProcess(process, true);
 				DrainProviderWorkerTail(process_service, process, result, true);
@@ -188,18 +208,21 @@ namespace
 				return result;
 			}
 
-			if (read_status != ProviderWorkerReadStatus::Data)
+			if (read_status != ProviderWorkerReadStatus::Data && diagnostic_status != ProviderWorkerReadStatus::Data)
 			{
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 		}
 
-		if (invocation.output_sink)
+		if (invocation.output_sink || invocation.structured_stdout)
 		{
 			for (;;)
 			{
 				const ProviderWorkerReadStatus status = ReadProviderWorkerOutput(process_service, process, result, false, invocation.output_sink);
-				if (status == ProviderWorkerReadStatus::Closed || status == ProviderWorkerReadStatus::Error) break;
+				const ProviderWorkerReadStatus diagnostic_status = invocation.structured_stdout
+				    ? DrainStructuredWorkerDiagnostic(process_service, process, result) : ProviderWorkerReadStatus::Closed;
+				if (status == ProviderWorkerReadStatus::Error || diagnostic_status == ProviderWorkerReadStatus::Error ||
+				    (status == ProviderWorkerReadStatus::Closed && diagnostic_status == ProviderWorkerReadStatus::Closed)) break;
 				if (stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline)
 				{
 					result.canceled = stop_token.stop_requested();
@@ -207,7 +230,7 @@ namespace
 					result.error = result.canceled ? "Command canceled." : "Command output did not close before its deadline.";
 					break;
 				}
-				if (status == ProviderWorkerReadStatus::NoData) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				if (status != ProviderWorkerReadStatus::Data && diagnostic_status != ProviderWorkerReadStatus::Data) std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
 		}
 		else DrainProviderWorkerTail(process_service, process, result, false);

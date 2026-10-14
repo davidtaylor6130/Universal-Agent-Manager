@@ -247,6 +247,8 @@ export interface AcpModel {
   defaultReasoningEffort?: string
   supportedReasoningEfforts?: string[]
   additionalSpeedTiers?: string[]
+  contextWindowTokens?: number | null
+  maxOutputTokens?: number | null
 }
 
 export interface AcpConfigOptionChoice {
@@ -526,6 +528,12 @@ export interface MemoryWorkerBinding {
   workerModelId: string
 }
 
+export interface HostScopedSettingsValues {
+  defaultNewChatProviderId: string
+  providerChatDefaults: Record<string, ProviderChatDefaults>
+  mcpServers: McpServerConfiguration[]
+}
+
 export interface ProviderChatDefaults {
   hiddenModelIds?: string[]
   hiddenProviderIds?: string[]
@@ -691,6 +699,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   branchSwitching?: boolean
   /** Backend accepts scopeExecutionHostId on settings saves. Hidden/disabled when absent or false. */
   hostScopedSettings?: boolean
+  hostScopedSettingsValues?: Record<string, HostScopedSettingsValues>
 }
 
 export interface ComputerUseAllowedApplication {

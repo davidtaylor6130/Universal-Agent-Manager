@@ -91,6 +91,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::int64_t m_searchQueryId = -1;
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_nativeHistoryRequests;
 	bool m_workspaceDeletionPending = false;
+	std::weak_ptr<uam::WorkspaceDeletionTask> m_workspaceDeletionTask;
 	std::string m_trustedUiIndexUrl;
 	using ActionHandler = void (UamQueryHandler::*)(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback>);
 	bool DispatchAction(std::string_view action, CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -174,6 +175,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetEditorSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleListRepositoryMatches(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetExecutionRoutingSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleExportLocalChats(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
@@ -237,6 +239,9 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleOpenWorkspaceEditor(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleListChatBranches(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleDiscardChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

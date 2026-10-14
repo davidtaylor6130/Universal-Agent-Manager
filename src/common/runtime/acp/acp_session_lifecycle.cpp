@@ -1,3 +1,5 @@
+#include "app/repository_route_match_service.h"
+#include "common/config/host_scoped_settings.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/config/provider_availability.h"
 #include "common/config/settings_frontend_json.h"
@@ -392,8 +394,8 @@ namespace
 		}
 		std::string error;
 		nlohmann::json servers = uam::mcp_server_config::ResolveForWorkspace(
-		    app.settings.mcp_servers, cwd, session.mcp_http_supported,
-		    session.mcp_sse_supported, &error);
+		    uam::host_scoped_settings::McpServers(app.settings, session.process_execution_host_id), cwd, session.mcp_http_supported,
+		    session.mcp_sse_supported, &error, session.process_execution_host_id.empty() ? "local" : session.process_execution_host_id);
 		if (servers.is_null())
 		{
 			session.last_error = std::move(error);
@@ -403,8 +405,8 @@ namespace
 		    uam::mcp_server_config::WorkspaceKey(chat->workspace_source_directory) != uam::mcp_server_config::WorkspaceKey(cwd))
 		{
 			nlohmann::json source_servers = uam::mcp_server_config::ResolveForWorkspace(
-			    app.settings.mcp_servers, chat->workspace_source_directory,
-			    session.mcp_http_supported, session.mcp_sse_supported, &error);
+			    uam::host_scoped_settings::McpServers(app.settings, session.process_execution_host_id), chat->workspace_source_directory,
+			    session.mcp_http_supported, session.mcp_sse_supported, &error, session.process_execution_host_id.empty() ? "local" : session.process_execution_host_id);
 			if (source_servers.is_null())
 			{
 				session.last_error = std::move(error);
@@ -850,6 +852,26 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (routing.status == ExecutionRoutingStatus::Waiting || routing.status == ExecutionRoutingStatus::Invalid)
 		{
 			session.lifecycle_state = "waiting_routing";
+			return false;
+		}
+	}
+
+	if (!session.model_discovery_only && !session.running && !session.recovering_remote_turn && !session.recovering_remote_process)
+	{
+		std::string repository_error;
+		const RepositoryRouteLaunchState repository = PrepareRepositoryRouteLaunch(app, chat, repository_error);
+		if (repository != RepositoryRouteLaunchState::Ready)
+		{
+			if (repository == RepositoryRouteLaunchState::Pending)
+			{
+				session.lifecycle_state = "waiting_routing";
+				session.reconnect_pending = true;
+				session.reconnect_not_before_time_s = GetAppTimeSeconds() + 0.1;
+				return true;
+			}
+			session.last_error = repository_error;
+			session.lifecycle_state = kAcpLifecycleError;
+			if (error_out) *error_out = repository_error;
 			return false;
 		}
 	}

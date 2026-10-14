@@ -352,6 +352,7 @@ struct ChatSession
 	std::string routing_assigned_connection_identity;
 	std::string routing_assigned_provider_configuration_identity;
 	bool routing_reservation_pending = false;
+	std::vector<std::string> routing_inherited_default_fields;
 	std::string provider_id;
 	std::string native_session_id;
 	ClaudeQuotaContinuation claude_quota_continuation;
@@ -644,6 +645,8 @@ struct ExecutionHost
 	bool cli_updates_as_admin = false;
 	/// Absent uses the legacy remote file; an empty value explicitly disables host instructions.
 	std::optional<std::string> instruction_text;
+	std::optional<std::string> runner_startup_applied;
+	std::string runner_startup_error;
 	bool operator==(const ExecutionHost&) const = default;
 };
 
@@ -686,6 +689,13 @@ struct ProviderAvailabilityOverride
 };
 
 enum class GitPortMethod { Patch, Merge, Squash };
+
+struct HostScopedSettings
+{
+	std::optional<std::string> default_new_chat_provider_id;
+	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
+	std::optional<std::vector<McpServerConfiguration>> mcp_servers;
+};
 
 struct AppSettings
 {
@@ -740,6 +750,7 @@ struct AppSettings
 	std::string permission_reviewer_model_id;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
+	std::map<std::string, HostScopedSettings> host_scoped_settings;
 	std::vector<ProviderAvailabilityOverride> provider_availability;
 	std::string markdown_store_directory;
 	std::string default_editor_preset_id = "vscode";

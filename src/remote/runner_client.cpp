@@ -199,6 +199,7 @@ namespace uam::remote
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
 		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
 		m_runnerStartup = response["capabilities"].value("runnerStartup", false);
+		m_runnerStartupObservation = response["capabilities"].value("runnerStartupObservation", false);
 		m_leasedChannelTake = response["capabilities"].value("leasedChannelTake", false);
 		m_providerNativeContext = response["capabilities"].value("providerNativeContext", false);
 		m_centralProviderConfiguration = response["capabilities"].value("centralProviderConfiguration", false);
@@ -751,14 +752,52 @@ namespace uam::remote
 	bool RunnerClient::ConfigureStartup(bool enabled, std::string* error_out, std::stop_token stop_token)
 	{
 		if (!m_connected && !Connect(error_out, stop_token)) return false;
-		if (!m_runnerStartup)
+		if (!m_runnerStartup || !m_runnerStartupObservation)
 		{
-			if (error_out != nullptr) *error_out = "Update this host's UAM runner to configure login startup.";
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to confirm login startup.";
 			return false;
 		}
 		nlohmann::json response;
-		return Request({{"type", "startup.configure"}, {"enabled", enabled}}, response, error_out,
-		    [stop_token]() { return stop_token.stop_requested(); }) && response.value("result", nlohmann::json::object()).value("enabled", !enabled) == enabled;
+		if (!Request({{"type", "startup.configure"}, {"enabled", enabled}}, response, error_out,
+		    [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json result = response.value("result", nlohmann::json::object());
+		if (!result.is_object() || !result.contains("status") || !result["status"].is_string() ||
+		    !result.contains("enabled") || !result["enabled"].is_boolean() ||
+		    result["enabled"].get<bool>() != enabled || result["status"].get<std::string>() != (enabled ? "enabled" : "disabled"))
+		{
+			if (error_out != nullptr) *error_out = "The runner startup registration could not be confirmed. Update the host runner and try again.";
+			return false;
+		}
+		return true;
+	}
+
+	bool RunnerClient::ObserveStartup(std::string& status, std::string* error_out, std::stop_token stop_token)
+	{
+		status.clear();
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_runnerStartupObservation)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's runner to observe login startup.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "startup.observe"}}, response, error_out,
+		    [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json result = response.value("result", nlohmann::json::object());
+		if (!result.is_object() || !result.contains("status") || !result["status"].is_string() ||
+		    !result.contains("enabled") || !result["enabled"].is_boolean())
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid startup observation.";
+			return false;
+		}
+		const std::string observed = result["status"].get<std::string>();
+		if ((observed != "enabled" && observed != "disabled") || result["enabled"].get<bool>() != (observed == "enabled"))
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid startup observation.";
+			return false;
+		}
+		status = observed;
+		return true;
 	}
 
 	bool RunnerClient::PrepareTextWorker(std::string_view id, std::string_view provider, std::filesystem::path& directory, std::string* error_out, std::stop_token stop_token)
@@ -1258,6 +1297,7 @@ namespace uam::remote
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
 		m_runnerStartup = false;
+		m_runnerStartupObservation = false;
 		m_leasedChannelTake = false;
 		m_providerNativeContext = false;
 		m_centralProviderConfiguration = false;

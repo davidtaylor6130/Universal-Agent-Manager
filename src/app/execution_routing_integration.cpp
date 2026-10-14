@@ -1,5 +1,8 @@
 #include "execution_routing_integration.h"
+#include "app/repository_route_match_service.h"
 #include "common/config/provider_availability.h"
+#include "common/config/host_scoped_settings.h"
+#include "common/config/settings_frontend_json.h"
 
 #include "app/chat_domain_service.h"
 #include "app/provider_resolution_service.h"
@@ -81,13 +84,14 @@ namespace uam
 		    host.runner_directory, host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)}));
 	}
 
-	std::string ExecutionRoutingProviderIdentity(const AppState& app, const ProviderProfile& provider)
+	std::string ExecutionRoutingProviderIdentity(const AppState& app, const ProviderProfile& provider, std::string_view host_id)
 	{
 		return ConfigurationIdentity(nlohmann::json::array({provider.id, provider.execution_mode, provider.output_mode,
 		    provider.interactive_command, provider.structured_protocol, provider.runtime_flags, provider.resume_argument,
 		    provider.supports_cli, provider.supports_structured, provider.supports_interactive, provider.supports_resume, provider.history_adapter,
 		    provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.provider_extra_flags,
-		    central_configuration::Serialize(app.settings.central_provider_configuration), mcp_server_config::Serialize(app.settings.mcp_servers)}));
+		    central_configuration::Serialize(app.settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(app.settings, host_id)),
+		    settings_frontend_json::SerializeProviderChatDefaults({{provider.id, provider_chat_defaults::ForProvider(app.settings, provider.id, host_id)}})}));
 	}
 
 	bool ExecutionRoutingOwnsWork(const AppState& app, const ChatSession& chat)
@@ -122,13 +126,14 @@ namespace uam
 			return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, {}};
 		const ProviderProfile* provider = ProviderResolutionService().ProviderForChat(app, chat);
 		if (provider == nullptr) return {ExecutionRoutingStatus::Invalid, ExecutionRoutingReason::InconsistentSnapshot, {}};
+		const bool repository_matches_current = automatic ? RefreshRepositoryRoutes(app) : false;
 		std::vector<ExecutionRoutingCandidate> candidates;
 		for (const ExecutionHost& host : app.settings.execution_hosts)
 		{
 			ExecutionRoutingCandidate candidate;
 			candidate.host_id = host.id;
 			candidate.connection_identity = ExecutionRoutingConnectionIdentity(host);
-			candidate.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider);
+			candidate.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider, host.id);
 			candidate.runner_ready = host.id == "local" || host.runner_status == "ready";
 			candidate.runner_compatible = host.id == "local" || (!host.runner_version.empty() && host.runner_protocol_version == remote::kRunnerProtocolVersion);
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host.id));
@@ -157,6 +162,17 @@ namespace uam
 					candidate.mappings.push_back({source, destination->id, destination->directory});
 				}
 			}
+			if (repository_matches_current)
+				for (const RepositoryRouteWorkspace& source : app.repository_route_workspaces)
+				{
+					if (source.host_id != "local") continue;
+					for (const RepositoryRouteMatch& match : MatchRepositoryRoutes(source, app.repository_route_workspaces, app.settings.execution_routing))
+					{
+						if (match.manual || match.host_id != host.id || !execution_hosts::IsAbsoluteRemotePath(host.platform, match.directory)) continue;
+						const std::string source_identity = WorkspaceIdentity(app, source.folder_id, source.directory);
+						if (!source_identity.empty()) candidate.mappings.push_back({source_identity, match.destination_folder_id, match.directory});
+					}
+				}
 			candidates.push_back(std::move(candidate));
 		}
 		if (std::ranges::none_of(candidates, [](const ExecutionRoutingCandidate& candidate) { return candidate.host_id == "local"; }))
@@ -166,7 +182,7 @@ namespace uam
 			local.runner_ready = local.runner_compatible = true;
 			local.provider_supported = provider_availability::IsEnabled(app.settings, provider->id, "local");
 			local.connection_identity = ExecutionRoutingConnectionIdentity(execution_hosts::LocalHost());
-			local.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider);
+			local.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider, "local");
 			candidates.push_back(std::move(local));
 		}
 		std::vector<ExecutionRoutingOccupancy> occupancy;
@@ -221,12 +237,23 @@ namespace uam
 		app.execution_routing_retry_at_by_chat_id.erase(chat.id);
 		if (decision.status == ExecutionRoutingStatus::Assigned) app.execution_routing_reserved_chat_ids.insert(chat.id);
 		if (!automatic || decision.status != ExecutionRoutingStatus::Assigned) return decision;
+		const std::string previous_model_id = chat.model_id;
+		const std::string previous_reviewer_model_id = chat.reviewer_model_id;
+		const std::string previous_reasoning_effort = chat.reasoning_effort;
+		const std::string previous_service_tier = chat.service_tier;
+		const bool previous_service_tier_explicit = chat.service_tier_explicit;
+		const std::vector<std::string> previous_inherited_fields = chat.routing_inherited_default_fields;
 		const ExecutionRoutingAssignment previous = AssignmentForChat(chat);
 		const std::string previous_directory = chat.workspace_directory;
 		const std::string previous_worktree = chat.workspace_worktree_directory;
 		const bool previous_pending = chat.routing_reservation_pending;
 		chat.execution_host_id = decision.assignment.host_id;
 		chat.folder_id = decision.assignment.destination_folder_id;
+		if (request.assigned.host_id.empty() && !chat.routing_inherited_default_fields.empty())
+		{
+			host_scoped_settings::ApplyInheritedRoutingDefaults(app.settings, chat);
+			chat.routing_inherited_default_fields.clear();
+		}
 		if (request.assigned.host_id.empty())
 		{
 			chat.workspace_directory = decision.assignment.destination_directory;
@@ -237,6 +264,12 @@ namespace uam
 		chat.routing_reservation_pending = true;
 		if (!ChatRepository::SaveChat(app.data_root, chat))
 		{
+			chat.model_id = previous_model_id;
+			chat.reviewer_model_id = previous_reviewer_model_id;
+			chat.reasoning_effort = previous_reasoning_effort;
+			chat.service_tier = previous_service_tier;
+			chat.service_tier_explicit = previous_service_tier_explicit;
+			chat.routing_inherited_default_fields = previous_inherited_fields;
 			chat.execution_host_id = previous.host_id;
 			chat.folder_id = previous.destination_folder_id;
 			chat.workspace_directory = previous_directory;
@@ -253,6 +286,7 @@ namespace uam
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::InconsistentSnapshot, {}};
 		}
+		if (request.assigned.host_id.empty()) RememberRepositoryRouteAssignment(app, chat);
 		return decision;
 	}
 

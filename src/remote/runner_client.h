@@ -115,6 +115,7 @@ namespace uam::remote
 		              const std::filesystem::path& target_path, bool overwrite,
 		              std::string* error_out = nullptr);
 		bool ConfigureStartup(bool enabled, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		bool ObserveStartup(std::string& status, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool PrepareTextWorker(std::string_view id, std::string_view provider, std::filesystem::path& directory, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool RemoveTextWorker(std::string_view id, std::string* error_out = nullptr);
 		bool ListMemoryEntries(const std::filesystem::path& workspace, std::vector<MemoryLibraryStore::Entry>& entries, std::string* error_out = nullptr);
@@ -162,6 +163,7 @@ namespace uam::remote
 		bool m_projectMemory = false;
 		bool m_isolatedTextWorkers = false;
 		bool m_runnerStartup = false;
+		bool m_runnerStartupObservation = false;
 		bool m_leasedChannelTake = false;
 		bool m_providerNativeContext = false;
 		bool m_centralProviderConfiguration = false;

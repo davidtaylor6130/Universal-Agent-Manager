@@ -82,7 +82,7 @@ inline bool AcpSessionHasDeferredUserQueueOnly(const AcpSessionState& session)
 
 inline bool AcpSessionHasBlockingRuntimeWork(const AcpSessionState& session)
 {
-	return AcpSessionHasActiveTurn(session) || AcpSessionHasPendingRuntimeRequest(session) ||
+	return session.pending_compaction != nullptr || AcpSessionHasActiveTurn(session) || AcpSessionHasPendingRuntimeRequest(session) ||
 	    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session) > 0;
 }
 

@@ -7,6 +7,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/acp/acp_model_json.h"
 #include "common/state/app_state.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/io_utils.h"
@@ -798,7 +799,15 @@ std::optional<ProviderModelCatalogService::ConfiguredOpenCodeSnapshot> ProviderM
 				if (model_id.empty()) continue;
 				const std::string name = model_entry.value().is_object() ? uam::nlohmann_json::TrimmedStringValue(model_entry.value(), {"name", "displayName", "display_name"}) : std::string{};
 				const std::string description = model_entry.value().is_object() ? uam::nlohmann_json::TrimmedStringValue(model_entry.value(), {"description"}) : std::string{};
+				const std::size_t previous_count = models_json.size();
 				PushModelIfNew(models_json, seen_model_ids, provider_id + "/" + model_id, uam::strings::NonEmptyOrFallback(name, model_id), description);
+				if (models_json.size() == previous_count) continue;
+				const nlohmann::json* limit = uam::nlohmann_json::FindObjectField(model_entry.value(), "limit");
+				if (limit == nullptr) continue;
+				const std::optional<std::int64_t> context = uam::acp_models::ModelTokenLimit(*limit, {"context"});
+				const std::optional<std::int64_t> output = uam::acp_models::ModelTokenLimit(*limit, {"output"});
+				if (context) models_json.back()["contextWindowTokens"] = *context;
+				if (output) models_json.back()["maxOutputTokens"] = *output;
 			}
 		}
 	}

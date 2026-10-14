@@ -148,7 +148,7 @@ namespace uam::remote
 			return ErrorResponse(request, "invalid_request", "A bounded request type is required.");
 
 		const std::string type = request["type"].get<std::string>();
-		if (type == "startup.configure" && state != nullptr) return state->HandleStartupRequest(request, runner_version);
+		if ((type == "startup.configure" || type == "startup.observe") && state != nullptr) return state->HandleStartupRequest(request, runner_version);
 		if (type != "hello")
 			return state != nullptr
 			    ? state->HandleProcessRequest(request)
@@ -173,7 +173,8 @@ namespace uam::remote
 			                          {"usageAccountingStream", state != nullptr},
 		                          {"projectMemory", state != nullptr},
 		                          {"isolatedTextWorkers", state != nullptr},
-			                          {"runnerStartup", state != nullptr},
+			                          {"runnerStartup", state != nullptr && (PlatformName() == "linux" || PlatformName() == "windows")},
+			                          {"runnerStartupObservation", state != nullptr && (PlatformName() == "linux" || PlatformName() == "windows")},
 			                          {"fileCopy", state != nullptr},
 			                          {"processInputAcknowledgement", state != nullptr},
 			                          {"processOutputAcknowledgement", state != nullptr},

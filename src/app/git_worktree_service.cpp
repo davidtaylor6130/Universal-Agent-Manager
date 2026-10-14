@@ -9,6 +9,8 @@
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/shell_escape.h"
@@ -716,6 +718,73 @@ namespace uam
 			return false;
 		}
 
+		/// Git's administrative backlink proves ownership even after checkout changes the path's original branch label.
+		bool VerifiedBranchSelectionWorkspace(const AppState& app, const ChatSession& chat, std::filesystem::path& worktree, std::string& error)
+		{
+			if (!app.settings.git_enabled || !paths::IsControllerLocalWorkspace(chat) || !paths::IsGitWorktreeIsolated(chat) ||
+			    chat.imported_read_only || !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() || !chat.temporary_parent_chat_id.empty())
+			{ error = "Choose an editable local Git worktree."; return false; }
+			error = "Could not verify the linked worktree ownership.";
+			const std::filesystem::path source = EffectiveSourceWorkspace(app, chat);
+			if (IsSvnWorkspace(source)) { error = "Branch switching is unavailable for SVN."; return false; }
+			const ChatFolder* folder = ChatDomainService().FindFolderById(app, chat.folder_id);
+			std::error_code ec;
+			const std::filesystem::path original = std::filesystem::canonical(source, ec);
+			if (ec || !folder || std::filesystem::canonical(paths::PathFromUtf8(folder->directory), ec) != original || ec)
+			{ error = "The Git source no longer matches the chat workspace."; return false; }
+			worktree = paths::AbsolutePathNoThrow(paths::PathFromUtf8(chat.workspace_worktree_directory)).lexically_normal();
+			const std::filesystem::path bucket = paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source, "")).lexically_normal();
+			if (worktree == bucket || !PathIsWithin(worktree, bucket))
+			{ error = "The worktree is outside its owned repository directory."; return false; }
+			for (std::filesystem::path current = worktree; ; current = current.parent_path())
+			{
+				if (paths::IsLinkOrReparsePointNoThrow(current) || !paths::IsDirectoryNoThrow(current))
+				{ error = "The worktree ownership path changed."; return false; }
+				if (current == paths::AbsolutePathNoThrow(app.data_root).lexically_normal()) break;
+				if (current == current.parent_path()) return false;
+			}
+			const std::filesystem::path marker = worktree / ".git";
+			if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(marker, ec)) || ec || paths::IsLinkOrReparsePointNoThrow(marker))
+			{ error = "The workspace is not an owned linked Git worktree."; return false; }
+			std::string common, expected_common, admin, top, actual_branch;
+			if (!GitOutput(worktree, "rev-parse --path-format=absolute --git-common-dir", &common, &error) ||
+			    !GitOutput(source, "rev-parse --path-format=absolute --git-common-dir", &expected_common, &error) ||
+			    !GitOutput(worktree, "rev-parse --absolute-git-dir", &admin, &error) ||
+			    !GitOutput(worktree, "rev-parse --show-toplevel", &top, &error) ||
+			    !GitOutput(worktree, "symbolic-ref --quiet --short HEAD", &actual_branch, &error)) return false;
+			const std::filesystem::path common_path = std::filesystem::canonical(paths::PathFromUtf8(common), ec);
+			if (ec) return false;
+			const std::filesystem::path expected_path = std::filesystem::canonical(paths::PathFromUtf8(expected_common), ec);
+			if (ec) return false;
+			const std::filesystem::path top_path = std::filesystem::canonical(paths::PathFromUtf8(top), ec);
+			if (ec) return false;
+			const std::filesystem::path physical_worktree = std::filesystem::canonical(worktree, ec);
+			if (ec || common_path != expected_path || top_path != physical_worktree || actual_branch != chat.workspace_branch_name)
+			{ error = "The worktree repository or recorded branch changed."; return false; }
+			const std::filesystem::path admin_path = std::filesystem::canonical(paths::PathFromUtf8(admin), ec);
+			if (ec || admin_path.parent_path() != common_path / "worktrees" || paths::IsLinkOrReparsePointNoThrow(paths::PathFromUtf8(admin))) return false;
+			const std::filesystem::path backlink = admin_path / "gitdir";
+			if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(backlink, ec)) || ec ||
+			    paths::IsLinkOrReparsePointNoThrow(backlink) || std::filesystem::file_size(backlink, ec) > 8192 || ec) return false;
+			const std::filesystem::path back_path = std::filesystem::canonical(paths::PathFromUtf8(strings::Trim(io::ReadTextFile(backlink))), ec);
+			if (ec) return false;
+			const std::filesystem::path marker_path = std::filesystem::canonical(marker, ec);
+			if (ec || back_path != marker_path) { error = "The Git administrative backlink changed."; return false; }
+			error.clear();
+			return true;
+		}
+
+		bool OriginalWorktreeBranchPath(const AppState& app, const std::filesystem::path& source,
+		    const std::filesystem::path& worktree, const std::string& branch, const std::string& chat_id)
+		{
+			std::filesystem::path physical;
+			std::string error;
+			const std::filesystem::path actual = paths::AbsolutePathNoThrow(worktree).lexically_normal();
+			if (actual == paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source, chat_id)).lexically_normal()) return false;
+			return actual == paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source, branch)).lexically_normal() ||
+			    (PhysicalWorktreeRootForChat(app, source, branch, physical, error) && actual == paths::AbsolutePathNoThrow(physical).lexically_normal());
+		}
+
 		bool ClearWorktreeIsolation(AppState& app, ChatSession& chat, const GitWorktreeStatus& status, std::string* error_out)
 		{
 			const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, status);
@@ -758,7 +827,7 @@ namespace uam
 			}
 
 			const std::string branch_name = BranchNameFromStatusOrChat(status, chat);
-			if (!branch_name.empty())
+			if (!branch_name.empty() && OriginalWorktreeBranchPath(app, source, worktree, branch_name, chat.id))
 			{
 				GitCommand(repository, "branch -D " + uam::shell::EscapeArg(branch_name));
 			}
@@ -868,6 +937,103 @@ namespace uam
 
 		PopulateIsolatedWorktreeStatus(status);
 		return status;
+	}
+
+	bool GitWorktreeService::ListChatBranches(const AppState& app, const ChatSession& chat, std::vector<GitChatBranch>& branches, bool& svn, std::string& error) const
+	{
+		branches.clear();
+		svn = paths::IsControllerLocalWorkspace(chat) && IsSvnWorkspace(EffectiveSourceWorkspace(app, chat));
+		if (svn) return true;
+		std::filesystem::path worktree;
+		if (!VerifiedBranchSelectionWorkspace(app, chat, worktree, error)) return false;
+		std::string refs;
+		if (!GitOutput(worktree, "for-each-ref " + shell::EscapeArg("--format=%(refname)") + " refs/heads", &refs, &error)) return false;
+		std::istringstream lines(refs);
+		std::string ref;
+		while (std::getline(lines, ref))
+		{
+			ref = strings::Trim(ref);
+			if (!ref.starts_with("refs/heads/")) { error = "Could not read local Git branches."; return false; }
+			const std::string name = ref.substr(11);
+			branches.push_back({name, name == chat.workspace_branch_name});
+		}
+		return true;
+	}
+
+		bool GitWorktreeService::ValidateChatBranchSelection(const AppState& app, const ChatSession& chat,
+		    const std::string& branch, bool create, std::string& error) const
+		{
+		if (branch.empty() || branch.size() > 255 || branch.front() == '-' || branch == "HEAD" ||
+		    std::ranges::any_of(branch, [](unsigned char c) { return c < 32 || c == 127; }))
+		{ error = "Choose a valid local Git branch name."; return false; }
+		std::filesystem::path worktree;
+		if (!VerifiedBranchSelectionWorkspace(app, chat, worktree, error) ||
+		    RefuseSharedWorktreeMutation(app, chat, worktree, &error)) return false;
+		std::string checked;
+		if (!GitOutput(worktree, "check-ref-format --branch " + shell::EscapeArg(branch), &checked, &error) || checked != branch)
+		{ error = "Choose a literal local Git branch name."; return false; }
+		bool dirty = false;
+		if (!IsDirty(worktree, &dirty, &error)) return false;
+		if (dirty) { error = "Commit or discard worktree changes before switching branches."; return false; }
+
+			const ProcessExecutionResult ref = RunCommand(BuildGitCommandInDirectory(worktree,
+			    "show-ref --verify --quiet " + shell::EscapeArg("refs/heads/" + branch)), 10000);
+			if ((!ref.ok && ref.exit_code != 1) || ref.timed_out || ref.canceled || ref.output_truncated || !ref.error.empty() || (ref.exit_code != 0 && ref.exit_code != 1))
+			{ error = "Could not verify the selected local branch."; return false; }
+			if ((create && ref.exit_code == 0) || (!create && ref.exit_code == 1))
+			{ error = create ? "That local branch already exists." : "The selected local branch no longer exists."; return false; }
+			std::string worktrees;
+			if (!GitOutput(worktree, "worktree list --porcelain", &worktrees, &error)) return false;
+			if (!create && branch != chat.workspace_branch_name &&
+			    ("\n" + worktrees + "\n").find("\nbranch refs/heads/" + branch + "\n") != std::string::npos)
+			{ error = "The selected branch is already checked out in another worktree."; return false; }
+			return true;
+		}
+
+	bool GitWorktreeService::SwitchChatBranch(AppState& app, ChatSession& chat, const std::string& branch, bool create, std::string& error) const
+	{
+		if (chat.acp_queue_held || !chat.acp_queued_prompts.empty())
+		{ error = "Finish or resolve queued input before switching branches."; return false; }
+		if (AcpStopInProgress(app, chat.id) || app.worktree_launch_preparations.contains(chat.id) || app.git_port_requests.contains(chat.id) ||
+		    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id))
+		{ error = "Wait for the chat runtime and history save to finish."; return false; }
+		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
+			if (session && session->chat_id == chat.id && (session->running || session->local_stop_pending || session->remote_stop_pending || session->queue_held || !session->queued_user_prompts.empty()))
+			{ error = "Stop the chat runtime before switching branches."; return false; }
+		for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
+			if (terminal && terminal->running && CliTerminalMatchesChatId(*terminal, chat.id))
+			{ error = "Stop the chat terminal before switching branches."; return false; }
+		if (!ValidateChatBranchSelection(app, chat, branch, create, error)) return false;
+		const std::filesystem::path worktree = paths::PathFromUtf8(chat.workspace_worktree_directory);
+		if (!create && branch == chat.workspace_branch_name) return true;
+		const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(app.data_root, chat.id);
+		const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+		if (!revision || !persisted || ChatRepository::ChatStorageRevision(app.data_root, chat.id) != revision ||
+		    persisted->workspace_worktree_directory != chat.workspace_worktree_directory || persisted->workspace_branch_name != chat.workspace_branch_name ||
+		    persisted->workspace_source_directory != chat.workspace_source_directory || persisted->workspace_base_ref != chat.workspace_base_ref ||
+		    persisted->provider_id != chat.provider_id || persisted->execution_host_id != chat.execution_host_id ||
+		    persisted->native_session_id != chat.native_session_id || persisted->updated_at != chat.updated_at)
+		{ error = "Chat metadata changed before branch switching."; return false; }
+		const std::string previous_branch = chat.workspace_branch_name;
+		if (!GitCommand(worktree, std::string("switch --no-guess --no-overwrite-ignore ") + (create ? "-c " : "") + shell::EscapeArg(branch), &error)) return false;
+		ChatSession switched = *persisted;
+		switched.workspace_branch_name = branch;
+		switched.updated_at = time::TimestampNow();
+		// Preserve the original integration base and history; checkout only changes the active branch.
+		const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, switched, *revision);
+		if (!prepared || ChatRepository::ChatStorageRevision(app.data_root, chat.id) != revision ||
+		    !ChatRepository::PublishPreparedChatSave(prepared, true, nullptr,
+		        [&app, &chat, &revision]() { return ChatRepository::ChatStorageRevision(app.data_root, chat.id) == revision; }))
+		{
+			error = "Failed to persist branch selection.";
+			std::string rollback_error;
+			if (!GitCommand(worktree, "switch --no-guess --no-overwrite-ignore " + shell::EscapeArg(previous_branch), &rollback_error))
+				error = "Chat metadata could not be saved and Git could not restore the previous branch. Inspect this worktree before retrying.";
+			return false;
+		}
+		chat.workspace_branch_name = switched.workspace_branch_name;
+		chat.updated_at = switched.updated_at;
+		return true;
 	}
 
 	bool ValidatePendingGitBaseOverrideScope(const AppState& app, const ChatSession& chat, std::string& error)
@@ -1385,21 +1551,17 @@ namespace uam
 		const std::filesystem::path source_root = uam::paths::PathFromUtf8(branch.workspace_source_directory);
 		const std::filesystem::path worktree = uam::paths::PathFromUtf8(branch.workspace_worktree_directory);
 		if (RefuseSharedWorktreeMutation(app, branch, worktree, error_out)) return false;
-		std::filesystem::path physical_worktree;
+		const bool original_branch_path = OriginalWorktreeBranchPath(app, source_root, worktree, branch.workspace_branch_name, branch.id);
+		std::filesystem::path verified;
 		std::string path_error;
-		const bool physical_path_available = PhysicalWorktreeRootForChat(app, source_root, branch.workspace_branch_name, physical_worktree, path_error);
-		if (!PathIsWithin(worktree, WorktreeRootForChat(app, source_root, "")) ||
-		    (uam::paths::AbsolutePathNoThrow(worktree).lexically_normal() !=
-		    uam::paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source_root, branch.id)).lexically_normal() &&
-		    uam::paths::AbsolutePathNoThrow(worktree).lexically_normal() !=
-		    uam::paths::AbsolutePathNoThrow(WorktreeRootForChat(app, source_root, branch.workspace_branch_name)).lexically_normal() &&
-		    (!physical_path_available || uam::paths::AbsolutePathNoThrow(worktree).lexically_normal() !=
-		    uam::paths::AbsolutePathNoThrow(physical_worktree).lexically_normal())) ||
-		    !uam::paths::IsDirectoryNoThrow(worktree) || uam::paths::IsLinkOrReparsePointNoThrow(worktree))
+		if ((!original_branch_path && !VerifiedBranchSelectionWorkspace(app, branch, verified, path_error)) ||
+		    !PathIsWithin(worktree, WorktreeRootForChat(app, source_root, "")) ||
+		    !paths::IsDirectoryNoThrow(worktree) || paths::IsLinkOrReparsePointNoThrow(worktree))
 		{
 			if (error_out != nullptr) *error_out = "Branch worktree path is unavailable or unexpected; it was left untouched.";
 			return false;
 		}
+
 		bool dirty = false;
 		std::string error;
 		std::string head;
@@ -1428,7 +1590,8 @@ namespace uam
 			if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(error, "Failed to remove unused branch worktree.");
 			return false;
 		}
-		(void)GitCommand(repository, "branch -D " + uam::shell::EscapeArg(branch.workspace_branch_name));
+		// A selected branch can predate this chat; only its original branch/path pair owns deletion.
+		if (original_branch_path) (void)GitCommand(repository, "branch -D " + uam::shell::EscapeArg(branch.workspace_branch_name));
 		std::error_code ec;
 		if (managed && !uam::paths::RemoveAllNoThrow(repository, &ec))
 		{

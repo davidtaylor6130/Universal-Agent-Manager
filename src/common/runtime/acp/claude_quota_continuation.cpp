@@ -67,7 +67,7 @@ namespace uam::acp_detail
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const ProviderProfile* provider = ProviderResolutionService().ProviderForChat(app, chat);
 		return nlohmann::json::array({chat.execution_host_id, host == nullptr ? "" : ExecutionRoutingConnectionIdentity(*host),
-		    provider == nullptr ? "" : ExecutionRoutingProviderIdentity(app, *provider),
+		    provider == nullptr ? "" : ExecutionRoutingProviderIdentity(app, *provider, chat.execution_host_id),
 		    paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)), chat.model_id, chat.approval_mode,
 		    chat.uam_agent_id, chat.last_prompt_agent_definition_hash, chat.goal_command_revision}).dump();
 	}

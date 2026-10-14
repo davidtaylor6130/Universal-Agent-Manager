@@ -22,6 +22,7 @@ import type {
   CliTranscript,
   CliVersionManager,
   CppAppState,
+  CppSettings,
   CppCliDebugState,
   CppDeletionProgress,
   EditorFileAssociation,
@@ -138,6 +139,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   branchSwitching?: boolean
   /** Backend accepts scopeExecutionHostId on settings saves. Scope selector is disabled when absent. */
   hostScopedSettings?: boolean
+  hostScopedSettingsValues: NonNullable<CppSettings['hostScopedSettingsValues']>
   /** Settings page scope: '*' for all environments, otherwise an SSH execution host id. Session only. */
   settingsScopeHostId: string
   uamAgentsBySessionId: Record<string, UamAgentSummary[]>

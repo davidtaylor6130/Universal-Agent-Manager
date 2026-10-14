@@ -173,6 +173,8 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		host.instruction_text = collision->instruction_text;
 		host.startup_enabled = collision->startup_enabled;
 		host.startup_status = collision->startup_status;
+		host.runner_startup_applied.reset();
+		host.runner_startup_error.clear();
 		host.cli_updates_as_admin = collision->cli_updates_as_admin;
 	}
 	uam::remote::BootstrapPlan plan;
@@ -336,10 +338,20 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 				        if (!restore_previous && startup_confirmed->has_value())
 				        {
 					        const auto current = FindMutableHost(m_app.settings.execution_hosts, host_id);
-					        if (current != m_app.settings.execution_hosts.end()) current->startup_status = **startup_confirmed ? "enabled" : "error";
+					        if (current != m_app.settings.execution_hosts.end())
+					        {
+						        current->startup_status = **startup_confirmed ? "enabled" : "error";
+						        current->runner_startup_applied = **startup_confirmed ? "enabled" : "failed";
+						        current->runner_startup_error = **startup_confirmed ? "" : "Runner startup could not be confirmed after installation.";
+					        }
 					        if (!PersistenceCoordinator().SaveSettings(m_app))
 					        {
-						        if (current != m_app.settings.execution_hosts.end()) current->startup_status = "pending";
+						        if (current != m_app.settings.execution_hosts.end())
+						        {
+							        current->startup_status = "pending";
+							        current->runner_startup_applied.reset();
+							        current->runner_startup_error.clear();
+						        }
 						        final_response = uam::query_handler_async::AsyncFailure(500, "Helper installed, but startup confirmation could not be saved. Save this host's options again.");
 					        }
 				        }
@@ -392,6 +404,8 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		    {
 			    found->runner_status = "ready";
 			    if (found->startup_enabled) found->startup_status = "pending";
+			    found->runner_startup_applied.reset();
+			    found->runner_startup_error.clear();
 			    std::string version = uam::constants::kAppVersion;
 			    if (!version.empty() && (version.front() == 'V' || version.front() == 'v'))
 				    version.erase(version.begin());
@@ -503,6 +517,11 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 	const ExecutionHost observed = *host;
 	const bool configure_startup = uam::execution_hosts::NeedsStartupConfiguration(updated, observed);
 	updated.startup_status = configure_startup ? "pending" : observed.startup_status;
+	if (configure_startup)
+	{
+		updated.runner_startup_applied = "pending";
+		updated.runner_startup_error.clear();
+	}
 	const AppSettings previous = m_app.settings;
 	*host = updated;
 	if (!PersistenceCoordinator().SaveSettings(m_app))
@@ -535,10 +554,12 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 		    const auto current = FindMutableHost(m_app.settings.execution_hosts, updated.id);
 		    if (current == m_app.settings.execution_hosts.end() || *current != updated)
 		        { response = uam::query_handler_async::AsyncFailure(409, "The SSH host changed while its options were being saved. Save its options again to confirm startup."); return; }
-		    uam::execution_hosts::ApplyStartupConfigurationResult(*current, observed, response.ok);
+		    uam::execution_hosts::ApplyStartupConfigurationResult(*current, observed, response.ok, response.error);
 		    if (!PersistenceCoordinator().SaveSettings(m_app))
 		    {
 			    current->startup_status = "pending";
+			    current->runner_startup_applied.reset();
+			    current->runner_startup_error.clear();
 			    response = uam::query_handler_async::AsyncFailure(500, "Startup changed on the host, but its confirmed status could not be saved. Save host options again to confirm it.");
 		    }
 		    RefreshUsageTargets();
@@ -548,7 +569,10 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 	{
 		g_remote_install_tokens.erase(id);
 		const auto current = FindMutableHost(m_app.settings.execution_hosts, id);
-		if (current != m_app.settings.execution_hosts.end()) current->startup_status = "error";
+		if (current != m_app.settings.execution_hosts.end())
+		{
+			uam::execution_hosts::ApplyStartupConfigurationResult(*current, observed, false, "Startup configuration could not be queued.");
+		}
 		(void)PersistenceCoordinator().SaveSettings(m_app);
 	}
 
@@ -635,6 +659,8 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		uam::remote::DirectoryListing listing;
 		std::string error;
 		bool connected = false;
+		std::string startup_status;
+		std::string startup_error;
 	};
 	auto result = std::make_shared<DirectoryResult>();
 	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime,
@@ -650,6 +676,7 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 			return uam::query_handler_async::AsyncFailure(
 			    502, result->error.empty() ? "The remote helper could not be reached." : result->error);
 		result->connected = true;
+		(void)client.ObserveStartup(result->startup_status, &result->startup_error);
 		if (!client.ListDirectories(uam::paths::PathFromUtf8(directory), result->listing, &result->error))
 			return uam::query_handler_async::AsyncFailure(
 			    502, result->error.empty() ? "The remote directory could not be listed." : result->error);
@@ -674,6 +701,15 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 			    response = uam::query_handler_async::AsyncFailure(
 			        409, "The remote helper changed while browsing. Try again.");
 			    return;
+		    }
+		    if (!result->startup_status.empty())
+		    {
+			    found->runner_startup_applied = result->startup_status;
+			    found->runner_startup_error.clear();
+		    }
+		    else if (!found->runner_startup_applied)
+		    {
+			    found->runner_startup_error = result->startup_error.substr(0, 300);
 		    }
 		    if (!PersistenceCoordinator().SaveSettings(m_app) && response.ok)
 			    response = uam::query_handler_async::AsyncFailure(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/execution_routing_integration.h"
+#include "app/repository_route_match_service.h"
 
 #include <filesystem>
 #include <string>
@@ -124,6 +125,16 @@ namespace uam
 		{
 			(void)AdmitExecutionRouting(app, chat, true);
 		}
+		std::string repository_error;
+		const RepositoryRouteLaunchState repository = PrepareRepositoryRouteLaunch(app, chat, repository_error);
+		if (repository == RepositoryRouteLaunchState::Pending)
+		{
+			terminal.last_error.clear();
+			terminal.should_launch = true;
+			return true;
+		}
+		if (repository == RepositoryRouteLaunchState::Failed)
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, repository_error);
 		const ExecutionHost* execution_host =
 		    uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const bool remote = execution_host != nullptr &&

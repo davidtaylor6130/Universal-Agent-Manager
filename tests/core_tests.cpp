@@ -14564,6 +14564,8 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 			{
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "read-only"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--ignore-user-config"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "features.shell_tool=false"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "web_search=\"disabled\""));
 			}
 			else if (profile.id == uam::provider_ids::kClaudeCli)
 			{
@@ -24860,6 +24862,7 @@ UAM_TEST(MacTerminalFastStopTerminatesProcessGroupChildren)
 std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv);
 std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv);
 std::optional<int> RunRemoteEmptyArgumentsFixture(int argc, char** argv);
+std::optional<int> RunRemoteOldStartupEchoFixture(int argc, char** argv);
 std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv);
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[]);
 
@@ -24870,6 +24873,7 @@ std::optional<int> RunMacTerminalSignalFixtureIfRequested(int argc, char* argv[]
 int main(int argc, char** argv)
 {
 	if (const std::optional<int> result = RunRemoteEmptyArgumentsFixture(argc, argv)) return *result;
+	if (const std::optional<int> result = RunRemoteOldStartupEchoFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteCodexSetupFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOpenCodeCreateFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunOpenCodeSessionCreateFixtureIfRequested(argc, argv)) return *result;

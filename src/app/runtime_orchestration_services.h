@@ -121,6 +121,9 @@ class ChatHistorySyncService
 		std::shared_future<std::shared_ptr<PreparedHistoryBatch>> preparation;
 		std::shared_future<bool> publication_sync;
 		std::optional<std::size_t> open_code_next_offset;
+		std::size_t open_code_session_count = 0;
+		std::size_t open_code_scanned_count = 0;
+		std::string open_code_list_fingerprint;
 		std::map<std::string, ExecutionHost> expected_hosts;
 		std::map<std::string, ChatFolder> selected_folder_snapshots;
 		bool Pending() const { return !chats.empty() || !codex_rollouts.empty() || preparation.valid() || publication_sync.valid(); }
@@ -128,7 +131,7 @@ class ChatHistorySyncService
 	};
 	LocalHistoryDiscovery DiscoverRemoteProviderChatsForFolder(const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token = {}) const;
 	/// Read provider transcripts without accessing live app state or writing local history.
-	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0) const;
+	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0, bool open_code_only = false, std::optional<std::size_t> open_code_remaining = {}, const std::string& open_code_list_fingerprint = {}) const;
 	/// <summary>Removes owned, declined, duplicate and unregistered startup candidates without writing history.</summary>
 	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat) const;
 	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr) const;
@@ -159,6 +162,7 @@ class ChatHistorySyncService
 	static RemoteCodexTranscript ParseRemoteCodexTranscript(const nlohmann::json& result);
 	ImportResult ImportCodexRolloutChatsForFolder(uam::AppState& app, const std::string& folder_id) const;
 	bool AddNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<ChatSession>& chats, std::vector<std::string>& added_keys, const std::unordered_set<std::string>& retained_keys = {}) const;
+	bool FilterDeletedNativeHistory(const std::filesystem::path& data_root, std::vector<ChatSession>& chats, std::string* error_out = nullptr) const;
 	bool RemoveNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<std::string>& keys) const;
 	/// <summary>Save a validated native transcript before replacing the live chat; keep active or unsaved work.</summary>
 	bool SaveNativeTranscript(uam::AppState& app, ChatSession& current, std::vector<Message> messages) const;

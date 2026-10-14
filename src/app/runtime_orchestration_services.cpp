@@ -1701,7 +1701,13 @@ std::vector<ChatSession> ChatHistorySyncService::LoadNativeSessionChats(const fs
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	if (ProviderRuntime::SupportsGeminiJsonHistory(provider))
 	{
-		return ChatDomainService().DeduplicateChatsById(LoadGeminiJsonHistoryForRuntime(chats_dir, provider, options, stop_token));
+		const fs::path source_path = chats_dir.parent_path() / ".project_root";
+		const std::optional<std::uintmax_t> source_size = uam::paths::FileSizeNoThrow(source_path);
+		const std::string workspace = source_size && *source_size <= 65536 ? uam::strings::Trim(uam::io::ReadTextFile(source_path)) : std::string{};
+		std::vector<ChatSession> chats = ChatDomainService().DeduplicateChatsById(LoadGeminiJsonHistoryForRuntime(chats_dir, provider, options, stop_token));
+		if (!workspace.empty())
+			for (ChatSession& chat : chats) chat.workspace_directory = workspace;
+		return chats;
 	}
 #endif
 
@@ -1780,6 +1786,27 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 	return false;
 }
 
+bool ChatHistorySyncService::FilterDeletedNativeHistory(const fs::path& data_root, std::vector<ChatSession>& chats, std::string* error_out) const
+{
+	const NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
+	if (!tombstones.available)
+	{
+		if (error_out != nullptr) *error_out = "Deletion records could not be read; native history refresh stopped.";
+		return false;
+	}
+	if (!tombstones.keys.empty() && std::ranges::any_of(chats, [](const ChatSession& chat)
+	    { return !uam::strings::IsBlank(chat.native_session_id) && chat_identity::NativeWorkspaceForHistoryImport(chat).empty(); }))
+	{
+		if (error_out != nullptr) *error_out = "Native history has no workspace scope; refresh stopped to preserve deleted chats.";
+		return false;
+	}
+	std::erase_if(chats, [&](const ChatSession& chat)
+	{
+		return tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+	});
+	return true;
+}
+
 bool ChatHistorySyncService::RemoveNativeImportTombstones(
     const fs::path& data_root,
     const std::vector<std::string>& keys_to_remove) const
@@ -1819,6 +1846,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 		}
 
 		std::vector<ChatSession> native_chats = LoadNativeSessionChats(*chats_dir, native_provider);
+		for (ChatSession& native_chat : native_chats) native_chat.workspace_directory = uam::paths::Utf8PathString(workspace_root);
 		ApplyLocalOverrides(app, native_chats);
 
 		for (ChatSession& native_chat : native_chats)
@@ -1938,7 +1966,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 	return result;
 }
 
-ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile, std::stop_token stop_token, std::size_t open_code_scan_offset) const
+ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile, std::stop_token stop_token, std::size_t open_code_scan_offset, bool open_code_only, std::optional<std::size_t> open_code_remaining, const std::string& open_code_list_fingerprint) const
 {
 	LocalHistoryDiscovery discovery;
 	if (!uam::paths::IsControllerLocalWorkspace(folder) || (!folder.id.empty() && uam::strings::IsBlank(folder.directory)))
@@ -1947,6 +1975,8 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		return discovery;
 	}
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
+	if (!open_code_only)
+	{
 	for (const fs::path& root : {uam::codex::CodexHomePath() / "sessions", uam::codex::CodexHomePath() / "archived_sessions"})
 	{
 		std::error_code error;
@@ -1966,8 +1996,11 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		}
 		if (error) discovery.result.Fail("Could not finish scanning Codex history: " + error.message());
 	}
+	}
 #endif
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	if (!open_code_only)
+	{
 	ProviderRuntimeHistoryLoadOptions options;
 	options.native_max_file_bytes = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxFileBytes();
 	options.native_max_messages = PlatformServicesFactory::Instance().process_service.NativeGeminiSessionMaxMessages();
@@ -1981,8 +2014,11 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		chat.folder_id = folder.id;
 		discovery.chats.push_back(std::move(chat));
 	}
+	}
 #endif
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	if (!open_code_only)
+	{
 	const ProviderProfile gemini_profile = ProviderProfileStore::DefaultGeminiProfile();
 	const auto gemini_sources = ProviderRuntime::DiscoverChatSources(gemini_profile);
 	if (!gemini_sources.error.empty()) discovery.result.Fail(gemini_sources.error);
@@ -1997,23 +2033,49 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			discovery.chats.push_back(std::move(chat));
 		}
 	}
+	}
 #endif
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (open_code_profile != nullptr)
 	{
 		uam::ProviderWorkerInvocation invocation;
 		invocation.direct_process = true;
+		invocation.structured_stdout = true;
 		invocation.argv = ProviderRuntimeRegistry::Resolve(*open_code_profile).BuildNativeDiscoveryArgv(*open_code_profile);
 		const auto count_option = std::ranges::find(invocation.argv, "--max-count");
 		if (count_option != invocation.argv.end() && std::next(count_option) != invocation.argv.end()) invocation.argv.erase(count_option, std::next(count_option, 2));
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
 		const auto listed = uam::ExecuteProviderWorkerInvocation(invocation, (folder.directory.empty() ? uam::paths::CurrentPathOrDot() : uam::paths::PathFromUtf8(folder.directory)), 30000, stop_token);
-		const nlohmann::json sessions = nlohmann::json::parse(listed.output, nullptr, false);
+		nlohmann::json sessions = nlohmann::json::parse(listed.output, nullptr, false);
 		if (!listed.ok || listed.exit_code != 0 || listed.output_truncated || !sessions.is_array())
 		{
 			discovery.result.Fail("OpenCode history discovery failed: " + uam::strings::NonEmptyOrFallback(listed.error, "invalid session list."));
 		}
-		else for (std::size_t scanned = 0; scanned < sessions.size(); ++scanned)
+		else
+		{
+			std::unordered_set<std::string> identities;
+			bool valid = true;
+			for (const nlohmann::json& session : sessions)
+			{
+				if (!session.is_object() || !session.contains("id") || !session["id"].is_string() ||
+				    !session.contains("directory") || !session["directory"].is_string()) { valid = false; break; }
+				const std::string id = session["id"].get<std::string>();
+				if (!uam::execution_hosts::IsPortableId(id) || id.starts_with('-') || !identities.insert(id).second) { valid = false; break; }
+			}
+			if (!valid) discovery.result.Fail("OpenCode returned malformed or duplicate session metadata.");
+			else
+			{
+				std::sort(sessions.begin(), sessions.end(), [](const nlohmann::json& left, const nlohmann::json& right)
+				{
+					return left["id"].get_ref<const std::string&>() < right["id"].get_ref<const std::string&>();
+				});
+				nlohmann::json ids = nlohmann::json::array();
+				for (const nlohmann::json& session : sessions) ids.push_back(session["id"]);
+				discovery.open_code_session_count = sessions.size();
+				discovery.open_code_list_fingerprint = ids.dump();
+				if (!open_code_list_fingerprint.empty() && open_code_list_fingerprint != discovery.open_code_list_fingerprint)
+					discovery.result.Fail("OpenCode session list changed during discovery; retry the scan.");
+				else for (std::size_t scanned = 0; scanned < std::min(sessions.size(), open_code_remaining.value_or(sessions.size())); ++scanned)
 		{
 			const std::size_t position = (open_code_scan_offset % sessions.size() + scanned) % sessions.size();
 			const nlohmann::json& session = sessions[position];
@@ -2023,6 +2085,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 				break;
 			}
 			discovery.open_code_next_offset = (position + 1) % sessions.size();
+			++discovery.open_code_scanned_count;
 			if (!session.is_object() || !session.contains("id") || !session["id"].is_string() ||
 			    !session.contains("directory") || !session["directory"].is_string())
 			{
@@ -2064,11 +2127,15 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			chat.updated_at = session.contains("updated") && session["updated"].is_number_integer() ? IsoTimestampFromEpochMilliseconds(session["updated"].get<std::int64_t>()) : chat.created_at;
 			discovery.chats.push_back(std::move(chat));
 		}
+			}
+		}
 	}
 #else
 	(void)open_code_profile;
 #endif
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	if (!open_code_only)
+	{
 	const std::optional<fs::path> configured_claude = uam::env::GetTrimmedPath("CLAUDE_CONFIG_DIR");
 	const fs::path claude_root = configured_claude ? *configured_claude : uam::env::GetUserHomePath().value_or(fs::path{}) / ".claude";
 	const auto encode_project = [](const std::string& directory)
@@ -2296,6 +2363,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			}
 		}
 		if (claude_error) discovery.result.Fail("Could not finish scanning Claude history: " + claude_error.message());
+	}
 	}
 #endif
 	if (stop_token.stop_requested()) discovery.result.Fail("History discovery was canceled.");
@@ -3756,6 +3824,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 	for (const ProviderChatSource& source : discovery.sources)
 	{
 		std::vector<ChatSession> native_chats = LoadNativeSessionChats(source.chats_dir, native_provider);
+		for (ChatSession& native_chat : native_chats) native_chat.workspace_directory = source.folder_directory;
 		ApplyLocalOverrides(app, native_chats);
 		std::optional<std::string> import_folder_id;
 
@@ -4776,6 +4845,13 @@ std::vector<ChatSession> ChatHistorySyncService::OverlayLocalHistory(const uam::
 
 void ChatHistorySyncService::ApplyLocalOverrides(uam::AppState& app, std::vector<ChatSession>& native_chats, bool persist_local_draft_links) const
 {
+	std::string deletion_error;
+	if (!FilterDeletedNativeHistory(app.data_root, native_chats, &deletion_error))
+	{
+		native_chats.clear();
+		app.status_line = deletion_error;
+		return;
+	}
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const std::vector<ChatSession> local_chats = OverlayLocalHistory(app, native_chats, persist_local_draft_links);
 	std::unordered_set<std::string> native_ids;

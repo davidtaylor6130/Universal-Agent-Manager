@@ -2,6 +2,7 @@
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
 #include "common/config/settings_store.h"
+#include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include <stdexcept>
 #include "common/config/central_provider_configuration.h"
@@ -247,6 +248,9 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 
 void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	std::string scope;
+	std::string scope_error;
+	if (!uam::host_scoped_settings::ParseScope(m_app.settings, payload, scope, scope_error)) { cb->Failure(400, scope_error); return; }
 	const nlohmann::json* requested_servers = uam::nlohmann_json::FindArrayField(payload, "servers");
 	if (requested_servers == nullptr)
 	{
@@ -261,15 +265,21 @@ void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	const std::vector<McpServerConfiguration> previous = m_app.settings.mcp_servers;
-	m_app.settings.mcp_servers = std::move(servers);
+	if (!scope.empty() && std::ranges::any_of(servers, [&](const McpServerConfiguration& server) { return !server.execution_host_id.empty() && server.execution_host_id != scope; }))
+	{
+		cb->Failure(400, "MCP servers must belong to the selected computer.");
+		return;
+	}
+	const AppSettings previous = m_app.settings;
+	if (scope.empty()) m_app.settings.mcp_servers = std::move(servers);
+	else m_app.settings.host_scoped_settings[scope].mcp_servers = std::move(servers);
 	if (!PersistenceCoordinator().SaveSettings(m_app))
 	{
-		m_app.settings.mcp_servers = previous;
+		m_app.settings = previous;
 		cb->Failure(500, "Failed to save MCP server settings.");
 		return;
 	}
-	cb->Success(nlohmann::json{{"servers", uam::mcp_server_config::Serialize(m_app.settings.mcp_servers)}}.dump());
+	cb->Success(nlohmann::json{{"servers", uam::mcp_server_config::Serialize(uam::host_scoped_settings::McpServers(m_app.settings, scope))}}.dump());
 	uam::PushStateUpdateIfChanged(browser, m_app);
 }
 
@@ -314,6 +324,15 @@ void UamQueryHandler::HandleSetUamAgentPreferences(CefRefPtr<CefBrowser> browser
 
 void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	std::string scope;
+	std::string scope_error;
+	if (!uam::host_scoped_settings::ParseScope(m_app.settings, payload, scope, scope_error)) { cb->Failure(400, scope_error); return; }
+	if ((payload.contains("defaultProviderId") && !payload["defaultProviderId"].is_string()) ||
+	    (payload.contains("defaults") && !payload["defaults"].is_object()))
+	{
+		cb->Failure(400, "Provider settings require a provider ID and defaults object.");
+		return;
+	}
 	const AppSettings previous = m_app.settings;
 	if (const nlohmann::json* entries = uam::nlohmann_json::FindObjectField(payload, "defaults"))
 	{
@@ -328,7 +347,7 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 			}
 		}
 	}
-	const std::string requested_default_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("defaultProviderId", m_app.settings.default_new_chat_provider_id));
+	const std::string requested_default_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("defaultProviderId", uam::host_scoped_settings::DefaultProvider(m_app.settings, scope)));
 	if (!requested_default_provider_id.empty())
 	{
 		const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, requested_default_provider_id);
@@ -337,7 +356,11 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 			cb->Failure(400, "Unsupported default provider: " + requested_default_provider_id);
 			return;
 		}
-		m_app.settings.default_new_chat_provider_id = provider->id;
+		if (payload.contains("defaultProviderId"))
+		{
+			if (scope.empty()) m_app.settings.default_new_chat_provider_id = provider->id;
+			else m_app.settings.host_scoped_settings[scope].default_new_chat_provider_id = provider->id;
+		}
 	}
 
 	if (const nlohmann::json* defaults_by_provider = uam::nlohmann_json::FindObjectField(payload, "defaults"); defaults_by_provider != nullptr)
@@ -350,9 +373,10 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 			{
 				continue;
 			}
-			const ProviderChatDefaults fallback = DefaultsForProvider(m_app.settings, provider->id);
+			const ProviderChatDefaults fallback = uam::provider_chat_defaults::ForProvider(m_app.settings, provider->id, scope);
 			ProviderChatDefaults defaults = ProviderDefaultsFromSettingsPayload(it.value(), fallback, provider->id);
-			m_app.settings.provider_chat_defaults[provider->id] = defaults;
+			if (scope.empty()) m_app.settings.provider_chat_defaults[provider->id] = defaults;
+			else m_app.settings.host_scoped_settings[scope].provider_chat_defaults[provider->id] = defaults;
 		}
 	}
 
@@ -782,13 +806,18 @@ void UamQueryHandler::HandleSetExecutionRoutingSettings(CefRefPtr<CefBrowser> br
 			{
 				const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, host_entry.at("hostId").get<std::string>());
 				if (host == nullptr || host->id == "local") throw std::runtime_error("Select an existing remote host.");
+				for (const nlohmann::json& mapping : host_entry.at("workspaceMappings"))
+				{
+					const ChatFolder* source = ChatDomainService().FindFolderById(m_app, mapping.at("sourceFolderId").get<std::string>());
+					if (!source || source->directory != mapping.at("sourceDirectory").get<std::string>()) throw std::runtime_error("Choose the current registered source workspace.");
+				}
 				for (nlohmann::json& provider_entry : host_entry.at("providers"))
 					if (provider_entry.value("confirm", false))
 					{
 						const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, provider_entry.at("providerId").get<std::string>());
 						if (provider == nullptr) throw std::runtime_error("Select an available provider.");
 						provider_entry["connectionIdentity"] = uam::ExecutionRoutingConnectionIdentity(*host);
-						provider_entry["providerConfigurationIdentity"] = uam::ExecutionRoutingProviderIdentity(m_app, *provider);
+						provider_entry["providerConfigurationIdentity"] = uam::ExecutionRoutingProviderIdentity(m_app, *provider, host->id);
 					}
 			}
 	}

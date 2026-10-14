@@ -1052,4 +1052,25 @@ describe('NewChatModal', () => {
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ newChatWorktreeContext: null }) }
   })
 
+  it('projects a configured SSH host provider and model defaults when opening', async () => {
+    const optionsSpy = vi.spyOn(modelOptions, 'buildModelOptions')
+    useAppStore.setState({
+      folders: [{ id: 'remote-fixture', name: 'Remote', parentId: null, directory: '/private-fixture', executionHostId: 'lab', isExpanded: true, createdAt: new Date() }],
+      newChatFolderId: 'remote-fixture',
+      executionHosts: [{ id: 'lab', label: 'Lab', transport: 'ssh', sshAlias: 'private-fixture', runnerStatus: 'ready', runnerVersion: 'test', platform: 'linux', architecture: 'x64', lastSeenAt: '' }],
+      hostScopedSettingsValues: { lab: { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: { 'codex-cli': { modelId: 'host-model', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, memoryLevel: 'strict', reasoningEffort: 'high', serviceTier: '', smallModelMode: false } }, mcpServers: [] } },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<NewChatModal />))
+      expect(optionsSpy.mock.calls.some(call => call[1] === 'host-model' && call[3] === 'codex-cli')).toBe(true)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      optionsSpy.mockRestore()
+    }
+  })
+
 })

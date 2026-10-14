@@ -45,6 +45,7 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	std::string OnAcpValidateResumeId(const ChatSession& chat) const override;
 	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
 	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const override;
+	bool SupportsAcpCompaction() const override { return true; }
 	bool SupportsAcpSteering() const override { return true; }
 	nlohmann::json OnAcpBuildSteer(uam::AcpSessionState& session, int request_id,
 	    const std::string& prompt, std::string& out_method) const override;

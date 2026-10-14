@@ -29,6 +29,8 @@ namespace uam
 		std::unordered_set<std::string> retained_workspace_keys;
 		std::vector<NativeDeletionOwner> retained_native_owners;
 		std::unordered_map<std::string, std::string> native_stores_by_directory;
+		/// <summary>Worker-only logical item completions; observers must marshal live state to the UI thread.</summary>
+		std::function<void(std::size_t, std::size_t, const std::string&)> progress;
 		bool commit_rejected = false;
 		bool deleting_chats = false;
 		bool metadata_saved = false;

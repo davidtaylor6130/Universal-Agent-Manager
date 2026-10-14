@@ -12,6 +12,12 @@ namespace uam
 	void CancelGitPortRequest(AppState& app, const std::string& chat_id);
 	void PollGitPortRequests(AppState& app);
 
+	struct GitChatBranch
+	{
+		std::string name;
+		bool current = false;
+	};
+
 	struct GitWorktreeStatus
 	{
 		bool is_git_repository = false;
@@ -108,6 +114,10 @@ namespace uam
 		bool RemoveRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& source_root,
 		    const GitWorktreeRetentionCandidate& candidate, const std::vector<std::filesystem::path>& protected_paths,
 		    const WorkspaceLeaseGate::Lease& lease, std::stop_token stop_token = {}, int retention_days = 14) const;
+		/// Selects only a settled, clean, unshared local linked worktree and preserves its cwd and history.
+		bool ListChatBranches(const AppState& app, const ChatSession& chat, std::vector<GitChatBranch>& branches, bool& svn, std::string& error) const;
+		bool ValidateChatBranchSelection(const AppState& app, const ChatSession& chat, const std::string& branch, bool create, std::string& error) const;
+		bool SwitchChatBranch(AppState& app, ChatSession& chat, const std::string& branch, bool create, std::string& error) const;
 		GitWorktreeStatus Status(const AppState& app, const ChatSession& chat) const;
 		/// Creates the saved default worktree before a new local chat launches a provider.
 		bool PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr) const;

@@ -337,6 +337,7 @@ class IProviderRuntime
 
 	/// <summary>Builds native manual compaction; null means the provider has no direct request.</summary>
 	virtual nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState&, int, std::string&) const { return nullptr; }
+	virtual bool SupportsAcpCompaction() const { return false; }
 
 	/// <summary>True when input can be appended to an active turn without interrupting it.</summary>
 	virtual bool SupportsAcpSteering() const { return false; }

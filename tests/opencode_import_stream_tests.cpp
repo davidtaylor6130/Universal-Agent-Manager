@@ -294,3 +294,44 @@ UAM_TEST(OpenCodeStreamStartupSelectionRetainsOwnedSpool)
 	}
 #endif
 }
+
+UAM_TEST(OpenCodeStructuredExportSeparatesDiagnosticOutput)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	OpenCodeExportFixture fixture;
+#if defined(_WIN32)
+	const fs::path executable = fixture.temp.root / "fixture.cmd";
+	const std::string script = "@echo off\r\ntype export.json\r\necho diagnostic after valid JSON 1>&2\r\nexit /b 0\r\n";
+#else
+	const fs::path executable = fixture.temp.root / "fixture";
+	const std::string script = "#!/bin/sh\n/bin/cat export.json\nprintf 'diagnostic after valid JSON\\n' >&2\n";
+#endif
+	UAM_ASSERT(uam::io::WriteTextFile(executable, script));
+	fs::permissions(executable, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+	const ChatHistorySyncService::RemoteOpenCodeTranscript loaded = ChatHistorySyncService().LoadLocalOpenCodeTranscript(fixture.chat, fixture.profile);
+	UAM_ASSERT(loaded.success);
+	UAM_ASSERT_EQ(loaded.messages.size(), std::size_t{12});
+	UAM_ASSERT_EQ(loaded.messages.back().content, fixture.text + "11");
+#endif
+}
+
+UAM_TEST(OpenCodeStructuredExportDrainsDiagnosticBackpressure)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	OpenCodeExportFixture fixture;
+	UAM_ASSERT(uam::io::WriteTextFile(fixture.workspace / "diagnostic.txt", std::string(5 * 1024 * 1024, 'd')));
+#if defined(_WIN32)
+	const fs::path executable = fixture.temp.root / "fixture.cmd";
+	const std::string script = "@echo off\r\ntype diagnostic.txt 1>&2\r\ntype export.json\r\nexit /b 0\r\n";
+#else
+	const fs::path executable = fixture.temp.root / "fixture";
+	const std::string script = "#!/bin/sh\n/bin/cat diagnostic.txt >&2\n/bin/cat export.json\n";
+#endif
+	UAM_ASSERT(uam::io::WriteTextFile(executable, script));
+	fs::permissions(executable, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+	const ChatHistorySyncService::RemoteOpenCodeTranscript loaded = ChatHistorySyncService().LoadLocalOpenCodeTranscript(fixture.chat, fixture.profile);
+	UAM_ASSERT(loaded.success);
+	UAM_ASSERT_EQ(loaded.messages.size(), std::size_t{12});
+	UAM_ASSERT_EQ(loaded.messages.back().content, fixture.text + "11");
+#endif
+}

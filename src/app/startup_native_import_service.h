@@ -45,6 +45,9 @@ namespace uam
 	{
 		std::optional<ProviderProfile> open_code_profile;
 		std::size_t open_code_offset = 0;
+		bool open_code_only = false;
+		std::optional<std::size_t> open_code_remaining;
+		std::string open_code_list_fingerprint;
 		std::vector<StartupNativeImportRemoteScope> remote_scopes;
 	};
 
@@ -80,6 +83,7 @@ namespace uam
 		void AddError(const std::string& error);
 		void FinishImport(AppState& app);
 		Scanner m_scanner;
+		StartupNativeImportScanRequest m_scan_request;
 		std::map<std::string, ExecutionHost> m_remote_hosts;
 		std::map<std::string, ChatFolder> m_remote_folders;
 		bool m_initialized = false;

@@ -2,6 +2,7 @@
 
 #include "app/provider_model_catalog_service.h"
 #include "app/execution_routing_service.h"
+#include "app/repository_route_match_service.h"
 #include "common/models/app_models.h"
 #include "common/paths/workspace_lease.h"
 #include "common/config/frontend_actions.h"
@@ -97,6 +98,7 @@ namespace uam
 
 	struct AcpSessionState;
 	struct PendingAcpPromptDelivery;
+	struct PendingAcpCompaction;
 	struct PendingLocalAcpLaunch;
 	struct PendingLocalSessionReceipt;
 	struct PendingAgentInputPreparation;
@@ -236,6 +238,8 @@ namespace uam
 		std::string default_reasoning_effort;
 		std::vector<std::string> supported_reasoning_efforts;
 		std::vector<std::string> additional_speed_tiers;
+		std::optional<std::int64_t> context_window_tokens;
+		std::optional<std::int64_t> max_output_tokens;
 	};
 
 	struct AcpTurnEventState
@@ -461,6 +465,7 @@ namespace uam
 	{
 		Interrupt,
 		ProviderUpdate,
+		WorkspaceChange,
 		Timeout
 	};
 
@@ -602,6 +607,7 @@ namespace uam
 		bool mcp_http_supported = false;
 		bool mcp_sse_supported = false;
 		bool processing = false;
+		std::shared_ptr<PendingAcpCompaction> pending_compaction;
 		bool manual_compaction_pending = false;
 		bool context_compaction_in_progress = false;
 		bool recovering_remote_turn = false;
@@ -1097,11 +1103,24 @@ namespace uam
 		std::vector<ChatSession> chats;
 	};
 
+	struct DeletionProgress
+	{
+		std::size_t completed = 0;
+		std::size_t total = 0;
+		std::string current_label;
+	};
+
 	struct AppState
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
+		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;
+		std::filesystem::path repository_route_data_root;
+		double repository_route_observed_at_s = -1.0;
+		std::shared_ptr<RepositoryRouteTask> repository_route_refresh;
+		std::vector<std::shared_ptr<RepositoryRouteTask>> repository_route_tasks;
+		std::unordered_map<std::string, std::vector<RepositoryRouteWorkspace>> repository_route_assignments;
 		std::shared_ptr<StartupNativeImportService> startup_native_import_service;
 		// Weak reservations expire if the async callback is discarded during bridge shutdown.
 		std::vector<std::shared_ptr<ClaudeQuotaHistoryTask>> claude_quota_history_tasks;
@@ -1200,6 +1219,7 @@ namespace uam
 		std::unordered_map<std::string, std::weak_ptr<PendingChatSaveTask>> pending_chat_save_retry_owners;
 		std::shared_ptr<MemoryActivityRefreshTask> memory_activity_refresh_task;
 		std::unordered_map<std::string, double> remote_recovery_hydration_retry_not_before_by_chat_id;
+		std::optional<DeletionProgress> deletion_progress;
 		std::unordered_set<std::string> worktree_operation_chat_ids;
 		struct GitPortRequest
 		{

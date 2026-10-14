@@ -99,6 +99,8 @@ namespace
 		parsed.model.default_reasoning_effort = uam::codex::NormalizeReasoningEffort(uam::nlohmann_json::TrimmedStringValue(model, {"defaultReasoningEffort", "default_reasoning_effort", "defaultReasoningLevel", "default_reasoning_level"}));
 		parsed.model.supported_reasoning_efforts = uam::acp_models::UniqueStringArrayValue(model, {"supportedReasoningEfforts", "supported_reasoning_levels"}, uam::codex::NormalizeReasoningEffort);
 		parsed.model.additional_speed_tiers = uam::acp_models::UniqueStringArrayValue(model, {"additionalSpeedTiers", "additional_speed_tiers", "serviceTiers", "service_tiers"}, uam::acp_models::NormalizeModelServiceTier);
+		parsed.model.context_window_tokens = uam::acp_models::ModelTokenLimit(model, {"contextWindowTokens", "context_window"});
+		parsed.model.max_output_tokens = uam::acp_models::ModelTokenLimit(model, {"maxOutputTokens"});
 		return parsed;
 	}
 nlohmann::json BuildModelListRequest(int request_id, const std::string& cursor = {})
@@ -335,6 +337,8 @@ std::vector<std::string> CodexCliProviderRuntime::BuildWorkerArgv(const Provider
 	    "--ignore-user-config", "--ignore-rules", "--json", "--color", "never",
 	    "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only",
 	    "-c", "model_reasoning_effort=\"low\"",
+	    "-c", "features.shell_tool=false",
+	    "-c", "web_search=\"disabled\"",
 	};
 	for (const char* arg : kCodexReadOnlyWorkerArgs)
 	{

@@ -9,6 +9,7 @@
 #include "common/paths/workspace_file_reader.h"
 #include "common/provider/provider_native_context.h"
 #include "remote/runner_startup.h"
+#include "remote/runner_startup_observation.h"
 
 #include "common/memory/memory_categories.h"
 #include "common/utils/string_utils.h"
@@ -618,24 +619,32 @@ namespace uam::remote
 
 	nlohmann::json RunnerState::HandleStartupRequest(const nlohmann::json& request, std::string_view runner_version)
 	{
-		if (!request.contains("enabled") || !request["enabled"].is_boolean())
+		const bool observing = request.value("type", "") == "startup.observe";
+		if (!observing && (!request.contains("enabled") || !request["enabled"].is_boolean()))
 			return ProcessError(request, "invalid_request", "A runner startup boolean is required.");
-		const bool enabled = request["enabled"].get<bool>();
+		const bool enabled = !observing && request["enabled"].get<bool>();
 		const std::filesystem::path executable = ProcessService().ResolveCurrentExecutablePath();
 		const std::optional<std::filesystem::path> home = env::GetUserHomePath();
 		if (!home || !executable.is_absolute()) return ProcessError(request, "startup_failed", "The runner user paths are unavailable.");
 		std::string error;
 #if defined(__linux__)
 		const std::filesystem::path socket = executable.parent_path().parent_path() / (RunnerEndpointName(runner_version) + ".sock");
-		if (!ConfigureLinuxRunnerStartup(ProcessService(), *home, executable, socket, enabled, error))
+		if (!observing && !ConfigureLinuxRunnerStartup(ProcessService(), *home, executable, socket, enabled, error))
 			return ProcessError(request, "startup_failed", error);
 #elif defined(_WIN32)
-		if (!ConfigureWindowsRunnerStartup(executable, enabled, error)) return ProcessError(request, "startup_failed", error);
+		if (!observing && !ConfigureWindowsRunnerStartup(executable, enabled, error)) return ProcessError(request, "startup_failed", error);
 #else
 		(void)runner_version; (void)enabled;
 		return ProcessError(request, "unsupported", "Runner login registration supports Linux systemd user sessions and Windows.");
 #endif
-		return ProcessSuccess(request, {{"enabled", enabled}, {"status", enabled ? "enabled" : "disabled"}});
+		std::string observed;
+#if defined(__linux__)
+		observed = ObserveLinuxRunnerStartup(ProcessService(), *home, executable, socket, error);
+#elif defined(_WIN32)
+		observed = ObserveWindowsRunnerStartup(executable, error);
+#endif
+		if (observed.empty()) return ProcessError(request, "startup_unconfirmed", error);
+		return ProcessSuccess(request, {{"enabled", observed == "enabled"}, {"status", observed}});
 	}
 
 	nlohmann::json RunnerState::HandleProcessRequest(const nlohmann::json& request)

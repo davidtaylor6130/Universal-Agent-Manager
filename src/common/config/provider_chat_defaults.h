@@ -69,9 +69,15 @@ namespace uam::provider_chat_defaults
 		return defaults;
 	}
 
-	inline ProviderChatDefaults ForProvider(const AppSettings& settings, std::string_view provider_id)
+	inline ProviderChatDefaults ForProvider(const AppSettings& settings, std::string_view provider_id, std::string_view host_id = "")
 	{
 		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+		const std::map<std::string, HostScopedSettings>::const_iterator scoped = settings.host_scoped_settings.find(std::string(host_id));
+		if (scoped != settings.host_scoped_settings.end())
+		{
+			const std::map<std::string, ProviderChatDefaults>::const_iterator override = scoped->second.provider_chat_defaults.find(normalized_provider_id);
+			if (override != scoped->second.provider_chat_defaults.end()) return Normalize(override->second, normalized_provider_id);
+		}
 		const auto found = settings.provider_chat_defaults.find(normalized_provider_id);
 		if (found != settings.provider_chat_defaults.end())
 		{
@@ -101,6 +107,6 @@ namespace uam::provider_chat_defaults
 
 	inline void ApplyToChat(const AppSettings& settings, ChatSession& chat)
 	{
-		ApplyToChat(chat, ForProvider(settings, chat.provider_id));
+		ApplyToChat(chat, ForProvider(settings, chat.provider_id, chat.execution_host_id));
 	}
 } // namespace uam::provider_chat_defaults

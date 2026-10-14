@@ -630,6 +630,8 @@ export function sanitizeAcpModel(value: unknown): AcpModel | null {
     defaultReasoningEffort: normalizeCodexReasoningEffort(value.defaultReasoningEffort),
     supportedReasoningEfforts,
     additionalSpeedTiers,
+    contextWindowTokens: nonNegativeInteger(value.contextWindowTokens),
+    maxOutputTokens: nonNegativeInteger(value.maxOutputTokens),
   }
 }
 
@@ -1759,6 +1761,13 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     computerUseAllowlistEnabled: booleanOr(value.computerUseAllowlistEnabled, false),
     branchSwitching: typeof value.branchSwitching === 'boolean' ? value.branchSwitching : undefined,
     hostScopedSettings: typeof value.hostScopedSettings === 'boolean' ? value.hostScopedSettings : undefined,
+    hostScopedSettingsValues: isRecord(value.hostScopedSettingsValues)
+      ? Object.fromEntries(Object.entries(value.hostScopedSettingsValues).flatMap(([hostId, entry]) => {
+          if (!hostId || hostId === '*' || hostId === 'local' || !isRecord(entry)) return []
+          const scoped = sanitizeCppSettings({ defaultNewChatProviderId: entry.defaultNewChatProviderId, providerChatDefaults: entry.providerChatDefaults, mcpServers: entry.mcpServers })
+          return [[hostId, { defaultNewChatProviderId: scoped.defaultNewChatProviderId ?? '', providerChatDefaults: scoped.providerChatDefaults ?? {}, mcpServers: scoped.mcpServers ?? [] }]]
+        }))
+      : {},
     computerUseAllowedApplications: Array.isArray(value.computerUseAllowedApplications)
       ? value.computerUseAllowedApplications.flatMap((entry): ComputerUseAllowedApplication[] => {
           if (!isRecord(entry)) return []

@@ -370,3 +370,31 @@ it('identifies the OpenCode read action as local to this computer', async () => 
   await click('Add server'); await click('Import configuration')
   expect(button("Read this computer's OpenCode configuration")).toBeDefined()
 })
+
+it('uses host effective MCP servers and keeps global built-in controls out of host saves', async () => {
+  const scopedServer = { ...server, id: 'host-server', name: 'host-only', args: [] }
+  useAppStore.setState({ hostScopedSettings: true, executionHosts: [{ id: 'lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], hostScopedSettingsValues: { lab: { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: {}, mcpServers: [scopedServer] } } })
+  await act(async () => root.render(<McpServerSetup key="lab" scopeExecutionHostId="lab" onBusyChange={() => {}} onDirtyChange={() => {}} />))
+  expect(host.textContent).toContain('host-only')
+  expect(host.textContent).not.toContain('UAM Computer Use')
+  expect(host.textContent).not.toContain('playwright')
+  await click('JSON')
+  const field = host.querySelector('textarea[aria-label="MCP JSON"]')!
+  await type(field as HTMLTextAreaElement, toJsonText([scopedServer], false))
+  await click('Save')
+  expect(saveServers).not.toHaveBeenCalled()
+  expect(saveCentral).not.toHaveBeenCalled()
+  expect(host.textContent).toContain('Could not save MCP servers.')
+})
+
+it('does not publish a completed MCP save into a replacement scope', async () => {
+  let finish!: (result: { ok: boolean }) => void
+  saveServers.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+  await click('JSON')
+  await type(host.querySelector('textarea[aria-label="MCP JSON"]') as HTMLTextAreaElement, toJsonText([server], false))
+  await act(async () => button('Save').click())
+  await act(async () => root.render(<McpServerSetup key="replacement" scopeExecutionHostId="lab" onBusyChange={() => {}} onDirtyChange={() => {}} />))
+  await act(async () => finish({ ok: true }))
+  expect(saveCentral).not.toHaveBeenCalled()
+  expect(host.textContent).not.toContain('Saved. Gemini')
+})

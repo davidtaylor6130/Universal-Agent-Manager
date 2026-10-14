@@ -463,6 +463,66 @@ namespace uam
 			return files;
 		}
 
+		std::set<std::string> TrimmedFileSet(const std::vector<std::string>& files);
+
+		bool PrepareSvnCommitTargets(const std::filesystem::path& workspace, const std::vector<std::string>& files, std::vector<std::string>& targets, std::vector<std::string>& additions, std::vector<std::string>& deletions, std::string& error)
+		{
+			const std::set<std::string> selected = TrimmedFileSet(files);
+			std::error_code path_error;
+			const std::filesystem::path root = std::filesystem::weakly_canonical(workspace, path_error);
+			if (path_error) { error = "Failed to resolve the SVN workspace."; return false; }
+			std::set<std::string> added_paths;
+			for (const std::string& file : selected)
+			{
+				const std::filesystem::path relative = uam::paths::PathFromUtf8(file);
+				if (relative.is_absolute() || relative.empty()) { error = "SVN selections must be workspace-relative paths."; return false; }
+				for (const std::filesystem::path& component : relative)
+					if (component == ".." || component == ".svn") { error = "SVN selection escapes the workspace or targets administrative data."; return false; }
+				const std::filesystem::path resolved = std::filesystem::weakly_canonical(root / relative, path_error);
+				const std::filesystem::path contained = resolved.lexically_relative(root);
+				if (path_error || contained.empty() || *contained.begin() == "..") { error = "SVN selection is outside the workspace."; return false; }
+			}
+			for (const std::string& file : selected)
+			{
+				const std::filesystem::path relative = uam::paths::PathFromUtf8(file).lexically_normal();
+				std::filesystem::path current = root;
+				bool unversioned_parent = false;
+				for (const std::filesystem::path& component : relative)
+				{
+					current /= component;
+					const std::string target = uam::paths::Utf8PathString(current) + "@";
+					std::string output;
+					if (!unversioned_parent && !OutputCommandRaw("svn status --non-interactive --depth empty -- " + uam::shell::EscapeArg(target), &output, &error)) return false;
+					const std::vector<VcsChangedFile> status = ParseSvnStatus(output);
+					const std::string code = status.empty() ? "" : status.front().status;
+					if (code.find_first_of("C~X") != std::string::npos || code == "I") { error = "Resolve SVN conflicts, obstructions or external paths before committing."; return false; }
+					if (unversioned_parent || code == "?")
+					{
+						unversioned_parent = true;
+						if (!std::filesystem::exists(current, path_error) || path_error) { error = "A selected SVN addition no longer exists."; return false; }
+						if (added_paths.insert(target).second) { additions.push_back(target); targets.push_back(target); }
+					}
+					if (!code.empty() && code.front() == 'A' && current != root / relative && added_paths.insert(target).second)
+						targets.push_back(target);
+					if (current != root / relative) continue;
+					if (!unversioned_parent && code.empty()) { error = "A selected SVN path is no longer changed: " + file; return false; }
+					if (code == "!" || code == "D")
+					{
+						std::string kind;
+						if (!OutputCommand("svn info --non-interactive --show-item kind -- " + uam::shell::EscapeArg(target), &kind, &error)) return false;
+						if (kind == "dir") { error = "Select deleted SVN files individually; directory deletion can include unselected descendants."; return false; }
+						if (code == "!")
+						{
+							if (std::filesystem::exists(current, path_error) || path_error) { error = "A missing SVN path changed before scheduling."; return false; }
+							deletions.push_back(target);
+						}
+					}
+					if (!unversioned_parent) targets.push_back(target);
+				}
+			}
+			return !targets.empty();
+		}
+
 		struct LineStats
 		{
 			int additions = 0;
@@ -761,11 +821,6 @@ namespace uam
 		std::string JoinQuotedFiles(const std::vector<std::string>& files)
 		{
 			return JoinNonEmptyFiles(files, [](const std::string& file) { return uam::shell::EscapeArg(file); });
-		}
-
-		std::string JoinQuotedSvnFiles(const std::filesystem::path& workspace, const std::vector<std::string>& files)
-		{
-			return JoinNonEmptyFiles(files, [&workspace](const std::string& file) { return BuildSvnPathArgument(workspace, file); });
 		}
 
 		std::set<std::string> TrimmedFileSet(const std::vector<std::string>& files)
@@ -1639,7 +1694,6 @@ namespace uam
 			result.error = "Select at least one changed file to commit.";
 			return result;
 		}
-		const std::string quoted_svn_files = JoinQuotedSvnFiles(workspace, files);
 
 		if (type == VcsType::Git)
 		{
@@ -1663,9 +1717,25 @@ namespace uam
 		}
 		else
 		{
-			ProcessExecutionResult commit_result;
-			if (!Command("svn commit -m " + uam::shell::EscapeArg(message) + " " + quoted_svn_files, &commit_result, &result.error))
+			std::vector<std::string> targets;
+			std::vector<std::string> additions;
+			std::vector<std::string> deletions;
+			if (!PrepareSvnCommitTargets(workspace, files, targets, additions, deletions, result.error)) return result;
+			for (const std::string& target : additions)
+				if (!Command("svn add --non-interactive --depth empty -- " + uam::shell::EscapeArg(target), nullptr, &result.error))
+				{ result.error += " Local SVN scheduling is retained; no commit was attempted."; return result; }
+			for (const std::string& target : deletions)
 			{
+				std::error_code path_error;
+				if (std::filesystem::exists(uam::paths::PathFromUtf8(target.substr(0, target.size() - 1)), path_error) || path_error)
+				{ result.error = "A missing SVN path changed before scheduling; local scheduling is retained."; return result; }
+				if (!Command("svn delete --non-interactive -- " + uam::shell::EscapeArg(target), nullptr, &result.error))
+				{ result.error += " Local SVN scheduling is retained; no commit was attempted."; return result; }
+			}
+			ProcessExecutionResult commit_result;
+			if (!Command("svn commit --non-interactive --depth empty -m " + uam::shell::EscapeArg(message) + " -- " + JoinQuotedFiles(targets), &commit_result, &result.error))
+			{
+				result.error += " Local SVN scheduling is retained; verify repository publication before retrying.";
 				return result;
 			}
 			CompleteSuccessfulCommit(result, Status(app, chat, type), commit_result, "SVN commit created.");

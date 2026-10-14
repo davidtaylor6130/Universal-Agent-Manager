@@ -140,6 +140,7 @@ function deserializeState(
     computerUseAllowedApplications: AppState['computerUseAllowedApplications']
     branchSwitching?: boolean
     hostScopedSettings?: boolean
+    hostScopedSettingsValues: AppState['hostScopedSettingsValues']
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
     shellActions: ShellAction[]
     shellActionNotification: string
@@ -364,6 +365,7 @@ function deserializeState(
     computerUseAllowedApplications: cpp.settings.computerUseAllowedApplications ?? [],
     branchSwitching: cpp.settings.branchSwitching === true,
     hostScopedSettings: cpp.settings.hostScopedSettings,
+    hostScopedSettingsValues: cpp.settings.hostScopedSettingsValues ?? {},
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
     shellActions: cpp.shellActions ?? existing.shellActions,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
@@ -585,6 +587,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     computerUseAllowedApplications: patch.settings?.computerUseAllowedApplications ?? current.computerUseAllowedApplications,
     branchSwitching: patch.settings?.branchSwitching ?? current.branchSwitching,
     hostScopedSettings: patch.settings?.hostScopedSettings ?? current.hostScopedSettings,
+    hostScopedSettingsValues: patch.settings?.hostScopedSettingsValues ?? current.hostScopedSettingsValues,
     uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
     shellActions: patch.shellActions ?? current.shellActions,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
@@ -796,6 +799,7 @@ export const useAppStore = create<AppState>((set, get) => {
             computerUseAllowedApplications: current.computerUseAllowedApplications,
             branchSwitching: current.branchSwitching,
             hostScopedSettings: current.hostScopedSettings,
+            hostScopedSettingsValues: current.hostScopedSettingsValues,
             uamAgentsBySessionId: current.uamAgentsBySessionId,
             shellActions: current.shellActions,
             shellActionNotification: current.shellActionNotification,
@@ -1125,6 +1129,7 @@ export const useAppStore = create<AppState>((set, get) => {
         computerUseAllowedApplications: current.computerUseAllowedApplications,
         branchSwitching: current.branchSwitching,
         hostScopedSettings: current.hostScopedSettings,
+        hostScopedSettingsValues: current.hostScopedSettingsValues,
         uamAgentsBySessionId: current.uamAgentsBySessionId,
         shellActions: current.shellActions,
         shellActionNotification: current.shellActionNotification,

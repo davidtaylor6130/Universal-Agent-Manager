@@ -1,4 +1,6 @@
 #pragma once
+#include "common/config/host_scoped_settings.h"
+
 
 #include "common/state/app_state.h"
 #include "common/config/mcp_server_config.h"
@@ -306,7 +308,7 @@ namespace uam::provider_mcp_settings
 		for (const char* provider : provider_ids::kAllCliProviderIds)
 		{
 			if (selected != nullptr && selected->provider_id != provider) continue;
-			std::vector<McpServerConfiguration> candidates = app.settings.mcp_servers;
+			std::vector<McpServerConfiguration> candidates = host_scoped_settings::McpServers(app.settings, host);
 			for (McpServerConfiguration& server : candidates)
 				server.enabled = central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, server.id, server.enabled);
 			const std::vector<McpServerConfiguration> servers = mcp_server_config::SelectForWorkspace(candidates, workspace, host);
@@ -338,7 +340,7 @@ namespace uam::provider_mcp_settings
 			const std::string detail = state == "disabled" ? "UAM tools are disabled for this scope." : state == "connected" ? "The running provider MCP connection has a current heartbeat." : state == "handshake-confirmed" ? "UAM MCP handshake confirmed for this running session. Waiting for a current connection heartbeat." :
 			    state == "configured-unverified" ? (configured == 0 ? "UAM MCP is enabled for the next provider session. No connection has been confirmed." : "UAM MCP is installed for a running session. No handshake has been confirmed.") : provider_failed ? "The provider session failed. Check its chat error; an MCP failure has not been established." : "UAM MCP is installed when the next enabled session starts.";
 			nlohmann::json server_settings = nlohmann::json::array();
-			for (const McpServerConfiguration& server : app.settings.mcp_servers)
+			for (const McpServerConfiguration& server : host_scoped_settings::McpServers(app.settings, host))
 				if (server.execution_host_id.empty() || server.execution_host_id == host)
 					server_settings.push_back({{"id", server.id}, {"name", server.name}, {"enabled", central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, server.id, server.enabled)}});
 			providers.push_back({{"providerId", provider}, {"uamControlEnabled", enabled}, {"sharedSetupEnabled", central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, "shared-setup", app.settings.central_provider_configuration.enabled)}, {"mcpServers", server_settings}, {"status", state}, {"detail", detail}, {"activeSessionCount", active},

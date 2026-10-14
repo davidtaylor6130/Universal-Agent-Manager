@@ -144,7 +144,13 @@ inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession
 		chat.uam_agent_id = settings.central_provider_configuration.default_agent_id;
 	}
 	chat.uam_control_enabled = uam::central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", settings.central_provider_configuration.uam_control_enabled);
-	ProviderChatDefaults defaults = DefaultsForProvider(settings, chat.provider_id);
+	if (chat.routing_mode == "automatic")
+	{
+		chat.routing_inherited_default_fields.clear();
+		for (const char* field : {"modelId", "reviewerModelId", "reasoningEffort", "serviceTier"})
+			if (payload_defaults == nullptr || !payload_defaults->contains(field)) chat.routing_inherited_default_fields.push_back(field);
+	}
+	ProviderChatDefaults defaults = uam::provider_chat_defaults::ForProvider(settings, chat.provider_id, chat.routing_mode == "automatic" ? "" : chat.execution_host_id);
 	if (payload_defaults != nullptr)
 	{
 		defaults = DefaultsFromPayload(*payload_defaults, defaults, chat.provider_id);
@@ -153,11 +159,10 @@ inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession
 	if (chat.routing_mode == "automatic")
 	{
 		// The assigned computer owns model and account defaults.
-		chat.model_id.clear();
-		chat.reviewer_model_id.clear();
-		chat.reasoning_effort.clear();
-		chat.service_tier.clear();
-		chat.service_tier_explicit = false;
+		if (std::ranges::find(chat.routing_inherited_default_fields, "modelId") != chat.routing_inherited_default_fields.end()) chat.model_id.clear();
+		if (std::ranges::find(chat.routing_inherited_default_fields, "reviewerModelId") != chat.routing_inherited_default_fields.end()) chat.reviewer_model_id.clear();
+		if (std::ranges::find(chat.routing_inherited_default_fields, "reasoningEffort") != chat.routing_inherited_default_fields.end()) chat.reasoning_effort.clear();
+		if (std::ranges::find(chat.routing_inherited_default_fields, "serviceTier") != chat.routing_inherited_default_fields.end()) { chat.service_tier.clear(); chat.service_tier_explicit = false; }
 	}
 }
 

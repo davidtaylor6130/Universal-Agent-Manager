@@ -44,7 +44,7 @@ namespace uam::platform
 
 	/// <summary>Closes input, observes a bounded cooperative exit, and forces only the owned tree on timeout. Call off the UI thread with exclusive process ownership. Output handles remain open for the caller.</summary>
 	inline ObservedProcessStopResult StopStdioProcessObserved(IPlatformProcessService& service, StdioProcessPlatformFields& process,
-	                                                         std::chrono::milliseconds grace = std::chrono::milliseconds(800))
+	                                                         std::chrono::milliseconds grace = std::chrono::milliseconds(800), bool allow_forced_stop = true)
 	{
 		ObservedProcessStopResult result;
 		service.CloseStdioProcessInput(process);
@@ -67,6 +67,7 @@ namespace uam::platform
 			if (std::chrono::steady_clock::now() >= deadline) break;
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
+		if (!allow_forced_stop) { result.outcome = ProcessStopOutcome::Failed; return result; }
 		service.TerminateStdioProcess(process, true);
 		const auto forced_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 		while (!(result.exit_confirmed = service.PollStdioProcessExited(process, &result.exit_code)) && std::chrono::steady_clock::now() < forced_deadline)

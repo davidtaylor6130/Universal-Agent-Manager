@@ -66,6 +66,21 @@ namespace uam::acp_models
 		return !normalized.empty() ? normalized : uam::strings::TrimmedEqualsIgnoreCase(value, "priority") ? "fast" : "";
 	}
 
+	inline std::optional<std::int64_t> ModelTokenLimit(const nlohmann::json& model, std::initializer_list<const char*> keys)
+	{
+		for (const char* key : keys)
+		{
+			const nlohmann::json* value = uam::nlohmann_json::FindField(model, key);
+			if (value == nullptr) continue;
+			if (!value->is_number_integer()) return std::nullopt;
+			constexpr std::int64_t max_exact = 9007199254740991LL;
+			if (value->is_number_unsigned() && value->get<std::uint64_t>() > static_cast<std::uint64_t>(max_exact)) return std::nullopt;
+			const std::int64_t count = value->get<std::int64_t>();
+			return count >= 0 && count <= max_exact ? std::optional<std::int64_t>{count} : std::nullopt;
+		}
+		return std::nullopt;
+	}
+
 	inline std::optional<AcpModelState> ParseAcpModelState(const nlohmann::json& model)
 	{
 		if (!model.is_object())
@@ -89,6 +104,8 @@ namespace uam::acp_models
 		parsed.default_reasoning_effort = uam::codex::NormalizeReasoningEffort(uam::nlohmann_json::TrimmedStringValue(model, {"defaultReasoningEffort", "default_reasoning_effort", "defaultReasoningLevel", "default_reasoning_level"}));
 		parsed.supported_reasoning_efforts = UniqueStringArrayValue(model, {"supportedReasoningEfforts", "supported_reasoning_levels"}, uam::codex::NormalizeReasoningEffort);
 		parsed.additional_speed_tiers = UniqueStringArrayValue(model, {"additionalSpeedTiers", "additional_speed_tiers", "serviceTiers", "service_tiers"}, NormalizeModelServiceTier);
+		parsed.context_window_tokens = ModelTokenLimit(model, {"contextWindowTokens"});
+		parsed.max_output_tokens = ModelTokenLimit(model, {"maxOutputTokens"});
 		return parsed;
 	}
 

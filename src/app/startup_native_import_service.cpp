@@ -42,7 +42,7 @@ namespace uam
 			{
 				const ChatHistorySyncService history;
 				ChatHistorySyncService::LocalHistoryDiscovery discovery = history.DiscoverProviderChatsForFolder({},
-				    request.open_code_profile ? &*request.open_code_profile : nullptr, stop, request.open_code_offset);
+				    request.open_code_profile ? &*request.open_code_profile : nullptr, stop, request.open_code_offset, request.open_code_only, request.open_code_remaining, request.open_code_list_fingerprint);
 				for (const StartupNativeImportRemoteScope& scope : request.remote_scopes)
 				{
 					if (stop.stop_requested()) break;
@@ -85,6 +85,7 @@ namespace uam
 			m_remote_folders[folder.id] = folder;
 			request.remote_scopes.push_back({folder, *host});
 		}
+		m_scan_request = request;
 		try
 		{
 			m_scan = std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token()]()
@@ -115,7 +116,26 @@ namespace uam
 			ChatHistorySyncService::LocalHistoryDiscovery discovery;
 			try { discovery = m_scan.get(); }
 			catch (const std::exception& error) { AddError(std::string("History discovery failed: ") + error.what()); }
-			for (const std::string& error : discovery.result.errors) AddError(error);
+			if (m_stop.stop_requested()) return false;
+			if (discovery.open_code_next_offset) app.open_code_history_scan_offset = *discovery.open_code_next_offset;
+			const bool changed_list = m_scan_request.open_code_remaining &&
+			    (discovery.open_code_list_fingerprint != m_scan_request.open_code_list_fingerprint ||
+			     discovery.open_code_session_count < *m_scan_request.open_code_remaining);
+			if (changed_list)
+			{
+				AddError("OpenCode session list changed during discovery; retry the scan.");
+				discovery.CancelPending();
+				m_phase = m_candidates.empty() ? "complete" : "ready";
+				return true;
+			}
+			const std::size_t remaining = m_scan_request.open_code_remaining.value_or(discovery.open_code_session_count);
+			const bool continue_scan = discovery.open_code_scanned_count > 0 && discovery.open_code_scanned_count < remaining &&
+			    discovery.open_code_next_offset && !discovery.open_code_list_fingerprint.empty();
+			for (const std::string& error : discovery.result.errors)
+			{
+				if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
+				AddError(error);
+			}
 			std::string filter_error;
 			if (!ChatHistorySyncService().FilterStartupImportCandidates(app, discovery, &filter_error))
 			{
@@ -128,6 +148,11 @@ namespace uam
 			{
 				const ChatFolder* owner = ChatDomainService().FindFolderById(app, chat.folder_id);
 				if (owner == nullptr) return;
+				if (std::ranges::any_of(m_candidates, [&](const Candidate& existing)
+				{
+					return chat_identity::NativeIdentityKeyForHistoryImport(existing.chat) == chat_identity::NativeIdentityKeyForHistoryImport(chat) &&
+					    existing.chat.execution_host_id == chat.execution_host_id;
+				})) return;
 				Candidate candidate;
 				if (!paths::IsControllerLocalWorkspace(chat))
 				{
@@ -151,6 +176,30 @@ namespace uam
 			};
 			for (ChatSession& chat : discovery.chats) add(std::move(chat), {});
 			for (std::pair<ChatSession, std::filesystem::path>& record : discovery.codex_rollouts) add(std::move(record.first), std::move(record.second));
+			if (discovery.open_code_scanned_count > remaining)
+				AddError("OpenCode history scan exceeded its remaining session budget.");
+			else if (continue_scan)
+			{
+				m_scan_request.open_code_only = true;
+				m_scan_request.remote_scopes.clear();
+				m_scan_request.open_code_offset = *discovery.open_code_next_offset;
+				m_scan_request.open_code_remaining = remaining - discovery.open_code_scanned_count;
+				m_scan_request.open_code_list_fingerprint = discovery.open_code_list_fingerprint;
+				try
+				{
+					m_scan = std::async(std::launch::async, [scanner = m_scanner, request = m_scan_request, stop = m_stop.get_token()]
+					{
+						return scanner(request, stop);
+					});
+					return true;
+				}
+				catch (const std::exception&)
+				{
+					AddError("OpenCode history continuation could not start; retry the scan.");
+				}
+			}
+			if (remaining > 0 && discovery.open_code_scanned_count == 0 && !discovery.open_code_list_fingerprint.empty())
+				AddError("OpenCode history scan made no progress; retry the scan.");
 			m_phase = m_candidates.empty() ? "complete" : "ready";
 			return true;
 		}

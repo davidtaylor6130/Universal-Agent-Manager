@@ -67,7 +67,7 @@ std::string NativeHistorySnapshotDigest(const std::vector<ChatSession>& chats)
 
 uam::platform::AsyncNativeChatLoadTask& AsyncNativeChatLoadTaskFor(uam::AppState& app, const std::string& provider_id, const std::filesystem::path& chats_dir)
 {
-	return app.native_chat_load_tasks[AsyncNativeChatLoadTaskKey(provider_id, chats_dir)];
+	return app.native_chat_load_tasks[uam::paths::NormalizedPortablePathString(app.data_root) + "\n" + AsyncNativeChatLoadTaskKey(provider_id, chats_dir)];
 }
 
 bool StartAsyncNativeChatLoadForTerminal(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir)
@@ -93,7 +93,7 @@ bool StartAsyncNativeChatLoadForTerminal(uam::AppState& app, const ProviderProfi
 
 bool TryConsumeAsyncNativeChatLoadForTerminal(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir, std::vector<ChatSession>& chats_out, std::string& digest_out, std::string& error_out)
 {
-	const std::string key = AsyncNativeChatLoadTaskKey(provider.id, chats_dir);
+	const std::string key = uam::paths::NormalizedPortablePathString(app.data_root) + "\n" + AsyncNativeChatLoadTaskKey(provider.id, chats_dir);
 	const auto it = app.native_chat_load_tasks.find(key);
 
 	if (it == app.native_chat_load_tasks.end())

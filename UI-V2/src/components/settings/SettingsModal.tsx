@@ -665,12 +665,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [memoryPolicyError, setMemoryPolicyError] = useState<Record<string, string>>({})
   const saveMemoryPolicy = async (key: string, save: () => Promise<boolean>) => {
     if (memoryPolicySaving[key]) return
+    const capturedScope = useAppStore.getState().settingsScopeHostId
+    const ownsFeedback = () => useAppStore.getState().settingsScopeHostId === capturedScope
     setMemoryPolicySaving((current) => ({ ...current, [key]: true }))
     setMemoryPolicyError((current) => ({ ...current, [key]: '' }))
     try {
-      if (!await save()) setMemoryPolicyError((current) => ({ ...current, [key]: 'Could not save the memory policy. Try again.' }))
-    } catch { setMemoryPolicyError((current) => ({ ...current, [key]: 'Could not save the memory policy. Try again.' })) }
-    finally { setMemoryPolicySaving((current) => ({ ...current, [key]: false })) }
+      if (!await save() && ownsFeedback()) setMemoryPolicyError((current) => ({ ...current, [key]: 'Could not save the memory policy. Try again.' }))
+    } catch { if (ownsFeedback()) setMemoryPolicyError((current) => ({ ...current, [key]: 'Could not save the memory policy. Try again.' })) }
+    finally { if (ownsFeedback()) setMemoryPolicySaving((current) => ({ ...current, [key]: false })) }
   }
   const memoryIdleDelaySeconds = useAppStore((s) => s.memoryIdleDelaySeconds)
   const memoryRecallBudgetBytes = useAppStore((s) => s.memoryRecallBudgetBytes)
@@ -703,8 +705,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const cliVersionManager = useAppStore(useShallow((s) => s.cliVersionManager))
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
   const isMarkdownStoreOpen = useAppStore((s) => s.isMarkdownStoreOpen)
-  const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
-  const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+  const defaultNewChatProviderId = useAppStore((s) => (s.hostScopedSettings && s.executionHosts.some((host) => host.transport === 'ssh' && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.defaultNewChatProviderId) || s.defaultNewChatProviderId)
+  const providerChatDefaults = useAppStore(useShallow((s) => (s.hostScopedSettings && s.executionHosts.some((host) => host.transport === 'ssh' && host.id === s.settingsScopeHostId) && s.hostScopedSettingsValues?.[s.settingsScopeHostId]?.providerChatDefaults) || s.providerChatDefaults))
   const fileExplorerApplication = useAppStore((s) => s.fileExplorerApplication)
   const [explorerDraft, setExplorerDraft] = useState('')
   const [customExplorer, setCustomExplorer] = useState(false)
@@ -1124,7 +1126,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const updateProviderDefaults = (providerId: string, defaults: ProviderChatDefaults) => {
     void setProviderChatDefaults({
       providerChatDefaults: {
-        ...providerChatDefaults,
         [providerId]: defaults,
       },
     }, settingsScope)
@@ -1763,11 +1764,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const scopeValue = onProviderPage || hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const settingsScope = hostScopedSettings ? storedScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const effectiveProviderSettingsHostId = scopeValue === SETTINGS_ALL_ENVIRONMENTS ? 'local' : scopeValue
-  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={(hostId) => { if (providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(() => setSettingsScopeHostId(hostId)); else setSettingsScopeHostId(hostId) }} /> : null
+  const scopeBar = scopeBarVisible ? <SettingsScopeBar hosts={executionHosts} value={scopeValue} selectorEnabled={onProviderPage || hostScopedSettings} supported={hostScopedSettings} onChange={(hostId) => { if (!mcpSaving) requestSectionExit(() => setSettingsScopeHostId(hostId)) }} /> : null
   // A pending CLI install or open version menu belongs to the computer it was started for.
   useEffect(() => {
     setPendingCliInstall(null)
     setOpenCliVersionMenu(null)
+    setMemoryPolicyError({})
+    setMemoryPolicySaving({})
   }, [settingsScopeHostId])
   const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
     const selectedSection = sectionOverride ?? selectedSettingsSection
@@ -2124,7 +2127,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             <MenuSelect label={`${providerName} default memory level`} value={defaults.memoryLevel ?? 'default'} disabled={memoryPolicySaving[provider.id]}
                               options={MEMORY_POLICY_CHOICES.map((option) => ({ value: option.id, label: option.label, description: option.id === 'default' ? 'Use the current app default.' : option.detail }))}
                               onChange={(memoryLevel) => void saveMemoryPolicy(provider.id, () => setProviderChatDefaults({ providerChatDefaults: {
-                                ...providerChatDefaults, [provider.id]: { ...defaults, memoryLevel: memoryLevel as MemoryLevel,
+                                [provider.id]: { ...defaults, memoryLevel: memoryLevel as MemoryLevel,
                                   memoryEnabled: memoryLevel === 'default' ? memoryEnabledDefault : memoryLevel !== 'off' },
                               } }, settingsScope))} />
                             {memoryPolicyError[provider.id] && <p role="alert" style={{ color: 'var(--error)' }}>{memoryPolicyError[provider.id]}</p>}
@@ -3075,7 +3078,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'central-configuration') return <CentralProviderSettings ref={centralRef} />
 
-    if (selectedSection === 'mcp-servers') return <McpServerSetup onBusyChange={setMcpSaving} onDirtyChange={setMcpDraftDirty} scopeExecutionHostId={settingsScope} />
+    if (selectedSection === 'mcp-servers') return <McpServerSetup key={settingsScope} onBusyChange={setMcpSaving} onDirtyChange={setMcpDraftDirty} scopeExecutionHostId={settingsScope} />
 
     if (selectedSection === 'chat-data') {
       return (

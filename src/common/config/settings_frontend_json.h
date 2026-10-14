@@ -11,6 +11,7 @@
 #include "common/config/execution_host_config.h"
 #include "common/config/mcp_server_config.h"
 #include "common/config/provider_chat_defaults.h"
+#include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
@@ -150,6 +151,16 @@ namespace uam::settings_frontend_json
 		settings_json["dismissedUpdateVersions"] = settings.dismissed_update_versions;
 		settings_json["defaultNewChatProviderId"] = uam::provider_ids::NormalizeCliProviderAliasOrSelf(settings.default_new_chat_provider_id);
 		settings_json["providerChatDefaults"] = SerializeProviderChatDefaults(settings.provider_chat_defaults);
+		settings_json["hostScopedSettings"] = true;
+		settings_json["hostScopedSettingsValues"] = nlohmann::json::object();
+		for (const ExecutionHost& host : settings.execution_hosts)
+		{
+			if (host.transport != "ssh") continue;
+			std::map<std::string, ProviderChatDefaults> defaults = settings.provider_chat_defaults;
+			const std::map<std::string, HostScopedSettings>::const_iterator scoped = settings.host_scoped_settings.find(host.id);
+			if (scoped != settings.host_scoped_settings.end()) for (const std::pair<const std::string, ProviderChatDefaults>& entry : scoped->second.provider_chat_defaults) defaults[entry.first] = entry.second;
+			settings_json["hostScopedSettingsValues"][host.id] = {{"defaultNewChatProviderId", uam::host_scoped_settings::DefaultProvider(settings, host.id)}, {"providerChatDefaults", SerializeProviderChatDefaults(defaults)}, {"mcpServers", uam::mcp_server_config::Serialize(uam::host_scoped_settings::VisibleMcpServers(settings, host.id))}};
+		}
 		settings_json["providerAvailability"] = provider_availability::Serialize(settings.provider_availability);
 		settings_json["fileExplorerApplication"] = settings.file_explorer_application;
 		settings_json["defaultEditorPresetId"] = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);

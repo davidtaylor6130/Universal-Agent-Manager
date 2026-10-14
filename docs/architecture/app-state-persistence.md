@@ -16,3 +16,9 @@ Keep workspace ownership explicit when loading or saving chats. Do not move app 
 - Focused checks: `tests/core_tests.cpp`, `tests/state_workspace_snapshot_tests.cpp`, `tests/workspace_chat_save_ticket_tests.cpp`, `tests/storage_retention_tests.cpp`.
 
 No measured whole-app persistence latency budget is recorded here. Keep writes bounded and preserve failure handling; use the focused tests before changing file formats or save ownership.
+
+## Computer-scoped defaults
+
+`host_scoped_settings` persists optional provider defaults, the default new-chat provider and MCP server lists for configured SSH computers. Missing overrides inherit global values; an explicitly empty MCP list disables inherited servers for that computer. `scopeExecutionHostId` selects a configured SSH host, while an omitted, empty or `*` scope selects global settings. Invalid or removed hosts cannot become save targets, and loading settings removes obsolete host overrides.
+
+`hostScopedSettingsValues` exposes resolved defaults to the frontend. Scoped saves change the selected host without replacing global settings; frontend saves send only changed provider fields and ignore replies for an obsolete scope. MCP projection filters servers belonging to other hosts, and provider context preparation uses the resolved launch host. New chats explicitly assigned to SSH computers initialize and fall back to the effective host defaults while preserving explicit user choices. Automatically routed chats retain creation-time inheritance markers for model, reviewer, reasoning and service tier when the host is unknown, then resolve those fields after host assignment. Failed assignment persistence restores the prior values and inheritance markers.

@@ -477,6 +477,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/transcript_retention_service.cpp
   src/app/chat_search_service.cpp
   src/app/execution_routing_service.cpp
+  src/app/repository_route_match_service.cpp
   src/app/execution_routing_integration.cpp
   src/app/resource_collection_service.cpp
     src/app/provider_worker_command.cpp
@@ -511,6 +512,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/shell_action_handlers.cpp
   src/cef/markdown_handlers.cpp
   src/cef/folder_handlers.cpp
+  src/cef/chat_branch_handlers.cpp
+  src/cef/repository_route_handlers.cpp
   src/cef/resource_collection_handlers.cpp
   src/cef/memory_handlers.cpp
   src/cef/workspace_handlers.cpp
@@ -1229,6 +1232,15 @@ if(UAM_BUILD_TESTS)
   endforeach()
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/chat_branch_selection_tests.cpp
+    tests/host_scoped_settings_tests.cpp
+    tests/repository_route_match_tests.cpp
+    tests/deletion_progress_tests.cpp
+    tests/manual_compaction_startup_tests.cpp
+    tests/runner_startup_observation_tests.cpp
+    tests/provider_model_metadata_tests.cpp
+    tests/claude_model_metadata_tests.cpp
+    tests/svn_commit_scheduling_tests.cpp
     tests/native_import_failure_tests.cpp
     tests/opencode_import_stream_tests.cpp
     tests/local_chat_bundle_tests.cpp
@@ -1316,6 +1328,7 @@ if(UAM_BUILD_TESTS)
     tests/opencode_usage_tests.cpp
     tests/state_workspace_snapshot_tests.cpp
     tests/terminal_tests.cpp
+    tests/deleted_active_native_refresh_tests.cpp
     tests/sidechat_context_tests.cpp
     tests/goal_tests.cpp
     tests/provider_child_activity_tests.cpp
@@ -1352,6 +1365,7 @@ if(UAM_BUILD_TESTS)
     src/app/transcript_retention_service.cpp
     src/app/chat_search_service.cpp
     src/app/execution_routing_service.cpp
+  src/app/repository_route_match_service.cpp
     src/app/execution_routing_integration.cpp
     src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp

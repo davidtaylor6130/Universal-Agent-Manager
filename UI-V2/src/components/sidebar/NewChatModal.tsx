@@ -1,3 +1,4 @@
+import { defaultsForExecutionHost } from '../../utils/settingsScope'
 import { ExecutionRoutingDialog } from '../modals/ExecutionRoutingDialog'
 import { RUNNER_STATUS } from '../settings/ExecutionRoutingSettings'
 import { canRouteAutomatically, sanitizeRepositoryMatches, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
@@ -26,8 +27,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const folders = useAppStore(useShallow((s) => s.folders))
   const providers = useAppStore(useShallow((s) => s.providers))
-  const defaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
-  const providerChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+  const globalDefaultNewChatProviderId = useAppStore((s) => s.defaultNewChatProviderId)
+  const globalProviderChatDefaults = useAppStore(useShallow((s) => s.providerChatDefaults))
+  const hostScopedSettingsValues = useAppStore(useShallow((s) => s.hostScopedSettingsValues))
 	const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
 	const sessions = useAppStore(useShallow((s) => s.sessions))
 	const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
@@ -52,16 +54,21 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const [name, setName] = useState('')
   const [sourceContextInvalid, setSourceContextInvalid] = useState(false)
   const [folderId, setFolderId] = useState<string | null>(initialFolderId)
-  const initialIsRemote = Boolean(initialFolder?.executionHostId && initialFolder.executionHostId !== 'local')
+  const defaultState = { defaultNewChatProviderId: globalDefaultNewChatProviderId, providerChatDefaults: globalProviderChatDefaults, hostScopedSettingsValues, executionHosts }
+  const initialDefaults = defaultsForExecutionHost(defaultState, initialFolder?.executionHostId || 'local')
   const initialProviderId =
-    providers.some((provider) => provider.id === defaultNewChatProviderId)
-      ? defaultNewChatProviderId
+    providers.some((provider) => provider.id === initialDefaults.defaultNewChatProviderId)
+      ? initialDefaults.defaultNewChatProviderId
       : providers[0]?.id ?? DEFAULT_PROVIDER_ID
   const [providerId, setProviderId] = useState(initialProviderId)
 	const [executionHostId, setExecutionHostId] = useState(initialFolder?.executionHostId || 'local')
+  const effectiveDefaults = routingMode === 'explicit' ? defaultsForExecutionHost(defaultState, executionHostId) : defaultState
+  const defaultNewChatProviderId = effectiveDefaults.defaultNewChatProviderId
+  const providerChatDefaults = effectiveDefaults.providerChatDefaults
+  const providerChoiceExplicit = useRef(false)
 	const [remoteWorkspace, setRemoteWorkspace] = useState(initialFolder?.executionHostId && initialFolder.executionHostId !== 'local' ? initialFolder.directory : '')
-  const [modelId, setModelId] = useState(initialIsRemote ? '' : providerChatDefaults[initialProviderId]?.modelId ?? '')
-  const [reasoningEffort, setReasoningEffort] = useState(initialIsRemote ? '' : providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
+  const [modelId, setModelId] = useState(initialDefaults.providerChatDefaults[initialProviderId]?.modelId ?? '')
+  const [reasoningEffort, setReasoningEffort] = useState(initialDefaults.providerChatDefaults[initialProviderId]?.reasoningEffort ?? '')
   const [creatingChat, setCreatingChat] = useState(false)
   const [chatError, setChatError] = useState('')
   const [creatingWorkspace, setCreatingWorkspace] = useState(false)
@@ -112,8 +119,8 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     const folder = folders.find((candidate) => candidate.id === newChatFolderId)
     if (folder) {
       requestedFolderRef.current = newChatFolderId
+      if ((folder.executionHostId || 'local') !== executionHostId) chooseHost(folder.executionHostId || 'local')
       setFolderId(newChatFolderId)
-	  setExecutionHostId(folder.executionHostId || 'local')
 	  if ((folder.executionHostId || 'local') !== 'local') setRemoteWorkspace(folder.directory)
     }
   }, [folders, newChatFolderId])
@@ -287,10 +294,11 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     }
   }
 
-  const chooseProvider = (nextProviderId: string, nextHostId = executionHostId) => {
+  const chooseProvider = (nextProviderId: string, nextHostId = executionHostId, explicit = true) => {
+    if (explicit) providerChoiceExplicit.current = true
     providerChoices.current[`${executionHostId}\n${providerId}`] = { modelId, effort: reasoningEffort }
     const saved = providerChoices.current[`${nextHostId}\n${nextProviderId}`]
-    const defaults = nextHostId === 'local' ? providerChatDefaults[nextProviderId] : undefined
+    const defaults = defaultsForExecutionHost(defaultState, nextHostId).providerChatDefaults[nextProviderId]
     setProviderId(nextProviderId)
     setModelId(saved?.modelId ?? defaults?.modelId ?? '')
     setReasoningEffort(saved?.effort ?? defaults?.reasoningEffort ?? '')
@@ -301,7 +309,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     workspaceChoices.current[executionHostId] = { folderId, path: remoteWorkspace }
     const saved = workspaceChoices.current[hostId]
     const compatible = folders.find((folder) => (folder.executionHostId || 'local') === hostId)
-    chooseProvider(providerId, hostId)
+    const preferred = defaultsForExecutionHost(defaultState, hostId).defaultNewChatProviderId
+    const nextProvider = !providerChoiceExplicit.current && providers.some(provider => provider.id === preferred) ? preferred : providerId
+    chooseProvider(nextProvider, hostId, false)
     setExecutionHostId(hostId)
     setFolderId(saved ? saved.folderId : compatible?.id ?? null)
     setRemoteWorkspace(saved ? saved.path : hostId !== 'local' ? compatible?.directory ?? '' : '')

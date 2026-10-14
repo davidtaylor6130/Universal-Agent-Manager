@@ -293,7 +293,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		if (!GoalService::IsProviderManaged(*goal))
 		{
 			const ProviderChatDefaults defaults =
-			    uam::provider_chat_defaults::ForProvider(app.settings, chat->provider_id);
+			    uam::provider_chat_defaults::ForProvider(app.settings, chat->provider_id, chat->execution_host_id);
 			goal->worker_model_id = uam::strings::NonEmptyOrFallback(
 			    chat->model_id,
 			    uam::strings::NonEmptyOrFallback(defaults.model_id, goal->worker_model_id));
@@ -962,7 +962,7 @@ bool PollPendingGoalIterations(AppState& app)
 		if (session && session->goal_queue_admission_revision == chat.goal_command_revision &&
 		    (session->goal_queue_admission == AcpSessionState::GoalQueueAdmission::PendingContinuation ||
 		     session->goal_queue_admission == AcpSessionState::GoalQueueAdmission::HeldContinuation)) continue;
-		if (AcpStopInProgress(app, chat.id) || (session != nullptr && (AcpSessionHasActiveTurn(*session) || session->turn_checkpoint_commit_pending))) continue;
+		if (AcpStopInProgress(app, chat.id) || (session != nullptr && (session->pending_compaction || AcpSessionHasActiveTurn(*session) || session->turn_checkpoint_commit_pending))) continue;
 		const bool iteration_busy = std::ranges::any_of(app.chats, [&](const ChatSession& candidate)
 		{
 			const AcpSessionState* iteration = FindAcpSessionForChat(app, candidate.id);

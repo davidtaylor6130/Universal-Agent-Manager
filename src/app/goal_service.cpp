@@ -131,7 +131,7 @@ bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const st
 	goal.execution_owner = execution_owner == "provider" ? "provider" : "uam";
 	goal.provider_command = goal.execution_owner == "provider" ? uam::strings::Trim(provider_command) : "";
 	goal.worker_model_id = uam::strings::Trim(chat->model_id);
-	const ProviderChatDefaults defaults = uam::provider_chat_defaults::ForProvider(app.settings, chat->provider_id);
+	const ProviderChatDefaults defaults = uam::provider_chat_defaults::ForProvider(app.settings, chat->provider_id, chat->execution_host_id);
 	goal.reviewer_model_id = goal.execution_owner == "uam"
 	                             ? uam::strings::NonEmptyOrFallback(chat->reviewer_model_id, uam::strings::NonEmptyOrFallback(defaults.reviewer_model_id, goal.worker_model_id))
 	                             : "";

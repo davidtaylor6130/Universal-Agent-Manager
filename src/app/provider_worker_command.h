@@ -44,6 +44,7 @@ namespace uam
 	struct ProviderWorkerInvocation
 	{
 		bool direct_process = false;
+		bool structured_stdout = false;
 		std::function<bool(std::string_view)> output_sink;
 		std::vector<std::string> argv;
 		std::string standard_input;

@@ -1045,6 +1045,7 @@ namespace
 		       lhs.remote_recovery_enabled == rhs.remote_recovery_enabled &&
 		       lhs.remote_recovery_state == rhs.remote_recovery_state &&
 		       lhs.routing_mode == rhs.routing_mode &&
+		       lhs.routing_inherited_default_fields == rhs.routing_inherited_default_fields &&
 		       lhs.routing_source_folder_id == rhs.routing_source_folder_id &&
 		       lhs.routing_source_directory == rhs.routing_source_directory &&
 		       lhs.routing_assigned_connection_identity == rhs.routing_assigned_connection_identity &&
@@ -1419,6 +1420,7 @@ namespace
 		chat.remote_recovery_enabled = JsonBoolOrDefault(root.Find("remote_recovery_enabled"), false);
 		chat.remote_recovery_state = JsonStringOrEmpty(root.Find("remote_recovery_state"));
 		chat.routing_mode = JsonStringOrEmpty(root.Find("routing_mode"));
+		chat.routing_inherited_default_fields = JsonStringArrayOrEmpty(root.Find("routing_inherited_default_fields"));
 		chat.routing_source_folder_id = JsonStringOrEmpty(root.Find("routing_source_folder_id"));
 		chat.routing_source_directory = JsonStringOrEmpty(root.Find("routing_source_directory"));
 		chat.routing_assigned_connection_identity = JsonStringOrEmpty(root.Find("routing_assigned_connection_identity"));
@@ -2281,6 +2283,7 @@ try
 	uam::json::SetBool(root, "remote_recovery_enabled", chat.remote_recovery_enabled);
 	uam::json::SetString(root, "remote_recovery_state", chat.remote_recovery_state);
 	uam::json::SetString(root, "routing_mode", chat.routing_mode);
+	uam::json::SetValue(root, "routing_inherited_default_fields", StringArrayToJson(chat.routing_inherited_default_fields));
 	uam::json::SetString(root, "routing_source_folder_id", chat.routing_source_folder_id);
 	uam::json::SetString(root, "routing_source_directory", chat.routing_source_directory);
 	uam::json::SetString(root, "routing_assigned_connection_identity", chat.routing_assigned_connection_identity);
@@ -3310,6 +3313,7 @@ namespace
 		hydrated.remote_recovery_state = summary.remote_recovery_state;
 		hydrated.remote_process_control_token = summary.remote_process_control_token;
 		hydrated.routing_mode = summary.routing_mode;
+		hydrated.routing_inherited_default_fields = summary.routing_inherited_default_fields;
 		hydrated.routing_source_folder_id = summary.routing_source_folder_id;
 		hydrated.routing_source_directory = summary.routing_source_directory;
 		hydrated.routing_assigned_connection_identity = summary.routing_assigned_connection_identity;

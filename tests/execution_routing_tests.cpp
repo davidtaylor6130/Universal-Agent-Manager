@@ -291,7 +291,7 @@ namespace
 		policy.enabled = true;
 		policy.max_active_turns = 1;
 		policy.provider_confirmations.push_back({"codex-cli", uam::ExecutionRoutingConnectionIdentity(host),
-		    uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front())});
+		    uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front(), "remote")});
 		policy.workspace_mappings.push_back({"source", (root / "repo").string(), "destination"});
 		app.settings.execution_routing.hosts.push_back(policy);
 		ChatSession chat = ChatDomainService().CreateNewChat("source", "codex-cli");
@@ -584,12 +584,12 @@ UAM_TEST(ExecutionRoutingMcpChangesInvalidateHostConfirmation)
 		server.command = "must-not-start";
 		server.environment.push_back({"PRIVATE_FIXTURE", "", "before"});
 		app.settings.mcp_servers.push_back(server);
-		const std::string confirmed = uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front());
+		const std::string confirmed = uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front(), "remote");
 		app.settings.execution_routing.hosts.front().provider_confirmations.front().provider_configuration_identity = confirmed;
 		if (variation == 0) app.settings.mcp_servers.front().command = "must-not-start-changed";
 		else if (variation == 1) app.settings.mcp_servers.front().environment.front().value = "after";
 		else app.settings.mcp_servers.front().enabled = false;
-		const std::string changed = uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front());
+		const std::string changed = uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front(), "remote");
 		UAM_ASSERT(changed != confirmed);
 		UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
 		UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("local"));

@@ -230,11 +230,38 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 		}
 	}
 	m_workspaceDeletionPending = true;
+	m_workspaceDeletionTask = task;
 	m_app.worktree_operation_chat_ids.insert(task->deleted_ids.begin(), task->deleted_ids.end());
-	const auto unlock = [this, task]()
+	const std::filesystem::path data_root = task->snapshot.data_root;
+	const std::weak_ptr<void> lifetime = m_asyncLifetime;
+	const std::weak_ptr<uam::WorkspaceDeletionTask> weak_task = task;
+	m_app.deletion_progress = uam::DeletionProgress{0, task->snapshot.chats.size() + task->folder_ids.size(), {}};
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	task->progress = [this, browser, lifetime, weak_task, data_root, last_push = std::chrono::steady_clock::time_point{}](std::size_t completed, std::size_t total, const std::string& label) mutable
 	{
-		for (const std::string& id : task->deleted_ids) m_app.worktree_operation_chat_ids.erase(id);
+		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+		if (completed != total && now - last_push < std::chrono::milliseconds(50)) return;
+		last_push = now;
+		(void)CefPostTask(TID_UI, new uam::query_handler_async::CefQueryCallbackTask(lifetime, nullptr,
+		    uam::query_handler_async::AsyncSuccess({}),
+		    [this, browser, weak_task, data_root, completed, total, label](uam::query_handler_async::AsyncCefResult&)
+		    {
+			    const std::shared_ptr<uam::WorkspaceDeletionTask> current = weak_task.lock();
+			    if (!current || m_workspaceDeletionTask.lock() != current || m_app.data_root != data_root) return;
+			    m_app.deletion_progress = uam::DeletionProgress{completed, total, label};
+			    uam::PushStateUpdateIfChanged(browser, m_app);
+		    }));
+	};
+	const std::function<void()> unlock = [this, browser, weak_task, data_root]()
+	{
+		const std::shared_ptr<uam::WorkspaceDeletionTask> current = weak_task.lock();
+		if (!current || m_workspaceDeletionTask.lock() != current) return;
+		if (m_app.data_root == data_root)
+			for (const std::string& id : current->deleted_ids) m_app.worktree_operation_chat_ids.erase(id);
+		m_workspaceDeletionTask.reset();
 		m_workspaceDeletionPending = false;
+		m_app.deletion_progress.reset();
+		uam::PushStateUpdateIfChanged(browser, m_app);
 	};
 	if (!uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
 	    [task]()
@@ -243,45 +270,61 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 		        ? uam::query_handler_async::AsyncSuccess({})
 		        : uam::query_handler_async::AsyncFailure(500, task->snapshot.status_line);
 	    },
-	    [this, browser, cb, task, single_chat, unlock](uam::query_handler_async::AsyncCefResult& response)
+	    [this, browser, cb, task, single_chat, unlock, data_root, lifetime](uam::query_handler_async::AsyncCefResult& response)
 	    {
+		    if (m_workspaceDeletionTask.lock() != task || m_app.data_root != data_root)
+		    {
+			    unlock();
+			    response = uam::query_handler_async::AsyncFailure(409, "Deletion ownership changed. Recovery evidence was preserved.");
+			    return;
+		    }
 		    if (!response.ok) { unlock(); return; }
 		    uam::CommitWorkspaceDeletion(m_app, *task);
 		    if (task->commit_rejected)
 		    {
 			    response = uam::query_handler_async::AsyncFailure(500, m_app.status_line);
+			    m_app.deletion_progress.reset();
+			    uam::PushStateUpdateIfChanged(browser, m_app);
 			    return;
 		    }
 		    const std::string selected_id = ChatDomainService().SelectedChatId(m_app);
-		    if (single_chat)
-		        response = uam::query_handler_async::AsyncSuccess({});
-		    else
-		        response = uam::query_handler_async::AsyncSuccess({
-		            {"deletedChatIds", task->deleted_ids},
-		            {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}});
-		    cb->Success(response.body);
-		    response.callback_deferred = true;
+		    const std::string result_body = single_chat ? std::string("{}") : nlohmann::json{
+		        {"deletedChatIds", task->deleted_ids},
+		        {"selectedChatId", selected_id.empty() ? nlohmann::json(nullptr) : nlohmann::json(selected_id)}}.dump();
 		    uam::PushStateUpdateIfChanged(browser, m_app);
-		    if (!CefPostTask(TID_FILE_BACKGROUND, new uam::query_handler_async::CefQueryWorkerTask(m_asyncLifetime, nullptr,
+		    // Committed cleanup owns its lifetime even if the query or bridge closes.
+		    if (CefPostTask(TID_FILE_BACKGROUND, new uam::query_handler_async::CefQueryWorkerTask(task, nullptr,
 		        [task]()
 		        {
 			        (void)uam::CleanupWorkspaceDeletion(*task);
 			        return uam::query_handler_async::AsyncSuccess({});
 		        },
-		        [this, browser, task, unlock](uam::query_handler_async::AsyncCefResult& result)
+		        [this, browser, cb, task, unlock, lifetime, data_root, result_body](uam::query_handler_async::AsyncCefResult& result)
 		        {
-			        unlock();
+			        if (lifetime.expired()) return;
+			        if (m_workspaceDeletionTask.lock() != task || m_app.data_root != data_root)
+			        {
+				        unlock();
+				        cb->Failure(409, "Deletion ownership changed. Recovery evidence was preserved.");
+				        return;
+			        }
 			        m_app.status_line = result.ok ? task->snapshot.status_line
 			            : (task->deleting_chats
 			                ? "Chat deletion is committed. Disk cleanup will finish safely on restart."
 			                : "Workspace deletion is committed. Disk cleanup will finish safely on restart.");
-			        uam::PushStateUpdateIfChanged(browser, m_app);
+			        unlock();
+			        cb->Success(result_body);
 		        })))
 		    {
-			    unlock();
+			    response.callback_deferred = true;
+		    }
+		    else
+		    {
 			    m_app.status_line = task->deleting_chats
 			        ? "Chat deletion is committed. Disk cleanup will finish safely on restart."
 			        : "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+			    unlock();
+			    response = uam::query_handler_async::AsyncSuccess(nlohmann::json::parse(result_body));
 		    }
 	    })) unlock();
 }

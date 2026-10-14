@@ -33,8 +33,10 @@ namespace uam::execution_hosts
 	}
 
 	/// <summary>Applies startup confirmation after the host's local options were saved.</summary>
-	inline void ApplyStartupConfigurationResult(ExecutionHost& current, const ExecutionHost& previous, bool succeeded)
+	inline void ApplyStartupConfigurationResult(ExecutionHost& current, const ExecutionHost& previous, bool succeeded, std::string_view error = {})
 	{
+		current.runner_startup_applied = succeeded ? (current.startup_enabled ? "enabled" : "disabled") : "failed";
+		current.runner_startup_error = succeeded ? "" : std::string(error.substr(0, 300));
 		if (succeeded) current.startup_status = current.startup_enabled ? "enabled" : "disabled";
 		else
 		{
@@ -280,6 +282,8 @@ namespace uam::execution_hosts
 			    {"cliUpdatesAsAdmin", host.cli_updates_as_admin},
 			    {"customIcon", uam::icons::Serialize(host.custom_icon)},
 			});
+			if (host.runner_startup_applied) result.back()["runnerStartupApplied"] = *host.runner_startup_applied;
+			if (!host.runner_startup_error.empty()) result.back()["runnerStartupError"] = host.runner_startup_error;
 		}
 		return result;
 	}

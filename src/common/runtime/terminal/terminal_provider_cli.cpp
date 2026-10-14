@@ -1,3 +1,4 @@
+#include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include "app/uam_control_service.h"
 #include "app/provider_configuration_service.h"
@@ -487,13 +488,13 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 	    !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location);
 	if (terminal.context_preparation == nullptr && (!prepare_history || history_prepared) &&
 	    !uam::central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, host.id, "shared-setup", app.settings.central_provider_configuration.enabled) &&
-	    uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() &&
-	    (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(app.settings.mcp_servers, chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() ||
+	    uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() &&
+	    (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() ||
 	    (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id))) return true;
 	const std::function<std::string()> capture_baseline = [&]() { return nlohmann::json::array({chat.id, chat.provider_id,
 	    uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)),
 	    ContextConnectionIdentity(host), host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr), chat.uam_control_enabled, chat.uam_agent_id, chat.provider_handoff_context, chat.native_session_id, chat.provider_handoff_session_id,
-	    ChatRepository::ChatMetadataFingerprint(app.data_root, chat), argv, environment, uam::central_configuration::Serialize(app.settings.central_provider_configuration), uam::mcp_server_config::Serialize(app.settings.mcp_servers)}).dump(); };
+	    ChatRepository::ChatMetadataFingerprint(app.data_root, chat), argv, environment, uam::central_configuration::Serialize(app.settings.central_provider_configuration), uam::mcp_server_config::Serialize(uam::host_scoped_settings::McpServers(app.settings, host.id))}).dump(); };
 	const std::string baseline = capture_baseline();
 	if (terminal.context_preparation != nullptr)
 	{

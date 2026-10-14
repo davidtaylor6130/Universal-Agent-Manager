@@ -1,4 +1,6 @@
 #pragma once
+#include "common/config/host_scoped_settings.h"
+
 
 #include "app/agent_definition_service.h"
 #include "app/markdown_store_service.h"
@@ -23,7 +25,7 @@ namespace uam
 	{
 		bundle = {};
 		// Source workspace settings follow isolated worktrees; the active workspace can override them.
-		std::vector<McpServerConfiguration> candidates = settings.mcp_servers;
+		std::vector<McpServerConfiguration> candidates = host_scoped_settings::McpServers(settings, host.id);
 		for (McpServerConfiguration& server : candidates) server.enabled = central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, host.id, server.id, server.enabled);
 		if (!chat.workspace_source_directory.empty() && chat.workspace_source_directory != uam::paths::Utf8PathString(workspace))
 		{

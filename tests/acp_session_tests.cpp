@@ -1446,6 +1446,67 @@ UAM_TEST(AcpRetryFailedPromptAcceptsTrailingBlankAssistantPlaceholder)
 	}
 }
 
+UAM_TEST(AcpRetryFailedPromptAcceptsWhitespaceOnlyAssistantMetadata)
+{
+	for (const bool thought : {false, true})
+	{
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "retry-whitespace-metadata";
+		chat.provider_id = uam::provider_ids::kGeminiCli;
+		chat.messages_loaded = true;
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retry original prompt.",
+		                         .interrupted = true, .acp_prompt_not_sent = true});
+		Message placeholder;
+		placeholder.role = MessageRole::Assistant;
+		if (thought) placeholder.thoughts = " \t\n";
+		else placeholder.plan_summary = " \t\n";
+		chat.messages.push_back(std::move(placeholder));
+		app.chats.push_back(std::move(chat));
+
+		std::string error;
+		UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+		UAM_ASSERT_EQ(error, std::string("Reconnect the original native session before retrying."));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+		UAM_ASSERT(app.chats.front().messages.front().acp_prompt_not_sent);
+		UAM_ASSERT(app.acp_sessions.empty());
+	}
+}
+
+UAM_TEST(AcpRetryFailedPromptMatchesJavascriptWhitespace)
+{
+	const std::vector<std::string> whitespace = {"\xC2\xA0", "\xE1\x9A\x80", "\xE2\x80\x80", "\xE2\x80\x81", "\xE2\x80\x82", "\xE2\x80\x83", "\xE2\x80\x84", "\xE2\x80\x85", "\xE2\x80\x86", "\xE2\x80\x87", "\xE2\x80\x88", "\xE2\x80\x89", "\xE2\x80\x8A", "\xE2\x80\xA8", "\xE2\x80\xA9", "\xE2\x80\xAF", "\xE2\x81\x9F", "\xE3\x80\x80", "\xEF\xBB\xBF"};
+	const std::vector<std::string> substantive = {"\xC2\x85", "\xE1\xA0\x8E", "\xE2\x80\x8B", "\xC2", "\xE2\x80", "\xFF", "\xC0\xA0", "text"};
+	for (const bool accepted : {true, false})
+	{
+		for (const std::string& text : accepted ? whitespace : substantive)
+		{
+			for (const int field : {0, 1, 2})
+			{
+				uam::AppState app;
+				ChatSession chat;
+				chat.id = "retry-unicode-whitespace";
+				chat.provider_id = uam::provider_ids::kGeminiCli;
+				chat.messages_loaded = true;
+				chat.messages.push_back({.role = MessageRole::User, .content = "Retry original prompt.", .acp_prompt_not_sent = true});
+				Message placeholder;
+				placeholder.role = MessageRole::Assistant;
+				if (field == 0) placeholder.content = " \t" + text + "\n ";
+				if (field == 1) placeholder.thoughts = " \t" + text + "\n ";
+				if (field == 2) placeholder.plan_summary = " \t" + text + "\n ";
+				chat.messages.push_back(std::move(placeholder));
+				app.chats.push_back(std::move(chat));
+				std::string error;
+				UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
+				UAM_ASSERT_EQ(error, std::string(accepted ? "Reconnect the original native session before retrying." : "The failed message is no longer the latest message."));
+				UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+				UAM_ASSERT(app.chats.front().messages.front().acp_prompt_not_sent);
+				UAM_ASSERT(app.acp_sessions.empty());
+			}
+		}
+	}
+}
+
 UAM_TEST(AcpRetryFailedPromptRejectsAssistantOutputAfterFailedUser)
 {
 	for (const int kind : {0, 1, 2, 3, 4, 5})

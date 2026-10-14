@@ -19,3 +19,11 @@ Permissions for structured tool requests pass through the native permission laye
 - Focused checks: `tests/acp_session_tests.cpp`, `tests/terminal_tests.cpp`, `tests/provider_availability_tests.cpp`, `tests/native_chat_identity_tests.cpp`, `tests/turn_finalization_ownership_tests.cpp`.
 
 The 250 ms frontend interaction budget does not measure provider startup or response time. Process timeouts are operation-specific; preserve their existing values and ownership tests when changing launch or shutdown paths.
+
+## Manual compaction and model limits
+
+Local Codex manual compaction can start an idle or stopped structured session and wait for provider readiness. The pending request owns the chat incarnation, data root, provider, workspace and native session; stop, cancellation, deletion or an unrelated ownership change clears it. Preparation can transfer ownership only through its captured saved workspace task. Active turns, queued prompts, pending delivery and controls block admission. Compaction is maintenance, creates no user message or turn checkpoint, and reports `compacting` while waiting or running. Other providers and remote sessions retain their explicit unsupported response.
+
+Model catalogs preserve optional `contextWindowTokens` and `maxOutputTokens` across cached and frontend projections. Structured provider metadata and OpenCode's model `limit.context` and `limit.output` supply these values. Only nonnegative integers within JavaScript's exact integer range are accepted; absent or invalid limits remain unknown. Context capacity and maximum output stay separate and are not inferred from one another.
+
+Retry locates the latest authored user message after hydrating cold history. Empty assistant placeholders do not block retry when their content, thoughts and plan summaries contain only JavaScript `trim` whitespace, including its Unicode whitespace characters. Substantive output or malformed UTF-8 blocks retry. A later user message still rejects an obsolete retry request.
