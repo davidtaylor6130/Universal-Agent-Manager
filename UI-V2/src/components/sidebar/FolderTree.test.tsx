@@ -603,7 +603,10 @@ describe('FolderTree', () => {
     const move = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
       button.textContent?.includes('Move to collection')
     ) as HTMLButtonElement
-    act(() => move.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })))
+    act(() => {
+      move.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+      vi.advanceTimersByTime(160) // hover intent before the submenu opens
+    })
     const submenu = document.body.querySelector('[role="menu"][aria-label="Move to collection"]') as HTMLElement
     expect(submenu).toBeTruthy()
 
@@ -611,7 +614,7 @@ describe('FolderTree', () => {
       move.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: submenu }))
       submenu.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: move }))
       submenu.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }))
-      vi.advanceTimersByTime(200)
+      vi.advanceTimersByTime(320) // close delay, then exit motion
     })
 
     expect(document.body.querySelector('[role="menu"][aria-label="Move to collection"]')).toBeNull()
@@ -623,6 +626,7 @@ describe('FolderTree', () => {
   })
 
   it('opens and closes the collection submenu with nested-menu keyboard controls', () => {
+    vi.useFakeTimers()
     useAppStore.setState({
       resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }],
     })
@@ -647,6 +651,7 @@ describe('FolderTree', () => {
       expect(submenu.contains(document.activeElement)).toBe(true)
 
       act(() => submenu.dispatchEvent(new KeyboardEvent('keydown', { key: closeKey, bubbles: true })))
+      act(() => { vi.advanceTimersByTime(200) }) // exit motion keeps the submenu mounted briefly
       expect(document.body.querySelector('[role="menu"][aria-label="Move to collection"]')).toBeNull()
       expect(document.activeElement).toBe(move)
       expect(document.body.querySelector('[data-viewport-menu]')).toBeTruthy()
@@ -654,6 +659,7 @@ describe('FolderTree', () => {
 
     act(() => root.unmount())
     host.remove()
+    vi.useRealTimers()
   })
 
   it('marks a missing workspace folder accessibly without removing its chats', () => {
