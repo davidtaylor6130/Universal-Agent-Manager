@@ -107,6 +107,12 @@
 .uam-sb-menu-item:disabled { opacity: .5; cursor: default; }
 .uam-sb-menu-item--danger { color: var(--error); }
 .uam-sb-menu-item--danger:hover:not(:disabled) { background: var(--error-dim); color: var(--error); }
+.uam-sb-menu-divider { margin: 4px 8px; border-top: 1px solid var(--border); }
+
+/* Submenus fade out quicker than they open; pointer-events stop while leaving. */
+.uam-sb-submenu[data-state="closing"] { animation: uam-sb-submenu-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+@keyframes uam-sb-submenu-out { to { opacity: 0; transform: scale(0.98); } }
+@media (prefers-reduced-motion: reduce) { .uam-sb-submenu[data-state="closing"] { animation: none; } }
 
 /* Collapsed Active section: one calm warning strip that expands the section. */
 .uam-sb-attention-strip {

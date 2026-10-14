@@ -1,4 +1,5 @@
 import { SnoozeMenu } from './SnoozeMenu'
+import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
@@ -6,7 +7,7 @@ import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock,
+  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock, SmilePlus,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -25,7 +26,7 @@ import { preferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { CollectionMenuItems } from './CollectionMenuItems'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
-import { CustomIcon } from '../shared/CustomIcon'
+import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { reportAppFailure } from '../../utils/appFailure'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
 
@@ -198,6 +199,35 @@ function formatWakeTime(untilMs: number): string {
 
 const HOVER_FADE = 'transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0'
 
+type CopyDetail = { label: string; value: string }
+
+function MenuDivider() {
+  return <div className="uam-sb-menu-divider" role="separator" />
+}
+
+/** Copy rows live inside the Copy submenu, so their status resets when the submenu closes. */
+function CopyDetailItems({ items }: { items: CopyDetail[] }) {
+  const [copying, setCopying] = useState(false)
+  const [result, setResult] = useState<{ label: string; ok: boolean } | null>(null)
+  const copy = async ({ label, value }: CopyDetail) => {
+    if (copying) return
+    setCopying(true)
+    setResult(null)
+    try { setResult({ label, ok: await copyTextToClipboard(value, document) }) }
+    catch { setResult({ label, ok: false }) }
+    finally { setCopying(false) }
+  }
+  return <>
+    {items.map((item) => <button key={item.label} type="button" role="menuitem" disabled={copying} className="uam-sb-menu-item"
+      style={{ cursor: copying ? 'wait' : 'pointer' }} onClick={() => { void copy(item) }}>
+      <Copy size={13} aria-hidden />{item.label}
+    </button>)}
+    {result && <p role={result.ok ? 'status' : 'alert'} className="px-3 py-1 text-xs" style={{ color: result.ok ? 'var(--text-2)' : 'var(--error)' }}>
+      {result.ok ? `${result.label} copied.` : 'Could not copy. Try again.'}
+    </p>}
+  </>
+}
+
 export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
@@ -342,16 +372,17 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
-  const [copyState, setCopyState] = useState<'name' | 'id' | 'failed' | null>(null)
-  const [copying, setCopying] = useState(false)
-  const copyChatDetail = async (kind: 'name' | 'id') => {
-    if (copying) return
-    setCopying(true)
-    setCopyState(null)
-    try { setCopyState(await copyTextToClipboard(kind === 'id' ? sessionId : sessionName, document) ? kind : 'failed') }
-    catch { setCopyState('failed') }
-    finally { setCopying(false) }
-  }
+  const iconPicker = useCustomIconPicker()
+  const nativeSessionId = useAppStore((s) => s.acpBindingBySessionId[sessionId]?.sessionId ?? '')
+  const workspacePath = sessionSummary.worktreeDirectory || sessionSummary.workspaceDirectory
+  const branchName = sessionSummary.branchName.trim()
+  const copyItems: CopyDetail[] = [
+    { label: 'Chat name', value: sessionName },
+    { label: 'Chat ID', value: sessionId },
+    ...(workspacePath ? [{ label: 'Workspace path', value: workspacePath }] : []),
+    ...(branchName ? [{ label: 'Branch', value: branchName }] : []),
+    ...(nativeSessionId ? [{ label: 'Native session ID', value: nativeSessionId }] : []),
+  ]
   const [generatingTitle, setGeneratingTitle] = useState(false)
   const [cancellingTitle, setCancellingTitle] = useState(false)
   const [titleFeedback, setTitleFeedback] = useState<{ error: boolean; text: string } | null>(null)
@@ -388,7 +419,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     }
   }
   const showMenu = menuPos !== null
-  useEffect(() => { setCopyState(null) }, [showMenu])
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -850,19 +880,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               setMenuPos(null)
               current.setNewChatModalOpen(true, source.folderId, { sourceChatId: source.id, expectedWorkspaceDirectory: source.workspaceWorktreeDirectory, expectedExecutionHostId: source.executionHostId || 'local' })
             }}><MessageSquarePlus size={13} aria-hidden />New chat in this worktree</button>
+          <MenuDivider />
           <button
             role="menuitem"
             className="uam-sb-menu-item"
-            
-            onClick={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }}
-          >
-            <Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
-            {isPinned ? 'Unpin chat' : 'Pin chat'}
-          </button>
-          <button
-            role="menuitem"
-            className="uam-sb-menu-item"
-                        onClick={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }}
+            onClick={() => { setMenuPos(null); setEditing(true); setEditValue(sessionName) }}
           >
             <Pencil size={13} aria-hidden />
             Rename
@@ -870,26 +892,34 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </button>
           <button type="button" role="menuitem" disabled={generatingTitle}
             className="uam-sb-menu-item"
-            style={{ background: 'transparent', color: 'var(--text-2)', cursor: generatingTitle ? 'wait' : 'pointer', border: 'none', fontFamily: 'inherit' }}
             onClick={() => { void regenerateTitle() }}>
             <RefreshCw size={13} aria-hidden />{generatingTitle ? 'Generating title…' : 'Regenerate title'}
           </button>
           {generatingTitle && <button type="button" role="menuitem" disabled={cancellingTitle}
             className="uam-sb-menu-item"
-            
             onClick={() => { void cancelTitle() }}>{cancellingTitle ? 'Cancelling…' : 'Cancel title generation'}</button>}
           {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--error)' : 'var(--text-2)' }}>{titleFeedback.text}</p>}
-          {(['name', 'id'] as const).map(kind => <button key={kind} type="button" role="menuitem" disabled={copying}
+          <button
+            role="menuitem"
             className="uam-sb-menu-item"
-            style={{ background: 'transparent', color: 'var(--text-2)', cursor: copying ? 'wait' : 'pointer', border: 'none', fontFamily: 'inherit' }}
-            onClick={() => { void copyChatDetail(kind) }}>
-            <Copy size={13} aria-hidden />{kind === 'name' ? 'Copy chat name' : 'Copy chat ID'}
-          </button>)}
-          {copyState && <p role={copyState === 'failed' ? 'alert' : 'status'} className="px-3 py-1 text-xs" style={{ color: copyState === 'failed' ? 'var(--error)' : 'var(--text-2)' }}>
-            {copyState === 'failed' ? 'Could not copy. Try again.' : copyState === 'id' ? 'Chat ID copied.' : 'Chat name copied.'}
-          </p>}
-          <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={sessionSummary.snoozedUntilMs} />
-          <CollectionMenuItems type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
+            onClick={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }}
+          >
+            <Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
+            {isPinned ? 'Unpin chat' : 'Pin chat'}
+          </button>
+          <button type="button" role="menuitem" className="uam-sb-menu-item"
+            onClick={() => { setMenuPos(null); iconPicker.open('chat', sessionId, sessionName) }}>
+            <SmilePlus size={13} aria-hidden />Icon…
+          </button>
+          <MenuDivider />
+          <RowSubmenu label="Copy" ariaLabel="Copy" icon={<Copy size={13} aria-hidden />}>
+            <CopyDetailItems items={copyItems} />
+          </RowSubmenu>
+          <RowSubmenu label="Snooze" ariaLabel={`Snooze ${sessionName}`} icon={<Clock size={13} aria-hidden />}>
+            <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={sessionSummary.snoozedUntilMs} onSnoozed={() => setMenuPos(null)} />
+          </RowSubmenu>
+          <CollectionMenuItems showDivider={false} type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
+          <MenuDivider />
           <button
             role="menuitem"
             className="uam-sb-menu-item uam-sb-menu-item--danger"
@@ -901,6 +931,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </button>
         </ViewportMenu>
       )}
+      {iconPicker.dialog}
       <ConfirmDialog
         open={confirmDelete}
         title="Delete chat?"

@@ -59,6 +59,13 @@ function makeAcpBinding(overrides: Partial<AcpBinding> = {}): AcpBinding {
   }
 }
 
+/** Opens the Copy submenu from the open context menu and returns its element. */
+function openCopySubmenu(menu: Element) {
+  const copy = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Copy')!
+  act(() => copy.click())
+  return document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Copy"]')!
+}
+
 function renderSessionItem(activityLayout = false) {
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -332,14 +339,14 @@ describe('SessionItem status icons', () => {
     const { host, root } = renderSessionItem(activityLayout)
     try {
       act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
-      const menu = document.body.querySelector('[data-viewport-menu]')!
-      const button = (name: string) => Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === name)!
-      await act(async () => button('Copy chat name').click())
+      const submenu = openCopySubmenu(document.body.querySelector('[data-viewport-menu]')!)
+      const button = (name: string) => Array.from(submenu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === name)!
+      await act(async () => button('Chat name').click())
       expect(copied).toEqual(['Chat 1'])
-      expect(menu.querySelector('[role="status"]')?.textContent).toBe('Chat name copied.')
-      await act(async () => button('Copy chat ID').click())
+      expect(submenu.querySelector('[role="status"]')?.textContent).toBe('Chat name copied.')
+      await act(async () => button('Chat ID').click())
       expect(copied).toEqual(['Chat 1', 'chat-1'])
-      expect(menu.querySelector('[role="status"]')?.textContent).toBe('Chat ID copied.')
+      expect(submenu.querySelector('[role="status"]')?.textContent).toBe('Chat ID copied.')
     } finally { delete window.cefQuery; act(() => root.unmount()); host.remove() }
   })
 
@@ -350,13 +357,13 @@ describe('SessionItem status icons', () => {
     const { host, root } = renderSessionItem()
     try {
       act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
-      const menu = document.body.querySelector('[data-viewport-menu]')!
-      const button = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Copy chat ID')!
+      const submenu = openCopySubmenu(document.body.querySelector('[data-viewport-menu]')!)
+      const button = Array.from(submenu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Chat ID')!
       await act(async () => button.click())
-      expect(menu.querySelector('[role="alert"]')?.textContent).toBe('Could not copy. Try again.')
+      expect(submenu.querySelector('[role="alert"]')?.textContent).toBe('Could not copy. Try again.')
       expect(button.disabled).toBe(false)
       await act(async () => button.click())
-      expect(menu.querySelector('[role="status"]')?.textContent).toBe('Chat ID copied.')
+      expect(submenu.querySelector('[role="status"]')?.textContent).toBe('Chat ID copied.')
       expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
     } finally {
       act(() => root.unmount()); host.remove()
@@ -951,6 +958,30 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('groups the chat menu into sections with dividers and submenus for copy, snooze and collections', () => {
+    useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }] })
+    const { host, root } = renderSessionItem()
+    try {
+      act(() => host.querySelector('.cursor-pointer')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 })))
+      const menu = document.body.querySelector('[data-viewport-menu]')!
+      const items = Array.from(menu.children).map((child) => child.getAttribute('role') === 'separator' ? '---' : child.textContent?.trim())
+      expect(items).toEqual([
+        'New chat in this worktree',
+        '---',
+        'RenameF2',
+        'Regenerate title',
+        'Pin chat',
+        'Icon…',
+        '---',
+        'Copy',
+        'Snooze',
+        'Move to collection',
+        '---',
+        'Delete…Del',
+      ])
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('moves a chat to a collection from its right-click menu', async () => {
     const moveResourceToCollection = vi.fn().mockResolvedValue(true)
     useAppStore.setState({
@@ -996,7 +1027,7 @@ describe('SessionItem snooze actions', () => {
     try {
       act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Snooze Chat 1"]')!.click())
       const menu = document.body.querySelector('[role="menu"][aria-label="Snooze Chat 1"]')
-      expect(menu?.querySelector('button')?.textContent).toBe('Snooze')
+      expect(menu?.querySelector('[role="menuitem"]')?.textContent?.startsWith('5 minutes')).toBe(true)
     } finally {
       act(() => root.unmount())
       host.remove()
