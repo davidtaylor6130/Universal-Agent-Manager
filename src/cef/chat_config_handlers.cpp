@@ -49,6 +49,14 @@
 
 namespace
 {
+	bool HasComputerUseOwnership(const uam::AppState& app, const std::string& chat_id, bool enabled)
+	{
+		if (enabled || app.computer_use_revocation_pending_chat_ids.contains(chat_id)) return true;
+		const std::unordered_map<std::string, uam::ComputerUseRuntimeState>::const_iterator runtime = app.computer_use_by_chat_id.find(chat_id);
+		return runtime != app.computer_use_by_chat_id.end() &&
+		    (runtime->second.state == "armed" || runtime->second.state == "running" || runtime->second.state == "paused");
+	}
+
 	uam::query_handler_async::AsyncCefResult RunComputerUseSettingsHelperOnce(
 	    std::string action, std::string permission = {})
 	{
@@ -1109,23 +1117,35 @@ void UamQueryHandler::HandleDeleteAgentDefinition(CefRefPtr<CefBrowser>, const n
 
 void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const std::string chat_id = payload.value("chatId", "");
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Open a workspace chat before importing an agent.");
-	if (chat == nullptr) return;
-
 	uam::ProviderAgentImportRequest request;
-	request.provider_id = payload.value("providerId", "");
-	request.source_path = uam::paths::PathFromUtf8(payload.value("sourcePath", ""));
-	request.canonical_id = payload.value("canonicalId", "");
-	request.workspace_access = payload.value("workspaceAccess", "");
-	request.workspace_scope = payload.value("workspaceScope", false);
-	request.acknowledge_ignored_fields = payload.value("acknowledgeIgnoredFields", false);
+	std::filesystem::path workspace_root;
+	try
+	{
+		const std::string chat_id = payload.value("chatId", "");
+		request.provider_id = payload.value("providerId", "");
+		request.source_path = uam::paths::PathFromUtf8(payload.value("sourcePath", ""));
+		request.canonical_id = payload.value("canonicalId", "");
+		request.workspace_access = payload.value("workspaceAccess", "");
+		request.skills = payload.value("skills", std::vector<std::string>{});
+		request.workspace_scope = payload.value("workspaceScope", false);
+		request.acknowledge_ignored_fields = payload.value("acknowledgeIgnoredFields", false);
+		if (request.workspace_scope)
+		{
+			ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Open a workspace chat before importing an agent.");
+			if (chat == nullptr) return;
+			workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat);
+		}
+	}
+	catch (const nlohmann::json::exception&)
+	{
+		cb->Failure(400, "Agent import fields are missing or invalid.");
+		return;
+	}
 
 	uam::AgentDefinition imported;
 	std::string error;
 	if (!uam::AgentDefinitionService::ImportProviderAgent(
-	        m_app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat),
-	        request, &imported, &error))
+	        m_app.data_root, workspace_root, request, &imported, &error))
 	{
 		cb->Failure(400, FailureDetailOrFallback(error, "Provider agent import failed."));
 		return;
@@ -1358,6 +1378,35 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	}
 	const bool uses_uam_backend = uam::computer_use::UsesUamBackend(*chat);
 
+	if (!enabled)
+	{
+		if (!HasComputerUseOwnership(m_app, chat_id, chat != nullptr && chat->computer_use_enabled))
+		{
+			cb->Success("{}");
+			return;
+		}
+		m_app.computer_use_revocation_pending_chat_ids.insert(chat_id);
+		chat->computer_use_enabled = false;
+		const bool acp_stopped = uam::StopAcpSession(m_app, chat_id);
+		const bool terminal_stopped = uam::StopAndEraseCliTerminalForChat(m_app, chat_id);
+		chat = ChatDomainService().FindChatById(m_app, chat_id);
+		if (chat != nullptr) chat->computer_use_enabled = false;
+		std::string error;
+		const bool control_stopped = !uses_uam_backend || uam::ComputerUseService::SetControlState(m_app, chat_id, "stopped", &error);
+		if (acp_stopped && terminal_stopped && control_stopped)
+			m_app.computer_use_revocation_pending_chat_ids.erase(chat_id);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		if (m_app.computer_use_revocation_pending_chat_ids.contains(chat_id))
+			cb->Failure(500, FailureDetailOrFallback(error, "Computer Use is disabled; its previous controls are still stopping. Retry disabling."));
+		else cb->Success("{}");
+		return;
+	}
+	if (m_app.computer_use_revocation_pending_chat_ids.contains(chat_id))
+	{
+		cb->Failure(409, "Retry disabling Computer Use to clear its previous controls before enabling it.");
+		return;
+	}
+
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 	if (!uam::EnsureAcpStopProgress(m_app, chat_id))
 	{
@@ -1369,22 +1418,10 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 		cb->Failure(409, "Activate provider computer use after the current structured turn finishes.");
 		return;
 	}
-	if (session != nullptr && session->running && (!enabled || !uses_uam_backend) && !uam::StopAcpSession(m_app, chat_id))
+	if (session != nullptr && session->running && !uses_uam_backend && !uam::StopAcpSession(m_app, chat_id))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
-		return;
-	}
-
-	if (!enabled)
-	{
-		// Turning computer use off is a safety boundary: terminate the provider first,
-		// even if the cooperative control file cannot be updated.
-		chat->computer_use_enabled = false;
-		if (uses_uam_backend)
-			(void)uam::ComputerUseService::SetControlState(m_app, chat_id, "stopped");
-		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Success("{}");
 		return;
 	}
 
@@ -1523,7 +1560,8 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 		}
 	}
 	const bool globally_enabled = payload.value("computerUseGloballyEnabled", previous.computer_use_globally_enabled);
-	if (globally_enabled && !previous.computer_use_globally_enabled && !uam::ComputerUseService::ResetControlsForStartup(m_app))
+	if (globally_enabled && (!m_app.computer_use_revocation_pending_chat_ids.empty() ||
+	    (!previous.computer_use_globally_enabled && !uam::ComputerUseService::ResetControlsForStartup(m_app))))
 	{
 		cb->Failure(500, "Computer Use cannot be re-enabled until its previous control grants are cleared.");
 		return;
@@ -1535,16 +1573,32 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 	bool revoked = true;
 	if (!m_app.settings.computer_use_globally_enabled)
 	{
+		// Terminal history synchronization can replace the chat vector.
+		std::unordered_set<std::string> owned_ids = m_app.computer_use_revocation_pending_chat_ids;
+		for (const std::pair<const std::string, uam::ComputerUseRuntimeState>& entry : m_app.computer_use_by_chat_id)
+		{
+			const std::string& chat_id = entry.first;
+			const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
+			if ((chat == nullptr || uam::computer_use::AvailableForChat(*chat)) && HasComputerUseOwnership(m_app, chat_id, chat != nullptr && chat->computer_use_enabled))
+				owned_ids.insert(chat_id);
+		}
 		for (ChatSession& chat : m_app.chats)
 		{
-			const bool was_enabled = chat.computer_use_enabled;
+			if (uam::computer_use::AvailableForChat(chat) && HasComputerUseOwnership(m_app, chat.id, chat.computer_use_enabled))
+				owned_ids.insert(chat.id);
 			chat.computer_use_enabled = false;
-			if (!uam::computer_use::AvailableForChat(chat)) continue;
-			if (was_enabled || uam::AcpStopInProgress(m_app, chat.id))
-			{
-				revoked = uam::StopAcpSession(m_app, chat.id) && revoked;
-				revoked = uam::StopAndEraseCliTerminalForChat(m_app, chat.id) && revoked;
-			}
+		}
+		m_app.computer_use_revocation_pending_chat_ids.insert(owned_ids.begin(), owned_ids.end());
+		for (const std::string& chat_id : owned_ids)
+		{
+			const bool acp_stopped = uam::StopAcpSession(m_app, chat_id);
+			const bool terminal_stopped = uam::StopAndEraseCliTerminalForChat(m_app, chat_id);
+			ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
+			if (chat != nullptr) chat->computer_use_enabled = false;
+			const bool control_stopped = uam::ComputerUseService::SetControlState(m_app, chat_id, "stopped");
+			if (acp_stopped && terminal_stopped && control_stopped)
+				m_app.computer_use_revocation_pending_chat_ids.erase(chat_id);
+			else revoked = false;
 		}
 		revoked = uam::ComputerUseService::ResetControlsForStartup(m_app) && revoked;
 	}

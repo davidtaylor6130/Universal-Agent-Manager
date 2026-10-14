@@ -41,6 +41,22 @@ namespace
 	constexpr std::size_t kMaxQueuedPermissions = 64;
 	bool PermissionFitsPlanCeiling(const AcpPendingPermissionState& pending);
 
+	std::string AiReviewOneTimeOptionId(const AcpPendingPermissionState& pending)
+	{
+		for (const AcpPermissionOptionState& option : pending.options)
+		{
+			if (IsRejectPermissionOption(option.id, option.name, option.kind)) continue;
+			if (option.kind == "allow_once" ||
+			    ((uam::acp_permissions::IsCodexDecisionPermissionKind(pending.provider_request_kind) ||
+			      pending.provider_request_kind == uam::acp_permissions::kCodexPermissionsRequestKind) &&
+			     option.kind == uam::acp_permissions::kDecisionOptionKind && option.id == uam::acp_permissions::kAcceptDecision))
+			{
+				return option.id;
+			}
+		}
+		return {};
+	}
+
 	/// <summary>Rechecks current review ownership and access before launch or delivery of an asynchronous verdict.</summary>
 	bool ParentPermissionReviewAllowed(const AcpSessionState& session, const ChatSession& chat)
 	{
@@ -61,10 +77,11 @@ namespace
 	}
 
 
-	bool HasPermissionReviewTask(const AppState& app, std::string_view chat_id, std::string_view request_id_json)
+	bool HasPermissionReviewTask(const AppState& app, std::string_view chat_id, const AcpSessionState& session)
 	{
 		return std::ranges::any_of(app.permission_review_tasks, [&](const AsyncPermissionReviewTask& task) {
-			return task.chat_id == chat_id && task.request_id_json == request_id_json;
+			return task.chat_id == chat_id && task.request_id_json == session.pending_permission.request_id_json &&
+			       task.permission_review_incarnation == session.permission_review_incarnation;
 		});
 	}
 
@@ -80,7 +97,7 @@ namespace
 	bool TryStartPermissionReview(AppState& app, AcpSessionState& session, const ChatSession& chat)
 	{
 		if (!ParentPermissionReviewAllowed(session, chat) ||
-		    HasPermissionReviewTask(app, chat.id, session.pending_permission.request_id_json))
+		    HasPermissionReviewTask(app, chat.id, session))
 		{
 			return false;
 		}
@@ -117,6 +134,7 @@ namespace
 		AsyncPermissionReviewTask task;
 		task.chat_id = chat.id;
 		task.request_id_json = session.pending_permission.request_id_json;
+		task.permission_review_incarnation = session.permission_review_incarnation;
 		task.command_preview = invocation.command_preview;
 		task.state = std::make_shared<AsyncProcessTaskState>();
 		task.state->launch_time = std::chrono::steady_clock::now();
@@ -163,7 +181,7 @@ std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending
 		{
 			if (original.second->empty()) continue;
 			nlohmann::json payload = nlohmann::json::parse(*original.second, nullptr, false);
-			if (!payload.is_object()) return {};
+			if (payload.is_discarded() || (original.second != &pending.provider_input_json && !payload.is_object())) return {};
 			request[original.first] = std::move(payload);
 		}
 		const std::string prompt = "Review this single provider permission request. Return exactly one JSON object and no prose or markdown: {\"decision\":\"approve|deny|uncertain\",\"reason\":\"short reason\"}. Approve only when the shown operation is clearly safe and intended. Deny clearly unsafe or destructive operations. Use uncertain for missing context. Request:\n" + request.dump();
@@ -552,7 +570,9 @@ bool PollPermissionReviewTasks(AppState& app)
 		const ProcessExecutionResult result = task.state->result;
 		AcpSessionState* session = FindAcpSessionForChat(app, task.chat_id);
 		ChatSession* chat = ChatDomainService().FindChatById(app, task.chat_id);
-		if (session != nullptr && chat != nullptr && session->running && session->pending_permission.request_id_json == task.request_id_json && ParentPermissionReviewAllowed(*session, *chat))
+		if (session != nullptr && chat != nullptr && session->running && task.permission_review_incarnation != nullptr &&
+		    session->permission_review_incarnation == task.permission_review_incarnation &&
+		    session->pending_permission.request_id_json == task.request_id_json && ParentPermissionReviewAllowed(*session, *chat))
 		{
 			const auto decision = result.ok && !result.output_truncated ? ParsePermissionReviewWorkerOutput(task.state->provider_id, result.output) : std::nullopt;
 			if (!decision)
@@ -569,7 +589,7 @@ bool PollPermissionReviewTasks(AppState& app)
 			else
 			{
 				const bool approve = decision->decision == "approve";
-				const std::string option_id = approve ? AutoApproveOptionId(session->pending_permission) : RejectPermissionOptionId(session->pending_permission);
+				const std::string option_id = approve ? AiReviewOneTimeOptionId(session->pending_permission) : RejectPermissionOptionId(session->pending_permission);
 				std::string response_error;
 				const bool sent = approve && option_id.empty()
 				    ? false

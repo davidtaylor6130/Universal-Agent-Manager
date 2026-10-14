@@ -46,6 +46,7 @@ namespace uam
 		result.workspace_isolation_kind = chat.workspace_isolation_kind;
 		result.workspace_source_directory = chat.workspace_source_directory;
 		result.workspace_worktree_directory = chat.workspace_worktree_directory;
+		result.svn_update_pending = chat.svn_update_pending;
 		result.workspace_branch_name = chat.workspace_branch_name;
 		result.git_base_branch_override = chat.git_base_branch_override;
 		result.routing_mode = chat.routing_mode;

@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "cef/uam_query_handler_internal.h"
+#include "common/memory/memory_policy.h"
 
 using namespace uam_test;
 
@@ -29,6 +30,8 @@ UAM_TEST(AutomaticRoutingDoesNotInheritSourceAccountModelOrTierDefaults)
 		UAM_ASSERT_EQ(chat.service_tier_explicit, !automatic);
 		UAM_ASSERT_EQ(chat.approval_mode, defaults.approval_mode);
 		UAM_ASSERT_EQ(chat.command_safety_tier, defaults.command_safety_tier);
-		UAM_ASSERT(!chat.memory_enabled);
+		UAM_ASSERT_EQ(chat.memory_level, std::string(uam::memory_levels::kDefault));
+		UAM_ASSERT(chat.memory_enabled);
+		UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string(uam::memory_levels::kOff));
 	}
 }

@@ -570,3 +570,32 @@ UAM_TEST(ExecutionRoutingAssignedWorktreeKeepsRegisteredBaseOwnership)
 	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/mapped/repo"));
 	UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string("/mapped/worktree"));
 }
+
+UAM_TEST(ExecutionRoutingMcpChangesInvalidateHostConfirmation)
+{
+	for (int variation = 0; variation < 3; ++variation)
+	{
+		TempDir temp("uam-routing-mcp-identity");
+		uam::AppState app;
+		ConfigureRoutingFixture(app, temp.root);
+		McpServerConfiguration server;
+		server.id = "private-fixture";
+		server.execution_host_id = "remote";
+		server.command = "must-not-start";
+		server.environment.push_back({"PRIVATE_FIXTURE", "", "before"});
+		app.settings.mcp_servers.push_back(server);
+		const std::string confirmed = uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front());
+		app.settings.execution_routing.hosts.front().provider_confirmations.front().provider_configuration_identity = confirmed;
+		if (variation == 0) app.settings.mcp_servers.front().command = "must-not-start-changed";
+		else if (variation == 1) app.settings.mcp_servers.front().environment.front().value = "after";
+		else app.settings.mcp_servers.front().enabled = false;
+		const std::string changed = uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front());
+		UAM_ASSERT(changed != confirmed);
+		UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+		UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("local"));
+		app.settings.execution_routing.hosts.front().provider_confirmations.front().provider_configuration_identity = changed;
+		app.execution_routing_retry_at_by_chat_id.clear();
+		UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+		UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote"));
+	}
+}

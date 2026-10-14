@@ -117,6 +117,7 @@ namespace uam::settings_frontend_json
 		settings_json["backupLogRetentionDays"] = settings.backup_log_retention_days;
 		settings_json["httpCacheClearIntervalDays"] = settings.http_cache_clear_interval_days;
 		settings_json["svnEnabled"] = settings.svn_enabled;
+		settings_json["svnUpdateBeforeChat"] = settings.svn_update_before_chat;
 		settings_json["voiceInputMode"] = uam::voice_input::NormalizeMode(settings.voice_input_mode);
 		settings_json["voiceInputServerBaseUrl"] = uam::strings::Trim(settings.voice_input_server_base_url);
 		settings_json["voiceInputServerEndpoint"] = uam::strings::Trim(settings.voice_input_server_endpoint);

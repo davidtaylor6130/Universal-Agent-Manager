@@ -77,7 +77,7 @@ namespace uam::provider_chat_defaults
 		{
 			return Normalize(found->second, normalized_provider_id);
 		}
-		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", settings.memory_enabled_default, "", "", settings.memory_level_default};
+		return ProviderChatDefaults{"", uam::approval_modes::kDefaultApprovalMode, "off", true, "", "", uam::memory_levels::kDefault};
 	}
 
 	inline void ApplyToChat(ChatSession& chat, ProviderChatDefaults defaults)
@@ -91,8 +91,8 @@ namespace uam::provider_chat_defaults
 		chat.reviewer_model_id = defaults.reviewer_model_id;
 		chat.approval_mode = defaults.approval_mode;
 		chat.command_safety_tier = defaults.command_safety_tier;
-		chat.memory_level = defaults.memory_level;
-		chat.memory_enabled = defaults.memory_enabled;
+		chat.memory_level = uam::memory_levels::kDefault;
+		chat.memory_enabled = true;
 		chat.reasoning_effort = defaults.reasoning_effort;
 		chat.service_tier = defaults.service_tier;
 		chat.service_tier_explicit = !defaults.service_tier.empty();

@@ -70,6 +70,26 @@ UAM_TEST(VcsSettingsPersistAndDefaultExistingInstallationsToEnabled)
 	UAM_ASSERT(settings.git_enabled && !settings.svn_enabled);
 }
 
+UAM_TEST(SvnUpdateBeforeChatSettingsDefaultOffAndPersistThroughJson)
+{
+	TempDir temp("uam-svn-update-settings");
+	AppSettings settings;
+	const nlohmann::json defaults = uam::settings_frontend_json::SerializeCommonSettingsFields(settings);
+	UAM_ASSERT(defaults.contains("svnUpdateBeforeChat"));
+	UAM_ASSERT_EQ(defaults.at("svnUpdateBeforeChat").get<bool>(), false);
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "settings.txt", "svn_enabled=true\nsvn_update_before_chat=true\n"));
+	UAM_ASSERT(SettingsStore::Load(temp.root / "settings.txt", settings).loaded);
+	UAM_ASSERT_EQ(uam::settings_frontend_json::SerializeCommonSettingsFields(settings).at("svnUpdateBeforeChat").get<bool>(), true);
+	UAM_ASSERT(SettingsStore::Save(temp.root / "roundtrip.txt", settings));
+	AppSettings restored;
+	UAM_ASSERT(SettingsStore::Load(temp.root / "roundtrip.txt", restored).loaded);
+	UAM_ASSERT_EQ(uam::settings_frontend_json::SerializeCommonSettingsFields(restored).at("svnUpdateBeforeChat").get<bool>(), true);
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "legacy.txt", "svn_enabled=true\n"));
+	AppSettings legacy;
+	UAM_ASSERT(SettingsStore::Load(temp.root / "legacy.txt", legacy).loaded);
+	UAM_ASSERT_EQ(uam::settings_frontend_json::SerializeCommonSettingsFields(legacy).at("svnUpdateBeforeChat").get<bool>(), false);
+}
+
 UAM_TEST(VcsSettingsDisabledTypedOperationsStopBeforeLocalOrRemoteAccess)
 {
 	uam::AppState app; app.settings.git_enabled = false; app.settings.svn_enabled = false;

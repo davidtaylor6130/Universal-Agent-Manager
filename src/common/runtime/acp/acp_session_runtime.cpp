@@ -1170,7 +1170,7 @@ namespace uam
 			return nlohmann::json::array({chat.id, chat.created_at, chat.provider_id, chat.native_session_id,
 			    chat.execution_host_id, chat.workspace_directory, chat.workspace_source_directory,
 			    chat.workspace_worktree_directory, chat.workspace_isolation_kind, chat.workspace_base_ref,
-		    chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr),
+		    chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr), chat.svn_update_pending,
 			    chat.workspace_branch_name, chat.routing_mode, chat.active_goal_id, chat.goal_command_revision,
 			    chat.uam_agent_id, provider.interactive_command, provider.runtime_flags, provider.resume_argument,
 			    provider.supports_structured, provider.structured_protocol, AcpProcessHandleLabel(session),
@@ -1652,14 +1652,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		bool StartAcpUserPromptBatch(AppState& app, AcpSessionState& session, ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, std::string* error_out, bool defer_durable_admission = false, bool queued_dispatch = false)
 		{
-			const std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>>::const_iterator workspace_preparation = app.worktree_launch_preparations.find(chat.id);
-			if (app.worktree_operation_chat_ids.contains(chat.id) ||
-			    (workspace_preparation != app.worktree_launch_preparations.end() && !(workspace_preparation->second->saved && *workspace_preparation->second->saved)))
-			{
-				if (error_out != nullptr) *error_out = "Workspace preparation must finish and be saved before sending prompts. Reopen the chat if preparation was canceled.";
-				return false;
-			}
-
 			if (chat.acp_queue_storage_error)
 			{
 				if (error_out != nullptr) *error_out = "Queued input recovery is held because its saved journal is unreadable or mismatched.";
@@ -1705,11 +1697,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (error_out != nullptr) *error_out = "This native continuation needs explicit recovery.";
 				return false;
 			}
-			if (chat.workspace_isolation_kind == uam::paths::kPendingGitWorktreeIsolationKind &&
+			if ((chat.workspace_isolation_kind == uam::paths::kPendingGitWorktreeIsolationKind || chat.svn_update_pending) &&
 			    uam::paths::IsControllerLocalWorkspace(chat) && chat.agent_run_id.empty() && chat.goal_owner_chat_id.empty() &&
 			    chat.temporary_parent_chat_id.empty())
 			{
-				if (app.settings.git_enabled && app.settings.git_auto_worktree)
+				if ((app.settings.git_enabled && app.settings.git_auto_worktree) || chat.svn_update_pending)
 				{
 					// Model discovery may have opened an idle provider in the source directory.
 					// Restart it so the first prompt runs in the new worktree.
@@ -1722,8 +1714,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 					}
 					session.queued_user_prompts = std::move(pending);
 				}
-				if (!GitWorktreeService().PrepareForFirstLaunch(app, chat, error_out)) return false;
 			}
+			if (PrepareAcpWorkspaceForLaunch(app, session, chat, error_out) != WorktreeLaunchPreparationState::Ready) return false;
 			const Goal* goal = first.goal_id.empty()
 			                       ? GoalService::FindActiveGoal(app, chat.id)
 			                       : GoalService::FindGoalById(app, chat.id, first.goal_id);
@@ -2446,7 +2438,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			if (handled) return true;
 		}
-		if ((!preparing_session || !preparing_session->pending_agent_input) &&
+		if (!chat.svn_update_pending && chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind &&
+		    (!preparing_session || !preparing_session->pending_agent_input) &&
 		    (!preparing_session ||
 		     (!preparing_session->running && !preparing_session->processing && preparing_session->queued_user_prompts.empty()) ||
 		     (preparing_session->running && preparing_session->session_ready &&
@@ -2546,7 +2539,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 		}
-		if (session.processing || session.queue_held || session.turn_checkpoint_commit_pending || !session.queued_user_prompts.empty() || restart_remote_cancellation || chat.routing_mode == "automatic")
+		if (session.processing || session.queue_held || session.turn_checkpoint_commit_pending || !session.queued_user_prompts.empty() || restart_remote_cancellation || chat.routing_mode == "automatic" || chat.svn_update_pending || chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind)
 		{
 			const std::deque<AcpQueuedUserPromptState> previous_queue =
 			    session.queued_user_prompts;
@@ -3201,6 +3194,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		if (!StartAcpUserPromptBatch(app, session, chat, batch, &error, local_async || remote_async, true))
 		{
+			if (session.worktree_launch_pending || session.queue_held) return false;
 			chat.acp_dispatched_queued_prompt_count = 0;
 			if (local_async || remote_async) acp_detail::ScheduleChatSave(app, chat, 0.0);
 			else (void)acp_detail::SaveChatQuietly(app, chat);
@@ -3651,6 +3645,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->memory_recall_query.clear();
 		session->memory_recall_preparation.reset();
 		session->pending_agent_input.reset();
+		if (session->worktree_launch_pending)
+		{
+			CancelWorktreeLaunchPreparation(app, chat_id, session->worktree_launch_cancellation);
+			session->worktree_launch_pending = false;
+			session->worktree_launch_cancellation.reset();
+		}
 		session->pending_local_launch.reset();
 		session->claude_input_preparation.reset();
 		session->processing = false;
@@ -4136,6 +4136,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (ChatSession* owner = ChatDomainService().FindChatById(app, chat_id))
 				(void)InterruptPreparedAgentRow(app, *owner, *session->pending_agent_input);
 		session->pending_agent_input.reset();
+		if (session->worktree_launch_pending)
+		{
+			CancelWorktreeLaunchPreparation(app, chat_id, session->worktree_launch_cancellation);
+			session->worktree_launch_pending = false;
+			session->worktree_launch_cancellation.reset();
+		}
 		session->pending_local_launch.reset();
 		session->claude_input_preparation.reset();
 		if (session->local_stop_pending)
@@ -4753,6 +4759,17 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 			AcpSessionState& session = *session_ptr;
 			if (session.local_stop_pending) continue;
+			if (session.worktree_launch_pending)
+			{
+				ChatSession* workspace_chat = FindAcpRuntimeChatById(app, session.chat_id);
+				if (!workspace_chat) continue;
+				const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, *workspace_chat);
+				if (workspace == WorktreeLaunchPreparationState::Pending) continue;
+				changed = true;
+				if (workspace == WorktreeLaunchPreparationState::Failed) continue;
+				if (!session.running) session.reconnect_pending = true;
+			}
+
 			if (session.pending_queued_history)
 			{
 				const std::shared_ptr<PendingQueuedHistoryPreparation> task = session.pending_queued_history;
@@ -5724,7 +5741,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		return nlohmann::json::array({chat.workspace_directory, chat.folder_id, chat.workspace_isolation_kind,
 		    chat.workspace_source_directory, chat.workspace_base_ref, chat.workspace_branch_name,
-		    chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr),
+		    chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr), chat.svn_update_pending,
 		    chat.workspace_worktree_directory}).dump();
 	}
 

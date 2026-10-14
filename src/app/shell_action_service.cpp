@@ -588,6 +588,7 @@ namespace
 		    action_it->provider_id.empty() ? app.settings.default_new_chat_provider_id : action_it->provider_id);
 		chat.title = action_it->open_workspace ? FolderTitle(workspace) : action_it->label;
 		chat.workspace_directory = uam::paths::Utf8PathString(workspace);
+		chat.svn_update_pending = app.settings.svn_enabled && app.settings.svn_update_before_chat;
 		uam::provider_chat_defaults::ApplyToChat(app.settings, chat);
 		if (!action_it->model_id.empty()) chat.model_id = action_it->model_id;
 		app.chats.push_back(std::move(chat));

@@ -6,6 +6,8 @@ Execution routing selects where a provider or worker command runs. A local host 
 
 `ExecutionRoutingService` resolves an operation's host, and the integration layer passes host context into launch and history services. The runner client and protocol exchange typed requests with a remote runner. The runner owns remote process execution, spooling and host-local usage collection. Preserve output framing, cancellation and exit status across the transport. Do not expose remote host credentials in logs or frontend state.
 
+Terminal instruction preparation uses the effective provider and host `shared-setup` override, including when global shared setup is disabled. Routing confirmation fingerprints include configured MCP servers; changing a server command, environment or enabled state requires fresh confirmation before automatic admission.
+
 Remote memory publication and context policy are separate from local memory storage. Any change to host selection must cover local defaulting, unavailable hosts and multiple-host history.
 
 ## Ownership and checks

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stop_token>
@@ -43,6 +44,7 @@ namespace uam
 	struct ProviderWorkerInvocation
 	{
 		bool direct_process = false;
+		std::function<bool(std::string_view)> output_sink;
 		std::vector<std::string> argv;
 		std::string standard_input;
 		std::string shell_command;

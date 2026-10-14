@@ -153,6 +153,7 @@ UAM_TEST(PermissionReviewQueueAdvanceKeepsNewWorkerOwned)
 		~Cleanup() { uam::acp_detail::StopPermissionReviewTasks(app); }
 	} cleanup{app};
 	uam::AsyncPermissionReviewTask completed;
+	completed.permission_review_incarnation = session.permission_review_incarnation;
 	completed.chat_id = chat.id;
 	completed.request_id_json = "7";
 	completed.state = std::make_shared<AsyncProcessTaskState>();
@@ -21913,7 +21914,10 @@ UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 	UAM_ASSERT(discovery.result.success);
 	UAM_ASSERT_EQ(discovery.chats.front().workspace_directory, workspace.string());
 	UAM_ASSERT_EQ(discovery.chats.size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(discovery.chats.front().messages.front().content, std::string("native question"));
+	UAM_ASSERT(!discovery.chats.front().messages_loaded);
+	UAM_ASSERT(discovery.chats.front().messages.empty());
+	UAM_ASSERT_EQ(discovery.chats.front().persisted_message_count, std::size_t{1});
+	UAM_ASSERT_EQ(discovery.open_code_exports.size(), std::size_t{1});
 	UAM_ASSERT(!fs::exists(temp.root / "data"));
 	uam::AppState app;
 	app.data_root = temp.root / "data";
@@ -21928,6 +21932,9 @@ UAM_TEST(LocalOpenCodeDiscoveryUsesNativeListAndTranscriptExport)
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, saved_empty));
 	UAM_ASSERT_EQ(ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, folder, discovery, true).imported_count, 1);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(2));
+	const auto imported = ChatRepository::LoadLocalChat(app.data_root, discovery.chats.front().id, true);
+	UAM_ASSERT(imported && imported->messages.size() == 1);
+	UAM_ASSERT_EQ(imported->messages.front().content, std::string("native question"));
 	UAM_ASSERT(ChatRepository::LoadLocalChat(app.data_root, saved_empty.id, true)->messages.empty());
 	nlohmann::json later = exported;
 	later["info"]["id"] = "ses_empty";

@@ -197,3 +197,28 @@ UAM_TEST(ComputerUseGlobalOffDisablesNativeCodexInteractiveFreshAndResume)
 		UAM_ASSERT_EQ(argv.back(), std::string("computer_use"));
 	}
 }
+
+UAM_TEST(ComputerUseFailedStartupResetBlocksStaleGrantAndDeletedCleanup)
+{
+	TempDir temp("uam-cu-startup-revoke");
+	uam::AppState app; app.data_root = temp.root;
+	ChatSession chat; chat.id = "startup-revoke"; chat.execution_host_id = "local";
+	app.chats.push_back(chat);
+	const fs::path directory = temp.root / "computer-use" / chat.id;
+	fs::create_directories(directory / "control.json");
+	UAM_ASSERT(!uam::ComputerUseService::ResetControlsForStartup(app));
+	UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.contains(chat.id));
+	fs::remove(directory / "control.json");
+	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", "{\"state\":\"armed\"}\n"));
+	(void)uam::ComputerUseService::Poll(app);
+	UAM_ASSERT(!app.chats.front().computer_use_enabled);
+	std::string error;
+	UAM_ASSERT(!uam::ComputerUseService::SetControlState(app, chat.id, "armed", &error));
+	app.chats.front().computer_use_enabled = true;
+	UAM_ASSERT(!uam::ComputerUseService::PersistTrustedTask(app, chat.id, "Open Example", &error));
+	app.chats.clear();
+	UAM_ASSERT(uam::ComputerUseService::SetControlState(app, chat.id, "stopped", &error));
+	UAM_ASSERT_EQ(nlohmann::json::parse(ReadFile(directory / "control.json"))["state"].get<std::string>(), std::string("stopped"));
+	// Runtime shutdown confirmation owns removal of the pending latch.
+	UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.contains(chat.id));
+}

@@ -976,6 +976,11 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	{
 		cb->Failure(400, "Pull before chat requires a boolean."); return;
 	}
+	const std::optional<bool> svn_update_before_chat = uam::nlohmann_json::BoolFieldStrict(payload, "svnUpdateBeforeChat");
+	if (payload.contains("svnUpdateBeforeChat") && !svn_update_before_chat)
+	{
+		cb->Failure(400, "SVN update before chat requires a boolean."); return;
+	}
 	const nlohmann::json* port_value = uam::nlohmann_json::FindStringField(payload, "gitPortMethod");
 	const std::string port_method = port_value ? port_value->get<std::string>() : std::string();
 	if (payload.contains("gitPortMethod") && (!port_value || (port_method != "patch" && port_method != "merge" && port_method != "squash")))
@@ -1016,6 +1021,7 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	m_app.settings.svn_enabled = *svn_enabled;
 	if (automatic_worktree) m_app.settings.git_auto_worktree = *automatic_worktree;
 	if (pull_before_chat) m_app.settings.git_pull_before_chat = *pull_before_chat;
+	if (svn_update_before_chat) m_app.settings.svn_update_before_chat = *svn_update_before_chat;
 	if (port_value) m_app.settings.git_port_method = port_method == "merge" ? GitPortMethod::Merge : port_method == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;
 	if (base_value) m_app.settings.git_default_base_branch = base_branch;
 	if (cleanup_enabled) m_app.settings.worktree_cleanup_enabled = *cleanup_enabled;

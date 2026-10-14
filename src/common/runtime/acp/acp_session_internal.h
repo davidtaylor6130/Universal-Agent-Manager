@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/goal_service.h"
+#include "app/worktree_launch_preparation_service.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/app_time.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
@@ -21,6 +22,8 @@
 
 namespace uam::acp_detail
 {
+
+WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr);
 
 /// <summary>Bounds asynchronous remote Stop confirmation: a runner RPC permits 15 seconds, followed by retained-output drain and removal.</summary>
 inline constexpr double kRemoteStopConfirmationTimeoutSeconds = 30.0;

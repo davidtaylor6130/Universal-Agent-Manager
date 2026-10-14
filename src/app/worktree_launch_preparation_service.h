@@ -32,6 +32,9 @@ namespace uam
 		bool pull_before_chat = false;
 		bool git_enabled = true;
 		bool automatic_worktree = true;
+		bool svn_enabled = true;
+		bool svn_update_before_chat = false;
+		bool update_only = false;
 		std::shared_ptr<std::stop_source> cancellation = std::make_shared<std::stop_source>();
 		std::shared_ptr<WorkspaceLeaseGate::Lease> lease;
 		std::future<PreparedLaunchWorktree> worker;
@@ -46,7 +49,7 @@ namespace uam
 		~WorktreeLaunchPreparationTask() { cancellation->request_stop(); }
 	};
 
-	/// <summary>Starts Git-only preparation, then admits launch only after live workspace metadata is saved.</summary>
+	/// <summary>Starts owned SVN update and optional Git preparation, then admits launch only after live workspace metadata is saved.</summary>
 	WorktreeLaunchPreparationResult PrepareWorktreeForLaunch(AppState& app, ChatSession& chat);
 	bool PollWorktreeLaunchPreparations(AppState& app);
 	void CancelWorktreeLaunchPreparation(AppState& app, const std::string& chat_id, const std::shared_ptr<std::stop_source>& expected = {});

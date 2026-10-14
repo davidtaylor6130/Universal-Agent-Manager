@@ -956,6 +956,8 @@ void UamQueryHandler::HandleCreateSession(CefRefPtr<CefBrowser> browser, const n
 	{
 		ChatSession chat = ChatDomainService().CreateNewChat(target_folder_id, provider_id, validated_source == nullptr && m_app.settings.git_enabled && m_app.settings.git_auto_worktree, git_base_branch_override);
 		chat.execution_host_id = execution_host_id;
+		chat.svn_update_pending = validated_source == nullptr && execution_host_id == uam::execution_hosts::kLocalHostId &&
+		    m_app.settings.svn_enabled && m_app.settings.svn_update_before_chat;
 		chat.routing_mode = routing_mode;
 		if (routing_mode == "automatic")
 		{

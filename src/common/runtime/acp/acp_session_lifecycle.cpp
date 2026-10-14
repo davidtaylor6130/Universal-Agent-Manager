@@ -133,7 +133,7 @@ namespace
 		    provider.supports_structured, provider.structured_protocol, provider.execution_mode, provider.output_mode,
 		    provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.git_auto_worktree,
 		    chat.workspace_base_ref,
-		    chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr), chat.workspace_branch_name, chat.id, chat.created_at, chat.provider_id, chat.native_session_id,
+		    chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr), chat.svn_update_pending, chat.workspace_branch_name, chat.id, chat.created_at, chat.provider_id, chat.native_session_id,
 		    chat.execution_host_id, chat.workspace_directory, chat.workspace_source_directory,
 		    chat.workspace_worktree_directory, chat.workspace_isolation_kind, chat.routing_mode,
 		    chat.routing_assigned_connection_identity, chat.model_id, chat.approval_mode, chat.extra_flags,
@@ -747,8 +747,51 @@ bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const C
 	return false;
 }
 
+WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out)
+{
+	if (session.running) return WorktreeLaunchPreparationState::Ready;
+	// Poll the captured operation before the service can replace a revoked task.
+	if (session.worktree_launch_pending && session.worktree_launch_cancellation)
+	{
+		(void)PollWorktreeLaunchPreparations(app);
+		if (session.worktree_launch_cancellation->stop_requested())
+		{
+			session.worktree_launch_pending = false;
+			session.worktree_launch_cancellation.reset();
+			session.reconnect_pending = false;
+			session.queue_held = chat.acp_queue_held = true;
+			session.last_error = "Workspace preparation was canceled or changed. Retry the held input.";
+			session.lifecycle_state = kAcpLifecycleError;
+			ScheduleChatSave(app, chat, 0.0);
+			if (error_out) *error_out = session.last_error;
+			return WorktreeLaunchPreparationState::Failed;
+		}
+	}
+	const WorktreeLaunchPreparationResult workspace = PrepareWorktreeForLaunch(app, chat);
+	session.worktree_launch_pending = workspace.state == WorktreeLaunchPreparationState::Pending;
+	if (session.worktree_launch_pending)
+	{
+		session.worktree_launch_cancellation = workspace.cancellation;
+		session.lifecycle_state = "waiting_workspace";
+		return workspace.state;
+	}
+	session.worktree_launch_cancellation.reset();
+	if (workspace.state == WorktreeLaunchPreparationState::Failed)
+	{
+		session.reconnect_pending = false;
+		session.queue_held = chat.acp_queue_held = true;
+		session.last_error = workspace.error;
+		session.lifecycle_state = kAcpLifecycleError;
+		ScheduleChatSave(app, chat, 0.0);
+		if (error_out) *error_out = workspace.error;
+	}
+	return workspace.state;
+}
+
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out)
 {
+	const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, chat, error_out);
+	if (workspace != WorktreeLaunchPreparationState::Ready) return workspace == WorktreeLaunchPreparationState::Pending;
 	const std::shared_ptr<PendingLocalAcpLaunch> prepared = session.pending_local_launch;
 	if (prepared)
 	{
@@ -1234,6 +1277,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (!SaveChatQuietly(app, chat))
 			startup_error = "Remote process ownership could not be saved before launch.";
 	}
+	if (startup_error.empty()) session.permission_review_incarnation = std::make_shared<const char>(0);
 	if (!startup_error.empty() ||
 	    !PlatformServicesFactory::Instance().process_service.StartStdioProcess(
 	        session, process_working_directory, process_argv, &startup_error,

@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "common/memory/memory_policy.h"
+#include "common/config/provider_chat_defaults.h"
 #include "cef/uam_query_handler_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
 
@@ -247,4 +248,100 @@ UAM_TEST(InheritedMemoryPolicyCannotMarkOldColdLowSignalWorkProcessed)
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 	UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
 	UAM_ASSERT(app.memory_extraction_tasks.empty());
+}
+
+UAM_TEST(MissingProviderMemoryDefaultsInheritAppPolicyAfterReload)
+{
+	TempDir temp("uam-memory-initial-defaults");
+	AppSettings settings;
+	settings.memory_level_default = "strict";
+	UAM_ASSERT(SettingsStore::Save(temp.root / "settings.txt", settings));
+	AppSettings loaded;
+	UAM_ASSERT(SettingsStore::Load(temp.root / "settings.txt", loaded).loaded);
+	loaded.memory_level_default = "off";
+	loaded.memory_enabled_default = false;
+	for (const std::string& provider : {"gemini-cli", "codex-cli", "opencode-cli", "claude-cli", "copilot-cli", "antigravity-cli"})
+	{
+		ChatSession chat;
+		chat.provider_id = provider;
+		chat.memory_level = "default";
+		UAM_ASSERT_EQ(uam::memory_policy::Resolve(loaded, chat), std::string("off"));
+	}
+}
+
+UAM_TEST(NewChatMemorySelectionInheritsChangingProviderAndAppDefaults)
+{
+	AppSettings settings;
+	settings.memory_level_default = "strict";
+	ChatSession chat;
+	chat.provider_id = "codex-cli";
+	uam::provider_chat_defaults::ApplyToChat(settings, chat);
+	UAM_ASSERT_EQ(chat.memory_level, std::string("default"));
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("strict"));
+	settings.memory_level_default = "off";
+	settings.memory_enabled_default = false;
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("off"));
+	settings.provider_chat_defaults[chat.provider_id].memory_level = "strict";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, chat), std::string("strict"));
+	ChatSession provider_chat;
+	provider_chat.provider_id = chat.provider_id;
+	uam::provider_chat_defaults::ApplyToChat(settings, provider_chat);
+	UAM_ASSERT_EQ(provider_chat.memory_level, std::string("default"));
+	settings.provider_chat_defaults[chat.provider_id].memory_level = "off";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(settings, provider_chat), std::string("off"));
+}
+
+UAM_TEST(ExplicitMemoryOverridesSurviveInheritedDefaultChangesAndReload)
+{
+	TempDir temp("uam-memory-explicit-defaults");
+	AppSettings settings;
+	settings.memory_level_default = "off";
+	settings.memory_enabled_default = false;
+	settings.provider_chat_defaults["codex-cli"].memory_level = "strict";
+	UAM_ASSERT(SettingsStore::Save(temp.root / "settings.txt", settings));
+	AppSettings loaded;
+	UAM_ASSERT(SettingsStore::Load(temp.root / "settings.txt", loaded).loaded);
+	ChatSession inherited;
+	inherited.provider_id = "codex-cli";
+	inherited.memory_level = "default";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(loaded, inherited), std::string("strict"));
+	ChatSession explicit_chat;
+	explicit_chat.id = "explicit-memory-policy";
+	explicit_chat.provider_id = "codex-cli";
+	explicit_chat.memory_level = "strict";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root / "data", explicit_chat));
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(temp.root / "data", explicit_chat.id);
+	UAM_ASSERT(restored.has_value());
+	loaded.provider_chat_defaults["codex-cli"].memory_level = "off";
+	UAM_ASSERT_EQ(uam::memory_policy::Resolve(loaded, *restored), std::string("strict"));
+}
+
+UAM_TEST(ProviderSwitchPreservesExplicitAndInheritedMemorySelections)
+{
+	for (const std::string& level : {"off", "strict", "readOnly", "default"})
+	{
+		TempDir temp("uam-memory-provider-switch");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		UAM_ASSERT(app.provider_profiles.size() >= 2);
+		const std::string source = app.provider_profiles[0].id;
+		const std::string target = app.provider_profiles[1].id;
+		app.settings.provider_chat_defaults[target].memory_level = "open";
+		ChatSession chat;
+		chat.id = "memory-switch";
+		chat.provider_id = source;
+		chat.memory_level = level;
+		chat.memory_enabled = level != "off";
+		app.chats.push_back(chat);
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(app, chat.id, target), uam::ChatProviderSwitchResult::Changed);
+		const ChatSession& changed = app.chats.front();
+		UAM_ASSERT_EQ(changed.memory_level, level);
+		UAM_ASSERT_EQ(changed.memory_enabled, chat.memory_enabled);
+		UAM_ASSERT_EQ(uam::memory_policy::Resolve(app.settings, changed), level == "default" ? std::string("open") : level);
+		const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(restored.has_value());
+		UAM_ASSERT_EQ(restored->memory_level, level);
+		UAM_ASSERT_EQ(uam::memory_policy::Resolve(app.settings, *restored), level == "default" ? std::string("open") : level);
+	}
 }

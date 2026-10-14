@@ -1153,6 +1153,15 @@ namespace
 		return false;
 	}
 
+	std::shared_ptr<PreparedChatSave> PrepareOpenCodeImport(const fs::path& root, const uam::opencode_import::Spool& source, ChatSession& chat, std::string& error)
+	{
+		return ChatRepository::PrepareImportedChatSave(root, chat,
+		    [&](const std::function<bool(const Message&)>& emit, ChatSession& metadata)
+		{
+			return uam::opencode_import::Read(*source, metadata, emit, {}, error);
+		});
+	}
+
 	bool NativeChatShouldBeImported(const fs::path& chats_dir, const ChatSession& native_chat, const std::string& target_id, bool delete_native_after_import)
 	{
 		if (IsUamMemoryWorkerNativeChat(native_chat))
@@ -1337,6 +1346,7 @@ namespace
 		native.workspace_base_ref = local.workspace_base_ref;
 		native.workspace_branch_name = local.workspace_branch_name;
 		native.workspace_worktree_directory = local.workspace_worktree_directory;
+		native.svn_update_pending = local.svn_update_pending;
 		native.imported_read_only = local.imported_read_only;
 		native.approval_mode = local.approval_mode;
 		native.command_safety_tier = local.command_safety_tier;
@@ -2009,16 +2019,28 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			chat.provider_id = uam::provider_ids::kOpenCodeCli;
 			chat.folder_id = folder.id;
 			chat.workspace_directory = session["directory"].get<std::string>();
-			const auto transcript = LoadLocalOpenCodeTranscript(chat, *open_code_profile, stop_token);
-			if (!transcript.success)
+			uam::ProviderWorkerInvocation exported;
+			exported.direct_process = true;
+			exported.argv = ProviderRuntimeRegistry::Resolve(*open_code_profile).BuildNativeExportArgv(*open_code_profile, chat);
+			std::string error;
+			const auto source = uam::opencode_import::Export(std::move(exported), uam::paths::PathFromUtf8(chat.workspace_directory), stop_token, error);
+			std::size_t message_count = 0;
+			std::string fallback_title;
+			if (!source || !uam::opencode_import::Read(*source, chat, [&](const Message& message)
 			{
-				discovery.result.Fail(transcript.error);
+				++message_count;
+				if (fallback_title.empty() && message.role == MessageRole::User) fallback_title = uam::BuildImportedChatTitle({message}, "");
+				return true;
+			}, stop_token, error))
+			{
+				discovery.result.Fail(error);
 				continue;
 			}
-			// Model discovery creates native sessions without a conversation. Import them only after a message exists.
-			if (transcript.messages.empty()) continue;
-			chat.messages = transcript.messages;
-			chat.title = session.contains("title") && session["title"].is_string() ? session["title"].get<std::string>() : uam::BuildImportedChatTitle(chat.messages, "");
+			if (message_count == 0) continue;
+			chat.messages_loaded = false;
+			chat.persisted_message_count = message_count;
+			chat.title = session.contains("title") && session["title"].is_string() ? session["title"].get<std::string>() : fallback_title;
+			discovery.open_code_exports.emplace(chat_identity::NativeIdentityKeyForHistoryImport(chat), source);
 			chat.created_at = session.contains("created") && session["created"].is_number_integer() ? IsoTimestampFromEpochMilliseconds(session["created"].get<std::int64_t>()) : "";
 			chat.updated_at = session.contains("updated") && session["updated"].is_number_integer() ? IsoTimestampFromEpochMilliseconds(session["updated"].get<std::int64_t>()) : chat.created_at;
 			discovery.chats.push_back(std::move(chat));
@@ -2311,6 +2333,14 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 				if (!persisted || !MessagesEquivalent(live->messages, persisted->messages)) continue;
 			}
 		}
+		const auto source = discovery.open_code_exports.find(key);
+		if (source != discovery.open_code_exports.end() && existing != import_index.existing_id_by_native_key.end())
+		{
+			std::string error;
+			if (!uam::opencode_import::Read(*source->second, chat, [&](const Message& message) { chat.messages.push_back(message); return true; }, {}, error))
+			{ result.Fail(error); continue; }
+			chat.messages_loaded = true;
+		}
 		const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, chat, "");
 		if (!native_key) continue;
 		std::string generated_folder_id;
@@ -2331,7 +2361,15 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		}
 		if (const ChatSession* live = ChatDomainService().FindChatById(app, chat.id)) OverlayLocalChatState(*live, chat);
 		bool saved = false;
-		if (!rollout_file.empty() && !chat.messages_loaded)
+		if (source != discovery.open_code_exports.end() && !chat.messages_loaded)
+		{
+			std::string error;
+			const auto prepared = PrepareOpenCodeImport(app.data_root, source->second, chat, error);
+			saved = prepared && ChatRepository::PublishPreparedChatSave(prepared);
+			if (!error.empty()) result.Fail(error);
+			if (saved) TrackImportedNativeChat(import_index, chat, *native_key);
+		}
+		else if (!rollout_file.empty() && !chat.messages_loaded)
 		{
 			const std::shared_ptr<PreparedChatSave> prepared = PrepareCodexRolloutImport(app.data_root, rollout_file, chat);
 			saved = prepared && ChatRepository::PublishPreparedChatSave(prepared);
@@ -2374,6 +2412,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 void ChatHistorySyncService::LocalHistoryDiscovery::CancelPending()
 {
 	chats.clear();
+	open_code_exports.clear();
 	codex_rollouts.clear();
 	if (!preparation.valid() && !publication_sync.valid()) return;
 	// std::async futures can join on destruction. Let cleanup wait away from the UI.
@@ -2466,6 +2505,10 @@ bool ChatHistorySyncService::FilterStartupImportCandidates(const uam::AppState& 
 		return false;
 	};
 	std::erase_if(discovery.chats, reject);
+	std::erase_if(discovery.open_code_exports, [&](const auto& record)
+	{
+		return std::ranges::none_of(discovery.chats, [&](const ChatSession& chat) { return chat_identity::NativeIdentityKeyForHistoryImport(chat) == record.first; });
+	});
 	std::erase_if(discovery.codex_rollouts, [&](std::pair<ChatSession, fs::path>& record) { return reject(record.first); });
 	return true;
 }
@@ -2604,6 +2647,12 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			chat = std::move(discovery.chats.back());
 			discovery.chats.pop_back();
+			const auto source = discovery.open_code_exports.find(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+			if (source != discovery.open_code_exports.end())
+			{
+				candidate.open_code_export = std::move(source->second);
+				discovery.open_code_exports.erase(source);
+			}
 		}
 		else
 		{
@@ -2701,6 +2750,21 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 					candidate.skipped = true;
 					if (!persisted_ownership->tombstones_available) candidate.error = "Deletion records could not be read; import stopped.";
 					continue;
+				}
+				if (candidate.open_code_export)
+				{
+					if (!candidate.expected_live && !candidate.retain_messages)
+					{
+						candidate.files = PrepareOpenCodeImport(root, candidate.open_code_export, candidate.chat, candidate.error);
+						if (!candidate.files && candidate.error.empty()) candidate.error = "Failed to stage complete OpenCode history " + candidate.chat.native_session_id + ".";
+						continue;
+					}
+					if (!uam::opencode_import::Read(*candidate.open_code_export, candidate.chat, [&](const Message& message)
+					{
+						candidate.chat.messages.push_back(message);
+						return true;
+					}, {}, candidate.error)) { candidate.skipped = true; continue; }
+					candidate.chat.messages_loaded = true;
 				}
 				if (!candidate.codex_rollout.empty())
 				{
@@ -3109,20 +3173,21 @@ ChatHistorySyncService::RemoteOpenCodeTranscript ChatHistorySyncService::LoadLoc
 	uam::ProviderWorkerInvocation invocation;
 	invocation.direct_process = true;
 	invocation.argv = ProviderRuntimeRegistry::Resolve(profile).BuildNativeExportArgv(profile, chat);
-	const ProcessExecutionResult exported = uam::ExecuteProviderWorkerInvocation(invocation, workspace, 30000, stop_token);
-	if (!exported.ok || exported.exit_code != 0 || exported.output_truncated)
+	std::string error;
+	const auto source = uam::opencode_import::Export(std::move(invocation), workspace, stop_token, error);
+	if (!source || !uam::opencode_import::Read(*source, chat, [&](const Message& message)
 	{
-		result.error = exported.output_truncated ? "The OpenCode transcript exceeds UAM's 4 MiB safety limit." :
-		    "OpenCode could not export the session: " + uam::strings::NonEmptyOrFallback(exported.error, "exit " + std::to_string(exported.exit_code));
-		return result;
-	}
-	result = ParseRemoteOpenCodeTranscript(exported.output);
-	if (result.success && (result.session_id != chat.native_session_id ||
-	    !Utf8WorkspaceDirectoriesMatch(result.directory, chat.workspace_directory)))
+		result.messages.push_back(message);
+		return true;
+	}, stop_token, error))
 	{
 		result = {};
-		result.error = "OpenCode exported a different session or workspace.";
+		result.error = error;
+		return result;
 	}
+	result.success = true;
+	result.session_id = chat.native_session_id;
+	result.directory = chat.workspace_directory;
 	return result;
 }
 

@@ -88,16 +88,17 @@ namespace
 		Error,
 	};
 
-	ProviderWorkerReadStatus ReadProviderWorkerOutput(IPlatformProcessService& process_service, uam::platform::StdioProcessPlatformFields& process, ProcessExecutionResult& result, bool preserve_existing_error)
+	ProviderWorkerReadStatus ReadProviderWorkerOutput(IPlatformProcessService& process_service, uam::platform::StdioProcessPlatformFields& process, ProcessExecutionResult& result, bool preserve_existing_error, const std::function<bool(std::string_view)>& sink = {})
 	{
 		std::array<char, 4096> buffer{};
 		std::string read_error;
 		const std::ptrdiff_t bytes_read = process_service.ReadStdioProcessStdout(process, buffer.data(), buffer.size(), &read_error);
 		if (bytes_read > 0)
 		{
-			if (!uam::platform::AppendCapturedCommandOutput(result, buffer.data(), static_cast<std::size_t>(bytes_read)))
+			if (sink ? !sink(std::string_view(buffer.data(), static_cast<std::size_t>(bytes_read))) :
+			    !uam::platform::AppendCapturedCommandOutput(result, buffer.data(), static_cast<std::size_t>(bytes_read)))
 			{
-				result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+				result.error = sink ? "Failed to write provider worker output." : std::string(uam::platform::kCapturedCommandOutputLimitError);
 				return ProviderWorkerReadStatus::Error;
 			}
 			return ProviderWorkerReadStatus::Data;
@@ -155,7 +156,7 @@ namespace
 		int exit_code = -1;
 		for (;;)
 		{
-			const ProviderWorkerReadStatus read_status = ReadProviderWorkerOutput(process_service, process, result, false);
+			const ProviderWorkerReadStatus read_status = ReadProviderWorkerOutput(process_service, process, result, false, invocation.output_sink);
 			if (read_status == ProviderWorkerReadStatus::Error)
 			{
 				process_service.TerminateStdioProcess(process, true);
@@ -193,7 +194,23 @@ namespace
 			}
 		}
 
-		DrainProviderWorkerTail(process_service, process, result, false);
+		if (invocation.output_sink)
+		{
+			for (;;)
+			{
+				const ProviderWorkerReadStatus status = ReadProviderWorkerOutput(process_service, process, result, false, invocation.output_sink);
+				if (status == ProviderWorkerReadStatus::Closed || status == ProviderWorkerReadStatus::Error) break;
+				if (stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline)
+				{
+					result.canceled = stop_token.stop_requested();
+					result.timed_out = !result.canceled;
+					result.error = result.canceled ? "Command canceled." : "Command output did not close before its deadline.";
+					break;
+				}
+				if (status == ProviderWorkerReadStatus::NoData) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
+		else DrainProviderWorkerTail(process_service, process, result, false);
 		process_service.CloseStdioProcessHandles(process);
 		result.exit_code = exit_code;
 		result.ok = result.error.empty() && result.exit_code == 0;
@@ -270,10 +287,10 @@ namespace uam
 
 	ProcessExecutionResult ExecuteProviderWorkerInvocation(const ProviderWorkerInvocation& invocation, const std::filesystem::path& working_directory, int timeout_ms, std::stop_token stop_token)
 	{
-		if (invocation.Empty())
+		if (invocation.Empty() || (invocation.output_sink && !invocation.direct_process))
 		{
 			ProcessExecutionResult result;
-			result.error = "Provider worker command is empty.";
+			result.error = invocation.Empty() ? "Provider worker command is empty." : "Provider worker output streaming requires a direct process.";
 			return result;
 		}
 		const std::filesystem::path& actual_working_directory = invocation.isolated_working_directory == nullptr ? working_directory : *invocation.isolated_working_directory;

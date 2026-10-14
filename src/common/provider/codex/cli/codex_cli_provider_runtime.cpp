@@ -869,7 +869,7 @@ nlohmann::json CodexCliProviderRuntime::OnAcpBuildPermissionResponse(const uam::
 		}
 		response["result"] = {
 		    {uam::acp_permissions::kPermissionsField, permissions},
-		    {uam::acp_permissions::kScopeField, uam::acp_permissions::kSessionScope},
+		    {uam::acp_permissions::kScopeField, option_id == uam::acp_permissions::kAcceptForSessionDecision ? uam::acp_permissions::kSessionScope : "turn"},
 		};
 	}
 	else

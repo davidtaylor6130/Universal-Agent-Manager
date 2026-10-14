@@ -176,7 +176,7 @@ namespace uam
 				// A standard main checkout owns the common .git directory. Do not infer bare repositories.
 				if (common.filename() != ".git" || !uam::paths::IsDirectoryNoThrow(common)) return workspace;
 				const fs::path resolved = common.parent_path() / location.lexically_relative(root);
-				return uam::paths::IsDirectoryNoThrow(resolved) ? uam::paths::NormalizeExistingPath(resolved) : workspace;
+				return uam::paths::NormalizeExistingOrAbsolutePath(resolved);
 			}
 			if (root == root.parent_path()) break;
 		}

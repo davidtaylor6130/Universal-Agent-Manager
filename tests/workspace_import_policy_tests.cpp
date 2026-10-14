@@ -69,6 +69,50 @@ UAM_TEST(ImportedLinkedWorktreeUsesMainFolderAndKeepsNativeWorkspace)
 	UAM_ASSERT_EQ(app.chats.front().workspace_directory, (worktree / "child").string());
 }
 
+UAM_TEST(ImportedBranchOnlyWorktreeChildUsesMainFolderAndKeepsNativeWorkspace)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-import-branch-only-worktree-child");
+	const fs::path main = temp.root / "main";
+	const fs::path worktree = temp.root / "linked";
+	const fs::path child = worktree / "branch-only";
+	fs::create_directories(main);
+	UAM_ASSERT(RunGitForTest(main, "init -q"));
+	UAM_ASSERT(RunGitForTest(main, "-c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -qm fixture"));
+	UAM_ASSERT(RunGitForTest(main, "worktree add --detach " + ShellQuoteForTest(worktree.string())));
+	fs::create_directories(child);
+	UAM_ASSERT(!fs::exists(main / "branch-only"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.folders.push_back({"main-owner", "Main", main.string(), false, "local"});
+	app.folders.push_back({"linked-owner", "Linked", worktree.string(), false, "local"});
+	const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, child);
+	UAM_ASSERT(owner != nullptr);
+	UAM_ASSERT_EQ(owner->id, std::string("main-owner"));
+	UAM_ASSERT(uam::ImportedWorkspaceMatchesFolder(child, main));
+
+	const fs::path nested = child / "nested-repository";
+	fs::create_directories(nested / ".git");
+	fs::create_directories(nested / "deeper");
+	UAM_ASSERT(uam::FindImportedWorkspaceFolder(app.folders, nested / "deeper") == nullptr);
+	UAM_ASSERT(!uam::ImportedWorkspaceMatchesFolder(nested / "deeper", main));
+	app.folders.push_back({"nested-owner", "Nested", nested.string(), false, "local"});
+	owner = uam::FindImportedWorkspaceFolder(app.folders, nested / "deeper");
+	UAM_ASSERT(owner != nullptr);
+	UAM_ASSERT_EQ(owner->id, std::string("nested-owner"));
+
+	ChatHistorySyncService::LocalHistoryDiscovery discovery;
+	discovery.chats.push_back(ImportFixture(child, "native-branch-only-session"));
+	const auto result = DrainFixture(app, discovery, ChatHistorySyncService::ImportPolicy::RegisteredWorkspacesOnly);
+	UAM_ASSERT(result.success);
+	UAM_ASSERT_EQ(result.imported_count, 1);
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("main-owner"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("native-branch-only-session"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, child.string());
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{3});
+}
+
 UAM_TEST(AutomaticHistoryImportOnlyPublishesRegisteredWorkspaceOwners)
 {
 	TempDir temp("uam-import-registered-only");

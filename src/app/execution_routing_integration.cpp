@@ -6,6 +6,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/central_provider_configuration.h"
+#include "common/config/mcp_server_config.h"
 #include "common/paths/workspace_root.h"
 #include "common/paths/path_utils.h"
 #include "common/provider/provider_runtime.h"
@@ -86,7 +87,7 @@ namespace uam
 		    provider.interactive_command, provider.structured_protocol, provider.runtime_flags, provider.resume_argument,
 		    provider.supports_cli, provider.supports_structured, provider.supports_interactive, provider.supports_resume, provider.history_adapter,
 		    provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.provider_extra_flags,
-		    central_configuration::Serialize(app.settings.central_provider_configuration)}));
+		    central_configuration::Serialize(app.settings.central_provider_configuration), mcp_server_config::Serialize(app.settings.mcp_servers)}));
 	}
 
 	bool ExecutionRoutingOwnsWork(const AppState& app, const ChatSession& chat)

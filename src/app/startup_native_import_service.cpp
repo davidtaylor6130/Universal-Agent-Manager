@@ -143,6 +143,8 @@ namespace uam
 				candidate.summary = {m_generation + ":" + std::to_string(m_candidates.size()), chat.provider_id,
 				    chat.native_session_id, strings::SafeLine(chat.title, 512, true), chat.folder_id, chat.workspace_directory,
 				    strings::NonEmptyOrFallback(chat.execution_host_id, "local"), chat.updated_at};
+				const auto exported = discovery.open_code_exports.find(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+				if (exported != discovery.open_code_exports.end()) candidate.open_code_export = std::move(exported->second);
 				candidate.chat = std::move(chat);
 				candidate.rollout = std::move(rollout);
 				candidate.owner = *owner;
@@ -247,7 +249,11 @@ namespace uam
 			if (!selected.contains(candidate.summary.candidate_id)) continue;
 			m_import.selected_folder_snapshots[candidate.owner.id] = candidate.owner;
 			if (candidate.host) m_import.expected_hosts[candidate.host->id] = *candidate.host;
-			if (candidate.rollout.empty()) m_import.chats.push_back(candidate.chat);
+			if (candidate.rollout.empty())
+			{
+				m_import.chats.push_back(candidate.chat);
+				if (candidate.open_code_export) m_import.open_code_exports.emplace(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat), candidate.open_code_export);
+			}
 			else m_import.codex_rollouts.emplace_back(candidate.chat, candidate.rollout);
 			const std::string candidate_id = candidate.summary.candidate_id;
 			m_selected.push_back(std::move(candidate));
