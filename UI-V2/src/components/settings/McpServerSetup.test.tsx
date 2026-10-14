@@ -398,3 +398,26 @@ it('does not publish a completed MCP save into a replacement scope', async () =>
   expect(saveCentral).not.toHaveBeenCalled()
   expect(host.textContent).not.toContain('Saved. Gemini')
 })
+
+
+it.each(['http', 'sse', 'stdio'] as const)('omits long %s endpoint and workspace paths from summaries while preserving editable values', async transport => {
+  const endpoint = `https://example.com/${'long-endpoint/'.repeat(100)}mcp`
+  const workspace = `/workspace/${'long-directory/'.repeat(100)}`
+  const command = `/opt/${'long-program/'.repeat(100)}server`
+  const argument = '--private-argument'
+  const configured = { ...server, transport, url: endpoint, workspaceDirectory: workspace, command, args: [argument] }
+  await act(async () => {
+    useAppStore.setState({ mcpServers: [configured] })
+    root.render(<McpServerSetup key={transport} onBusyChange={() => {}} onDirtyChange={() => {}} />)
+  })
+  expect(host.textContent).toContain('playwright')
+  expect(host.textContent).toContain('Selected workspace')
+  for (const value of [endpoint, workspace, command, argument]) expect(host.textContent).not.toContain(value)
+  await click('Edit playwright')
+  const values = [...host.querySelectorAll<HTMLInputElement>('input')].map(field => field.value)
+  expect(values).toContain(transport === 'stdio' ? command : endpoint)
+  expect(values).toContain(workspace)
+  if (transport === 'stdio') expect(values).toContain(argument)
+  expect(useAppStore.getState().mcpServers).toEqual([configured])
+  expect(saveServers).not.toHaveBeenCalled()
+})

@@ -153,14 +153,14 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
       <table className="uam-prov-matrix w-full text-xs text-left" aria-label="Provider connection overview">
         <thead><tr style={{ borderBottom: '1px solid var(--border)' }}>{['Provider', 'Status', 'UAM MCP', 'Computer Use', 'Shared setup'].map(label => <th key={label} className={`uam-prov-label uam-prov-th px-2 py-2${label === 'Provider' ? ' uam-prov-sticky uam-prov-th--provider' : ''} font-medium`}>{label}</th>)}{collapseServers
           ? <th className="uam-prov-label uam-prov-th px-2 py-2 font-medium">MCP servers</th>
-          : servers.map(server => <th key={server.id} title={[server.executionHostId, server.workspaceDirectory].filter(Boolean).join(' · ')} className="uam-prov-label uam-prov-th px-2 py-2 font-medium">{server.name}</th>)}</tr></thead>
+          : servers.map(server => <th key={server.id} className="uam-prov-label uam-prov-th px-2 py-2 font-medium">{server.name}</th>)}</tr></thead>
         <tbody>{ids.map(id => {
           const metadata = providerMetadataForId(id)
           const runtime = runtimeProviders.find(provider => provider.id === id)
           const terminalOnly = runtime?.supportsStructured === undefined ? metadata.structuredProtocol === 'none' : !runtime.supportsStructured
           const version = hostVersions.find(item => item.providerId === id)
           const health = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === id) : undefined
-          const healthLabel = health?.status === 'connected' && status?.connectedProofAvailable ? 'Connected' : health?.status === 'failed' ? 'Failed' : health?.status === 'missing' ? 'Not configured' : health?.status === 'disabled' ? 'Disabled' : 'Unknown'
+          const healthLabel = health?.status === 'connected' && status?.connectedProofAvailable ? 'Connected' : health?.status === 'handshake-confirmed' && status?.handshakeProofAvailable ? 'Handshake confirmed' : health?.status === 'configured-unverified' ? 'Configured, unverified' : health?.status === 'failed' ? 'Failed' : health?.status === 'missing' ? 'Not configured' : health?.status === 'disabled' ? 'Disabled' : 'Unknown'
           const healthTone: StatusTone = terminalOnly ? 'neutral' : healthLabel === 'Connected' ? 'success' : healthLabel === 'Failed' ? 'error' : healthLabel === 'Not configured' ? 'warning' : 'neutral'
           const cli = version?.installedVersion || (version?.status === 'checking' ? 'Checking' : version?.status === 'unavailable' ? 'Not installed' : 'Not checked')
           const uamOn = health?.uamControlEnabled === undefined ? undefined : !terminalOnly && health.uamControlEnabled
@@ -194,7 +194,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
         {servers.map(server => {
           const enabled = serverEnabled(health, server.id)
           return <div key={server.id} className="uam-prov-pop__row">
-            <span className="min-w-0 grid"><span className="truncate text-sm" style={{ color: 'var(--text)' }}>{server.name}</span>{server.workspaceDirectory && <span className="uam-prov-detail truncate">{server.workspaceDirectory}</span>}</span>
+            <span className="min-w-0 grid"><span className="truncate text-sm" style={{ color: 'var(--text)' }}>{server.name}</span></span>
             {checkbox(`${metadata.shortName} ${server.name}`, enabled, terminalOnly ? undefined : () => void setConfiguration(id, server.id, !enabled), `${id}:${server.id}`)}
           </div>
         })}

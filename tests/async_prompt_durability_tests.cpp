@@ -1517,7 +1517,7 @@ UAM_TEST(AcpSmallModelLargeUnsavedHistoryKeepsAdmissionPollWithinInputBudget)
 	UAM_ASSERT(fixture.session->prompt_request_id != 0);
 }
 
-static void CheckColdLocalConfigurationAdmission(std::string_view variation)
+static void CheckColdLocalConfigurationAdmission(std::string_view variation, bool scope_override = false, bool scope_disabled = false)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	TempDir temp("uam-cold-local-admission");
@@ -1555,7 +1555,13 @@ while ($null -ne ($line = [Console]::ReadLine())) {
     'fixture/release' { if ($null -ne $heldId) { Reply $heldId @{stopReason='end_turn'}; $heldId = $null } }
     'session/prompt' {
       $durable = [IO.File]::ReadAllText($env:UAM_TEST_COLD_PRIMARY)
-      if (-not $durable.Contains('Launch with the private cold configuration') -or -not $durable.Contains('199xxxxxxxx') -or -not $durable.Contains($env:UAM_TEST_COLD_AGENT_HASH) -or -not $durable.Contains('cold-private-session')) { exit 94 }
+      if (-not $durable.Contains('Launch with the private cold configuration')) { [Console]::Error.WriteLine('fixture durable prompt missing'); exit 94 }
+      if (-not $durable.Contains('199xxxxxxxx')) { [Console]::Error.WriteLine('fixture durable history missing'); exit 94 }
+      if ($env:UAM_TEST_COLD_NATIVE_AGENT -eq '1') {
+        $agents = @(Get-ChildItem -LiteralPath ([IO.Path]::Combine($env:OPENCODE_CONFIG_DIR, 'agent')) -Filter '*.md')
+        if ($agents.Count -ne 1 -or -not [IO.File]::ReadAllText($agents[0].FullName).Contains('Implement the requested change and verify it.')) { [Console]::Error.WriteLine('fixture captured native agent missing'); exit 94 }
+      } elseif (-not $durable.Contains($env:UAM_TEST_COLD_AGENT_HASH)) { [Console]::Error.WriteLine('fixture durable agent hash missing'); exit 94 }
+      if (-not $durable.Contains('cold-private-session')) { [Console]::Error.WriteLine('fixture durable session id missing'); exit 94 }
       [IO.File]::AppendAllText($env:UAM_TEST_COLD_PROMPTS, $line + "`n")
       [Console]::WriteLine('{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"private-cold-launch-ok"}}}}')
       if ($env:UAM_TEST_COLD_HOLD_COMPLETION -ne '1' -or $heldOnce) { Reply $request.id @{stopReason='end_turn'} } else { $heldId = $request.id; $heldOnce = $true }
@@ -1579,10 +1585,14 @@ while IFS= read -r line; do
     *'"method":"fixture/chunk"'*) printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"stream-during-agent-preparation"}}}}' ;;
     *'"method":"fixture/release"'*) if [ -n "$held_id" ]; then printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$held_id"; held_id=; fi ;;
     *'"method":"session/prompt"'*)
-      grep -Fq 'Launch with the private cold configuration' "$UAM_TEST_COLD_PRIMARY" || exit 94
-      grep -Fq '199xxxxxxxx' "$UAM_TEST_COLD_PRIMARY" || exit 94
-      grep -Fq "$UAM_TEST_COLD_AGENT_HASH" "$UAM_TEST_COLD_PRIMARY" || exit 94
-      grep -Fq 'cold-private-session' "$UAM_TEST_COLD_PRIMARY" || exit 94
+      grep -Fq 'Launch with the private cold configuration' "$UAM_TEST_COLD_PRIMARY" || { printf '%s\n' 'fixture durable prompt missing' >&2; exit 94; }
+      grep -Fq '199xxxxxxxx' "$UAM_TEST_COLD_PRIMARY" || { printf '%s\n' 'fixture durable history missing' >&2; exit 94; }
+      if [ "$UAM_TEST_COLD_NATIVE_AGENT" = 1 ]; then
+        grep -Fq 'Implement the requested change and verify it.' "$OPENCODE_CONFIG_DIR"/agent/*.md || { printf '%s\n' 'fixture captured native agent missing' >&2; exit 94; }
+      else
+        grep -Fq "$UAM_TEST_COLD_AGENT_HASH" "$UAM_TEST_COLD_PRIMARY" || { printf '%s\n' 'fixture durable agent hash missing' >&2; exit 94; }
+      fi
+      grep -Fq 'cold-private-session' "$UAM_TEST_COLD_PRIMARY" || { printf '%s\n' 'fixture durable session id missing' >&2; exit 94; }
       printf '%s\n' "$line" >> "$UAM_TEST_COLD_PROMPTS"
       printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"private-cold-launch-ok"}}}}'
       if [ "$UAM_TEST_COLD_HOLD_COMPLETION" != 1 ] || [ "$held_once" = 1 ]; then
@@ -1609,6 +1619,13 @@ done
 	app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "uam";
 	app.settings.central_provider_configuration.enabled = true;
 	app.settings.central_provider_configuration.skill_directories = {(temp.root / "private-skills").string()};
+	if (scope_override)
+	{
+		app.settings.central_provider_configuration.enabled = false;
+		app.settings.central_provider_configuration.mcp_overrides.push_back({"opencode-cli", "local", "shared-setup", true});
+	}
+	if (scope_disabled)
+		app.settings.central_provider_configuration.mcp_overrides.push_back({"opencode-cli", "local", "shared-setup", false});
 	if (variation == "failure") app.settings.central_provider_configuration.instruction_files = {(temp.root / "missing-instructions.md").string()};
 	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id["opencode-cli"];
 	version.checked = version.supported = true;
@@ -1653,6 +1670,7 @@ done
 	if (app.chats.front().uam_agent_id == "workspace-47")
 		expected_hash = "opencode-cli:fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(ReadFile(temp.root / ".uam/agents/workspace-47.md")));
 	ScopedEnvVar binding_hash("UAM_TEST_COLD_AGENT_HASH", expected_hash);
+	ScopedEnvVar native_agent("UAM_TEST_COLD_NATIVE_AGENT", scope_override ? "1" : "0");
 	ScopedEnvVar exit_after_setup("UAM_TEST_COLD_EXIT_AFTER_SETUP", variation == "receiptexit" ? "1" : "0");
 	struct Cleanup
 	{
@@ -1666,6 +1684,8 @@ done
 	UAM_ASSERT(accepted);
 	UAM_ASSERT(feedback <= std::chrono::milliseconds(100));
 	UAM_ASSERT(!app.acp_sessions.empty() && (app.acp_sessions.front()->pending_agent_input || app.acp_sessions.front()->pending_local_launch));
+	bool configuration_worker_used = app.acp_sessions.front()->pending_local_launch != nullptr;
+	bool session_receipt_used = false;
 	if (app.acp_sessions.front()->pending_agent_input)
 	{
 		UAM_ASSERT_EQ(app.acp_sessions.front()->lifecycle_state, std::string("preparing_agent"));
@@ -1776,7 +1796,20 @@ done
 	{
 		const std::chrono::steady_clock::time_point poll_started = std::chrono::steady_clock::now();
 		(void)uam::PollAllAcpSessions(app);
-		UAM_ASSERT(std::chrono::steady_clock::now() - poll_started <= std::chrono::milliseconds(100));
+		if (std::chrono::steady_clock::now() - poll_started > std::chrono::milliseconds(100))
+		{
+			const uam::AcpSessionState& current = *app.acp_sessions.front();
+			throw std::runtime_error("Cold configuration poll exceeded 100ms: " + nlohmann::json{
+			    {"globalSetup", app.settings.central_provider_configuration.enabled}, {"processHost", current.process_execution_host_id},
+			    {"smallModel", app.chats.front().small_model_mode}, {"discovery", current.model_discovery_only},
+			    {"internal", current.goal_internal_session}, {"turnKind", current.goal_turn_kind}, {"review", current.goal_review_turn},
+			    {"activeGoal", app.chats.front().active_goal_id}, {"owner", app.chats.front().goal_owner_chat_id},
+			    {"iterationGoal", app.chats.front().goal_iteration_goal_id}, {"recoveringTurn", current.recovering_remote_turn},
+			    {"recoveringProcess", current.recovering_remote_process}, {"running", current.running}, {"ready", current.session_ready},
+			    {"pendingReceipt", current.pending_local_session_receipt != nullptr}}.dump());
+		}
+		configuration_worker_used = configuration_worker_used || app.acp_sessions.front()->pending_local_launch != nullptr;
+		session_receipt_used = session_receipt_used || app.acp_sessions.front()->pending_local_session_receipt != nullptr;
 		if (variation == "receiptexit" && app.acp_sessions.front()->pending_local_session_receipt &&
 		    !app.acp_sessions.front()->running && !app.acp_sessions.front()->pending_local_launch &&
 		    !app.acp_sessions.front()->pending_agent_input)
@@ -2178,8 +2211,12 @@ done
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
 	}
-	if (variation.empty()) UAM_ASSERT_EQ(app.acp_sessions.front()->last_error, std::string{});
+	if (variation.empty() && !app.acp_sessions.front()->last_error.empty())
+		throw std::runtime_error("Cold configuration launch failed: " + app.acp_sessions.front()->last_error);
 	UAM_ASSERT(completed);
+	if (scope_override) UAM_ASSERT(configuration_worker_used);
+	if (scope_disabled) UAM_ASSERT(!configuration_worker_used);
+	if (scope_override || scope_disabled) UAM_ASSERT(session_receipt_used);
 	if (variation.empty()) UAM_ASSERT_EQ(app.acp_sessions.front()->current_model_id, app.chats.front().model_id);
 	if (variation == "receiptfailure") UAM_ASSERT(receipt_guard_exercised && !fs::exists(saved_chats));
 	if (variation == "completionnext") UAM_ASSERT(completion_guard_exercised);
@@ -2191,7 +2228,14 @@ done
 		UAM_ASSERT_EQ(durable->messages[static_cast<std::size_t>(index)].content, std::to_string(index) + std::string(128 * 1024, 'x'));
 	UAM_ASSERT_EQ(durable->messages[200].content, std::string("Launch with the private cold configuration"));
 	UAM_ASSERT_EQ(durable->messages.back().content, std::string("private-cold-launch-ok"));
-	UAM_ASSERT_EQ(durable->last_prompt_agent_definition_hash, expected_hash);
+	if (scope_override)
+	{
+		// Native OpenCode adapters own the captured instructions; the inline-injection marker stays empty.
+		UAM_ASSERT(durable->last_prompt_agent_definition_hash.empty());
+		UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_definition_hash, std::string("builtin-build-v1"));
+		UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_execution_capability, std::string("opencode-native-agent-config"));
+	}
+	else UAM_ASSERT_EQ(durable->last_prompt_agent_definition_hash, expected_hash);
 	const std::string prompts = ReadFile(prompt_log);
 	UAM_ASSERT_EQ(std::count(prompts.begin(), prompts.end(), '\n'), (variation == "completionnext" || variation == "receiptqueue") ? 2 : 1);
 	if (variation == "receiptfailure")
@@ -2201,8 +2245,13 @@ done
 		    { return row.role == MessageRole::User && row.content == "Launch with the private cold configuration"; }), 2);
 	}
 	UAM_ASSERT(prompts.find("Launch with the private cold configuration") != std::string::npos);
-	UAM_ASSERT(!app.acp_sessions.front()->provider_configuration_directory.empty());
-	UAM_ASSERT(fs::exists(app.acp_sessions.front()->provider_configuration_directory / "skills/fixture/reference-2047.txt"));
+	if (scope_disabled)
+		UAM_ASSERT(app.acp_sessions.front()->provider_configuration_directory.empty());
+	else
+	{
+		UAM_ASSERT(!app.acp_sessions.front()->provider_configuration_directory.empty());
+		UAM_ASSERT(fs::exists(app.acp_sessions.front()->provider_configuration_directory / "skills/fixture/reference-2047.txt"));
+	}
 	if (variation == "catalog" || variation == "prepare" || variation == "warm")
 	{
 		UAM_ASSERT_EQ(app.acp_sessions.front()->active_uam_agent_id, std::string("workspace-47"));
@@ -2244,6 +2293,52 @@ done
 UAM_TEST(AcpColdLocalConfigurationAdmissionKeepsInputAndPollBudgets)
 {
 	CheckColdLocalConfigurationAdmission({});
+}
+
+UAM_TEST(AcpScopedCentralOverrideDefersColdConfiguration)
+{
+	CheckColdLocalConfigurationAdmission({}, true);
+}
+
+UAM_TEST(AcpDisabledCentralOverrideKeepsAsyncSessionReceipt)
+{
+	CheckColdLocalConfigurationAdmission({}, false, true);
+}
+
+UAM_TEST(AcpControlOnlyLaunchDefersColdConfiguration)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-control-only-cold-configuration");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ProviderProfile provider = ProviderProfileStore::DefaultClaudeProfile();
+	provider.interactive_command = "private-provider-must-not-start";
+	app.provider_profiles = {provider};
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+	app.settings.central_provider_configuration.enabled = false;
+	ChatSession chat;
+	chat.id = "control-only-configuration";
+	chat.provider_id = provider.id;
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	chat.uam_control_enabled = true;
+	chat.model_id = "selected-control-model";
+	chat.memory_enabled = false;
+	app.chats.push_back(std::move(chat));
+	std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = app.chats.front().id;
+	app.acp_sessions.push_back(std::move(owned));
+	struct Cleanup
+	{
+		uam::AppState& app;
+		~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+	} cleanup{app};
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, "Private control-only launch", &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(app.acp_sessions.front()->pending_local_launch != nullptr);
+	UAM_ASSERT_EQ(app.acp_sessions.front()->goal_turn_model_id, app.chats.front().model_id);
+	UAM_ASSERT(!app.acp_sessions.front()->running);
+#endif
 }
 
 UAM_TEST(AcpColdLocalConfigurationCancellationRevokesLaunch)

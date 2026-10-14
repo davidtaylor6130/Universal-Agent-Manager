@@ -151,6 +151,18 @@ namespace
 	}
 }
 
+bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	if (host == nullptr || host->id != execution_hosts::kLocalHostId || session.model_discovery_only ||
+	    session.recovering_remote_turn || session.recovering_remote_process) return false;
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	return central_configuration::McpEnabled(app.settings.central_provider_configuration, provider.id, host->id,
+	           "shared-setup", app.settings.central_provider_configuration.enabled) ||
+	    ((provider.id == provider_ids::kClaudeCli || provider.id == provider_ids::kAntigravityCli) &&
+	        UamControlService::EnabledForChat(app.settings, chat));
+}
+
 std::string LocalSessionReceiptOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 {
 	return LocalLaunchOwnership(app, session, chat);
@@ -1082,9 +1094,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	if (session.active_uam_agent_execution_capability == "uam-central-native-setup") launch_chat.uam_agent_id = session.active_uam_agent_id;
 	if (session.active_uam_agent_workspace_access == "read") launch_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 	if (!session.goal_turn_model_id.empty()) launch_chat.model_id = session.goal_turn_model_id;
-	const bool defer_configuration = !remote && !session.model_discovery_only &&
-	    !session.recovering_remote_turn && !session.recovering_remote_process &&
-	    app.settings.central_provider_configuration.enabled;
+	const bool defer_configuration = ShouldDeferLocalAcpConfiguration(app, session, chat);
 	std::vector<std::string> launch_argv = defer_configuration ? std::vector<std::string>{} : BuildAcpLaunchArgv(provider, launch_chat);
 	std::vector<std::pair<std::string, std::string>> launch_environment =
 	    defer_configuration ? uam::provider_setup::Environment{} : uam::provider_runtime_internal::ProviderChildEnvironmentOverrides(provider);
@@ -1164,6 +1174,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		}
 	}
 	ProviderConfigurationBundle configuration_bundle;
+	const std::string configuration_provider_version = CheckedProviderConfigurationVersion(app, provider.id, *execution_host);
 	if (defer_configuration && !prepared)
 	{
 		const std::shared_ptr<PendingLocalAcpLaunch> task = std::make_shared<PendingLocalAcpLaunch>();
@@ -1180,7 +1191,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		{
 			task->worker = std::make_unique<std::jthread>([result, provider, launch_chat = std::move(launch_chat), configuration_settings,
 			    workspace_root, launch_argv = std::move(launch_argv), launch_environment = std::move(launch_environment),
-			    launch_control_servers, central_native, central_instructions](std::stop_token) mutable
+			    launch_control_servers, central_native, central_instructions, configuration_provider_version](std::stop_token) mutable
 			{
 				try
 				{
@@ -1191,7 +1202,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 					result->environment.insert(result->environment.end(), runtime_environment.begin(), runtime_environment.end());
 					result->environment.insert(result->environment.end(), launch_environment.begin(), launch_environment.end());
 					result->success = PrepareProviderConfiguration(result->root, configuration_settings, launch_chat, result->host,
-					    workspace_root, result->bundle, result->error, central_native ? &central_instructions : nullptr) &&
+					    workspace_root, result->bundle, result->error, central_native ? &central_instructions : nullptr, configuration_provider_version) &&
 					    (result->bundle.local_directory.empty() || uam::provider_setup::Apply(provider.id, result->bundle.local_directory,
 					        workspace_root, result->argv, result->environment, result->error, launch_control_servers, &result->instructions));
 				}
@@ -1229,7 +1240,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	if (!prepared && !session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process &&
 	    (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error,
-	                                  session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr) ||
+	                                  session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr, configuration_provider_version) ||
 	     (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers, &session.provider_protocol_instructions))))
 	{
 		session.lifecycle_state = kAcpLifecycleError;

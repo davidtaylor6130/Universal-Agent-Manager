@@ -1790,9 +1790,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			}
 			BindQueuedAgentForLaunch(session, first);
 			const std::string previous_turn_model = session.goal_turn_model_id;
-			const bool preparing_local_configuration = chat.execution_host_id == execution_hosts::kLocalHostId &&
-			    app.settings.central_provider_configuration.enabled && !session.model_discovery_only &&
-			    !session.recovering_remote_turn && !session.recovering_remote_process;
+			const bool preparing_local_configuration = ShouldDeferLocalAcpConfiguration(app, session, chat);
 			if (preparing_local_configuration) session.goal_turn_model_id = turn_model_id;
 			std::string effective_prompt;
 			std::optional<std::size_t> recall_position;

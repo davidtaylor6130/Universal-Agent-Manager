@@ -12,6 +12,7 @@
 #include "remote/runner_startup_observation.h"
 
 #include "common/memory/memory_categories.h"
+#include "common/memory/memory_recall_preview.h"
 #include "common/utils/string_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/utils/base64.h"
@@ -29,6 +30,7 @@
 #include <fstream>
 #include <mutex>
 #include <ranges>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -802,6 +804,9 @@ namespace uam::remote
 			if (!IsBoundedText(workspace_text, kMaxWorkingDirectoryBytes) || !workspace.is_absolute())
 				return ProcessError(request, "invalid_request", "An absolute bounded workspace is required.");
 			const int requested_budget = request.value("budget", 8192);
+			if (request.contains("detailReferences") && !request["detailReferences"].is_boolean())
+				return ProcessError(request, "invalid_request", "Memory detail references must be boolean.");
+			const bool detail_references = request.value("detailReferences", false);
 			if (requested_budget < 512 || requested_budget > 65536)
 				return ProcessError(request, "invalid_request", "The memory budget must be between 512 and 65536 bytes.");
 			std::vector<std::filesystem::path> files;
@@ -823,16 +828,29 @@ namespace uam::remote
 			}
 			std::ranges::sort(files);
 			std::string text;
+			std::vector<std::pair<std::string, std::string>> rows;
+			std::size_t fact_bytes = 0;
 			for (const std::filesystem::path& file : files)
 			{
 				const nlohmann::json response = HandleProcessRequest({{"id", request["id"]}, {"type", "context.read"}, {"path", uam::paths::Utf8PathString(file)}});
 				if (!response.value("ok", false)) return response;
-				std::string preview = response["result"].value("text", "");
-				const std::size_t memory_at = preview.find("## Memory");
-				if (memory_at != std::string::npos) preview.erase(0, memory_at + 9);
-				preview = uam::strings::SafeLine(preview, 320);
-				if (text.size() + preview.size() + 3 > static_cast<std::size_t>(requested_budget)) break;
-				if (!preview.empty()) text += "- " + preview + "\n";
+				std::istringstream content(response["result"].value("text", ""));
+				const std::string preview = uam::memory::ReadFactPreview(content);
+				if (preview.empty()) continue;
+				std::string row = "- " + preview;
+				const std::string path = uam::paths::Utf8PathString(file);
+				if (fact_bytes + row.size() + 1 > static_cast<std::size_t>(requested_budget)) break;
+				fact_bytes += row.size() + 1;
+				const bool reference_allowed = detail_references && uam::provider_setup::NoSymlinks(file) &&
+				    uam::memory::IsSafeDetailReference(path);
+				rows.emplace_back(std::move(row), reference_allowed ? " [details: " + path + "]" : "");
+			}
+			std::size_t remaining = static_cast<std::size_t>(requested_budget) - fact_bytes;
+			for (const auto& [row, reference] : rows)
+			{
+				text += row;
+				if (reference.size() <= remaining) { text += reference; remaining -= reference.size(); }
+				text += '\n';
 			}
 			return ProcessSuccess(request, {{"text", text}});
 		}

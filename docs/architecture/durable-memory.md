@@ -16,6 +16,14 @@ Off prevents future UAM recall and AI memory extraction. Read Only permits recal
 
 The provider-switch contract preserves an existing chat's memory selection: `default` follows the destination provider, while an explicit selection remains explicit. Creation inheritance and switch preservation pass focused native and frontend verification; live acceptance remains pending.
 
+## Compact recall and detail files
+
+First-send recall keeps the existing normalized byte budget, default 2,048 with a 512–8,192 range. Each selected fact becomes one UTF-8-safe line of at most 320 bytes, ending before its Evidence section; detail references do not replace selected facts. Off still suppresses recall and Read Only still permits it.
+
+For local sessions with approved shared setup and memory enabled, validated global and effective-workspace category files are copied into the existing immutable owned provider bundle under `memory/global/` and `memory/workspace/`. `memory/index.md` lists titles and relative paths, and the provider instructions refer to that index. The references identify actual readable files rather than embedding full bodies and evidence in the initial prompt. Mandatory workspace, host and selected-agent instructions remain unchanged. A failed resource snapshot, file or manifest size limit, or disabled shared setup retains the original setup bundle and bounded facts without enabling sharing. Effective host/provider setup selection runs through existing asynchronous preparation rather than adding memory file reads to the GUI thread.
+
+Remote `context.memory` callers can request optional `detailReferences: true`. The helper selects facts under the existing budget first, then adds references only within spare total bytes. Detail reads use existing `workspace.file.read` ownership, root and link validation; controller-global memory files are not exported to SSH. Older helpers ignore the optional request and return bounded facts. Remote optimization requires the compatible helper, with activation kept separate from live process ownership.
+
 ## Ownership and checks
 
 - Services: `src/app/memory_service.*`, `src/app/memory_library_service.*`.

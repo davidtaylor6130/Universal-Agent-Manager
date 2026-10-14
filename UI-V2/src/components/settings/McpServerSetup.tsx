@@ -315,10 +315,8 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           const refs = server.transport === 'stdio' ? server.environment : server.headers
           const setRefs = (values: Reference[]) => update(server.id, server.transport === 'stdio' ? { environment: values } : { headers: values })
           const serverName = server.name || 'server'
-          const launch = server.transport === 'stdio' ? [server.command, ...server.args].join(' ') || 'Program not set' : server.url || 'URL not set'
-          const scope = [server.workspaceDirectory || 'All workspaces', server.executionHostId ? (hosts.find(host => host.id === server.executionHostId)?.label ?? server.executionHostId) : 'All machines'].join(' · ')
+          const scope = [server.workspaceDirectory ? 'Selected workspace' : 'All workspaces', server.executionHostId ? (hosts.find(host => host.id === server.executionHostId)?.label ?? server.executionHostId) : 'All machines'].join(' · ')
           return <SettingRow key={server.id} icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
-            description={<span className="uam-prov-detail">{launch}</span>}
             status={scope}
             control={<>
               {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}

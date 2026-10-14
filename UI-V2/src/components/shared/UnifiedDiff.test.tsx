@@ -45,6 +45,37 @@ describe('Unified file review', () => {
 })
 
 
+describe('Diff accessibility', () => {
+  it.each(['unified', 'split'] as const)('announces change states and source line numbers in %s view', (layout) => {
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    try {
+      const diff = '@@ -8,2 +12,2 @@\n same\n-old\n+new\n\\ No newline at end of file'
+      act(() => root.render(<UnifiedDiff diff={diff} path="file.txt" layout={layout} />))
+      const added = host.querySelector<HTMLElement>('[data-kind="added"]')!
+      const removed = host.querySelector<HTMLElement>('[data-kind="removed"]')!
+      expect(added.textContent).toContain('Added line. New line 13. ')
+      expect(removed.textContent).toContain('Removed line. Old line 9. ')
+      for (const [row, visible] of [[added, '13+new'], [removed, '9-old']] as const) {
+        const clone = row.cloneNode(true) as HTMLElement
+        clone.querySelectorAll('.sr-only').forEach(label => label.remove())
+        expect(clone.textContent).toBe(visible)
+        expect([...row.querySelectorAll('.sr-only')].every(label => label.classList.contains('select-none'))).toBe(true)
+      }
+      expect(added.querySelector('.uam-rv-sign')?.getAttribute('aria-hidden')).toBe('true')
+      expect(removed.querySelector('.uam-rv-sign')?.getAttribute('aria-hidden')).toBe('true')
+      expect(host.querySelectorAll('.uam-rv-gutter[aria-label]')).toHaveLength(0)
+      const context = host.querySelector<HTMLElement>('[data-kind="context"]')!
+      expect(context.querySelector('[data-gutter="old"]')?.textContent).toBe('Old line 8. ')
+      const newContext = layout === 'split' ? host.querySelector('[data-diff-side="right"][data-kind="context"]')! : context
+      expect(newContext.querySelector('[data-gutter="new"]')?.textContent).toBe('New line 12. ')
+      expect([...host.querySelectorAll('[data-gutter]')].filter(gutter => !/\d/.test(gutter.textContent ?? '')).every(gutter => gutter.textContent === '')).toBe(true)
+      expect(host.textContent).toContain('\\ No newline at end of file')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+})
+
+
 describe('Split file review', () => {
   it('shows new-file contents on the right without the Git patch preamble', () => {
     const host = document.createElement('div'); document.body.append(host)
@@ -58,7 +89,7 @@ describe('Split file review', () => {
       expect((host.querySelector('[role="region"]')!.firstElementChild as HTMLElement).style.minWidth).toBe('calc(80ch + 100px)')
       expect(host.textContent).not.toContain('/dev/null')
       expect(host.textContent).toContain('@@ -0,0 +1,2 @@')
-      expect([...host.querySelectorAll('[data-diff-side="right"] [aria-label="New line"]')].map(line => line.textContent)).toEqual(['1', '2', ''])
+      expect([...host.querySelectorAll('[data-diff-side="right"] [data-gutter="new"]')].map(line => line.textContent)).toEqual(['New line 1. ', 'New line 2. ', ''])
       expect([...host.querySelectorAll('[data-diff-side="left"]')].every(side => side.getAttribute('data-kind') === 'empty')).toBe(true)
       expect(host.textContent).toContain('--- literal file contents')
       expect(host.textContent).toContain('\\ No newline at end of file')

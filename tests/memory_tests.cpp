@@ -3,6 +3,8 @@
 #include "common/provider/provider_text_worker.h"
 #include "common/memory/memory_levels.h"
 #include "common/memory/memory_policy.h"
+#include "common/provider/provider_setup.h"
+#include "common/paths/workspace_file_reader.h"
 
 using namespace uam_test;
 
@@ -2924,4 +2926,125 @@ UAM_TEST(ProviderTextWorkerPathsRemapOwnedRootAndDescendantsOnly)
 	const std::vector<std::string> unchanged = linux;
 	uam::provider_workers::RemapWorkerPaths(linux, {}, "/other", "linux");
 	UAM_ASSERT_EQ(linux, unchanged);
+}
+
+UAM_TEST(MemoryRecallKeepsFactsAndExcludesEvidenceFromThePromptBudget)
+{
+	TempDir temp("uam-memory-fact-details");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.workspace_directory = (temp.root / "workspace").string();
+	const fs::path entry = MemoryService::CategoryPath(MemoryService::GlobalMemoryRoot(app.data_root), "Lessons/User_Lessons") / "preference.md";
+	const std::string fact = "Préférer les tests avant de modifier les données.";
+	UAM_ASSERT(uam::io::WriteTextFile(entry, "# Preference\n\n## Memory\n" + fact + "\n\n## Evidence\nDO_NOT_INLINE_EVIDENCE"));
+	const std::string small = MemoryService::BuildRecallPreface(app, chat, "Continue");
+	UAM_ASSERT(small.find(fact) != std::string::npos);
+	UAM_ASSERT(small.find("DO_NOT_INLINE_EVIDENCE") == std::string::npos);
+	UAM_ASSERT(small.find("## Evidence") == std::string::npos);
+	UAM_ASSERT(uam::io::WriteTextFile(entry, "# Preference\r\n\r\n## Memory\r\n" + fact + "\r\n\r\n  ## Evidence\r\n" + std::string(1024 * 1024, 'e')));
+	UAM_ASSERT_EQ(MemoryService::BuildRecallPreface(app, chat, "Continue"), small);
+	UAM_ASSERT(small.size() <= static_cast<std::size_t>(app.settings.memory_recall_budget_bytes) + 24);
+}
+
+UAM_TEST(MemoryRecallResourcesPublishOwnedScopedSnapshotsForOnDemandReading)
+{
+	TempDir temp("uam-memory-resource-read");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.workspace_directory = (temp.root / "workspace").string();
+	const fs::path workspace = fs::path(chat.workspace_directory);
+	const fs::path global = MemoryService::CategoryPath(MemoryService::GlobalMemoryRoot(app.data_root), "Lessons/User_Lessons") / "global.md";
+	const fs::path project = MemoryService::CategoryPath(MemoryService::LocalMemoryRoot(workspace), "Lessons/User_Lessons") / "project.md";
+	const fs::path foreign = MemoryService::CategoryPath(MemoryService::LocalMemoryRoot(temp.root / "other"), "Lessons/User_Lessons") / "foreign.md";
+	UAM_ASSERT(uam::io::WriteTextFile(global, "## Memory\nKeep required global preference.\n## Evidence\nGLOBAL_DETAIL"));
+	UAM_ASSERT(uam::io::WriteTextFile(project, "## Memory\nKeep project preference.\n## Evidence\nPROJECT_DETAIL_é"));
+	UAM_ASSERT(uam::io::WriteTextFile(foreign, "## Memory\nFOREIGN_DETAIL"));
+	std::map<std::string, std::string> files{{"AGENTS.md", "Required host and agent instructions."}};
+	std::string error;
+	UAM_ASSERT(MemoryService::BuildRecallResources(app.data_root, app.settings, chat, workspace, files, error));
+	UAM_ASSERT_EQ(files.at("AGENTS.md"), "Required host and agent instructions.");
+	UAM_ASSERT(files.at("memory/index.md").find("workspace/Lessons/User_Lessons/project.md") != std::string::npos);
+	for (const auto& [name, bytes] : files) UAM_ASSERT(bytes.find("FOREIGN_DETAIL") == std::string::npos);
+	nlohmann::json manifest = {{"format", 1}, {"files", nlohmann::json::object()}};
+	for (const auto& [name, bytes] : files) manifest["files"][name] = {{"size", bytes.size()}, {"digest", uam::provider_setup::Digest(bytes)}};
+	const fs::path owned = fs::absolute(workspace / ".UAM/provider-setup" / uam::provider_setup::Digest(manifest.dump()));
+	std::vector<std::string> missing;
+	UAM_ASSERT(uam::provider_setup::Prepare(owned, manifest, missing, error));
+	for (const std::string& name : missing)
+	{
+		fs::create_directories((owned / name).parent_path());
+		UAM_ASSERT(uam::provider_setup::WriteRuntimeFile(owned / name, files.at(name), error, false));
+	}
+	UAM_ASSERT(uam::provider_setup::Prepare(owned, manifest, missing, error));
+	UAM_ASSERT(missing.empty());
+	UAM_ASSERT(uam::io::WriteTextFile(project, "Changed after admission"));
+	const auto read = uam::workspace_files::Read(fs::canonical(workspace), uam::paths::Utf8PathString(owned / "memory/workspace/Lessons/User_Lessons/project.md"));
+	UAM_ASSERT(read.ok);
+	UAM_ASSERT(read.text.find("PROJECT_DETAIL_é") != std::string::npos);
+	UAM_ASSERT(read.text.find("Changed after admission") == std::string::npos);
+	UAM_ASSERT(!uam::workspace_files::Read(fs::canonical(workspace), "../data/memory/Lessons/User_Lessons/global.md").ok);
+	UAM_ASSERT_EQ(files.at("memory/global/Lessons/User_Lessons/global.md"), ReadFile(global));
+}
+
+UAM_TEST(MemoryRecallResourceFailurePreservesFallbackAndRejectsForeignRoots)
+{
+	TempDir temp("uam-memory-resource-fallback");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.workspace_directory = (temp.root / "workspace").string();
+	const fs::path root = MemoryService::LocalMemoryRoot(chat.workspace_directory);
+	const fs::path entry = MemoryService::CategoryPath(root, "Lessons/User_Lessons") / "valid.md";
+	UAM_ASSERT(uam::io::WriteTextFile(entry, "## Memory\nKeep this fact.\n## Evidence\nOptional detail"));
+	const std::map<std::string, std::string> original{{"AGENTS.md", "Required instructions"}};
+	std::map<std::string, std::string> files = original;
+	std::string error;
+	UAM_ASSERT(!MemoryService::BuildRecallResources(app.data_root, app.settings, chat, temp.root / "other", files, error));
+	UAM_ASSERT(files == original);
+	const fs::path large = entry.parent_path() / "too-large.md";
+	UAM_ASSERT(uam::io::WriteTextFile(large, std::string(uam::provider_setup::kMaxFileBytes + 1, 'x')));
+	UAM_ASSERT(!MemoryService::BuildRecallResources(app.data_root, app.settings, chat, fs::path(chat.workspace_directory), files, error));
+	UAM_ASSERT(files == original);
+	UAM_ASSERT(MemoryService::BuildRecallPreface(app, chat, "Continue").find("Keep this fact.") != std::string::npos);
+	fs::remove(large);
+#if !defined(_WIN32)
+	const fs::path linked = entry.parent_path() / "linked.md";
+	fs::create_symlink(entry, linked);
+	UAM_ASSERT(!MemoryService::BuildRecallResources(app.data_root, app.settings, chat, fs::path(chat.workspace_directory), files, error));
+	UAM_ASSERT(files == original);
+	fs::remove(linked);
+	const fs::path injected = entry.parent_path() / "injected\nreference.md";
+	UAM_ASSERT(uam::io::WriteTextFile(injected, "## Memory\nKeep this other fact."));
+	UAM_ASSERT(!MemoryService::BuildRecallResources(app.data_root, app.settings, chat, fs::path(chat.workspace_directory), files, error));
+	UAM_ASSERT(files == original);
+	fs::remove(injected);
+#endif
+	for (const std::string policy : {"off", "readOnly"})
+	{
+		chat.memory_level = policy;
+		files = original;
+		UAM_ASSERT(MemoryService::BuildRecallResources(app.data_root, app.settings, chat, fs::path(chat.workspace_directory), files, error));
+		UAM_ASSERT_EQ(files.contains("memory/index.md"), policy == "readOnly");
+	}
+	chat.execution_host_id = "ssh-fixture";
+	files = original;
+	UAM_ASSERT(MemoryService::BuildRecallResources(app.data_root, app.settings, chat, fs::path(chat.workspace_directory), files, error));
+	UAM_ASSERT(files == original);
+}
+
+UAM_TEST(MemoryRecallFoldsMultilineFactsIntoOneRowWithoutEvidence)
+{
+	TempDir temp("uam-memory-single-line-fact");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.workspace_directory = (temp.root / "workspace").string();
+	const fs::path entry = MemoryService::CategoryPath(MemoryService::GlobalMemoryRoot(app.data_root), "Lessons/User_Lessons") / "multiline.md";
+	UAM_ASSERT(uam::io::WriteTextFile(entry, "## Memory\nFirst é fact.\nSecond fact.\nThird fact.\n## Evidence\nNOT_INLINE"));
+	const std::string recall = MemoryService::BuildRecallPreface(app, chat, "Continue");
+	UAM_ASSERT(recall.find("- First é fact. Second fact. Third fact.\n") != std::string::npos);
+	UAM_ASSERT(recall.find("NOT_INLINE") == std::string::npos);
+	UAM_ASSERT_EQ(std::count(recall.begin(), recall.end(), '\n'), 4);
 }

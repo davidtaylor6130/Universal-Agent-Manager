@@ -604,11 +604,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       >
         {activityLayout && !editing ? (
           <div className="uam-sb-activity flex min-w-0 flex-1 flex-col gap-0.5">
-            <div className="flex min-w-0 items-center gap-2">
-              {/* Fixed slot: rows without an icon keep their titles aligned. */}
-              <span aria-hidden className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-                <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
-              </span>
+            <div className="flex min-w-0 items-center gap-2 [&>img]:h-4">
+              <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
               <span className="block min-w-0 flex-1 truncate text-[13px] leading-5" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
               {lifecycleStatus?.type === 'processing' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium tabular-nums" style={{ color: 'var(--info)' }}>

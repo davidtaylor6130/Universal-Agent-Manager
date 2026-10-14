@@ -106,15 +106,17 @@ export function UnifiedDiff({ diff, path, layout = 'unified' }: { diff: string; 
           {row.header !== undefined ? <span className="uam-rv-diff-text" style={{ color: 'var(--text-3)', paddingLeft: 8 }}>{row.header || ' '}</span> : (['left', 'right'] as const).map((side) => {
             const line = row[side]
             return <div key={side} data-diff-side={side} data-kind={line?.kind ?? 'empty'} className="uam-rv-diff-side" style={{ lineHeight: `${ROW_HEIGHT}px` }}>
-              <span aria-label={side === 'left' ? 'Old line' : 'New line'} className="uam-rv-gutter">{side === 'left' ? line?.oldLine : line?.newLine}</span>
+              <span className="sr-only select-none">{line?.kind === 'added' ? 'Added line. ' : line?.kind === 'removed' ? 'Removed line. ' : ''}</span>
+              <span data-gutter={side === 'left' ? 'old' : 'new'} className="uam-rv-gutter">{(side === 'left' ? line?.oldLine : line?.newLine) !== undefined && <><span className="sr-only select-none">{side === 'left' ? 'Old line ' : 'New line '}</span>{side === 'left' ? line?.oldLine : line?.newLine}<span className="sr-only select-none">. </span></>}</span>
               {line && line.kind !== 'header' && <span className="uam-rv-sign" aria-hidden>{line.text.charAt(0)}</span>}
               <span className="uam-rv-diff-text">{line ? line.kind === 'header' ? line.text : line.text.slice(1) : ' '}</span>
             </div>
           })}
         </div>) : lines.slice(start, end).map((row, offset) => <div key={start + offset} data-diff-row={start + offset}
           data-kind={row.kind} className="uam-rv-diff-row" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}>
-          <span aria-label="Old line" className="uam-rv-gutter">{row.oldLine}</span>
-          <span aria-label="New line" className="uam-rv-gutter">{row.newLine}</span>
+          <span className="sr-only select-none">{row.kind === 'added' ? 'Added line. ' : row.kind === 'removed' ? 'Removed line. ' : ''}</span>
+          <span data-gutter="old" className="uam-rv-gutter">{row.oldLine !== undefined && <><span className="sr-only select-none">Old line </span>{row.oldLine}<span className="sr-only select-none">. </span></>}</span>
+          <span data-gutter="new" className="uam-rv-gutter">{row.newLine !== undefined && <><span className="sr-only select-none">New line </span>{row.newLine}<span className="sr-only select-none">. </span></>}</span>
           {row.kind !== 'header' && <span className="uam-rv-sign" aria-hidden>{row.text.charAt(0)}</span>}
           <span className="uam-rv-diff-text">{row.kind === 'header' ? row.text || ' ' : row.text.slice(1) || ' '}</span>
         </div>)}

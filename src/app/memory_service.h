@@ -3,6 +3,7 @@
 #include "common/state/app_state.h"
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,8 @@ class MemoryService
 	static std::filesystem::path CategoryPath(const std::filesystem::path& root, const std::string& category);
 	static bool EnsureMemoryLayout(const std::filesystem::path& root);
 	static std::string BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt, std::stop_token stop_token = {});
+	/// <summary>Stages scoped memory detail files without changing the caller's resources on failure.</summary>
+	static bool BuildRecallResources(const std::filesystem::path& data_root, const AppSettings& settings, const ChatSession& chat, const std::filesystem::path& workspace, std::map<std::string, std::string>& files, std::string& error);
 	static bool ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count = -1, std::string* error_out = nullptr, bool refresh_counts_async = false);
 	/// <summary>Reads memory metadata and syncs private temporary entries without replacing saved memories.</summary>
 	static std::shared_ptr<PreparedMemoryOutput> PrepareWorkerOutput(const std::filesystem::path& data_root, const ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count, std::string* error_out = nullptr, std::stop_token stop_token = {});

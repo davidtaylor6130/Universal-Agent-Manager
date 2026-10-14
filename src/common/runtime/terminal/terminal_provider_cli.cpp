@@ -429,7 +429,8 @@ bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const
 		settings.central_provider_configuration = {};
 		settings.central_provider_configuration.enabled = true;
 	}
-	if (!PrepareProviderConfiguration(app.data_root, settings, chat, host, workspace, bundle, error)) return false;
+	if (!PrepareProviderConfiguration(app.data_root, settings, chat, host, workspace, bundle, error, nullptr,
+	                                 CheckedProviderConfigurationVersion(app, chat.provider_id, host))) return false;
 	if (installed_directory) *installed_directory = bundle.local_directory;
 	std::filesystem::path target;
 	std::unique_ptr<uam::remote::RunnerClient> client;

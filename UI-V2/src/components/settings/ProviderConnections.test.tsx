@@ -196,4 +196,36 @@ it('collapses many server columns into one count chip whose popover holds each s
   await act(async () => chip.click())
   expect(document.body.querySelector('[aria-label="Codex Docs"]')?.getAttribute('aria-checked')).toBe('true')
   expect(document.body.querySelector('[aria-label="Codex Git (unknown)"]')).not.toBeNull()
+  const popover = document.body.querySelector('[aria-label="Codex MCP servers"]')!
+  expect(popover.textContent).not.toContain(server.workspaceDirectory)
+  expect(popover.textContent).not.toContain(server.url)
+})
+
+
+it.each(['local', 'ssh-lab'])('shows known MCP setup and handshake states for %s without claiming live connectivity', async hostId => {
+  const configured = status(hostId)
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: configured })
+  await render('gemini-cli', hostId)
+  expect(sendToCEF).toHaveBeenCalledWith(expect.objectContaining({ action: 'getProviderMcpStatus', payload: { executionHostId: hostId } }))
+  expect(host.querySelector('.uam-prov-status')?.textContent).toBe('Configured, unverified')
+  expect(host.textContent).not.toContain('Connected')
+  const confirmed = status(hostId)
+  confirmed.handshakeProofAvailable = true
+  confirmed.providers[0].status = 'handshake-confirmed'
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: confirmed })
+  await click('Refresh provider connections')
+  expect(host.querySelector('.uam-prov-status')?.textContent).toBe('Handshake confirmed')
+  expect(host.textContent).not.toContain('Connected')
+  confirmed.handshakeProofAvailable = false
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: confirmed })
+  await click('Refresh provider connections')
+  expect(host.querySelector('.uam-prov-status')?.textContent).toBe('Unknown')
+})
+
+it('keeps endpoint and workspace paths out of MCP server overview summaries', async () => {
+  await render('gemini-cli')
+  expect(host.textContent).not.toContain(server.url)
+  expect(host.textContent).not.toContain(server.workspaceDirectory)
+  const headers = [...host.querySelectorAll('th')]
+  expect(headers.find(header => header.textContent === server.name)?.hasAttribute('title')).toBe(false)
 })

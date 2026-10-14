@@ -1024,6 +1024,56 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it.each([undefined, { type: 'png' as const, value: 'missing.png' }])('starts the activity title at the row edge without an available custom icon (%s)', (customIcon) => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon }], showProviderIconsInSidebar: true })
+    const { host, root } = renderSessionItem(true)
+    try {
+      const activity = host.querySelector('.uam-sb-activity')!
+      const titleLine = activity.firstElementChild!
+      expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+      expect(titleLine.querySelector('[aria-label^="Provider:"]')).toBeNull()
+      expect(activity.lastElementChild?.querySelector('[aria-label="Provider: Gemini"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('does not leave an activity icon gutter after its custom PNG fails to load', () => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon: {
+      type: 'png', value: 'broken.png', dataUrl: 'data:image/png;base64,AAAA',
+    } }], showProviderIconsInSidebar: true })
+    const { host, root } = renderSessionItem(true)
+    try {
+      const titleLine = host.querySelector('.uam-sb-activity')!.firstElementChild!
+      act(() => titleLine.querySelector('img')!.dispatchEvent(new Event('error')))
+      expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+      expect(host.querySelector('[aria-label="Provider: Gemini"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([
+    { activity: true, pinned: false, working: true, snoozed: false },
+    { activity: true, pinned: false, working: false, snoozed: true },
+    { activity: false, pinned: true, working: true, snoozed: false },
+    { activity: false, pinned: true, working: false, snoozed: true },
+  ])('preserves provider and status affordances around the title ($activity/$pinned/$working/$snoozed)', ({ activity, pinned, working, snoozed }) => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', isPinned: pinned,
+      snoozedUntilMs: snoozed ? Date.now() + 3_600_000 : undefined }],
+      acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: working, lifecycleState: working ? 'processing' : 'ready' }) } })
+    const { host, root } = renderSessionItem(activity)
+    try {
+      expect(host.querySelectorAll('[aria-label="Provider: Gemini"]')).toHaveLength(1)
+      if (activity) {
+        const titleLine = host.querySelector('.uam-sb-activity')!.firstElementChild!
+        expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+        if (working) expect(titleLine.querySelector('[role="status"]')?.textContent).toBe('Working')
+        else expect(host.querySelector('[aria-label="Snooze Chat 1"]')).toBeTruthy()
+      } else {
+        expect(host.querySelector('[aria-label="Unpin Chat 1"]')).toBeTruthy()
+        if (working) expect(host.querySelector('[aria-label="Agent running"]')).toBeTruthy()
+        if (snoozed) expect(host.querySelector('[aria-label="Unsnooze Chat 1"]')).toBeTruthy()
+      }
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('shows the chat custom icon in place of the provider glyph and before the activity title', () => {
     const icon = { type: 'text' as const, value: '🧪' }
     useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon: icon }], showProviderIconsInSidebar: true })

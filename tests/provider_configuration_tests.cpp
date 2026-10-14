@@ -13,6 +13,244 @@
 
 using namespace uam_test;
 
+UAM_TEST(OpenCodeDiscoveryUsesOnlyCheckedVersionsOnTheSelectedHost)
+{
+	uam::AppState app;
+	ExecutionHost local;
+	ExecutionHost remote;
+	remote.id = "ssh-fixture";
+	remote.transport = "ssh";
+	remote.ssh_alias = "fixture";
+	uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", remote.id)];
+	state.execution_host = remote;
+	state.installed_version = "1.17.20";
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote).empty());
+	state.checked = true;
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote).empty());
+	state.supported = true;
+	UAM_ASSERT_EQ(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote), std::string("1.17.20"));
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", local).empty());
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "codex-cli", remote).empty());
+	remote.ssh_alias = "different-target";
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote).empty());
+}
+
+UAM_TEST(OpenCodeDiscoverySupportsInheritedMcpWithoutChangingOtherProviderBundles)
+{
+	TempDir temp("uam-discovery-versions");
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	ExecutionHost host;
+	for (const std::string version : {"", "1.17.19", "1.17.20", "1.18.35", "1.18.36", "unknown"})
+	{
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, version));
+		const bool verified = version == "1.17.20" || version == "1.18.35";
+		UAM_ASSERT_EQ(!bundle.local_directory.empty(), verified);
+		if (!verified) continue;
+		UAM_ASSERT_EQ(bundle.manifest["format"], nlohmann::json(1));
+		UAM_ASSERT(bundle.manifest.value("openCodeCodeMode", false));
+		UAM_ASSERT(bundle.manifest.value("mcpOnly", false));
+		UAM_ASSERT(bundle.manifest["mcpServers"].empty());
+		UAM_ASSERT(bundle.files.empty());
+	}
+	settings.central_provider_configuration.enabled = true;
+	for (const std::string provider : {"codex-cli", "claude-cli", "gemini-cli", "copilot-cli", "antigravity-cli"})
+	{
+		chat.provider_id = provider;
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, "1.17.20"));
+		UAM_ASSERT(!bundle.manifest.contains("openCodeCodeMode"));
+	}
+}
+
+UAM_TEST(OpenCodeDiscoveryManifestRequiresBooleanHintAndRetainsFormatOne)
+{
+	nlohmann::json manifest = {{"format", 1}, {"files", nlohmann::json::object()}};
+	std::string error;
+	for (const nlohmann::json hint : {nlohmann::json(true), nlohmann::json(false)})
+	{
+		manifest["openCodeCodeMode"] = hint;
+		UAM_ASSERT(uam::provider_setup::ValidateManifest(manifest, error));
+	}
+	for (const nlohmann::json hint : {nlohmann::json("true"), nlohmann::json(1), nlohmann::json(nullptr), nlohmann::json::object()})
+	{
+		manifest["openCodeCodeMode"] = hint;
+		UAM_ASSERT(!uam::provider_setup::ValidateManifest(manifest, error));
+	}
+}
+
+UAM_TEST(OpenCodeDiscoveryPreservesExecutingHostAndLaunchEnvironmentOverrides)
+{
+	TempDir temp("uam-discovery-environment");
+	constexpr const char* flag = "OPENCODE_EXPERIMENTAL_CODE_MODE";
+	ScopedEnvVar original(flag, "");
+#if !defined(_WIN32)
+	unsetenv(flag);
+#endif
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, "1.17.20"));
+	std::vector<std::string> argv{"opencode", "acp"};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, flag), std::string("true"));
+	UAM_ASSERT(std::getenv(flag) == nullptr);
+	UAM_ASSERT_EQ(argv, std::vector<std::string>({"opencode", "acp"}));
+	for (const std::string value : {"true", "false", ""})
+	{
+		environment = {{flag, value}, {"OPENCODE_PERMISSION", R"({"read":"deny"})"}};
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+		UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, flag), value);
+		UAM_ASSERT_EQ(std::count_if(environment.begin(), environment.end(), [flag](const std::pair<std::string, std::string>& entry) { return entry.first == flag; }), 1);
+		UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_PERMISSION"), std::string(R"({"read":"deny"})"));
+		ScopedEnvVar inherited(flag, value);
+		environment.clear();
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+#if defined(_WIN32)
+		if (value.empty()) continue; // The CRT removes an empty assignment; explicit launch entries above still preserve it.
+#endif
+		UAM_ASSERT(std::ranges::none_of(environment, [flag](const std::pair<std::string, std::string>& entry) { return entry.first == flag; }));
+	}
+#if defined(_WIN32)
+	environment = {{"opencode_experimental_code_mode", "false"}};
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT_EQ(environment.front().second, std::string("false"));
+	UAM_ASSERT(std::ranges::none_of(environment, [flag](const std::pair<std::string, std::string>& entry) { return entry.first == flag; }));
+#endif
+	argv = {"claude"};
+	environment.clear();
+	UAM_ASSERT(uam::provider_setup::Apply("claude-cli", bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT(std::ranges::none_of(environment, [flag](const std::pair<std::string, std::string>& entry) { return entry.first == flag; }));
+}
+
+UAM_TEST(OpenCodeDiscoveryRunnerPropagatesOnlyTheChildDefault)
+{
+	TempDir temp("uam-discovery-runner");
+	constexpr const char* flag = "OPENCODE_EXPERIMENTAL_CODE_MODE";
+	ScopedEnvVar original(flag, "");
+#if !defined(_WIN32)
+	unsetenv(flag);
+#endif
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, "1.17.20"));
+	const fs::path target = temp.root / ".UAM/provider-setup" / bundle.local_directory.filename();
+	std::vector<std::string> missing;
+	UAM_ASSERT(uam::provider_setup::Prepare(target, bundle.manifest, missing, error));
+#if defined(_WIN32)
+	const std::vector<std::string> argv{"cmd.exe", "/D", "/C", "echo %OPENCODE_EXPERIMENTAL_CODE_MODE%"};
+#else
+	const std::vector<std::string> argv{"/bin/sh", "-c", "printf %s \"$OPENCODE_EXPERIMENTAL_CODE_MODE\""};
+#endif
+	uam::remote::RunnerState runner;
+	const nlohmann::json started = runner.HandleProcessRequest({{"id", "start"}, {"type", "process.start"}, {"sessionId", "discovery-fixture"},
+	    {"controlToken", "private-token"}, {"cwd", uam::paths::Utf8PathString(temp.root)}, {"argv", argv},
+	    {"configurationProvider", chat.provider_id}, {"configurationDirectory", uam::paths::Utf8PathString(target)}});
+	UAM_ASSERT(started.value("ok", false));
+	std::string output;
+	bool exited = false;
+	for (int attempt = 0; attempt < 200; ++attempt)
+	{
+		const nlohmann::json polled = runner.HandleProcessRequest({{"id", "poll"}, {"type", "process.poll"}, {"sessionId", "discovery-fixture"}, {"controlToken", "private-token"}});
+		UAM_ASSERT(polled.value("ok", false));
+		std::string chunk;
+		UAM_ASSERT(uam::base64::Decode(polled["result"].value("stdoutBase64", ""), chunk));
+		output += chunk;
+		if (!polled["result"].value("running", true)) { exited = true; break; }
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(uam::strings::Trim(output), std::string("true"));
+	UAM_ASSERT(std::getenv(flag) == nullptr);
+	UAM_ASSERT(runner.HandleProcessRequest({{"id", "remove"}, {"type", "process.remove"}, {"sessionId", "discovery-fixture"}, {"controlToken", "private-token"}}).value("ok", false));
+}
+
+UAM_TEST(CentralMemoryDetailsRemainReadableThroughTheOwnedIndex)
+{
+	TempDir temp("uam-central-memory-details");
+	const fs::path data = temp.root / "data";
+	const fs::path memory = MemoryService::GlobalMemoryRoot(data) / uam::memory::kLessonsAi;
+	fs::create_directories(memory);
+	const std::string detail = "# Example\nA short lesson.\n\n## Evidence\nDetailed source retained only in the owned file.\n";
+	UAM_ASSERT(uam::io::WriteTextFile(memory / "example.md", detail));
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(data, settings, chat, host, temp.root, bundle, error));
+	UAM_ASSERT_EQ(bundle.files.at("memory/global/Lessons/AI_Lessons/example.md"), detail);
+	UAM_ASSERT(bundle.files.at("memory/index.md").find("global/Lessons/AI_Lessons/example.md") != std::string::npos);
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("__UAM_RESOURCE_ROOT__/memory/index.md") != std::string::npos);
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("Detailed source retained") == std::string::npos);
+	std::vector<std::string> argv{"opencode", "acp"};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	const nlohmann::json config = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
+	const fs::path instructions = uam::paths::PathFromUtf8(config["instructions"][0].get<std::string>());
+	UAM_ASSERT(ReadFile(instructions).find(uam::paths::Utf8PathString(bundle.local_directory / "memory/index.md")) != std::string::npos);
+	UAM_ASSERT_EQ(ReadFile(bundle.local_directory / "memory/global/Lessons/AI_Lessons/example.md"), detail);
+	UAM_ASSERT_EQ(ReadFile(memory / "example.md"), detail);
+}
+
+UAM_TEST(CentralMemoryDetailFailureKeepsTheOriginalLaunchAndNoBrokenIndex)
+{
+	TempDir temp("uam-central-memory-fallback");
+	const fs::path data = temp.root / "data";
+	const fs::path memory = MemoryService::GlobalMemoryRoot(data) / uam::memory::kLessonsAi;
+	fs::create_directories(memory);
+	UAM_ASSERT(uam::io::WriteTextFile(memory / "large.md", std::string(uam::provider_setup::kMaxFileBytes + 1, 'x')));
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(data, settings, chat, host, temp.root, bundle, error));
+	UAM_ASSERT(!bundle.files.contains("memory/index.md"));
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("Memory details:") == std::string::npos);
+	UAM_ASSERT(error.empty());
+}
+
+UAM_TEST(CentralMemoryManifestOverflowKeepsTheOriginalLaunch)
+{
+	TempDir temp("uam-central-memory-manifest-fallback");
+	const fs::path data = temp.root / "data";
+	const fs::path memory = MemoryService::GlobalMemoryRoot(data) / uam::memory::kLessonsAi;
+	fs::create_directories(memory);
+	for (int index = 0; index < 1900; ++index)
+		UAM_ASSERT(uam::io::WriteTextFile(memory / (std::to_string(index) + "-" + std::string(215, 'x') + ".md"), "A bounded fact."));
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(data, settings, chat, host, temp.root, bundle, error));
+	UAM_ASSERT(!bundle.files.contains("memory/index.md"));
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("Memory details:") == std::string::npos);
+	UAM_ASSERT(uam::provider_setup::ValidateManifest(bundle.manifest, error));
+	UAM_ASSERT(bundle.manifest.dump().size() < 512 * 1024);
+	UAM_ASSERT_EQ(ReadFile(memory / ("0-" + std::string(215, 'x') + ".md")), std::string("A bounded fact."));
+}
+
 UAM_TEST(CentralConfigurationPersistsAndRejectsMalformedPaths)
 {
 	TempDir temp("uam-central-settings");

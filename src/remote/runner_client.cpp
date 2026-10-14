@@ -893,7 +893,7 @@ namespace uam::remote
 			return false;
 		}
 		nlohmann::json response;
-		if (!Request({{"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", budget}},
+		if (!Request({{"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", budget}, {"detailReferences", true}},
 		    response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
 		if (!response.contains("result") || !response["result"].is_object() || !response["result"].contains("text") || !response["result"]["text"].is_string() || response["result"]["text"].get_ref<const std::string&>().size() > 65536)
 		{

@@ -99,6 +99,7 @@ namespace uam::provider_setup
 		if (!manifest.is_object() || !manifest.contains("format") || !manifest["format"].is_number_integer() || manifest["format"] != 1 || !manifest.contains("files") || !manifest["files"].is_object() || manifest["files"].size() > kMaxFiles)
 		{ error = "Central resource manifest is invalid."; return false; }
 		if (manifest.contains("mcpOnly") && !manifest["mcpOnly"].is_boolean()) { error = "MCP-only metadata must be boolean."; return false; }
+		if (manifest.contains("openCodeCodeMode") && !manifest["openCodeCodeMode"].is_boolean()) { error = "OpenCode discovery metadata must be boolean."; return false; }
 		if (manifest.dump().size() > 512 * 1024) { error = "Central resource manifest exceeds 512 KiB."; return false; }
 		std::size_t total = 0;
 		for (const auto& [name, entry] : manifest["files"].items())
@@ -381,6 +382,18 @@ namespace uam::provider_setup
 		}
 		else if (provider == uam::provider_ids::kOpenCodeCli)
 		{
+			// Resolve defaults on the executing host, preserving even an explicitly empty override.
+			constexpr const char* code_mode = "OPENCODE_EXPERIMENTAL_CODE_MODE";
+			if (manifest.value("openCodeCodeMode", false) && std::getenv(code_mode) == nullptr &&
+			    std::ranges::none_of(environment, [code_mode](const std::pair<std::string, std::string>& entry)
+			    {
+#if defined(_WIN32)
+				return uam::strings::EqualsIgnoreCase(entry.first, code_mode);
+#else
+				return entry.first == code_mode;
+#endif
+			    }))
+				SetEnvironment(environment, code_mode, "true");
 			const std::string existing = EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT");
 			nlohmann::json config = existing.empty() ? nlohmann::json::object() : nlohmann::json::parse(existing, nullptr, false, true);
 			if (!config.is_object()) { error = "Existing OpenCode inline configuration is invalid."; return false; }

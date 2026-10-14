@@ -5708,3 +5708,72 @@ UAM_TEST(OptInRealRemoteWindowsCodexCompletesPromptAfterIdleResume)
 	UAM_ASSERT(app.chats.front().acp_queued_prompts.empty());
 #endif
 }
+
+UAM_TEST(RemoteMemoryDetailReferencesAreReadableScopedAndEvidenceFree)
+{
+	TempDir temp("uam-remote-memory-details");
+	const fs::path workspace = fs::canonical(temp.root);
+	const fs::path entry = workspace / ".UAM/Lessons/User_Lessons/lesson.md";
+	UAM_ASSERT(uam::io::WriteTextFile(entry, "## Memory\nKeep tests.\n\n## Evidence\nREMOTE_DETAIL_é"));
+	uam::remote::RunnerState state;
+	const auto call = [&](const nlohmann::json& request) { return uam::remote::HandleRunnerRequest(request, "4.11.0", &state); };
+	const nlohmann::json response = call({{"id", "details"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}});
+	UAM_ASSERT(response.value("ok", false));
+	const std::string text = response["result"].value("text", "");
+	UAM_ASSERT(text.find("Keep tests.") != std::string::npos);
+	UAM_ASSERT(text.find("REMOTE_DETAIL") == std::string::npos);
+	UAM_ASSERT(text.find("## Evidence") == std::string::npos);
+	UAM_ASSERT(text.size() <= 512);
+	const std::size_t start = text.find(" [details: ");
+	UAM_ASSERT(start != std::string::npos);
+	const std::string path = text.substr(start + 11, text.find(']', start) - start - 11);
+	const nlohmann::json read = call({{"id", "read-detail"}, {"type", "workspace.file.read"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"path", path}});
+	UAM_ASSERT(read.value("ok", false));
+	std::string detail;
+	UAM_ASSERT(uam::base64::Decode(read["result"].value("dataBase64", ""), detail));
+	UAM_ASSERT(detail.find("REMOTE_DETAIL_é") != std::string::npos);
+	UAM_ASSERT(!call({{"id", "foreign"}, {"type", "workspace.file.read"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"path", "../foreign.md"}}).value("ok", true));
+	UAM_ASSERT(!call({{"id", "invalid"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", "yes"}}).value("ok", true));
+#if !defined(_WIN32)
+	fs::create_symlink(entry, entry.parent_path() / "linked.md");
+	UAM_ASSERT(!call({{"id", "linked"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}}).value("ok", true));
+#endif
+}
+
+UAM_TEST(RemoteMemoryOptionalReferencesNeverDisplaceFactsOrOverflowTheBudget)
+{
+	TempDir temp("uam-remote-memory-facts-first");
+	fs::path workspace = fs::canonical(temp.root);
+	for (int index = 0; index < 5; ++index) workspace /= std::string(95, 'w');
+	const fs::path directory = workspace / ".UAM/Lessons/User_Lessons";
+	for (int index = 0; index < 2; ++index)
+		UAM_ASSERT(uam::io::WriteTextFile(directory / (std::to_string(index) + ".md"), "## Memory\nFact" + std::to_string(index) + std::string(195, 'f') + "\n## Evidence\nNOT_INLINE"));
+	uam::remote::RunnerState state;
+	const auto read = [&](bool references)
+	{
+		return uam::remote::HandleRunnerRequest({{"id", "facts"}, {"type", "context.memory"},
+		    {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", references}}, "4.11.0", &state);
+	};
+	const nlohmann::json fallback = read(false);
+	const nlohmann::json progressive = read(true);
+	UAM_ASSERT(fallback.value("ok", false) && progressive.value("ok", false));
+	const std::string facts = progressive["result"].value("text", "");
+	UAM_ASSERT_EQ(facts, fallback["result"].value("text", ""));
+	UAM_ASSERT(facts.find("Fact0") != std::string::npos && facts.find("Fact1") != std::string::npos);
+	UAM_ASSERT(facts.find("NOT_INLINE") == std::string::npos);
+	UAM_ASSERT(facts.size() <= 512);
+}
+
+#if !defined(_WIN32)
+UAM_TEST(RemoteMemoryDetailReferenceRejectsLineBreakFilenameWithoutDroppingFact)
+{
+	TempDir temp("uam-remote-memory-reference-injection");
+	const fs::path workspace = fs::canonical(temp.root);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / ".UAM/Lessons/User_Lessons/unsafe\nname.md", "## Memory\nFirst fact.\nSecond fact.\n## Evidence\nNOT_INLINE"));
+	uam::remote::RunnerState state;
+	const nlohmann::json response = uam::remote::HandleRunnerRequest({{"id", "unsafe-reference"}, {"type", "context.memory"},
+	    {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}}, "4.11.0", &state);
+	UAM_ASSERT(response.value("ok", false));
+	UAM_ASSERT_EQ(response["result"].value("text", ""), "- First fact. Second fact.\n");
+}
+#endif
