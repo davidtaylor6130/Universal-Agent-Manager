@@ -247,7 +247,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     {option(<ListPlus size={16} />, 'Manual form', 'Fill in every field yourself.', () => { const server = newServer(''); setServers(list => [...list, server]); setOpen(server.id); setSetup(null) })}
     {option(<Braces size={16} />, 'Edit JSON', 'Edit the full server list as JSON.', () => { switchView('json'); setSetup(null) })}
   </div> : setup === 'import' ? <>
-    <p className="text-sm" style={{ color: 'var(--text-2)' }}>Read OpenCode's global configuration, or paste its MCP section. Existing servers stay unchanged.</p>
+    <p className="text-sm" style={{ color: 'var(--text-2)' }}>Read OpenCode's config or paste its MCP section.</p>
     {text('OpenCode configuration file or directory (optional)', importPath, setImportPath, 'Empty: read global OpenCode configuration')}
     <Button size="sm" className="self-start" disabled={busy} loading={busy} onClick={() => void readOpenCode()}>Read this computer's OpenCode configuration</Button>
     <textarea aria-label="Import MCP configuration" className="uam-prov-json uam-prov-json--compact" spellCheck={false} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]); setMessage('') }} />
@@ -272,26 +272,26 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       </Overlay>
     </Presence>
 
-    {view === 'form' && <SettingsSection title="Built in" description="Always available to agents. Changes apply to new chats.">
-      <SettingRow title="UAM MCP service" description="Lets agents ask you questions, manage goals and use UAM skills. It can't be turned off or removed."
-        status={uamEnabled ? undefined : 'Off in this draft. New chats run without UAM tools until you save.'}
+    {view === 'form' && <SettingsSection title="Built in">
+      <SettingRow title="UAM MCP service" description="Agent questions, goals and UAM skills."
+        status={uamEnabled ? undefined : 'Off in this draft until you save.'}
         control={uamEnabled
           ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />Always on</span>
           : <Button size="sm" disabled={busy} onClick={() => { setUamEnabled(true); setMessage('') }}>Turn back on</Button>} />
       {COMPUTER_USE_ENABLED && typeof computerUseEnabled === 'boolean'
         ? <SettingRow title="UAM Computer Use"
-            description={computerUseEnabled ? "Lets chats control this computer's screen, mouse and keyboard. When off, they can't." : "Chats can't control this computer's screen, mouse or keyboard."}
+            description={computerUseEnabled ? "Chats can control this computer's screen, mouse and keyboard." : "Chats can't control the screen, mouse or keyboard."}
             status={computerUseEnabled ? undefined : 'Off'}
             control={<Switch className="uam-switch--accent" hideLabel label="UAM Computer Use" checked={computerUseEnabled} disabled={busy || computerUseBusy}
               onChange={event => void setComputerUseEnabled(event.currentTarget.checked)} />}>
             {computerUseError && <p role="alert" className="uam-prov-sub" style={{ color: 'var(--error)' }}>{computerUseError}</p>}
           </SettingRow>
-        : <SettingRow title="UAM Computer Use" description="Built in. It can't be deleted. Builds can also exclude it."
+        : <SettingRow title="UAM Computer Use" description="Built in. Can't be deleted."
             control={<span className="uam-prov-status" data-tone={COMPUTER_USE_ENABLED ? 'success' : 'neutral'}><StatusDot tone={COMPUTER_USE_ENABLED ? 'success' : 'neutral'} />{COMPUTER_USE_ENABLED ? 'Available in this build' : 'Unavailable in this build'}</span>} />}
     </SettingsSection>}
 
     <SettingsSection title={view === 'json' ? 'JSON editor' : 'Your servers'}
-      description={view === 'json' ? 'Same layout as OpenCode. local runs a program; remote connects to a URL. Optional workspace and host limit where a server is used.' : 'Shared with Gemini, Codex, Claude Code, OpenCode and Copilot, locally and over SSH.'}
+      description={view === 'json' ? undefined : 'Shared by every provider, locally and over SSH.'}
       actions={<>
         <div role="tablist" aria-label="Editor view" className="uam-prov-seg">
           <button type="button" role="tab" className="uam-prov-seg__item" aria-selected={view === 'form'} disabled={busy} onClick={() => switchView('form')}>Form</button>
@@ -301,9 +301,9 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       </>}>
       {view === 'json' ? <div className="grid gap-2 py-3">
         <textarea aria-label="MCP JSON" className="uam-prov-json" rows={20} spellCheck={false} value={jsonText} disabled={busy} onChange={event => { setJsonText(event.currentTarget.value); setMessage('') }} />
-        <p className="uam-set-field__hint"><code>{'"{env:VARIABLE}"'}</code> reads a value from the machine's environment. <code>uam-mcp</code> is built in: only <code>enabled</code> can change.</p>
+        <p className="uam-set-field__hint"><code>{'"{env:VARIABLE}"'}</code> reads this machine's environment.</p>
       </div> : <>
-        {servers.length === 0 && <SettingRow title="No servers yet" description="Add a server to give every agent extra tools." />}
+        {servers.length === 0 && <SettingRow title="No servers yet" />}
         {servers.map(server => {
           const expanded = open === server.id
           const refs = server.transport === 'stdio' ? server.environment : server.headers
@@ -329,16 +329,16 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                 </select>
               </label>
               {server.transport === 'stdio' ? <>
-                {text('Program path', server.command, command => update(server.id, { command }), '/usr/local/bin/npx', 'Full path to the program. On SSH this is the path on the remote machine.')}
+                {text('Program path', server.command, command => update(server.id, { command }), '/usr/local/bin/npx', 'Full path. Over SSH, the path on the remote machine.')}
                 <div className="uam-set-field"><span className="uam-set-field__label">Arguments</span>
                   {server.args.map((arg, index) => <div key={index} className="flex gap-2">
                     <input aria-label={`Argument ${index + 1}`} className="uam-field flex-1" value={arg} disabled={busy} onChange={event => { const value = event.currentTarget.value; update(server.id, { args: server.args.map((item, i) => i === index ? value : item) }) }} />
                     <IconButton size="sm" disabled={busy} icon={<Trash2 size={13} />} label={`Remove argument ${index + 1}`} variant="danger" onClick={() => update(server.id, { args: server.args.filter((_, i) => i !== index) })} />
                   </div>)}
                   <Button size="sm" className="self-start" disabled={busy} onClick={() => update(server.id, { args: [...server.args, ''] })}>+ Add argument</Button>
-                  <span className="uam-set-field__hint">One value per box, no quotes. Example: <code>-y</code> then <code>@playwright/mcp@latest</code>.</span>
+                  <span className="uam-set-field__hint">One value per box, no quotes.</span>
                 </div>
-              </> : text('URL', server.url, url => update(server.id, { url }), 'http://main.homelab.com:9001/mcp', 'Any http:// or https:// address. On SSH, localhost means the remote machine.')}
+              </> : text('URL', server.url, url => update(server.id, { url }), 'http://main.homelab.com:9001/mcp', 'http:// or https://. Over SSH, localhost is the remote machine.')}
               <div className="uam-set-field"><span className="uam-set-field__label">{server.transport === 'stdio' ? 'Environment variables' : 'Headers'}</span>
                 {refs.map((ref, index) => <div key={index} className="flex gap-2 items-center">
                   <input aria-label={`Variable name ${index + 1}`} className="uam-field flex-1" placeholder={server.transport === 'stdio' ? 'API_TOKEN' : 'Authorization'} value={ref.name} disabled={busy} onChange={event => { const name = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, name } : item)) }} />
@@ -351,7 +351,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                   <IconButton size="sm" disabled={busy} icon={<Trash2 size={13} />} label={`Remove variable ${index + 1}`} variant="danger" onClick={() => setRefs(refs.filter((_, i) => i !== index))} />
                 </div>)}
                 <Button size="sm" className="self-start" disabled={busy} onClick={() => setRefs([...refs, { name: '', environmentVariable: '', value: '' }])}>+ Add {server.transport === 'stdio' ? 'variable' : 'header'}</Button>
-                <span className="uam-set-field__hint">Type a value, or choose "from variable" to read it from that machine's environment. Typed values are saved in UAM settings as plain text.</span>
+                <span className="uam-set-field__hint">Typed values are saved as plain text.</span>
               </div>
               <details className="uam-mcp-advanced"><summary className="cursor-pointer text-sm">Limit where it runs (optional)</summary>
                 <div className="grid gap-3 pt-2">

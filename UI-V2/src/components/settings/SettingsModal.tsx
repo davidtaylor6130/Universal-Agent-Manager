@@ -202,15 +202,13 @@ const ProviderAvailabilityControls = forwardRef<SettingsDraftHandle, { providers
     finally { setSaving(false) }
   }
   return <>
-    <SettingsSection title="Provider availability" description={`Choose which providers can start new sessions on ${hostLabel}.`}>
-      {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)} description={provider.id === 'antigravity-cli' ? 'Allow terminal sessions on the selected host.' : 'Allow new sessions on the selected host.'}
+    {providers.map((provider) => <SettingRow key={provider.id} title={providerShortName(provider, provider.id)} description={provider.id === 'antigravity-cli' ? 'Terminal sessions only.' : undefined}
         control={<MenuSelect label={`${providerShortName(provider, provider.id)} availability`} value={draft[provider.id] ? 'enabled' : 'disabled'} disabled={saving}
           options={[{ value: 'enabled', label: 'Enabled' }, { value: 'disabled', label: 'Disabled' }]}
           onChange={(value) => { setDraft((current) => ({ ...current, [provider.id]: value === 'enabled' })); setError('') }} />} />)}
       {error && <p role="alert" className="px-3 text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
       <div className="flex justify-end gap-2 p-3"><Button size="sm" disabled={saving || !dirty} onClick={() => { setDraft(saved); setError('') }}>Discard</Button>
         <Button size="sm" variant="primary" disabled={saving || !dirty} onClick={() => void save()}>{saving ? 'Saving…' : 'Save provider settings'}</Button></div>
-    </SettingsSection>
     {exit && <UnsavedChangesDialog title="Unsaved provider settings" busy={saving} error={error} onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); next() }} onSave={() => void save(exit)} />}
   </>
 })
@@ -275,7 +273,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       {applied === 'failed' && <span style={{ color: 'var(--error)' }}>{`Couldn't apply${host.runnerStartupError ? `: ${host.runnerStartupError}` : '.'}`}</span>}
       {startupMismatch && <span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span>}
     </span>
-  ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses Windows login or Linux systemd user session`
+  ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses login or systemd user session`
   return (
     <form className="mt-2 grid gap-2" onSubmit={(event) => {
       event.preventDefault()
@@ -283,18 +281,18 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
     }}>
       <SettingRow
         title="Start runner at login"
-        description="Starts the helper when you sign in to the computer."
+        description="Starts the helper when you sign in."
         status={startupStatus}
         control={<Switch hideLabel name="startupEnabled" label="Start runner at login" checked={startupEnabled} disabled={busy} onChange={(event) => setStartupEnabled(event.currentTarget.checked)} />}
       />
       {host.platform === 'linux' && (
         <SettingRow
           title="Run CLI updates with sudo"
-          description="Opt in only if npm works with passwordless sudo. Chat sessions still run as your SSH user."
+          description="Needs passwordless sudo for npm. Chats still run as you."
           control={<Switch hideLabel name="cliUpdatesAsAdmin" label="Run CLI updates with sudo" checked={cliUpdatesAsAdmin} disabled={busy} onChange={(event) => setCliUpdatesAsAdmin(event.currentTarget.checked)} />}
         />
       )}
-      <SettingsField label="Host instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Read on this host before project context. Leave empty to skip.">
+      <SettingsField label="Host instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Read first on this host. Empty skips it.">
         <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
         {instructionError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span>}
       </SettingsField>
@@ -608,11 +606,10 @@ function ProviderDisclosureCard({ panelId, providerId, leadingIcon, title, expan
   actions?: ReactNode
   togglePosition?: 'left' | 'right'
 }) {
-  if (alwaysOpen) return <div className="uam-set-card uam-provider-flat">
-    <div className="uam-provider-flat__bar"><span className="uam-set-row__title flex-1">{title}</span>{actions}</div>
-    {progress}
-    <div id={panelId} className="uam-provider-flat__body">{children}</div>
-  </div>
+  if (alwaysOpen) return <>
+    {actions && <div className="flex justify-end">{actions}</div>}
+    <div id={panelId} className="uam-provider-flat__body">{progress}{children}</div>
+  </>
   const chevron = <IconButton size="sm" className="uam-disclosure-row__toggle" icon={<ChevronRight size={14}/>} label={toggleLabel} aria-expanded={expanded} aria-controls={panelId} onClick={onToggle}/>
   return <div className="uam-disclosure-row" data-expanded={expanded}>
     <div className="uam-disclosure-row__header">
@@ -744,7 +741,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [pendingCliInstall, setPendingCliInstall] = useState<{ providerId: string; providerName: string; version: string } | null>(null)
   const [pendingDefaultYolo, setPendingDefaultYolo] = useState<{ providerId: string; providerName: string; defaults: ProviderChatDefaults } | null>(null)
   const [expandedDefaultProviders, setExpandedDefaultProviders] = useState<Record<string, boolean>>({})
-  const [expandedCliVersionProviders, setExpandedCliVersionProviders] = useState<Record<string, boolean>>({})
   const [expandedEditorGroups, setExpandedEditorGroups] = useState<Record<string, boolean>>({})
   const [markdownStoreDraftDirectory, setMarkdownStoreDraftDirectory] = useState(markdownStoreDirectory)
   const [editorAssociationsDraft, setEditorAssociationsDraft] = useState(editorFileAssociations)
@@ -1126,14 +1122,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
   const toggleDefaultProvider = (providerId: string) => {
     setExpandedDefaultProviders((current) => ({
-      ...current,
-      [providerId]: !(current[providerId] ?? false),
-    }))
-  }
-
-  const toggleCliVersionProvider = (providerId: string) => {
-    setOpenCliVersionMenu(null)
-    setExpandedCliVersionProviders((current) => ({
       ...current,
       [providerId]: !(current[providerId] ?? false),
     }))
@@ -1778,10 +1766,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const renderSectionContent = (sectionOverride?: SettingsSectionId, scopedProviderId?: string): ReactNode => {
     const selectedSection = sectionOverride ?? selectedSettingsSection
     const availability = (ids?: string[]) => <ProviderAvailabilityControls key={`${effectiveProviderSettingsHostId}:${ids?.join(',') || 'all'}`} ref={providerAvailabilityRef} providers={providers.filter((provider) => !ids || ids.includes(provider.id))} hostId={effectiveProviderSettingsHostId} hostLabel={effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find((host) => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId} />
-    if (selectedSection === 'provider-summary') return <div className="grid">{availability()}<ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
+    if (selectedSection === 'provider-summary') return <div className="grid"><SettingsSection title="Provider availability">{availability()}</SettingsSection><ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
-      return <div className="grid">{availability([providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<SettingsSection title="Connection and MCP" description="Live connection status and which MCP servers this provider loads in new sessions." flush><div className="p-3"><ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div></SettingsSection></div>
+      return <div className="grid"><SettingsSection title="CLI and availability">{availability([providerId])}{renderSectionContent('cli-version', providerId)}</SettingsSection>{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
@@ -1988,12 +1976,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   (option) => <ProviderLogo providerId={option.id} />
                 )} />
           </SettingsSection>}
-          {scopedProviderId && <SectionCard
-            flat
-            title={scopedProviderId ? "Models and chat defaults" : "New Chat Defaults"}
-            description="What new chats with this provider start with. You can still change these per chat."
-            hideTitle={!scopedProviderId}
-          >
+          {scopedProviderId && <SettingsSection title="Chat defaults">
             <div className="grid gap-4">
               <div className="space-y-3">
                 {providers.filter(provider => provider.id === scopedProviderId).map((provider) => {
@@ -2043,8 +2026,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                       actions={provider.supportsStructured === false ? undefined : <IconButton icon={<RefreshCw size={14}/>} label={`Refresh ${providerName} models`} disabled={!providerWorkspace || modelsLoading} onClick={() => void (effectiveProviderSettingsHostId === 'local' ? discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace) : discoverProviderModels(providerSession?.id ?? '', provider.id, providerWorkspace, effectiveProviderSettingsHostId))} />}
                     >
                       <div className="grid gap-3 text-xs" style={{ color: 'var(--text-2)' }}>
-                        {provider.supportsStructured === false && <p>Terminal only. Model discovery and model visibility are managed in the provider CLI.</p>}
-                        {!modelOptions.some(option => option.id) && provider.supportsStructured !== false && <p>Model visibility becomes available after models are discovered.</p>}
+                        {provider.supportsStructured === false && <p>Terminal only. Models are managed in the CLI.</p>}
+                        {!modelOptions.some(option => option.id) && provider.supportsStructured !== false && <p>Visibility appears once models are discovered.</p>}
                         {modelOptions.some((option) => option.id) && (
                           <details className="rounded-lg" style={{ border: '1px solid var(--border)' }}>
                             <summary className="flex cursor-pointer items-center justify-between px-3 py-2" style={{ color: 'var(--text)' }}>
@@ -2211,7 +2194,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             reviewerModelOptions,
                             (reviewerModelId) => updateProviderDefaults(provider.id, { ...defaults, reviewerModelId })
                           )}
-                          <span style={{ color: 'var(--text-3)' }}>Used for architecture and read-only review; the normal model remains the worker.</span>
+                          <span style={{ color: 'var(--text-3)' }}>Used for architecture and read-only review.</span>
                         </div>
                         <div className="grid gap-1">
                           <Button
@@ -2222,7 +2205,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                           >
                             {defaults.smallModelMode ? 'Architect + worker on' : 'Architect + worker off'}
                           </Button>
-                          <span style={{ color: 'var(--text-3)' }}>The reviewer model plans and checks one step at a time; the normal model implements it.</span>
+                          <span style={{ color: 'var(--text-3)' }}>Reviewer plans and checks each step; the model implements it.</span>
                         </div>
                           </div>
                         </details>
@@ -2246,7 +2229,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 })}
               </div>
             </div>
-          </SectionCard>}
+          </SettingsSection>}
         </div>
       )
     }
@@ -2516,107 +2499,83 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
     if (selectedSection === 'cli-version') {
+      const managers = (effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).filter(manager => !scopedProviderId || manager.providerId === scopedProviderId)
       return (
-        <div className="space-y-4">
-          <SectionCard
-            flat
-            description={scopedProviderId ? 'The provider CLI UAM runs. Keep it on the recommended version unless you need a newer one.' : undefined}
-            title={scopedProviderId ? `Installation on ${effectiveProviderSettingsHostId === 'local' ? 'this computer' : executionHosts.find(host => host.id === effectiveProviderSettingsHostId)?.label || effectiveProviderSettingsHostId}` : "Provider CLIs"}
-          >
-            <div ref={cliVersionMenuRef} className="space-y-3">
-              {scopedProviderId && hasSshHosts && scopeValue === SETTINGS_ALL_ENVIRONMENTS && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Choose a computer above to manage its CLI version.</p>}
-              {!(effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).some(manager => !scopedProviderId || manager.providerId === scopedProviderId) && (
-                <div className="uam-set-card text-xs" style={{ color: 'var(--text-3)', padding: '14px 16px' }}>
-                  No CLI installation information is available. Check the provider on this host.
+        <div ref={cliVersionMenuRef} className="grid gap-3">
+          {scopedProviderId && hasSshHosts && scopeValue === SETTINGS_ALL_ENVIRONMENTS && <p className="text-xs" style={{ color: 'var(--text-3)' }}>Choose a computer above to manage its CLI version.</p>}
+          {managers.length === 0 && <p className="text-xs" style={{ color: 'var(--text-3)' }}>No CLI installation information is available. Check the provider on this host.</p>}
+          {managers.map((manager) => {
+            const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
+            const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
+            const actionErrorKey = cliActionErrorKey(manager.providerId, manager.executionHostId || effectiveProviderSettingsHostId)
+            const installHostName = manager.executionHostId && manager.executionHostId !== 'local'
+              ? manager.executionHostName || executionHosts.find((host) => host.id === manager.executionHostId)?.label || manager.executionHostId
+              : 'this computer'
+            const issues = [...cliVersionIssues(manager), ...(cliActionError[actionErrorKey] ? [cliActionError[actionErrorKey]] : [])]
+            const requestInstall = (version: string) => {
+              setOpenCliVersionMenu(null)
+              setPendingCliInstall({providerId:manager.providerId,providerName,version})
+            }
+            return (
+              <div key={manager.providerId} className="grid gap-3">
+                {manager.running && <div role="progressbar" aria-label={`${providerName} CLI task running`} className="uam-settings-progress" />}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="grid gap-1 text-xs" style={{color:'var(--warning)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
+                  <div className="flex items-center gap-1">
+                    <StatusIndicator issues={issues} okLabel={manager.status === 'provider-managed' ? 'Provider managed' : 'CLI verified'}/>
+                    <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
+                      setCliActionError(current => ({...current,[actionErrorKey]:''}))
+                      try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
+                      catch { setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
+                    }}/>
+                    {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
+                    {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
+                      <Button size="sm" role="menuitem" disabled={!manager.preferredVersion} onClick={() => requestInstall(manager.preferredVersion)}>Download recommended{manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}</Button>
+                      <Button size="sm" role="menuitem" onClick={() => requestInstall('latest')}>Download latest</Button>
+                    </ViewportMenu>}
+                  </div>
                 </div>
-              )}
-              {(effectiveProviderSettingsHostId === 'local' ? cliVersionManager.providers : (cliVersionManager.remoteProviders ?? []).filter(manager => manager.executionHostId === effectiveProviderSettingsHostId)).filter(manager => !scopedProviderId || manager.providerId === scopedProviderId).map((manager) => {
-                const cliVersionProvider = providers.find((provider) => provider.id === manager.providerId)
-                const providerName = providerDisplayName(cliVersionProvider, manager.providerId)
-                const actionErrorKey = cliActionErrorKey(manager.providerId, manager.executionHostId || effectiveProviderSettingsHostId)
-                const installHostName = manager.executionHostId && manager.executionHostId !== 'local'
-                  ? manager.executionHostName || executionHosts.find((host) => host.id === manager.executionHostId)?.label || manager.executionHostId
-                  : 'this computer'
-                const expanded = expandedCliVersionProviders[manager.providerId] ?? false
-                const issues = [...cliVersionIssues(manager), ...(cliActionError[actionErrorKey] ? [cliActionError[actionErrorKey]] : [])]
-                const requestInstall = (version: string) => {
-                  setOpenCliVersionMenu(null)
-                  setExpandedCliVersionProviders(current => ({...current,[manager.providerId]:true}))
-                  setPendingCliInstall({providerId:manager.providerId,providerName,version})
-                }
-                return (
-                  <ProviderDisclosureCard
-                    key={manager.providerId}
-                    alwaysOpen={Boolean(scopedProviderId)}
-                    togglePosition="right"
-                    panelId={`${manager.providerId}-cli-version-panel`}
-                    providerId={manager.providerId}
-                    title={scopedProviderId ? `${providerName} CLI` : providerName}
-                    expanded={expanded}
-                    toggleLabel={`${expanded ? 'Hide' : 'Show'} ${providerName} CLI version settings`}
-                    onToggle={() => toggleCliVersionProvider(manager.providerId)}
-                    actions={<StatusIndicator issues={issues} okLabel={manager.status === 'provider-managed' ? 'Provider managed' : 'CLI verified'}/>}
-                    progress={manager.running ? <div role="progressbar" aria-label={`${providerName} CLI task running`} className="uam-settings-progress" /> : undefined}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                    <div className="grid gap-1 text-xs" style={{color:'var(--warning)'}}>{issues.map(issue => <div key={issue}>{issue}</div>)}</div>
-                      <div className="flex items-center gap-1">
-                      <IconButton icon={<RefreshCw size={15}/>} label={`Refresh ${providerName} CLI version`} disabled={manager.running} onClick={async () => {
-                        setCliActionError(current => ({...current,[actionErrorKey]:''}))
-                        try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? refreshCliProviderVersion(manager.providerId, manager.executionHostId) : refreshCliProviderVersion(manager.providerId))) setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
-                        catch { setCliActionError(current => ({...current,[actionErrorKey]:'Version check could not start.'})) }
-                      }}/>
-                      {manager.canInstall !== false && <IconButton ref={element => { if (element) popupAnchorsRef.current.set(`${manager.providerId}:download`,element) }} icon={<Download size={15}/>} label={`Download ${providerName} CLI`} aria-haspopup="menu" aria-expanded={openCliVersionMenu === `${manager.providerId}:download`} disabled={manager.running} onClick={() => setOpenCliVersionMenu(current => current === `${manager.providerId}:download` ? null : `${manager.providerId}:download`)}/>}
-                      {openCliVersionMenu === `${manager.providerId}:download` && <ViewportMenu anchorRef={{current:popupAnchorsRef.current.get(`${manager.providerId}:download`) ?? null}} role="menu" aria-label={`${providerName} download choices`} className="grid gap-1 p-2" style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:8}}>
-                        <Button size="sm" role="menuitem" disabled={!manager.preferredVersion} onClick={() => requestInstall(manager.preferredVersion)}>Download recommended{manager.preferredVersion ? ` ${manager.preferredVersion}` : ''}</Button>
-                        <Button size="sm" role="menuitem" onClick={() => requestInstall('latest')}>Download latest</Button>
-                      </ViewportMenu>}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3 mt-3 text-sm">
-                      <div><div className="text-xs" style={{color:'var(--text-3)'}}>Installed</div>{manager.installedVersion || 'Not detected'}</div>
-                      <div><div className="text-xs" style={{color:'var(--text-3)'}}>Recommended</div>{manager.preferredVersion || 'Unavailable'}</div>
-                    </div>
-                    {pendingCliInstall?.providerId === manager.providerId && <div className="flex flex-wrap items-center gap-3 mt-3 text-xs" role="group" aria-label="Confirm CLI installation">
-                      <span>Install {pendingCliInstall.providerName} {pendingCliInstall.version} on {installHostName} using {manager.installMethod || 'npm'}?</span>
-                      <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
-                      <Button size="sm" disabled={manager.running} onClick={async () => {
-                        const pending = pendingCliInstall
-                        setPendingCliInstall(null)
-                        setCliActionError(current => ({...current,[actionErrorKey]:''}))
-                        try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
-                        catch { setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
-                      }}>Install version</Button>
-                    </div>}
-
-                    {(manager.lastCommand || manager.lastOutput) && (
-                      <div className="grid gap-2 mt-3">
-                        {manager.lastCommand && (
-                          <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
-                            {manager.lastCommand}
-                          </code>
-                        )}
-                        <pre
-                          className="text-[11px] leading-5 overflow-auto rounded-lg px-3 py-2"
-                          style={{
-                            maxHeight: 180,
-                            background: 'var(--surface-up)',
-                            color: 'var(--text-2)',
-                            border: '1px solid var(--border)',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            fontFamily: 'var(--font-mono)',
-                          }}
-                        >
-                          {manager.lastOutput || 'No output captured yet.'}
-                        </pre>
-                      </div>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div><div className="text-xs" style={{color:'var(--text-3)'}}>Installed</div>{manager.installedVersion || 'Not detected'}</div>
+                  <div><div className="text-xs" style={{color:'var(--text-3)'}}>Recommended</div>{manager.preferredVersion || 'Unavailable'}</div>
+                </div>
+                {pendingCliInstall?.providerId === manager.providerId && <div className="flex flex-wrap items-center gap-3 text-xs" role="group" aria-label="Confirm CLI installation">
+                  <span>Install {pendingCliInstall.providerName} {pendingCliInstall.version} on {installHostName} using {manager.installMethod || 'npm'}?</span>
+                  <Button size="sm" onClick={() => setPendingCliInstall(null)}>Cancel</Button>
+                  <Button size="sm" disabled={manager.running} onClick={async () => {
+                    const pending = pendingCliInstall
+                    setPendingCliInstall(null)
+                    setCliActionError(current => ({...current,[actionErrorKey]:''}))
+                    try { if (!await (manager.executionHostId && manager.executionHostId !== 'local' ? applyCliProviderVersion(pending.providerId,pending.version,manager.executionHostId) : applyCliProviderVersion(pending.providerId,pending.version))) setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
+                    catch { setCliActionError(current => ({...current,[actionErrorKey]:'Installation could not start. Check provider output.'})) }
+                  }}>Install version</Button>
+                </div>}
+                {(manager.lastCommand || manager.lastOutput) && (
+                  <div className="grid gap-2">
+                    {manager.lastCommand && (
+                      <code className="text-xs rounded-md px-2 py-1" style={{ background: 'var(--surface-up)', color: 'var(--text)' }}>
+                        {manager.lastCommand}
+                      </code>
                     )}
-                  </ProviderDisclosureCard>
-                )
-              })}
-            </div>
-          </SectionCard>
+                    <pre
+                      className="text-[11px] leading-5 overflow-auto rounded-lg px-3 py-2"
+                      style={{
+                        maxHeight: 180,
+                        background: 'var(--surface-up)',
+                        color: 'var(--text-2)',
+                        border: '1px solid var(--border)',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        fontFamily: 'var(--font-mono)',
+                      }}
+                    >
+                      {manager.lastOutput || 'No output captured yet.'}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       )
     }
@@ -2630,12 +2589,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <summary className="flex cursor-pointer items-center gap-2" style={{ color: 'var(--text-2)' }}>
               <Info size={14} aria-hidden />Remote Computer Use is off
             </summary>
-            <p className="mt-1.5 pl-[22px] leading-relaxed">Remote chats keep structured chat, permissions, cancellation and provider controls. Screen observation and input stay off because UAM cannot safely supervise a remote desktop.</p>
+            <p className="mt-1.5 pl-[22px]">Remote chats can't see or control the screen.</p>
           </details>
 
           <SettingsSection
             title="Add a host"
-            description="Connect a computer you can reach over SSH. UAM installs a small helper on it."
             actions={
               <Button size="sm" variant="primary" leadingIcon={<Server size={14} />} aria-busy={remoteBusy || undefined} disabled={remoteBusy || !remoteAlias.trim()} onClick={() => void previewRemoteHost()}>
                 Preview setup
@@ -2670,8 +2628,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             {remoteMessage && <div role="status" className="text-xs" style={{ color: remoteMessage.endsWith('ready.') || remoteMessage.includes('removed') ? 'var(--success)' : 'var(--text-2)' }}>{remoteMessage}</div>}
           </SettingsSection>
 
-          <SettingsSection title="Configured hosts" description="Helpers installed on these computers. Each host keeps its own options.">
-            {remoteHosts.length === 0 && <SettingRow title="No remote hosts yet" description="Add a computer above to run workspaces over SSH." />}
+          <SettingsSection title="Configured hosts">
+            {remoteHosts.length === 0 && <SettingRow title="No remote hosts yet" />}
             {remoteHosts.map((host) => (
               <SettingRow
                 key={host.id}
