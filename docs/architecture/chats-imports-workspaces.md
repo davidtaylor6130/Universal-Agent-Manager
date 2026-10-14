@@ -52,3 +52,5 @@ Native history refresh applies deletion tombstones within the data root and work
 ## Sidebar render ownership
 
 `FolderTree` retains equal branch-family ID arrays across metadata-only catalogue updates and keeps Shift-click anchors in the existing row reference. `SessionItem` reacts to pane layout changes only when its family’s pane indexes or the pane count change; family changes refresh from the latest stored layout. Selection ranges still follow visible DOM rows, and selected-chat/status subscriptions remain live. Focused render regressions are in `FolderTree.render.test.tsx` and `SessionItem.test.tsx`.
+
+Runtime grace/deadline displays in chat headers and terminal panes share `useCountdownClock`: one wake at grace expiry, one-second updates while visible, and no scheduled updates past the deadline or after runtime Stop. Focus and visible-window events refresh wall-clock changes without duplicating timers. `RuntimeTimeout.test.tsx` verifies render counts through grace and expiry, clock adjustment, activity reset and Stop. The serialized `FolderTree.performance.test.tsx` enforces the existing 250 ms selection budget with 1,000 mounted rows.
