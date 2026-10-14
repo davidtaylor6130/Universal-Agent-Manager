@@ -38,3 +38,7 @@ Windows service pipes, mutexes and shutdown events include the physical installa
 When updating alongside a service that still owns provider processes, install into a new managed root and verify it before changing the host's `runnerDirectory`. Preserve the older service and its processes; changing the configured directory does not migrate them. Startup registration must point to the verified new executable, with any previous owned registration backed up before replacement.
 
 Windows activation and rollback cleanup treats absent optional receipt files as already removed, while removal errors for existing files remain failures. A first installation has no rollback executable; that absence must not turn a successfully verified activation into a reported failure.
+
+## Central configuration launch scope
+
+Remote `process.start` binds the provider setup directory to the exact lexical workspace. A trailing directory separator or normalized dot component identifies the same workspace; unrelated directories and symbolic-link resources remain rejected. Configuration rejection alone does not prove a provider is absent: a successful start reply may have been lost. Before reporting a definitive setup failure, the proxy requires a matching, token-scoped `process.poll` reply of `session_not_found`. The probe requests acknowledged output without consuming existing spool cursors; a surviving process, foreign ownership or failed probe retains ambiguous reconnect handling.

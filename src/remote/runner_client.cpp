@@ -370,8 +370,9 @@ namespace uam::remote
 	    const std::vector<std::string>& argv,
 	    const std::vector<std::pair<std::string, std::string>>& environment,
 	    std::string* error_out, bool attach_if_exists, std::string control_token,
-	    bool retry_lost_reply, const std::string& configuration_provider, const std::filesystem::path& configuration_directory, const nlohmann::json& session_mcp_servers)
+	    bool retry_lost_reply, const std::string& configuration_provider, const std::filesystem::path& configuration_directory, const nlohmann::json& session_mcp_servers, bool* configuration_rejected_out)
 	{
+		if (configuration_rejected_out != nullptr) *configuration_rejected_out = false;
 		if (!Connect(error_out)) return false;
 		const bool transient_lease = control_token.empty();
 		if (transient_lease)
@@ -401,6 +402,25 @@ namespace uam::remote
 		{
 			request["attachIfExists"] = true;
 			started = Request(std::move(request), response, error_out);
+		}
+		// Configuration rejection alone cannot rule out a provider surviving a lost start reply.
+		if (!started && m_connected && configuration_rejected_out != nullptr &&
+		    !configuration_directory.empty() && response.contains("error") && response["error"].is_object())
+		{
+			const nlohmann::json::const_iterator code = response["error"].find("code");
+			if (code != response["error"].end() && code->is_string() &&
+			    (*code == "invalid_request" || *code == "configuration_failed"))
+			{
+				nlohmann::json existence;
+				std::string probe_error;
+				const bool exists = Request({{"type", "process.poll"}, {"sessionId", session_id},
+				    {"controlToken", control_token}, {"acknowledgedOutput", true}}, existence, &probe_error);
+				if (!exists && m_connected && existence.contains("error") && existence["error"].is_object())
+				{
+					const nlohmann::json::const_iterator missing = existence["error"].find("code");
+					*configuration_rejected_out = missing != existence["error"].end() && missing->is_string() && *missing == "session_not_found";
+				}
+			}
 		}
 		if (started)
 			m_processInputSequences[session_id] = response.value(

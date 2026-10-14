@@ -70,7 +70,7 @@ namespace uam::remote
 		                  std::string* error_out = nullptr,
 		                  bool attach_if_exists = false,
 		                  std::string control_token = {},
-		                  bool retry_lost_reply = true, const std::string& configuration_provider = {}, const std::filesystem::path& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array());
+		                  bool retry_lost_reply = true, const std::string& configuration_provider = {}, const std::filesystem::path& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array(), bool* configuration_rejected_out = nullptr);
 		ProcessExecutionResult ExecuteCommand(const std::string& session_id,
 		    const std::filesystem::path& working_directory,
 		    const std::vector<std::string>& argv, int timeout_ms,

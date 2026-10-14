@@ -10054,19 +10054,85 @@ UAM_TEST(RemoteProxyConfigurationCapabilityRejectionNeverStartsProvider)
 	    std::string(uam::remote::kRemoteStartupFailurePrefix) + token + " configuration\n");
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(requests), std::string("hello \n"));
 }
+
+UAM_TEST(RemoteProxyConfigurationStartRejectionPreservesCauseAndExistingSessionRecovery)
+{
+	for (const std::string& rejection : {"invalid_request", "configuration_failed", "session_exists", "unauthorized", "existing", "foreign", "disconnect"})
+	{
+		TempDir temp("uam-proxy-config-start-rejection");
+		IPlatformProcessService& process_service = PlatformServicesFactory::Instance().process_service;
+		const fs::path executable = process_service.ResolveCurrentExecutablePath();
+		const fs::path runner = executable.parent_path() / "uam-runner";
+		const fs::path requests = temp.root / "requests.txt";
+		const fs::path ssh = temp.root / "ssh";
+		const bool ambiguous = rejection == "existing" || rejection == "foreign" || rejection == "disconnect";
+		const std::string code = ambiguous ? "configuration_failed" : rejection;
+		const std::string result = nlohmann::json{{"missing", nlohmann::json::array()}, {"pollOutcome", rejection}}.dump();
+		UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec " + ShellQuoteForTest(executable.string()) +
+		    " --uam-test-runner-result " + ShellQuoteForTest(result) + " " + ShellQuoteForTest(requests.string()) + " --reject-config-start=" + code + "\n"));
+		fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		const std::string token = "unstarted-proxy-authority";
+		const fs::path configuration = temp.root / "configuration";
+		fs::create_directories(configuration);
+		UAM_ASSERT(uam::io::WriteTextFile(configuration / "owner.json", R"({"format":1,"files":{}})"));
+		const std::string spec = uam::remote::BuildProcessProxySpec("unstarted-proxy", temp.root,
+		    {"/usr/bin/false"}, {}, false, token, 0, 0, {}, {}, "opencode-cli", configuration.string());
+		const std::vector<std::pair<std::string, std::string>> environment = {
+		    {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")},
+		    {uam::remote::kRemoteProcessSpecEnvironment, spec}};
+		uam::platform::StdioProcessPlatformFields proxy;
+		std::string error;
+		UAM_ASSERT(process_service.StartStdioProcess(proxy, temp.root,
+		    {runner.string(), "proxy", "--alias", "offline-fixture", "--platform", "linux", "--version", "test"}, &error, environment));
+		struct ProxyGuard
+		{
+			uam::platform::StdioProcessPlatformFields& process;
+			~ProxyGuard()
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(process, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(process);
+			}
+		} guard{proxy};
+		std::array<char, 1024> buffer{};
+		std::string stderr_text;
+		int exit_code = -1;
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			const std::ptrdiff_t read = process_service.ReadStdioProcessStderr(proxy, buffer.data(), buffer.size(), &error);
+			if (read > 0) stderr_text.append(buffer.data(), static_cast<std::size_t>(read));
+			if (process_service.PollStdioProcessExited(proxy, &exit_code))
+			{
+				const std::ptrdiff_t final_read = process_service.ReadStdioProcessStderr(proxy, buffer.data(), buffer.size(), &error);
+				if (final_read > 0) stderr_text.append(buffer.data(), static_cast<std::size_t>(final_read));
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		const bool rejected_before_start = rejection == "invalid_request" || rejection == "configuration_failed";
+		UAM_ASSERT_EQ(exit_code, rejected_before_start ? uam::remote::kRemoteConfigurationStartupFailureExitCode : 70);
+		UAM_ASSERT_EQ(stderr_text, std::string("Central resource folder does not belong to this workspace.\n") +
+		    (rejected_before_start ? std::string(uam::remote::kRemoteStartupFailurePrefix) + token + " configuration\n" : ""));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(requests), std::string("hello \nconfiguration.prepare \nprocess.start unstarted-proxy\n") +
+		    (rejected_before_start || ambiguous ? "process.poll unstarted-proxy\n" : ""));
+	}
+}
 #endif
 
 UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 {
-	for (const bool legacy : {false, true})
+	for (const std::string& provider : {"codex-cli", "opencode-cli"})
+	for (const std::string& rejection : {"capability", "workspace", "apply", "legacy"})
 	for (const bool input_failed : {false, true})
 	{
+		const bool legacy = rejection == "legacy";
+		if (legacy && provider != "codex-cli") continue;
 		TempDir temp("uam-acp-confirmed-config-startup-failure");
 		uam::AppState app;
 		app.data_root = temp.root;
 		ChatSession chat;
 		chat.id = "confirmed-config-startup-failure";
-		chat.provider_id = "codex-cli";
+		chat.provider_id = provider;
 		chat.execution_host_id = "ssh-test";
 		chat.remote_process_exists = true; // Launch ownership is saved before the proxy starts.
 		chat.remote_process_control_token = "never-launched-authority";
@@ -10077,7 +10143,7 @@ UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 		std::unique_ptr<uam::AcpSessionState> owned_session = std::make_unique<uam::AcpSessionState>();
 		owned_session->chat_id = chat.id;
 		owned_session->provider_id = chat.provider_id;
-		owned_session->protocol_kind = "codex-app-server";
+		owned_session->protocol_kind = provider == "codex-cli" ? "codex-app-server" : "acp";
 		owned_session->running = true;
 		owned_session->processing = true;
 		owned_session->queued_prompt = chat.messages.front().content;
@@ -10087,6 +10153,8 @@ UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 		uam::AcpSessionState* session = owned_session.get();
 		const std::string expected_error = legacy
 		    ? "Codex central instructions exceed the OS launch limit. Move reference material into skills."
+		    : rejection == "workspace" ? "Central resource folder does not belong to this workspace."
+		    : rejection == "apply" ? "Central resource manifest is invalid."
 		    : "Update the SSH helper before using central provider configuration.";
 		const int expected_exit = legacy ? 70 : 71;
 #if defined(_WIN32)

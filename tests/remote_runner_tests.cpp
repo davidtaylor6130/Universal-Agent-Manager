@@ -7,6 +7,7 @@
 #include "common/usage/usage_collector.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/provider_setup.h"
 #include "common/provider/provider_native_context.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "remote/runner_service_posix.h"
@@ -4339,6 +4340,39 @@ UAM_TEST(RemoteWorkspaceFilePreviewClientReassemblesLargeUnicodeSources)
 	UAM_ASSERT(!client.ReadWorkspaceFile(uam::paths::Utf8PathString(temp.root), "missing.txt", file, &error));
 	UAM_ASSERT(file.is_null());
 	UAM_ASSERT(!error.empty());
+}
+
+UAM_TEST(RemoteRunnerCentralConfigurationAcceptsTrailingWorkspaceSeparatorsAndRejectsOtherWorkspaces)
+{
+	TempDir temp("uam-runner-central-workspace");
+	const fs::path workspace = temp.root / "workspace";
+	const nlohmann::json manifest = {{"format", 1}, {"mcpOnly", true}, {"files", nlohmann::json::object()}};
+	const fs::path configuration = workspace / ".UAM" / "provider-setup" / uam::provider_setup::Digest(manifest.dump());
+	fs::create_directories(configuration);
+	UAM_ASSERT(uam::io::WriteTextFile(configuration / "owner.json", manifest.dump()));
+	const std::string executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string();
+	const std::string cwd = uam::paths::Utf8PathString(workspace);
+	for (const std::string& spelling : {cwd, cwd + std::string(1, fs::path::preferred_separator), cwd + "/./"})
+	{
+		uam::remote::RunnerState state;
+		nlohmann::json start = {{"id", "start"}, {"type", "process.start"}, {"sessionId", "central-path"},
+		    {"controlToken", kProcessControlToken}, {"cwd", spelling},
+		    {"argv", nlohmann::json::array({executable, "--uam-test-empty-arguments"})},
+		    {"configurationDirectory", uam::paths::Utf8PathString(configuration)}, {"configurationProvider", "opencode-cli"}};
+		const nlohmann::json started = state.HandleProcessRequest(start);
+		UAM_ASSERT(started.value("ok", false));
+	}
+	for (const fs::path& outside : {temp.root / ".UAM" / "provider-setup" / "fixture",
+	    workspace / ".UAM" / "wrong-directory" / "fixture", workspace / "other" / ".UAM" / "provider-setup" / "fixture"})
+	{
+		uam::remote::RunnerState state;
+		const nlohmann::json rejected = state.HandleProcessRequest({{"id", "outside"}, {"type", "process.start"},
+		    {"sessionId", "central-path"}, {"controlToken", kProcessControlToken}, {"cwd", cwd + "/"},
+		    {"argv", nlohmann::json::array({executable, "--uam-test-empty-arguments"})},
+		    {"configurationDirectory", uam::paths::Utf8PathString(outside)}, {"configurationProvider", "opencode-cli"}});
+		UAM_ASSERT(!rejected.value("ok", true));
+		UAM_ASSERT_EQ(rejected["error"].value("message", ""), "Central resource folder does not belong to this workspace.");
+	}
 }
 
 UAM_TEST(RemoteRunnerPreservesEmptyOptionValuesButRejectsAnEmptyExecutable)

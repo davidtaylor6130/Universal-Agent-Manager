@@ -5239,8 +5239,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 				if (remote_startup_rejected)
 				{
-					// This token-bound proxy outcome precedes StartProcess, so no prompt can
-					// have reached this launch. Preserve its cause instead of attaching a turn.
+					// This token-bound outcome confirms pre-launch rejection with no surviving
+					// process, so preserve its cause instead of attaching a phantom turn.
 					session.last_error = *remote_startup_error;
 					session.recent_stderr = *remote_startup_error;
 					session.recovering_remote_turn = false;

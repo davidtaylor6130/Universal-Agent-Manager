@@ -27,3 +27,7 @@ Local Codex manual compaction can start an idle or stopped structured session an
 Model catalogs preserve optional `contextWindowTokens` and `maxOutputTokens` across cached and frontend projections. Structured provider metadata and OpenCode's model `limit.context` and `limit.output` supply these values. Only nonnegative integers within JavaScript's exact integer range are accepted; absent or invalid limits remain unknown. Context capacity and maximum output stay separate and are not inferred from one another.
 
 Retry locates the latest authored user message after hydrating cold history. Empty assistant placeholders do not block retry when their content, thoughts and plan summaries contain only JavaScript `trim` whitespace, including its Unicode whitespace characters. Substantive output or malformed UTF-8 blocks retry. A later user message still rejects an obsolete retry request.
+
+## Remote setup rejection
+
+A token-bound proxy startup-failure marker preserves the setup error and unsent user input rather than reattaching to a nonexistent provider. For configuration rejected by `process.start`, that marker requires a confirmed missing process; lost start replies and surviving or foreign-owned processes retain recovery. ACP accepts the marker only for its current authority before initialization/session readiness or prompt delivery, so provider stderr cannot invalidate an established turn.

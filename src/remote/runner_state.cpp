@@ -1337,7 +1337,10 @@ namespace uam::remote
 				if (!request["configurationDirectory"].is_string() || !request.contains("configurationProvider") || !request["configurationProvider"].is_string())
 					return ProcessError(request, "invalid_request", "Central launch configuration is invalid.");
 				const std::filesystem::path directory = uam::paths::PathFromUtf8(request["configurationDirectory"].get<std::string>());
-				if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM" || directory.parent_path().parent_path().parent_path().lexically_normal() != working_directory.lexically_normal())
+				std::filesystem::path normalized_workspace = working_directory.lexically_normal();
+				// A final separator adds an empty component without changing the workspace.
+				if (normalized_workspace.filename().empty() && normalized_workspace.has_relative_path()) normalized_workspace = normalized_workspace.parent_path();
+				if (directory.parent_path().filename() != "provider-setup" || directory.parent_path().parent_path().filename() != ".UAM" || directory.parent_path().parent_path().parent_path().lexically_normal() != normalized_workspace)
 					return ProcessError(request, "invalid_request", "Central resource folder does not belong to this workspace.");
 				if (!uam::provider_setup::Apply(request["configurationProvider"].get<std::string>(), directory, working_directory, arguments, environment, error, request.value("sessionMcpServers", nlohmann::json::array()), &protocol_instructions))
 					return ProcessError(request, "configuration_failed", error);

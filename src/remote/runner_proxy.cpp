@@ -648,6 +648,7 @@ namespace uam::remote
 		}
 		if (protocol_version >= 3)
 			client.SetProcessControlToken(session_id, spec->delivery_token);
+		bool configuration_rejected = false;
 		if (spec->attach_only)
 		{
 			ProcessPollResult persisted;
@@ -668,9 +669,14 @@ namespace uam::remote
 		}
 		else if (!client.StartProcess(session_id, spec->working_directory, spec->argv,
 		                              spec->environment, &error, false,
-		                              spec->delivery_token, true, spec->configuration_provider, configuration_directory, spec->session_mcp_servers))
+		                              spec->delivery_token, true, spec->configuration_provider, configuration_directory, spec->session_mcp_servers, &configuration_rejected))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
+			if (configuration_rejected)
+			{
+				std::cerr << kRemoteStartupFailurePrefix << spec->delivery_token << " configuration\n";
+				return kRemoteConfigurationStartupFailureExitCode;
+			}
 			return 70;
 		}
 		RunnerClient poll_client(process_service,
