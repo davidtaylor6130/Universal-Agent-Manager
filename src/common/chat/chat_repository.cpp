@@ -1864,7 +1864,8 @@ namespace
 			uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(chat.persisted_message_count));
 			uam::json::SetString(root, kChatPersistedMessagesDigestField, chat.persisted_messages_digest);
 			uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(file_text.size()));
-			(void)uam::io::WriteTextFile(SummaryCachePathForChatFile(path), SerializeJson(root));
+			// This cache is rebuilt from the primary; metadata-only summary saves remain durable.
+			(void)uam::io::WriteCacheFile(SummaryCachePathForChatFile(path), SerializeJson(root));
 		}
 
 		ApplyQueueJournal(path, root, chat);

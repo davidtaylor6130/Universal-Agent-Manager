@@ -335,11 +335,11 @@ namespace uam::io
 	    const std::filesystem::path& temp_path,
 	    std::string_view content,
 	    const AtomicWriteStageHook& hook,
-	    AtomicWriteResult& result)
+	    AtomicWriteResult& result, bool sync_to_disk = true)
 	{
 		std::filesystem::path native_temp_path;
 		if (!NativeFilePath(temp_path, native_temp_path, result.error)) return false;
-		HANDLE file = CreateFileW(native_temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+		HANDLE file = CreateFileW(native_temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | (sync_to_disk ? FILE_FLAG_WRITE_THROUGH : 0), nullptr);
 		if (file == INVALID_HANDLE_VALUE)
 		{
 			result.error = "Failed to create temporary file: " + AtomicWriteSystemError(GetLastError());
@@ -386,14 +386,14 @@ namespace uam::io
 			CloseHandle(file);
 			return false;
 		}
-		if (!FlushFileBuffers(file))
+		if (sync_to_disk && !FlushFileBuffers(file))
 		{
 			result.error = "Failed to sync temporary file: " + AtomicWriteSystemError(GetLastError());
 			CloseHandle(file);
 			return false;
 		}
 		CloseHandle(file);
-		return ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
+		return !sync_to_disk || ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
 	}
 
 	inline bool ReplaceAtomicTemp(
@@ -402,7 +402,7 @@ namespace uam::io
 	    const std::filesystem::path& backup_temp_path,
 	    bool destination_exists,
 	    bool preserve_backup,
-	    AtomicWriteResult& result)
+	    AtomicWriteResult& result, bool sync_to_disk = true)
 	{
 		std::filesystem::path native_path;
 		std::filesystem::path native_temp_path;
@@ -411,8 +411,8 @@ namespace uam::io
 		    !NativeFilePath(temp_path, native_temp_path, result.error) ||
 		    (preserve_backup && !NativeFilePath(backup_temp_path, native_backup_temp_path, result.error))) return false;
 		const bool replaced = destination_exists
-		    ? ReplaceFileW(native_path.c_str(), native_temp_path.c_str(), preserve_backup ? native_backup_temp_path.c_str() : nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)
-		    : MoveFileExW(native_temp_path.c_str(), native_path.c_str(), MOVEFILE_WRITE_THROUGH);
+		    ? ReplaceFileW(native_path.c_str(), native_temp_path.c_str(), preserve_backup ? native_backup_temp_path.c_str() : nullptr, sync_to_disk ? REPLACEFILE_WRITE_THROUGH : 0, nullptr, nullptr)
+		    : MoveFileExW(native_temp_path.c_str(), native_path.c_str(), sync_to_disk ? MOVEFILE_WRITE_THROUGH : 0);
 		if (!replaced)
 		{
 			result.error = "Failed to atomically replace destination: " + AtomicWriteSystemError(GetLastError());
@@ -430,7 +430,7 @@ namespace uam::io
 	    const std::filesystem::path& temp_path,
 	    std::string_view content,
 	    const AtomicWriteStageHook& hook,
-	    AtomicWriteResult& result)
+	    AtomicWriteResult& result, bool sync_to_disk = true)
 	{
 		const int fd = open(temp_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
 		if (fd < 0)
@@ -484,9 +484,9 @@ namespace uam::io
 			return false;
 		}
 #if defined(__APPLE__)
-		const bool synced = fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0;
+		const bool synced = !sync_to_disk || fcntl(fd, F_FULLFSYNC) == 0 || fsync(fd) == 0;
 #else
-		const bool synced = fsync(fd) == 0;
+		const bool synced = !sync_to_disk || fsync(fd) == 0;
 #endif
 		if (!synced)
 		{
@@ -499,7 +499,7 @@ namespace uam::io
 			result.error = "Failed to close temporary file: " + AtomicWriteSystemError(errno);
 			return false;
 		}
-		return ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
+		return !sync_to_disk || ContinueAtomicWrite(hook, AtomicWriteStage::AfterFileSync, result);
 	}
 
 	inline bool SyncAtomicWriteDirectory(const std::filesystem::path& parent, AtomicWriteResult& result)
@@ -605,7 +605,7 @@ namespace uam::io
 
 	inline AtomicWriteResult CommitSyncedAtomicTemp(const std::filesystem::path& path,
 	    const std::filesystem::path& temp_path, bool preserve_backup = false,
-	    const AtomicWriteStageHook& hook = {}, bool sync_directory = true)
+	    const AtomicWriteStageHook& hook = {}, bool sync_directory = true, bool sync_replace = true)
 	{
 		AtomicWriteResult result;
 		const std::filesystem::path parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
@@ -624,7 +624,7 @@ namespace uam::io
 		}
 
 #if defined(_WIN32)
-		if (!ReplaceAtomicTemp(path, temp_path, backup_temp_path, destination_exists, preserve_backup, result))
+		if (!ReplaceAtomicTemp(path, temp_path, backup_temp_path, destination_exists, preserve_backup, result, sync_replace))
 		{
 			RemoveAtomicTempNoThrow(temp_path);
 			return result;
@@ -728,7 +728,7 @@ namespace uam::io
 	    const std::filesystem::path& path,
 	    std::string_view content,
 	    const AtomicWriteStageHook& hook = {},
-	    bool preserve_backup = false)
+	    bool preserve_backup = false, bool sync_to_disk = true)
 	{
 		static std::mutex write_mutex;
 		std::lock_guard<std::mutex> lock(write_mutex);
@@ -769,7 +769,7 @@ namespace uam::io
 		const std::filesystem::path temp_path = MakeTempWritePath(path);
 		const std::filesystem::path backup_path = MakeBackupPath(path);
 		const std::filesystem::path backup_temp_path = MakeTempWritePath(backup_path);
-		if (!WriteAndSyncAtomicTemp(temp_path, content, hook, result))
+		if (!WriteAndSyncAtomicTemp(temp_path, content, hook, result, sync_to_disk))
 		{
 			if (!result.interrupted)
 			{
@@ -777,13 +777,19 @@ namespace uam::io
 			}
 			return result;
 		}
-		return CommitSyncedAtomicTemp(path, temp_path, preserve_backup, hook);
+		return CommitSyncedAtomicTemp(path, temp_path, preserve_backup, hook, sync_to_disk, sync_to_disk);
 	}
 
 
 	inline bool AtomicWriteFile(const std::filesystem::path& path, std::string_view content)
 	{
 		return AtomicWriteFileDetailed(path, content).success;
+	}
+
+	/// <summary>Atomically publishes reconstructible cache data without durable disk sync.</summary>
+	inline bool WriteCacheFile(const std::filesystem::path& path, std::string_view content)
+	{
+		return AtomicWriteFileDetailed(path, content, {}, false, false).success;
 	}
 
 	inline bool AtomicWriteFileWithBackup(const std::filesystem::path& path, std::string_view content)
