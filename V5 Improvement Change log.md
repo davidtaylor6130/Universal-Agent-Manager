@@ -1040,6 +1040,8 @@ The coordinator's unpushed local `uam/v5-improvements` (60 commits, including ex
 
 Codex contract changes: Computer Use Disable Setting and Automatic Provider Agent Import now use the existing backend; provider agent discovery (listing agents in provider config folders) remains unsupported and needs a backend listing action if wanted.
 
+**Integration into `uam/v5-improvements` (2026-10-14):** David approved the mock review. `claude/v5ui-integration` (waves 5 to 8 plus the Lucide icon library `36fc42c3`, which stores library icons as text `lucide:<name>` and applies icon resets locally) was fast-forwarded into `uam/v5-improvements` on top of `397b9964`. Verification at merge: `tsc -b` clean, 1,638 of 1,638 unit tests pass, production build succeeds; the native app was rebuilt from this tip for David's live testing. Every row from these waves stays Not User Tested until David confirms each change in the native app.
+
 ## Historical alpha82 commit inventory
 
 These 278 entries are reachable from the pinned alpha82 source and include follow-up fixes, parallel commit variants, test changes and checkpoints rather than 278 independent features.
