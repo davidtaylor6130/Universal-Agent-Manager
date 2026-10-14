@@ -45,7 +45,7 @@ describe('SettingsScopeBar', () => {
     try {
       const trigger = view.host.querySelector('button#settings-scope') as HTMLButtonElement
       expect(trigger.disabled).toBe(false)
-      expect(view.host.textContent).toContain('Defaults and MCP lists still apply to all environments')
+      expect(view.host.textContent).toContain('defaults and MCP lists stay global')
     } finally { view.cleanup() }
   })
 

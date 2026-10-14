@@ -145,7 +145,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
         <Button size="sm" onClick={onMcpSelect}>Manage MCP servers</Button>
       </div>
     </div>
-    {!central.uamControlEnabled && <Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New provider sessions will run without UAM tools. Existing sessions keep their current configuration.</Notice>}
+    {!central.uamControlEnabled && <Notice tone="error" title="UAM MCP is off" dismissLabel="Dismiss UAM MCP warning" actions={<Button size="sm" disabled={busy} onClick={() => void enable()}>Enable UAM MCP</Button>}>New sessions run without UAM tools.</Notice>}
     {error && <p role="alert" className="uam-prov-sub" style={{ color: 'var(--error)' }}>{error}</p>}
     {statusError && <p role="status" className="uam-prov-sub">{statusError}</p>}
     {!status && !statusError && <p role="status" className="uam-prov-sub">Checking connections…</p>}

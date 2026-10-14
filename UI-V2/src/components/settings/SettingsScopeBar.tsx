@@ -34,7 +34,7 @@ export function SettingsScopeBar({ hosts, value, selectorEnabled, supported, onC
       </div>
       {selectorEnabled && selected && (supported
         ? <p className="text-xs" style={{ color: 'var(--text-3)' }}>Changes here apply only to {selected.label}.</p>
-        : <p className="text-xs" style={{ color: 'var(--text-3)' }}>Computer actions here use {selected.label}. Defaults and MCP lists still apply to all environments until UAM is updated.</p>)}
+        : <p className="text-xs" style={{ color: 'var(--text-3)' }}>Computer actions only; defaults and MCP lists stay global.</p>)}
     </div>
   )
 }

@@ -235,7 +235,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Terminal only')
     expect(host.querySelector('[aria-label="Refresh Antigravity models"]')).toBeNull()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Show Antigravity chat defaults"]')?.click())
-    expect(host.textContent).toContain('Model discovery and model visibility are managed in the provider CLI')
+    expect(host.textContent).toContain('Models are managed in the CLI')
     act(() => root.unmount()); host.remove()
   })
 
@@ -262,7 +262,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeTruthy()
     act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
     expect(host.querySelector('[aria-label="Confirm CLI installation"]')).toBeNull()
-    expect(host.textContent).toContain('Installation on Lab')
+    expect(host.textContent).toContain('Installed')
     expect(host.textContent).toContain('8.0')
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Refresh Codex CLI version"]')!.click())
     expect(useAppStore.getState().refreshCliProviderVersion).toHaveBeenCalledWith('codex-cli', 'ssh-lab')
@@ -280,7 +280,7 @@ describe('SettingsModal memory settings', () => {
     act(() => useAppStore.setState({ settingsScopeHostId: 'ssh-lab' }))
     act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Provider connection overview"] button')).find(button => button.querySelector('.uam-prov-provider__name')?.textContent === 'Codex')!.click())
     expect(useAppStore.getState().settingsScopeHostId).toBe('ssh-lab')
-    expect(host.textContent).toContain('Installation on Lab')
+    expect(host.textContent).toContain('Installed')
     expect(host.textContent).toContain('8.0')
     act(() => root.unmount()); host.remove()
   })
@@ -1064,11 +1064,11 @@ describe('SettingsModal memory settings', () => {
 
     openCliVersionSection(host)
 
-    expect(host.textContent).toContain('Installation on this computer')
+    expect(host.textContent).toContain('Installed')
     expect(host.textContent).toContain('Gemini')
     expect(host.textContent).toContain('Codex')
-    // Provider pages show the installation panel flat, without a disclosure toggle.
-    expect(host.querySelector('#codex-cli-cli-version-panel')).toBeTruthy()
+    // Provider pages show the CLI controls flat, without a disclosure toggle.
+    expect(host.querySelector('section[aria-label="CLI and availability"]')).toBeTruthy()
     expect(host.querySelector('button[aria-label="Show Codex CLI version settings"]')).toBeNull()
 
     expect(host.textContent).toContain('0.123.0')
@@ -2073,8 +2073,8 @@ describe('SettingsModal memory settings', () => {
     openCliVersionSection(host)
     // Provider pages show their single provider flat: no disclosure toggle, issues badge in the status bar.
     expect(host.querySelectorAll('button[aria-label^="Show "][aria-label$="CLI version settings"]')).toHaveLength(0)
-    expect(host.querySelector('.uam-provider-flat__bar [role="img"]')?.textContent).toBe('2')
-    expect(host.querySelector('#codex-cli-cli-version-panel [aria-label="Refresh Codex CLI version"]')).toBeTruthy()
+    expect(host.querySelector('.uam-status-count')?.textContent).toBe('2')
+    expect(host.querySelector('[aria-label="Refresh Codex CLI version"]')).toBeTruthy()
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Download Codex CLI"]')!.click())
     act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(button => button.textContent === 'Download latest')!.click())
     expect(useAppStore.getState().applyCliProviderVersion).not.toHaveBeenCalled()

@@ -282,7 +282,7 @@ it('switches Computer Use from the built-in row, disables it in flight and repor
   useAppStore.setState({ computerUseEnabled: false })
   await act(async () => root.render(<McpServerSetup onBusyChange={() => {}} onDirtyChange={() => {}} />))
   expect(document.body.textContent).toContain('Off')
-  expect(document.body.textContent).toContain("Chats can't control this computer's screen, mouse or keyboard.")
+  expect(document.body.textContent).toContain("Chats can't control the screen, mouse or keyboard.")
 })
 
 it('keeps provider override identity when a server is renamed in the JSON editor', async () => {
