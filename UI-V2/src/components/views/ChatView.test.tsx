@@ -1129,7 +1129,7 @@ describe('ChatView', () => {
     await act(async () => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...providerGoal, status: 'complete' }] } }))
     const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
     expect(summary.textContent).toContain('Review changes')
-    expect(summary.textContent).toContain('src/exact.ts')
+    expect(summary.querySelector('[aria-label="Review changes to src/exact.ts"]')?.textContent).toContain('exact.ts')
     expect(summary.textContent).toContain('isolated Git checkpoint')
     expect(host.querySelector('[aria-label="Turn checkpoint"]')).toBeNull()
 

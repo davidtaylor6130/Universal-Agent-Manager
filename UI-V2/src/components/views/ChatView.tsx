@@ -2,6 +2,8 @@ import { formatContextReferences, sanitizeContextReferences } from '../../utils/
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
 import { MessageNavigationRail } from '../chat/MessageNavigationRail'
+import { ChangedFilesTree } from '../chat/ChangedFilesTree'
+import { changedLineTotals } from '../chat/changedFilesTreeModel'
 import { SubagentWaitStatus, isWaitingOnSubagents } from '../chat/SubagentWaitStatus'
 import { InlinePromptQueue } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
@@ -2642,7 +2644,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               {!chatWorking && !historyLoading && (repositoryChanges || (isGitWorktree && latestAssistantMessage?.checkpointSha)) && (
                 <section
                   aria-label="Review changes"
-                  className="mx-4 overflow-hidden rounded-md text-xs"
+                  className="uam-changes-card mx-4 overflow-hidden rounded-md text-xs"
                   style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 font-medium" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text)' }}>
@@ -2653,33 +2655,26 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                           {repositoryChanges.changedFiles.length} changed file{repositoryChanges.changedFiles.length === 1 ? '' : 's'}
                         </span>
                       )}
+                      {repositoryChanges && (() => {
+                        const totals = changedLineTotals(repositoryChanges.changedFiles)
+                        return (
+                          <span className="flex gap-2 font-mono font-normal">
+                            <span style={{ color: 'var(--success)' }}>+{totals.additions}</span>
+                            <span style={{ color: 'var(--error)' }}>-{totals.deletions}</span>
+                          </span>
+                        )
+                      })()}
                     </div>
                     <Button style={isCompanionContext() ? { display: 'none' } : undefined} type="button" size="sm" variant="secondary" aria-label="Open commit panel" onClick={() => setCommitPanelOpen(true)}>
                       Open commit panel
                     </Button>
                   </div>
                   {repositoryChanges && (
-                    <div className="max-h-48 overflow-y-auto">
-                      {repositoryChanges.changedFiles.map((file) => (
-                      <button
-                        key={file.path}
-                        type="button"
-                        aria-label={`Review changes to ${file.path}`}
-                        className="uam-choice-button flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left"
-                        style={{ borderBottom: '1px solid var(--border)', background: 'transparent', color: 'var(--text-2)' }}
-                        onClick={() => setSelectedRepositoryFile(file)}
-                      >
-                        <span className="w-6 shrink-0 text-center font-mono" style={{ color: 'var(--text-3)' }}>{file.status.trim() || 'M'}</span>
-                        <span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span>
-                        {file.binary ? (
-                          <span className="shrink-0 font-mono" style={{ color: 'var(--text-3)' }}>BIN</span>
-                        ) : (
-                          <span className="flex shrink-0 gap-2 font-mono"><span style={{ color: 'var(--green)' }}>+{file.additions}</span><span style={{ color: 'var(--red)' }}>-{file.deletions}</span></span>
-                        )}
-                        <ChevronRight size={14} aria-hidden className="shrink-0" style={{ color: 'var(--text-3)' }} />
-                      </button>
-                      ))}
-                    </div>
+                    <ChangedFilesTree
+                      files={repositoryChanges.changedFiles}
+                      selectedPath={selectedRepositoryFile?.path}
+                      onOpenFile={setSelectedRepositoryFile}
+                    />
                   )}
                   {isGitWorktree && latestAssistantMessage?.checkpointSha && (
                     <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2" style={{ borderTop: repositoryChanges ? '1px solid var(--border)' : undefined, color: 'var(--text-2)' }}>

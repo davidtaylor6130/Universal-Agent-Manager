@@ -1,0 +1,33 @@
+/* Review card body: header and footer keep their size, the tree scrolls inside the 280px card. */
+.uam-changes-card { display: flex; flex-direction: column; max-height: 280px; }
+.uam-changes-tree { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 0; outline: none; }
+.uam-changes-tree:focus-visible { box-shadow: inset var(--focus-ring); }
+
+.uam-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 26px;
+  padding-right: 10px;
+  text-align: left;
+  color: var(--text-2);
+  background: transparent;
+  animation: uam-tree-row-in var(--dur-fast) var(--ease-out-soft) backwards;
+}
+.uam-tree-row[aria-selected="true"] { background: var(--accent-dim); color: var(--text); }
+.uam-tree-row:focus-visible { box-shadow: inset var(--focus-ring); }
+.uam-tree-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+.uam-tree-counts { display: flex; flex-shrink: 0; gap: 6px; font-family: var(--font-mono); }
+.uam-tree-status { width: 14px; flex-shrink: 0; text-align: center; font-family: var(--font-mono); font-weight: 600; }
+.uam-tree-chevron { flex-shrink: 0; transition: transform var(--dur-base) var(--ease-out-soft); }
+.uam-tree-chevron[data-open="true"] { transform: rotate(90deg); }
+
+@keyframes uam-tree-row-in {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uam-tree-row { animation: none; }
+  .uam-tree-chevron { transition: none; }
+}
