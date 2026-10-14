@@ -3079,7 +3079,7 @@ describe('useAppStore Gemini CLI slice', () => {
       modelId: 'gpt-5.4',
       approvalMode: 'plan',
       commandSafetyTier: 'yolo',
-      memoryEnabled: false,
+      memoryEnabled: true, // ponytail: local preview chats inherit the memory default (68a702da)
       smallModelMode: true,
       reasoningEffort: 'high',
       serviceTier: 'fast',
