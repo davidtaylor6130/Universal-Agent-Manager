@@ -100,7 +100,7 @@ function state(): Json {
     settings: {
       activeProviderId: 'claude-cli', theme: localStorage.getItem('uam-theme') ?? 'dark', memoryEnabledDefault: true, memoryIdleDelaySeconds: 60, memoryRecallBudgetBytes: 8192,
       goalMaxLoopIterations: 10, updateChecksEnabled: true, automaticProviderUpdates: false, updateLastCheckedAt: iso(3600000), dismissedUpdateVersions: {},
-      memoryLastStatus: '', memoryWorkerBindings: {}, gitEnabled: true, svnEnabled: false, executionHosts, computerUseEnabled, providerAgentImport: true, hostScopedSettings: true,
+      memoryLastStatus: '', memoryWorkerBindings: {}, gitEnabled: true, svnEnabled: false, executionHosts, computerUseEnabled, providerAgentImport: true, branchSwitching: true, hostScopedSettings: true,
       defaultNewChatProviderId: 'claude-cli',
     },
     cliVersionManager: { providers: [
@@ -149,6 +149,10 @@ function messagesResponse(chatId: string): Json {
 }
 
 function setChat(id: string, patch: Json) { chats = chats.map(c => c.id === id ? { ...c, ...patch } : c) }
+// Branch switching: per-chat checked-out branch overrides and a shared fake branch list.
+const chatBranchOverrides: Record<string, string> = {}
+let fakeBranches: { name: string; remote?: boolean }[] = [{ name: 'main' }, { name: 'claude/v5ui-integration' }, { name: 'feature/composer' }, { name: 'build/fix-login' }, { name: 'release/2.0', remote: true }]
+const chatCurrentBranch = (id: string) => chatBranchOverrides[id] ?? ((chats.find(x => x.id === id)?.workspaceBranchName as string) || (chats.find(x => x.id === id)?.folderId === 'f-site' ? 'main' : 'claude/v5ui-integration'))
 
 async function handle(action: string, payload: Json): Promise<unknown> {
   switch (action) {
@@ -200,9 +204,27 @@ async function handle(action: string, payload: Json): Promise<unknown> {
     case 'listMarkdownStoreEntries': return { entries: [] }
     case 'listThemes': return { themes: [] }
     case 'listUamAgents': return { agents: [] }
+    case 'listChatBranches': {
+      const current = chatCurrentBranch(payload.chatId as string)
+      return { vcsType: 'git', branches: fakeBranches.map(b => ({ ...b, current: b.name === current })) }
+    }
+    case 'switchChatBranch': {
+      const id = payload.chatId as string
+      const name = (payload.branch as string).trim()
+      if (payload.create) {
+        if (fakeBranches.some(b => b.name === name)) throw Object.assign(new Error(`A branch named ${name} already exists.`), { code: 400 })
+        fakeBranches = [...fakeBranches, { name }]
+      } else if (name === 'release/2.0') {
+        throw Object.assign(new Error('Commit or discard 2 changed files before switching branches.'), { code: 409 })
+      }
+      if (!fakeBranches.some(b => b.name === name)) throw Object.assign(new Error(`Unknown branch ${name}.`), { code: 404 })
+      chatBranchOverrides[id] = name
+      push()
+      return { branch: name }
+    }
     case 'getVcsCommitStatus': {
       const c = chats.find(x => x.id === payload.chatId)
-      const branch = (c?.workspaceBranchName as string) || (c?.folderId === 'f-site' ? 'main' : 'claude/v5ui-integration')
+      const branch = chatCurrentBranch(payload.chatId as string)
       return { available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: (c?.workspaceDirectory as string) ?? '', branchOrRevision: branch, lineStatsReady: true, warning: '', error: '',
         changedFiles: [{ path: 'UI-V2/src/components/views/ChatView.tsx', status: 'M', additions: 42, deletions: 7, staged: false }] }
     }
