@@ -53,7 +53,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     <SettingsSection title="Git and SVN">
       <SettingRow title="Git" control={modes('Git', draft.gitEnabled, (value) => edit({ gitEnabled: value }))} />
       <SettingRow title="Automatic isolation" description="Separate worktree before each new chat." control={modes('Automatic isolation', draft.gitAutoWorktree, (value) => edit({ gitAutoWorktree: value }), !draft.gitEnabled)} />
-      <SettingRow title="Default base branch" description="Empty uses HEAD. Must exist locally." control={<input className="uam-input" aria-label="Default local Git base branch" placeholder="HEAD" value={draft.gitDefaultBaseBranch} disabled={saving || !draft.gitEnabled} spellCheck={false} onChange={(event) => edit({ gitDefaultBaseBranch: event.currentTarget.value })} />} />
+      <SettingRow title="Default base branch" description="Empty uses HEAD. Must exist locally." control={<input className="uam-field" aria-label="Default local Git base branch" placeholder="HEAD" value={draft.gitDefaultBaseBranch} disabled={saving || !draft.gitEnabled} spellCheck={false} onChange={(event) => edit({ gitDefaultBaseBranch: event.currentTarget.value })} />} />
       <SettingRow title="Port changes" description="Merge and Squash stage changes for you to commit." control={<div className="flex gap-1" role="group" aria-label="Port method">
         {(['patch', 'merge', 'squash'] as const).map((method) => <Button key={method} size="sm" disabled={saving || !draft.gitEnabled} aria-pressed={draft.gitPortMethod === method}
           style={draft.gitPortMethod === method ? { borderColor: 'var(--text)', background: 'var(--surface-high)' } : undefined}
