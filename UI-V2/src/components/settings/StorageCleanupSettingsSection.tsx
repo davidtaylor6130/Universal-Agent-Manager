@@ -56,7 +56,7 @@ export const StorageCleanupSettingsSection = forwardRef<StorageCleanupSettingsSe
     {[true, false].map((value, index) => <Button key={String(value)} size="sm" aria-pressed={enabled === value} disabled={Boolean(saving)}
       style={enabled === value ? { borderColor: 'var(--text)', background: 'var(--surface-high)' } : undefined} onClick={() => change(value)}>{choices[index]}</Button>)}
   </div>
-  const number = (label: string, value: string, minimum: number, change: (value: string) => void, disabled = false) => <div className="flex items-center gap-2"><input className="uam-input" type="number" aria-label={label} value={value} min={minimum} max={3650} step={1} disabled={Boolean(saving) || disabled} onChange={(event) => change(event.currentTarget.value)} /><span>days</span></div>
+  const number = (label: string, value: string, minimum: number, change: (value: string) => void, disabled = false) => <div className="flex items-center gap-2"><input className="uam-field tabular-nums" style={{ width: 88 }} type="number" aria-label={label} value={value} min={minimum} max={3650} step={1} disabled={Boolean(saving) || disabled} onChange={(event) => change(event.currentTarget.value)} /><span className="text-xs" style={{ color: 'var(--text-3)' }}>days</span></div>
   const discard = (group: 'worktree' | 'storage') => {
     const patch = group === 'worktree' ? { enabled: saved.enabled, worktree: saved.worktree } : { logs: saved.logs, cache: saved.cache, periodic: saved.periodic }
     setDraft((value) => ({ ...value, ...patch })); setBaseline((value) => ({ ...value, ...patch })); setError('')

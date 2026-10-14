@@ -19,6 +19,15 @@ function mount() {
   return { host, root }
 }
 describe('Cleanup policy controls', () => {
+  it('renders numeric inputs with the themed field class so text follows the theme tokens', () => {
+    const { host, root } = mount()
+    try {
+      for (const label of ['Worktree retention age', 'Backup log retention', 'HTTP cache interval']) {
+        const field = host.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!
+        expect(field.classList.contains('uam-field')).toBe(true)
+      }
+    } finally { act(() => root.unmount()) }
+  })
   it('keeps independent endpoint acceptance when backup and cache persistence fails', async () => {
     const requests: { action: string; payload: unknown }[] = []
     window.cefQuery = ({ request, onSuccess, onFailure }) => { const message = JSON.parse(request); requests.push({ action: message.action, payload: message.payload }); if (message.action === 'setStorageSettings') onFailure(500, 'Disk full'); else onSuccess('{}') }
