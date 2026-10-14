@@ -1022,6 +1022,24 @@ The coordinator's unpushed local `uam/v5-improvements` (60 commits, including ex
 - **Composer Branch Switching:** serialize `settings.branchSwitching: true`; `listChatBranches { chatId }` returns `{ branches: [{ name, current, remote? }], vcsType }`; `switchChatBranch { chatId, branch, create? }` switches the chat workspace and returns `{ branch }` or a one-line error.
 - **Repository Routing Matches:** serialize `settings.executionRouting.repositoryMatching: true`; `listRepositoryMatches {}` returns per-folder repository identity (Git remote or SVN root) and per-host matched remote directories with `source: 'automatic' | 'manual'`; routing saves accept `useAutomaticMatch: true` on a mapping entry to clear a manual override.
 
+### Wave 8 — third mock review and Codex alignment (2026-10-14)
+
+`origin/uam/v5-improvements` (`397b9964`, including SVN update-before-chat and lossless chat state) was merged into `claude/v5ui-integration` in `639bdc46`. Codex had implemented different backend actions from the wave 5 contracts, so the UI was re-wired to the real backend instead. Merged-tree verification: `tsc -b` clean, 1,631 of 1,631 unit and 22 of 22 performance tests pass, production build succeeds. Not yet visually re-checked by David.
+
+| Commit | Surface | Summary |
+|---|---|---|
+| `0b721a93` and the Git base-branch fix | Settings | Storage cleanup and Git base-branch inputs use the themed field class instead of the undefined `uam-input`, so they are readable in dark themes. |
+| `db87afc1` | Navigation | The Memory library brain button is removed from the left rail; Memory Store stays in Settings. |
+| `a30d9932` | New chat | The dialog is two columns and fits a 1280×800 window without scrolling, with rarely used options under More options. |
+| `4273ced2` | Settings | SSH Routing has its own page under Connections, sharing the routing editor with the New chat dialog. |
+| `a1d0f32a`, `64671c51` | Sidebar | Chat right-click menu is sectioned with Copy and Snooze submenus, Snooze has presets from five minutes to a week plus a custom amount, and chat custom icons render on sidebar rows. |
+| `502f56af` and the composer icon fix | Workspaces | Workspace custom icons show in the workspace picker and the composer workspace button. |
+| `5a34b138` | Settings | The Computer Use switch uses the real `computerUseGloballyEnabled` setting and `setComputerUseSettings`. |
+| `2221f238` | Settings | Provider agent import uses the real browse, preview and `importProviderAgent` path flow; the unsupported list-based import UI was removed. |
+| `adc6db3d` | Settings | Remote hosts have an inline Host instructions editor saving `instructionText`, with the instruction file kept as a legacy option. |
+
+Codex contract changes: Computer Use Disable Setting and Automatic Provider Agent Import now use the existing backend; provider agent discovery (listing agents in provider config folders) remains unsupported and needs a backend listing action if wanted.
+
 ## Historical alpha82 commit inventory
 
 These 278 entries are reachable from the pinned alpha82 source and include follow-up fixes, parallel commit variants, test changes and checkpoints rather than 278 independent features.
