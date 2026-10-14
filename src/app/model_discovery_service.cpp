@@ -1,6 +1,7 @@
 #include "app/model_discovery_service.h"
 
 #include "app/provider_model_catalog_service.h"
+#include "app/chat_domain_service.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/provider_availability.h"
 #include "common/paths/workspace_root.h"
@@ -84,6 +85,15 @@ namespace uam
 				add(chat.provider_id, paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id);
 		for (const ChatFolder& folder : app.folders)
 			add(app.settings.default_new_chat_provider_id, folder.directory, folder.execution_host_id);
+		const ChatDomainService domain;
+		const ChatFolder* initial_folder = domain.FindFolderById(app, app.new_chat_folder_id);
+		const ChatSession* selected = domain.SelectedChat(app);
+		if (initial_folder == nullptr && selected != nullptr) initial_folder = domain.FindFolderById(app, selected->folder_id);
+		if (initial_folder == nullptr && !app.folders.empty()) initial_folder = &app.folders.front();
+		if (initial_folder != nullptr)
+			for (const ProviderProfile& provider : app.provider_profiles)
+				if (ProviderRuntime::IsRuntimeEnabled(provider) && provider_availability::IsEnabled(app.settings, provider.id, initial_folder->execution_host_id))
+					add(provider.id, initial_folder->directory, initial_folder->execution_host_id);
 		return scopes;
 	}
 

@@ -86,6 +86,7 @@ UAM_TEST(DisabledProviderAdmissionRejectsBeforeVersionOrProcessWork)
 UAM_TEST(DisabledProviderStartupDiscoveryNeverLaunchesItsScope)
 {
 	AvailabilityFixture fixture;
+	fixture.app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
 	fixture.app.settings.default_new_chat_provider_id = "codex-cli";
 	fixture.app.folders.push_back(ChatFolder{"folder", "Private", fixture.temp.root.string(), false});
 	fixture.app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();

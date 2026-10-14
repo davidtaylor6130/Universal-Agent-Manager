@@ -752,7 +752,6 @@ bool Application::InitializeState()
 		                    " after the manager restarted.";
 	}
 	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
-	m_startupModelDiscovery.Initialize(m_app);
 	m_app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>();
 	m_app.startup_native_import_service->Initialize(m_app);
 	MemoryService::RefreshMemoryActivity(m_app);
@@ -761,6 +760,7 @@ bool Application::InitializeState()
 	{
 		ChatDomainService().SelectRememberedOrFirstChat(m_app);
 	}
+	m_startupModelDiscovery.Initialize(m_app);
 	if (!uam::ComputerUseService::ResetControlsForStartup(m_app))
 	{
 		m_app.status_line =

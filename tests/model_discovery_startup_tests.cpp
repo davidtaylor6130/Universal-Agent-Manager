@@ -3,6 +3,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/paths/app_paths.h"
 #include "common/config/settings_store.h"
+#include "common/config/provider_availability.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/paths/workspace_root.h"
 #include "test_harness.h"
@@ -37,6 +38,8 @@ namespace
 			}
 			app.runtime_cli_versions_by_provider_id["codex-cli"].checked = true;
 			app.runtime_cli_versions_by_provider_id["codex-cli"].supported = true;
+			app.runtime_cli_versions_by_provider_id["claude-cli"].checked = true;
+			app.runtime_cli_versions_by_provider_id["claude-cli"].supported = false;
 			app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 			app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
 		}
@@ -115,6 +118,52 @@ UAM_TEST(StartupModelDiscoveryDeduplicatesRegisteredScopesWithoutProviderFolderP
 	UAM_ASSERT_EQ(scopes.size(), std::size_t{4});
 	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
 	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 0);
+}
+
+UAM_TEST(StartupModelDiscoveryPrewarmsOnlyInitialNewChatWorkspaceAcrossProviders)
+{
+	StartupDiscoveryFixture fixture;
+	ExecutionHost remote;
+	remote.id = "remote";
+	remote.transport = "ssh";
+	remote.platform = "linux";
+	remote.runner_status = "ready";
+	fixture.app.settings.execution_hosts.push_back(remote);
+	ChatFolder remote_folder{"remote-folder", "Remote", "/srv/private-fixture", false};
+	remote_folder.execution_host_id = remote.id;
+	fixture.app.folders.push_back(remote_folder);
+	UAM_ASSERT(uam::provider_availability::Set(fixture.app.settings, "claude-cli", remote.id, false));
+	ChatSession selected;
+	selected.id = "selected-fixture-chat";
+	selected.provider_id = "codex-cli";
+	selected.folder_id = fixture.app.folders[2].id;
+	selected.workspace_directory = fixture.app.folders[2].directory;
+	fixture.app.chats.push_back(selected);
+	fixture.app.selected_chat_index = 0;
+	fixture.app.new_chat_folder_id = fixture.app.folders[1].id;
+	UAM_ASSERT(fixture.app.provider_model_catalog->GetCachedProviderModels("claude-cli", fixture.app.folders[1].directory).empty());
+	const std::function<void(const std::string&)> expect_preferred = [&](const std::string& workspace)
+	{
+		const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
+		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("codex-cli"), &uam::ModelDiscoveryScope::provider_id), 4);
+		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
+		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 0);
+		UAM_ASSERT_EQ(scopes.size(), std::size_t{5});
+		const std::vector<uam::ModelDiscoveryScope>::const_iterator claude = std::ranges::find(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id);
+		UAM_ASSERT_EQ(claude->workspace_directory, fs::weakly_canonical(workspace).generic_string());
+		UAM_ASSERT_EQ(claude->execution_host_id, std::string("local"));
+	};
+	expect_preferred(fixture.app.folders[1].directory);
+	fixture.app.new_chat_folder_id = "removed-folder";
+	expect_preferred(fixture.app.folders[2].directory);
+	fixture.app.selected_chat_index = -1;
+	expect_preferred(fixture.app.folders.front().directory);
+	fixture.app.new_chat_folder_id = remote_folder.id;
+	const std::vector<uam::ModelDiscoveryScope> disabled_remote = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
+	UAM_ASSERT_EQ(disabled_remote.size(), std::size_t{4});
+	UAM_ASSERT_EQ(std::ranges::count(disabled_remote, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 0);
+	UAM_ASSERT(fixture.launched.empty());
+	UAM_ASSERT(fixture.app.acp_sessions.empty());
 }
 
 UAM_TEST(StartupModelDiscoveryBoundsConcurrencyAndLeavesExistingTurnsUntouched)
@@ -335,7 +384,9 @@ UAM_TEST(StartupModelDiscoveryDeduplicatesWindowsRemoteCaseWithoutFoldingLinuxPa
 			fixture.app.folders.push_back(folder);
 		}
 		const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
-		UAM_ASSERT_EQ(scopes.size(), platform == "windows" ? std::size_t{1} : std::size_t{2});
+		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("codex-cli"), &uam::ModelDiscoveryScope::provider_id), platform == "windows" ? 1 : 2);
+		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
+		UAM_ASSERT_EQ(scopes.size(), platform == "windows" ? std::size_t{2} : std::size_t{3});
 	}
 }
 
@@ -378,11 +429,14 @@ UAM_TEST(StartupModelDiscoveryPreservesRemoteLinuxLiteralBackslashesInScopeAndLa
 		fixture.app.folders.push_back(folder);
 	}
 	const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
-	UAM_ASSERT_EQ(scopes.size(), std::size_t{2});
+	UAM_ASSERT_EQ(scopes.size(), std::size_t{3});
+	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
 	UAM_ASSERT_EQ(scopes[0].workspace_directory, paths[0]);
 	UAM_ASSERT_EQ(scopes[1].workspace_directory, paths[1]);
 	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", host.id)].checked = true;
 	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", host.id)].supported = true;
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", host.id)].checked = true;
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", host.id)].supported = false;
 	uam::StartupModelDiscoveryService service(fixture.Launcher());
 	service.Initialize(fixture.app);
 	UAM_ASSERT(service.Poll(fixture.app));
