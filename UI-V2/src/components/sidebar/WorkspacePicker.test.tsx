@@ -45,6 +45,16 @@ describe('WorkspacePicker', () => {
     expect(picker.style.borderColor).toBe('var(--border)')
   })
 
+  it('shows each workspace custom icon in the list and trigger, with the folder icon as fallback', () => {
+    props = { ...props, folders: props.folders.map((item) => item.id === 'a' ? { ...item, customIcon: { type: 'text', value: '📌' } } : item), value: 'a' }
+    render()
+    expect(trigger().textContent).toContain('📌')
+    open()
+    const app = options().find((entry) => entry.textContent?.includes('App'))!
+    expect(app.textContent).toContain('📌')
+    expect(options().find((entry) => entry.textContent?.includes('Loose'))!.querySelector('svg')).toBeTruthy()
+  })
+
   it('mirrors first sidebar collection ownership and searches names, paths and group text', () => {
     open()
     expect(options().map((entry) => entry.textContent)).toEqual(['App/repo/app', 'Backend/repo/backend', 'Loose/misc'])

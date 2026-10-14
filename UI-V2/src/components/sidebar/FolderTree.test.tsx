@@ -124,6 +124,20 @@ describe('FolderTree', () => {
     host.remove()
   })
 
+  it('renders a workspace custom icon in the sidebar header', () => {
+    useAppStore.setState((state) => ({ folders: state.folders.map((folder) => ({ ...folder, customIcon: { type: 'text', value: '📌' } })) }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+
+    expect(host.querySelector('[data-testid="folder-header-project"]')?.textContent).toContain('📌')
+    expect(host.querySelector('[data-testid="folder-icon-project"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('shows five recent chats in a folder until see more is clicked', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
