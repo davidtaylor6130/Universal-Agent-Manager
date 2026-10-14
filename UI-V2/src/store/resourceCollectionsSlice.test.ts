@@ -45,6 +45,24 @@ describe('resource collection state', () => {
     expect(useAppStore.getState().sessions[0]).toBe(session)
   })
 
+  it('clears a chat icon on reset in the native app without waiting for the state push', async () => {
+    const session = sessionFromCppChat(sanitizeCppChat({ id: 'icon-chat', customIcon: { type: 'text', value: '🧪' } })!, undefined, [])
+    useAppStore.setState({ sessions: [session] })
+    const received: unknown[] = []
+    window.cefQuery = request => { received.push(JSON.parse(request.request)); request.onSuccess('{}') }
+    expect(await useAppStore.getState().setCustomIcon('chat', 'icon-chat', null)).toBe(true)
+    expect(received[0]).toMatchObject({ action: 'setCustomIcon', payload: { targetType: 'chat', targetId: 'icon-chat', icon: null } })
+    expect(useAppStore.getState().sessions[0].customIcon).toBeUndefined()
+  })
+
+  it('stores library icons as portable lucide text and keeps them through state sanitizing', async () => {
+    const session = sessionFromCppChat(sanitizeCppChat({ id: 'icon-chat' })!, undefined, [])
+    useAppStore.setState({ sessions: [session] })
+    expect(await useAppStore.getState().setCustomIcon('chat', 'icon-chat', { type: 'text', value: 'lucide:flask-conical' })).toBe(true)
+    expect(useAppStore.getState().sessions[0].customIcon).toEqual({ type: 'text', value: 'lucide:flask-conical' })
+    expect(sanitizeCppChat({ id: 'icon-chat', customIcon: { type: 'text', value: 'lucide:Bad Name' } })?.customIcon).toBeUndefined()
+  })
+
   it('sanitizes collections in full state and patches', () => {
     const raw = [
       {

@@ -3,6 +3,21 @@ export type CustomIconInput = { type: 'text'; value: string } | { type: 'png'; b
 
 export type CustomIcon = { type: 'text'; value: string } | { type: 'png'; value: string; dataUrl?: string }
 
+/** Library icons are stored as text values `lucide:<name>` so the native store needs no new icon type. */
+export const LUCIDE_ICON_PREFIX = 'lucide:'
+const LUCIDE_ICON_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+export function lucideIconValue(name: string): string {
+  return `${LUCIDE_ICON_PREFIX}${name}`
+}
+
+/** Returns the Lucide name for a `lucide:` text value, or null for emoji/characters. Unknown names are the renderer's concern. */
+export function lucideIconName(value: string): string | null {
+  if (!value.startsWith(LUCIDE_ICON_PREFIX)) return null
+  const name = value.slice(LUCIDE_ICON_PREFIX.length)
+  return LUCIDE_ICON_NAME.test(name) && value.length <= 64 ? name : null
+}
+
 export function isSingleIconText(value: string): boolean {
   const Segmenter = (Intl as unknown as { Segmenter?: new (locale?: string, options?: { granularity: 'grapheme' }) => { segment: (text: string) => Iterable<unknown> } }).Segmenter
   return (Segmenter ? [...new Segmenter(undefined, { granularity: 'grapheme' }).segment(value)] : Array.from(value)).length === 1
@@ -13,7 +28,8 @@ export function sanitizeCustomIcon(value: unknown): CustomIcon | undefined {
   if (!value || typeof value !== 'object') return undefined
   const icon = value as Record<string, unknown>
   if (typeof icon.value !== 'string') return undefined
-  if (icon.type === 'text' && isSingleIconText(icon.value) && new TextEncoder().encode(icon.value).length <= 64 && !/[\x00-\x1f\x7f]/.test(icon.value)) {
+  const textValid = lucideIconName(icon.value) !== null || isSingleIconText(icon.value)
+  if (icon.type === 'text' && textValid && new TextEncoder().encode(icon.value).length <= 64 && !/[\x00-\x1f\x7f]/.test(icon.value)) {
     return { type: 'text', value: icon.value }
   }
   if (icon.type === 'png' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.png$/i.test(icon.value)) {

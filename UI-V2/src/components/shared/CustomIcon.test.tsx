@@ -48,6 +48,7 @@ describe('Custom icons', () => {
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
     try {
       act(() => root.render(<Harness />)); act(() => host.querySelector('button')!.click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent === 'Upload')!.click())
       const input = document.body.querySelector<HTMLInputElement>('input[type="file"]')!
       for (const name of ['first.png', 'second.png']) {
         Object.defineProperty(input, 'files', { configurable: true, value: [new File(['PNG'], name, { type: 'image/png' })] })
@@ -66,4 +67,25 @@ describe('Custom icons', () => {
     }
   })
 
+  it('saves the chosen library icon as lucide text and resets it to default through the same path', async () => {
+    const previous = useAppStore.getState().setCustomIcon
+    const save = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ setCustomIcon: save })
+    function Harness() { const picker = useCustomIconPicker(); return <><button onClick={() => picker.open('chat', 'c1', 'Chat')}>Icon</button>{picker.dialog}</> }
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<Harness />)); act(() => host.querySelector('button')!.click())
+      await act(async () => { await import('./LucideIcons') })
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+      const dialog = document.body.querySelector('[role="dialog"]')!
+      act(() => document.body.querySelector<HTMLButtonElement>('[aria-label="flask-conical"]')!.click())
+      await act(async () => Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Save')!.click())
+      expect(save).toHaveBeenLastCalledWith('chat', 'c1', { type: 'text', value: 'lucide:flask-conical' })
+      act(() => host.querySelector('button')!.click())
+      await act(async () => Array.from(document.body.querySelectorAll('[role="dialog"] button')).find((button) => button.textContent === 'Reset to default')!.click())
+      expect(save).toHaveBeenLastCalledWith('chat', 'c1', null)
+    } finally {
+      act(() => root.unmount()); host.remove(); useAppStore.setState({ setCustomIcon: previous })
+    }
+  })
 })

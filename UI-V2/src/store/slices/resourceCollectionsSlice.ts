@@ -90,31 +90,36 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
 
     setCustomIcon: async (targetType: CustomIconTarget, targetId: string, icon: CustomIconInput): Promise<boolean> => {
       if (icon?.type === 'text' && !sanitizeCustomIcon(icon)) return false
-      if (isCefContext()) {
-        const response = await sendToCEF({ action: 'setCustomIcon', payload: { targetType, targetId, icon }, requestId: createRequestId('setCustomIcon') })
-        return response.ok
-      }
       const customIcon: CustomIcon | undefined = icon === null ? undefined : icon.type === 'text' ? icon : {
         type: 'png', value: `${crypto.randomUUID()}.png`, dataUrl: `data:image/png;base64,${icon.base64}`,
       }
-      if (targetType === 'chat') {
-        if (!get().sessions.some((session) => session.id === targetId)) return false
-        set((state) => ({ sessions: state.sessions.map((session) => session.id === targetId ? { ...session, customIcon } : session) }))
-      } else if (targetType === 'workspace') {
-        if (!get().folders.some((folder) => folder.id === targetId)) return false
-        set((state) => ({ folders: state.folders.map((folder) => folder.id === targetId ? { ...folder, customIcon } : folder) }))
-      } else if (targetType === 'host') {
-        if (!get().executionHosts.some((host) => host.id === targetId)) return false
-        set((state) => ({ executionHosts: state.executionHosts.map((host) => host.id === targetId ? { ...host, customIcon } : host) }))
-      } else {
-        const found = get().resourceCollections.some((collection) => targetType === 'collection' ? collection.id === targetId
-          : collection.references.some((reference) => reference.id === targetId && reference.type === 'desktop-app'))
-        if (!found) return false
-        set((state) => ({ resourceCollections: state.resourceCollections.map((collection) => targetType === 'collection'
-          ? collection.id === targetId ? { ...collection, customIcon } : collection
-          : { ...collection, references: collection.references.map((reference) => reference.id === targetId && reference.type === 'desktop-app' ? { ...reference, customIcon } : reference) }) }))
+      const applyLocally = (): boolean => {
+        if (targetType === 'chat') {
+          if (!get().sessions.some((session) => session.id === targetId)) return false
+          set((state) => ({ sessions: state.sessions.map((session) => session.id === targetId ? { ...session, customIcon } : session) }))
+        } else if (targetType === 'workspace') {
+          if (!get().folders.some((folder) => folder.id === targetId)) return false
+          set((state) => ({ folders: state.folders.map((folder) => folder.id === targetId ? { ...folder, customIcon } : folder) }))
+        } else if (targetType === 'host') {
+          if (!get().executionHosts.some((host) => host.id === targetId)) return false
+          set((state) => ({ executionHosts: state.executionHosts.map((host) => host.id === targetId ? { ...host, customIcon } : host) }))
+        } else {
+          const found = get().resourceCollections.some((collection) => targetType === 'collection' ? collection.id === targetId
+            : collection.references.some((reference) => reference.id === targetId && reference.type === 'desktop-app'))
+          if (!found) return false
+          set((state) => ({ resourceCollections: state.resourceCollections.map((collection) => targetType === 'collection'
+            ? collection.id === targetId ? { ...collection, customIcon } : collection
+            : { ...collection, references: collection.references.map((reference) => reference.id === targetId && reference.type === 'desktop-app' ? { ...reference, customIcon } : reference) }) }))
+        }
+        return true
       }
-      return true
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setCustomIcon', payload: { targetType, targetId, icon }, requestId: createRequestId('setCustomIcon') })
+        // The state push normally follows, but a reset or text icon is fully known here; apply it so the UI never waits on a push that may be deduplicated.
+        if (response.ok && icon?.type !== 'png') applyLocally()
+        return response.ok
+      }
+      return applyLocally()
     },
 
     createResourceCollection: async (name: string): Promise<ResourceCollection | null> => {

@@ -195,6 +195,18 @@ async function handle(action: string, payload: Json): Promise<unknown> {
       if (selectedChatId && ids.includes(selectedChatId)) selectedChatId = (chats[0]?.id as string) ?? null
       push(); return { selectedChatId }
     }
+    case 'setCustomIcon': {
+      // Mirrors the native handler: null removes the icon; text is stored as-is; PNG payloads become a portable asset name.
+      const targetId = payload.targetId as string
+      const icon = payload.icon as Json | null
+      const customIcon = icon === null ? null : icon.type === 'text' ? { type: 'text', value: icon.value } : { type: 'png', value: `${crypto.randomUUID()}.png`, dataUrl: `data:image/png;base64,${icon?.base64}` }
+      const target = payload.targetType === 'chat' ? chats.find(c => c.id === targetId)
+        : payload.targetType === 'workspace' ? folders.find(f => f.id === targetId)
+        : payload.targetType === 'host' ? executionHosts.find(h => h.id === targetId) : undefined
+      if (!target) throw Object.assign(new Error('Icon target not found.'), { code: 404 })
+      ;(target as Json).customIcon = customIcon
+      setTimeout(push, 0); return {}
+    }
     case 'setChatPinned': setChat(payload.chatId as string, { pinned: payload.pinned }); setTimeout(push, 0); return {}
     case 'renameSession': setChat(payload.chatId as string, { title: payload.title }); setTimeout(push, 0); return {}
     case 'listMarkdownStoreEntries': return { entries: [] }
