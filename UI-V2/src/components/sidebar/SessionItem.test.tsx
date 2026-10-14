@@ -958,6 +958,23 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('shows the chat custom icon in place of the provider glyph and before the activity title', () => {
+    const icon = { type: 'text' as const, value: '🧪' }
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon: icon }], showProviderIconsInSidebar: true })
+    const compact = renderSessionItem()
+    try {
+      expect(compact.host.querySelector('[aria-label="Chat icon"]')?.textContent).toContain('🧪')
+      expect(compact.host.querySelector('[aria-label^="Provider:"]')).toBeNull()
+    } finally { act(() => compact.root.unmount()); compact.host.remove() }
+
+    const activity = renderSessionItem(true)
+    try {
+      const text = activity.host.textContent ?? ''
+      expect(text.indexOf('🧪')).toBeGreaterThanOrEqual(0)
+      expect(text.indexOf('🧪')).toBeLessThan(text.indexOf('Chat 1'))
+    } finally { act(() => activity.root.unmount()); activity.host.remove() }
+  })
+
   it('groups the chat menu into sections with dividers and submenus for copy, snooze and collections', () => {
     useAppStore.setState({ resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [] }] })
     const { host, root } = renderSessionItem()
