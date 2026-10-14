@@ -8066,6 +8066,18 @@ describe('ChatView', () => {
     act(() => root.unmount()); host.remove(); delete window.cefQuery
   })
 
+  it('uses one neutral side-chat icon for the pill and resume control, and the return arrow only for return', async () => {
+    const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
+    const session = { ...useAppStore.getState().sessions[0], temporaryParentChatId: 'main-chat' }
+    try {
+      act(() => root.render(<ChatView session={session} />))
+      const controls = host.querySelector('.uam-composer-side-controls')!
+      expect(controls.querySelector('.uam-composer-side-controls__pill svg')!.classList).toContain('lucide-message-square-dashed')
+      expect(controls.querySelector('[aria-label="Return to main chat"] svg')!.classList).toContain('lucide-corner-up-left')
+      expect(host.querySelector('.uam-composer-side-controls svg.lucide-corner-up-right')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it.each(['YOLO Cancel', 'side Return'])('keeps an unsent draft when clicking %s instead of submitting the composer', async (journey) => {
     const originalSend = useAppStore.getState().sendAcpPrompt
     const originalSelect = useAppStore.getState().setActiveSession
