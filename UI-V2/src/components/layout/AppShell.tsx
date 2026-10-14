@@ -5,7 +5,7 @@ import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
-import { PanelLeftClose, PanelLeftOpen, Brain, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
 import './panels.css'
 
 /** GitHub mark (lucide dropped brand icons). */
@@ -184,39 +184,14 @@ function remoteConnectionIssues(
   return issues
 }
 
-function formatMemoryTitle(entryCount: number, lastCreatedAt: string): string {
-  if (entryCount <= 0) {
-    return 'No memories yet'
-  }
-
-  const countLabel = `${entryCount} ${entryCount === 1 ? 'memory' : 'memories'} saved`
-  const parsed = lastCreatedAt ? new Date(lastCreatedAt) : null
-  if (!parsed || Number.isNaN(parsed.getTime())) {
-    return countLabel
-  }
-
-  return `${countLabel}, last updated ${parsed.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })}`
-}
-
-function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSettings, onOpenMemory }: {
+function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSettings }: {
   settingsOpen: boolean
   usageOpen: boolean
   onToggleUsage: () => void
   onToggleSettings: () => void
-  onOpenMemory: () => void
 }) {
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
   const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed)
-  const memoryActivity = useAppStore((s) => s.memoryActivity)
-  const memoryLibraryOpen = useAppStore((s) => Boolean(s.memoryLibraryScope))
-  const hasActivity = memoryActivity.runningCount > 0 || memoryActivity.lastCreatedCount > 0
-  const memoryTitle = formatMemoryTitle(memoryActivity.entryCount, memoryActivity.lastCreatedAt)
 
   return (
     <aside className="uam-side-rail uam-side-rail--left" aria-label="Main navigation">
@@ -233,21 +208,6 @@ function LeftActivityRail({ settingsOpen, usageOpen, onToggleUsage, onToggleSett
       <div className="uam-side-rail__spacer" />
       <ThemeToggle />
       <IconButton icon={<ChartNoAxesCombined size={17} />} label="Usage" tooltipSide="right" active={usageOpen} onClick={onToggleUsage} />
-      <span className="relative inline-flex">
-        <IconButton
-          icon={<Brain size={17} />}
-          label="Memory library"
-          tooltip={memoryTitle}
-          tooltipSide="right"
-          active={memoryLibraryOpen}
-          onClick={onOpenMemory}
-        />
-        {hasActivity && (
-          <span className="absolute -right-0.5 -top-0.5 pointer-events-none" data-testid="memory-activity-dot" aria-hidden="true">
-            <StatusDot tone="accent" pulse size={7} />
-          </span>
-        )}
-      </span>
       <IconButton
         icon={<Settings2 size={17} />}
         label="Settings"
@@ -567,7 +527,6 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
 export function AppShell() {
   const settingsRef = useRef<SettingsHandle>(null)
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
-  const openAllMemoryLibrary = useAppStore((s) => s.openAllMemoryLibrary)
   const refreshCustomThemes = useAppStore((state) => state.refreshCustomThemes)
   const isNewChatModalOpen = useAppStore((s) => s.isNewChatModalOpen)
   const isSettingsOpen = useAppStore((s) => s.isSettingsOpen)
@@ -844,14 +803,6 @@ export function AppShell() {
         usageOpen={usageOpen}
         onToggleUsage={() => setUsageOpen(value => !value)}
         onToggleSettings={toggleSettings}
-        onOpenMemory={() => {
-          setUsageOpen(false)
-          if (isSettingsOpen && settingsRef.current) settingsRef.current.showMemory()
-          else {
-            if (isSettingsOpen) setSettingsOpen(false)
-            void openAllMemoryLibrary()
-          }
-        }}
       />
 
       {/* Keep chat components mounted while Settings occupies the middle region. */}

@@ -144,10 +144,8 @@ describe('AppShell', () => {
   })
 
   it('keeps the rail actions wired', () => {
-    const openAllMemoryLibrary = vi.fn().mockResolvedValue(true)
     const setSettingsOpen = vi.fn()
     useAppStore.setState({
-      openAllMemoryLibrary,
       setSettingsOpen,
     })
 
@@ -159,15 +157,13 @@ describe('AppShell', () => {
       root.render(<AppShell />)
     })
 
-    const memoryButton = host.querySelector('button[aria-label="Memory library"]') as HTMLButtonElement
+    expect(host.querySelector('button[aria-label="Memory library"]')).toBeNull()
     const settingsButton = host.querySelector('button[aria-label="Settings"]') as HTMLButtonElement
 
     act(() => {
-      memoryButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       settingsButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    expect(openAllMemoryLibrary).toHaveBeenCalledTimes(1)
     expect(setSettingsOpen).toHaveBeenCalledWith(true)
     expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === '+New Chat')).toBe(false)
 
@@ -211,8 +207,6 @@ describe('AppShell', () => {
       await act(async () => useAppStore.setState({ memoryLibraryScope: null }))
       standaloneRender.mockClear()
       await act(async () => { host.querySelector<HTMLButtonElement>('[aria-label="Settings"]')!.click(); await import('../settings/SettingsModal') })
-      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Memory library"]')!.click())
-      expect(useAppStore.getState().memoryLibraryScope).not.toBeNull()
       standaloneRender.mockClear()
       await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Back to chats"]')!.click())
       expect(useAppStore.getState().isSettingsOpen).toBe(false)
