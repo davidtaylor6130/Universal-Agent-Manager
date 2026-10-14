@@ -580,6 +580,8 @@ This is the shared outstanding-work register; the remaining-work rows above are 
 | Navigation and interface | Graphical | New Chat On Same Branch | Add a chat context-menu action that starts a new chat in the same workspace on the same branch or worktree as the chat that was right-clicked. | Frontend implemented in `6eebdeb6`, hidden until the backend contract below exists; Codex Review; Codex Backend Implementation; Claude UI Reviewed; Not User Tested | Unassigned |
 | Navigation and interface | Misc | Recorded Provider Stop Time | David's latest request replaces saved timeout-history presentation with transient graphics positioned in the chat-history layout. | Superseded by transient timeout graphics per David 2026-10-13; Un-Reviewed; Claude Review; Not User Tested | Unassigned |
 | Settings and motion | Graphical | Settings Environment Scope | Choose All environments or one SSH computer at the top of Settings so per-machine settings apply to that scope. | Frontend implemented in `a1815538` and `8e29298f`; Codex Review; Codex Backend Implementation; Claude UI Reviewed; Not User Tested | Unassigned |
+| VCS and worktrees | Graphical | Composer Branch Switching | Choose or create the chat's branch from the composer workspace tab. | Frontend implemented, hidden until the backend contract exists; Codex Review; Codex Backend Implementation; Claude UI Reviewed; Not User Tested | Unassigned |
+| Remote routing | Graphical | Repository Routing Matches | Match workspaces to remote checkouts by repository with manual mapping as fallback. | Frontend implemented, hidden until the backend contract exists; Codex Review; Codex Backend Implementation; Claude UI Reviewed; Not User Tested | Unassigned |
 | Deferred ideas | Misc | T3 PR Workflow | Keep T3-inspired pull-request, branch and GitHub-provider workflows plus auto-settling at the very end of the backlog for later design and implementation. | Open; Claude Review; Not User Tested | Unassigned |
 
 | Permissions and MCP | Bugfix | Malformed MCP Reply Recovery | Validate malformed mailbox reply shapes and keep the actual stdio transport available for subsequent valid requests. | In Progress; Un-Reviewed; Claude Review; Not User Tested | chat-1791755529536-1b146e |
@@ -895,6 +897,25 @@ Overlap note: `be1228e5` touches branch display in the composer workspace tab, w
 #### Codex backend contract — Settings Environment Scope
 
 Codex Review; Codex Backend Implementation. Serialize `settings.hostScopedSettings: true` once supported. Then `setProviderChatDefaults` and `setMcpServers` may carry `scopeExecutionHostId`; store those values per SSH host, return the selected host's effective values, and fall back to the all-environments values when a host has none. CLI version, provider MCP status and model refresh already take `executionHostId` and need no change.
+
+### Wave 7 — second mock review and coordinator merge (2026-10-14)
+
+The coordinator's unpushed local `uam/v5-improvements` (60 commits, including expanded Git and SVN settings and New chat in this worktree) was merged into `claude/v5ui-integration` in `a296b516`; the flag-gated New chat on this branch item was dropped in favour of the coordinator's version, and provider availability now follows the single settings scope bar. Merged-tree verification after this wave: `tsc -b` clean, 1,614 of 1,614 unit and 22 of 22 performance tests pass, production build succeeds. Not yet visually re-checked by David.
+
+| Commit | Surface | Summary |
+|---|---|---|
+| `cd059d27` | Transcript | Compacting, waiting on subagents, stopped/timeout and interrupted notices are inline transcript dividers instead of composer strips or message tags. |
+| `0f163674` | Sidebar and composer | Active chats rows gain a hover Snooze action with wake times and Unsnooze; side-chat controls use one side-chat icon and keep the back arrow only for returning. |
+| `05194173` | Composer (Codex backend) | The workspace tab opens a searchable branch picker, display-only until the backend sends `branchSwitching`. |
+| `f350c124` | New chat routing (Codex backend) | Automatic routing matches workspaces by Git or SVN repository with manual mapping as an override, once the backend sends `repositoryMatching`. |
+| `6612ca4d` | Transcript | The end-of-turn Review changes card is a collapsible file tree with per-folder and per-file counts. |
+| `1435e8b5` | Transcript | Message rail hover and active marks follow the doubled notch width and 1.5x height. |
+| `6e6e86ba`, `23e020fa`, `e3cbd4fa` | Settings | Every settings page trimmed to one line of text per item with stacked headers and one-row sections merged. |
+
+#### Codex backend contracts
+
+- **Composer Branch Switching:** serialize `settings.branchSwitching: true`; `listChatBranches { chatId }` returns `{ branches: [{ name, current, remote? }], vcsType }`; `switchChatBranch { chatId, branch, create? }` switches the chat workspace and returns `{ branch }` or a one-line error.
+- **Repository Routing Matches:** serialize `settings.executionRouting.repositoryMatching: true`; `listRepositoryMatches {}` returns per-folder repository identity (Git remote or SVN root) and per-host matched remote directories with `source: 'automatic' | 'manual'`; routing saves accept `useAutomaticMatch: true` on a mapping entry to clear a manual override.
 
 ## Historical alpha82 commit inventory
 
