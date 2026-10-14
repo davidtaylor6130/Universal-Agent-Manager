@@ -373,26 +373,49 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		const std::size_t expected_count = chat->persisted_message_count;
 		const std::string expected_digest = chat->persisted_messages_digest;
 		const ChatSession expected = *chat;
+		const uam::AcpSessionState* runtime = uam::FindAcpSessionForChat(m_app, chat_id);
+		const bool recover_cold_unsent = !chat->imported_read_only && chat->native_session_id.empty() &&
+		    (runtime == nullptr || (!runtime->running && !runtime->processing));
 		const std::weak_ptr<void> lifetime = m_asyncLifetime;
 		auto indexed = std::make_shared<std::optional<ChatMessagePage>>();
 		auto loaded = std::make_shared<std::optional<ChatSession>>();
 		auto tail = std::make_shared<std::shared_ptr<PreparedChatSave>>();
 		auto cached_revision = std::make_shared<std::optional<std::string>>();
+		auto unsent_revision = std::make_shared<std::optional<std::string>>();
+		auto hydrate_unsent = std::make_shared<bool>(false);
 		// Opening history must not queue behind background VCS subprocess checks.
 		uam::query_handler_async::RunAsyncCefQuery(
 		    m_asyncLifetime, cb,
-		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded, tail, cached_revision, expected_count, expected_digest, expected, indexed, lifetime]()
+		    [data_root, chat_id, known_digest, page, defer_tool_call_content, search_target, loaded, tail, cached_revision, expected_count, expected_digest, expected, indexed, lifetime, recover_cold_unsent, hydrate_unsent, unsent_revision]()
 		    {
 			    if (page && !page->second && page->first <= 50 && defer_tool_call_content && !search_target)
 			    {
 				    *cached_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
-				    const std::optional<nlohmann::json> cached = uam::MessageTailCache::Read(data_root, chat_id, expected_count, expected_digest, page->first, known_digest, &expected);
+				    const std::optional<nlohmann::json> cached = uam::MessageTailCache::Read(data_root, chat_id, expected_count, expected_digest, page->first,
+				        recover_cold_unsent ? std::string_view{} : std::string_view(known_digest), &expected);
 				    if (cached && *cached_revision == ChatRepository::ChatStorageRevision(data_root, chat_id))
-					    return uam::query_handler_async::AsyncSuccess(*cached);
+				    {
+					    const nlohmann::json* rows = uam::nlohmann_json::FindArrayField(*cached, "messages");
+					    *hydrate_unsent = recover_cold_unsent && rows && std::ranges::any_of(*rows, [](const nlohmann::json& row)
+					    {
+						    const auto flag = row.find("acpPromptNotSent");
+						    return flag != row.end() && flag->is_boolean() && flag->get<bool>();
+					    });
+					    if (!*hydrate_unsent)
+					    {
+						    nlohmann::json body = *cached;
+						    if (!known_digest.empty() && body.value("messagesDigest", "") == known_digest)
+						    {
+							    body["unchanged"] = true;
+							    body.erase("messages");
+						    }
+						    return uam::query_handler_async::AsyncSuccess(std::move(body));
+					    }
+				    }
 				    cached_revision->reset();
 			    }
 			    std::string warning;
-			    if (page)
+			    if (page && !*hydrate_unsent)
 			    {
 				    *indexed = ChatRepository::ReadMessagePage(data_root, expected, page->first, page->second, &warning, [lifetime]() { return lifetime.expired(); });
 				    if (!*indexed) return uam::query_handler_async::AsyncFailure(500,
@@ -403,18 +426,26 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 				    if (search_target && (search_target->second < (*indexed)->start_index ||
 				        search_target->second >= (*indexed)->start_index + (*indexed)->chat.messages.size()))
 					    return uam::query_handler_async::AsyncFailure(400, "The requested page does not contain the selected search message.");
-				    return uam::query_handler_async::AsyncSuccess(uam::StateSerializer::SerializeDetachedMessagePage(
-				        **indexed, defer_tool_call_content, known_digest, !page->second));
+				    *hydrate_unsent = recover_cold_unsent && std::ranges::any_of((*indexed)->chat.messages,
+				        [](const Message& row) { return row.acp_prompt_not_sent; });
+				    if (!*hydrate_unsent)
+					    return uam::query_handler_async::AsyncSuccess(uam::StateSerializer::SerializeDetachedMessagePage(
+					        **indexed, defer_tool_call_content, known_digest, !page->second));
+				    indexed->reset();
 			    }
+			    // Failed first-turn drafts need full native certainty; ordinary cached pages remain detached.
+			    if (*hydrate_unsent) *unsent_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
 			    *loaded = ChatRepository::LoadLocalChat(data_root, chat_id, true, &warning);
 			    if (!loaded->has_value())
 				    return uam::query_handler_async::AsyncFailure(500,
 				        uam::query_handler_internal::FailureDetailOrFallback(warning, "Failed to load chat messages."));
+			    if (*hydrate_unsent && *unsent_revision != ChatRepository::ChatStorageRevision(data_root, chat_id))
+				    return uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 			    *tail = uam::MessageTailCache::Prepare(data_root, **loaded);
 			    return SerializeGuardedChatMessagesResult(**loaded, known_digest, page, defer_tool_call_content, search_target);
 		    },
 		    [this, chat_id, known_digest, page, defer_tool_call_content, search_target, expected_count,
-		     expected_digest, loaded, tail, cached_revision, data_root, indexed, expected](uam::query_handler_async::AsyncCefResult& response)
+		     expected_digest, loaded, tail, cached_revision, data_root, indexed, expected, hydrate_unsent, unsent_revision, recover_cold_unsent](uam::query_handler_async::AsyncCefResult& response)
 		    {
 			    bool publish_tail = false;
 			    const std::function<void()> complete = [&]()
@@ -449,8 +480,15 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 						    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 					    return;
 				    }
+				    if (*hydrate_unsent && (m_app.pending_chat_save_at_by_chat_id.contains(chat_id) ||
+				        m_app.worktree_operation_chat_ids.contains(chat_id) ||
+				        *unsent_revision != ChatRepository::ChatStorageRevision(data_root, chat_id)))
+				    {
+					    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
+					    return;
+				    }
 				    if (!uam::TranscriptRetentionService::CompleteHistoryLoad(
-				            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value()))
+				            *current, std::move(**loaded), expected_count, expected_digest, !page.has_value() || *hydrate_unsent))
 					    response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading. Retry to refresh it.");
 				    else if (!m_app.pending_chat_save_at_by_chat_id.contains(chat_id) && !m_app.worktree_operation_chat_ids.contains(chat_id))
 					    publish_tail = true;
@@ -468,7 +506,19 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 					    return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
 				    });
 			    };
-			    try { complete(); }
+			    try
+			    {
+				    complete();
+				    const ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+				    if (response.ok && recover_cold_unsent && current && current->messages_loaded)
+				    {
+					    nlohmann::json body = nlohmann::json::parse(response.body);
+					    body["unsentMessageIndices"] = uam::KnownUnsentAcpMessageIndices(m_app, *current);
+					    body["recoverableUnsentMessageIndices"] = uam::RecoverableUnsentAcpMessageIndices(m_app, *current);
+					    body["totalCount"] = current->messages.size();
+					    response.body = body.dump();
+				    }
+			    }
 			    catch (...) { dispose(); throw; }
 			    dispose();
 		    }, TID_FILE_USER_BLOCKING);

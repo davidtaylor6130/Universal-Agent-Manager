@@ -11,6 +11,7 @@
 #include "app/provider_configuration_service.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
 #include "app/agent_definition_service.h"
@@ -186,33 +187,43 @@ std::string PromptDeliveryConfiguration(const AppState& app, const AcpSessionSta
 
 namespace
 {
-	bool OwnsPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
-	    const PendingAcpPromptDelivery& packet)
+	/// <summary>Names revoked ownership without logging authored input or configuration values.</summary>
+	std::string_view PromptAdmissionOwnershipMismatch(const AppState& app, const AcpSessionState& session,
+	    const ChatSession& chat, const PendingAcpPromptDelivery& packet)
 	{
-		const bool remote = packet.remote_host.has_value();
-		const ExecutionHost* host = remote ? execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id) : nullptr;
-		const bool remote_owned = !remote || (host != nullptr && execution_hosts::SameConnection(*host, *packet.remote_host) &&
-		    host->runner_protocol_version == packet.proxy_protocol && session.remote_runner_protocol_version == packet.proxy_protocol &&
-		    session.remote_output_delivery_token == packet.proxy_token && session.process_execution_host_id == host->id &&
-		    session.prompt_request_id == 0 && chat.remote_turn_reconnect_pending && chat.remote_prompt_delivery_session_id == packet.delivery_session_id &&
-		    chat.remote_prompt_delivery_id == packet.delivery_id && chat.remote_prompt_delivery_payload == packet.delivery_payload &&
-		    std::ranges::any_of(chat.remote_pending_requests, [&packet](const AcpRemotePendingRequestState& request)
-		    { return request.request_id == packet.request_id && request.turn_serial == packet.turn_serial && request.method == packet.method && !request.response_consumed; }));
-		return packet.turn_serial == session.turn_serial && packet.prompt == session.queued_prompt &&
-		    session.processing && !session.cancel_requested && packet.data_root == app.data_root &&
-		    packet.created_at == chat.created_at && packet.provider_id == session.provider_id &&
-		    packet.provider_id == chat.provider_id && packet.session_id == session.session_id &&
-		    packet.process_id == AcpProcessHandleLabel(session) && packet.workspace == chat.workspace_directory &&
-		    (remote ? remote_owned : chat.execution_host_id == execution_hosts::kLocalHostId) &&
-		    packet.native_session_id == chat.native_session_id && packet.active_goal_id == chat.active_goal_id &&
-		    packet.goal_revision == chat.goal_command_revision && packet.small_model_mode == chat.small_model_mode &&
-		    packet.configuration == PromptDeliveryConfiguration(app, session, chat) &&
-		    provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id) &&
-		    std::ranges::all_of(packet.user_messages, [&chat](const std::pair<std::size_t, std::string>& user)
+		if (packet.turn_serial != session.turn_serial || packet.prompt != session.queued_prompt ||
+		    !session.processing || session.cancel_requested) return "turn";
+		if (packet.data_root != app.data_root || packet.created_at != chat.created_at) return "chat";
+		if (packet.provider_id != session.provider_id || packet.provider_id != chat.provider_id) return "provider";
+		if (packet.session_id != session.session_id || packet.native_session_id != chat.native_session_id) return "native_session";
+		if (packet.process_id != AcpProcessHandleLabel(session)) return "process";
+		if (packet.workspace != chat.workspace_directory) return "workspace";
+		if (packet.active_goal_id != chat.active_goal_id || packet.goal_revision != chat.goal_command_revision ||
+		    packet.small_model_mode != chat.small_model_mode) return "goal";
+		if (packet.configuration != PromptDeliveryConfiguration(app, session, chat)) return "configuration";
+		if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return "provider_disabled";
+		if (!std::ranges::all_of(packet.user_messages, [&chat](const std::pair<std::size_t, std::string>& user)
 		    {
 			    return user.first < chat.messages.size() && chat.messages[user.first].role == MessageRole::User &&
 			        chat.messages[user.first].content == user.second && !chat.messages[user.first].acp_prompt_not_sent;
-		    });
+		    })) return "authored_input";
+		if (!packet.remote_host) return chat.execution_host_id == execution_hosts::kLocalHostId ? "" : "execution_host";
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		if (host == nullptr || !execution_hosts::SameConnection(*host, *packet.remote_host) ||
+		    host->runner_protocol_version != packet.proxy_protocol || session.remote_runner_protocol_version != packet.proxy_protocol ||
+		    session.remote_output_delivery_token != packet.proxy_token || session.process_execution_host_id != host->id) return "remote_connection";
+		if (session.prompt_request_id != 0 || !chat.remote_turn_reconnect_pending ||
+		    chat.remote_prompt_delivery_session_id != packet.delivery_session_id || chat.remote_prompt_delivery_id != packet.delivery_id ||
+		    chat.remote_prompt_delivery_payload != packet.delivery_payload) return "remote_delivery";
+		if (!std::ranges::any_of(chat.remote_pending_requests, [&packet](const AcpRemotePendingRequestState& request)
+		    { return request.request_id == packet.request_id && request.turn_serial == packet.turn_serial && request.method == packet.method && !request.response_consumed; })) return "remote_request";
+		return "";
+	}
+
+	bool OwnsPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat,
+	    const PendingAcpPromptDelivery& packet)
+	{
+		return PromptAdmissionOwnershipMismatch(app, session, chat, packet).empty();
 	}
 
 	bool ConfigureRemoteUamControlRelay(AppState& app, AcpSessionState& session,
@@ -666,6 +677,11 @@ void RetireRemoteAcpRequests(AppState& app, AcpSessionState& session, ChatSessio
 	for (AcpRemotePendingRequestState& request : chat.remote_pending_requests)
 	{
 		if (request.response_consumed || session.pending_request_methods.contains(request.request_id)) continue;
+		// Setup responses may stage the next prompt before its receipt registers the wire request.
+		const std::shared_ptr<PendingAcpPromptDelivery>& staged = session.pending_prompt_delivery;
+		if (staged && staged->remote_host && staged->admission != DurableAdmissionState::Failed &&
+		    staged->request_id == request.request_id && staged->turn_serial == request.turn_serial &&
+		    staged->method == request.method && OwnsPromptAdmission(app, session, chat, *staged)) continue;
 		request.response_consumed = true;
 		request.payload.clear();
 		changed = true;
@@ -1567,28 +1583,32 @@ bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat)
 	return true;
 }
 
-bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat)
+bool SendStartupModelIfNeeded(AcpSessionState& session, ChatSession& chat)
 {
 	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).IsGenericAcpSession() || !session.running || !session.session_ready || session.startup_model_request_id != 0 || session.reasoning_change_request_id != 0 || session.config_option_change_request_id != 0 || session.model_change_request_id != 0 || session.awaiting_model_config_options || session.session_id.empty())
 	{
 		return false;
 	}
 
-	const std::string model_id = uam::strings::Trim(
+	const std::string requested_model = uam::strings::Trim(
 	    uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, chat.model_id));
+	std::string model_error;
+	const std::optional<std::string> resolved_model = uam::acp_models::ResolveAdvertisedModelId(session, requested_model, model_error);
+	if (!resolved_model)
+	{
+		FailAcpTurnOrSession(session, &chat, model_error);
+		return true;
+	}
+	const std::string& model_id = *resolved_model;
+	if (model_id != requested_model)
+	{
+		if (!session.goal_turn_model_id.empty()) session.goal_turn_model_id = model_id;
+		if (session.goal_turn_kind.empty() && !session.goal_review_turn && uam::strings::Trim(chat.model_id) == requested_model) chat.model_id = model_id;
+	}
 	if (model_id.empty() || session.current_model_id == model_id)
 	{
 		ClearAcpStartupModelRequest(session);
 		return false;
-	}
-	const auto model_option = std::ranges::find_if(session.available_config_options, [](const AcpConfigOptionState& option) {
-		return option.category == "model" || option.id == "model";
-	});
-	if (model_option != session.available_config_options.end() &&
-	    std::ranges::none_of(model_option->choices, [&](const AcpConfigOptionChoiceState& choice) { return choice.value == model_id; }))
-	{
-		FailAcpTurnOrSession(session, nullptr, "The provider no longer offers the saved model '" + model_id + "'. Refresh models in Settings or restart UAM, then select an available model before retrying.");
-		return true;
 	}
 
 	const int id = NextAcpRequestId(session, uam::acp_methods::kSessionSetModel);
@@ -1842,6 +1862,13 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 
 	// The delivery-intent save already persists local state unless delivery changes metadata.
 	bool local_delivery_save_needed = unsent_messages.empty();
+	for (const std::size_t index : unsent_messages)
+	{
+		if (index >= chat.messages.size() || !chat.messages[index].interrupted) continue;
+		chat.messages[index].interrupted = false;
+		local_delivery_save_needed = true;
+		if (remote) ScheduleChatSave(app, chat, 0.0);
+	}
 	if (session.active_uam_agent_execution_capability == "uam-prompt-injected" &&
 	    !session.active_uam_agent_instructions.empty())
 	{
@@ -1907,6 +1934,10 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		const bool remote = session.pending_prompt_delivery->remote_host.has_value();
 		const bool same_turn = session.pending_prompt_delivery->turn_serial == session.turn_serial &&
 		    session.pending_prompt_delivery->prompt == session.queued_prompt;
+		AppendAcpDiagnostic(session, "persistence", "prompt_admission_rejected", "", "", false, 0, "",
+		    "ownership=" + uam::strings::NonEmptyOrFallback(std::string(PromptAdmissionOwnershipMismatch(app, session, chat, *session.pending_prompt_delivery)), "unchanged") +
+		    "; receipt=" + (session.pending_prompt_delivery->admission == DurableAdmissionState::Failed ? "failed" :
+		        session.pending_prompt_delivery->admission == DurableAdmissionState::Committed ? "committed" : "pending"));
 		RestorePendingPromptDelivery(session, chat);
 		if (same_turn && remote)
 		{
@@ -2258,12 +2289,88 @@ void InterruptUnconfirmedAcpSteers(AppState& app, AcpSessionState& session, Chat
 	if (changed) (void)SaveChatQuietly(app, chat);
 }
 
+/// <summary>Only a definitively undelivered current tail may return to the editable outbox.</summary>
+static std::optional<std::deque<AcpQueuedUserPromptState>> FailedAuthoredPromptRecovery(
+    const AppState& app, const ChatSession& chat, const AcpSessionState& session)
+{
+	const int first = session.turn_first_user_message_index;
+	const int last = session.turn_user_message_index;
+	if (session.provider_id != chat.provider_id || session.lifecycle_state != kAcpLifecycleError || session.processing || session.prompt_request_id != 0 ||
+	    !session.queued_prompt.empty() || session.pending_prompt_delivery || session.pending_agent_input ||
+	    session.pending_local_launch || session.pending_local_session_receipt || session.reconnect_pending ||
+	    session.recovering_remote_turn || session.recovering_remote_process || session.remote_stop_pending ||
+	    session.remote_stop_unconfirmed || !session.pending_steer_requests.empty() ||
+	    !session.pending_request_methods.empty() || session.goal_internal_session ||
+	    !chat.messages_loaded || chat.imported_read_only || chat.acp_queue_storage_error ||
+	    chat.remote_process_exists || chat.remote_turn_reconnect_pending || chat.remote_restart_pending ||
+	    chat.remote_stop_cleanup_pending || chat.remote_source_exit_pending ||
+	    !chat.remote_active_turn_id.empty() || !chat.remote_prompt_delivery_session_id.empty() ||
+	    !chat.remote_prompt_delivery_id.empty() || !chat.remote_prompt_delivery_payload.empty() ||
+	    !chat.remote_pending_requests.empty() || !chat.remote_interaction_responses.empty() ||
+	    chat.acp_dispatched_queued_prompt_count != 0 || first < 0 || last < first ||
+	    last + 1 != static_cast<int>(chat.messages.size())) return std::nullopt;
+	if (std::ranges::any_of(app.chats, [&chat, first](const ChatSession& child)
+	    { return child.id != chat.id && (child.parent_chat_id == chat.id || child.branch_root_chat_id == chat.id) && child.branch_from_message_index >= first; }))
+		return std::nullopt;
+	if (chat.acp_queued_prompts.size() != session.queued_user_prompts.size() ||
+	    session.queued_user_prompts.size() + static_cast<std::size_t>(last - first + 1) > 32) return std::nullopt;
+	for (std::size_t index = 0; index < chat.acp_queued_prompts.size(); ++index)
+	{
+		const AcpQueuedUserPromptState& stored = chat.acp_queued_prompts[index];
+		const AcpQueuedUserPromptState& queued = session.queued_user_prompts[index];
+		if (stored.prepared_for_delivery || stored.existing_user_message_index >= first ||
+		    stored != queued ||
+		    !stored.claude_quota_continuation_id.empty()) return std::nullopt;
+	}
+	std::deque<AcpQueuedUserPromptState> recovered;
+	for (int index = first; index <= last; ++index)
+	{
+		const Message& row = chat.messages[static_cast<std::size_t>(index)];
+		if (row.role != MessageRole::User || !row.acp_prompt_not_sent ||
+		    !row.tool_calls.empty() || !row.thoughts.empty() || !row.plan_entries.empty() ||
+		    !row.plan_summary.empty() || !row.blocks.empty() ||
+		    (!row.provider.empty() && row.provider != chat.provider_id) ||
+		    row.markdown_store_files.size() != row.markdown_store_prompt_blocks.size()) return std::nullopt;
+		AcpQueuedUserPromptState queued;
+		queued.id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		if (queued.id.empty()) queued.id = uam::time::SteadyEpochNanosecondsTokenNow();
+		queued.text = row.content;
+		queued.attachments = row.attachments;
+		queued.markdown_store_files = row.markdown_store_files;
+		queued.markdown_store_prompt_blocks = row.markdown_store_prompt_blocks;
+		queued.priority_steer = row.priority_steer;
+		queued.uam_agent_id = session.active_uam_agent_id;
+		queued.uam_agent_definition_hash = session.active_uam_agent_definition_hash;
+		queued.uam_agent_definition_snapshot = session.active_uam_agent_definition_snapshot;
+		queued.uam_agent_instructions = session.active_uam_agent_instructions;
+		queued.uam_agent_skills = session.active_uam_agent_skills;
+		queued.uam_agent_delegates = session.active_uam_agent_delegates;
+		queued.uam_agent_workspace_access = session.active_uam_agent_workspace_access;
+		queued.uam_agent_execution_capability = session.active_uam_agent_execution_capability;
+		queued.goal_mode = !chat.active_goal_id.empty();
+		queued.goal_id = chat.active_goal_id;
+		queued.computer_use_mode = app.settings.computer_use_globally_enabled && chat.computer_use_enabled;
+		recovered.push_back(std::move(queued));
+	}
+	recovered.insert(recovered.end(), session.queued_user_prompts.begin(), session.queued_user_prompts.end());
+	return recovered;
+}
+
 bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 {
 	// Discovery sessions are temporary and must not reappear as chats on the next launch.
 	if (std::any_of(app.model_discovery_chats.begin(), app.model_discovery_chats.end(),
 	        [&chat](const ChatSession& discovery) { return discovery.id == chat.id; })) return true;
 	ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
+	const bool had_remote_delivery_authority = persisted &&
+	    (persisted->remote_turn_reconnect_pending || !persisted->remote_active_turn_id.empty() ||
+	     !persisted->remote_prompt_delivery_session_id.empty() || !persisted->remote_prompt_delivery_id.empty() ||
+	     !persisted->remote_prompt_delivery_payload.empty() || !persisted->remote_pending_requests.empty());
+	const AcpSessionState* original_session = persisted ? FindAcpSessionForChat(app, chat.id) : nullptr;
+	const bool preserve_remote_delivery_authority = had_remote_delivery_authority && original_session &&
+	    original_session->lifecycle_state == kAcpLifecycleError &&
+	    (!persisted->messages_loaded || std::ranges::any_of(persisted->messages, [](const Message& row)
+	    { return row.role == MessageRole::User && row.acp_prompt_not_sent; }));
 	if (persisted != nullptr)
 	{
 		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
@@ -2275,12 +2382,16 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 		{
 			persisted->remote_next_request_id = std::max(persisted->remote_next_request_id, active->next_request_id);
 			persisted->remote_turn_serial = std::max(persisted->remote_turn_serial, active->turn_serial);
-			persisted->remote_turn_user_message_index = uam::AcpSessionHasActiveTurn(*active)
-			    ? active->turn_user_message_index : -1;
-			persisted->remote_active_turn_id = ProviderRuntimeRegistry::ResolveById(active->provider_id).AcpTurnIdentity(*active);
+			// Only an explicit runtime settlement may clear an uncertain failed prompt's authority.
+			if (!preserve_remote_delivery_authority)
+			{
+				persisted->remote_turn_user_message_index = uam::AcpSessionHasActiveTurn(*active)
+				    ? active->turn_user_message_index : -1;
+				persisted->remote_active_turn_id = ProviderRuntimeRegistry::ResolveById(active->provider_id).AcpTurnIdentity(*active);
+			}
 		}
 	}
-	if (persisted != nullptr && persisted->remote_turn_reconnect_pending)
+	if (persisted != nullptr && persisted->remote_turn_reconnect_pending && !preserve_remote_delivery_authority)
 	{
 		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 		if (session == nullptr ||
@@ -2301,7 +2412,36 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat)
 	}
 	FinishPendingQueuedAdmissionSave(app, chat.id);
 	InvalidatePendingChatSave(app, chat.id);
+	AcpSessionState* active = persisted ? FindAcpSessionForChat(app, chat.id) : nullptr;
+	const std::optional<std::deque<AcpQueuedUserPromptState>> recovered = active && persisted && !had_remote_delivery_authority
+	    ? FailedAuthoredPromptRecovery(app, *persisted, *active) : std::nullopt;
+	std::optional<ChatSession> previous_chat;
+	std::deque<AcpQueuedUserPromptState> previous_queue;
+	const bool previous_held = active && active->queue_held;
+	if (recovered)
+	{
+		previous_chat = *persisted;
+		previous_queue = active->queued_user_prompts;
+		persisted->messages.resize(static_cast<std::size_t>(active->turn_first_user_message_index));
+		persisted->acp_queued_prompts.assign(recovered->begin(), recovered->end());
+		active->queued_user_prompts = *recovered;
+		active->queue_held = persisted->acp_queue_held = true;
+		persisted->remote_turn_user_message_index = -1;
+	}
 	const bool saved = ChatRepository::SaveChat(app.data_root, persisted == nullptr ? chat : *persisted);
+	if (recovered)
+	{
+		if (saved)
+		{
+			active->turn_first_user_message_index = active->turn_user_message_index = -1;
+		}
+		else
+		{
+			*persisted = std::move(*previous_chat);
+			active->queued_user_prompts = std::move(previous_queue);
+			active->queue_held = previous_held;
+		}
+	}
 	if (saved)
 	{
 		app.pending_chat_save_at_by_chat_id.erase(chat.id);
@@ -2603,8 +2743,8 @@ void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	if (chat != nullptr)
 	{
 		RestorePendingPromptDelivery(session, *chat);
-		// A failure before delivery retires the staged copy; the visible user message
-		// remains available for retry. Unconfirmed deliveries and later queued prompts stay intact.
+		// Retire prepared wire text; the durable save returns authored input to a held queue.
+		// Unconfirmed deliveries and later queued prompts stay intact.
 		if (session.prompt_request_id == 0 && !session.queued_prompt.empty() &&
 		    !chat->remote_turn_reconnect_pending && chat->remote_pending_requests.empty() &&
 		    chat->remote_prompt_delivery_id.empty() && chat->remote_prompt_delivery_payload.empty() &&

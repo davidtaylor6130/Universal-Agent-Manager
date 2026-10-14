@@ -310,7 +310,22 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       const activeFamilyChatId = state.activeSessionId !== sessionId && familySessionIds.includes(state.activeSessionId ?? '')
         ? state.activeSessionId
         : null
-      const preferredChatId = preferredFamilyChat(branchRootId, familySessionIds) ?? activeFamilyChatId
+      const rememberedChatId = preferredFamilyChat(branchRootId, familySessionIds)
+      let preferredChatId = rememberedChatId ?? activeFamilyChatId
+      if (activityLayout) {
+        const familyActivity = familySessionIds.map((id) => ({ id, status: displayedChatStatus(
+          [state.cliBindingBySessionId[id]], [state.acpBindingBySessionId[id]]
+        ) }))
+        const status = familyActivity.find((candidate) => candidate.status?.type === 'attention')?.status ??
+          familyActivity.find((candidate) => candidate.status?.type === 'processing')?.status
+        if (status) {
+          const matchingIds = familyActivity.filter((candidate) => candidate.status?.type === status.type &&
+            (status.type !== 'attention' || (candidate.status.type === 'attention' && candidate.status.kind === status.kind)) &&
+            sessions.some((chat) => chat.id === candidate.id)).map((candidate) => candidate.id)
+          // Open the branch supplying the family status without moving a conversation while it is being read.
+          preferredChatId = [state.activeSessionId, rememberedChatId, ...matchingIds].find((id) => id && matchingIds.includes(id)) ?? preferredChatId
+        }
+      }
       const preferredChat = preferredChatId ? sessions.find((candidate) => candidate.id === preferredChatId) : undefined
       let deepestChat: Session | undefined = preferredChat
       if (!deepestChat) {

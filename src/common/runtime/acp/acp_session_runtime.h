@@ -35,6 +35,10 @@ bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_
 bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id, const std::string& blocked_reason);
 bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app);
 bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+/// <summary>Raw authored indices excluded from delivered history only when their own interval has no output.</summary>
+std::vector<int> KnownUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
+/// <summary>Latest legacy draft authorized for explicit fresh-session retry without replaying any earlier draft.</summary>
+std::vector<int> RecoverableUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
 bool RetryFailedAcpMessage(AppState& app, const std::string& chat_id, int message_index, std::string* error_out = nullptr);
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSession& chat);

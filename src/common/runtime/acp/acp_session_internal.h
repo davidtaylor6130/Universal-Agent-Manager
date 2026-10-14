@@ -314,7 +314,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpResponseFailureDetails& details);
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
-bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat);
+bool SendStartupModelIfNeeded(AcpSessionState& session, ChatSession& chat);
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Confirmed remote v3 admission retains legacy and quota compatibility barriers.</summary>
 bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);

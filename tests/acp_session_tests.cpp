@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "app/transcript_retention_service.h"
 #include "common/chat/native_chat_identity.h"
 #include "app/agent_definition_service.h"
 #include "app/memory_service.h"
@@ -1317,6 +1318,169 @@ UAM_TEST(FailedTextOnlyTurnPersistsAsInterrupted)
 	UAM_ASSERT(reloaded->messages.back().interrupted);
 }
 
+UAM_TEST(AcpFailedUnsentPromptSaveMovesAuthoredTailToHeldEditableQueue)
+{
+	for (const std::string& provider : {"opencode-cli", "codex-cli"})
+	{
+		TempDir temp("uam-unsent-authored-tail");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "unsent-authored-tail";
+		chat.provider_id = provider;
+		chat.execution_host_id = "ssh-test";
+		chat.messages = {
+		    {.role = MessageRole::User, .content = "Delivered earlier."},
+		    {.role = MessageRole::Assistant, .content = "Earlier response."},
+		    {.role = MessageRole::User, .content = "Original first attempt.", .acp_prompt_not_sent = true},
+		    {.role = MessageRole::User, .content = "Retry without losing attachments.", .acp_prompt_not_sent = true}};
+		chat.messages.back().markdown_store_files = {"skill.md"};
+		chat.messages.back().markdown_store_prompt_blocks = {"Captured skill instructions."};
+		chat.messages.back().attachments.push_back({.id = "attachment", .path = "retained.png"});
+		chat.acp_queued_prompts.push_back({.text = "Later queued prompt.", .id = "later"});
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = provider;
+		owned->processing = true;
+		owned->queued_prompt = chat.messages.back().content;
+		owned->turn_first_user_message_index = 2;
+		owned->turn_user_message_index = 3;
+		owned->active_uam_agent_id = "read-only";
+		owned->active_uam_agent_definition_hash = "agent-hash";
+		owned->active_uam_agent_definition_snapshot = "agent-snapshot";
+		owned->active_uam_agent_instructions = "Inspect without writes.";
+		owned->active_uam_agent_workspace_access = "read";
+		owned->queued_user_prompts.push_back(chat.acp_queued_prompts.front());
+		uam::AcpSessionState* session = owned.get();
+		app.acp_sessions.push_back(std::move(owned));
+		uam::acp_detail::FailAcpTurnOrSession(*session, &app.chats.front(), "Provider failed before delivery.");
+		UAM_ASSERT(uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+		UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{3});
+		UAM_ASSERT(session->queue_held && app.chats.front().acp_queue_held);
+		UAM_ASSERT_EQ(session->queued_user_prompts[0].text, std::string("Original first attempt."));
+		const uam::AcpQueuedUserPromptState& restored = session->queued_user_prompts[1];
+		UAM_ASSERT_EQ(restored.text, chat.messages.back().content);
+		UAM_ASSERT_EQ(restored.attachments, chat.messages.back().attachments);
+		UAM_ASSERT_EQ(restored.markdown_store_prompt_blocks, chat.messages.back().markdown_store_prompt_blocks);
+		UAM_ASSERT_EQ(restored.uam_agent_definition_snapshot, std::string("agent-snapshot"));
+		UAM_ASSERT_EQ(restored.uam_agent_workspace_access, std::string("read"));
+		UAM_ASSERT(restored.append_user_message && !restored.prepared_for_delivery && !restored.id.empty());
+		UAM_ASSERT(restored.revision >= 1 && restored.existing_user_message_index == -1);
+		UAM_ASSERT_EQ(session->queued_user_prompts.back().id, std::string("later"));
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->messages.size(), std::size_t{2});
+		UAM_ASSERT(saved->acp_queue_held);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{3});
+		UAM_ASSERT_EQ(saved->acp_queued_prompts[1].attachments, restored.attachments);
+		UAM_ASSERT(saved->acp_queued_prompts[1].revision >= 1 && saved->acp_queued_prompts[1].append_user_message);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts[1].existing_user_message_index, -1);
+		const std::string recovered_id = restored.id;
+		std::string edit_error;
+		UAM_ASSERT(uam::EditQueuedAcpPrompt(app, chat.id, recovered_id, 1,
+		    "Edit the unsent prompt before retrying.", &edit_error));
+		UAM_ASSERT(app.chats.front().messages.size() == 2 && session->queue_held);
+		UAM_ASSERT_EQ(session->queued_user_prompts[1].text, std::string("Edit the unsent prompt before retrying."));
+		UAM_ASSERT_EQ(session->queued_user_prompts[1].revision, 2);
+		UAM_ASSERT_EQ(session->queued_user_prompts[1].attachments, chat.messages.back().attachments);
+		UAM_ASSERT_EQ(session->queued_user_prompts[1].uam_agent_workspace_access, std::string("read"));
+	}
+}
+
+UAM_TEST(AcpFailedUnsentPromptSaveRollbackKeepsBothDurableIntents)
+{
+	TempDir temp("uam-unsent-transfer-save-failure");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "unsent-transfer-save-failure";
+	chat.provider_id = "opencode-cli";
+	chat.execution_host_id = "ssh-test";
+	chat.messages.push_back({.role = MessageRole::User, .content = "Keep this original prompt.", .interrupted = true, .acp_prompt_not_sent = true});
+	chat.acp_queued_prompts.push_back({.text = "Keep this later queued prompt.", .id = "later"});
+	app.chats.push_back(chat);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = chat.provider_id;
+	owned->lifecycle_state = "error";
+	owned->turn_first_user_message_index = 0;
+	owned->turn_user_message_index = 0;
+	owned->queued_user_prompts.push_back(chat.acp_queued_prompts.front());
+	uam::AcpSessionState* session = owned.get();
+	app.acp_sessions.push_back(std::move(owned));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, app.chats.front()));
+	const fs::path blocked = temp.root / "blocked-root";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked, "file blocks the data root"));
+	app.data_root = blocked;
+	UAM_ASSERT(!uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.chats.front().messages.front().content, chat.messages.front().content);
+	UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.front().id, std::string("later"));
+	UAM_ASSERT(!session->queue_held && !app.chats.front().acp_queue_held);
+	app.data_root = temp.root;
+	UAM_ASSERT(uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+	UAM_ASSERT(app.chats.front().messages.empty());
+	UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{2});
+}
+
+UAM_TEST(AcpFailedUnsentPromptSavePreservesUncertainOutputAndBranchHistory)
+{
+	for (const std::string& guard : {"delivery", "pending-request", "partial-output", "branch", "other-provider", "live-prompt", "active-turn", "delivery-session", "provider-owner", "user-output", "reconnect"})
+	{
+		TempDir temp("uam-unsent-transfer-authority-guard");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "unsent-transfer-authority-guard";
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = "ssh-test";
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retain existing history.", .interrupted = true, .acp_prompt_not_sent = true});
+		if (guard == "delivery") chat.remote_prompt_delivery_id = "possible-delivery";
+		if (guard == "active-turn") chat.remote_active_turn_id = "accepted-provider-turn";
+		if (guard == "delivery-session") chat.remote_prompt_delivery_session_id = "possible-delivery-session";
+		if (guard == "reconnect") chat.remote_turn_reconnect_pending = true;
+		if (guard == "pending-request") chat.remote_pending_requests.push_back({.request_id = 3, .method = "session/prompt"});
+		if (guard == "partial-output") chat.messages.push_back({.role = MessageRole::Assistant, .content = "Provider already responded."});
+		if (guard == "other-provider") chat.messages.front().provider = "codex-cli";
+		if (guard == "user-output") chat.messages.front().tool_calls.push_back({.id = "response", .status = "completed"});
+		app.chats.push_back(chat);
+		if (guard == "branch")
+		{
+			ChatSession branch;
+			branch.id = "child-branch";
+			branch.parent_chat_id = chat.id;
+			branch.branch_from_message_index = 0;
+			app.chats.push_back(branch);
+		}
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->lifecycle_state = "error";
+		owned->turn_first_user_message_index = 0;
+		owned->turn_user_message_index = 0;
+		if (guard == "live-prompt") owned->prompt_request_id = 2;
+		if (guard == "provider-owner") owned->provider_id = "codex-cli";
+		uam::AcpSessionState* session = owned.get();
+		app.acp_sessions.push_back(std::move(owned));
+		UAM_ASSERT(uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), chat.messages.size());
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, chat.messages.front().content);
+		UAM_ASSERT(session->queued_user_prompts.empty());
+		UAM_ASSERT(app.chats.front().acp_queued_prompts.empty());
+		UAM_ASSERT(uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), chat.messages.size());
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->messages.size(), chat.messages.size());
+		UAM_ASSERT_EQ(saved->remote_active_turn_id, chat.remote_active_turn_id);
+		UAM_ASSERT_EQ(saved->remote_turn_reconnect_pending, chat.remote_turn_reconnect_pending);
+		UAM_ASSERT(saved->acp_queued_prompts.empty());
+	}
+}
+
 UAM_TEST(AcpFailedUnsentRemotePromptRetiresOnlyItsPreparedOutboxEntry)
 {
 	for (const bool delivery_pending : {false, true})
@@ -1454,6 +1618,8 @@ UAM_TEST(AcpRetryFailedPromptAcceptsWhitespaceOnlyAssistantMetadata)
 		ChatSession chat;
 		chat.id = "retry-whitespace-metadata";
 		chat.provider_id = uam::provider_ids::kGeminiCli;
+		chat.native_session_id = "original-native-requires-reconnect";
+				chat.remote_process_exists = true;
 		chat.messages_loaded = true;
 		chat.messages.push_back({.role = MessageRole::User, .content = "Retry original prompt.",
 		                         .interrupted = true, .acp_prompt_not_sent = true});
@@ -1487,6 +1653,8 @@ UAM_TEST(AcpRetryFailedPromptMatchesJavascriptWhitespace)
 				ChatSession chat;
 				chat.id = "retry-unicode-whitespace";
 				chat.provider_id = uam::provider_ids::kGeminiCli;
+				chat.native_session_id = "original-native-requires-reconnect";
+				chat.remote_process_exists = true;
 				chat.messages_loaded = true;
 				chat.messages.push_back({.role = MessageRole::User, .content = "Retry original prompt.", .acp_prompt_not_sent = true});
 				Message placeholder;
@@ -1533,6 +1701,723 @@ UAM_TEST(AcpRetryFailedPromptRejectsAssistantOutputAfterFailedUser)
 		std::string error;
 		UAM_ASSERT(!uam::RetryFailedAcpMessage(app, app.chats.front().id, 0, &error));
 		UAM_ASSERT(error.find("no longer the latest") != std::string::npos);
+	}
+}
+
+namespace
+{
+	struct RejectedPreparedPrefixFixture
+	{
+		TempDir temp{"uam-rejected-held-prefix"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+		RejectedPreparedPrefixFixture()
+		{
+			app.data_root = temp.root / "data";
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			ChatSession chat;
+			chat.id = "chat-rejected-held-prefix";
+			chat.provider_id = "codex-cli";
+			chat.native_session_id = "01a13bf6-87d5-7691-889f-79a8bf5a7b25";
+			chat.execution_host_id = "private-host";
+			chat.uam_agent_id = "plan";
+			chat.created_at = chat.updated_at = "2026-10-14T20:17:11.000Z";
+			chat.remote_process_exists = true;
+			for (int index = 0; index < 23; ++index)
+				chat.messages.push_back({.role = index % 2 ? MessageRole::Assistant : MessageRole::User, .content = "Delivered history " + std::to_string(index)});
+			chat.messages.push_back({.role = MessageRole::User, .content = "Original authored request.", .created_at = "2026-10-14T20:17:08.000Z", .interrupted = true, .acp_prompt_not_sent = true});
+			chat.messages.back().markdown_store_files = {"original-skill.md"};
+			chat.messages.back().markdown_store_prompt_blocks = {"Original skill snapshot."};
+			chat.messages.back().attachments.push_back({.id = "attachment", .kind = "file", .path = "C:\\private\\file.txt"});
+			uam::AcpQueuedUserPromptState head;
+			head.id = "legacy-prepared";
+			head.text = "Old injected agent context.\n\nOriginal authored request.\n\nOriginal skill snapshot.\n\nReferenced files:\n- C:\\private\\file.txt\n";
+			head.append_user_message = false;
+			head.prepared_for_delivery = true;
+			head.prepared_user_message_count = 1;
+			chat.acp_queued_prompts = {head, {.text = "Future captured input.", .uam_agent_workspace_access = "read", .id = "future"}};
+			chat.acp_dispatched_queued_prompt_count = 1;
+			chat.acp_queue_held = true;
+			ExecutionHost host;
+			host.id = "private-host";
+			host.runner_protocol_version = 3;
+			app.settings.execution_hosts.push_back(host);
+			app.chats.push_back(std::move(chat));
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+			owned->chat_id = app.chats.front().id;
+			owned->provider_id = app.chats.front().provider_id;
+			owned->session_id = owned->codex_thread_id = app.chats.front().native_session_id;
+			owned->process_execution_host_id = "private-host";
+			owned->remote_runner_protocol_version = 3;
+			owned->remote_output_delivery_token = "private-recovery-token";
+			std::string process_error;
+#if defined(_WIN32)
+			const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
+#else
+			const std::vector<std::string> sink = {"/bin/cat"};
+#endif
+			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*owned, temp.root, sink, &process_error));
+			owned->running = owned->session_ready = owned->queue_held = true;
+			owned->lifecycle_state = "error";
+			owned->queued_user_prompts.push_back(app.chats.front().acp_queued_prompts.back());
+			session = owned.get();
+			app.acp_sessions.push_back(std::move(owned));
+		}
+		void StageReferencedDraft()
+		{
+			ChatSession& chat = app.chats.front();
+			const Message& row = chat.messages.back();
+			uam::AcpQueuedUserPromptState fresh;
+			fresh.text = row.content;
+			fresh.id = "fresh-referenced";
+			fresh.uam_agent_id = "plan";
+			fresh.uam_agent_definition_hash = "captured-plan";
+			fresh.uam_agent_definition_snapshot = "captured read-only agent";
+			fresh.uam_agent_workspace_access = "read";
+			fresh.append_user_message = false;
+			fresh.existing_user_message_index = 23;
+			fresh.existing_user_message_created_at = row.created_at;
+			fresh.attachments = row.attachments;
+			fresh.markdown_store_files = row.markdown_store_files;
+			fresh.markdown_store_prompt_blocks = row.markdown_store_prompt_blocks;
+			session->queued_user_prompts.push_front(fresh);
+			chat.acp_queued_prompts.assign(session->queued_user_prompts.begin(), session->queued_user_prompts.end());
+			chat.acp_dispatched_queued_prompt_count = 0;
+			session->turn_first_user_message_index = session->turn_user_message_index = 23;
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		}
+		~RejectedPreparedPrefixFixture()
+		{
+			if (!session) return;
+			PlatformServicesFactory::Instance().process_service.StopStdioProcess(*session, true);
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*session);
+		}
+	};
+}
+
+UAM_TEST(AcpExplicitPreparedPrefixRetryStagesFreshShownAgentAndPreservesAuthoredIndices)
+{
+	RejectedPreparedPrefixFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	const std::vector<Message> original = chat.messages;
+	const uam::AcpQueuedUserPromptState future = chat.acp_queued_prompts.back();
+	UAM_ASSERT_EQ(uam::RecoverableUnsentAcpMessageIndices(fixture.app, chat), std::vector<int>({23}));
+	std::string error;
+	UAM_ASSERT(uam::RetryFailedAcpMessage(fixture.app, chat.id, 23, &error));
+	UAM_ASSERT_EQ(chat.messages, original);
+	UAM_ASSERT(chat.acp_queue_held && fixture.session->queue_held && !fixture.session->processing);
+	UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, std::size_t{0});
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{2});
+	const uam::AcpQueuedUserPromptState& fresh = chat.acp_queued_prompts.front();
+	UAM_ASSERT_EQ(fresh.text, original.back().content);
+	UAM_ASSERT_EQ(fresh.existing_user_message_index, 23);
+	UAM_ASSERT_EQ(fresh.existing_user_message_created_at, original.back().created_at);
+	UAM_ASSERT(!fresh.append_user_message && !fresh.prepared_for_delivery && fresh.revision == 1 && !fresh.id.empty());
+	UAM_ASSERT_EQ(fresh.uam_agent_id, std::string("plan"));
+	UAM_ASSERT_EQ(fresh.uam_agent_workspace_access, std::string("read"));
+	UAM_ASSERT(!fresh.uam_agent_definition_hash.empty() && !fresh.uam_agent_definition_snapshot.empty());
+	UAM_ASSERT_EQ(fresh.markdown_store_prompt_blocks, original.back().markdown_store_prompt_blocks);
+	UAM_ASSERT_EQ(fresh.attachments, original.back().attachments);
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.back(), future);
+	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front(), fresh);
+	const std::optional<ChatSession> restored = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+	UAM_ASSERT(restored && restored->messages == original && restored->acp_queued_prompts == chat.acp_queued_prompts);
+	UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(fixture.app, chat).empty());
+}
+
+UAM_TEST(AcpExplicitPreparedPrefixRetryRejectsUncertaintyAndRollsBackSaveFailure)
+{
+	for (const std::string mutation : {"read_only", "native", "delivery", "count", "body", "future", "output", "timestamp", "save_failure"})
+	{
+		RejectedPreparedPrefixFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		if (mutation == "read_only") chat.imported_read_only = true;
+		if (mutation == "native") fixture.session->session_id = "foreign-native-session";
+		if (mutation == "delivery") chat.remote_prompt_delivery_session_id = "unknown-delivery";
+		if (mutation == "count") chat.acp_queued_prompts.front().prepared_user_message_count = 2;
+		if (mutation == "body") chat.acp_queued_prompts.front().text = "A different request.";
+		if (mutation == "future") fixture.session->queued_user_prompts.front().uam_agent_workspace_access = "write";
+		if (mutation == "output") chat.messages.push_back({.role = MessageRole::Assistant, .content = "Actual provider output."});
+		if (mutation == "timestamp") chat.messages.back().created_at.clear();
+		const ChatSession before = chat;
+		const std::deque<uam::AcpQueuedUserPromptState> runtime_before = fixture.session->queued_user_prompts;
+		if (mutation == "save_failure")
+		{
+			const std::filesystem::path blocked = fixture.temp.root / "blocked";
+			UAM_ASSERT(uam::io::WriteTextFile(blocked, "blocks directory creation"));
+			fixture.app.data_root = blocked;
+		}
+		else UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(fixture.app, chat).empty());
+		std::string error;
+		UAM_ASSERT(!uam::RetryFailedAcpMessage(fixture.app, chat.id, 23, &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(chat.messages, before.messages);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts, before.acp_queued_prompts);
+		UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, before.acp_dispatched_queued_prompt_count);
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts, runtime_before);
+		UAM_ASSERT(fixture.session->queue_held && chat.acp_queue_held && !fixture.session->processing);
+	}
+}
+
+UAM_TEST(AcpRestartKeepsRejectedPreparedPrefixHeldWithoutReplayingOldAgent)
+{
+	RejectedPreparedPrefixFixture fixture;
+	const std::vector<Message> original = fixture.app.chats.front().messages;
+	uam::AppState restored;
+	restored.data_root = fixture.app.data_root;
+	restored.provider_profiles = fixture.app.provider_profiles;
+	restored.chats = ChatRepository::LoadLocalChatSummaries(restored.data_root);
+	UAM_ASSERT_EQ(uam::RestoreRemoteAcpSessionsAfterRestart(restored), std::size_t{1});
+	UAM_ASSERT(restored.chats.front().acp_queue_held);
+	UAM_ASSERT_EQ(restored.acp_sessions.size(), std::size_t{1});
+	UAM_ASSERT(restored.acp_sessions.front()->queue_held && !restored.acp_sessions.front()->processing);
+	UAM_ASSERT(restored.acp_sessions.front()->queued_prompt.empty());
+	UAM_ASSERT_EQ(restored.acp_sessions.front()->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(restored.chats.front().messages, original);
+	UAM_ASSERT_EQ(restored.chats.front().acp_dispatched_queued_prompt_count, std::size_t{1});
+}
+
+UAM_TEST(AcpReferencedHeldDraftEditUpdatesRawInputAndRollsBackAtomically)
+{
+	for (const std::string mutation : {"edit", "body", "output", "branch", "save_failure"})
+	{
+		RejectedPreparedPrefixFixture fixture;
+		fixture.StageReferencedDraft();
+		ChatSession& chat = fixture.app.chats.front();
+		if (mutation == "body") chat.messages.back().content = "Changed raw input.";
+		if (mutation == "output") chat.messages.push_back({.role = MessageRole::Assistant, .content = "Provider output."});
+		if (mutation == "branch") fixture.app.chats.push_back({.id = "dependent-branch", .parent_chat_id = chat.id, .branch_from_message_index = 23});
+		// Appending another chat may relocate the vector, so use the original stable ID again.
+		ChatSession& current = fixture.app.chats.front();
+		const ChatSession before = current;
+		const std::deque<uam::AcpQueuedUserPromptState> queue_before = fixture.session->queued_user_prompts;
+		if (mutation == "save_failure")
+		{
+			const std::filesystem::path blocked = fixture.temp.root / "blocked";
+			UAM_ASSERT(uam::io::WriteTextFile(blocked, "blocks save"));
+			fixture.app.data_root = blocked;
+		}
+		std::string error;
+		const bool edited = uam::EditQueuedAcpPrompt(fixture.app, current.id, "fresh-referenced", 1,
+		    "Edited raw input.", &error, std::vector<std::string>{});
+		UAM_ASSERT_EQ(edited, mutation == "edit");
+		if (edited)
+		{
+			UAM_ASSERT_EQ(current.messages.size(), std::size_t{24});
+			UAM_ASSERT_EQ(current.messages.back().content, std::string("Edited raw input."));
+			UAM_ASSERT(current.messages.back().attachments.empty() && current.messages.back().acp_prompt_not_sent && current.messages.back().interrupted);
+			UAM_ASSERT_EQ(current.acp_queued_prompts.front().revision, 2);
+			UAM_ASSERT_EQ(current.acp_queued_prompts.front().existing_user_message_index, 23);
+			UAM_ASSERT_EQ(current.acp_queued_prompts.front().uam_agent_definition_hash, before.acp_queued_prompts.front().uam_agent_definition_hash);
+			UAM_ASSERT_EQ(current.acp_queued_prompts.back(), before.acp_queued_prompts.back());
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, current.id);
+			UAM_ASSERT(saved && saved->messages == current.messages && saved->acp_queued_prompts == current.acp_queued_prompts);
+		}
+		else
+		{
+			UAM_ASSERT_EQ(current.messages, before.messages);
+			UAM_ASSERT_EQ(current.acp_queued_prompts, before.acp_queued_prompts);
+			UAM_ASSERT_EQ(fixture.session->queued_user_prompts, queue_before);
+		}
+	}
+}
+
+UAM_TEST(AcpReferencedHeldDraftRemovalAndClearPreserveOtherHistoryAndRollback)
+{
+	for (const std::string action : {"remove", "clear"})
+		for (const std::string mutation : {"success", "later", "branch", "save_failure"})
+		{
+			RejectedPreparedPrefixFixture fixture;
+			fixture.StageReferencedDraft();
+			ChatSession& chat = fixture.app.chats.front();
+			if (mutation == "later") chat.messages.push_back({.role = MessageRole::User, .content = "Unrelated later input.", .acp_prompt_not_sent = true});
+			if (mutation == "branch") fixture.app.chats.push_back({.id = "dependent-branch", .parent_chat_id = chat.id, .branch_from_message_index = 23});
+			ChatSession& current = fixture.app.chats.front();
+			const ChatSession before = current;
+			const std::deque<uam::AcpQueuedUserPromptState> queue_before = fixture.session->queued_user_prompts;
+			if (mutation == "save_failure")
+			{
+				const std::filesystem::path blocked = fixture.temp.root / "blocked";
+				UAM_ASSERT(uam::io::WriteTextFile(blocked, "blocks save"));
+				fixture.app.data_root = blocked;
+			}
+			std::string error;
+			const bool removed = action == "remove"
+			    ? uam::RemoveQueuedAcpPrompt(fixture.app, current.id, 0, &error, std::pair{std::string("fresh-referenced"), 1})
+			    : uam::CancelAcpTurn(fixture.app, current.id, &error, false, false);
+			UAM_ASSERT_EQ(removed, mutation == "success");
+			if (removed)
+			{
+				UAM_ASSERT_EQ(current.messages.size(), std::size_t{23});
+				UAM_ASSERT(std::equal(current.messages.begin(), current.messages.end(), before.messages.begin()));
+				UAM_ASSERT_EQ(current.acp_queued_prompts.size(), action == "remove" ? std::size_t{1} : std::size_t{0});
+				if (action == "remove") UAM_ASSERT_EQ(current.acp_queued_prompts.front(), before.acp_queued_prompts.back());
+				UAM_ASSERT_EQ(fixture.session->turn_user_message_index, -1);
+				const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, current.id);
+				UAM_ASSERT(saved && saved->messages == current.messages && saved->acp_queued_prompts == current.acp_queued_prompts);
+			}
+			else
+			{
+				UAM_ASSERT_EQ(current.messages, before.messages);
+				UAM_ASSERT_EQ(current.acp_queued_prompts, before.acp_queued_prompts);
+				UAM_ASSERT_EQ(fixture.session->queued_user_prompts, queue_before);
+				UAM_ASSERT_EQ(fixture.session->turn_user_message_index, 23);
+			}
+		}
+}
+
+UAM_TEST(AcpStoppedNativeRetryStagesOnlyExplicitFreshHeldIntent)
+{
+	for (const bool missing_runtime : {false, true})
+	{
+		RejectedPreparedPrefixFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(*fixture.session, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*fixture.session);
+		fixture.session->running = fixture.session->session_ready = fixture.session->queue_held = false;
+		fixture.session->queued_user_prompts.clear();
+		chat.remote_process_exists = chat.acp_queue_held = false;
+		chat.remote_process_control_token = "historical-confirmed-stopped-process";
+		chat.acp_queued_prompts.clear();
+		chat.acp_dispatched_queued_prompt_count = 0;
+		if (missing_runtime)
+		{
+			fixture.app.acp_sessions.clear();
+			fixture.session = nullptr;
+		}
+		const std::vector<Message> original = chat.messages;
+		chat.messages.back().created_at.clear();
+		UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(fixture.app, chat).empty());
+		chat.messages.back().created_at = original.back().created_at;
+		UAM_ASSERT_EQ(uam::RecoverableUnsentAcpMessageIndices(fixture.app, chat), std::vector<int>({23}));
+		std::string error;
+		UAM_ASSERT(uam::RetryFailedAcpMessage(fixture.app, chat.id, 23, &error));
+		const uam::AcpSessionState* holder = uam::FindAcpSessionForChat(fixture.app, chat.id);
+		UAM_ASSERT(holder && !holder->running && !holder->processing && !holder->reconnect_pending && holder->queue_held);
+		UAM_ASSERT_EQ(chat.messages, original);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.front().existing_user_message_index, 23);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.front().uam_agent_workspace_access, std::string("read"));
+		UAM_ASSERT(!chat.remote_turn_reconnect_pending && chat.remote_prompt_delivery_id.empty());
+	}
+}
+
+UAM_TEST(AcpStoppingReferencedHeldDraftRetainsOriginalInputAndSaveFailureRollsBack)
+{
+	for (const bool fail_save : {false, true})
+	{
+		RejectedPreparedPrefixFixture fixture;
+		fixture.StageReferencedDraft();
+		ChatSession& chat = fixture.app.chats.front();
+		const ChatSession before = chat;
+		const std::deque<uam::AcpQueuedUserPromptState> queue_before = fixture.session->queued_user_prompts;
+		if (fail_save)
+		{
+			const std::filesystem::path blocked = fixture.temp.root / "blocked";
+			UAM_ASSERT(uam::io::WriteTextFile(blocked, "blocks save"));
+			fixture.app.data_root = blocked;
+		}
+		const bool stopped = uam::StopAcpSession(fixture.app, chat.id);
+		if (fail_save) UAM_ASSERT(!stopped);
+		else UAM_ASSERT(stopped || fixture.session->remote_stop_pending);
+		if (fail_save)
+		{
+			UAM_ASSERT_EQ(chat.messages, before.messages);
+			UAM_ASSERT_EQ(chat.acp_queued_prompts, before.acp_queued_prompts);
+			UAM_ASSERT_EQ(fixture.session->queued_user_prompts, queue_before);
+			UAM_ASSERT(fixture.session->queue_held);
+		}
+		else
+		{
+			UAM_ASSERT_EQ(chat.messages.size(), std::size_t{25});
+			UAM_ASSERT(std::equal(before.messages.begin(), before.messages.end(), chat.messages.begin()));
+			UAM_ASSERT_EQ(chat.messages[23].content, std::string("Original authored request."));
+			UAM_ASSERT(chat.messages[23].interrupted && chat.messages[23].acp_prompt_not_sent);
+			UAM_ASSERT_EQ(chat.messages[24].content, std::string("Future captured input."));
+			UAM_ASSERT(chat.acp_queued_prompts.empty());
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+			UAM_ASSERT(saved && saved->messages == chat.messages && saved->acp_queued_prompts.empty());
+		}
+	}
+}
+
+UAM_TEST(AcpColdUnsentCacheRequiresRetainedNativeHistoryForAuthoritativeProjection)
+{
+	TempDir temp("uam-cold-unsent-cache-projection");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession original;
+	original.id = "chat-cold-unsent-cache-projection";
+	original.created_at = "2026-10-14T18:00:00.000Z";
+	original.updated_at = original.created_at;
+	original.provider_id = "opencode-cli";
+	original.execution_host_id = "ssh-test";
+	original.messages = {
+	    {.role = MessageRole::User, .content = "Older unsent input.", .interrupted = true, .acp_prompt_not_sent = true},
+	    {.role = MessageRole::User, .content = "Latest unsent input.", .interrupted = true, .acp_prompt_not_sent = true}};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, original));
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(uam::MessageTailCache::Prepare(temp.root, *loaded)));
+	std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+	UAM_ASSERT(summary.has_value() && !summary->messages_loaded && summary->messages.empty());
+	app.chats.push_back(*summary);
+	UAM_ASSERT(uam::KnownUnsentAcpMessageIndices(app, app.chats.front()).empty());
+	const std::optional<nlohmann::json> cache = uam::MessageTailCache::Read(temp.root, original.id,
+	    summary->persisted_message_count, summary->persisted_messages_digest, 50, {}, &*summary);
+	UAM_ASSERT(cache.has_value() && cache->at("messages").size() == 2);
+	const std::optional<nlohmann::json> unchanged = uam::MessageTailCache::Read(temp.root, original.id,
+	    summary->persisted_message_count, summary->persisted_messages_digest, 50, cache->at("messagesDigest").get<std::string>(), &*summary);
+	UAM_ASSERT(unchanged.has_value() && unchanged->value("unchanged", false));
+	UAM_ASSERT(!unchanged->contains("messages"));
+	UAM_ASSERT(cache->at("messages").at(0).at("acpPromptNotSent").get<bool>());
+	const std::optional<ChatMessagePage> indexed = ChatRepository::ReadMessagePage(temp.root, *summary, 50);
+	UAM_ASSERT(indexed.has_value() && indexed->chat.messages.size() == 2);
+	UAM_ASSERT(indexed->chat.messages.front().acp_prompt_not_sent);
+	const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(temp.root, original.id);
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value() && revision == ChatRepository::ChatStorageRevision(temp.root, original.id));
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(app.chats.front(), std::move(*loaded),
+	    summary->persisted_message_count, summary->persisted_messages_digest, true));
+	UAM_ASSERT(app.chats.front().messages_loaded && app.chats.front().messages.size() == 2);
+	UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, app.chats.front()), std::vector<int>({0, 1}));
+	UAM_ASSERT_EQ(uam::RecoverableUnsentAcpMessageIndices(app, app.chats.front()), std::vector<int>({1}));
+	const nlohmann::json state = uam::StateSerializer::Serialize(app);
+	UAM_ASSERT(state.at("chats").at(0).at("acpSession").at("unsentMessageIndices") == nlohmann::json::array({0, 1}));
+	UAM_ASSERT(state.at("chats").at(0).at("acpSession").at("recoverableUnsentMessageIndices") == nlohmann::json::array({1}));
+}
+
+UAM_TEST(AcpColdUnsentHistoryRejectsChangedIdentityAndOrdinaryPagesStayCold)
+{
+	for (const bool change_count : {false, true})
+	{
+		TempDir temp("uam-cold-unsent-stale-identity");
+		ChatSession original;
+		original.id = "cold-unsent-stale-identity";
+		original.provider_id = "opencode-cli";
+		original.messages.push_back({.role = MessageRole::User, .content = "Unsent input.", .acp_prompt_not_sent = true});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, original));
+		std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+		std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+		UAM_ASSERT(summary.has_value() && loaded.has_value());
+		const std::size_t count = summary->persisted_message_count;
+		const std::string digest = summary->persisted_messages_digest;
+		if (change_count) ++summary->persisted_message_count;
+		else summary->persisted_messages_digest = "newer-messages-digest";
+		UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), count, digest, true));
+		UAM_ASSERT(!summary->messages_loaded && summary->messages.empty());
+		uam::AppState app;
+		UAM_ASSERT(uam::KnownUnsentAcpMessageIndices(app, *summary).empty());
+		const std::optional<std::string> old_revision = ChatRepository::ChatStorageRevision(temp.root, original.id);
+		original.messages.front().content = "Changed unsent input.";
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, original));
+		UAM_ASSERT(old_revision != ChatRepository::ChatStorageRevision(temp.root, original.id));
+	}
+	TempDir temp("uam-ordinary-cold-page");
+	ChatSession ordinary;
+	ordinary.id = "ordinary-cold-page";
+	ordinary.messages = {{.role = MessageRole::User, .content = "Delivered input."}, {.role = MessageRole::Assistant, .content = "Actual reply."}};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, ordinary));
+	std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, ordinary.id, false);
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, ordinary.id, true);
+	UAM_ASSERT(summary.has_value() && loaded.has_value());
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded),
+	    summary->persisted_message_count, summary->persisted_messages_digest, false));
+	UAM_ASSERT(!summary->messages_loaded && summary->messages.empty());
+}
+
+UAM_TEST(AcpKnownUnsentProjectionPersistsAcrossLaterQueueAndDeliveredTurn)
+{
+	TempDir temp("uam-legacy-unsent-projection");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "legacy-unsent-projection";
+	chat.provider_id = "opencode-cli";
+	chat.messages = {
+	    {.role = MessageRole::User, .content = "Older failed draft.", .interrupted = true, .acp_prompt_not_sent = true},
+	    {.role = MessageRole::User, .content = "Latest failed draft.", .interrupted = true, .acp_prompt_not_sent = true}};
+	UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, chat), std::vector<int>({0, 1}));
+	UAM_ASSERT_EQ(uam::RecoverableUnsentAcpMessageIndices(app, chat), std::vector<int>({1}));
+	chat.acp_queued_prompts.push_back({.text = "Latest failed draft.", .id = "owned-queue"});
+	chat.acp_queue_held = true;
+	UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, chat), std::vector<int>({0, 1}));
+	UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, chat).empty());
+	chat.acp_queued_prompts.clear();
+	chat.acp_queue_held = false;
+	chat.native_session_id = "accepted-native-session";
+	chat.messages[1].acp_prompt_not_sent = false;
+	chat.messages[1].interrupted = false;
+	chat.messages.push_back({.role = MessageRole::Assistant, .content = "Actual reply to the later delivered input."});
+	UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, chat), std::vector<int>({0}));
+	UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, chat).empty());
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{3});
+	UAM_ASSERT_EQ(chat.messages.front().content, std::string("Older failed draft."));
+	chat.messages[1].acp_prompt_not_sent = true;
+	UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, chat), std::vector<int>({0}));
+	chat.remote_turn_user_message_index = 0;
+	chat.remote_prompt_delivery_id = "uncertain-old-input";
+	UAM_ASSERT(uam::KnownUnsentAcpMessageIndices(app, chat).empty());
+}
+
+UAM_TEST(AcpKnownUnsentProjectionKeepsCurrentAdmissionVisibleUntilFailure)
+{
+	for (const int phase : {0, 1, 2})
+	{
+		const bool reconnect = phase == 1;
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "current-admission";
+		chat.provider_id = "gemini-cli";
+		chat.messages = {
+		    {.role = MessageRole::User, .content = "Older failed input.", .acp_prompt_not_sent = true},
+		    {.role = MessageRole::User, .content = "Currently admitted input.", .acp_prompt_not_sent = true}};
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->turn_first_user_message_index = phase == 2 ? -1 : 1;
+		session->turn_user_message_index = 1;
+		session->processing = !reconnect;
+		session->reconnect_pending = reconnect;
+		uam::AcpSessionState* owner = session.get();
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, app.chats.front()), std::vector<int>({0}));
+		owner->processing = owner->reconnect_pending = false;
+		owner->lifecycle_state = "error";
+		UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, app.chats.front()), std::vector<int>({0, 1}));
+	}
+}
+
+UAM_TEST(AcpKnownUnsentProjectionPreservesMergedRemoteInputAuthority)
+{
+	for (const int persisted_last : {-1, 2})
+	{
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "merged-remote-input";
+		chat.provider_id = "opencode-cli";
+		chat.remote_turn_user_message_index = persisted_last;
+		chat.remote_prompt_delivery_session_id = "uncertain-merged-delivery";
+		chat.messages = {
+		    {.role = MessageRole::Assistant, .content = "Earlier actual output."},
+		    {.role = MessageRole::User, .content = "Merged first input.", .acp_prompt_not_sent = true},
+		    {.role = MessageRole::User, .content = "Merged second input.", .acp_prompt_not_sent = true}};
+		UAM_ASSERT(uam::KnownUnsentAcpMessageIndices(app, chat).empty());
+		UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, chat).empty());
+		chat.remote_prompt_delivery_session_id.clear();
+		UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, chat), std::vector<int>({1, 2}));
+	}
+}
+
+UAM_TEST(AcpRecoverableUnsentProjectionRetainsReadyOriginalNativeRetry)
+{
+	for (const std::string& phase : {"ready", "foreign-native", "active", "request", "stop", "later-delivered"})
+	{
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "warm-unsent-retry";
+		chat.provider_id = "opencode-cli";
+		chat.native_session_id = "original-native";
+		chat.remote_process_exists = true;
+		chat.messages = {
+		    {.role = MessageRole::User, .content = "Earlier delivered input."},
+		    {.role = MessageRole::Assistant, .content = "Earlier actual reply."},
+		    {.role = MessageRole::User, .content = "Failed later draft.", .interrupted = true, .acp_prompt_not_sent = true}};
+		if (phase == "later-delivered") chat.messages.push_back({.role = MessageRole::User, .content = "Later delivered input."});
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->session_id = phase == "foreign-native" ? "foreign-native" : chat.native_session_id;
+		session->running = session->session_ready = true;
+		session->turn_first_user_message_index = session->turn_user_message_index = 2;
+		session->processing = phase == "active";
+		session->local_stop_pending = phase == "stop";
+		if (phase == "request") session->pending_request_methods.emplace(3, "session/set_model");
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT_EQ(uam::RecoverableUnsentAcpMessageIndices(app, app.chats.front()),
+		    phase == "ready" ? std::vector<int>({2}) : std::vector<int>{});
+	}
+}
+
+UAM_TEST(AcpLegacyUnsentRetryAuthorityAndReadonlyGuards)
+{
+	for (const std::string& guard : {"imported", "delivery", "native", "process", "source-exit", "partial-output", "foreign", "stopping", "runtime-prompt", "pending-request"})
+	{
+		uam::AppState app;
+		ChatSession chat;
+		chat.id = "legacy-unsent-guard";
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = "missing-host";
+		chat.messages.push_back({.role = MessageRole::User, .content = "Retain this unsent draft.", .interrupted = true, .acp_prompt_not_sent = true});
+		if (guard == "imported") chat.imported_read_only = true;
+		if (guard == "delivery") chat.remote_prompt_delivery_id = "uncertain-input";
+		if (guard == "native") chat.native_session_id = "existing-native";
+		if (guard == "process") chat.remote_process_exists = true;
+		if (guard == "source-exit") chat.remote_source_exit_pending = true;
+		if (guard == "partial-output") chat.messages.push_back({.role = MessageRole::Assistant, .content = "Actual provider output."});
+		if (guard == "foreign") chat.messages.front().provider = "codex-cli";
+		if (guard == "pending-request") chat.remote_pending_requests.push_back({.request_id = 1, .method = "session/prompt", .user_message_index = 0});
+		app.chats.push_back(chat);
+		if (guard == "stopping" || guard == "runtime-prompt")
+		{
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = chat.id;
+			session->provider_id = chat.provider_id;
+			session->remote_stop_pending = guard == "stopping";
+			session->prompt_request_id = guard == "runtime-prompt" ? 4 : 0;
+			app.acp_sessions.push_back(std::move(session));
+		}
+		UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, app.chats.front()).empty());
+		std::string error;
+		UAM_ASSERT(!uam::RetryFailedAcpMessage(app, chat.id, 0, &error));
+		UAM_ASSERT(error != "The selected execution host no longer exists.");
+		UAM_ASSERT_EQ(app.chats.front().messages.front().content, chat.messages.front().content);
+		if (guard == "imported")
+		{
+			UAM_ASSERT(uam::KnownUnsentAcpMessageIndices(app, app.chats.front()).empty());
+			UAM_ASSERT(!uam::RetryLastAcpPrompt(app, chat.id, &error));
+			UAM_ASSERT(app.acp_sessions.empty());
+		}
+	}
+}
+
+UAM_TEST(AcpFailedPromptRecoveryPreservesDurableQueueMetadataAndCapacity)
+{
+	for (const std::string& guard : {"security", "attachments", "capacity"})
+	{
+		TempDir temp("uam-unsent-mirror-guard");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "unsent-mirror-guard";
+		chat.provider_id = "opencode-cli";
+		chat.messages.push_back({.role = MessageRole::User, .content = "Original failed input.", .interrupted = true, .acp_prompt_not_sent = true});
+		chat.acp_queued_prompts.push_back({.text = "Later captured input.", .uam_agent_workspace_access = "read", .id = "later"});
+		chat.acp_queued_prompts.front().attachments.push_back({.id = "kept", .path = "kept.png"});
+		if (guard == "capacity")
+			for (int index = 1; index < 32; ++index) chat.acp_queued_prompts.push_back({.text = "Future input.", .id = "future-" + std::to_string(index)});
+		app.chats.push_back(chat);
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->lifecycle_state = "error";
+		session->turn_first_user_message_index = session->turn_user_message_index = 0;
+		session->queued_user_prompts.assign(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
+		if (guard == "security") session->queued_user_prompts.front().uam_agent_workspace_access = "write";
+		if (guard == "attachments") session->queued_user_prompts.front().attachments.clear();
+		app.acp_sessions.push_back(std::move(session));
+		UAM_ASSERT(uam::acp_detail::SaveChatQuietly(app, app.chats.front()));
+		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->acp_queued_prompts, chat.acp_queued_prompts);
+	}
+}
+
+UAM_TEST(AcpRetryLegacyFirstPromptUsesFreshSessionOnlyAfterExplicitRetry)
+{
+	TempDir temp("uam-retry-legacy-first-prompt");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "retry-legacy-first-prompt";
+	chat.provider_id = "opencode-cli";
+	chat.execution_host_id = "missing-host";
+	chat.messages_loaded = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Earlier failed attempt.", .interrupted = true, .acp_prompt_not_sent = true});
+	chat.messages.push_back({.role = MessageRole::User, .content = "Explicitly retry the latest draft.", .interrupted = true, .acp_prompt_not_sent = true});
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(!uam::RetryFailedAcpMessage(app, chat.id, 1, &error));
+	UAM_ASSERT_EQ(error, std::string("The selected execution host no longer exists."));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, chat.messages.back().content);
+	UAM_ASSERT(app.chats.front().messages.back().interrupted);
+	app.chats.front().messages.push_back({.role = MessageRole::Assistant, .content = " \t\n"});
+	UAM_ASSERT_EQ(uam::RecoverableUnsentAcpMessageIndices(app, app.chats.front()), std::vector<int>({1}));
+	error.clear();
+	UAM_ASSERT(!uam::RetryFailedAcpMessage(app, chat.id, 1, &error));
+	UAM_ASSERT_EQ(error, std::string("The selected execution host no longer exists."));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{3});
+	UAM_ASSERT_EQ(app.chats.front().messages.back().content, std::string(" \t\n"));
+}
+
+UAM_TEST(AcpRetryBranchContextOmitsEarlierUnsentAttempts)
+{
+	for (const int scenario : {0, 1, 2})
+	{
+		const bool stale_marker_with_output = scenario == 1;
+		const bool wholly_unsent = scenario == 2;
+		TempDir temp("uam-retry-branch-omits-unsent");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.settings.provider_chat_defaults["gemini-cli"].feature_preference = "provider";
+		ChatSession chat;
+		chat.id = "retry-branch-omits-unsent";
+		chat.provider_id = "gemini-cli";
+		chat.native_session_id = "private-native-session";
+		chat.messages = {
+		    {.role = MessageRole::User, .content = "Earlier delivered input."},
+		    {.role = MessageRole::Assistant, .content = "Earlier actual output."},
+		    {.role = MessageRole::User, .content = "Never delivered older attempt.", .interrupted = true, .acp_prompt_not_sent = true},
+		    {.role = MessageRole::User, .content = "Retry this exact latest input.", .interrupted = true, .acp_prompt_not_sent = true}};
+		if (stale_marker_with_output) chat.messages.insert(chat.messages.begin() + 3,
+		    {.role = MessageRole::Assistant, .content = "Partial output proves that older input was delivered."});
+		if (wholly_unsent) chat.messages.erase(chat.messages.begin(), chat.messages.begin() + 2);
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->session_id = chat.native_session_id;
+		owned->running = owned->session_ready = true;
+		uam::AcpSessionState* session = owned.get();
+		app.acp_sessions.push_back(std::move(owned));
+		auto& service = PlatformServicesFactory::Instance().process_service;
+#if defined(_WIN32)
+		const std::vector<std::string> argv = {"cmd.exe", "/C", "more"};
+#else
+		const std::vector<std::string> argv = {"/bin/cat"};
+#endif
+		std::string error;
+		UAM_ASSERT(service.StartStdioProcess(*session, temp.root, argv, &error));
+		struct SinkGuard
+		{
+			uam::AcpSessionState& session;
+			~SinkGuard()
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+			}
+		} guard{*session};
+		UAM_ASSERT(uam::RetryLastAcpPrompt(app, chat.id, &error));
+		AwaitPromptAdmission(app, *session, app.chats.front());
+		service.CloseStdioProcessInput(*session);
+		std::string output;
+		char buffer[4096];
+		for (int attempt = 0; attempt < 200; ++attempt)
+		{
+			const std::ptrdiff_t read = service.ReadStdioProcessStdout(*session, buffer, sizeof(buffer), &error);
+			if (read > 0) output.append(buffer, static_cast<std::size_t>(read));
+			if (service.PollStdioProcessExited(*session) && read <= 0) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT_EQ(output.find("Never delivered older attempt.") != std::string::npos, stale_marker_with_output);
+		UAM_ASSERT_EQ(output.find("Partial output proves that older input was delivered.") != std::string::npos, stale_marker_with_output);
+		UAM_ASSERT_EQ(output.find("Earlier delivered input.") != std::string::npos, !wholly_unsent);
+		UAM_ASSERT_EQ(output.find("Earlier actual output.") != std::string::npos, !wholly_unsent);
+		if (wholly_unsent)
+		{
+			const nlohmann::json request = nlohmann::json::parse(output);
+			UAM_ASSERT_EQ(request.at("params").at("prompt").at(0).at("text").get<std::string>(), std::string("Retry this exact latest input."));
+		}
+		UAM_ASSERT(output.find("Retry this exact latest input.") != std::string::npos);
+		UAM_ASSERT(app.chats.front().messages[wholly_unsent ? 0 : 2].acp_prompt_not_sent);
 	}
 }
 
@@ -10197,13 +11082,17 @@ UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 			UAM_ASSERT(diagnostic.detail.find(chat.remote_process_control_token) == std::string::npos);
 		UAM_ASSERT(!app.chats.front().remote_process_exists);
 		UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
-		UAM_ASSERT(app.chats.front().messages.front().acp_prompt_not_sent);
-		UAM_ASSERT(app.chats.front().messages.front().interrupted);
-		UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t(1));
+		UAM_ASSERT(app.chats.front().messages.empty());
+		UAM_ASSERT(app.chats.front().acp_queue_held && session->queue_held);
+		UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.front().text, std::string("Start the remote task."));
+		UAM_ASSERT(app.chats.front().acp_queued_prompts.front().append_user_message);
+		UAM_ASSERT(!app.chats.front().acp_queued_prompts.front().prepared_for_delivery);
 		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
 		UAM_ASSERT(saved.has_value());
 		UAM_ASSERT(!saved->remote_process_exists && !saved->remote_turn_reconnect_pending);
-		UAM_ASSERT(saved->messages.front().acp_prompt_not_sent && saved->messages.front().interrupted);
+		UAM_ASSERT(saved->messages.empty() && saved->acp_queue_held);
+		UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, std::string("Start the remote task."));
 	}
 }
 

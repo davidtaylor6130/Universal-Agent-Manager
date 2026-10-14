@@ -540,6 +540,45 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it.each([
+    { name: 'opens the working branch instead of its remembered stopped root', activity: true, selected: 'chat-root', remembered: 'chat-root', first: { processing: true }, second: {}, clicked: 'chat-root', expected: 'chat-a' },
+    { name: 'opens attention before a working branch', activity: true, selected: 'chat-a', remembered: 'chat-a', first: { processing: true }, second: { processing: true, attentionKind: 'question' as AcpAttentionKind }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'keeps the selected working branch among multiple workers', activity: true, selected: 'chat-b', remembered: 'chat-a', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'keeps a remembered working branch when selection is outside the family', activity: true, selected: 'unrelated', remembered: 'chat-b', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'uses stable family order when neither remembered nor selected branch is working', activity: true, selected: 'chat-root', remembered: 'chat-root', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-a' },
+    { name: 'keeps remembered idle selection when the family has no work', activity: true, selected: 'unrelated', remembered: 'chat-root', first: {}, second: {}, clicked: 'chat-root', expected: 'chat-root' },
+    { name: 'preserves ordinary folder family navigation', activity: false, selected: 'unrelated', remembered: 'chat-root', first: { processing: true }, second: {}, clicked: 'chat-root', expected: 'chat-root' },
+    { name: 'preserves explicit branch selection while its sibling works', activity: true, selected: 'unrelated', remembered: 'chat-a', first: { processing: true }, second: {}, clicked: 'chat-b', expected: 'chat-b' },
+  ])('$name', ({ activity, selected, remembered, first, second, clicked, expected }) => {
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchA = { ...makeSession(), id: 'chat-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchB = { ...makeSession(), id: 'chat-b', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    const familySessionIds = ['chat-root', 'chat-a', 'chat-b']
+    const setActiveSession = vi.fn()
+    setPreferredFamilyChat('chat-root', remembered)
+    useAppStore.setState({
+      sessions: [branchB, rootSession, branchA], activeSessionId: selected, setActiveSession,
+      acpBindingBySessionId: {
+        'chat-root': makeAcpBinding({ running: false, lifecycleState: 'stopped' }),
+        'chat-a': makeAcpBinding(first), 'chat-b': makeAcpBinding(second),
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      const session = clicked === 'chat-b' ? branchB : rootSession
+      act(() => root.render(<SessionItem sessionId={clicked} session={session} familySessionIds={familySessionIds} activityLayout={activity} />))
+      expect(setActiveSession).not.toHaveBeenCalled()
+      act(() => host.querySelector<HTMLElement>(`[data-testid="session-row-${clicked}"]`)!.click())
+      if (expected === selected) expect(setActiveSession).not.toHaveBeenCalled()
+      else expect(setActiveSession).toHaveBeenCalledExactlyOnceWith(expected)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('restores the last selected family chat after reorder and falls back when it is deleted', () => {
     const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
     const branchA = { ...makeSession(), id: 'chat-branch-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 5 }

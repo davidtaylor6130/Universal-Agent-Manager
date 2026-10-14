@@ -319,3 +319,49 @@ UAM_TEST(HeldQueueResumeRequiresExactSnapshotAndDurableAdmissionBeforeReconnect)
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().attachments.size(), std::size_t{1});
 	UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(fixture.app, "held-queue", expected, &error));
 }
+
+UAM_TEST(LegacyUnsentProjectionSerializesNativeIndicesAndRevokesRetryAuthority)
+{
+	HeldQueueFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.acp_queued_prompts.clear();
+	for (const std::string& text : {"earlier failed input", "latest failed input"})
+	{
+		Message row;
+		row.role = MessageRole::User;
+		row.content = text;
+		row.acp_prompt_not_sent = true;
+		row.interrupted = true;
+		chat.messages.push_back(row);
+	}
+	const auto snapshot = [&fixture]()
+	{
+		return uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+	};
+	UAM_ASSERT(snapshot()["unsentMessageIndices"] == nlohmann::json::array({0, 1}));
+	UAM_ASSERT(snapshot()["recoverableUnsentMessageIndices"] == nlohmann::json::array({1}));
+	chat.remote_process_exists = true;
+	UAM_ASSERT(snapshot()["recoverableUnsentMessageIndices"].empty());
+	chat.remote_process_exists = false;
+	chat.messages.back().acp_prompt_not_sent = false;
+	Message answer;
+	answer.role = MessageRole::Assistant;
+	answer.content = "Delivered response";
+	chat.messages.push_back(answer);
+	UAM_ASSERT(snapshot()["unsentMessageIndices"] == nlohmann::json::array({0}));
+	UAM_ASSERT(snapshot()["recoverableUnsentMessageIndices"].empty());
+	chat.imported_read_only = true;
+	UAM_ASSERT(snapshot()["unsentMessageIndices"].empty());
+	UAM_ASSERT(snapshot()["recoverableUnsentMessageIndices"].empty());
+}
+
+UAM_TEST(HeldQueueSerializesOnlyNonnegativeReferencedNativeIndices)
+{
+	HeldQueueFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.acp_queued_prompts.front().existing_user_message_index = 23;
+	chat.acp_queued_prompts.front().append_user_message = false;
+	const nlohmann::json summary = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+	UAM_ASSERT(summary["queuedPrompts"][0]["existingUserMessageIndex"] == 23);
+	UAM_ASSERT(!summary["queuedPrompts"][1].contains("existingUserMessageIndex"));
+}

@@ -447,7 +447,7 @@ namespace uam
 			{
 				attachments.push_back(SerializeAttachmentForFrontend(attachment));
 			}
-			return {
+			nlohmann::json result = {
 			    {"id", prompt.id},
 			    {"revision", prompt.revision},
 			    {"prepared", prompt.prepared_for_delivery},
@@ -460,6 +460,8 @@ namespace uam
 			    {"computerUseMode", prompt.computer_use_mode},
 			    {"prioritySteer", prompt.priority_steer},
 			};
+			if (prompt.existing_user_message_index >= 0) result["existingUserMessageIndex"] = prompt.existing_user_message_index;
+			return result;
 		}
 
 		nlohmann::json SerializeMessageForFrontend(const Message& message,
@@ -1019,6 +1021,8 @@ namespace uam
 				if (!prompt.prepared_for_delivery && prompt.claude_quota_continuation_id.empty()) acp_json["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(prompt));
 			}
 			acp_json["queueHeld"] = chat.acp_queue_held;
+			acp_json["unsentMessageIndices"] = KnownUnsentAcpMessageIndices(app, chat);
+			acp_json["recoverableUnsentMessageIndices"] = RecoverableUnsentAcpMessageIndices(app, chat);
 			acp_json["waitIsStale"] = false;
 			acp_json["waitStaleReason"] = "";
 			acp_json["waitSeconds"] = 0;
@@ -1101,6 +1105,8 @@ namespace uam
 			}
 			acp_json["queuedPrompts"] = std::move(queued_prompts);
 			acp_json["queueHeld"] = session->queue_held;
+			acp_json["unsentMessageIndices"] = KnownUnsentAcpMessageIndices(app, chat);
+			acp_json["recoverableUnsentMessageIndices"] = RecoverableUnsentAcpMessageIndices(app, chat);
 			acp_json["goalTurnKind"] = session->goal_turn_kind;
 			acp_json["waitIsStale"] = session->wait_is_stale;
 			acp_json["waitStaleReason"] = session->wait_stale_reason;

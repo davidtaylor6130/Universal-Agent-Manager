@@ -329,6 +329,7 @@ export interface AcpQueuedPrompt {
   id?: string
   revision?: number
   prepared?: boolean
+  existingUserMessageIndex?: number
   text: string
   uamAgentId: string
   markdownStoreFiles: string[]
@@ -451,6 +452,8 @@ export interface CppAcpSession {
   turnAssistantMessageIndex?: number
   turnSerial?: number
   queueHeld?: boolean
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
@@ -808,6 +811,8 @@ export interface OpenWorkspaceEditorResponse {
 }
 
 export interface ChatMessagesResponse {
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
   userMessageIndices?: number[] | null
   chatId?: string
   messagesDigest?: string
@@ -941,6 +946,8 @@ export interface AcpBinding {
   turnAssistantMessageIndex: number
   turnSerial: number
   queueHeld?: boolean
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string

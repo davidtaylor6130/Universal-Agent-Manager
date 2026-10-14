@@ -49,7 +49,8 @@ UX rules (enforce):
 
 ## Notifications
 
-- Chat status notices (compacting, waiting on subagents, stopped/timeout, response interrupted or not sent) are inline transcript dividers, never composer-docked or tagged on a message.
+- Chat status notices (compacting, waiting on subagents, stopped/timeout and response interrupted) are inline transcript dividers, never composer-docked or tagged on a message.
+- Native-confirmed unsent inputs use the existing prompt queue rows outside conversation history; legacy rows retain original message positions, expose explicit new-branch editing and offer Retry only when native recovery guards allow it. A real held entry referencing the same original input replaces its legacy recovery row. Partial-output or uncertain-delivery messages remain in the transcript with their interruption divider.
 - One notifications panel (the bell rail) holds every app-wide message: failures, warnings, completed system actions and available updates.
 - One shared transient alert (`TransientAlertSurface` in `AppShell`, bottom-left, `aria-live="polite"`) briefly shows each new message. It auto-dismisses and the message stays in the panel.
 - No feature-specific popups or toasts. Features report failures through `reportAppFailure` (`utils/appFailure.ts`).

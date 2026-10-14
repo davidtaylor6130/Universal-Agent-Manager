@@ -108,6 +108,7 @@ namespace uam
 		bool priority_steer = false;
 		std::string id;
 		int revision = 1;
+		bool operator==(const AcpQueuedUserPromptState&) const = default;
 	};
 
 	/// <summary>

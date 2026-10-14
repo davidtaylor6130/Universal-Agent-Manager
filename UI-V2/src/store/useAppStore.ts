@@ -44,7 +44,7 @@ export {
 
 export * from './cpp/types'
 import type { VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
-import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
+import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, reconcileHeldOutboxHistory, queuedPromptsEquivalent, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
 import { persistTheme } from './slices/uiSlice'
@@ -175,9 +175,9 @@ function deserializeState(
 	for (const chat of cpp.chats) {
 		const existingMessages = existing.messages[chat.id]
 		if (!Array.isArray(chat.messages)) {
-      if (existingMessages?.length) {
-        nextMessages[chat.id] = existingMessages
-      }
+      const retained = reconcileHeldOutboxHistory(chat, existingMessages, historyStartIndexBySessionId[chat.id] ?? 0, existing.acpBindingBySessionId[chat.id], existingSessionsById[chat.id])
+      if (retained !== undefined) nextMessages[chat.id] = retained
+      else if (retained !== existingMessages) delete historyStartIndexBySessionId[chat.id]
       continue
     }
 
@@ -420,6 +420,14 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   for (const chatId of removedChatIds) {
     delete messages[chatId]
     delete historyStartIndexBySessionId[chatId]
+  }
+  for (const chat of patch.chats ?? []) {
+    const retained = reconcileHeldOutboxHistory(chat, messages[chat.id], historyStartIndexBySessionId[chat.id] ?? 0, current.acpBindingBySessionId[chat.id], existingSessionsById[chat.id])
+    if (retained !== undefined) messages[chat.id] = retained
+    else if (messages[chat.id] !== undefined) {
+      delete messages[chat.id]
+      delete historyStartIndexBySessionId[chat.id]
+    }
   }
   for (const [chatId, cppMessages] of Object.entries(patch.messagesByChatId ?? {})) {
     if (current.chatSearchNavigation?.chatId === chatId) continue
@@ -919,10 +927,15 @@ export const useAppStore = create<AppState>((set, get) => {
                 ((activeSessionBefore.messageCount ?? 0) !== (activeSessionAfter.messageCount ?? 0) ||
                   (activeSessionBefore.messagesDigest ?? '') !== (activeSessionAfter.messagesDigest ?? ''))
               )
+              const newlyHeldOutboxMismatch = Boolean(activeChatId && activeBindingAfter?.queueHeld &&
+                activeBindingAfter.queuedPrompts?.length &&
+                (!activeBindingBefore?.queueHeld || !queuedPromptsEquivalent(activeBindingBefore.queuedPrompts, activeBindingAfter.queuedPrompts)) &&
+                Number.isSafeInteger(activeSessionAfter?.messageCount) && activeSessionAfter?.messagesDigest &&
+                (get().historyStartIndexBySessionId[activeChatId] ?? 0) + (get().messages[activeChatId]?.length ?? 0) > activeSessionAfter!.messageCount!)
               if (
                 activeChatId &&
                 activeChatId === get().activeSessionId &&
-                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory)
+                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory || newlyHeldOutboxMismatch)
               ) {
                 get().loadSessionMessages(activeChatId, true)
               }

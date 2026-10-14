@@ -567,6 +567,8 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.turnAssistantMessageIndex === next.turnAssistantMessageIndex &&
     existing.turnSerial === next.turnSerial &&
     (existing.queueHeld ?? false) === (next.queueHeld ?? false) &&
+    sameArrayEntries(existing.unsentMessageIndices ?? [], next.unsentMessageIndices ?? []) &&
+    sameArrayEntries(existing.recoverableUnsentMessageIndices ?? [], next.recoverableUnsentMessageIndices ?? []) &&
     queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
     existing.waitIsStale === next.waitIsStale &&
     existing.waitStaleReason === next.waitStaleReason &&
@@ -683,6 +685,8 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
     turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
     queueHeld: acp?.queueHeld ?? false,
+    unsentMessageIndices: acp?.unsentMessageIndices ?? [],
+    recoverableUnsentMessageIndices: acp?.recoverableUnsentMessageIndices ?? [],
     queuedPrompts: acp?.queuedPrompts ?? [],
     waitIsStale: Boolean(acp?.waitIsStale),
     waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
@@ -858,6 +862,47 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
   }
 }
 
+/** Authoritative count contraction retires only an exact recovered or explicitly removed native outbox suffix. */
+export function reconcileHeldOutboxHistory(chat: CppChat, existing: Message[] | undefined, startIndex = 0, previousBinding?: AcpBinding, previousSession?: Pick<Session, 'messageCount' | 'messagesDigest'>): Message[] | undefined {
+  if (!existing?.length || !Number.isSafeInteger(chat.messageCount) || chat.messageCount! < 0 || !chat.messagesDigest) return existing
+  const retained = chat.messageCount! - startIndex
+  if (retained >= existing.length) return existing
+  const incomingQueue = chat.acpSession?.queuedPrompts ?? []
+  const known = new Set(previousBinding?.unsentMessageIndices ?? [])
+  const removedReferences = previousBinding?.queueHeld && Array.isArray(chat.acpSession?.queuedPrompts) &&
+    previousSession?.messagesDigest && previousSession.messagesDigest !== chat.messagesDigest &&
+    Number.isSafeInteger(previousSession.messageCount) && chat.messageCount! < previousSession.messageCount!
+    ? (previousBinding.queuedPrompts ?? []).filter((prompt) => !prompt.prepared &&
+        Number.isSafeInteger(prompt.existingUserMessageIndex) && known.has(prompt.existingUserMessageIndex!) &&
+        !incomingQueue.some((incoming) => incoming.id === prompt.id)) : []
+  const queue = [...(chat.acpSession?.queueHeld ? incomingQueue : []), ...removedReferences]
+  if (!queue.length || queue.some((prompt) => !prompt.id || !Number.isSafeInteger(prompt.revision) || prompt.revision! < 1)) return existing
+  const unmatched = [...queue]
+  let matchedRemovedReference = false
+  let optimisticStart = existing.length
+  for (let index = Math.max(0, retained); index < existing.length; index += 1) {
+    const message = existing[index]
+    if (message.nativeMessageIndex === undefined && message.role === 'user' && matchedRemovedReference) {
+      optimisticStart = index
+      break
+    }
+    if (message.role === 'assistant' && !message.content.trim() && !message.thoughts?.trim() && !message.planSummary?.trim() &&
+        !message.planEntries?.length && !message.toolCalls?.length && !message.blocks?.length && !message.attachments?.length) continue
+    if (message.role !== 'user' || message.nativeMessageIndex !== startIndex + index) return existing
+    const queuedIndex = unmatched.findIndex((prompt) =>
+      (prompt.existingUserMessageIndex === undefined || prompt.existingUserMessageIndex === startIndex + index) &&
+      (!removedReferences.includes(prompt) || message.acpPromptNotSent) && prompt.text === message.content &&
+      attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
+    if (queuedIndex < 0) return existing
+    matchedRemovedReference ||= removedReferences.includes(unmatched[queuedIndex])
+    unmatched.splice(queuedIndex, 1)
+  }
+  const optimistic = existing.slice(optimisticStart)
+  if (optimistic.some((message) => message.role !== 'user' || message.nativeMessageIndex !== undefined || message.isStreaming ||
+      message.thoughts?.trim() || message.planSummary?.trim() || message.planEntries?.length || message.toolCalls?.length || message.blocks?.length)) return existing
+  return retained <= 0 && chat.messageCount! > 0 && !optimistic.length ? undefined : [...existing.slice(0, Math.max(0, retained)), ...optimistic]
+}
+
 export function reconcileCppMessages(
   chatId: string,
   existingMessages: Message[] | undefined,
@@ -973,6 +1018,7 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
   return previous.every((prompt, index) => {
     const other = incoming[index]
     return prompt.id === other.id && prompt.revision === other.revision && Boolean(prompt.prepared) === Boolean(other.prepared) &&
+      prompt.existingUserMessageIndex === other.existingUserMessageIndex &&
       prompt.uamAgentId === other.uamAgentId && prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&

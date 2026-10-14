@@ -1,3 +1,6 @@
+import type { AcpQueuedPrompt } from '../../store/cpp/types'
+import { attachmentsEquivalent } from '../../store/cpp/reconcile'
+import { messageAttachments } from '../../store/cpp/sanitizers'
 import { formatContextReferences, sanitizeContextReferences } from '../../utils/contextReferences'
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
@@ -5,7 +8,7 @@ import { MessageNavigationRail } from '../chat/MessageNavigationRail'
 import { ChangedFilesTree } from '../chat/ChangedFilesTree'
 import { changedLineTotals } from '../chat/changedFilesTreeModel'
 import { SubagentWaitStatus, isWaitingOnSubagents } from '../chat/SubagentWaitStatus'
-import { InlinePromptQueue } from '../chat/InlinePromptQueue'
+import { InlinePromptQueue, type UnsentPrompt } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -183,6 +186,29 @@ function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
 function hasSubstantiveOutput(message: Message) {
   return Boolean(message.content.trim() || message.thoughts?.trim() || message.planSummary?.trim() ||
     message.planEntries?.length || message.toolCalls?.length || message.blocks?.length || message.attachments?.length)
+}
+
+/** Native certainty owns recovery; keep original message positions for branch and retry requests. */
+export function projectUnsentPrompts(messages: Message[], historyStartIndex: number, knownIndices: readonly number[], retryIndices: readonly number[], heldPrompts: readonly AcpQueuedPrompt[] = []) {
+  if (knownIndices.length === 0) return { prompts: [] as UnsentPrompt[], hiddenIndices: new Set<number>() }
+  const known = new Set(knownIndices)
+  const retryable = new Set(retryIndices)
+  const hiddenIndices = new Set<number>()
+  const prompts: UnsentPrompt[] = []
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    const nativeIndex = historyStartIndex + index
+    if (message.role !== 'user' || !message.acpPromptNotSent || !known.has(nativeIndex)) continue
+    let end = index + 1
+    while (end < messages.length && messages[end].role !== 'user') end += 1
+    if (messages.slice(index + 1, end).some((output) => output.role !== 'assistant' || hasSubstantiveOutput(output))) continue
+    const representedByQueue = heldPrompts.some((prompt) => prompt.id && Number.isSafeInteger(prompt.revision) && prompt.revision! > 0 &&
+      !prompt.prepared && prompt.existingUserMessageIndex === nativeIndex && prompt.text === message.content &&
+      attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
+    if (!representedByQueue) prompts.push({ messageIndex: nativeIndex, text: message.content, attachments: message.attachments ?? [], retryable: retryable.has(nativeIndex) })
+    for (let hidden = index; hidden < end; hidden += 1) hiddenIndices.add(hidden)
+  }
+  return { prompts, hiddenIndices }
 }
 
 function canRetryMessageInPlace(messages: Message[], messageIndex: number) {
@@ -507,6 +533,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [session.id])
   const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
+  const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const historyStartIndex = useAppStore((s) => s.historyStartIndexBySessionId[session.id] ?? 0)
   const searchNavigation = useAppStore((s) => s.chatSearchNavigation?.chatId === session.id ? s.chatSearchNavigation : null)
   const searchNavigationRef = useRef(searchNavigation)
@@ -516,8 +543,19 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const historyLoading = messages.length === 0 && !chatHistoryError && (
     (historyPageMissing && (session.messageCount ?? 0) > 0) || chatHistoryRetryingIds.has(session.id)
   )
-  // Empty chat with no history to wait for (a new chat, even while its first history request is in flight): the composer centres.
-  const composerCentred = messages.length === 0 && !chatHistoryError && !historyLoading
+  const unsentProjection = useMemo(() => projectUnsentPrompts(messages, historyStartIndex, acp?.unsentMessageIndices ?? [], acp?.recoverableUnsentMessageIndices ?? [], acp?.queueHeld ? acp.queuedPrompts ?? [] : []),
+    [messages, historyStartIndex, acp?.unsentMessageIndices, acp?.recoverableUnsentMessageIndices, acp?.queueHeld, acp?.queuedPrompts])
+  const navigableUserMessageIndices = useMemo(() => {
+    if (!acp?.unsentMessageIndices?.length) return session.userMessageIndices
+    const known = new Set(acp.unsentMessageIndices)
+    const indices = session.userMessageIndices ?? messages.flatMap((message, index) => message.role === 'user' ? [historyStartIndex + index] : [])
+    return indices.filter((index) => {
+      const loadedIndex = index - historyStartIndex
+      return loadedIndex < 0 || loadedIndex >= messages.length ? !known.has(index) : !unsentProjection.hiddenIndices.has(loadedIndex)
+    })
+  }, [messages, historyStartIndex, session.userMessageIndices, unsentProjection, acp?.unsentMessageIndices])
+  // Definitively unsent inputs do not turn an otherwise empty chat into delivered history.
+  const composerCentred = historyStartIndex === 0 && messages.length === unsentProjection.hiddenIndices.size && !chatHistoryError && !historyLoading
   const composerFormRef = useRef<HTMLFormElement>(null)
   const composerCentredRef = useRef(composerCentred)
   const composerTopRef = useRef(0)
@@ -560,7 +598,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   )
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const folderIcon = useAppStore((s) => session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.customIcon : undefined)
-  const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const cli = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const providers = useAppStore((s) => s.providers)
@@ -891,11 +928,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     if (state.activeSessionId !== session.id || state.chatSearchNavigation?.generation !== searchNavigation.generation ||
         state.chatSearchNavigation.chatId !== session.id) return
     const target = transcriptContentRef.current?.querySelector<HTMLElement>(`[data-message-index="${searchNavigation.messageIndex}"]`)
+      ?? composerFormRef.current?.querySelector<HTMLElement>(`[data-unsent-message-index="${searchNavigation.messageIndex}"]`)
     if (!target) return
     isNearBottomRef.current = false
     target.scrollIntoView?.({ block: 'center' })
     useAppStore.getState().consumeChatSearchJump(session.id, searchNavigation.generation)
-  }, [searchNavigation, messages, historyStartIndex, session.id])
+  }, [searchNavigation, messages, historyStartIndex, session.id, unsentProjection])
 
   const scrollToBottom = useCallback(() => {
     const followLatest = () => {
@@ -2448,7 +2486,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               {visibleMessages.map((message, visibleIndex) => {
                 const index = earliestRenderedMessageIndex + visibleIndex
-                if (index === redundantStreamingMessageIndex) return null
+                if (index === redundantStreamingMessageIndex || unsentProjection.hiddenIndices.has(index)) return null
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
                 const followingResponse = message.role === 'user' && messages[index + 1]?.role === 'assistant' ? messages[index + 1] : undefined
@@ -2501,7 +2539,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         assistantLabel={reviewAssistantLabel(messageProviderName, message)}
                         goalReview={Boolean(goalReviewForMessage(message))}
                         streaming={Boolean(acp?.processing)}
-                        actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null}
                       >
                         <TurnTimelineContent
                           disclosureState={liveWorkDisclosure}
@@ -2540,7 +2578,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         sessionBranchFromMessageIndex={session.branchFromMessageIndex}
                         sessionBranchMessageEdited={session.branchMessageEdited}
                         branchSessions={branchSessions}
-                        actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
                         retryInPlace={index === retryInPlaceMessageIndex}
@@ -2591,7 +2629,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   </WorkSectionContext.Provider>
                 )
               })}
-              {acp?.processing && turnEvents.length === 0 && activeWorkMessageIndex < 0 && (
+              {acp?.processing && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
                   role="status"
@@ -2699,7 +2737,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             <div ref={bottomRef} />
           </div>
           {session.messagesDigest && <MessageNavigationRail key={session.id}
-            userMessageIndices={session.userMessageIndices} startIndex={historyStartIndex} messages={messages}
+            userMessageIndices={navigableUserMessageIndices} startIndex={historyStartIndex} messages={messages}
             currentIndex={searchNavigation?.messageIndex ?? Math.max(0, historyStartIndex + messages.length - 1)}
             viewportRef={scrollRef} busy={searchNavigation?.phase === 'loading'}
             onNavigate={(index) => { isNearBottomRef.current = false; void useAppStore.getState().jumpToSessionMessage(session.id, index) }} />}
@@ -2878,7 +2916,24 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 {attachmentError}
               </Notice>
             )}
-            <InlinePromptQueue key={session.id} held={acp?.queueHeld ?? false} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
+            <InlinePromptQueue key={session.id} unsentPrompts={unsentProjection.prompts}
+              unsentActionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null}
+              onEditUnsent={isCompanionContext() ? undefined : beginEditingMessage}
+              onRetryUnsent={isCompanionContext() ? undefined : async (index) => {
+                if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
+                const generation = ++messageBranchGenerationRef.current
+                const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
+                setBranchingMessageIndex(index)
+                setMessageBranchError('')
+                try {
+                  const result = await retryFailedMessage(session.id, index)
+                  if (!result.ok) throw new Error(result.error || 'Could not retry the failed message.')
+                  return true
+                } finally {
+                  if (ownsFeedback()) setBranchingMessageIndex(null)
+                }
+              }}
+              held={acp?.queueHeld ?? false} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
               onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}
               onReorder={(expected, orderedIds) => reorderQueuedAcpPrompts(session.id, expected, orderedIds)}
               onRemove={(index, expected) => expected ? removeQueuedAcpPrompt(session.id, index, expected) : removeQueuedAcpPrompt(session.id, index)}

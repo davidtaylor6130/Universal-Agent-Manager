@@ -392,6 +392,7 @@ export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
     ...(isString(value.id) && value.id.trim() ? { id: value.id } : {}),
     ...(Number.isSafeInteger(value.revision) && Number(value.revision) > 0 ? { revision: Number(value.revision) } : {}),
     ...(value.prepared === true ? { prepared: true } : {}),
+    ...(Number.isSafeInteger(value.existingUserMessageIndex) && Number(value.existingUserMessageIndex) >= 0 ? { existingUserMessageIndex: Number(value.existingUserMessageIndex) } : {}),
     text,
     uamAgentId: stringOr(value.uamAgentId).trim() || 'build',
     markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
@@ -831,6 +832,8 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
     turnSerial: finiteNumberOr(value.turnSerial, 0),
     queueHeld: booleanOr(value.queueHeld),
+    unsentMessageIndices: Array.isArray(value.unsentMessageIndices) ? value.unsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
+    recoverableUnsentMessageIndices: Array.isArray(value.recoverableUnsentMessageIndices) ? value.recoverableUnsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
     queuedPrompts: Array.isArray(value.queuedPrompts)
       ? value.queuedPrompts.flatMap((prompt) => {
           const sanitized = sanitizeQueuedPrompt(prompt)
@@ -987,7 +990,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     attentionRevision: isString(value.attentionRevision) ? value.attentionRevision : undefined,
     settledAt: isString(value.settledAt) && value.settledAt ? value.settledAt : undefined,
     snoozedUntilMs: Number.isSafeInteger(value.snoozedUntilMs) && (value.snoozedUntilMs as number) >= 0 && (value.snoozedUntilMs as number) <= 8_640_000_000_000_000 ? value.snoozedUntilMs as number : 0,
-    messageCount: finiteNumberOr(value.messageCount, 0),
+    messageCount: typeof value.messageCount === 'number' && Number.isSafeInteger(value.messageCount) && value.messageCount >= 0 ? value.messageCount : undefined,
     messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,
     messages: Array.isArray(value.messages)
       ? value.messages.flatMap((message) => {

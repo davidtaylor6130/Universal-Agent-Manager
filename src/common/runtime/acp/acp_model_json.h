@@ -1,11 +1,13 @@
 #pragma once
 
 #include "common/provider/codex/codex_options.h"
+#include "common/provider/provider_ids.h"
 #include "common/state/app_state.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 
+#include <algorithm>
 #include <initializer_list>
 #include <optional>
 #include <string>
@@ -107,6 +109,48 @@ namespace uam::acp_models
 		parsed.context_window_tokens = ModelTokenLimit(model, {"contextWindowTokens"});
 		parsed.max_output_tokens = ModelTokenLimit(model, {"maxOutputTokens"});
 		return parsed;
+	}
+
+	/// <summary>Keep native IDs exact; repair only a unique advertised OpenCode casing alias.</summary>
+	inline std::optional<std::string> ResolveAdvertisedModelId(const AcpSessionState& session, std::string_view requested, std::string& error)
+	{
+		error.clear();
+		const std::string model_id = uam::strings::Trim(requested);
+		const bool opencode = session.provider_id == uam::provider_ids::kOpenCodeCli;
+		if (model_id.empty() || (!opencode && model_id == session.current_model_id)) return model_id;
+		const auto option = std::ranges::find_if(session.available_config_options, [](const AcpConfigOptionState& value)
+		{
+			return value.category == "model" || value.id == "model";
+		});
+		std::vector<std::string> advertised;
+		if (option != session.available_config_options.end())
+		{
+			for (const AcpConfigOptionChoiceState& choice : option->choices) uam::ranges::PushUniqueNonEmptyString(advertised, choice.value);
+		}
+		else
+		{
+			if (!opencode) return model_id;
+			for (const AcpModelState& model : session.available_models) uam::ranges::PushUniqueNonEmptyString(advertised, model.id);
+			if (advertised.empty()) return model_id;
+		}
+		if (std::ranges::find(advertised, model_id) != advertised.end()) return model_id;
+		if (opencode)
+		{
+			std::optional<std::string> alias;
+			for (const std::string& candidate : advertised)
+			{
+				if (!uam::strings::TrimmedEqualsIgnoreCase(candidate, model_id)) continue;
+				if (alias)
+				{
+					error = "The saved model '" + model_id + "' matches multiple provider models. Select an exact available model before retrying.";
+					return std::nullopt;
+				}
+				alias = candidate;
+			}
+			if (alias) return alias;
+		}
+		error = "The provider no longer offers the saved model '" + model_id + "'. Refresh models in Settings or restart UAM, then select an available model before retrying.";
+		return std::nullopt;
 	}
 
 
