@@ -6,7 +6,8 @@ import './settings-shell.css'
  * The one settings layout language, modelled on the MCP Servers page:
  * an uppercase section label with a one-line description, then a bordered
  * card of rows. A row puts its title and description on the left and its
- * control on the right; wide inputs use SettingsField instead.
+ * control on the right; wide inputs use SettingsField instead. Descriptions are
+ * one line: they truncate, and the full text is in the tooltip.
  */
 export function SettingsSection({ title, description, actions, children, flush = false, className }: {
   title: string
@@ -23,7 +24,7 @@ export function SettingsSection({ title, description, actions, children, flush =
       <header className="uam-set-section__head">
         <div className="min-w-0">
           <h3 className="uam-set-section__title">{title}</h3>
-          {description && <p className="uam-set-section__desc">{description}</p>}
+          {description && <p className="uam-set-section__desc" title={typeof description === 'string' ? description : undefined}>{description}</p>}
         </div>
         {actions && <div className="uam-set-section__actions">{actions}</div>}
       </header>
@@ -52,7 +53,7 @@ export function SettingRow({ title, description, control, icon, children, htmlFo
         {icon && <span className="uam-set-row__icon">{icon}</span>}
         <div className="min-w-0">
           <Title className="uam-set-row__title" {...(htmlFor ? { htmlFor } : {})}>{title}</Title>
-          {description && <div className="uam-set-row__desc">{description}</div>}
+          {description && <div className="uam-set-row__desc" title={typeof description === 'string' ? description : undefined}>{description}</div>}
           {status && <div className="uam-set-row__status">{status}</div>}
         </div>
         {control && <div className="uam-set-row__control">{control}</div>}

@@ -43,7 +43,6 @@ import {
   type BuiltInTheme,
   type StoredTheme,
 } from '../../utils/themeStorage'
-import { MOTION_SPEEDS, applyMotionSpeed, readStoredMotion, writeStoredMotion, type MotionSpeed } from '../../utils/motionStorage'
 import type { Provider } from '../../types/provider'
 import type { ComputerUseBackend, ExecutionHost, Session } from '../../types/session'
 import type { MemoryLevel } from '../../types/memory'
@@ -140,8 +139,8 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
     finally { setSaving(false) }
   }
   return <>
-    <SettingsSection title="Dictation" description="Speak a message instead of typing it.">
-      <SettingRow title="Transcription service" description="Server mode sends your recording to the configured server." control={
+    <SettingsSection title="Dictation">
+      <SettingRow title="Transcription service" status={draft.mode === 'server' ? (supported ? 'Recording is sent to your server.' : capabilities?.server?.reason || 'Server support has not been reported.') : 'Start dictation with the microphone button in the message box.'} control={
         <div role="radiogroup" aria-label="Transcription service" className="flex gap-1" onKeyDown={selectPolicyWithArrowKeys}>
           {([{ id: 'system', label: 'System' }, { id: 'server', label: 'Server' }, { id: 'local', label: 'Local AI' }] as const).map((option) =>
             <Button key={option.id} size="sm" variant={draft.mode === option.id ? 'primary' : 'secondary'} role="radio" aria-checked={draft.mode === option.id}
@@ -149,11 +148,9 @@ const VoiceInputControls = forwardRef<SettingsDraftHandle>(function VoiceInputCo
               onClick={() => edit({ ...draft, mode: option.id })}>{option.label}</Button>)}
         </div>
       } />
-      <SettingRow title="Supported modes" description="System uses the operating system speech service. Local AI is not supported."
-        status={draft.mode === 'server' ? (supported ? 'Recording is sent to your server.' : capabilities?.server?.reason || 'Server support has not been reported.') : 'Start dictation with the microphone button in the message box.'} />
       {draft.mode === 'server' && <div className="grid gap-3 p-3">
         {([{ key: 'serverBaseUrl', label: 'Server URL' }, { key: 'serverEndpoint', label: 'Endpoint' }, { key: 'serverModel', label: 'Model' }, { key: 'apiKeyEnv', label: 'API key environment variable' }] as const).map((field) =>
-          <SettingsField key={field.key} label={field.label} htmlFor={`voice-${field.key}`} hint={field.key === 'apiKeyEnv' ? 'The key is read from this environment variable when recording is sent.' : undefined}>
+          <SettingsField key={field.key} label={field.label} htmlFor={`voice-${field.key}`} hint={field.key === 'apiKeyEnv' ? 'Read from this environment variable.' : undefined}>
             <input id={`voice-${field.key}`} aria-label={field.label} className="uam-field w-full" value={draft[field.key] ?? ''} disabled={saving} autoComplete="off" spellCheck={false} onChange={(event) => edit({ ...draft, [field.key]: event.currentTarget.value })} />
           </SettingsField>)}
       </div>}
@@ -727,7 +724,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const browseMarkdownStoreDirectory = useAppStore((s) => s.browseMarkdownStoreDirectory)
   const setMarkdownStoreDirectory = useAppStore((s) => s.setMarkdownStoreDirectory)
   const { theme, setTheme } = useTheme()
-  const [motionSpeed, setMotionSpeed] = useState<MotionSpeed>(readStoredMotion)
   const [settingsSearch, setSettingsSearch] = useState('')
   const navRef = useRef<HTMLElement>(null)
   const [navIndicator, setNavIndicator] = useState<{ top: number; height: number } | null>(null)
@@ -1591,11 +1587,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     : <Copy key="idle" size={14} aria-hidden />
   const copyLabel = (kind: 'token' | 'url', idle: string) => companionCopy?.kind === kind ? companionCopy.ok ? 'Copied' : 'Copy failed' : idle
   const renderPhoneAccess = () => <div className="grid gap-0">
-    <SettingsSection title="Phone access" description="Open UAM on a phone or tablet on the same network. Sign in with the token.">
+    <SettingsSection title="Phone access">
       <SettingRow
         title="Enable phone access"
-        description={companionSettings?.configured ? 'Lets devices on your network open the companion URL. Restart UAM after changing access.' : 'Phone access is not configured on this computer.'}
-        status={companionSettings?.enabled && companionSettings.proxyRunning === false ? <span style={{ color: 'var(--error)' }}>The phone HTTPS proxy is not running. Restart UAM and check the network address.</span> : undefined}
+        description={companionSettings?.configured ? 'Restart UAM after changing.' : 'Not configured on this computer.'}
+        status={companionSettings?.enabled && companionSettings.proxyRunning === false ? <span style={{ color: 'var(--error)' }}>HTTPS proxy not running. Restart UAM.</span> : undefined}
         control={<Switch
           hideLabel
           label="Enable phone access"
@@ -1606,14 +1602,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       />
       {companionSettings?.url && <SettingRow
         title="Companion URL"
-        description="Open this on the other device, on the same network."
         control={<Button size="sm" variant="ghost" leadingIcon={copyIcon('url')} aria-label="Copy phone URL" disabled={companionBusy} onClick={() => void copyCompanion('url')}>{copyLabel('url', 'Copy URL')}</Button>}
       >
         <code className="block truncate font-mono text-xs" title={companionSettings.url} style={{ color: 'var(--text-2)' }}>{companionSettings.url}</code>
       </SettingRow>}
       <SettingRow
         title="Access token"
-        description="Paste this when the phone asks you to sign in."
+        description="Paste this on the phone to sign in."
         control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>}
       />
       {companionSettings?.localAddresses?.map((address) => {
@@ -1623,7 +1618,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         return <SettingRow
           key={address}
           title="Network address changed"
-          description={`The configured address ${host} is no longer on this Mac.`}
+          description={`${host} is no longer on this Mac.`}
           control={<Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => {
             setCompanionBusy(true)
             void sendToCEF<typeof companionSettings>({ action: 'repairCompanionLanAddress', payload: { address } }).then((result) => {
@@ -1796,10 +1791,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       ]
       return (
         <div className="grid gap-0">
-          <SettingsSection title="Theme" description="Colours for the whole app. Copy a theme to make your own.">
+          <SettingsSection title="Theme">
             <SettingRow
               title="Colour theme"
-              description="Applies to every window straight away."
             >
               <div role="radiogroup" aria-label="Colour theme" className="uam-theme-grid" onKeyDown={(event) => {
                 // Arrow keys move between theme tiles; Enter or Space applies the focused one.
@@ -1843,7 +1837,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             </SettingRow>
             <SettingRow
               title="Manage themes"
-              description="Add, copy, edit or delete a theme. Import or export one as a JSON file."
               control={
                 <div className="flex flex-wrap justify-end gap-1">
                   <IconButton icon={<Plus size={15}/>} label="Add theme" onClick={() => startNewTheme()}/>
@@ -1870,10 +1863,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               {themeMessage && <div role="status" className="text-xs" style={{ color: themeMessage.includes('failed') || themeMessage.includes('could not') ? 'var(--error)' : 'var(--text-2)' }}>{themeMessage}</div>}
             </SettingRow>
           </SettingsSection>
-          <SettingsSection title="Sidebar" description="What each chat row shows.">
+          <SettingsSection title="Chats">
             <SettingRow
               title="Provider icons"
-              description="Show which agent each chat runs on."
               control={
                 <Switch
                   hideLabel
@@ -1885,7 +1877,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             />
             <SettingRow
               title="Worktree path"
-              description="Show a chat's isolated worktree folder under its name."
+              description="Show the worktree folder under each chat name."
               control={
                 <Switch
                   hideLabel
@@ -1895,41 +1887,19 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 />
               }
             />
-          </SettingsSection>
-          <SettingsSection title="Chat activity" description="How agent work is shown while it runs.">
             <SettingRow
               title="Compact working"
-              description="Condense tool activity while an agent is working."
+              description="Condense tool activity while an agent works."
               control={<Switch hideLabel label="Compact working" checked={workingDisplayMode === 'compact'} onChange={(event) => setWorkingDisplayMode(event.target.checked ? 'compact' : 'verbose')} />}
             />
             <SettingRow
               title="Expand work traces"
-              description="Open each turn's tool and reasoning trace by default."
+              description="Open each turn's tool and reasoning trace."
               control={<Switch hideLabel label="Expand work traces" checked={expandWorkTraces} onChange={(event) => setExpandWorkTraces(event.target.checked)} />}
             />
             <SettingRow
               title="Collapsible work sections"
-              description="Let finished work sections fold away."
               control={<Switch hideLabel label="Allow work sections to collapse" checked={collapsibleWorkSections} onChange={(event) => setCollapsibleWorkSections(event.target.checked)} />}
-            />
-          </SettingsSection>
-          <SettingsSection title="Motion" description="How fast panels, menus and transitions move. Saved on this computer.">
-            <SettingRow
-              title="Animation speed"
-              description="Off removes transitions entirely."
-              control={
-                <MenuSelect
-                  label="Animation speed"
-                  value={motionSpeed}
-                  options={MOTION_SPEEDS.map((speed) => ({ value: speed.id, label: speed.label }))}
-                  onChange={(value) => {
-                    const next = value as MotionSpeed
-                    setMotionSpeed(next)
-                    writeStoredMotion(next)
-                    applyMotionSpeed(next)
-                  }}
-                />
-              }
             />
           </SettingsSection>
           <TypographySettings />
@@ -1954,27 +1924,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         : []
       return (
         <div className="space-y-4">
-          {!scopedProviderId && settingsScope === SETTINGS_ALL_ENVIRONMENTS && <SettingsSection title="AI permission reviewer" description="A second model can approve routine permission requests; anything it is unsure about still comes to you.">
-            <SettingRow title="Reviewer provider" description="Which agent reviews permission requests." control={renderDefaultsMenu(
-                  'permission-reviewer-provider',
-                  permissionReviewerProviderId,
-                  'AI permission reviewer provider',
-                  [
-                    { id: '', label: 'Not configured', detail: 'AI Review always falls back to you.' },
-                    ...providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => ({ id: provider.id, label: providerDisplayName(provider, provider.id), detail: provider.name ?? provider.id })),
-                  ],
-                  (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
-                  (option) => option.id ? <ProviderLogo providerId={option.id} /> : null
-                )} />
-            <SettingRow title="Reviewer model" description="Model used for reviews. Defaults to the provider's own default." control={renderDefaultsMenu(
-                  'permission-reviewer-model',
-                  permissionReviewerModelId,
-                  'AI permission reviewer model',
-                  reviewerModels.length > 0 ? reviewerModels : [{ id: '', label: 'Provider default', detail: reviewerProvider ? 'Use the provider default model.' : 'Choose a reviewer provider first.' }],
-                  (modelId) => void setMemorySettings({ permissionReviewerModelId: modelId })
-                )} />
-          </SettingsSection>}
-          {!scopedProviderId && <SettingsSection title="New chats" description="What a new chat starts with unless you choose otherwise.">
+          {!scopedProviderId && <SettingsSection title="Chats">
             <SettingRow title="Default provider" description="Preselected in the New chat dialog." control={renderDefaultsMenu(
                   'default-provider',
                   defaultNewChatProviderId || providers[0]?.id || DEFAULT_PROVIDER_ID,
@@ -1987,6 +1937,26 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   (providerId) => void setProviderChatDefaults({ defaultNewChatProviderId: providerId }, settingsScope),
                   (option) => <ProviderLogo providerId={option.id} />
                 )} />
+            {settingsScope === SETTINGS_ALL_ENVIRONMENTS && <>
+              <SettingRow title="Reviewer provider" description="AI approves routine requests; unsure ones come to you." control={renderDefaultsMenu(
+                    'permission-reviewer-provider',
+                    permissionReviewerProviderId,
+                    'AI permission reviewer provider',
+                    [
+                      { id: '', label: 'Not configured', detail: 'AI Review always falls back to you.' },
+                      ...providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => ({ id: provider.id, label: providerDisplayName(provider, provider.id), detail: provider.name ?? provider.id })),
+                    ],
+                    (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
+                    (option) => option.id ? <ProviderLogo providerId={option.id} /> : null
+                  )} />
+              <SettingRow title="Reviewer model" control={renderDefaultsMenu(
+                    'permission-reviewer-model',
+                    permissionReviewerModelId,
+                    'AI permission reviewer model',
+                    reviewerModels.length > 0 ? reviewerModels : [{ id: '', label: 'Provider default', detail: reviewerProvider ? 'Use the provider default model.' : 'Choose a reviewer provider first.' }],
+                    (modelId) => void setMemorySettings({ permissionReviewerModelId: modelId })
+                  )} />
+            </>}
           </SettingsSection>}
           {scopedProviderId && <SectionCard
             flat

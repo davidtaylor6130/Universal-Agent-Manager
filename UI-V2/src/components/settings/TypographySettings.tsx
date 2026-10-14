@@ -14,7 +14,7 @@ export function TypographySettings() {
   ] as const
   return (
     <div className="grid gap-6">
-      <SettingsSection title="Fonts and sizes" description="Each row changes one part of the app. The sample updates as you change it."
+      <SettingsSection title="Fonts and sizes"
         actions={<Button size="sm" onClick={reset}>Reset typography</Button>}>
         {rows.map((row) => {
           const fontKey = `${row.id}Font` as keyof TypographyPreferences
@@ -37,7 +37,6 @@ export function TypographySettings() {
               <div className="uam-typo-row__preview" aria-label={`${row.label} preview`} style={{ fontFamily: family, fontSize: size }}>
                 {row.preview}
               </div>
-              <span className="uam-typo-row__meta">{(row.fonts as Record<string, { label: string }>)[selected]?.label} · {size}px</span>
             </SettingRow>
           )
         })}
