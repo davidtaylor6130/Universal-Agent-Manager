@@ -27,6 +27,7 @@ import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { attachmentChipKind, isImageAttachment, AttachmentList, CompactionSeparator, InterruptedDivider, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
+import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
@@ -558,6 +559,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.directory ?? '' : ''
   )
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
+  const folderIcon = useAppStore((s) => session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.customIcon : undefined)
   const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const cli = useAppStore((s) => s.cliBindingBySessionId[session.id])
@@ -2900,7 +2902,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                       setGoalsPopupOwner(null)
                       setModelOpen(false)
                     }}
-                    icon={<ComposerIcon name="folder" size={14} />}
+                    icon={<CustomIcon icon={folderIcon} fallback={<ComposerIcon name="folder" size={14} />} />}
                     label={workspaceDirectory ? 'Workspace actions' : 'Workspace not selected'}
                     aria-haspopup="menu"
                     aria-expanded={workspaceMenuOpen}
