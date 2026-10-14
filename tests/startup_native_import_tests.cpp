@@ -1,5 +1,8 @@
 #include "test_harness.h"
 #include "app/startup_native_import_service.h"
+#include "app/agent_run_ledger.h"
+#include "app/agent_run_scheduler.h"
+#include "common/utils/diagnostic_log.h"
 
 #include <atomic>
 #include <fstream>
@@ -49,6 +52,206 @@ namespace
 			service.Poll(app);
 			std::this_thread::yield();
 		}
+	}
+}
+
+UAM_TEST(StartupNativeCandidatesRetainHiddenAgentOwnershipAcrossProviders)
+{
+	TempDir temp("uam-startup-hidden-agent-ownership");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const fs::path directory = temp.root / "workspace";
+	std::vector<ChatSession> histories;
+	std::vector<ChatSession> owners;
+	for (const std::string& provider : {std::string("claude-cli"), std::string("codex-cli")})
+	{
+		const std::string native_id = provider == "codex-cli" ? "11111111-1111-4111-8111-111111111111" : "native-" + provider;
+		ChatSession native = StartupHistory(directory, native_id);
+		native.provider_id = provider;
+		histories.push_back(native);
+		ChatSession owner = native;
+		owner.id = "chat-agent-" + provider;
+		owner.agent_run_id = "run-" + provider;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, owner));
+		owners.push_back(std::move(owner));
+	}
+	histories.push_back(StartupHistory(directory, "ordinary-unowned"));
+	ChatHistorySyncService().LoadSidebarChats(app);
+	UAM_ASSERT(app.chats.empty());
+	UAM_ASSERT_EQ(app.hidden_agent_chat_ownership.chats.size(), std::size_t{2});
+	uam::StartupNativeImportService service(FixtureScanner(histories));
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{1});
+	UAM_ASSERT_EQ(ready.candidates.front().native_session_id, std::string("ordinary-unowned"));
+	std::string error;
+	UAM_ASSERT(service.Decide(app, ready.generation, {}, {}, &error, "known", true));
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().imported_count, 1);
+	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{0});
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	for (const ChatSession& owner : owners)
+	{
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, owner.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->native_session_id, owner.native_session_id);
+		UAM_ASSERT_EQ(saved->agent_run_id, owner.agent_run_id);
+		UAM_ASSERT_EQ(saved->messages, owner.messages);
+		UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, owner.native_session_id)));
+	}
+}
+
+UAM_TEST(StartupHiddenAgentOwnershipRefreshesOnSidebarMergeAndRootReload)
+{
+	TempDir temp("uam-startup-hidden-agent-refresh");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ChatSession hidden = StartupHistory(temp.root / "workspace", "native-before");
+	hidden.provider_id = "claude-cli";
+	hidden.id = "chat-hidden";
+	hidden.agent_run_id = "run-hidden";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, hidden));
+	ChatSession ordinary = StartupHistory(temp.root / "workspace", "ordinary-local");
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, ordinary));
+	const ChatHistorySyncService history;
+	history.LoadSidebarChats(app);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	app.chats.front().title = "Unsaved local title";
+	hidden.native_session_id = "native-after";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, hidden));
+	history.MergeSidebarChatsPreservingCurrent(app);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.chats.front().title, std::string("Unsaved local title"));
+	ChatSession before = StartupHistory(temp.root / "workspace", "native-before");
+	before.provider_id = "claude-cli";
+	ChatSession after = before;
+	after.id = "native-after";
+	after.native_session_id = after.id;
+	ChatHistorySyncService::LocalHistoryDiscovery discovery;
+	discovery.chats = {before, after};
+	UAM_ASSERT(history.FilterStartupImportCandidates(app, discovery));
+	UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{1});
+	UAM_ASSERT_EQ(discovery.chats.front().native_session_id, before.native_session_id);
+	app.data_root = temp.root / "second-data-root";
+	history.LoadSidebarChats(app);
+	UAM_ASSERT(app.chats.empty());
+	discovery.chats = {before, after};
+	UAM_ASSERT(history.FilterStartupImportCandidates(app, discovery));
+	UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{2});
+}
+
+UAM_TEST(StartupNativeDiagnosticsLogErrorsBeyondBoundedSnapshot)
+{
+	TempDir temp("uam-startup-import-diagnostics");
+	const fs::path log = temp.root / "diagnostics.log";
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error));
+	struct StopLog
+	{
+		~StopLog() { uam::diagnostics::StopFileLog(); }
+	} stop;
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	uam::StartupNativeImportService service([](const uam::StartupNativeImportScanRequest&, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		for (int index = 0; index < 21; ++index) discovery.result.Fail("private-history-error-" + std::to_string(index));
+		return discovery;
+	});
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().errors.size(), std::size_t{20});
+	uam::diagnostics::FlushFileLog();
+	UAM_ASSERT(uam::io::ReadTextFile(log).find("private-history-error-20") != std::string::npos);
+}
+
+UAM_TEST(StartupNativeOwnershipSurvivesAgentCancellationAndResolvedIdRemoval)
+{
+	for (const bool resolved_only : {false, true})
+	{
+		TempDir temp("uam-startup-cancelled-agent-ownership");
+		uam::AppState app;
+		StartupWorkspace(app, temp.root);
+		const ChatHistorySyncService history;
+		history.LoadSidebarChats(app);
+		AgentRun run;
+		run.id = uam::AgentRunLedger::NewRunId();
+		run.root_chat_id = "root-chat";
+		run.transcript_chat_id = "chat-running-agent";
+		run.agent_id = "private-agent";
+		run.provider_id = "claude-cli";
+		run.definition_snapshot = "private fixture definition";
+		run.task = "Private fixture task";
+		run.effective_workspace_access = "read";
+		run.status = "queued";
+		run.depth = 1;
+		run.created_at = uam::time::TimestampNow();
+		run.updated_at = run.created_at;
+		UAM_ASSERT(uam::AgentRunLedger::Save(app.data_root, run));
+		ChatSession transcript = StartupHistory(temp.root / "workspace", "real-native-agent");
+		transcript.id = run.transcript_chat_id;
+		transcript.agent_run_id = run.id;
+		transcript.provider_id = run.provider_id;
+		if (resolved_only) transcript.native_session_id = transcript.id;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, transcript));
+		app.chats.push_back(transcript);
+		app.agent_runs.push_back(run);
+		app.queued_agent_run_ids.push_back(run.id);
+		if (resolved_only) app.resolved_native_sessions_by_chat_id[transcript.id] = "real-native-agent";
+		std::string error;
+		UAM_ASSERT(uam::AgentRunScheduler::CancelTree(app, run.id, &error));
+		UAM_ASSERT_EQ(app.agent_runs.front().status, std::string("cancelled"));
+		UAM_ASSERT(app.chats.empty());
+		UAM_ASSERT(app.acp_sessions.empty());
+		UAM_ASSERT(app.queued_agent_run_ids.empty());
+		UAM_ASSERT(!app.resolved_native_sessions_by_chat_id.contains(transcript.id));
+		ChatSession native = StartupHistory(temp.root / "workspace", "real-native-agent");
+		native.provider_id = run.provider_id;
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.chats.push_back(native);
+		UAM_ASSERT(history.FilterStartupImportCandidates(app, discovery));
+		UAM_ASSERT(discovery.chats.empty());
+		UAM_ASSERT_EQ(app.hidden_agent_chat_ownership.chats.size(), std::size_t{1});
+		UAM_ASSERT(app.hidden_agent_chat_ownership.chats.front().messages.empty());
+		history.MergeSidebarChatsPreservingCurrent(app);
+		UAM_ASSERT(app.chats.empty());
+		discovery.chats = {native};
+		UAM_ASSERT(history.FilterStartupImportCandidates(app, discovery));
+		UAM_ASSERT(discovery.chats.empty());
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, transcript.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->native_session_id, transcript.native_session_id);
+		UAM_ASSERT_EQ(saved->messages, transcript.messages);
+		if (resolved_only)
+		{
+			transcript.native_session_id = "newer-native-agent";
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, transcript));
+			history.MergeSidebarChatsPreservingCurrent(app);
+			ChatSession newer = native;
+			newer.id = transcript.native_session_id;
+			newer.native_session_id = newer.id;
+			discovery.chats = {native, newer};
+			UAM_ASSERT(history.FilterStartupImportCandidates(app, discovery));
+			UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{1});
+			UAM_ASSERT_EQ(discovery.chats.front().native_session_id, native.native_session_id);
+		}
+		UAM_ASSERT(!ChatRepository::DeleteChatStorageFiles(app.data_root, transcript.id).Failed());
+		history.MergeSidebarChatsPreservingCurrent(app);
+		UAM_ASSERT(app.hidden_agent_chat_ownership.chats.empty());
+		ChatSession deleted_source = native;
+		deleted_source.id = transcript.native_session_id;
+		deleted_source.native_session_id = deleted_source.id;
+		discovery.chats = {deleted_source};
+		UAM_ASSERT(history.FilterStartupImportCandidates(app, discovery));
+		UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{1});
+		app.data_root = temp.root / "second-data-root";
+		history.LoadSidebarChats(app);
+		UAM_ASSERT(app.chats.empty());
+		UAM_ASSERT(app.hidden_agent_chat_ownership.chats.empty());
+		discovery.chats = {native};
+		UAM_ASSERT(history.FilterStartupImportCandidates(app, discovery));
+		UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{1});
 	}
 }
 

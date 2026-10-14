@@ -447,6 +447,18 @@ namespace
 			}
 		}
 
+		if (app.hidden_agent_chat_ownership.data_root == data_root)
+		{
+			for (const ChatSession& chat : app.hidden_agent_chat_ownership.chats)
+			{
+				import_index.existing_ids.insert(chat.id);
+				if (uam::strings::IsBlank(chat.native_session_id)) continue;
+				import_index.owned_native_keys.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+				const std::string remote_key = RemoteImportOwnershipKey(app, chat);
+				if (!remote_key.empty()) import_index.remote_owned_native_keys.insert(remote_key);
+			}
+		}
+
 		// Session attachment can precede the deferred chat save. Protect live
 		// ownership as well as persisted links before any background import.
 		for (const ChatSession& chat : app.chats)
@@ -959,11 +971,12 @@ namespace
 					    }
 					    chat.updated_at = chat.created_at;
 					    chat.messages_loaded = !metadata_only;
-					    return !metadata_only;
+					    return true;
 				    }
 
 				    if (!include || record_type != "response_item") return true;
 				    const std::string_view item_type = uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "type");
+				    if (metadata_only && (item_type != "message" || uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "role") != "user")) return true;
 				    const bool builtin_tool = item_type == "local_shell_call" || item_type == "web_search_call";
 				    if (item_type == "function_call" || item_type == "custom_tool_call" || builtin_tool)
 				    {
@@ -1072,6 +1085,12 @@ namespace
 				    {
 					    return true;
 				    }
+				    if (metadata_only)
+				    {
+					    // Discovery requires authored history without retaining the transcript.
+					    has_user_message = true;
+					    return false;
+				    }
 
 				    Message message;
 				    message.role = role == "user" ? MessageRole::User : MessageRole::Assistant;
@@ -1098,7 +1117,7 @@ namespace
 		if (malformed_out != nullptr) *malformed_out = !read_success || parse_error;
 
 		if (stop_token.stop_requested()) return std::nullopt;
-		if (!read_success || parse_error || !metadata_seen || !include || (!metadata_only && !has_user_message))
+		if (!read_success || parse_error || !metadata_seen || !include || !has_user_message)
 		{
 			return std::nullopt;
 		}
@@ -3606,11 +3625,72 @@ ChatHistorySyncService::LoadRemoteCodexTranscript(
 	return transcript;
 }
 
+void ChatHistorySyncService::RetainHiddenAgentChatOwnership(uam::AppState& app, const ChatSession& chat) const
+{
+	if (chat.agent_run_id.empty()) return;
+	uam::HiddenAgentChatOwnership& ownership = app.hidden_agent_chat_ownership;
+	if (ownership.data_root != app.data_root)
+	{
+		ownership.data_root = app.data_root;
+		ownership.chats.clear();
+	}
+	const std::vector<ChatSession>::iterator previous = std::ranges::find(ownership.chats, chat.id, &ChatSession::id);
+	ChatSession metadata;
+	metadata.id = chat.id;
+	metadata.provider_id = chat.provider_id;
+	metadata.native_session_id = chat.native_session_id;
+	metadata.folder_id = chat.folder_id;
+	metadata.execution_host_id = chat.execution_host_id;
+	metadata.workspace_directory = chat.workspace_directory;
+	metadata.workspace_worktree_directory = chat.workspace_worktree_directory;
+	metadata.agent_run_id = chat.agent_run_id;
+	metadata.title = chat.title;
+	metadata.created_at = chat.created_at;
+	metadata.updated_at = chat.updated_at;
+	metadata.messages_loaded = false;
+	metadata.persisted_message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+	metadata.persisted_messages_digest = chat.persisted_messages_digest;
+	const bool draft_native_id = uam::strings::IsBlank(chat.native_session_id) || NativeSessionLinkService().IsLocalDraftChatId(chat.native_session_id);
+	const std::unordered_map<std::string, std::string>::const_iterator resolved = app.resolved_native_sessions_by_chat_id.find(chat.id);
+	if (draft_native_id && resolved != app.resolved_native_sessions_by_chat_id.end() && !uam::strings::IsBlank(resolved->second))
+	{
+		metadata.native_session_id = resolved->second;
+	}
+	else if (draft_native_id && previous != ownership.chats.end() &&
+	    previous->agent_run_id == chat.agent_run_id &&
+	    uam::provider_ids::CanonicalCliProviderLookupId(previous->provider_id) == uam::provider_ids::CanonicalCliProviderLookupId(chat.provider_id) &&
+	    chat_identity::NativeWorkspaceForHistoryImport(*previous) == chat_identity::NativeWorkspaceForHistoryImport(chat))
+	{
+		metadata.native_session_id = previous->native_session_id;
+	}
+	if (previous == ownership.chats.end()) ownership.chats.push_back(std::move(metadata));
+	else *previous = std::move(metadata);
+}
+
+namespace
+{
+	void RetainHiddenAgentChats(uam::AppState& app, std::vector<ChatSession>& chats)
+	{
+		std::vector<ChatSession> previous;
+		if (app.hidden_agent_chat_ownership.data_root == app.data_root)
+			previous = std::move(app.hidden_agent_chat_ownership.chats);
+		app.hidden_agent_chat_ownership = {app.data_root, {}};
+		std::erase_if(chats, [&](const ChatSession& chat)
+		{
+			if (chat.agent_run_id.empty()) return false;
+			const std::vector<ChatSession>::const_iterator captured = std::ranges::find(previous, chat.id, &ChatSession::id);
+			if (captured != previous.end()) app.hidden_agent_chat_ownership.chats.push_back(*captured);
+			ChatHistorySyncService().RetainHiddenAgentChatOwnership(app, chat);
+			return true;
+		});
+	}
+}
+
 void ChatHistorySyncService::LoadSidebarChats(uam::AppState& app) const
 {
 	std::string warning;
 	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root, &warning);
-	std::erase_if(chats, [](const ChatSession& chat) { return !chat.agent_run_id.empty(); });
+	RetainHiddenAgentChats(app, chats);
 	NormalizeLegacyOpenCodeChatsForSidebar(app, chats);
 	ReplaceAppChatsWithNormalized(app, std::move(chats));
 	if (!warning.empty())
@@ -3630,7 +3710,7 @@ void ChatHistorySyncService::MergeSidebarChatsPreservingCurrent(uam::AppState& a
 
 	std::string warning;
 	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root, &warning);
-	std::erase_if(chats, [](const ChatSession& chat) { return !chat.agent_run_id.empty(); });
+	RetainHiddenAgentChats(app, chats);
 	for (ChatSession& chat : chats)
 	{
 		const auto current = current_by_id.find(chat.id);

@@ -39,3 +39,95 @@ UAM_TEST(OpenCodeImportReportsInvalidRootAndMessagesSeparately)
 	UAM_ASSERT(!invalid_messages.success);
 	UAM_ASSERT_EQ(invalid_messages.error, std::string("OpenCode export is missing a valid messages array."));
 }
+
+UAM_TEST(CodexDiscoveryExcludesSessionsWithoutAuthoredUsers)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-authored-discovery");
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	app.folders.push_back({"known", "Known", workspace.string(), false, "local"});
+	const fs::path sessions = temp.root / "codex" / "sessions";
+	fs::create_directories(sessions);
+	const std::string authored_id = "44444444-4444-4444-8444-444444444444";
+	const std::string context = "<environment_context>\nprivate fixture context\n</environment_context>";
+	const nlohmann::json context_message = {{"type", "response_item"}, {"payload", {{"type", "message"},
+	    {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", context}}})}}}};
+	for (const int mode : {0, 1, 2, 3})
+	{
+		const std::string id = mode == 3 ? authored_id : "11111111-1111-4111-8111-11111111111" + std::to_string(mode);
+		std::string records = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", workspace.string()},
+		    {"timestamp", "2026-10-10T01:25:39Z"}}}}.dump() + "\n";
+		if (mode == 0)
+			records += nlohmann::json{{"type", "event_msg"}, {"payload", {{"type", "thread_settings_applied"}}}}.dump() + "\n";
+		else if (mode == 1)
+			records += nlohmann::json{{"type", "realtime_item"}, {"payload", {{"type", "realtime_session_closed"}}}}.dump() + "\n";
+		else records += context_message.dump() + "\n";
+		if (mode == 3)
+		{
+			records += nlohmann::json{{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"},
+			    {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", context + "\nAuthored request"}}})}}}}.dump() + "\n";
+			records += nlohmann::json{{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "assistant"},
+			    {"content", nlohmann::json::array({{{"type", "output_text"}, {"text", "Authored response"}}})}}}}.dump() + "\n";
+		}
+		UAM_ASSERT(uam::io::WriteTextFile(sessions / ("rollout-" + id + ".jsonl"), records));
+	}
+	const ChatHistorySyncService::LocalHistoryDiscovery discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(app.folders.front());
+	UAM_ASSERT(discovery.result.success);
+	UAM_ASSERT_EQ(discovery.codex_rollouts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(discovery.codex_rollouts.front().first.native_session_id, authored_id);
+	UAM_ASSERT(discovery.codex_rollouts.front().first.messages.empty());
+	UAM_ASSERT(!discovery.codex_rollouts.front().first.messages_loaded);
+	const ChatHistorySyncService::ImportResult imported = ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, app.folders.front(), discovery, true);
+	UAM_ASSERT(imported.success);
+	UAM_ASSERT_EQ(imported.imported_count, 1);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, authored_id);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(saved->messages.front().content, std::string("Authored request"));
+	UAM_ASSERT_EQ(saved->messages.back().content, std::string("Authored response"));
+	std::stop_source cancelled;
+	cancelled.request_stop();
+	UAM_ASSERT(ChatHistorySyncService().DiscoverProviderChatsForFolder(app.folders.front(), nullptr, cancelled.get_token()).codex_rollouts.empty());
+#endif
+}
+
+UAM_TEST(CodexDiscoveryKeepsMalformedHistoryFailClosed)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-malformed-discovery");
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	app.folders.push_back({"known", "Known", workspace.string(), false, "local"});
+	const fs::path sessions = temp.root / "codex" / "sessions";
+	fs::create_directories(sessions);
+	const std::string id = "55555555-5555-4555-8555-555555555555";
+	const fs::path rollout = sessions / ("rollout-" + id + ".jsonl");
+	const std::string metadata = nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", workspace.string()}}}}.dump() + "\n";
+	UAM_ASSERT(uam::io::WriteTextFile(rollout, metadata + "{incomplete"));
+	const ChatHistorySyncService::LocalHistoryDiscovery malformed = ChatHistorySyncService().DiscoverProviderChatsForFolder(app.folders.front());
+	UAM_ASSERT(!malformed.result.success);
+	UAM_ASSERT(malformed.codex_rollouts.empty());
+	const std::string message = nlohmann::json{{"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"},
+	    {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "Authored request"}}})}}}}.dump() + "\n";
+	UAM_ASSERT(uam::io::WriteTextFile(rollout, metadata + message + "{incomplete"));
+	const ChatHistorySyncService::LocalHistoryDiscovery discovered = ChatHistorySyncService().DiscoverProviderChatsForFolder(app.folders.front());
+	UAM_ASSERT_EQ(discovered.codex_rollouts.size(), std::size_t{1});
+	const ChatHistorySyncService::ImportResult imported = ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, app.folders.front(), discovered, true);
+	UAM_ASSERT(!imported.success);
+	UAM_ASSERT_EQ(imported.imported_count, 0);
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, id)));
+#endif
+}

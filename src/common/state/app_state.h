@@ -1091,6 +1091,12 @@ namespace uam
 	/// <summary>Shared application state for the CEF/React provider CLI release slice.</summary>
 	struct PendingChatSaveTask;
 	struct MemoryActivityRefreshTask;
+	struct HiddenAgentChatOwnership
+	{
+		fs::path data_root;
+		std::vector<ChatSession> chats;
+	};
+
 	struct AppState
 	{
 		WorkspaceLeaseGate worktree_retention_gate;
@@ -1117,6 +1123,7 @@ namespace uam
 		uam::FrontendActionMap frontend_actions;
 
 		std::vector<ChatSession> chats;
+		HiddenAgentChatOwnership hidden_agent_chat_ownership;
 		std::vector<AgentRun> agent_runs;
 		std::vector<UamControlCapability> uam_control_capabilities;
 		std::string uam_control_manager_id;

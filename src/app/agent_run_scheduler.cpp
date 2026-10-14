@@ -4,6 +4,7 @@
 #include "app/agent_definition_service.h"
 #include "app/agent_run_ledger.h"
 #include "app/chat_domain_service.h"
+#include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/approval_modes.h"
 #include "common/config/mcp_server_config.h"
@@ -66,6 +67,8 @@ namespace uam
 
 		void EraseRuntimeChat(AppState& app, std::string_view chat_id)
 		{
+			if (const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id)))
+				ChatHistorySyncService().RetainHiddenAgentChatOwnership(app, *chat);
 			std::erase_if(app.acp_sessions, [&](const auto& session) { return session != nullptr && session->chat_id == chat_id; });
 			std::erase_if(app.chats, [&](const ChatSession& chat) { return chat.id == chat_id; });
 			app.chats_with_unseen_updates.erase(std::string(chat_id));

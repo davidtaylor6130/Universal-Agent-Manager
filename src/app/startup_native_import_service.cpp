@@ -101,11 +101,10 @@ namespace uam
 
 	void StartupNativeImportService::AddError(const std::string& error)
 	{
-		if (!error.empty() && m_errors.size() < 20)
-		{
-			m_errors.push_back(strings::SafeLine(error, 512, true));
-			diagnostics::Write("Startup native history: " + m_errors.back());
-		}
+		if (error.empty()) return;
+		const std::string message = strings::SafeLine(error, 512, true);
+		diagnostics::Write("Startup native history: " + message);
+		if (m_errors.size() < 20) m_errors.push_back(message);
 	}
 
 	bool StartupNativeImportService::Poll(AppState& app)

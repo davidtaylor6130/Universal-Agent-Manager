@@ -168,6 +168,8 @@ class ChatHistorySyncService
 	std::optional<std::filesystem::path> ResolveNativeHistoryChatsDirForWorkspace(const std::filesystem::path& workspace_root) const;
 	std::filesystem::path ResolveNativeHistoryChatsDirForChat(const uam::AppState& app, const ChatSession& chat) const;
 	void LoadSidebarChats(uam::AppState& app) const;
+	/// <summary>Retains hidden agent identity without transcript bodies or additional storage reads.</summary>
+	void RetainHiddenAgentChatOwnership(uam::AppState& app, const ChatSession& chat) const;
 	void MergeSidebarChatsPreservingCurrent(uam::AppState& app) const;
 	void RefreshNativeSessionDirectory(uam::AppState& app) const;
 	bool StartAsyncNativeChatLoad(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir) const;
