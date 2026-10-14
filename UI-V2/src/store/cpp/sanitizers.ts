@@ -1705,6 +1705,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         runnerDirectory: stringOr(entry.runnerDirectory),
         runnerProtocolVersion: finiteNumberOr(entry.runnerProtocolVersion, 0),
         instructionFile: stringOr(entry.instructionFile),
+        instructionText: typeof entry.instructionText === 'string' ? entry.instructionText : undefined,
         startupEnabled: booleanOr(entry.startupEnabled, false),
         cliUpdatesAsAdmin: booleanOr(entry.cliUpdatesAsAdmin, false),
         startupStatus: stringOr(entry.startupStatus, 'disabled'),

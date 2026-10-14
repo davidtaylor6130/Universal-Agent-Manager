@@ -574,6 +574,66 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
+  it('saves inline host instructions only when they change, and can switch back to the instruction file', async () => {
+    const host = { id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' }
+    useAppStore.setState({ executionHosts: [{ ...host, instructionText: null }] })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      requests.push(parsed)
+      onSuccess(JSON.stringify({}))
+    }
+    const setTextareaValue = (element: HTMLTextAreaElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(element, value)
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const { host: container, root } = renderModal()
+    try {
+      openRemoteHostsSection(container)
+      const area = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Host instructions on Fixture host"]')!
+      const saveButton = () => area.form!.querySelector<HTMLButtonElement>('button[type="submit"]')!
+      expect(saveButton().disabled).toBe(true)
+      // Typing then clearing on a legacy host must not count as a change.
+      await act(async () => setTextareaValue(area, 'x'))
+      expect(saveButton().disabled).toBe(false)
+      await act(async () => setTextareaValue(area, ''))
+      expect(saveButton().disabled).toBe(true)
+      await act(async () => setTextareaValue(area, 'Be terse.'))
+      requests.length = 0
+      await act(async () => { saveButton().click() })
+      expect(requests.find((request) => request.action === 'saveRemoteHostOptions')?.payload).toEqual({
+        id: 'fixture-host', instructionFile: '/tmp/AGENTS.md', instructionText: 'Be terse.', startupEnabled: false, cliUpdatesAsAdmin: false,
+      })
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+
+  it('sends null when a host with inline instructions goes back to the instruction file', async () => {
+    useAppStore.setState({
+      executionHosts: [{ id: 'fixture-host', label: 'Fixture host', transport: 'ssh', sshAlias: 'fixture-host', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md', instructionText: 'Be terse.' }],
+    })
+    const requests: Array<{ action: string; payload: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      requests.push(JSON.parse(request) as { action: string; payload: Record<string, unknown> })
+      onSuccess(JSON.stringify({}))
+    }
+    const { host: container, root } = renderModal()
+    try {
+      openRemoteHostsSection(container)
+      const area = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Host instructions on Fixture host"]')!
+      expect(area.value).toBe('Be terse.')
+      await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Use instruction file instead')!.click())
+      requests.length = 0
+      await act(async () => area.form!.querySelector<HTMLButtonElement>('button[type="submit"]')!.click())
+      expect(requests.find((request) => request.action === 'saveRemoteHostOptions')?.payload.instructionText).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      container.remove()
+    }
+  })
+
   it.each([
     { applied: undefined, error: undefined, expected: 'Currently off' },
     { applied: 'enabled', error: undefined, expected: 'Starts automatically' },
@@ -703,6 +763,7 @@ describe('SettingsModal memory settings', () => {
     openAgentsSection(host)
     expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Find agents')).toBe(false)
     expect(host.textContent).toContain('Import from a provider')
+    expect(host.querySelector('input[aria-label="Native agent Markdown file"]')).not.toBeNull()
     act(() => root.unmount())
     host.remove()
   })
@@ -755,7 +816,6 @@ describe('SettingsModal memory settings', () => {
   })
 
   it.each(['path', 'provider'] as const)('ignores an obsolete agent preview after the %s changes', async (changedField) => {
-    expect(host.querySelector('input[aria-label="Native agent Markdown file"]')).not.toBeNull()
     type Preview = Awaited<ReturnType<ReturnType<typeof useAppStore.getState>['previewProviderAgentImport']>>
     const pending: Array<(preview: Preview) => void> = []
     const previewProviderAgentImport = vi.fn(() => new Promise<Preview>(resolve => pending.push(resolve)))

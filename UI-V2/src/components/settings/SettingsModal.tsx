@@ -247,15 +247,27 @@ function remoteInstructionFileError(platform: string | undefined, rawValue: stri
   return value.startsWith('/') ? '' : 'Use an absolute path such as /home/you/AGENTS.md.'
 }
 
-function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: ExecutionHost; busy: boolean; onSave: (instructionFile: string, startupEnabled: boolean, cliUpdatesAsAdmin: boolean) => void; onCheck: (instructionFile: string) => void }) {
+const HOST_INSTRUCTION_TEXT_MAX_BYTES = 256 * 1024
+
+type RemoteHostOptionsDraft = { instructionFile: string; instructionText?: string | null; startupEnabled: boolean; cliUpdatesAsAdmin: boolean }
+
+function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: ExecutionHost; busy: boolean; onSave: (draft: RemoteHostOptionsDraft) => void; onCheck: (instructionFile: string) => void }) {
   const [instructionFile, setInstructionFile] = useState(host.instructionFile || '')
+  // null = no inline text (the legacy instruction file applies); a string is inline text, where '' suppresses the host fragment.
+  const [inlineText, setInlineText] = useState<string | null>(host.instructionText ?? null)
   const [startupEnabled, setStartupEnabled] = useState(Boolean(host.startupEnabled))
   const [cliUpdatesAsAdmin, setCliUpdatesAsAdmin] = useState(Boolean(host.cliUpdatesAsAdmin))
   const instructionError = remoteInstructionFileError(host.platform, instructionFile)
+  const textBytes = new TextEncoder().encode(inlineText ?? '').length
+  const textError = textBytes > HOST_INSTRUCTION_TEXT_MAX_BYTES ? 'Host instructions are over 256 KiB. Shorten them to save.' : ''
+  // Clearing the box on a host still using the file keeps it in file mode instead of suppressing the file.
+  const changeText = (value: string) => setInlineText(value === '' && (host.instructionText ?? null) === null ? null : value)
+  const textDirty = inlineText !== (host.instructionText ?? null)
   const dirty = instructionFile.trim() !== (host.instructionFile || '').trim()
+    || textDirty
     || startupEnabled !== Boolean(host.startupEnabled)
     || cliUpdatesAsAdmin !== Boolean(host.cliUpdatesAsAdmin)
-  const saveReason = instructionError ? 'Fix the instruction file path first.' : dirty ? undefined : 'No changes to save.'
+  const saveReason = textError || instructionError ? 'Fix the errors above first.' : dirty ? undefined : 'No changes to save.'
   // Switch = saved preference; status = applied state on the host. Without runnerStartupApplied, keep the legacy line.
   const applied = host.runnerStartupApplied
   const appliedOn = applied === 'enabled'
@@ -270,10 +282,15 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       {startupMismatch && <span style={{ color: 'var(--text-3)' }}>· Saved setting doesn't match what is applied.</span>}
     </span>
   ) : `Currently ${!host.startupStatus || host.startupStatus === 'disabled' ? 'off' : host.startupStatus} · uses login or systemd user session`
+  const textHint = inlineText === null
+    ? 'Not set. The instruction file below is read on this host.'
+    : inlineText === ''
+      ? 'Empty. No host instructions are sent, and the instruction file is skipped.'
+      : 'Sent to this host. The instruction file below is skipped.'
   return (
     <form className="mt-2 grid gap-2" onSubmit={(event) => {
       event.preventDefault()
-      if (!busy && dirty && !instructionError) onSave(instructionFile, startupEnabled, cliUpdatesAsAdmin)
+      if (!busy && dirty && !instructionError && !textError) onSave({ instructionFile, instructionText: textDirty ? inlineText : undefined, startupEnabled, cliUpdatesAsAdmin })
     }}>
       <SettingRow
         title="Start runner at login"
@@ -288,13 +305,18 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
           control={<Switch hideLabel name="cliUpdatesAsAdmin" label="Run CLI updates with sudo" checked={cliUpdatesAsAdmin} disabled={busy} onChange={(event) => setCliUpdatesAsAdmin(event.currentTarget.checked)} />}
         />
       )}
-      <SettingsField label="Host instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Read first on this host. Empty skips it.">
+      <SettingsField label="Host instructions" htmlFor={`remote-host-instructions-${host.id}`} hint={textHint}>
+        <textarea id={`remote-host-instructions-${host.id}`} name="instructionText" aria-label={`Host instructions on ${host.label}`} aria-invalid={Boolean(textError) || undefined} value={inlineText ?? ''} onChange={(event) => changeText(event.currentTarget.value)} disabled={busy} rows={5} spellCheck={false} placeholder="Describe how agents should work on this host." className="uam-field w-full font-mono" style={{ minHeight: 96, height: 'auto', resize: 'vertical' }} />
+        {textError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{textError}</span>}
+        {inlineText !== null && <div><Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => setInlineText(null)}>Use instruction file instead</Button></div>}
+      </SettingsField>
+      <SettingsField label="Legacy instruction file" htmlFor={`remote-host-instruction-${host.id}`} hint="Used only while the host instructions above are not set. Empty skips it.">
         <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
         {instructionError && <span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span>}
       </SettingsField>
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="secondary" type="button" disabled={busy || !instructionFile.trim() || Boolean(instructionError)} onClick={() => onCheck(instructionFile)}>Check file</Button>
-        <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError)} title={saveReason}>Save host options</Button>
+        <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError) || Boolean(textError)} title={saveReason}>Save host options</Button>
       </div>
     </form>
   )
@@ -955,10 +977,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteLabel('')
   }
 
-  const saveRemoteHostOptions = async (host: ExecutionHost, instructionFile: string, startupEnabled: boolean, cliUpdatesAsAdmin: boolean) => {
+  const saveRemoteHostOptions = async (host: ExecutionHost, draft: RemoteHostOptionsDraft) => {
     if (isRemoteHostBusy(host.id)) return
     setRemoteHostBusy(host.id, true)
-    const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, instructionFile, startupEnabled, cliUpdatesAsAdmin } })
+    // instructionText is omitted unless changed, so the backend keeps the saved text.
+    const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, ...draft } })
     setRemoteHostBusy(host.id, false)
     setRemoteMessage(response.ok ? `${host.label} options saved.` : response.error || 'SSH host options could not be saved.')
   }
@@ -2219,6 +2242,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setAgentImportMessage(preview ? '' : 'Preview failed.')
         setAgentImportBusy(false)
       }
+      // Only a workspace-scoped import needs a chat; a global import is admitted without one.
+      const importNeedsChat = agentImportWorkspaceScope && !activeSessionId
       const runImport = async () => {
         if (agentImportBusy || importNeedsChat || !agentImportPreview?.supported) return
         const requestId = ++agentImportRequest.current
@@ -2242,8 +2267,6 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingsSection
             title="Agent cycle"
             actions={
-      // Only a workspace-scoped import needs a chat; a global import is admitted without one.
-      const importNeedsChat = agentImportWorkspaceScope && !activeSessionId
               <>
                 <div className="w-[220px] max-w-full">
                   <MenuSelect
@@ -2602,7 +2625,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     <RemoteHostOptionsForm
                       host={host}
                       busy={isRemoteHostBusy(host.id)}
-                      onSave={(instructionFile, startupEnabled, cliUpdatesAsAdmin) => void saveRemoteHostOptions(host, instructionFile, startupEnabled, cliUpdatesAsAdmin)}
+                      onSave={(draft) => void saveRemoteHostOptions(host, draft)}
                       onCheck={(instructionFile) => checkRemoteHostInstruction(host, instructionFile)}
                     />
                   </details>
