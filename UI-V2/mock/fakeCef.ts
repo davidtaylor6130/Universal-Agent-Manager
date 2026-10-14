@@ -37,6 +37,7 @@ const models: Record<string, { id: string; name: string; description: string }[]
 const folders = [
   { id: 'f-uam', title: 'Universal Agent Manager', directory: '/Users/david/GitHub/UAM', collapsed: false, executionHostId: 'local' },
   { id: 'f-site', title: 'Company website', directory: '/Users/david/GitHub/site', collapsed: false, executionHostId: 'local' },
+  { id: 'f-build-uam', title: 'UAM checkout', directory: '/home/david/GitHub/UAM', collapsed: false, executionHostId: 'h-build' },
 ]
 
 type Msg = { role: 'user' | 'assistant'; content: string; createdAt: string; attachments?: Json[]; providerId?: string }
@@ -102,6 +103,7 @@ function state(): Json {
       goalMaxLoopIterations: 10, updateChecksEnabled: true, automaticProviderUpdates: false, updateLastCheckedAt: iso(3600000), dismissedUpdateVersions: {},
       memoryLastStatus: '', memoryWorkerBindings: {}, gitEnabled: true, svnEnabled: false, executionHosts, computerUseEnabled, providerAgentImport: true, hostScopedSettings: true,
       defaultNewChatProviderId: 'claude-cli',
+      executionRouting: { enabled: false, hosts: [], repositoryMatching: true },
     },
     cliVersionManager: { providers: [
       { providerId: 'claude-cli', installedVersion: '2.4.0', selectedVersion: '2.4.0', availableVersions: [{ version: '2.5.0', preferred: true }, { version: '2.4.0', preferred: false }], preferredVersion: '2.5.0', status: 'untested-newer', message: 'Version 2.5.0 is available.', running: false, lastCommand: '', lastOutput: '' },
@@ -206,6 +208,10 @@ async function handle(action: string, payload: Json): Promise<unknown> {
       return { available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: (c?.workspaceDirectory as string) ?? '', branchOrRevision: branch, lineStatsReady: true, warning: '', error: '',
         changedFiles: [{ path: 'UI-V2/src/components/views/ChatView.tsx', status: 'M', additions: 42, deletions: 7, staged: false }] }
     }
+    case 'listRepositoryMatches': await sleep(400); return { workspaces: [
+      { folderId: 'f-uam', repository: { kind: 'git', identity: 'git@github.com:davidtaylor/universal-agent-manager.git' }, matches: [{ executionHostId: 'h-build', remoteDirectory: '/home/david/GitHub/UAM', source: 'automatic' }, { executionHostId: 'h-gpu', remoteDirectory: null, source: 'automatic' }] },
+      { folderId: 'f-site', repository: { kind: 'git', identity: 'https://github.com/davidtaylor/company-site.git' }, matches: [{ executionHostId: 'h-build', remoteDirectory: null, source: 'automatic' }, { executionHostId: 'h-gpu', remoteDirectory: null, source: 'automatic' }] },
+    ] }
     default:
       console.info('[fake CEF] unhandled action', action, payload)
       return {}
