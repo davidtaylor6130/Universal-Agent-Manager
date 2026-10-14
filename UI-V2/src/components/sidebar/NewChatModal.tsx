@@ -1,4 +1,5 @@
-import { ExecutionRoutingDialog, RUNNER_STATUS } from '../modals/ExecutionRoutingDialog'
+import { ExecutionRoutingDialog } from '../modals/ExecutionRoutingDialog'
+import { RUNNER_STATUS } from '../settings/ExecutionRoutingSettings'
 import { canRouteAutomatically, sanitizeRepositoryMatches, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { SSH_ENABLED } from '../../config/buildFeatures'

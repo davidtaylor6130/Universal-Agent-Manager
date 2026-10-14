@@ -9,6 +9,7 @@ import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
+import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
 import { ProviderAgentImport } from './ProviderAgentImport'
@@ -50,7 +51,7 @@ import { sanitizeVoiceInputSettings } from '../../store/cpp/sanitizers'
 import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
+import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, X, type LucideIcon } from 'lucide-react'
 import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, StatusDot, Switch, ViewportMenu, motionAllowed } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
@@ -350,7 +351,7 @@ function selectedMemoryModelLabel(options: MemoryModelOption[], modelId: string)
   return options.find((option) => option.id === modelId)?.label ?? titleFromModelId(modelId)
 }
 
-type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
+type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -379,6 +380,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'provider-summary', label: 'Overview', icon: TerminalSquare },
   ...SUPPORTED_CLI_PROVIDER_IDS.map(id => ({ id: `provider:${id}` as SettingsSectionId, label: providerMetadataForId(id).shortName, icon: TerminalSquare })),
   { id: 'remote-hosts', label: 'Remote Hosts', icon: Server },
+  { id: 'routing', label: 'SSH Routing', icon: Route },
   { id: 'phone', label: 'Phone', icon: Smartphone },
   { id: 'voice-input', label: 'Voice Input', icon: Mic },
   { id: 'memory-settings', label: 'Memory Settings', icon: Brain },
@@ -394,7 +396,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'chat-data', label: 'Chat Data', icon: Download },
   { id: 'storage-cleanup', label: 'Storage Cleanup', icon: Trash2 },
     { id: 'about', label: 'About', icon: Info },
-].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED) && (section.id !== 'phone' || MOBILE_COMPANION_ENABLED)) as SettingsSection[]
+].filter((section) => (section.id !== 'remote-hosts' || SSH_ENABLED) && (section.id !== 'routing' || SSH_ENABLED) && (section.id !== 'computer-use' || COMPUTER_USE_ENABLED) && (section.id !== 'phone' || MOBILE_COMPANION_ENABLED)) as SettingsSection[]
 
 // Retired pages that now live inside another page; old ids still resolve (search, deep links).
 const SETTINGS_SECTION_ALIASES: Partial<Record<string, SettingsSectionId>> = { typography: 'appearance' }
@@ -402,7 +404,7 @@ const SETTINGS_SECTION_ALIASES: Partial<Record<string, SettingsSectionId>> = { t
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'General', sections: ['appearance', 'defaults', 'phone', 'voice-input'] },
   { label: 'Providers', sections: ['provider-summary', ...SUPPORTED_CLI_PROVIDER_IDS.map(id => `provider:${id}` as SettingsSectionId)] },
-  { label: 'Connections', sections: ['remote-hosts', 'mcp-servers'] },
+  { label: 'Connections', sections: ['remote-hosts', 'routing', 'mcp-servers'] },
   { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
   { label: 'Security', sections: ['permissions', 'computer-use'] },
   { label: 'Workspace', sections: ['vcs', 'editors'] },
@@ -414,6 +416,7 @@ const SETTINGS_SECTION_DESCRIPTIONS: Partial<Record<string, string>> = {
   'voice-input': 'Dictation for the message box.',
   'cli-version': 'Installed provider CLIs and their versions.',
   'remote-hosts': 'Computers that can run workspaces over SSH.',
+  routing: 'Which computers run new chats and which remote folders they use.',
   'mcp-servers': 'Model Context Protocol servers available to agents.',
   phone: 'Use UAM from your phone on the same network.',
 }
@@ -429,6 +432,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   agents: 'agents agent store create edit delete helpers subagents instructions import providers codex gemini claude copilot opencode',
   'cli-version': 'installed recommended latest download update version codex gemini claude copilot opencode',
   'remote-hosts': 'computers ssh connections hosts runners servers install',
+  routing: 'routing ssh automatic remote folders mapping',
   phone: 'phone mobile companion token url remote access',
   'voice-input': 'microphone dictation transcription speech whisper',
   'memory-settings': 'memory workers recall budgets idle models tokens processing',
@@ -798,6 +802,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const centralRef = useRef<CentralProviderSettingsHandle>(null)
   const voiceRef = useRef<SettingsDraftHandle>(null)
   const vcsRef = useRef<SettingsDraftHandle>(null)
+  const routingRef = useRef<ExecutionRoutingSettingsHandle>(null)
   const cleanupRef = useRef<SettingsDraftHandle>(null)
   const providerAvailabilityRef = useRef<SettingsDraftHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
@@ -835,6 +840,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const requestSectionExit = (next: () => void) => {
     if (selectedSection === 'vcs' && vcsRef.current) vcsRef.current.requestLeave(next)
     else if (selectedSection === 'storage-cleanup' && cleanupRef.current) cleanupRef.current.requestLeave(next)
+    else if (selectedSection === 'routing' && routingRef.current) routingRef.current.requestLeave(next)
     else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
@@ -2527,6 +2533,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         </div>
       )
     }
+
+    if (SSH_ENABLED && selectedSection === 'routing') return <ExecutionRoutingSettings ref={routingRef} variant="page" />
 
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
