@@ -1,8 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Check, ChevronDown, ChevronRight } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Folder as FolderIcon } from 'lucide-react'
 import type { Folder } from '../../types/session'
 import type { ResourceCollection } from '../../types/resourceCollection'
+import type { CustomIcon as Icon } from '../../types/customIcon'
 import { ViewportMenu } from '../ui'
+import { CustomIcon } from '../shared/CustomIcon'
 
 export interface WorkspacePickerProps {
   folders: readonly Folder[]
@@ -19,6 +21,7 @@ interface WorkspaceRow {
   key: string
   folderId: string | null
   label: string
+  icon?: Icon
   path: string
   group: string
   groupId: string
@@ -54,7 +57,7 @@ export function WorkspacePicker({ folders, collections, executionHostId, value, 
     const assigned = new Set<string>()
     const add = (folder: Folder, group: string, groupId: string) => {
       assigned.add(folder.id)
-      result.push({ key: `folder:${folder.id}`, folderId: folder.id, label: folder.name, path: folder.directory, group, groupId })
+      result.push({ key: `folder:${folder.id}`, folderId: folder.id, label: folder.name, icon: folder.customIcon, path: folder.directory, group, groupId })
     }
     if (hostId !== 'local' && remoteEmptyOption) result.push({ key: 'empty', folderId: null, label: remoteEmptyOption.label, path: remoteEmptyOption.description ?? '', group: '', groupId: '' })
     for (const collection of collections) {
@@ -145,7 +148,7 @@ export function WorkspacePicker({ folders, collections, executionHostId, value, 
       onClick={() => open ? close() : show()} onKeyDown={(event) => {
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); event.stopPropagation(); show() }
       }}>
-      <span className="truncate">{selected?.label ?? 'Choose workspace'}</span><ChevronDown size={14} aria-hidden />
+      <span className="flex min-w-0 items-center gap-2">{selected && <CustomIcon icon={selected.icon} fallback={<FolderIcon size={14} aria-hidden />} />}<span className="truncate">{selected?.label ?? 'Choose workspace'}</span></span><ChevronDown size={14} aria-hidden />
     </button>
     {open && <ViewportMenu ref={menuRef} anchorRef={triggerRef} manageFocus={false} onRequestClose={() => close()} onKeyDown={onKeyDown}
       className="p-1" style={{ minWidth: Math.max(triggerRef.current?.getBoundingClientRect().width ?? 0, 260), maxHeight: 320, background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)' }}>
@@ -164,6 +167,7 @@ export function WorkspacePicker({ folders, collections, executionHostId, value, 
             {!groupCollapsed && <button type="button" role="option" id={`${listId}-option-${optionIndex}`} data-workspace-option-index={optionIndex} aria-selected={row.folderId === value} tabIndex={-1}
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left" style={{ color: optionIndex === activeIndex ? 'var(--text)' : 'var(--text-2)', background: optionIndex === activeIndex ? 'var(--accent-dim)' : 'transparent' }}
               onMouseEnter={() => setActiveKey(row.key)} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(row)}>
+              <CustomIcon icon={row.icon} fallback={<FolderIcon size={14} aria-hidden />} />
               <span className="min-w-0 flex-1"><span className="block truncate text-sm">{highlightMatches(row.label, tokens)}</span>{row.path && <span className="block truncate font-mono text-xs" style={{ color: 'var(--text-3)' }} title={row.path}>{highlightMatches(row.path, tokens)}</span>}</span>
               {row.folderId === value && <Check size={13} aria-hidden />}
             </button>}

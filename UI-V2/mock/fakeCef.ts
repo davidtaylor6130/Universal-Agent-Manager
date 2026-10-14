@@ -36,7 +36,7 @@ const models: Record<string, { id: string; name: string; description: string }[]
 
 const folders = [
   { id: 'f-uam', title: 'Universal Agent Manager', directory: '/Users/david/GitHub/UAM', collapsed: false, executionHostId: 'local' },
-  { id: 'f-site', title: 'Company website', directory: '/Users/david/GitHub/site', collapsed: false, executionHostId: 'local' },
+  { id: 'f-site', title: 'Company website', directory: '/Users/david/GitHub/site', collapsed: false, executionHostId: 'local', customIcon: { type: 'text', value: '🌐' } },
   { id: 'f-build-uam', title: 'UAM checkout', directory: '/home/david/GitHub/UAM', collapsed: false, executionHostId: 'h-build' },
 ]
 
