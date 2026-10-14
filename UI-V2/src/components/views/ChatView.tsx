@@ -25,7 +25,7 @@ import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { attachmentChipKind, isImageAttachment, AttachmentList, CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
-import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton, Tooltip } from '../ui'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
@@ -2024,7 +2024,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
       }
 
       const commands: SlashCommand[] = [
-        ...(!session.temporaryParentChatId && !isCompanionContext() ? [{ id: 'side', label: '/side', hint: liveSideChatId ? 'Resume the open side chat' : 'Open a temporary side chat', icon: <CornerUpRight size={15} />, run: () => void navigateSide() }] : []),
+        ...(!session.temporaryParentChatId && !isCompanionContext() ? [{ id: 'side', label: '/side', hint: liveSideChatId ? 'Resume the open side chat' : 'Open a temporary side chat', icon: <MessageSquareDashed size={15} />, run: () => void navigateSide() }] : []),
         ...(session.temporaryParentChatId && !isCompanionContext() ? [
           { id: 'side-return', label: '/side-return', hint: 'Back to the main chat; this side chat stays open', icon: <CornerUpLeft size={15} />, run: () => void navigateSide('return') },
           { id: 'side-dismiss', label: '/side-dismiss', hint: 'Close and discard this side chat', icon: <X size={15} />, run: () => void navigateSide('dismiss') },
@@ -2976,7 +2976,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               {showSideChatControls && (session.temporaryParentChatId ? (
                 <div className="uam-composer-side-controls" role="group" aria-label="Side chat">
                   <span className="uam-composer-side-controls__pill" title="Main chat context is reference only">
-                    <CornerUpRight size={12} aria-hidden />
+                    <MessageSquareDashed size={12} aria-hidden />
                     Side chat
                   </span>
                   <IconButton size="sm" icon={<CornerUpLeft size={14} aria-hidden />} label="Return to main chat" tooltip="Back to the main chat; this side chat stays open (/side-return)" onClick={() => void navigateSide('return')} />
@@ -2984,7 +2984,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 </div>
               ) : (
                 <div className="uam-composer-side-controls">
-                  <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpRight size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
+                  <Button type="button" size="sm" variant="ghost" leadingIcon={<MessageSquareDashed size={13} aria-hidden />} title="Resume the side chat (/side)" onClick={() => void navigateSide()}>Resume side chat</Button>
                 </div>
               ))}
             </div>
