@@ -10,7 +10,7 @@ AI Review uses Claude's native `auto` mode or Codex's confirmed native `auto_rev
 
 The agreed notification direction routes app-wide messages through the notifications panel and one shared transient alert. Existing separate notices remain until that work lands. UI presentation follows the [design language](../ui/design-language.md); settings controls follow [settings rules](../ui/settings.md).
 
-`UI-V2/src/services/updateCatalog.ts` normalizes the first 10,000 characters of the UAM release body into an optional plain-text `releaseNotesExcerpt` capped at 500 characters, preserves it through validated caching and UAM update projection, and leaves GUI rendering and provider release excerpts pending.
+`UI-V2/src/services/updateCatalog.ts` normalizes the first 10,000 characters of UAM and managed-provider release bodies into optional plain-text `releaseNotesExcerpt` values capped at 500 characters. Provider notes come from exact official release tags matching the npm or Homebrew version, with duplicate versions sharing a request and drafts or mismatched tags omitted. Failed optional notes preserve independently obtained update versions; the existing 15-second deadline covers both version and note requests, with five provider groups active at most. Validated caching and local/remote update projection preserve each installation method's own excerpt. GUI rendering remains pending.
 
 ## Ownership and checks
 

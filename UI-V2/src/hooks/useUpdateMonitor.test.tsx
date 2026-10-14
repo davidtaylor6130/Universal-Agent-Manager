@@ -361,13 +361,11 @@ describe('useUpdateMonitor', () => {
   it('checks again every 24 hours while the app remains open', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-07-13T12:00:00.000Z'))
-    let request = 0
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      const isUamRequest = request % 6 === 0
-      request += 1
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
       return {
-        ok: true,
-        json: async () => isUamRequest
+        ok: !url.includes('/releases/tags/'),
+        json: async () => url.includes('api.github.com')
           ? { tag_name: 'V4.1.0', html_url: 'https://example.test/uam' }
           : { version: '1.0.0' },
       }
@@ -388,9 +386,9 @@ describe('useUpdateMonitor', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS - 1) })
     expect(fetch).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
-    expect(fetch).toHaveBeenCalledTimes(11)
+    expect(fetch).toHaveBeenCalledTimes(16)
     await act(async () => { await vi.advanceTimersByTimeAsync(UPDATE_CHECK_INTERVAL_MS) })
-    expect(fetch).toHaveBeenCalledTimes(22)
+    expect(fetch).toHaveBeenCalledTimes(32)
 
     act(() => root.unmount())
   })
@@ -402,7 +400,8 @@ describe('useUpdateMonitor', () => {
       return null
     }
     const finishFetches: Array<(response: { ok: boolean; json: () => Promise<{ version: string }> }) => void> = []
-    vi.stubGlobal('fetch', vi.fn(() => new Promise((resolve) => finishFetches.push(resolve))))
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).includes('/releases/tags/')
+      ? Promise.resolve({ ok: false }) : new Promise((resolve) => finishFetches.push(resolve))))
     useAppStore.setState({
       providers: [],
       cliVersionManager: { providers: [] },
@@ -446,7 +445,7 @@ describe('useUpdateMonitor', () => {
     await act(async () => result!.checkNow())
     expect(result!.checking).toBe(true)
     await act(async () => result!.checkNow())
-    expect(fetch).toHaveBeenCalledTimes(11)
+    expect(fetch).toHaveBeenCalledTimes(16)
     act(() => useAppStore.setState({ cliVersionManager: { providers: [provider], remoteProviders: [
       { ...provider, executionHostId: 'alpha', status: 'checking', running: true },
     ] } }))

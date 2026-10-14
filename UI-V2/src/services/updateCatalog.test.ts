@@ -1,7 +1,16 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UPDATE_REQUEST_TIMEOUT_MS, availableRemoteHelperUpdates, availableUpdates, compareVersions, fetchLatestUpdateCatalog, readCachedUpdateCatalog } from './updateCatalog'
 
 describe('update catalog', () => {
+  beforeEach(() => {
+    const values = new Map<string, string>()
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    } })
+  })
+
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
@@ -15,6 +24,95 @@ describe('update catalog', () => {
     expect(compareVersions('4.5.7-alpha.10', '4.5.7-alpha.2')).toBeGreaterThan(0)
     expect(compareVersions('4.8.0-alpha-2', '4.8.0-alpha')).toBeGreaterThan(0)
 	expect(compareVersions('4.9.0-alpha-10', '4.9.0-alpha-9')).toBeGreaterThan(0)
+  })
+
+  it('fetches provider notes for exact npm and Homebrew versions and projects the selected method', async () => {
+    const noteUrls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/releases/tags/')) {
+        noteUrls.push(url)
+        const tag = decodeURIComponent(url.split('/').at(-1)!)
+        return { ok: true, json: async () => ({ tag_name: tag, body: `# Notes\n- **Fixed** ${tag}` }) }
+      }
+      return { ok: true, json: async () => url.includes('api.github.com')
+        ? { tag_name: 'v1.0.0' }
+        : { version: url.includes('formula/gemini-cli') ? '1.8.0' : '2.0.0' } }
+    }))
+    const catalog = await fetchLatestUpdateCatalog()
+    expect(catalog.providers['codex-cli']).toMatchObject({ releaseNotesExcerpt: 'Notes Fixed rust-v2.0.0' })
+    expect(catalog.providers['gemini-cli'].homebrew).toMatchObject({ releaseNotesExcerpt: 'Notes Fixed v1.8.0' })
+    expect(noteUrls.filter((url) => url.includes('/openai/codex/'))).toHaveLength(1)
+    expect(noteUrls).toHaveLength(6)
+    expect(readCachedUpdateCatalog()?.providers).toEqual(catalog.providers)
+    const installed = { installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '' }
+    const updates = availableUpdates(catalog, '1.0.0', {
+      providers: [{ ...installed, providerId: 'codex-cli', installMethod: 'npm' }],
+      remoteProviders: [{ ...installed, providerId: 'gemini-cli', installMethod: 'homebrew-formula', executionHostId: 'lab' }],
+    }, [], {})
+    expect(updates).toEqual([
+      expect.objectContaining({ providerId: 'codex-cli', releaseNotesExcerpt: 'Notes Fixed rust-v2.0.0' }),
+      expect.objectContaining({ providerId: 'gemini-cli', executionHostId: 'lab', latestVersion: '1.8.0', releaseNotesExcerpt: 'Notes Fixed v1.8.0' }),
+    ])
+  })
+
+  it('keeps provider update versions when their notes are missing, malformed or for another tag', async () => {
+    for (const mode of ['missing', 'malformed', 'mismatched', 'offline']) {
+      window.localStorage.removeItem('uam-update-catalog-v1')
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/releases/tags/')) {
+          if (mode === 'offline') throw new Error('offline')
+          return { ok: mode !== 'missing', json: async () => ({
+            tag_name: mode === 'mismatched' ? 'v9.0.0' : decodeURIComponent(url.split('/').at(-1)!),
+            body: mode === 'malformed' ? { text: 'Invalid body' } : 'Wrong or unavailable notes',
+          }) }
+        }
+        return { ok: true, json: async () => url.includes('api.github.com') ? { tag_name: 'v1.0.0' } : { version: '2.0.0' } }
+      }))
+      const catalog = await fetchLatestUpdateCatalog()
+      expect(catalog.providers['codex-cli'].version).toBe('2.0.0')
+      expect(catalog.providers['codex-cli']).not.toHaveProperty('releaseNotesExcerpt')
+      expect(catalog.providers['codex-cli'].homebrew).not.toHaveProperty('releaseNotesExcerpt')
+    }
+  })
+
+  it('sanitizes optional provider cache notes and preserves version-specific entries', () => {
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-10-14T00:00:00Z', uam: { version: '1.0.0', url: '' },
+      providers: { 'codex-cli': { version: '2.0.0', url: '', releaseNotesExcerpt: '<script>unsafe()</script>' + 'A'.repeat(1_000),
+        homebrew: { version: '1.9.0', url: '', releaseNotesExcerpt: { text: 'Invalid body' } } } },
+    }))
+    const cached = readCachedUpdateCatalog()
+    expect(cached?.providers['codex-cli']).toMatchObject({ version: '2.0.0', releaseNotesExcerpt: 'A'.repeat(500) })
+    expect(cached?.providers['codex-cli'].homebrew).toEqual({ version: '1.9.0', url: '' })
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: '2026-10-14T00:00:00Z', uam: { version: '1.0.0', url: '' },
+      providers: { 'codex-cli': { version: '3.0.0', url: '' } },
+    }))
+    expect(readCachedUpdateCatalog()?.providers['codex-cli']).toEqual({ version: '3.0.0', url: '' })
+  })
+
+  it('bounds provider notes by the shared deadline without losing successful version checks', async () => {
+    vi.useFakeTimers()
+    const pendingNotes: AbortSignal[] = []
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/releases/tags/')) {
+        pendingNotes.push(init!.signal!)
+        return new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))
+      }
+      return new Promise((resolve) => window.setTimeout(() => resolve({ ok: true, json: async () =>
+        url.includes('api.github.com') ? { tag_name: 'v1.0.0' } : { version: '2.0.0' } }), 10_000))
+    }))
+    const result = fetchLatestUpdateCatalog()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(pendingNotes).toHaveLength(5)
+    await vi.advanceTimersByTimeAsync(UPDATE_REQUEST_TIMEOUT_MS - 10_000)
+    const catalog = await result
+    expect(pendingNotes.every((signal) => signal.aborted)).toBe(true)
+    expect(catalog.providers['codex-cli'].version).toBe('2.0.0')
+    expect(catalog.providers['codex-cli']).not.toHaveProperty('releaseNotesExcerpt')
   })
 
   it('reports an older SSH helper independently of the online catalog', () => {
@@ -101,7 +199,7 @@ describe('update catalog', () => {
     }, [], {})
     expect(updates[0].releaseNotesExcerpt).toBe(catalog.uam.releaseNotesExcerpt)
     expect(updates[1]).not.toHaveProperty('releaseNotesExcerpt')
-    expect(fetch).toHaveBeenCalledTimes(11)
+    expect(fetch).toHaveBeenCalledTimes(16)
   })
 
   it('bounds oversized release bodies before caching and projection', async () => {
@@ -268,7 +366,7 @@ describe('update catalog', () => {
     expect(catalog.uam.version).toBe('V4.2.0')
     expect(catalog.providers['codex-cli'].version).toBe('0.130.0')
     expect(catalog.providers['opencode-cli'].homebrew?.version).toBe('1.18.0')
-    expect(fetch).toHaveBeenCalledTimes(11)
+    expect(fetch).toHaveBeenCalledTimes(17)
   })
 
   it('keeps independent provider releases when GitHub is unavailable', async () => {
