@@ -18,11 +18,11 @@ describe('Computer Use settings sanitization', () => {
   })
 })
 
-describe('providerAgentImport capability sanitization', () => {
-  it('keeps only a real boolean and otherwise leaves the capability absent', () => {
-    expect(sanitizeCppSettings({ providerAgentImport: true }).providerAgentImport).toBe(true)
-    expect(sanitizeCppSettings({ providerAgentImport: 'yes' }).providerAgentImport).toBeUndefined()
-    expect(sanitizeCppSettings({}).providerAgentImport).toBeUndefined()
+describe('computerUseGloballyEnabled sanitization', () => {
+  it('keeps only a real boolean and otherwise leaves the global consent absent', () => {
+    expect(sanitizeCppSettings({ computerUseGloballyEnabled: true }).computerUseGloballyEnabled).toBe(true)
+    expect(sanitizeCppSettings({ computerUseGloballyEnabled: 'yes' }).computerUseGloballyEnabled).toBeUndefined()
+    expect(sanitizeCppSettings({}).computerUseGloballyEnabled).toBeUndefined()
   })
 })
 

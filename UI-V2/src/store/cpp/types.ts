@@ -682,7 +682,8 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   executionHosts?: ExecutionHost[]
   favoriteUamAgentIds?: string[]
   uamAgentCycleShortcut?: UamAgentCycleShortcut
-  computerUseEnabled?: boolean
+  /** Global Computer Use consent (settings.computerUseGloballyEnabled). Off when absent. */
+  computerUseGloballyEnabled?: boolean
   computerUseAllowlistEnabled?: boolean
   computerUseAllowedApplications?: ComputerUseAllowedApplication[]
   /** Backend supports importing agents from provider configuration. Hidden when absent or false. */

@@ -231,7 +231,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
   const setComputerUseEnabled = async (enabled: boolean) => {
     setComputerUseBusy(true); setComputerUseError('')
     try {
-      const response = await sendToCEF({ action: 'setComputerUseEnabled', payload: { enabled } })
+      const response = await sendToCEF({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: enabled } })
       if (!response.ok) setComputerUseError(response.error || "Could not change Computer Use. Try again.")
     } finally { setComputerUseBusy(false) }
   }
