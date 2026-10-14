@@ -89,9 +89,9 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
       {previewIndex !== null && [-2, -1, 1, 2].map(distance => {
         const neighbor = index + distance
         if (neighbor < 0 || neighbor >= count) return null
-        return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: `${neighbor / (count - 1) * 100}%`, left: 6, width: 24, height: 1.5, background: 'var(--text-3)', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${Math.abs(distance) === 1 ? 5 / 6 : 3 / 4})` }} />
+        return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: `${neighbor / (count - 1) * 100}%`, left: 6, width: 48, height: 1.5, background: 'var(--text-3)', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${Math.abs(distance) === 1 ? 2 / 3 : 5 / 12})` }} />
       })}
-      <span aria-hidden data-rail-target={index} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 6, width: 24, height: 3, background: 'var(--accent)', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${previewIndex === null ? 22 / 24 : 1})` }} />
+      <span aria-hidden data-rail-target={index} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: `${count === 1 ? 50 : index / (count - 1) * 100}%`, left: 6, width: 48, height: 4.5, background: 'var(--accent)', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${previewIndex === null ? 22 / 48 : 1})` }} />
       {previewIndex !== null && <div className="conversation-rail-preview" aria-hidden style={{ top: `${count === 1 ? 50 : index / (count - 1) * 100}%` }}>
         <div className="conversation-rail-preview__label">{label}</div>
         {preview !== null
