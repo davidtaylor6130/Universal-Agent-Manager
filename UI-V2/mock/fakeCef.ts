@@ -78,7 +78,7 @@ const chat = (id: string, title: string, folderId: string, providerId: string, e
 let chats: Json[] = [
   chat('c-new', 'New chat', 'f-uam', 'claude-cli'),
   chat('c-long', 'Long review chat (message rail)', 'f-uam', 'claude-cli', { pinned: true, workspaceIsolationKind: 'gitWorktree', workspaceBranchName: 'feature/composer-row', workspaceWorktreeDirectory: '/Users/david/GitHub/UAM-worktrees/composer-row', workspaceBaseRef: 'main' }),
-  chat('c-attach', 'Attachments and chips', 'f-uam', 'codex-cli'),
+  chat('c-attach', 'Attachments and chips', 'f-uam', 'codex-cli', { customIcon: { type: 'text', value: '🧪' } }),
   chat('c-stopped', 'Stopped provider session', 'f-site', 'gemini-cli', { acpSession: { running: false, lifecycleState: 'stopped', lastStopReason: 'idle-timeout', idleShutdownAtMs: now - 900000 } }),
   chat('c-side', 'Side chat example', 'f-uam', 'claude-cli', { temporaryParentChatId: 'c-long' }),
 ]

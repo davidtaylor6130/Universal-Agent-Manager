@@ -27,6 +27,7 @@ import { CollectionMenuItems } from './CollectionMenuItems'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
+import { resolveCustomIcon } from '../../types/customIcon'
 import { reportAppFailure } from '../../utils/appFailure'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
 
@@ -239,6 +240,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         lastOpenedAt: session.lastOpenedAt ?? session.updatedAt ?? null,
         isPinned: session.isPinned ?? false,
         providerId: session.providerId,
+        customIcon: session.customIcon,
         folderId: session.folderId,
         workspaceDirectory: session.workspaceDirectory ?? '',
         worktreeDirectory: session.workspaceWorktreeDirectory ?? '',
@@ -256,6 +258,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       lastOpenedAt: storeSession?.lastOpenedAt ?? storeSession?.updatedAt ?? null,
       isPinned: storeSession?.isPinned ?? false,
       providerId: storeSession?.providerId,
+      customIcon: storeSession?.customIcon,
       folderId: storeSession?.folderId ?? null,
       workspaceDirectory: storeSession?.workspaceDirectory ?? '',
       worktreeDirectory: storeSession?.workspaceWorktreeDirectory ?? '',
@@ -373,6 +376,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const iconPicker = useCustomIconPicker()
+  const chatIcon = resolveCustomIcon(sessionSummary.customIcon)
   const nativeSessionId = useAppStore((s) => s.acpBindingBySessionId[sessionId]?.sessionId ?? '')
   const workspacePath = sessionSummary.worktreeDirectory || sessionSummary.workspaceDirectory
   const branchName = sessionSummary.branchName.trim()
@@ -575,6 +579,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         {activityLayout && !editing ? (
           <div className="uam-sb-activity flex min-w-0 flex-1 flex-col gap-0.5">
             <div className="flex min-w-0 items-center gap-2">
+              {/* Fixed slot: rows without an icon keep their titles aligned. */}
+              <span aria-hidden className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
+                <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
+              </span>
               <span className="block min-w-0 flex-1 truncate text-[13px] leading-5" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
               {lifecycleStatus?.type === 'processing' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium tabular-nums" style={{ color: 'var(--info)' }}>
@@ -667,9 +675,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             ))}
           </span>
         )}
-        {!editing && showProviderIcon && sessionSummary.providerId && (
-          <span role="img" aria-label={`Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
-            <ProviderLogo providerId={sessionSummary.providerId} size={16} />
+        {!editing && (chatIcon || (showProviderIcon && sessionSummary.providerId)) && (
+          // The chat's own icon replaces the provider glyph; the glyph stays the fallback.
+          <span role="img" aria-label={chatIcon ? 'Chat icon' : `Provider: ${providerShortName(undefined, sessionSummary.providerId)}`} title={chatIcon ? undefined : providerShortName(undefined, sessionSummary.providerId)} className="inline-flex shrink-0">
+            <CustomIcon icon={sessionSummary.customIcon} fallback={<ProviderLogo providerId={sessionSummary.providerId} size={16} />} />
           </span>
         )}
         {!editing && isPinned && (
