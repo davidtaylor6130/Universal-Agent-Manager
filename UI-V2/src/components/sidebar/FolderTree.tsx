@@ -7,6 +7,7 @@ import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, Folder
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
+import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
 import './sidebar.css'
 import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Tooltip, ViewportMenu } from '../ui'
@@ -211,7 +212,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const workspaceDeleteInFlightRef = useRef(false)
   const [pendingDeleteFolderIds, setPendingDeleteFolderIds] = useState<string[] | null>(null)
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set())
-  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null)
   const selectionAnchorRowRef = useRef<HTMLElement | null>(null)
   const [pendingBulkDeleteIds, setPendingBulkDeleteIds] = useState<string[] | null>(null)
   const [bulkDeleteFailed, setBulkDeleteFailed] = useState(false)
@@ -338,6 +338,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const snoozedList = usePresence(snoozedExpanded)
   const pinnedList = usePresence(pinnedExpanded)
   const allChatsList = usePresence(allChatsExpanded)
+  const previousFamiliesRef = useRef(new Map<string, string[]>())
   const familySessionIdsByRootId = useMemo(() => {
     const families = new Map<string, string[]>()
     for (const session of sessions) {
@@ -346,6 +347,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       if (family) family.push(session.id)
       else families.set(rootId, [session.id])
     }
+    // Metadata updates must not invalidate every memoized chat row.
+    for (const [rootId, family] of families) {
+      const previous = previousFamiliesRef.current.get(rootId)
+      if (previous && shallow(previous, family)) families.set(rootId, previous)
+    }
+    previousFamiliesRef.current = families
     return families
   }, [sessions])
   const pendingDeleteFolder = useMemo(
@@ -369,20 +376,18 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     folderSelectionAnchorRef.current = null
     if (isCompanionContext() || !event.shiftKey) {
       selectionAnchorRowRef.current = event.currentTarget
-      setSelectionAnchorId(sessionId)
       setSelectedSessionIds(new Set())
       return false
     }
 
     event.preventDefault()
     const rows = visibleSessionRows()
-    const anchorIndex = selectionAnchorId && selectionAnchorRowRef.current
+    const anchorIndex = selectionAnchorRowRef.current
       ? rows.indexOf(selectionAnchorRowRef.current)
       : -1
     const targetIndex = rows.indexOf(event.currentTarget)
     if (anchorIndex < 0 || targetIndex < 0) {
       selectionAnchorRowRef.current = event.currentTarget
-      setSelectionAnchorId(sessionId)
       setSelectedSessionIds(new Set([sessionId]))
       return true
     }
@@ -391,11 +396,10 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     const end = Math.max(anchorIndex, targetIndex)
     setSelectedSessionIds(new Set(rows.slice(start, end + 1).map((row) => row.dataset.sessionId ?? '').filter(Boolean)))
     return true
-  }, [selectionAnchorId, visibleSessionRows])
+  }, [visibleSessionRows])
 
   const clearBulkSelection = useCallback(() => {
     setSelectedSessionIds(new Set())
-    setSelectionAnchorId(null)
     selectionAnchorRowRef.current = null
     setPendingBulkDeleteIds(null)
     setBulkDeleteFailed(false)
@@ -522,7 +526,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
         const next = new Set([...current].filter((id) => visible.has(id)))
         return next.size === current.size ? current : next
       })
-      setSelectionAnchorId((current) => current && visible.has(current) ? current : null)
       if (selectionAnchorRowRef.current && !visibleSessionRows().includes(selectionAnchorRowRef.current)) {
         selectionAnchorRowRef.current = null
       }

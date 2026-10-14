@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
@@ -855,6 +855,33 @@ describe('SessionItem status icons', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('ignores unrelated pane changes and updates its own pane assignment', () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const rendered = vi.fn()
+    writeChatGridLayout(setChatInLeaf(defaultChatGridLayout, 'chat-2', 'leaf-1'))
+    try {
+      act(() => root.render(<Profiler id="row" onRender={rendered}><SessionItem sessionId="chat-1" /></Profiler>))
+      rendered.mockClear()
+      act(() => writeChatGridLayout(setChatInLeaf(defaultChatGridLayout, 'chat-3', 'leaf-1')))
+      expect(rendered).not.toHaveBeenCalled()
+      let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
+      layout = setChatInLeaf(layout, 'chat-1', chatGridLeaves(layout.root)[1].id)
+      act(() => writeChatGridLayout(layout))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).not.toBeNull()
+      act(() => writeChatGridLayout(setChatInLeaf(layout, 'chat-3', chatGridLeaves(layout.root)[1].id)))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).toBeNull()
+      act(() => writeChatGridLayout(setChatInLeaf(layout, 'child', chatGridLeaves(layout.root)[1].id)))
+      act(() => useAppStore.setState(state => ({ sessions: [...state.sessions,
+        { ...makeSession(), id: 'child', branchRootChatId: 'chat-1' }] })))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).not.toBeNull()
+      act(() => useAppStore.setState({ sessions: [makeSession()] }))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+    }
   })
 
   it('shows its pane colour without legacy context-menu pane buttons', () => {

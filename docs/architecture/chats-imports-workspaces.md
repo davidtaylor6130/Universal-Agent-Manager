@@ -48,3 +48,7 @@ Deletion publishes transient `deletionProgress` through full updates and fingerp
 Progress and final publication require the current task, bridge lifetime and data root. Committed cleanup retains its owned snapshot after query or bridge closure. Terminal paths omit progress, and committed deletion still returns success with a recovery status when cleanup cannot finish. Native cleanup failures retain transaction evidence for restart recovery. Private fixtures are in `tests/deletion_progress_tests.cpp`; this contract does not record user deletion acceptance.
 
 Native history refresh applies deletion tombstones within the data root and workspace scope before overlay reconciliation or direct saves. Unreadable deletion records stop refresh; when tombstones exist, an unscoped native session also stops refresh. Asynchronous native history request identities include the data root so an old-root response cannot populate the current database.
+
+## Sidebar render ownership
+
+`FolderTree` retains equal branch-family ID arrays across metadata-only catalogue updates and keeps Shift-click anchors in the existing row reference. `SessionItem` reacts to pane layout changes only when its family’s pane indexes or the pane count change; family changes refresh from the latest stored layout. Selection ranges still follow visible DOM rows, and selected-chat/status subscriptions remain live. Focused render regressions are in `FolderTree.render.test.tsx` and `SessionItem.test.tsx`.

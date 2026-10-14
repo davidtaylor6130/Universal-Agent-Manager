@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
+import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
 import { ConfirmDialog, IconButton, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -447,7 +448,16 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     }
   }, [editing])
 
-  useEffect(() => subscribeChatGridLayout(setGridLayout), [])
+  useEffect(() => {
+    const refresh = (layout: ReturnType<typeof readChatGridLayout>) => setGridLayout((previous) => {
+      const oldLeaves = chatGridLeaves(previous.root)
+      const nextLeaves = chatGridLeaves(layout.root)
+      const indexes = (leaves: typeof oldLeaves) => leaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
+      return oldLeaves.length === nextLeaves.length && shallow(indexes(oldLeaves), indexes(nextLeaves)) ? previous : layout
+    })
+    refresh(readChatGridLayout())
+    return subscribeChatGridLayout(refresh)
+  }, [familySessionIds])
 
   // Close context menu on outside click
   useEffect(() => {
