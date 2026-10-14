@@ -20,3 +20,7 @@ Rules:
 8. Empty states: one muted sentence + the add action.
 9. Motion: sections fade/rise in (built into primitives); expand/collapse uses the existing presence/grid-rows pattern; no flashing of whole lists on refresh (keep previous data while refreshing; disable only the control being saved).
 10. Keep every aria-label/role that tests query; when a test asserts exact old copy you intentionally changed, update that assertion minimally.
+
+## SVN new-chat updates
+
+The VCS settings page has a separate SVN “Update before new chat” row, selected from mock B by David on 2026-10-14. It defaults to off and cannot be edited while SVN is disabled. Changes remain in the draft until “Save VCS settings”; “Discard” restores saved values. Enabling this setting requests an SVN working-copy update before a new chat and does not authorize an SVN commit. Claude review and actual component visual/user acceptance remain pending.

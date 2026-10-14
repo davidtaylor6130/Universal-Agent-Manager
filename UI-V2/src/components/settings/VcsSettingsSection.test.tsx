@@ -6,7 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const initial = useAppStore.getState()
-beforeEach(() => { useAppStore.setState({ ...initial, gitEnabled: true, svnEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: '', gitPortMethod: 'patch', gitPullBeforeChat: false }, true) })
+beforeEach(() => { useAppStore.setState({ ...initial, gitEnabled: true, svnEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: '', gitPortMethod: 'patch', gitPullBeforeChat: false, svnUpdateBeforeChat: false }, true) })
 afterEach(() => { delete window.cefQuery; document.body.replaceChildren(); useAppStore.setState(initial, true) })
 function input(element: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(element, value)
@@ -29,7 +29,7 @@ describe('VCS defaults controls', () => {
       act(() => input(host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!, branch))
       expect(requests).toHaveLength(0)
       await act(async () => button(host, 'Save VCS settings').click())
-      expect(requests).toEqual([{ action: 'setVcsSettings', payload: { gitEnabled: true, svnEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: branch, gitPortMethod: 'patch', gitPullBeforeChat: false } }])
+      expect(requests).toEqual([{ action: 'setVcsSettings', payload: { gitEnabled: true, svnEnabled: true, gitAutoWorktree: true, gitDefaultBaseBranch: branch, gitPortMethod: 'patch', gitPullBeforeChat: false, svnUpdateBeforeChat: false } }])
       expect(button(host, 'Save VCS settings').disabled).toBe(true)
       expect(useAppStore.getState().gitDefaultBaseBranch).toBe(branch)
     } finally { act(() => root.unmount()) }
@@ -49,6 +49,51 @@ describe('VCS defaults controls', () => {
       expect(host.textContent).toContain('Discard unsaved VCS changes?')
       act(() => button(host, 'Discard and leave').click())
       expect(left).toBe(true)
+    } finally { act(() => root.unmount()) }
+  })
+})
+
+
+describe('SVN update before new chat', () => {
+  it('defaults off and saves only after an explicit draft save', async () => {
+    const requests: { action: string; payload: unknown }[] = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+    const { host, root } = mount()
+    try {
+      const group = host.querySelector<HTMLElement>('[aria-label="Update before new chat"]')!
+      expect(group.querySelector('button:nth-child(2)')?.getAttribute('aria-pressed')).toBe('true')
+      act(() => group.querySelector<HTMLButtonElement>('button')!.click())
+      expect(requests).toHaveLength(0)
+      expect(useAppStore.getState().svnUpdateBeforeChat).toBe(false)
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(requests).toHaveLength(1)
+      expect(requests[0]).toMatchObject({ action: 'setVcsSettings', payload: { svnUpdateBeforeChat: true, svnEnabled: true } })
+      expect(useAppStore.getState().svnUpdateBeforeChat).toBe(true)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('discards the update draft and disables editing when SVN is disabled', () => {
+    const { host, root } = mount()
+    try {
+      const group = () => host.querySelector<HTMLElement>('[aria-label="Update before new chat"]')!
+      act(() => group().querySelector<HTMLButtonElement>('button')!.click())
+      act(() => button(host, 'Discard').click())
+      expect(group().querySelector('button:nth-child(2)')?.getAttribute('aria-pressed')).toBe('true')
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="SVN"] button:nth-child(2)')!.click())
+      expect(Array.from(group().querySelectorAll('button')).every((control) => control.disabled)).toBe(true)
+      expect(useAppStore.getState().svnUpdateBeforeChat).toBe(false)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('retains the update draft after a save failure without changing the saved setting', async () => {
+    window.cefQuery = ({ onFailure }) => onFailure(500, 'Disk full')
+    const { host, root } = mount()
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Update before new chat"] button')!.click())
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(useAppStore.getState().svnUpdateBeforeChat).toBe(false)
+      expect(host.querySelector('[aria-label="Update before new chat"] button')?.getAttribute('aria-pressed')).toBe('true')
+      expect(host.textContent).toContain('Your changes are retained')
     } finally { act(() => root.unmount()) }
   })
 })

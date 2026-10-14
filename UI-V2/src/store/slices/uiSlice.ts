@@ -225,7 +225,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
 
     setVcsSettings: async (settings: VcsSettingsRequest) => {
       if (typeof settings.gitEnabled !== 'boolean' || typeof settings.svnEnabled !== 'boolean') return false
-      const optionalKeys = ['gitAutoWorktree', 'gitDefaultBaseBranch', 'gitPullBeforeChat', 'gitPortMethod', 'worktreeCleanupEnabled', 'worktreeRetentionDays']
+      const optionalKeys = ['gitAutoWorktree', 'gitDefaultBaseBranch', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'gitPortMethod', 'worktreeCleanupEnabled', 'worktreeRetentionDays']
       const parsed = sanitizeVcsStorageSettings(settings)
       const raw = settings as unknown as Record<string, unknown>
       if (Object.keys(settings).some((key) => key !== 'gitEnabled' && key !== 'svnEnabled' &&

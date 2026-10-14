@@ -1548,7 +1548,7 @@ export function sanitizeVoiceInputSettings(value: unknown): VoiceInputSettings {
 export function sanitizeVcsStorageSettings(value: unknown): Partial<VcsStorageSettings> {
   if (!isRecord(value)) return {}
   const settings: Partial<VcsStorageSettings> = {}
-  for (const key of ['gitAutoWorktree', 'gitPullBeforeChat', 'worktreeCleanupEnabled'] as const) {
+  for (const key of ['gitAutoWorktree', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'worktreeCleanupEnabled'] as const) {
     if (typeof value[key] === 'boolean') settings[key] = value[key]
   }
   const branch = sanitizeGitBaseBranch(value.gitDefaultBaseBranch)
@@ -1830,7 +1830,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
 
 function sanitizeProviderModelCatalogs(value: unknown): ProviderModelCatalog[] {
   if (!Array.isArray(value)) return []
-  return value.slice(0, 512).flatMap((entry) => {
+  return value.flatMap((entry) => {
     if (!isRecord(entry)) return []
     const providerId = normalizeCliProviderIdAlias(stringOr(entry.providerId))
     const workspaceDirectory = stringOr(entry.workspaceDirectory).trim()
