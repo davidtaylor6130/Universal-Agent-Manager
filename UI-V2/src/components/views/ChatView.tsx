@@ -25,6 +25,7 @@ import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { attachmentChipKind, isImageAttachment, AttachmentList, CompactionSeparator, PersistedMessageContent, TurnTimelineContent, formatWorkedDuration, stoppedResponseLabel, attachmentLabel, goalReviewForMessage, type WorkingDisplayMode } from '../chat/MessageBlocks'
 import { acpRuntimeBlocksControlChanges, PERMISSION_MODES, ComposerIcon, ComposerToolbar, ComposerAgentSelector, permissionModeIcon, permissionModeForTier, providerConfigVariantOptions, type DictationState } from '../chat/Composer'
 import { Notice, ViewportMenu, type NoticeTone } from '../ui'
+import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { AlertTriangle, ArrowDown, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MousePointer2, Paperclip, Pencil, Shield, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, IconButton, Tooltip } from '../ui'
@@ -581,9 +582,11 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   // Branch read once when the chat (or its workspace) is opened; see the composer branch effect below.
   const [composerVcsBranch, setComposerVcsBranch] = useState({ scope: '', branch: '' })
   const composerBranchScope = `${session.id}\n${workspaceDirectory}\n${session.executionHostId ?? ''}`
-  const composerBranch = (repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges.branchOrRevision : '')
+  // The composer's own read (refreshed after a branch switch) wins over the last completed-turn snapshot.
+  const composerBranch = (composerVcsBranch.scope === composerBranchScope ? composerVcsBranch.branch : '')
+    || (repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges.branchOrRevision : '')
     || session.workspaceBranchName
-    || (composerVcsBranch.scope === composerBranchScope ? composerVcsBranch.branch : '')
+  const branchSwitching = useAppStore((s) => s.branchSwitching === true)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
   const resumeQueuedAcpPrompts = useAppStore((s) => s.resumeQueuedAcpPrompts)
@@ -1347,6 +1350,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     })
     return () => { cancelled = true }
   }, [composerBranchScope, getVcsCommitStatus, remoteComputerUseDisabled, session.id, workspaceDirectory])
+  const handleBranchSwitched = (branch: string) => {
+    setComposerVcsBranch({ scope: composerBranchScope, branch })
+    void getVcsCommitStatus(session.id, 'git', { includeLineStats: false, contextOnly: true, requestId: `composer-branch:${composerBranchScope}` }).then((status) => {
+      if (status?.available && status.activeVcsType !== 'svn') setComposerVcsBranch({ scope: composerBranchScope, branch: status.branchOrRevision })
+    })
+  }
   const sideBusyRef = useRef(false)
   const [sideBusy, setSideBusy] = useState(false)
   // A main chat keeps at most one live side chat; reopening it is a local switch,
@@ -2955,7 +2964,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
                   <span className="truncate">{workspaceDirectory.replace(/\\/g, '/').split('/').filter(Boolean).pop() || 'No workspace'}</span>
-                  {composerBranch && <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate font-mono">{composerBranch}</span></span>}
+                  {composerBranch && (branchSwitching
+                    ? <ChatBranchPicker chatId={session.id} branch={composerBranch} disabled={workspaceActionsDisabled} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
+                    : <span className="inline-flex min-w-0 items-center gap-1 truncate" title={composerBranch}><GitBranch size={12} aria-hidden /><span className="truncate font-mono">{composerBranch}</span></span>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
                 </span>
               </>

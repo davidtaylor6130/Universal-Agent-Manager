@@ -136,6 +136,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   computerUseAllowlistEnabled: boolean
   computerUseAllowedApplications: ComputerUseAllowedApplication[]
   providerAgentImport?: boolean
+  branchSwitching?: boolean
   /** Backend accepts scopeExecutionHostId on settings saves. Scope selector is disabled when absent. */
   hostScopedSettings?: boolean
   /** Settings page scope: '*' for all environments, otherwise an SSH execution host id. Session only. */

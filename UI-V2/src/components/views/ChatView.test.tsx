@@ -5403,6 +5403,29 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('keeps the composer branch display-only unless the backend advertises branch switching', async () => {
+    const getVcsCommitStatus = vi.fn(() => Promise.resolve({
+      available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project',
+      branchOrRevision: 'feature/composer', changedFiles: [], lineStatsReady: true, warning: '', error: '',
+    }))
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceBranchName: '' } : session),
+      getVcsCommitStatus,
+      branchSwitching: false,
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="listbox"]')).toBeNull()
+    expect(host.querySelector('.uam-composer-workspace-tab')?.textContent).toContain('feature/composer')
+    await act(async () => { useAppStore.setState({ branchSwitching: true }) })
+    expect(host.querySelector('.uam-composer-workspace-tab button[aria-haspopup="listbox"]')?.textContent).toContain('feature/composer')
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ branchSwitching: undefined })
+  })
+
   it('reads the repository branch for the composer tab once when the chat opens', async () => {
     const getVcsCommitStatus = vi.fn(() => Promise.resolve({
       available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project',
