@@ -46,6 +46,51 @@ describe('Unified file review', () => {
 
 
 describe('Split file review', () => {
+  it('shows new-file contents on the right without the Git patch preamble', () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    const diff = 'diff --git a/V5 Improvement Change log.md b/V5 Improvement Change log.md\nnew file mode 100644\nindex 00000000..5dc4c6cb\n--- /dev/null\n+++ b/V5 Improvement Change log.md\t\n@@ -0,0 +1,2 @@\n+# V5 Improvement Change log\n+--- literal file contents\n\\ No newline at end of file'
+    try {
+      act(() => root.render(<UnifiedDiff diff={diff} path="V5 Improvement Change log.md" layout="split" />))
+      expect(host.textContent).not.toContain('diff --git')
+      expect(host.textContent).not.toContain('new file mode')
+      expect(host.textContent).not.toContain('index 00000000')
+      expect((host.querySelector('[role="region"]')!.firstElementChild as HTMLElement).style.minWidth).toBe('calc(80ch + 100px)')
+      expect(host.textContent).not.toContain('/dev/null')
+      expect(host.textContent).toContain('@@ -0,0 +1,2 @@')
+      expect([...host.querySelectorAll('[data-diff-side="right"] [aria-label="New line"]')].map(line => line.textContent)).toEqual(['1', '2', ''])
+      expect([...host.querySelectorAll('[data-diff-side="left"]')].every(side => side.getAttribute('data-kind') === 'empty')).toBe(true)
+      expect(host.textContent).toContain('--- literal file contents')
+      expect(host.textContent).toContain('\\ No newline at end of file')
+      act(() => root.render(<UnifiedDiff diff={diff} path="V5 Improvement Change log.md" layout="unified" />))
+      expect(host.textContent).toContain('diff --git')
+      expect(host.textContent).toContain('new file mode')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps the executable mode of a newly added file', () => {
+    const diff = 'diff --git a/tool b/tool\nnew file mode 100755\n--- /dev/null\n+++ b/tool\n@@ -0,0 +1 @@\n+#!/bin/sh'
+    expect(pairDiffLines(parseUnifiedDiff(diff))[0]).toEqual({ header: 'new file mode 100755' })
+  })
+
+  it('keeps rename and permission changes alongside text hunks', () => {
+    const diff = 'diff --git a/old b/new\nold mode 100644\nnew mode 100755\nrename from old\nrename to new\nindex 1234..5678\n--- a/old\n+++ b/new\n@@ -1 +1 @@\n-before\n+after'
+    const rows = pairDiffLines(parseUnifiedDiff(diff))
+    expect(rows.slice(0, 5).map(row => row.header)).toEqual(['old mode 100644', 'new mode 100755', 'rename from old', 'rename to new', '@@ -1 +1 @@'])
+    expect(rows[5]).toMatchObject({ left: { oldLine: 1, text: '-before' }, right: { newLine: 1, text: '+after' } })
+  })
+
+  it('retains metadata-only changes and strips deleted-file preambles without losing old line numbers', () => {
+    const modeOnly = 'diff --git a/file b/file\nold mode 100644\nnew mode 100755'
+    expect(pairDiffLines(parseUnifiedDiff(modeOnly))).toEqual(modeOnly.split('\n').map(header => ({ header })))
+    const deletion = 'diff --git a/file b/file\ndeleted file mode 100644\n--- a/file\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-old\n-another'
+    expect(pairDiffLines(parseUnifiedDiff(deletion))).toEqual([
+      { header: '@@ -1,2 +0,0 @@' },
+      { left: { text: '-old', kind: 'removed', oldLine: 1 }, right: undefined },
+      { left: { text: '-another', kind: 'removed', oldLine: 2 }, right: undefined },
+    ])
+  })
+
   it('pairs unequal changes and keeps source numbers and no-newline markers on their original side', () => {
     const rows = pairDiffLines(parseUnifiedDiff('@@ -8,3 +12,2 @@\n same\n-old\n-another\n\\ No newline at end of file\n+new\n@@ -20 +30 @@\n-last\n+next'))
     expect(rows[1]).toMatchObject({ left: { oldLine: 8 }, right: { newLine: 12 } })
