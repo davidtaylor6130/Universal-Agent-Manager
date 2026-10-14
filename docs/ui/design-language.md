@@ -35,6 +35,8 @@ Patterns:
 - Empty new chat: a short heading and the composer centre in the pane; the first send moves the composer down to its normal position (FLIP, transform only; reduced motion jumps).
 - Context chips (`components/chat/ContextChip.tsx`): referenced context (attachments, skills) is a 24px pill with a type icon, name and kind label on var(--surface-up). Full path is a Tooltip in mono; files open the preview on click; remove is an icon button on composer chips only. Kinds include file, folder, skill, image and branch (GitBranch icon). Assistant replies chip inline code that is clearly a file path, folder or branch; in prose the chip is vertical-align middle with negative block margin so the line height does not change.
 
+- Custom icons (chats, workspaces, hosts, collections): pick from the searchable Lucide library first (stored as text `lucide:<name>`), with Emoji and PNG upload as secondary tabs; render through `components/shared/CustomIcon.tsx`.
+
 UX rules (enforce):
 1. One clear primary action per section; rest secondary/ghost.
 2. Status ≠ configuration: show "what is happening" (badges/dots/state text) distinctly from "what you set" (fields/switches).
