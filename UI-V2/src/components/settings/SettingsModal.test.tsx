@@ -251,6 +251,16 @@ describe('SettingsModal memory settings', () => {
   })
 
 
+  it('lists SSH Routing under Connections and opens its settings page', () => {
+    const { host, root } = renderModal()
+    const group = [...host.querySelectorAll('nav h2')].find(item => item.textContent === 'Connections')?.parentElement
+    expect(group?.querySelector('[aria-label="SSH Routing"]')).toBeTruthy()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="SSH Routing"]')?.click())
+    expect(host.querySelector('h2.uam-settings-page-header__title')?.textContent).toBe('SSH Routing')
+    expect(host.querySelector('[aria-label="Automatic routing"]')).toBeTruthy()
+    act(() => root.unmount()); host.remove()
+  })
+
   it('routes provider version actions to the selected remote host and drops old install confirmation', async () => {
     const template = useAppStore.getState().cliVersionManager.providers.find(provider => provider.providerId === 'codex-cli')!
     useAppStore.setState(state => ({ executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], cliVersionManager: { ...state.cliVersionManager, remoteProviders: [{ ...template, executionHostId: 'ssh-lab', executionHostName: 'Lab', installedVersion: '8.0' }] } }))
