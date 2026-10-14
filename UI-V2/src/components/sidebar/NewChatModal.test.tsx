@@ -311,7 +311,7 @@ describe('NewChatModal', () => {
     act(() => root.render(<NewChatModal />))
     expect(host.querySelector('button[aria-label="Model"]')).toBeNull()
     expect(host.querySelector('button[aria-label="Codex"]')).not.toBeNull()
-    expect(host.querySelector<HTMLElement>('[data-testid="model-options"]')?.style.maxHeight).toBe('240px')
+    expect(host.querySelector<HTMLElement>('[data-testid="model-options"]')?.style.maxHeight).toBe('400px')
     expect(host.querySelector('[role="menuitemradio"]')).not.toBeNull()
     act(() => root.unmount())
     host.remove()
@@ -482,7 +482,7 @@ describe('NewChatModal', () => {
     await act(async () => { create?.click(); await Promise.resolve() })
 
 	expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/srv/project', 'lab')
-    expect(host.textContent).toContain('Computer Use is disabled for remote chats.')
+    expect(host.textContent).toContain('Computer Use is off for remote chats.')
 	expect(host.textContent).not.toContain('A workspace is required')
     expect(addSession).toHaveBeenCalledWith('New chat', null, 'opencode-cli', 'remote-only', '', 'chat', 'lab', '/srv/project')
 
