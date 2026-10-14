@@ -264,13 +264,15 @@ namespace uam
 			return more;
 		}
 
+		ChatSession* FindAcpRuntimeChatById(AppState& app, const std::string& chat_id);
+
 		bool DrainPendingRemoteStopStdout(AppState& app, PendingAcpRemoteStop& pending, CefRefPtr<CefBrowser> browser)
 		{
 			AcpSessionState* session = FindAcpSessionForChat(app, pending.chat_id);
 			// A replacement session cannot consume output from the old Stop proxy.
 			if (session != nullptr && !session->remote_stop_pending) session = nullptr;
 			return DrainRemoteStopStdout(app, pending, session,
-			    ChatDomainService().FindChatById(app, pending.chat_id), browser);
+			    FindAcpRuntimeChatById(app, pending.chat_id), browser);
 		}
 
 		bool HasUncertainClaudeQuotaInput(const ChatSession& chat)
@@ -4444,6 +4446,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	                              bool recoverable_remote_turn,
 	                              bool restart_after_cleanup = false)
 	{
+		ChatSession* chat = FindAcpRuntimeChatById(app, session.chat_id);
 		session.remote_stop_pending = false;
 		session.remote_stop_unconfirmed = true;
 		session.restart_after_remote_stop_cleanup =
@@ -4457,6 +4460,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.recovering_remote_turn = true;
 			ScheduleAcpReconnect(session, GetAppTimeSeconds());
 		}
+		else if (session.ephemeral_model_discovery && chat != nullptr &&
+		         chat->remote_process_exists && !chat->remote_process_control_token.empty())
+		{
+			// Retry only the retained owned process; a discovery must not start a replacement.
+			session.processing = false;
+			session.recovering_remote_turn = false;
+			session.recovering_remote_process = true;
+			ScheduleAcpReconnect(session, GetAppTimeSeconds());
+		}
 		else
 		{
 			session.processing = false;
@@ -4467,8 +4479,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		                         ? "Remote stop could not be confirmed; reconnecting to preserve the active turn."
 		                         : "Remote stop could not be confirmed.";
 		app.status_line = session.last_error;
-		if (ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
-		    chat != nullptr &&
+		if (chat != nullptr &&
 		    chat->execution_host_id != uam::execution_hosts::kLocalHostId)
 		{
 			chat->remote_stop_cleanup_pending = true;
@@ -4696,7 +4707,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		if (!session->remote_stop_pending && !session->remote_stop_unconfirmed) { session->stop_purpose = purpose; session->stop_outcome = platform::ProcessStopOutcome::Unknown; }
-		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		ChatSession* chat = FindAcpRuntimeChatById(app, chat_id);
 		if (session->restart_marker_save_pending)
 		{
 			if (chat == nullptr)
@@ -5162,7 +5173,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			{
 				changed = true;
 				stopped->stop_outcome = task.result != nullptr ? task.result->outcome : platform::ProcessStopOutcome::Unknown;
-				ChatSession* chat = ChatDomainService().FindChatById(app, task.chat_id);
+				ChatSession* chat = FindAcpRuntimeChatById(app, task.chat_id);
 				if (chat != nullptr && task.result != nullptr && !task.result_consumed)
 				{
 					acp_detail::AppendRecentStderr(*stopped, task.result->standard_error);
@@ -5238,7 +5249,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				changed = true;
 				continue;
 			}
-			ChatSession* chat = ChatDomainService().FindChatById(app, pending.chat_id);
+			ChatSession* chat = FindAcpRuntimeChatById(app, pending.chat_id);
 			if (session != nullptr && session->remote_stop_pending && !pending.stderr_tail.empty())
 				acp_detail::AppendRecentStderr(*session, pending.stderr_tail);
 			if (confirmed_stop && session != nullptr) ApplyConfirmedRemoteStopOutcome(app, *session, chat, pending.stderr_tail);
@@ -5848,7 +5859,20 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::unordered_set<std::string> completed_ephemeral_ids;
 		for (const auto& session : app.acp_sessions)
 		{
-			if (session != nullptr && session->ephemeral_model_discovery && !session->running) completed_ephemeral_ids.insert(session->chat_id);
+			if (session == nullptr || !session->ephemeral_model_discovery || session->running ||
+			    session->reconnect_pending || AcpStopInProgress(app, session->chat_id)) continue;
+			const std::vector<ChatSession>::iterator discovery = std::ranges::find_if(app.model_discovery_chats,
+			    [&session](const ChatSession& chat) { return chat.id == session->chat_id; });
+			if (discovery != app.model_discovery_chats.end() && discovery->execution_host_id != execution_hosts::kLocalHostId &&
+			    execution_hosts::Find(app.settings.execution_hosts, discovery->execution_host_id) != nullptr &&
+			    discovery->remote_process_exists && !discovery->remote_process_control_token.empty())
+			{
+				// A proxy exit cannot discard authority over its surviving discovery process.
+				PreserveFailedRemoteStop(app, *session, false);
+				changed = true;
+				continue;
+			}
+			completed_ephemeral_ids.insert(session->chat_id);
 		}
 		if (!completed_ephemeral_ids.empty())
 		{
@@ -5878,7 +5902,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*stop);
 			AcpSessionState* session = FindAcpSessionForChat(app, stop->chat_id);
 			if (session == nullptr || !session->remote_stop_pending) continue;
-			ChatSession* chat = ChatDomainService().FindChatById(app, stop->chat_id);
+			ChatSession* chat = FindAcpRuntimeChatById(app, stop->chat_id);
 			if (RemoteStopExitConfirmed(exited, exit_code, stop->stderr_tail))
 			{
 				ApplyConfirmedRemoteStopOutcome(app, *session, chat, stop->stderr_tail);

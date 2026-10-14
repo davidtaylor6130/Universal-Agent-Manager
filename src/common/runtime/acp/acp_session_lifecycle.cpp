@@ -642,8 +642,13 @@ bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const Cha
 	const bool remote = chat.execution_host_id != uam::execution_hosts::kLocalHostId;
 	if (remote)
 	{
-		if (ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
-		    persisted != nullptr)
+		ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
+		if (persisted == nullptr && session.ephemeral_model_discovery)
+		{
+			const std::vector<ChatSession>::iterator found = std::ranges::find_if(app.model_discovery_chats, [&chat](const ChatSession& item) { return item.id == chat.id; });
+			if (found != app.model_discovery_chats.end()) persisted = &*found;
+		}
+		if (persisted != nullptr)
 		{
 			persisted->remote_restart_pending = true;
 			persisted->remote_stop_cleanup_pending = true;

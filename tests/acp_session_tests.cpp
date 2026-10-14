@@ -14858,3 +14858,202 @@ UAM_TEST(UnavailableModelGuidanceOnlyClassifiesExactModelRejections)
 		UAM_ASSERT_EQ(app.chats.front().model_id, std::string("model-old"));
 	}
 }
+
+#if !defined(_WIN32)
+namespace
+{
+	void VerifyRemoteDiscoveryStopOwnership(bool failed, int stop_mode)
+	{
+		TempDir temp("uam-private-discovery-stop");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		ChatSession chat;
+		chat.id = "model-discovery-owned-stop";
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = "private-discovery-host";
+		chat.workspace_directory = temp.root.string();
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "private-discovery-authority";
+		app.model_discovery_chats.push_back(chat);
+		ChatSession real;
+		real.id = "unrelated-working-chat";
+		real.provider_id = "opencode-cli";
+		real.messages.push_back({MessageRole::User, "Keep this active input"});
+		app.chats.push_back(real);
+		std::unique_ptr<uam::AcpSessionState> active = std::make_unique<uam::AcpSessionState>();
+		active->chat_id = real.id;
+		active->processing = true;
+		active->prompt_request_id = 77;
+		app.acp_sessions.push_back(std::move(active));
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->model_discovery_only = true;
+		session->ephemeral_model_discovery = true;
+		session->running = true;
+		session->initialized = true;
+		session->session_ready = true;
+		session->remote_output_delivery_token = chat.remote_process_control_token;
+		const fs::path ssh = temp.root / "ssh";
+		const fs::path received = temp.root / "received-stop";
+		const fs::path release = temp.root / "release-stop";
+		UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nIFS= read -r line || exit 71\nprintf '%s\\n' \"$line\" >\"$1\"\nwhile [ ! -f \"$2\" ]; do sleep 0.01; done\nexit \"$3\"\n"));
+		fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root,
+		    {ssh.string(), received.string(), release.string(), failed ? "70" : "0"}, &error));
+		app.acp_sessions.push_back(std::move(session));
+		if (stop_mode == 2) (void)uam::acp_detail::StopAcpProcessForRestart(app, *app.acp_sessions.back(), app.model_discovery_chats.front());
+		else if (stop_mode == 1) (void)uam::StopAcpSession(app, chat.id, uam::AcpStopPurpose::Timeout);
+		else uam::acp_detail::StopBackgroundModelDiscovery(app, *app.acp_sessions.back());
+		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+		UAM_ASSERT(app.acp_sessions.back()->remote_stop_pending);
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (!fs::exists(received) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(received), std::string(uam::remote::kRemoteStopControlLine));
+		(void)uam::PollAllAcpSessions(app);
+		UAM_ASSERT_EQ(app.model_discovery_chats.size(), std::size_t{1});
+		UAM_ASSERT(app.acp_sessions.back()->remote_stop_pending);
+		UAM_ASSERT(app.model_discovery_chats.front().remote_stop_cleanup_pending);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, chat.id).has_value());
+		UAM_ASSERT(uam::io::WriteTextFile(release, "release"));
+		while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::PollAllAcpSessions(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		if (failed)
+		{
+			UAM_ASSERT_EQ(app.model_discovery_chats.size(), std::size_t{1});
+			UAM_ASSERT(app.acp_sessions.back()->remote_stop_unconfirmed);
+			UAM_ASSERT(app.model_discovery_chats.front().remote_stop_cleanup_pending);
+			UAM_ASSERT_EQ(app.model_discovery_chats.front().remote_process_control_token, chat.remote_process_control_token);
+			UAM_ASSERT(app.acp_sessions.back()->reconnect_pending);
+			UAM_ASSERT(app.acp_sessions.back()->recovering_remote_process);
+		}
+		else
+		{
+			UAM_ASSERT(app.model_discovery_chats.empty());
+			UAM_ASSERT_EQ(app.acp_sessions.size(), std::size_t{1});
+		}
+		UAM_ASSERT_EQ(app.acp_sessions.front()->chat_id, real.id);
+		UAM_ASSERT(app.acp_sessions.front()->processing);
+		UAM_ASSERT_EQ(app.acp_sessions.front()->prompt_request_id, 77);
+		UAM_ASSERT(app.chats.front().messages == real.messages);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, chat.id).has_value());
+	}
+}
+#endif
+
+UAM_TEST(RemoteEphemeralModelDiscoveryStopKeepsOwnedCleanupUntilConfirmed)
+{
+#if !defined(_WIN32)
+	VerifyRemoteDiscoveryStopOwnership(false, 0);
+	VerifyRemoteDiscoveryStopOwnership(false, 1);
+	VerifyRemoteDiscoveryStopOwnership(false, 2);
+#endif
+}
+
+UAM_TEST(RemoteEphemeralModelDiscoveryFailedStopRetainsRetryAuthority)
+{
+#if !defined(_WIN32)
+	VerifyRemoteDiscoveryStopOwnership(true, 0);
+#endif
+}
+
+UAM_TEST(BackgroundModelStopDoesNotInferRemoteOwnershipForAnUnregisteredSession)
+{
+	uam::AppState app;
+	uam::AcpSessionState session;
+	session.chat_id = "unregistered-model-discovery";
+	session.process_execution_host_id = "unknown-remote-host";
+	session.running = true;
+	// Ordinary active sessions are not background model discovery targets.
+	uam::acp_detail::StopBackgroundModelDiscovery(app, session);
+	UAM_ASSERT(session.running);
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(app.model_discovery_chats.empty());
+	std::unique_ptr<uam::AcpSessionState> unregistered = std::make_unique<uam::AcpSessionState>();
+	unregistered->chat_id = session.chat_id;
+	unregistered->process_execution_host_id = session.process_execution_host_id;
+	unregistered->model_discovery_only = true;
+	unregistered->ephemeral_model_discovery = true;
+	unregistered->running = true;
+	app.acp_sessions.push_back(std::move(unregistered));
+	uam::acp_detail::StopBackgroundModelDiscovery(app, *app.acp_sessions.front());
+	UAM_ASSERT(!app.acp_sessions.front()->running);
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(app.model_discovery_chats.empty());
+}
+
+UAM_TEST(RemoteEphemeralModelDiscoveryTransportLossRetainsOwnedCleanupAuthority)
+{
+#if !defined(_WIN32)
+	for (int outcome = 0; outcome < 3; ++outcome)
+	{
+		TempDir temp("uam-private-discovery-proxy-exit");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "private-disconnected-discovery";
+		host.transport = "ssh";
+		host.ssh_alias = "private-unused-alias";
+		host.runner_status = "offline";
+		app.settings.execution_hosts.push_back(host);
+		ChatSession chat;
+		chat.id = "model-discovery-disconnected";
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = temp.root.string();
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "private-disconnected-authority";
+		app.model_discovery_chats.push_back(chat);
+		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat.id;
+		session->provider_id = chat.provider_id;
+		session->process_execution_host_id = host.id;
+		session->running = true;
+		session->initialized = session->session_ready = outcome != 2;
+		session->model_discovery_only = session->ephemeral_model_discovery = true;
+		session->remote_output_delivery_token = chat.remote_process_control_token;
+		const std::string diagnostic = outcome == 1 ? "The remote process does not exist." : outcome == 2
+		    ? std::string(uam::remote::kRemoteStartupFailurePrefix) + chat.remote_process_control_token + " configuration"
+		    : "Private proxy connection was lost.";
+		std::string error;
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		UAM_ASSERT(process.StartStdioProcess(*session, temp.root,
+		    {"/bin/sh", "-c", "printf '%s\\n' \"$1\" >&2; exit \"$2\"", "private-exit", diagnostic, outcome == 2 ? "71" : "70"}, &error));
+		app.acp_sessions.push_back(std::move(session));
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (!process.PollStdioProcessExited(*app.acp_sessions.front()) && std::chrono::steady_clock::now() < deadline)
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		UAM_ASSERT(process.PollStdioProcessExited(*app.acp_sessions.front()));
+		(void)uam::PollAllAcpSessions(app);
+		if (outcome == 0)
+		{
+			UAM_ASSERT_EQ(app.model_discovery_chats.size(), std::size_t{1});
+			UAM_ASSERT_EQ(app.acp_sessions.size(), std::size_t{1});
+			UAM_ASSERT(app.acp_sessions.front()->remote_stop_unconfirmed);
+			UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
+			UAM_ASSERT(app.acp_sessions.front()->recovering_remote_process);
+			UAM_ASSERT(app.model_discovery_chats.front().remote_stop_cleanup_pending);
+			UAM_ASSERT_EQ(app.model_discovery_chats.front().remote_process_control_token, chat.remote_process_control_token);
+			const double retry_at = app.acp_sessions.front()->reconnect_not_before_time_s;
+			const int attempts = app.acp_sessions.front()->reconnect_attempts;
+			(void)uam::PollAllAcpSessions(app);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->reconnect_not_before_time_s, retry_at);
+			UAM_ASSERT_EQ(app.acp_sessions.front()->reconnect_attempts, attempts);
+		}
+		else
+		{
+			UAM_ASSERT(app.model_discovery_chats.empty());
+			UAM_ASSERT(app.acp_sessions.empty());
+		}
+		UAM_ASSERT(app.pending_acp_remote_stops.empty());
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, chat.id).has_value());
+	}
+#endif
+}
