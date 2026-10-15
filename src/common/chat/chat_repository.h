@@ -107,6 +107,9 @@ class ChatRepository
 	static std::optional<ChatSession> LoadLocalChatSummaryReadOnly(const std::filesystem::path& data_root, std::string_view chat_id);
 	/// <summary>Loads one locally persisted chat without scanning sibling files.</summary>
 	static std::optional<ChatSession> LoadLocalChat(const std::filesystem::path& data_root, std::string_view chat_id, bool include_messages = true, std::string* warning_out = nullptr, bool publish_summary_cache = true);
+	/// <summary>Reads one primary transcript within a strict byte limit without repairs or cache writes.</summary>
+	static std::optional<ChatSession> LoadLocalChatBounded(const std::filesystem::path& data_root,
+	    std::string_view chat_id, std::size_t max_bytes);
 	/// <summary>Seeks a bounded page of complete messages, repairing missing derived offsets on a worker.</summary>
 	static std::optional<ChatMessagePage> ReadMessagePage(const std::filesystem::path& data_root,
 	    const ChatSession& expected, std::size_t limit, std::optional<std::size_t> before = {},

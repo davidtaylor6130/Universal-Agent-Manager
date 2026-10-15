@@ -18,6 +18,9 @@ New selected or direct remote OpenCode imports validate a complete bounded nativ
 
 Provider-agent Markdown imports expand leading `~/` paths through the platform path service and validate the generated canonical definition before atomic publication. Invalid definitions, including duplicate skill attachments, cannot replace previous agent bytes or leave a new invalid file. The native import handler retains selected skills and explicit workspace access; global scope needs no chat, while workspace scope requires an available chat. Unsupported provider security fields remain blocked; a bounded native OpenCode permission subset has a provider-bound import path described in [Permissions and notifications](permissions-notifications.md#provider-bound-agent-imports). Omitted provider fields such as name still require acknowledgment. The settings global-picker flow and live GUI acceptance remain pending.
 
+
+Selected OpenCode historical-compaction repair is classification-only and uses the exact primary through `LoadLocalChatBounded`; it never substitutes a backup or reimports the whole native session. The bounded loader preserves normal summary metadata overlay while limiting actual primary and summary reads. Publication retains the existing original backup and chat/summary/queue revision guards. Its detailed proof and admission rules are described in [Provider sessions](provider-sessions.md#opencode-compaction-synchronization).
+
 ## SVN before first launch
 
 `svn_update_before_chat` defaults to OFF. An explicit new local chat captures `svn_update_pending` when SVN and the update setting are enabled. Existing chats, native imports, historical edit/branch children, selected existing worktrees, temporary side chats and subagents do not acquire that intent. Turning the setting OFF skips the update and preserves normal local Git preparation.

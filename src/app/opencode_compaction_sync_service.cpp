@@ -1,4 +1,5 @@
 #include "app/opencode_compaction_sync_service.h"
+#include "app/opencode_compaction_history.h"
 
 #include "app/chat_domain_service.h"
 #include "app/provider_worker_command.h"
@@ -475,11 +476,22 @@ struct OpenCodeCompactionSyncService::State
 	}
 };
 
-OpenCodeCompactionSyncService::OpenCodeCompactionSyncService(ExecuteQuery execute) : m_state(std::make_unique<State>(std::move(execute))) {}
+OpenCodeCompactionSyncService::OpenCodeCompactionSyncService(ExecuteQuery execute)
+    : m_state(std::make_unique<State>(execute))
+{
+	OpenCodeCompactionHistoryService::ExecuteQuery history_execute;
+	if (execute)
+		history_execute = [execute](const OpenCodeCompactionHistoryService::Query& query, std::stop_token stop)
+		{
+			return execute(Query{query.argv, query.workspace, query.host, query.sql}, stop);
+		};
+	m_history = std::make_unique<OpenCodeCompactionHistoryService>(std::move(history_execute));
+}
 OpenCodeCompactionSyncService::~OpenCodeCompactionSyncService() { Stop(); }
 
 void OpenCodeCompactionSyncService::Stop()
 {
+	if (m_history) m_history->Stop();
 	if (!m_state) return;
 	m_state->stopped = true;
 	if (m_state->active) m_state->active->cancellation.request_stop();
@@ -549,7 +561,7 @@ OpenCodeCompactionGateState OpenCodeCompactionSyncService::BeforeDispatch(AppSta
 bool OpenCodeCompactionSyncService::Poll(AppState& app)
 {
 	if (m_state->stopped) return false;
-	bool changed = false;
+	bool changed = m_history && m_history->Poll(app);
 	for (std::map<std::string, State::Context>::iterator current = m_state->contexts.begin(); current != m_state->contexts.end();)
 	{
 		State::Context& context = current->second;
@@ -586,7 +598,7 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 			if (!chat || !session || !m_state->Owns(app, *session, *chat, current->second)) m_state->contexts.erase(current);
 			else
 			{
-				changed = m_state->Consume(app, current->second, *work);
+				changed = m_state->Consume(app, current->second, *work) || changed;
 				if (!current->second.error.empty()) diagnostics::Write("[OpenCode compaction] " + current->second.error);
 			}
 		}

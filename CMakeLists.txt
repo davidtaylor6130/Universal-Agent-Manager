@@ -501,6 +501,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/runtime_orchestration_services.cpp
   src/app/startup_native_import_service.cpp
   src/app/opencode_compaction_sync_service.cpp
+  src/app/opencode_compaction_history.cpp
   src/app/model_discovery_service.cpp
   src/app/shell_action_service.cpp
   src/app/theme_service.cpp
@@ -1346,6 +1347,8 @@ if(UAM_BUILD_TESTS)
     tests/goal_workspace_admission_tests.cpp
     tests/opencode_compaction_sync_tests.cpp
     tests/opencode_compaction_metadata_tests.cpp
+    tests/opencode_compaction_history_tests.cpp
+    tests/compaction_handoff_tests.cpp
     tests/remote_worktree_tests.cpp
     tests/remote_path_inspection_tests.cpp
     tests/claude_projection_tests.cpp
@@ -1401,6 +1404,7 @@ if(UAM_BUILD_TESTS)
     src/app/runtime_orchestration_services.cpp
     src/app/startup_native_import_service.cpp
     src/app/opencode_compaction_sync_service.cpp
+  src/app/opencode_compaction_history.cpp
     src/app/model_discovery_service.cpp
     src/app/shell_action_service.cpp
     src/app/theme_service.cpp

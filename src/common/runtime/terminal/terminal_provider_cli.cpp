@@ -7,6 +7,7 @@
 
 #include "app/chat_domain_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/conversation_handoff.h"
 #include "app/provider_resolution_service.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_runtime.h"
@@ -205,10 +206,21 @@ std::string BuildProviderHandoffContext(const ChatSession& chat, std::stop_token
 	{
 		if (stop_token.stop_requested()) return {};
 		if (message->acp_prompt_discarded) continue;
-		if (message->role == MessageRole::User || message->role == MessageRole::Assistant)
-			append(message->role == MessageRole::User ? "User: " : "Assistant: ", message->content);
-		for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
-			if (block->type == "context_compaction") append("Conversation summary: ", block->text);
+		if (uam::chat::HandoffUsesBlockOrder(*message))
+		{
+			for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
+			{
+				if (block->type == "context_compaction") append("Conversation summary: ", block->text);
+				else if (block->type == "assistant_text") append("Assistant: ", block->text);
+			}
+		}
+		else
+		{
+			if (message->role == MessageRole::User || message->role == MessageRole::Assistant)
+				append(message->role == MessageRole::User ? "User: " : "Assistant: ", message->content);
+			for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
+				if (block->type == "context_compaction") append("Conversation summary: ", block->text);
+		}
 	}
 	std::string context;
 	if (omitted) context = kOmissionNotice;

@@ -3379,13 +3379,13 @@ namespace
 		hydrated.small_model_mode = summary.small_model_mode;
 	}
 
-	void ApplySummaryOpenedAtToFullChat(const fs::path& chat_path, ChatSession& chat)
+	void ApplySummaryOpenedAtToFullChat(const fs::path& chat_path, ChatSession& chat, std::size_t max_read_bytes = 0)
 	{
 		const fs::path summary_path = SummaryCachePathForChatFile(chat_path);
 		std::error_code error;
 		const std::uintmax_t source_size = fs::file_size(chat_path, error);
 		if (error || !SummaryCacheIsCurrent(chat_path, summary_path)) return;
-		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size);
+		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size, false, max_read_bytes);
 		if (summary.chat && summary.chat->id == chat.id)
 		{
 			if (summary.chat->last_opened_at > chat.last_opened_at) chat.last_opened_at = summary.chat->last_opened_at;
@@ -3633,6 +3633,16 @@ std::optional<ChatSession> ChatRepository::LoadLocalChat(const std::filesystem::
 	{
 		SetWarning(warning_out, loaded.error);
 	}
+	return std::move(loaded.chat);
+}
+
+std::optional<ChatSession> ChatRepository::LoadLocalChatBounded(const fs::path& data_root,
+    std::string_view chat_id, std::size_t max_bytes)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id) || max_bytes == 0) return std::nullopt;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
+	LoadChatResult loaded = ParseLocalChatFile(primary, true, 0, false, max_bytes);
+	if (loaded.chat) ApplySummaryOpenedAtToFullChat(primary, *loaded.chat, max_bytes);
 	return std::move(loaded.chat);
 }
 

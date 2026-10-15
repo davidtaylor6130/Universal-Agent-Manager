@@ -17,6 +17,7 @@ namespace uam
 
 	struct AppState;
 	struct AcpSessionState;
+	class OpenCodeCompactionHistoryService;
 
 	enum class OpenCodeCompactionGateState
 	{
@@ -54,5 +55,6 @@ namespace uam
 	  private:
 		struct State;
 		std::unique_ptr<State> m_state;
+		std::unique_ptr<OpenCodeCompactionHistoryService> m_history;
 	};
 }
