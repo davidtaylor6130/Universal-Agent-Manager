@@ -13,14 +13,18 @@ export function withSettingsScope<T extends object>(payload: T, scopeExecutionHo
   return { ...payload, scopeExecutionHostId }
 }
 
-/** Resolve saved defaults only for a still-configured explicit SSH host. */
+/**
+ * Resolve saved defaults for an execution host. An SSH host never inherits the controller's
+ * global defaults (model ids are local to the controller), so it gets empty defaults until its
+ * own scoped settings exist.
+ */
 export function defaultsForExecutionHost(state: {
   defaultNewChatProviderId: string
   providerChatDefaults: HostScopedSettingsValues['providerChatDefaults']
   hostScopedSettingsValues: Record<string, HostScopedSettingsValues>
   executionHosts: ExecutionHost[]
 }, hostId: string): Pick<HostScopedSettingsValues, 'defaultNewChatProviderId' | 'providerChatDefaults'> {
-  return state.executionHosts.some(host => host.id === hostId && host.transport === 'ssh')
-    ? state.hostScopedSettingsValues[hostId] ?? state
-    : state
+  if (!state.executionHosts.some(host => host.id === hostId && host.transport === 'ssh')) return state
+  // ponytail: an SSH host with no scoped settings gets empty defaults, not the controller's
+  return state.hostScopedSettingsValues[hostId] ?? { defaultNewChatProviderId: '', providerChatDefaults: {} }
 }
