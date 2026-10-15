@@ -44,7 +44,7 @@ namespace
 {
 	bool CanDeferLocalSessionReceipt(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 	{
-		return app.settings.central_provider_configuration.enabled &&
+		return (app.settings.central_provider_configuration.enabled || ShouldDeferLocalAcpConfiguration(app, session, chat)) &&
 		    chat.execution_host_id == execution_hosts::kLocalHostId &&
 		    session.process_execution_host_id == execution_hosts::kLocalHostId && !chat.small_model_mode &&
 		    !session.model_discovery_only && !session.goal_internal_session &&

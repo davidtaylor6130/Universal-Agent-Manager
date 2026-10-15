@@ -1661,7 +1661,8 @@ UAM_TEST(AcpResumeGoalPersistsActiveStateBeforeQueueingWork)
 	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
 	uam::AppState app;
 	app.data_root = temp.root;
-	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli, false);
+	chat.workspace_directory = temp.root.string();
 	chat.id = "chat-resume-work";
 	chat.small_model_mode = true;
 	std::string goal_id;
@@ -1712,7 +1713,8 @@ UAM_TEST(AcpResumeGoalDoesNotQueueWorkWhenActivationCannotBePersisted)
 	uam::AppState app;
 	app.data_root = temp.root / "not-a-directory";
 	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
-	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli, false);
+	chat.workspace_directory = temp.root.string();
 	chat.id = "chat-resume-save-failure";
 	app.chats.push_back(chat);
 	std::string goal_id;
@@ -1810,7 +1812,8 @@ UAM_TEST(AcpResumeGoalAdoptsTheCurrentlySelectedWorkerAndReviewerModels)
 	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
 	uam::AppState app;
 	app.data_root = temp.root;
-	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli, false);
+	chat.workspace_directory = temp.root.string();
 	chat.id = "chat-resume-selected-models";
 	chat.small_model_mode = true;
 	chat.model_id = "qwen3.6-35b-a3b";
@@ -1878,7 +1881,8 @@ UAM_TEST(AcpGoalIterationsUsePrivateContextsInOwnerChat)
 	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
 	uam::AppState app;
 	app.data_root = temp.root;
-	ChatSession root = ChatDomainService().CreateNewChat("", "gemini-cli");
+	ChatSession root = ChatDomainService().CreateNewChat("", "gemini-cli", false);
+	root.workspace_directory = temp.root.string();
 	root.id = "goal-root";
 	root.native_session_id = "root-native-session";
 	app.chats.push_back(root);
@@ -2899,7 +2903,8 @@ UAM_TEST(DeferredGoalContinuationWaitsForOwnedStopAndQueuesOnlyOnce)
 	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
 	uam::AppState app;
 	app.data_root = temp.root;
-	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli);
+	ChatSession chat = ChatDomainService().CreateNewChat("", uam::provider_ids::kCodexCli, false);
+	chat.workspace_directory = temp.root.string();
 	app.chats.push_back(chat);
 	std::string goal_id;
 	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Finish.", 100, &goal_id));

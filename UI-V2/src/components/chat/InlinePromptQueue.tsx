@@ -1,12 +1,29 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, CornerUpRight, GripVertical, Pencil, X } from 'lucide-react'
 import type { AcpQueuedPrompt } from '../../store/cpp/types'
+import type { Attachment } from '../../types/message'
 import { Button, IconButton, StatusDot, motionAllowed } from '../ui'
 import { EXIT_MS } from '../ui/Overlay'
 import './InlinePromptQueue.css'
 
+export interface UnsentPrompt {
+  messageIndex: number
+  text: string
+  attachments: readonly Attachment[]
+  retryable: boolean
+  receipt?: { id: string; revision: number }
+  recoveryPending?: boolean
+  sending?: boolean
+}
+
 interface InlinePromptQueueProps {
   prompts: readonly AcpQueuedPrompt[]
+  unsentPrompts?: readonly UnsentPrompt[]
+  unsentActionsDisabled?: boolean
+  unsentReceiptDeleteDisabled?: boolean
+  onRetryUnsent?: (messageIndex: number) => Promise<boolean>
+  onRemoveUnsent?: (messageIndex: number, receipt?: { id: string; revision: number }) => Promise<boolean>
+  onEditUnsent?: (messageIndex: number, text: string) => void
   held?: boolean
   onResume?: (expected: { id: string; revision: number }[]) => Promise<boolean>
   disabled?: boolean
@@ -27,7 +44,7 @@ function FileChip({ name, title, trailing }: { name: string; title?: string; tra
 /** Removed rows stay visible for the exit animation; reduced motion or no matchMedia (jsdom) drops them at once. */
 
 /** Edits queue snapshots separately from the composer; native ID/revision guards own admission. */
-export function InlinePromptQueue({ prompts, held = false, onResume, disabled = false, onEdit, onReorder, onSteer, onRemove }: InlinePromptQueueProps) {
+export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDisabled = false, unsentReceiptDeleteDisabled = unsentActionsDisabled, onRetryUnsent, onRemoveUnsent, onEditUnsent, held = false, onResume, disabled = false, onEdit, onReorder, onSteer, onRemove }: InlinePromptQueueProps) {
   const [editing, setEditing] = useState<{ id: string; revision: number; text: string; retainedAttachmentIds?: string[] } | null>(null)
   const [pending, setPending] = useState(false)
   const pendingRef = useRef(false)
@@ -79,8 +96,8 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
     try {
       if (await operation()) finish?.()
       else setError(failure)
-    } catch {
-      setError(failure)
+    } catch (error) {
+      setError(error instanceof Error && error.message.trim() ? error.message : failure)
     } finally {
       pendingRef.current = false
       setPending(false)
@@ -99,7 +116,7 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
     reorder(index, index + direction)
   }
 
-  if (prompts.length === 0 && !editing && leaving.length === 0) return null
+  if (prompts.length === 0 && unsentPrompts.length === 0 && !editing && leaving.length === 0) return null
   const editedPrompt = editing ? prompts.find((prompt) => prompt.id === editing.id) : undefined
   const editedPromptIndex = editedPrompt ? prompts.indexOf(editedPrompt) : -1
   const staleEdit = Boolean(editing && (!editedPrompt || editedPrompt.revision !== editing.revision))
@@ -114,11 +131,27 @@ export function InlinePromptQueue({ prompts, held = false, onResume, disabled = 
     void run(() => onEdit(editing.id, editing.revision, editing.text, retainedAttachmentIds), 'Queued prompt changed or could not be saved. Your edit is kept.', () => setEditing(null))
   }
   return <div className="uam-queue mb-1.5" role="group" aria-label="Queued prompt">
-    <span className="sr-only" role="status">{prompts.length} queued prompt{prompts.length === 1 ? '' : 's'}</span>
+    {prompts.length > 0 && <span className="sr-only" role="status">{prompts.length} queued prompt{prompts.length === 1 ? '' : 's'}</span>}
+    {unsentPrompts.length > 0 && <div className="uam-queue-list" role="group" aria-label="Unsent prompts">
+      {unsentPrompts.map((prompt) => <div key={prompt.receipt?.id ?? prompt.messageIndex} className="uam-queue-row uam-queued-prompt" data-unsent-message-index={prompt.receipt ? undefined : prompt.messageIndex} data-unsent-receipt-id={prompt.receipt?.id}>
+        <div className="uam-queue-row__main">
+          <span className="uam-queue-row__label">{prompt.sending ? 'Sending' : 'Unsent'}</span>
+          <span className="uam-queue-row__text">{prompt.text}</span>
+          <div className="uam-queue-row__actions">
+            {onEditUnsent && <IconButton size="sm" icon={<Pencil size={13} />} label="Edit message in new branch" disabled={blocked || unsentActionsDisabled || Boolean(prompt.recoveryPending) || Boolean(editing)} onClick={() => onEditUnsent(prompt.messageIndex, prompt.text)} />}
+            {prompt.retryable && onRetryUnsent && <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Retry message" disabled={blocked || unsentActionsDisabled || Boolean(prompt.recoveryPending) || Boolean(editing)} onClick={() => void run(() => onRetryUnsent(prompt.messageIndex), 'Unsent prompt could not be retried. Your input is kept.')} />}
+            {onRemoveUnsent && <IconButton size="sm" icon={<X size={14} />} label="Remove unsent prompt" disabled={blocked || (prompt.receipt ? unsentReceiptDeleteDisabled : unsentActionsDisabled) || Boolean(prompt.sending || (prompt.recoveryPending && !prompt.receipt)) || Boolean(editing)} onClick={() => void run(() => onRemoveUnsent(prompt.messageIndex, prompt.receipt), 'Unsent prompt could not be removed. Your input is kept.')} />}
+          </div>
+        </div>
+        {prompt.attachments.length > 0 && <div className="uam-queue-row__files" aria-label="Unsent prompt files">
+          {prompt.attachments.map((attachment) => <FileChip key={attachment.id} name={attachment.name} title={attachment.path || attachment.name} />)}
+        </div>}
+      </div>)}
+    </div>}
     {held && <div className="uam-queue-held">
       <StatusDot tone="warning" size={7} />
       <span className="uam-queue-held__copy">
-        <strong>Held after restart</strong>
+        <strong>Queue held</strong>
         <span>Resume to send these queued prompts.</span>
       </span>
       <Button type="button" size="sm" variant="secondary" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'Queue changed or could not be resumed. Your queued prompts are kept.')}>Resume queue</Button>

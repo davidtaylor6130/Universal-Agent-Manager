@@ -3,6 +3,12 @@
 #include <barrier>
 #include <thread>
 #include "app/provider_configuration_service.h"
+#include "app/central_instruction_file_service.h"
+#if defined(__APPLE__)
+#include <sys/acl.h>
+#include <sys/xattr.h>
+#include <membership.h>
+#endif
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
 #include "remote/runner_state.h"
@@ -10,8 +16,552 @@
 #include "app/uam_control_service.h"
 #include "cef/state_serializer.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
+#include "common/runtime/acp/acp_session_internal.h"
 
 using namespace uam_test;
+
+#if defined(__APPLE__)
+namespace
+{
+	/// <summary>Private transport and an unrelated pending check keep launch tests off real SSH/providers.</summary>
+	struct RemoteOpenCodeVersionLaunchFixture
+	{
+		TempDir temp{"uam-opencode-version-launch"};
+		ScopedEnvVar path{"PATH", temp.root.string() + ":/usr/bin:/bin"};
+		uam::AppState app;
+		ExecutionHost host{"private-opencode", "Private", "ssh", "private-fixture", "ready", "development", "linux", "x86_64", "", "runner", 3};
+		RemoteOpenCodeVersionLaunchFixture()
+		{
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexit 0\n"));
+			fs::permissions(temp.root / "ssh", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+			app.data_root = temp.root / "data";
+			app.provider_profiles = {ProviderProfileStore::DefaultOpenCodeProfile()};
+			app.settings.git_auto_worktree = false;
+			app.settings.central_provider_configuration.uam_control_enabled = false;
+			app.settings.execution_hosts.push_back(host);
+			ChatSession chat;
+			chat.id = "private-opencode-launch"; chat.provider_id = "opencode-cli";
+			chat.execution_host_id = host.id; chat.workspace_directory = temp.root.string();
+			chat.remote_process_control_token = "private-opencode-owner";
+			app.chats.push_back(chat);
+			app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+			Session().chat_id = chat.id; Session().provider_id = chat.provider_id;
+			app.runtime_cli_version_check_task.running = true;
+			app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
+			app.runtime_cli_version_check_task.execution_host = ExecutionHost{};
+			app.runtime_cli_version_provider_id = "codex-cli";
+		}
+		~RemoteOpenCodeVersionLaunchFixture()
+		{
+			PlatformServicesFactory::Instance().process_service.StopStdioProcess(Session(), true);
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(Session());
+		}
+		uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
+		bool Start(std::string* error = nullptr) { return uam::acp_detail::StartAcpProcessForChat(app, Session(), app.chats.front(), error); }
+		void Checked(std::string version = "1.17.20")
+		{
+			uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", host.id)];
+			state.execution_host = host; state.checked = true; state.supported = true; state.installed_version = std::move(version);
+		}
+	};
+}
+#endif
+
+UAM_TEST(RemoteOpenCodeUncachedLaunchWaitsAndUsesItsCompletedVersionDespiteUnrelatedCheck)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	UAM_ASSERT(!fixture.Session().running);
+	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+	UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
+	UAM_ASSERT(fixture.Start());
+	const std::pair<std::string, std::string> target{"opencode-cli", fixture.host.id};
+	UAM_ASSERT_EQ(std::ranges::count(fixture.app.runtime_cli_version_check_queue, target), 1);
+	fixture.Checked(); // The existing async version service publishes only metadata at completion.
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.Session().running);
+	const nlohmann::json manifest = nlohmann::json::parse(ReadFile(fixture.Session().provider_configuration_directory / "owner.json"));
+	UAM_ASSERT(manifest.value("openCodeCodeMode", false));
+	UAM_ASSERT_EQ(fixture.app.runtime_cli_version_provider_id, std::string("codex-cli"));
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeForeignVersionCacheCannotAuthorizeLaunchAndHostEditRevokesPending)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.Checked();
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", fixture.host.id)].execution_host.ssh_alias = "foreign-fixture";
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	UAM_ASSERT(!fixture.Session().running);
+	fixture.app.settings.execution_hosts.back().ssh_alias = "replacement-fixture";
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(!fixture.Session().running);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeCanceledVersionPreparationCannotLaunchAfterCheckCompletes)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	UAM_ASSERT(uam::StopAcpSession(fixture.app, fixture.app.chats.front().id, uam::AcpStopPurpose::Interrupt, true));
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	fixture.Checked();
+	uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT(!fixture.Session().running);
+	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeCompletedUnknownVersionKeepsEagerLaunchCompatibility)
+{
+#if defined(__APPLE__)
+	for (const std::string version : {"1.18.36", "1.17.19", ""})
+	{
+		RemoteOpenCodeVersionLaunchFixture fixture;
+		fixture.Checked(version);
+		fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", fixture.host.id)].supported = false;
+		UAM_ASSERT(fixture.Start());
+		UAM_ASSERT(fixture.Session().running);
+		UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+		UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
+	}
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeMatchingVersionCacheLaunchesWithoutWaitingForUnrelatedCheck)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.Checked();
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
+	UAM_ASSERT_EQ(fixture.app.runtime_cli_version_provider_id, std::string("codex-cli"));
+	const nlohmann::json manifest = nlohmann::json::parse(ReadFile(fixture.Session().provider_configuration_directory / "owner.json"));
+	UAM_ASSERT(manifest.value("openCodeCodeMode", false));
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeVersionHealthPublicationPreservesPendingLaunchOwnership)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.app.runtime_cli_version_check_task.execution_host = fixture.host;
+	fixture.app.runtime_cli_version_provider_id = "opencode-cli";
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr && !fixture.Session().running);
+	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
+	// The normal application tick can consume this owned worker after ACP polling, before its next call.
+	const std::shared_ptr<AsyncProcessTaskState> result = fixture.app.runtime_cli_version_check_task.state;
+	result->result.ok = true;
+	result->result.exit_code = 0;
+	result->result.output = "1.17.20\n";
+	result->remote_helper_connected = true;
+	result->completed.store(true, std::memory_order_release);
+	ProviderCliCompatibilityService().Poll(fixture.app);
+	UAM_ASSERT(!fixture.app.settings.execution_hosts.back().last_seen_at.empty());
+	UAM_ASSERT(fixture.app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("opencode-cli", fixture.host.id)).checked);
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && fixture.Session().running);
+	const nlohmann::json manifest = nlohmann::json::parse(ReadFile(fixture.Session().provider_configuration_directory / "owner.json"));
+	UAM_ASSERT(manifest.value("openCodeCodeMode", false));
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeVersionWaitRejectsChangedCentralConfiguration)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	fixture.app.settings.central_provider_configuration.enabled = true;
+	fixture.Checked();
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
+	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodePublicPromptKeepsSelectedModelAcrossColdVersionWait)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "provider";
+	fixture.app.chats.front().model_id = "private/selected-model";
+	fixture.Session().goal_turn_model_id = "private/previous-model";
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Private authored input", &error));
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr && !fixture.Session().running);
+	UAM_ASSERT_EQ(fixture.Session().goal_turn_model_id, std::string("private/selected-model"));
+	UAM_ASSERT(fixture.Session().prompt_request_id == 0);
+	const std::string queued = fixture.Session().queued_prompt;
+	const std::vector<Message> messages = fixture.app.chats.front().messages;
+	fixture.Checked();
+	UAM_ASSERT(fixture.Start(&error));
+	UAM_ASSERT(fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT_EQ(fixture.Session().queued_prompt, queued);
+	UAM_ASSERT(fixture.app.chats.front().messages == messages);
+	UAM_ASSERT(fixture.Session().prompt_request_id == 0);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodePublicPromptNormalizesModelOptionsBeforeColdVersionWait)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "provider";
+	fixture.app.chats.front().model_id = "private/selected-model";
+	fixture.app.chats.front().reasoning_effort = "unsupported-effort";
+	fixture.app.chats.front().service_tier = "unsupported-tier";
+	uam::AcpModelState model;
+	model.id = fixture.app.chats.front().model_id;
+	model.supported_reasoning_efforts = {"medium"};
+	model.default_reasoning_effort = "medium";
+	fixture.Session().available_models = {model};
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Private authored input", &error));
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr && !fixture.Session().running);
+	UAM_ASSERT_EQ(fixture.app.chats.front().reasoning_effort, std::string("medium"));
+	UAM_ASSERT(fixture.app.chats.front().service_tier.empty());
+	fixture.Checked();
+	UAM_ASSERT(fixture.Start(&error));
+	UAM_ASSERT(fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.Session().prompt_request_id == 0);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodePublicLaunchFailureRestoresSelectedModelOptions)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "provider";
+	fixture.app.settings.execution_hosts.back().runner_protocol_version = 0;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.model_id = "private/selected-model";
+	chat.reasoning_effort = "original-effort";
+	chat.service_tier = "original-tier";
+	chat.service_tier_explicit = false;
+	fixture.Session().goal_turn_model_id = "private/previous-model";
+	uam::AcpModelState model;
+	model.id = chat.model_id;
+	model.supported_reasoning_efforts = {"medium"};
+	model.default_reasoning_effort = "medium";
+	fixture.Session().available_models = {model};
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Private authored input", &error));
+	UAM_ASSERT_EQ(error, std::string("The selected remote runner is not ready. Recheck it in Settings."));
+	UAM_ASSERT_EQ(fixture.Session().last_error, error);
+	UAM_ASSERT_EQ(fixture.Session().lifecycle_state, std::string(uam::acp_detail::kAcpLifecycleError));
+	UAM_ASSERT_EQ(fixture.Session().goal_turn_model_id, std::string("private/previous-model"));
+	UAM_ASSERT_EQ(chat.reasoning_effort, std::string("original-effort"));
+	UAM_ASSERT_EQ(chat.service_tier, std::string("original-tier"));
+	UAM_ASSERT(!chat.service_tier_explicit);
+	UAM_ASSERT(!fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(chat.messages.empty() && fixture.Session().prompt_request_id == 0);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeFailedVersionCheckHoldsRawQueueUntilExplicitRetry)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	uam::AcpQueuedUserPromptState raw;
+	raw.id = "private-version-input"; raw.revision = 7; raw.text = "Private raw input";
+	raw.markdown_store_prompt_blocks = {"EXACT_CAPTURED_PRIVATE_SKILL"};
+	fixture.Session().queued_user_prompts = {raw};
+	fixture.app.chats.front().acp_queued_prompts = {raw};
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	fixture.Checked("");
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", fixture.host.id)].check_error = "Private version transport failed";
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(error.find("Private version transport failed") != std::string::npos);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.Session().queue_held && fixture.app.chats.front().acp_queue_held);
+	UAM_ASSERT(!fixture.Session().reconnect_pending && !fixture.Session().running);
+	uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
+	UAM_ASSERT(fixture.Session().queued_user_prompts.front() == raw);
+	UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.front() == raw);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(fixture.app.chats.front().id));
+	UAM_ASSERT(fixture.Start()); // A new explicit attempt may refresh the failed check, but sends nothing.
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr && !fixture.Session().running);
+	fixture.Checked();
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", fixture.host.id)].check_error.clear();
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().running && fixture.Session().queue_held);
+	UAM_ASSERT(fixture.Session().prompt_request_id == 0);
+	UAM_ASSERT(fixture.Session().queued_user_prompts.front() == raw);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeWarmAndRecoveryLaunchesDoNotProbeOrReconfigure)
+{
+#if defined(__APPLE__)
+	for (const bool recovery : {false, true})
+	{
+		RemoteOpenCodeVersionLaunchFixture fixture;
+		fixture.Session().running = !recovery;
+		fixture.Session().recovering_remote_process = recovery;
+		UAM_ASSERT(fixture.Start());
+		UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+		UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
+		UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
+		if (!recovery) fixture.Session().running = false; // No OS process belongs to the warm-state fixture.
+	}
+#endif
+}
+
+UAM_TEST(OpenCodeDiscoveryUsesOnlyCheckedVersionsOnTheSelectedHost)
+{
+	uam::AppState app;
+	ExecutionHost local;
+	ExecutionHost remote;
+	remote.id = "ssh-fixture";
+	remote.transport = "ssh";
+	remote.ssh_alias = "fixture";
+	uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", remote.id)];
+	state.execution_host = remote;
+	state.installed_version = "1.17.20";
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote).empty());
+	state.checked = true;
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote).empty());
+	state.supported = true;
+	UAM_ASSERT_EQ(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote), std::string("1.17.20"));
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", local).empty());
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "codex-cli", remote).empty());
+	remote.ssh_alias = "different-target";
+	UAM_ASSERT(uam::CheckedProviderConfigurationVersion(app, "opencode-cli", remote).empty());
+}
+
+UAM_TEST(OpenCodeDiscoverySupportsInheritedMcpWithoutChangingOtherProviderBundles)
+{
+	TempDir temp("uam-discovery-versions");
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	ExecutionHost host;
+	for (const std::string version : {"", "1.17.19", "1.17.20", "1.18.35", "1.18.36", "unknown"})
+	{
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, version));
+		const bool verified = version == "1.17.20" || version == "1.18.35";
+		UAM_ASSERT_EQ(!bundle.local_directory.empty(), verified);
+		if (!verified) continue;
+		UAM_ASSERT_EQ(bundle.manifest["format"], nlohmann::json(1));
+		UAM_ASSERT(bundle.manifest.value("openCodeCodeMode", false));
+		UAM_ASSERT(bundle.manifest.value("mcpOnly", false));
+		UAM_ASSERT(bundle.manifest["mcpServers"].empty());
+		UAM_ASSERT(bundle.files.empty());
+	}
+	settings.central_provider_configuration.enabled = true;
+	for (const std::string provider : {"codex-cli", "claude-cli", "gemini-cli", "copilot-cli", "antigravity-cli"})
+	{
+		chat.provider_id = provider;
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, "1.17.20"));
+		UAM_ASSERT(!bundle.manifest.contains("openCodeCodeMode"));
+	}
+}
+
+UAM_TEST(OpenCodeDiscoveryManifestRequiresBooleanHintAndRetainsFormatOne)
+{
+	nlohmann::json manifest = {{"format", 1}, {"files", nlohmann::json::object()}};
+	std::string error;
+	for (const nlohmann::json hint : {nlohmann::json(true), nlohmann::json(false)})
+	{
+		manifest["openCodeCodeMode"] = hint;
+		UAM_ASSERT(uam::provider_setup::ValidateManifest(manifest, error));
+	}
+	for (const nlohmann::json hint : {nlohmann::json("true"), nlohmann::json(1), nlohmann::json(nullptr), nlohmann::json::object()})
+	{
+		manifest["openCodeCodeMode"] = hint;
+		UAM_ASSERT(!uam::provider_setup::ValidateManifest(manifest, error));
+	}
+}
+
+UAM_TEST(OpenCodeDiscoveryPreservesExecutingHostAndLaunchEnvironmentOverrides)
+{
+	TempDir temp("uam-discovery-environment");
+	constexpr const char* flag = "OPENCODE_EXPERIMENTAL_CODE_MODE";
+	ScopedEnvVar original(flag, "");
+#if !defined(_WIN32)
+	unsetenv(flag);
+#endif
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, "1.17.20"));
+	std::vector<std::string> argv{"opencode", "acp"};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, flag), std::string("true"));
+	UAM_ASSERT(std::getenv(flag) == nullptr);
+	UAM_ASSERT_EQ(argv, std::vector<std::string>({"opencode", "acp"}));
+	for (const std::string value : {"true", "false", ""})
+	{
+		environment = {{flag, value}, {"OPENCODE_PERMISSION", R"({"read":"deny"})"}};
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+		UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, flag), value);
+		UAM_ASSERT_EQ(std::count_if(environment.begin(), environment.end(), [flag](const std::pair<std::string, std::string>& entry) { return entry.first == flag; }), 1);
+		UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_PERMISSION"), std::string(R"({"read":"deny"})"));
+		ScopedEnvVar inherited(flag, value);
+		environment.clear();
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+#if defined(_WIN32)
+		if (value.empty()) continue; // The CRT removes an empty assignment; explicit launch entries above still preserve it.
+#endif
+		UAM_ASSERT(std::ranges::none_of(environment, [flag](const std::pair<std::string, std::string>& entry) { return entry.first == flag; }));
+	}
+#if defined(_WIN32)
+	environment = {{"opencode_experimental_code_mode", "false"}};
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT_EQ(environment.front().second, std::string("false"));
+	UAM_ASSERT(std::ranges::none_of(environment, [flag](const std::pair<std::string, std::string>& entry) { return entry.first == flag; }));
+#endif
+	argv = {"claude"};
+	environment.clear();
+	UAM_ASSERT(uam::provider_setup::Apply("claude-cli", bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT(std::ranges::none_of(environment, [flag](const std::pair<std::string, std::string>& entry) { return entry.first == flag; }));
+}
+
+UAM_TEST(OpenCodeDiscoveryRunnerPropagatesOnlyTheChildDefault)
+{
+	TempDir temp("uam-discovery-runner");
+	constexpr const char* flag = "OPENCODE_EXPERIMENTAL_CODE_MODE";
+	ScopedEnvVar original(flag, "");
+#if !defined(_WIN32)
+	unsetenv(flag);
+#endif
+	AppSettings settings;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error, nullptr, "1.17.20"));
+	const fs::path target = temp.root / ".UAM/provider-setup" / bundle.local_directory.filename();
+	std::vector<std::string> missing;
+	UAM_ASSERT(uam::provider_setup::Prepare(target, bundle.manifest, missing, error));
+#if defined(_WIN32)
+	const std::vector<std::string> argv{"cmd.exe", "/D", "/C", "echo %OPENCODE_EXPERIMENTAL_CODE_MODE%"};
+#else
+	const std::vector<std::string> argv{"/bin/sh", "-c", "printf %s \"$OPENCODE_EXPERIMENTAL_CODE_MODE\""};
+#endif
+	uam::remote::RunnerState runner;
+	const nlohmann::json started = runner.HandleProcessRequest({{"id", "start"}, {"type", "process.start"}, {"sessionId", "discovery-fixture"},
+	    {"controlToken", "private-token"}, {"cwd", uam::paths::Utf8PathString(temp.root)}, {"argv", argv},
+	    {"configurationProvider", chat.provider_id}, {"configurationDirectory", uam::paths::Utf8PathString(target)}});
+	UAM_ASSERT(started.value("ok", false));
+	std::string output;
+	bool exited = false;
+	for (int attempt = 0; attempt < 200; ++attempt)
+	{
+		const nlohmann::json polled = runner.HandleProcessRequest({{"id", "poll"}, {"type", "process.poll"}, {"sessionId", "discovery-fixture"}, {"controlToken", "private-token"}});
+		UAM_ASSERT(polled.value("ok", false));
+		std::string chunk;
+		UAM_ASSERT(uam::base64::Decode(polled["result"].value("stdoutBase64", ""), chunk));
+		output += chunk;
+		if (!polled["result"].value("running", true)) { exited = true; break; }
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(exited);
+	UAM_ASSERT_EQ(uam::strings::Trim(output), std::string("true"));
+	UAM_ASSERT(std::getenv(flag) == nullptr);
+	UAM_ASSERT(runner.HandleProcessRequest({{"id", "remove"}, {"type", "process.remove"}, {"sessionId", "discovery-fixture"}, {"controlToken", "private-token"}}).value("ok", false));
+}
+
+UAM_TEST(CentralMemoryDetailsRemainReadableThroughTheOwnedIndex)
+{
+	TempDir temp("uam-central-memory-details");
+	const fs::path data = temp.root / "data";
+	const fs::path memory = MemoryService::GlobalMemoryRoot(data) / uam::memory::kLessonsAi;
+	fs::create_directories(memory);
+	const std::string detail = "# Example\nA short lesson.\n\n## Evidence\nDetailed source retained only in the owned file.\n";
+	UAM_ASSERT(uam::io::WriteTextFile(memory / "example.md", detail));
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(data, settings, chat, host, temp.root, bundle, error));
+	UAM_ASSERT_EQ(bundle.files.at("memory/global/Lessons/AI_Lessons/example.md"), detail);
+	UAM_ASSERT(bundle.files.at("memory/index.md").find("global/Lessons/AI_Lessons/example.md") != std::string::npos);
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("__UAM_RESOURCE_ROOT__/memory/index.md") != std::string::npos);
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("Detailed source retained") == std::string::npos);
+	std::vector<std::string> argv{"opencode", "acp"};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	const nlohmann::json config = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
+	const fs::path instructions = uam::paths::PathFromUtf8(config["instructions"][0].get<std::string>());
+	UAM_ASSERT(ReadFile(instructions).find(uam::paths::Utf8PathString(bundle.local_directory / "memory/index.md")) != std::string::npos);
+	UAM_ASSERT_EQ(ReadFile(bundle.local_directory / "memory/global/Lessons/AI_Lessons/example.md"), detail);
+	UAM_ASSERT_EQ(ReadFile(memory / "example.md"), detail);
+}
+
+UAM_TEST(CentralMemoryDetailFailureKeepsTheOriginalLaunchAndNoBrokenIndex)
+{
+	TempDir temp("uam-central-memory-fallback");
+	const fs::path data = temp.root / "data";
+	const fs::path memory = MemoryService::GlobalMemoryRoot(data) / uam::memory::kLessonsAi;
+	fs::create_directories(memory);
+	UAM_ASSERT(uam::io::WriteTextFile(memory / "large.md", std::string(uam::provider_setup::kMaxFileBytes + 1, 'x')));
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(data, settings, chat, host, temp.root, bundle, error));
+	UAM_ASSERT(!bundle.files.contains("memory/index.md"));
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("Memory details:") == std::string::npos);
+	UAM_ASSERT(error.empty());
+}
+
+UAM_TEST(CentralMemoryManifestOverflowKeepsTheOriginalLaunch)
+{
+	TempDir temp("uam-central-memory-manifest-fallback");
+	const fs::path data = temp.root / "data";
+	const fs::path memory = MemoryService::GlobalMemoryRoot(data) / uam::memory::kLessonsAi;
+	fs::create_directories(memory);
+	for (int index = 0; index < 1900; ++index)
+		UAM_ASSERT(uam::io::WriteTextFile(memory / (std::to_string(index) + "-" + std::string(215, 'x') + ".md"), "A bounded fact."));
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	ChatSession chat;
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(data, settings, chat, host, temp.root, bundle, error));
+	UAM_ASSERT(!bundle.files.contains("memory/index.md"));
+	UAM_ASSERT(bundle.files.at("AGENTS.md").find("Memory details:") == std::string::npos);
+	UAM_ASSERT(uam::provider_setup::ValidateManifest(bundle.manifest, error));
+	UAM_ASSERT(bundle.manifest.dump().size() < 512 * 1024);
+	UAM_ASSERT_EQ(ReadFile(memory / ("0-" + std::string(215, 'x') + ".md")), std::string("A bounded fact."));
+}
 
 UAM_TEST(CentralConfigurationPersistsAndRejectsMalformedPaths)
 {
@@ -821,3 +1371,216 @@ UAM_TEST(RemoteCodexCentralSetupUsesCompleteInstructionsAndIdempotentInput)
 	UAM_ASSERT_EQ(delivered["params"]["threadId"], nlohmann::json("saved-native"));
 	UAM_ASSERT(request({{"type", "process.remove"}}).value("ok", false));
 }
+
+#if defined(__APPLE__) || defined(_WIN32)
+UAM_TEST(CentralInstructionFilesAuthorizeSavedPathsAndPreserveBytes)
+{
+	TempDir temp("uam-central-file-edit");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string original = "\xef\xbb\xbf# Shared\r\nKeep exact bytes.\r\n";
+	UAM_ASSERT(uam::io::WriteTextFile(path, original));
+	const fs::file_time_type old_modified = fs::file_time_type::clock::now() - std::chrono::hours(24);
+	fs::last_write_time(path, old_modified);
+	CentralProviderConfiguration configuration;
+	const std::string requested = uam::paths::Utf8PathString(path);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+	configuration.instruction_files = {requested};
+	const auto loaded = uam::central_instruction_files::Read(configuration, requested);
+	UAM_ASSERT(loaded.ok);
+	UAM_ASSERT_EQ(loaded.content, original);
+	const std::string changed = original + "More rules.\r\n";
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, changed, original);
+	UAM_ASSERT(prepared->result.ok);
+	UAM_ASSERT_EQ(ReadFile(path), original);
+	const auto saved = uam::central_instruction_files::CommitSave(configuration, *prepared);
+	UAM_ASSERT(saved.ok);
+	UAM_ASSERT_EQ(saved.content, changed);
+	UAM_ASSERT_EQ(ReadFile(path), changed);
+	UAM_ASSERT(fs::last_write_time(path) > old_modified);
+	const fs::file_time_type saved_modified = fs::last_write_time(path);
+	const auto retry = uam::central_instruction_files::PrepareSave(configuration, requested, changed, original);
+	UAM_ASSERT(retry->result.ok);
+	UAM_ASSERT(retry->temporary.empty());
+	UAM_ASSERT(uam::central_instruction_files::CommitSave(configuration, *retry).ok);
+	UAM_ASSERT_EQ(fs::last_write_time(path), saved_modified);
+	const auto empty = uam::central_instruction_files::PrepareSave(configuration, requested, "", changed);
+	UAM_ASSERT(empty->result.ok);
+	UAM_ASSERT(uam::central_instruction_files::CommitSave(configuration, *empty).ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string{});
+}
+#endif
+
+#if defined(__APPLE__) || defined(_WIN32)
+UAM_TEST(CentralInstructionFilesRejectStaleContentAndConfiguration)
+{
+	TempDir temp("uam-central-file-stale");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	UAM_ASSERT(!uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "stale")->result.ok);
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(prepared->result.ok);
+	CentralProviderConfiguration removed;
+	UAM_ASSERT(!uam::central_instruction_files::CommitSave(removed, *prepared).ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("original"));
+	UAM_ASSERT(uam::io::WriteTextFile(path, "external"));
+	UAM_ASSERT(!uam::central_instruction_files::CommitSave(configuration, *prepared).ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("external"));
+}
+#endif
+
+UAM_TEST(CentralInstructionFilesRejectUnsafeTextAndFiles)
+{
+	TempDir temp("uam-central-file-validation");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+	for (const std::string& text : {std::string("a\0b", 3), std::string("\xc0\xaf", 2), std::string(2 * 1024 * 1024 + 1, 'x')})
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(path, text));
+		UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+		UAM_ASSERT(uam::io::WriteTextFile(path, "safe"));
+		UAM_ASSERT(!uam::central_instruction_files::PrepareSave(configuration, requested, text, "safe")->result.ok);
+		UAM_ASSERT_EQ(ReadFile(path), std::string("safe"));
+	}
+	fs::remove(path);
+	fs::create_directory(path);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+	fs::remove(path);
+#if !defined(_WIN32)
+	const fs::path outside = temp.root / "outside.md";
+	UAM_ASSERT(uam::io::WriteTextFile(outside, "outside"));
+	fs::create_symlink(outside, path);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+	UAM_ASSERT(!uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "outside")->result.ok);
+	UAM_ASSERT_EQ(ReadFile(outside), std::string("outside"));
+	fs::remove(path);
+	UAM_ASSERT(mkfifo(path.c_str(), 0600) == 0);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+#endif
+}
+
+#if defined(__APPLE__) || defined(_WIN32)
+UAM_TEST(CentralInstructionFilesStageFailureAndMetadataStaySafe)
+{
+	TempDir temp("uam-central-file-durable");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	const auto failed = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original",
+	    [](uam::io::AtomicWriteStage stage) { return stage != uam::io::AtomicWriteStage::DuringWrite; });
+	UAM_ASSERT(!failed->result.ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("original"));
+#if defined(__APPLE__)
+	UAM_ASSERT(chmod(path.c_str(), 0640) == 0);
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(prepared->result.ok);
+	UAM_ASSERT(uam::central_instruction_files::CommitSave(configuration, *prepared).ok);
+	struct stat info{};
+	UAM_ASSERT(stat(path.c_str(), &info) == 0);
+	UAM_ASSERT_EQ(info.st_mode & 0777, 0640);
+#endif
+}
+#endif
+
+#if defined(__APPLE__) || defined(_WIN32)
+UAM_TEST(CentralInstructionFilesRecheckIdentityAndRejectParentLinks)
+{
+	TempDir temp("uam-central-file-races");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(prepared->result.ok);
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	UAM_ASSERT(!uam::central_instruction_files::CommitSave(configuration, *prepared).ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("original"));
+	fs::path abandoned;
+	{
+		const auto cancelled = uam::central_instruction_files::PrepareSave(configuration, requested, "cancelled", "original");
+		UAM_ASSERT(cancelled->result.ok);
+		abandoned = cancelled->temporary;
+		UAM_ASSERT(fs::exists(abandoned));
+	}
+	UAM_ASSERT(!fs::exists(abandoned));
+#if !defined(_WIN32)
+	const fs::path linked = temp.root / "linked";
+	fs::create_directory_symlink(temp.root, linked);
+	const std::string alias = uam::paths::Utf8PathString(linked / "AGENTS.md");
+	configuration.instruction_files.push_back(alias);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, alias).ok);
+	const auto before_link = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(before_link->result.ok);
+	const fs::path outside = temp.root / "outside.md";
+	UAM_ASSERT(uam::io::WriteTextFile(outside, "outside"));
+	fs::remove(path);
+	fs::create_symlink(outside, path);
+	UAM_ASSERT(!uam::central_instruction_files::CommitSave(configuration, *before_link).ok);
+	UAM_ASSERT_EQ(ReadFile(outside), std::string("outside"));
+#endif
+}
+#endif
+
+UAM_TEST(CentralInstructionFilesAcceptBoundedEscapedBridgePayload)
+{
+	TempDir temp("uam-central-file-cap");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	const std::string content(2 * 1024 * 1024, '\x01');
+	UAM_ASSERT(uam::io::WriteTextFile(path, content));
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	UAM_ASSERT_EQ(uam::central_instruction_files::Read(configuration, requested).content, content);
+	const nlohmann::json request = {{"action", "saveCentralInstructionFile"}, {"payload", {{"path", requested}, {"content", content}, {"expectedContent", content}}}};
+	const auto parsed = uam::cef::ParseBridgeRequest(request.dump());
+	UAM_ASSERT(parsed.ok);
+	UAM_ASSERT_EQ(parsed.request.payload.at("content").get<std::string>(), content);
+	UAM_ASSERT_EQ(parsed.request.payload.at("expectedContent").get<std::string>(), content);
+}
+
+#if defined(__APPLE__)
+UAM_TEST(CentralInstructionFilesPreserveAclAndExtendedAttributes)
+{
+	TempDir temp("uam-central-file-metadata");
+	const fs::path path = temp.root / "AGENTS.md";
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	UAM_ASSERT(setxattr(path.c_str(), "com.uam.instruction-test", "keep", 4, 0, 0) == 0);
+	acl_t acl = acl_init(1);
+	UAM_ASSERT(acl != nullptr);
+	acl_entry_t entry;
+	UAM_ASSERT(acl_create_entry(&acl, &entry) == 0);
+	UAM_ASSERT(acl_set_tag_type(entry, ACL_EXTENDED_ALLOW) == 0);
+	uuid_t identifier;
+	UAM_ASSERT(mbr_uid_to_uuid(getuid(), identifier) == 0);
+	UAM_ASSERT(acl_set_qualifier(entry, identifier) == 0);
+	acl_permset_t permissions;
+	UAM_ASSERT(acl_get_permset(entry, &permissions) == 0);
+	UAM_ASSERT(acl_add_perm(permissions, ACL_READ_DATA) == 0);
+	UAM_ASSERT(acl_set_file(path.c_str(), ACL_TYPE_EXTENDED, acl) == 0);
+	CentralProviderConfiguration configuration;
+	const std::string requested = uam::paths::Utf8PathString(path);
+	configuration.instruction_files = {requested};
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(prepared->result.ok);
+	UAM_ASSERT(uam::central_instruction_files::CommitSave(configuration, *prepared).ok);
+	acl_t after = acl_get_file(path.c_str(), ACL_TYPE_EXTENDED);
+	UAM_ASSERT(after != nullptr);
+	ssize_t before_length = 0; ssize_t after_length = 0;
+	char* before_text = acl_to_text(acl, &before_length);
+	char* after_text = acl_to_text(after, &after_length);
+	UAM_ASSERT(before_text != nullptr && after_text != nullptr);
+	UAM_ASSERT_EQ(std::string(before_text, before_length), std::string(after_text, after_length));
+	acl_free(before_text); acl_free(after_text); acl_free(after); acl_free(acl);
+	char attribute[4]{};
+	UAM_ASSERT_EQ(getxattr(path.c_str(), "com.uam.instruction-test", attribute, sizeof(attribute), 0, 0), ssize_t(4));
+	UAM_ASSERT_EQ(std::string(attribute, sizeof(attribute)), std::string("keep"));
+}
+#endif

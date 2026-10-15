@@ -7,6 +7,7 @@
 
 #include "app/chat_domain_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/conversation_handoff.h"
 #include "app/provider_resolution_service.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_runtime.h"
@@ -95,6 +96,31 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	}
 
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	const std::string agent_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.uam_agent_id), "build");
+	if (agent_id != "build" && agent_id != "plan")
+	{
+		SelectedPrimaryAgentSnapshot snapshot;
+		std::string error;
+		if (!AgentDefinitionService::CaptureSelectedPrimary(app.data_root,
+		        uam::paths::ResolveControllerWorkspaceRootPath(app, chat), agent_id, snapshot, error))
+		{
+			if (error_out) *error_out = error;
+			return false;
+		}
+		if (!AgentDefinitionService::ValidateCapturedRuntimePolicy(agent_id, snapshot.definition.markdown_snapshot,
+		        provider.id, "terminal", error_out)) return false;
+	}
+	if (!chat.agent_run_id.empty())
+	{
+		const auto run = std::ranges::find(app.agent_runs, chat.agent_run_id, &AgentRun::id);
+		if (run == app.agent_runs.end())
+		{
+			if (error_out) *error_out = "Managed agent definition snapshot is unavailable.";
+			return false;
+		}
+		if (!AgentDefinitionService::ValidateCapturedRuntimePolicy(run->agent_id, run->definition_snapshot,
+		        provider.id, "terminal", error_out)) return false;
+	}
 	if (!provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
 	{
 		if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
@@ -179,10 +205,24 @@ std::string BuildProviderHandoffContext(const ChatSession& chat, std::stop_token
 	for (std::vector<Message>::const_reverse_iterator message = chat.messages.crbegin(); message != chat.messages.crend(); ++message)
 	{
 		if (stop_token.stop_requested()) return {};
-		if (message->role == MessageRole::User || message->role == MessageRole::Assistant)
-			append(message->role == MessageRole::User ? "User: " : "Assistant: ", message->content);
-		for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
-			if (block->type == "context_compaction") append("Conversation summary: ", block->text);
+		if (message->acp_prompt_discarded) continue;
+		if (uam::chat::HandoffUsesBlockOrder(*message))
+		{
+			for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
+			{
+				if (block->type == "context_compaction" || block->type == "context_compaction_interrupted")
+					append(block->type == "context_compaction_interrupted" ? "Interrupted conversation summary: " : "Conversation summary: ", block->text);
+				else if (block->type == "assistant_text") append("Assistant: ", block->text);
+			}
+		}
+		else
+		{
+			if (message->role == MessageRole::User || message->role == MessageRole::Assistant)
+				append(message->role == MessageRole::User ? "User: " : "Assistant: ", message->content);
+			for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
+				if (block->type == "context_compaction" || block->type == "context_compaction_interrupted")
+					append(block->type == "context_compaction_interrupted" ? "Interrupted conversation summary: " : "Conversation summary: ", block->text);
+		}
 	}
 	std::string context;
 	if (omitted) context = kOmissionNotice;
@@ -428,7 +468,8 @@ bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const
 		settings.central_provider_configuration = {};
 		settings.central_provider_configuration.enabled = true;
 	}
-	if (!PrepareProviderConfiguration(app.data_root, settings, chat, host, workspace, bundle, error)) return false;
+	if (!PrepareProviderConfiguration(app.data_root, settings, chat, host, workspace, bundle, error, nullptr,
+	                                 CheckedProviderConfigurationVersion(app, chat.provider_id, host))) return false;
 	if (installed_directory) *installed_directory = bundle.local_directory;
 	std::filesystem::path target;
 	std::unique_ptr<uam::remote::RunnerClient> client;

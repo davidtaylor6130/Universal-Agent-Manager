@@ -132,6 +132,27 @@ export function userMessageIndicesFromPage(data: ChatMessagesResponse): number[]
   }) ? indices : undefined
 }
 
+/** Native cold-history adoption publishes display/retry authority with the same guarded page. */
+function unsentIndicesFromPage(data: ChatMessagesResponse) {
+  const valid = (indices: unknown): indices is number[] => Array.isArray(indices) && Number.isSafeInteger(data.totalCount) && indices.every((index, position) =>
+    Number.isSafeInteger(index) && index >= 0 && index < data.totalCount! && (position === 0 || index > indices[position - 1]))
+  return valid(data.unsentMessageIndices) && valid(data.recoverableUnsentMessageIndices)
+    ? { unsentMessageIndices: data.unsentMessageIndices, recoverableUnsentMessageIndices: data.recoverableUnsentMessageIndices }
+    : undefined
+}
+
+function unsentProjectionFromPage(state: AppState, chatId: string, data: ChatMessagesResponse, observedBinding: AppState['acpBindingBySessionId'][string] | undefined) {
+  const indices = unsentIndicesFromPage(data)
+  const binding = state.acpBindingBySessionId[chatId]
+  return indices && binding && binding === observedBinding
+    ? { acpBindingBySessionId: { ...state.acpBindingBySessionId, [chatId]: { ...binding, ...indices } } } : undefined
+}
+
+function historyChangedDuringLoad(state: AppState, chatId: string) {
+  return { chatHistoryErrorBySessionId: { ...state.chatHistoryErrorBySessionId,
+    [chatId]: 'Chat history changed while loading. Retry to refresh it.' } }
+}
+
 export function withoutDeletedKeys<T>(values: Record<string, T>, deletedIds: Set<string>): Record<string, T> {
   return Object.fromEntries(Object.entries(values).filter(([id]) => !deletedIds.has(id)))
 }
@@ -186,6 +207,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     const historyStartAtRequestStart = current.historyStartIndexBySessionId[chatId] ?? 0
     const messagesAtRequestStart = current.messages[chatId]
     const bindingAtRequestStart = current.acpBindingBySessionId[chatId]
+    const sessionAtRequestStart = current.sessions.find((session) => session.id === chatId)
+    // A held native summary can predate an opaque optimistic echo, including while another chat was selected.
+    force ||= Boolean(bindingAtRequestStart?.queueHeld && bindingAtRequestStart.queuedPrompts?.length &&
+      bindingAtRequestStart.queuedPrompts.every((entry) => entry.id && Number.isSafeInteger(entry.revision) && entry.revision! > 0) &&
+      Number.isSafeInteger(sessionAtRequestStart?.messageCount) && sessionAtRequestStart?.messagesDigest &&
+      historyStartAtRequestStart + (messagesAtRequestStart?.length ?? 0) > sessionAtRequestStart!.messageCount!)
     const requestKey = `getChatMessages:${chatId}`
     const requestId = createRequestId('getChatMessages')
     const hydrationGeneration = messageHydrationGenerationByChatId.get(chatId) ?? 0
@@ -222,10 +249,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (data.chatId && data.chatId !== chatId) return
       if (data.unchanged) {
         set((state) => {
-          if (!state.chatHistoryErrorBySessionId[chatId]) return state
+          if (unsentIndicesFromPage(data) && state.acpBindingBySessionId[chatId] !== bindingAtRequestStart) return historyChangedDuringLoad(state, chatId)
+          const projection = state.messages[chatId] === messagesAtRequestStart ? unsentProjectionFromPage(state, chatId, data, bindingAtRequestStart) : undefined
+          if (!state.chatHistoryErrorBySessionId[chatId]) return projection ?? state
           const chatHistoryErrorBySessionId = { ...state.chatHistoryErrorBySessionId }
           delete chatHistoryErrorBySessionId[chatId]
-          return { chatHistoryErrorBySessionId }
+          return { ...projection, chatHistoryErrorBySessionId }
         })
         return
       }
@@ -237,6 +266,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           pageStart + data.messages.length !== totalCount) return false as const
 
       set((state) => {
+        if (unsentIndicesFromPage(data) && state.acpBindingBySessionId[chatId] !== bindingAtRequestStart) return historyChangedDuringLoad(state, chatId)
         let streamedTail: Message | undefined
         if ((force || data.startIndex !== undefined) && state.messages[chatId] !== messagesAtRequestStart) {
           const existing = state.messages[chatId] ?? []
@@ -299,8 +329,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const historyErrorChanged = chatHistoryErrorBySessionId !== state.chatHistoryErrorBySessionId
 
         const historyStartChanged = existingStart !== pageStart
-        if (!messagesChanged && !sessionsChanged && !historyErrorChanged && !historyStartChanged) return state
+        const projection = !streamedTail ? unsentProjectionFromPage(state, chatId, data, bindingAtRequestStart) : undefined
+        if (!messagesChanged && !sessionsChanged && !historyErrorChanged && !historyStartChanged && !projection) return state
         return {
+          ...projection,
           ...(messagesChanged ? {
             messages: {
               ...state.messages,
@@ -357,6 +389,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     providerAvailability: [],
     voiceInputMode: 'system' as VoiceInputMode,
     gitAutoWorktree: true,
+    gitSnapshotSvn: true,
+    gitSnapshotPlainFolders: true,
     gitDefaultBaseBranch: '',
     gitPullBeforeChat: false,
     svnUpdateBeforeChat: false,
@@ -460,6 +494,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       set({ chatSearchNavigation: target })
       get().setActiveSession(hit.chatId)
       const selectionRevision = intentionalSelectionRevision
+      const observedBinding = get().acpBindingBySessionId[hit.chatId]
       const response = await sendToCEF<ChatMessagesResponse>({ action: 'getChatMessages', payload: chatSearchPageRequest(hit) })
       const current = get()
       if (current.chatSearchNavigation?.generation !== generation) return false
@@ -479,9 +514,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [hit.chatId]: response.error || 'Chat history changed. Try opening the message again.' } }))
         return false
       }
+      if (unsentIndicesFromPage(data) && current.acpBindingBySessionId[hit.chatId] !== observedBinding) {
+        set({ chatSearchNavigation: null, ...historyChangedDuringLoad(current, hit.chatId) })
+        return false
+      }
       const page = data.messages.map((message, index) => buildMessageFromCpp(hit.chatId, message, data.startIndex! + index))
       loadedMessagesDigestByChatId.set(hit.chatId, data.messagesDigest)
       set((state) => ({
+        ...unsentProjectionFromPage(state, hit.chatId, data, observedBinding),
         chatSearchNavigation: { ...target, phase: 'ready' },
         messages: { ...state.messages, [hit.chatId]: page },
         historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [hit.chatId]: data.startIndex! },
@@ -512,6 +552,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const hydrationGeneration = (messageHydrationGenerationByChatId.get(chatId) ?? 0) + 1
         messageHydrationGenerationByChatId.set(chatId, hydrationGeneration)
         const selectionRevision = intentionalSelectionRevision
+        const observedBinding = get().acpBindingBySessionId[chatId]
         const response = await sendToCEF<ChatMessagesResponse>({ action: 'getChatMessages', payload: { chatId, limit: 50, deferToolCallContent: true } })
         if (get().chatSearchNavigation || get().activeSessionId !== chatId || intentionalSelectionRevision !== selectionRevision ||
             messageHydrationGenerationByChatId.get(chatId) !== hydrationGeneration || !get().sessions.some((session) => session.id === chatId)) return
@@ -523,8 +564,12 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             [chatId]: response.error || 'Could not return to the latest messages. Retry chat history.' } }))
           return
         }
+        if (unsentIndicesFromPage(data) && get().acpBindingBySessionId[chatId] !== observedBinding) {
+          set((state) => historyChangedDuringLoad(state, chatId))
+          return
+        }
         loadedMessagesDigestByChatId.set(chatId, data.messagesDigest ?? '')
-        set((state) => ({ messages: { ...state.messages, [chatId]: data.messages!.map((message, index) => buildMessageFromCpp(chatId, message, data.startIndex! + index)) },
+        set((state) => ({ ...unsentProjectionFromPage(state, chatId, data, observedBinding), messages: { ...state.messages, [chatId]: data.messages!.map((message, index) => buildMessageFromCpp(chatId, message, data.startIndex! + index)) },
           historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [chatId]: data.startIndex! },
           sessions: state.sessions.map((session) => session.id === chatId ? { ...session, messageCount: data.totalCount, userMessageIndices: userMessageIndicesFromPage(data) } : session),
         }))
@@ -537,6 +582,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!isCefContext()) return false
       const hydrationGeneration = messageHydrationGenerationByChatId.get(id) ?? 0
       const before = get().historyStartIndexBySessionId[id] ?? 0
+      const observedBinding = get().acpBindingBySessionId[id]
       if (before <= 0 || !get().messages[id]) return false
       const fail = (error: string) => {
         set((state) => ({ chatHistoryErrorBySessionId: {
@@ -557,12 +603,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           !Number.isSafeInteger(data.startIndex) || data.startIndex === undefined ||
           data.startIndex < 0 || data.startIndex + data.messages.length !== before) return fail('The earlier message page was invalid.')
       if (data.messagesDigest !== loadedMessagesDigestByChatId.get(id)) return fail('Chat history changed while loading. Retry to refresh it.')
+      if (unsentIndicesFromPage(data) && get().acpBindingBySessionId[id] !== observedBinding) return fail('Chat history changed while loading. Retry to refresh it.')
       const page = data.messages.map((message, index) => buildMessageFromCpp(id, message, data.startIndex! + index))
       let added = false
       set((state) => {
         if (state.historyStartIndexBySessionId[id] !== before || !state.messages[id]) return state
         added = true
         return {
+          ...unsentProjectionFromPage(state, id, data, observedBinding),
           messages: { ...state.messages, [id]: [...page, ...state.messages[id]] },
           historyStartIndexBySessionId: { ...state.historyStartIndexBySessionId, [id]: data.startIndex! },
           chatHistoryErrorBySessionId: Object.fromEntries(
@@ -709,6 +757,41 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         isNewChatModalOpen: false,
         newChatFolderId: null,
       }))
+      return true
+    },
+
+    discardUnsentMessage: async (id: string, messageIndex: number, expectedMessageId: string) => {
+      const state = get()
+      const chat = state.sessions.find((session) => session.id === id)
+      const binding = state.acpBindingBySessionId[id]
+      const message = state.messages[id]?.[messageIndex - (state.historyStartIndexBySessionId[id] ?? 0)]
+      if (!isCefContext() || isCompanionContext() || !chat || chat.importedReadOnly || !expectedMessageId || message?.id !== expectedMessageId ||
+          !Number.isSafeInteger(messageIndex) || messageIndex < 0 || !binding?.unsentMessageIndices?.includes(messageIndex) ||
+          message.role !== 'user' || !message.acpPromptNotSent || message.acpPromptDiscarded) return false
+      // Probe the clicked row without replacing a paged or search-anchored transcript with its tail.
+      const page = await sendToCEF<ChatMessagesResponse>({ action: 'getChatMessages', payload: {
+        chatId: id, limit: 1, before: messageIndex + 1, deferToolCallContent: true, messagesDigest: '',
+      } })
+      const data = page.data
+      const current = get()
+      if (!page.ok || !data?.messagesDigest || (data.chatId && data.chatId !== id) || data.startIndex !== messageIndex ||
+          !Number.isSafeInteger(data.totalCount) || data.totalCount! <= messageIndex || data.messages?.length !== 1 ||
+          reconcileCppMessages(id, [message], data.messages, true, messageIndex)[0] !== message ||
+          current.messages[id]?.[messageIndex - (current.historyStartIndexBySessionId[id] ?? 0)] !== message ||
+          !current.sessions.some((session) => session.id === id && !session.importedReadOnly) ||
+          !current.acpBindingBySessionId[id]?.unsentMessageIndices?.includes(messageIndex)) return false
+      const response = await sendToCEF({ action: 'manageQueuedAcpPrompt', payload: {
+        chatId: id, operation: 'discardUnsent', messageIndex, expectedMessagesDigest: data.messagesDigest,
+      } })
+      if (!response.ok) return false
+      loadedMessagesDigestByChatId.delete(id)
+      set((state) => {
+        const index = messageIndex - (state.historyStartIndexBySessionId[id] ?? 0)
+        if (state.messages[id]?.[index] !== message) return state
+        const messages = [...state.messages[id]]
+        messages[index] = { ...message, acpPromptDiscarded: true }
+        return { messages: { ...state.messages, [id]: messages } }
+      })
       return true
     },
 
@@ -2380,6 +2463,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const sentMarkdownEntries = new Set(get().markdownStoreAttachedBySessionId[sessionId] ?? [])
       const markdownStoreFiles = [...sentMarkdownEntries].map((entry) => entry.filePath)
       const state = get()
+      const stateAtAdmission = state
       const goalId = state.activeGoalIdByChatId[sessionId] ?? null
       const appendUserMessage = !state.acpBindingBySessionId[sessionId]?.processing
       const userMessageIndex = Math.max((state.historyStartIndexBySessionId[sessionId] ?? 0) + (state.messages[sessionId]?.length ?? 0),
@@ -2452,10 +2536,18 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         set((state) => {
           const existing = state.messages[sessionId] ?? []
           const sentAttachments = messageAttachments({ markdownStoreFiles, attachments })
+          const binding = state.acpBindingBySessionId[sessionId]
+          const previousQueue = stateAtAdmission.acpBindingBySessionId[sessionId]?.queuedPrompts ?? []
+          // A late acknowledgement confirms admission, not delivery. Preserve a recovered held input as outbox only.
+          const recoveredToOutbox = binding?.queueHeld && binding.queuedPrompts?.some((entry) =>
+            entry.id && Number.isSafeInteger(entry.revision) && entry.revision! > 0 &&
+            !previousQueue.some((previous) => previous.id === entry.id) &&
+            entry.text === prompt && attachmentsEquivalent(messageAttachments(entry), sentAttachments))
+
           const hydratedUser = existing[userMessageIndex - (state.historyStartIndexBySessionId[sessionId] ?? 0)]
           const alreadyHydrated = hydratedUser?.role === 'user' && hydratedUser.content === prompt &&
             attachmentsEquivalent(hydratedUser.attachments ?? [], sentAttachments)
-          const messages = appendUserMessage && !alreadyHydrated
+          const messages = ownsAttempt && appendUserMessage && !alreadyHydrated && !recoveredToOutbox
             ? {
                 ...state.messages,
                 [sessionId]: [...existing, {

@@ -33,6 +33,7 @@ class ChatHistorySyncService
 	struct RemoteOpenCodeTranscript
 	{
 		bool success = false;
+		bool verified_empty = false;
 		std::string session_id;
 		std::string directory;
 		std::vector<Message> messages;
@@ -73,6 +74,7 @@ class ChatHistorySyncService
 		int total_count = 0;
 		bool success = true;
 		std::vector<std::string> errors;
+		std::vector<std::string> confirmed_empty_native_keys;
 
 		bool partial() const { return imported_count > 0 && !success; }
 		void Fail(std::string error)
@@ -86,6 +88,7 @@ class ChatHistorySyncService
 			total_count += other.total_count;
 			if (!other.success) success = false;
 			errors.insert(errors.end(), other.errors.begin(), other.errors.end());
+			confirmed_empty_native_keys.insert(confirmed_empty_native_keys.end(), other.confirmed_empty_native_keys.begin(), other.confirmed_empty_native_keys.end());
 		}
 	};
 	ImportResult ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id = "") const;
@@ -104,9 +107,11 @@ class ChatHistorySyncService
 		std::string error;
 		bool retain_messages = false;
 		bool skipped = false;
+		bool confirmed_empty = false;
 	};
 	struct PreparedHistoryBatch
 	{
+		std::filesystem::path expected_data_root;
 		std::vector<PreparedHistoryChat> chats;
 		std::string expected_folders;
 		std::vector<ChatFolder> folders;
@@ -126,6 +131,7 @@ class ChatHistorySyncService
 		std::string open_code_list_fingerprint;
 		std::map<std::string, ExecutionHost> expected_hosts;
 		std::map<std::string, ChatFolder> selected_folder_snapshots;
+		std::stop_source preparation_stop;
 		bool Pending() const { return !chats.empty() || !codex_rollouts.empty() || preparation.valid() || publication_sync.valid(); }
 		void CancelPending();
 	};

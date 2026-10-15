@@ -1,7 +1,7 @@
 import { SnoozeMenu } from './SnoozeMenu'
 import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { useState, useRef, useEffect, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
+import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
 import { ConfirmDialog, IconButton, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -316,7 +317,22 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       const activeFamilyChatId = state.activeSessionId !== sessionId && familySessionIds.includes(state.activeSessionId ?? '')
         ? state.activeSessionId
         : null
-      const preferredChatId = preferredFamilyChat(branchRootId, familySessionIds) ?? activeFamilyChatId
+      const rememberedChatId = preferredFamilyChat(branchRootId, familySessionIds)
+      let preferredChatId = rememberedChatId ?? activeFamilyChatId
+      if (activityLayout) {
+        const familyActivity = familySessionIds.map((id) => ({ id, status: displayedChatStatus(
+          [state.cliBindingBySessionId[id]], [state.acpBindingBySessionId[id]]
+        ) }))
+        const status = familyActivity.find((candidate) => candidate.status?.type === 'attention')?.status ??
+          familyActivity.find((candidate) => candidate.status?.type === 'processing')?.status
+        if (status) {
+          const matchingIds = familyActivity.filter((candidate) => candidate.status?.type === status.type &&
+            (status.type !== 'attention' || (candidate.status.type === 'attention' && candidate.status.kind === status.kind)) &&
+            sessions.some((chat) => chat.id === candidate.id)).map((candidate) => candidate.id)
+          // Open the branch supplying the family status without moving a conversation while it is being read.
+          preferredChatId = [state.activeSessionId, rememberedChatId, ...matchingIds].find((id) => id && matchingIds.includes(id)) ?? preferredChatId
+        }
+      }
       const preferredChat = preferredChatId ? sessions.find((candidate) => candidate.id === preferredChatId) : undefined
       let deepestChat: Session | undefined = preferredChat
       if (!deepestChat) {
@@ -460,7 +476,17 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     }
   }, [editing])
 
-  useEffect(() => subscribeChatGridLayout(setGridLayout), [])
+  // Rows consume only pane count and family indexes; other layout changes need no render.
+  useLayoutEffect(() => {
+    const refresh = (layout: ReturnType<typeof readChatGridLayout>) => setGridLayout((previous) => {
+      const oldLeaves = chatGridLeaves(previous.root)
+      const nextLeaves = chatGridLeaves(layout.root)
+      const indexes = (leaves: typeof oldLeaves) => leaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
+      return oldLeaves.length === nextLeaves.length && shallow(indexes(oldLeaves), indexes(nextLeaves)) ? previous : layout
+    })
+    refresh(readChatGridLayout())
+    return subscribeChatGridLayout(refresh)
+  }, [familySessionIds])
 
   // Close context menu on outside click
   useEffect(() => {
@@ -591,11 +617,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       >
         {activityLayout && !editing ? (
           <div className="uam-sb-activity flex min-w-0 flex-1 flex-col gap-0.5">
-            <div className="flex min-w-0 items-center gap-2">
-              {/* Fixed slot: rows without an icon keep their titles aligned. */}
-              <span aria-hidden className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-                <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
-              </span>
+            <div className="flex min-w-0 items-center gap-2 [&>img]:h-4">
+              <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
               <span className="block min-w-0 flex-1 truncate text-[13px] leading-5" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
               {lifecycleStatus?.type === 'processing' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium tabular-nums" style={{ color: 'var(--info)' }}>

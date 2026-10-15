@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, Profiler } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AcpAttentionKind, type AcpBinding } from '../../store/useAppStore'
@@ -540,6 +540,45 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it.each([
+    { name: 'opens the working branch instead of its remembered stopped root', activity: true, selected: 'chat-root', remembered: 'chat-root', first: { processing: true }, second: {}, clicked: 'chat-root', expected: 'chat-a' },
+    { name: 'opens attention before a working branch', activity: true, selected: 'chat-a', remembered: 'chat-a', first: { processing: true }, second: { processing: true, attentionKind: 'question' as AcpAttentionKind }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'keeps the selected working branch among multiple workers', activity: true, selected: 'chat-b', remembered: 'chat-a', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'keeps a remembered working branch when selection is outside the family', activity: true, selected: 'unrelated', remembered: 'chat-b', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-b' },
+    { name: 'uses stable family order when neither remembered nor selected branch is working', activity: true, selected: 'chat-root', remembered: 'chat-root', first: { processing: true }, second: { processing: true }, clicked: 'chat-root', expected: 'chat-a' },
+    { name: 'keeps remembered idle selection when the family has no work', activity: true, selected: 'unrelated', remembered: 'chat-root', first: {}, second: {}, clicked: 'chat-root', expected: 'chat-root' },
+    { name: 'preserves ordinary folder family navigation', activity: false, selected: 'unrelated', remembered: 'chat-root', first: { processing: true }, second: {}, clicked: 'chat-root', expected: 'chat-root' },
+    { name: 'preserves explicit branch selection while its sibling works', activity: true, selected: 'unrelated', remembered: 'chat-a', first: { processing: true }, second: {}, clicked: 'chat-b', expected: 'chat-b' },
+  ])('$name', ({ activity, selected, remembered, first, second, clicked, expected }) => {
+    const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchA = { ...makeSession(), id: 'chat-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    const branchB = { ...makeSession(), id: 'chat-b', parentChatId: 'chat-root', branchRootChatId: 'chat-root' }
+    const familySessionIds = ['chat-root', 'chat-a', 'chat-b']
+    const setActiveSession = vi.fn()
+    setPreferredFamilyChat('chat-root', remembered)
+    useAppStore.setState({
+      sessions: [branchB, rootSession, branchA], activeSessionId: selected, setActiveSession,
+      acpBindingBySessionId: {
+        'chat-root': makeAcpBinding({ running: false, lifecycleState: 'stopped' }),
+        'chat-a': makeAcpBinding(first), 'chat-b': makeAcpBinding(second),
+      },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      const session = clicked === 'chat-b' ? branchB : rootSession
+      act(() => root.render(<SessionItem sessionId={clicked} session={session} familySessionIds={familySessionIds} activityLayout={activity} />))
+      expect(setActiveSession).not.toHaveBeenCalled()
+      act(() => host.querySelector<HTMLElement>(`[data-testid="session-row-${clicked}"]`)!.click())
+      if (expected === selected) expect(setActiveSession).not.toHaveBeenCalled()
+      else expect(setActiveSession).toHaveBeenCalledExactlyOnceWith(expected)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('restores the last selected family chat after reorder and falls back when it is deleted', () => {
     const rootSession = { ...makeSession(), id: 'chat-root', branchRootChatId: 'chat-root', messageCount: 3 }
     const branchA = { ...makeSession(), id: 'chat-branch-a', parentChatId: 'chat-root', branchRootChatId: 'chat-root', messageCount: 5 }
@@ -857,6 +896,33 @@ describe('SessionItem status icons', () => {
     host.remove()
   })
 
+  it('ignores unrelated pane changes and updates its own pane assignment', () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const rendered = vi.fn()
+    writeChatGridLayout(setChatInLeaf(defaultChatGridLayout, 'chat-2', 'leaf-1'))
+    try {
+      act(() => root.render(<Profiler id="row" onRender={rendered}><SessionItem sessionId="chat-1" /></Profiler>))
+      rendered.mockClear()
+      act(() => writeChatGridLayout(setChatInLeaf(defaultChatGridLayout, 'chat-3', 'leaf-1')))
+      expect(rendered).not.toHaveBeenCalled()
+      let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
+      layout = setChatInLeaf(layout, 'chat-1', chatGridLeaves(layout.root)[1].id)
+      act(() => writeChatGridLayout(layout))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).not.toBeNull()
+      act(() => writeChatGridLayout(setChatInLeaf(layout, 'chat-3', chatGridLeaves(layout.root)[1].id)))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).toBeNull()
+      act(() => writeChatGridLayout(setChatInLeaf(layout, 'child', chatGridLeaves(layout.root)[1].id)))
+      act(() => useAppStore.setState(state => ({ sessions: [...state.sessions,
+        { ...makeSession(), id: 'child', branchRootChatId: 'chat-1' }] })))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).not.toBeNull()
+      act(() => useAppStore.setState({ sessions: [makeSession()] }))
+      expect(host.querySelector('[aria-label="Shown in pane 2"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+    }
+  })
+
   it('shows its pane colour without legacy context-menu pane buttons', () => {
     let layout = splitChatLeaf(defaultChatGridLayout, 'leaf-1', 'horizontal')
     const leaves = chatGridLeaves(layout.root)
@@ -956,6 +1022,56 @@ describe('SessionItem status icons', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it.each([undefined, { type: 'png' as const, value: 'missing.png' }])('starts the activity title at the row edge without an available custom icon (%s)', (customIcon) => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon }], showProviderIconsInSidebar: true })
+    const { host, root } = renderSessionItem(true)
+    try {
+      const activity = host.querySelector('.uam-sb-activity')!
+      const titleLine = activity.firstElementChild!
+      expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+      expect(titleLine.querySelector('[aria-label^="Provider:"]')).toBeNull()
+      expect(activity.lastElementChild?.querySelector('[aria-label="Provider: Gemini"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('does not leave an activity icon gutter after its custom PNG fails to load', () => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon: {
+      type: 'png', value: 'broken.png', dataUrl: 'data:image/png;base64,AAAA',
+    } }], showProviderIconsInSidebar: true })
+    const { host, root } = renderSessionItem(true)
+    try {
+      const titleLine = host.querySelector('.uam-sb-activity')!.firstElementChild!
+      act(() => titleLine.querySelector('img')!.dispatchEvent(new Event('error')))
+      expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+      expect(host.querySelector('[aria-label="Provider: Gemini"]')).toBeTruthy()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([
+    { activity: true, pinned: false, working: true, snoozed: false },
+    { activity: true, pinned: false, working: false, snoozed: true },
+    { activity: false, pinned: true, working: true, snoozed: false },
+    { activity: false, pinned: true, working: false, snoozed: true },
+  ])('preserves provider and status affordances around the title ($activity/$pinned/$working/$snoozed)', ({ activity, pinned, working, snoozed }) => {
+    useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', isPinned: pinned,
+      snoozedUntilMs: snoozed ? Date.now() + 3_600_000 : undefined }],
+      acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: working, lifecycleState: working ? 'processing' : 'ready' }) } })
+    const { host, root } = renderSessionItem(activity)
+    try {
+      expect(host.querySelectorAll('[aria-label="Provider: Gemini"]')).toHaveLength(1)
+      if (activity) {
+        const titleLine = host.querySelector('.uam-sb-activity')!.firstElementChild!
+        expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
+        if (working) expect(titleLine.querySelector('[role="status"]')?.textContent).toBe('Working')
+        else expect(host.querySelector('[aria-label="Snooze Chat 1"]')).toBeTruthy()
+      } else {
+        expect(host.querySelector('[aria-label="Unpin Chat 1"]')).toBeTruthy()
+        if (working) expect(host.querySelector('[aria-label="Agent running"]')).toBeTruthy()
+        if (snoozed) expect(host.querySelector('[aria-label="Unsnooze Chat 1"]')).toBeTruthy()
+      }
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('shows the chat custom icon in place of the provider glyph and before the activity title', () => {

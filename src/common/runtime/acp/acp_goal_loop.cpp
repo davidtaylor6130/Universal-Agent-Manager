@@ -4,6 +4,7 @@
 
 #include "app/chat_domain_service.h"
 #include "app/git_worktree_service.h"
+#include "app/worktree_launch_preparation_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/provider_chat_defaults.h"
@@ -247,6 +248,16 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	{
 		if (error_out != nullptr) *error_out = "Another goal is already active in this chat.";
 		return false;
+	}
+	if (!GoalService::IsProviderManaged(*goal) && (session == nullptr || !AcpSessionHasActiveTurn(*session)))
+	{
+		const WorktreeLaunchPreparationResult workspace = PrepareWorktreeForLaunch(app, *chat);
+		if (workspace.state != WorktreeLaunchPreparationState::Ready)
+		{
+			if (error_out) *error_out = workspace.state == WorktreeLaunchPreparationState::Pending
+			    ? "Workspace preparation is still running. Retry Resume after it finishes." : workspace.error;
+			return false;
+		}
 	}
 	if (session == nullptr && !GoalService::IsProviderManaged(*goal))
 	{

@@ -104,7 +104,7 @@ namespace
 	bool IsReadyCliHost(const ExecutionHost& host)
 	{
 		return host.id == uam::execution_hosts::kLocalHostId ||
-		       (host.transport == "ssh" && host.runner_status == "ready" &&
+		       (uam::remote::CanAttemptRunnerConnection(host) &&
 		        host.runner_protocol_version >= 3 && !host.runner_version.empty() &&
 		        uam::execution_hosts::IsPortableId(host.id) &&
 		        uam::execution_hosts::IsSafeSshAlias(host.ssh_alias) &&

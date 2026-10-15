@@ -447,6 +447,7 @@ void Application::PollTick()
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
+	const bool compaction_sync_changed = m_openCodeCompactionSync && m_openCodeCompactionSync->Poll(m_app);
 	const bool uam_control_changed = uam::UamControlService::ProcessPendingRequests(m_app);
 	const bool agent_runs_changed = uam::AgentRunScheduler::Poll(m_app);
 	const bool chat_saves_changed = uam::FlushPendingChatSaves(m_app);
@@ -503,7 +504,7 @@ void Application::PollTick()
 	}
 	const std::chrono::steady_clock::time_point catalogs_finished = std::chrono::steady_clock::now();
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
+	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::HasDeferredStatePush();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -722,6 +723,19 @@ bool Application::InitializeState()
 	m_app.provider_model_catalog->Initialize(m_app.data_root, m_app.provider_profiles, m_app.settings.provider_extra_flags);
 	m_app.provider_model_catalog->SetExecutionHostContext(m_app.settings.execution_hosts);
 	m_app.provider_model_catalog->MaybeStartRefresh();
+	m_openCodeCompactionSync = std::make_shared<uam::OpenCodeCompactionSyncService>();
+	const std::weak_ptr<uam::OpenCodeCompactionSyncService> compaction_sync = m_openCodeCompactionSync;
+	m_app.opencode_compaction_before_turn_reset = [compaction_sync, app = &m_app](uam::AcpSessionState& session, const ChatSession& chat)
+	{
+		if (const std::shared_ptr<uam::OpenCodeCompactionSyncService> service = compaction_sync.lock())
+			service->ObserveBeforeTurnReset(*app, session, chat);
+	};
+	m_app.opencode_compaction_before_dispatch = [compaction_sync, app = &m_app](uam::AcpSessionState& session, ChatSession& chat, std::string& error)
+	{
+		const std::shared_ptr<uam::OpenCodeCompactionSyncService> service = compaction_sync.lock();
+		if (!service) { error = "Native compaction synchronization is stopping."; return uam::OpenCodeCompactionGateState::Failed; }
+		return service->BeforeDispatch(*app, session, chat, error);
+	};
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
@@ -850,6 +864,10 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	m_app.opencode_compaction_before_turn_reset = {};
+	m_app.opencode_compaction_before_dispatch = {};
+	if (m_openCodeCompactionSync) m_openCodeCompactionSync->Stop();
+	m_openCodeCompactionSync.reset();
 	m_worktreeRetention.Stop();
 	if (m_app.storage_retention_service != nullptr) m_app.storage_retention_service->Stop();
 	if (m_app.startup_native_import_service != nullptr) m_app.startup_native_import_service->Cancel();

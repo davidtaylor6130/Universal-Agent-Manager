@@ -282,7 +282,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
 export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
   if (!isRecord(value)) return null
   const type = value.type
-  if (type === 'context_compaction') {
+  if (type === 'context_compaction' || type === 'context_compaction_interrupted') {
     const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
     return { type, text: stringOr(value.text), toolCallId: isString(value.toolCallId) ? value.toolCallId : undefined,
       requestId: isString(value.requestId) ? value.requestId : undefined,
@@ -392,6 +392,7 @@ export function sanitizeQueuedPrompt(value: unknown): AcpQueuedPrompt | null {
     ...(isString(value.id) && value.id.trim() ? { id: value.id } : {}),
     ...(Number.isSafeInteger(value.revision) && Number(value.revision) > 0 ? { revision: Number(value.revision) } : {}),
     ...(value.prepared === true ? { prepared: true } : {}),
+    ...(Number.isSafeInteger(value.existingUserMessageIndex) && Number(value.existingUserMessageIndex) >= 0 ? { existingUserMessageIndex: Number(value.existingUserMessageIndex) } : {}),
     text,
     uamAgentId: stringOr(value.uamAgentId).trim() || 'build',
     markdownStoreFiles: Array.isArray(value.markdownStoreFiles)
@@ -453,6 +454,7 @@ export function sanitizeCppMessage(value: unknown): CppMessage | null {
     processingTimeMs: Math.max(0, finiteNumberOr(value.processingTimeMs, 0)),
 		interrupted: booleanOr(value.interrupted),
 		acpPromptNotSent: booleanOr(value.acpPromptNotSent),
+		acpPromptDiscarded: value.acpPromptDiscarded === true,
 		prioritySteer: booleanOr(value.prioritySteer),
 		continuesTurn: booleanOr(value.continuesTurn),
     checkpointSha: isString(value.checkpointSha) ? value.checkpointSha : undefined,
@@ -831,8 +833,22 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     turnAssistantMessageIndex: finiteNumberOr(value.turnAssistantMessageIndex, -1),
     turnSerial: finiteNumberOr(value.turnSerial, 0),
     queueHeld: booleanOr(value.queueHeld),
+    unsentMessageIndices: Array.isArray(value.unsentMessageIndices) ? value.unsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
+    recoverableUnsentMessageIndices: Array.isArray(value.recoverableUnsentMessageIndices) ? value.recoverableUnsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
     queuedPrompts: Array.isArray(value.queuedPrompts)
       ? value.queuedPrompts.flatMap((prompt) => {
+          const sanitized = sanitizeQueuedPrompt(prompt)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    pendingDirectPrompts: Array.isArray(value.pendingDirectPrompts)
+      ? value.pendingDirectPrompts.flatMap((prompt) => {
+          const sanitized = sanitizeQueuedPrompt(prompt)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    unsentDirectPrompts: Array.isArray(value.unsentDirectPrompts)
+      ? value.unsentDirectPrompts.flatMap((prompt) => {
           const sanitized = sanitizeQueuedPrompt(prompt)
           return sanitized ? [sanitized] : []
         })
@@ -987,7 +1003,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     attentionRevision: isString(value.attentionRevision) ? value.attentionRevision : undefined,
     settledAt: isString(value.settledAt) && value.settledAt ? value.settledAt : undefined,
     snoozedUntilMs: Number.isSafeInteger(value.snoozedUntilMs) && (value.snoozedUntilMs as number) >= 0 && (value.snoozedUntilMs as number) <= 8_640_000_000_000_000 ? value.snoozedUntilMs as number : 0,
-    messageCount: finiteNumberOr(value.messageCount, 0),
+    messageCount: typeof value.messageCount === 'number' && Number.isSafeInteger(value.messageCount) && value.messageCount >= 0 ? value.messageCount : undefined,
     messagesDigest: isString(value.messagesDigest) ? value.messagesDigest : undefined,
     messages: Array.isArray(value.messages)
       ? value.messages.flatMap((message) => {
@@ -1551,7 +1567,7 @@ export function sanitizeVoiceInputSettings(value: unknown): VoiceInputSettings {
 export function sanitizeVcsStorageSettings(value: unknown): Partial<VcsStorageSettings> {
   if (!isRecord(value)) return {}
   const settings: Partial<VcsStorageSettings> = {}
-  for (const key of ['gitAutoWorktree', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'worktreeCleanupEnabled'] as const) {
+  for (const key of ['gitAutoWorktree', 'gitSnapshotSvn', 'gitSnapshotPlainFolders', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'worktreeCleanupEnabled'] as const) {
     if (typeof value[key] === 'boolean') settings[key] = value[key]
   }
   const branch = sanitizeGitBaseBranch(value.gitDefaultBaseBranch)

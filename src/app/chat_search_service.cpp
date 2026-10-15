@@ -53,6 +53,7 @@ namespace uam
 			scan_field(chat.title + " " + chat.provider_id + " " + chat.workspace_directory);
 			for (const Message& message : chat.messages)
 			{
+				if (message.acp_prompt_discarded) continue;
 				scan_field(message.content);
 				scan_field(message.thoughts);
 				scan_field(message.plan_summary);
@@ -64,6 +65,7 @@ namespace uam
 			for (std::size_t index = 0; index < chat.messages.size() && result["hits"].size() < kMaxHits; ++index)
 			{
 				const Message& message = chat.messages[index];
+				if (message.acp_prompt_discarded) continue;
 				const std::array<std::pair<std::string_view, const std::string*>, 3> fields = {{{"content", &message.content}, {"thoughts", &message.thoughts}, {"planSummary", &message.plan_summary}}};
 				for (const std::pair<std::string_view, const std::string*>& field : fields)
 				{
@@ -104,6 +106,6 @@ namespace uam
 
 	bool ChatSearchTargetMatches(const ChatSession& chat, const std::string& digest, std::size_t message_index, bool reuse_selected_history)
 	{
-		return !digest.empty() && chat.messages_loaded && message_index < chat.messages.size() && StateSerializer::MessageDigest(chat, reuse_selected_history) == digest;
+		return !digest.empty() && chat.messages_loaded && message_index < chat.messages.size() && !chat.messages[message_index].acp_prompt_discarded && StateSerializer::MessageDigest(chat, reuse_selected_history) == digest;
 	}
 }

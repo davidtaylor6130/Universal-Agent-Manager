@@ -165,3 +165,43 @@ UAM_TEST(GitWorktreePullDisabledAndManualCreationStayOffline)
 		UAM_ASSERT(!fs::exists(uam::paths::PathFromUtf8(fixture.app.chats.front().workspace_worktree_directory) / "upstream.txt"));
 	}
 }
+
+UAM_TEST(GitWorktreePullSkipsManagedBaseline)
+{
+	if (!GitAvailableForTests()) return;
+	PullFixture fixture;
+	const fs::path folder = fixture.temporary.root / "ordinary-folder";
+	fs::create_directories(folder);
+	UAM_ASSERT(uam::io::WriteTextFile(folder / "keep.txt", "original"));
+	fixture.app.chats.front().workspace_directory = folder.string();
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.StartAndWait();
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(task->merged);
+	UAM_ASSERT(task->prepared->operation.status.managed_repository);
+	UAM_ASSERT_EQ(ReadFile(folder / "keep.txt"), std::string("original"));
+	UAM_ASSERT(!fs::exists(folder / ".git"));
+	UAM_ASSERT_EQ(ReadFile(fs::path(fixture.app.chats.front().workspace_worktree_directory) / "keep.txt"), std::string("original"));
+	UAM_ASSERT(!fs::exists(fixture.source / "upstream.txt"));
+}
+
+UAM_TEST(GitWorktreePullSkipsSelectedManagedRepository)
+{
+	if (!GitAvailableForTests()) return;
+	PullFixture fixture;
+	const fs::path folder = fixture.temporary.root / "ordinary-folder";
+	fs::create_directories(folder);
+	UAM_ASSERT(uam::io::WriteTextFile(folder / "keep.txt", "original"));
+	fixture.app.chats.front().workspace_directory = folder.string();
+	UAM_ASSERT(uam::GitWorktreeService().CreateForChat(fixture.app, fixture.app.chats.front()).ok);
+	const std::string selected = fixture.app.chats.front().workspace_worktree_directory;
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	chat.workspace_directory = selected;
+	fixture.app.chats.front() = std::move(chat);
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.StartAndWait();
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(task->merged);
+	UAM_ASSERT_EQ(ReadFile(fs::path(fixture.app.chats.front().workspace_worktree_directory) / "keep.txt"), std::string("original"));
+	UAM_ASSERT_EQ(ReadFile(fs::path(selected) / "keep.txt"), std::string("original"));
+	UAM_ASSERT_EQ(ReadFile(folder / "keep.txt"), std::string("original"));
+	UAM_ASSERT(!fs::exists(folder / ".git"));
+}

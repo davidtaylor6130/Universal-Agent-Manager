@@ -1421,6 +1421,205 @@ describe('useAppStore Gemini CLI slice', () => {
     )
   })
 
+  it.each(['held-before-ack', 'ack-before-held'] as const)('keeps a recovered prompt outside history across %s with deferred hydration', async (order) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].messageCount = 0
+    initial.chats[0].messagesDigest = 'empty'
+    initial.chats[0].acpSession = { sessionId: '', running: false, processing: false }
+    let acknowledge = () => { throw new Error('Send not started') }
+    let hydrate: (() => void) | undefined
+    let historyRequests = 0
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const action = JSON.parse(request).action
+      if (action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (action === 'sendAcpPrompt') acknowledge = () => onSuccess('{}')
+      else if (action === 'getChatMessages') {
+        historyRequests += 1
+        hydrate = () => onSuccess(JSON.stringify({ chatId: 'chat-1', messages: [], startIndex: 0, totalCount: 0, messagesDigest: 'empty', unsentMessageIndices: [], recoverableUnsentMessageIndices: [] }))
+      } else onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const attachment = { id: 'image', name: 'image.png', type: 'image/png', size: 1, path: '/staged/image.png' }
+    const sending = cefStore.getState().sendAcpPrompt('chat-1', 'Keep this input', [attachment])
+    const held = { ...initial.chats[0], messages: undefined, acpSession: { ...initial.chats[0].acpSession, queueHeld: true,
+      queuedPrompts: [{ id: 'real-outbox', revision: 1, text: 'Keep this input', attachments: [attachment] }] } }
+    if (order === 'ack-before-held') {
+      acknowledge()
+      await expect(sending).resolves.toBe(true)
+      expect(cefStore.getState().messages['chat-1']).toHaveLength(1)
+    }
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [held] } })
+    if (order === 'held-before-ack') {
+      acknowledge()
+      await expect(sending).resolves.toBe(true)
+      expect(cefStore.getState().messages['chat-1']).toEqual([])
+    } else {
+      // Opaque optimistic rows require authoritative history, rather than a guessed native index.
+      expect(historyRequests).toBe(1)
+      hydrate!()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(cefStore.getState().messages['chat-1']).toEqual([])
+    }
+    expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([expect.objectContaining({ id: 'real-outbox', revision: 1, text: 'Keep this input', attachments: [expect.objectContaining(attachment)] })])
+  })
+
+  it('does not associate an edited pre-existing queue entry with a newer acknowledged input', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].messageCount = 0
+    initial.chats[0].messagesDigest = 'empty'
+    initial.chats[0].acpSession = { sessionId: '', running: false, processing: false, queueHeld: true,
+      queuedPrompts: [{ id: 'already-held', revision: 1, text: 'Repeat' }] }
+    let acknowledge = () => { throw new Error('Send not started') }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else acknowledge = () => onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const sending = cefStore.getState().sendAcpPrompt('chat-1', 'Repeat')
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{ ...initial.chats[0], messages: undefined,
+      acpSession: { ...initial.chats[0].acpSession, queuedPrompts: [{ id: 'already-held', revision: 2, text: 'Repeat' }] } }] } })
+    acknowledge()
+    await expect(sending).resolves.toBe(true)
+    expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['Repeat'])
+  })
+
+  it('forces history for an opaque held mismatch when the chat is loaded later', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].messageCount = 0
+    initial.chats[0].messagesDigest = 'empty'
+    initial.chats[0].acpSession = { sessionId: '', running: false, processing: false }
+    const digests: string[] = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') {
+        digests.push(parsed.payload.messagesDigest)
+        onSuccess(JSON.stringify(parsed.payload.messagesDigest === 'empty' ? { chatId: 'chat-1', unchanged: true } :
+          { chatId: 'chat-1', messages: [], startIndex: 0, totalCount: 0, messagesDigest: 'empty' }))
+      } else onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await cefStore.getState().loadSessionMessages('chat-1')
+    await cefStore.getState().sendAcpPrompt('chat-1', 'Recovered while away')
+    cefStore.getState().loadFromCef({ ...initial, stateRevision: 2, chats: [{ ...initial.chats[0], messages: undefined,
+      acpSession: { ...initial.chats[0].acpSession, queueHeld: true, queuedPrompts: [{ id: 'held-away', revision: 1, text: 'Recovered while away' }] } }] })
+    expect(cefStore.getState().messages['chat-1']).toHaveLength(1)
+    await cefStore.getState().loadSessionMessages('chat-1')
+    expect(digests).toEqual(['', ''])
+    expect(cefStore.getState().messages['chat-1']).toEqual([])
+  })
+
+  it.each(['none', 'ack-before-removal', 'removal-before-ack'] as const)('retires a proven referenced raw tail atomically while preserving a later optimistic attempt (%s)', async (order) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].messageCount = 3
+    initial.chats[0].messagesDigest = 'three'
+    initial.chats[0].messages = [
+      { role: 'user', content: 'Delivered', createdAt: '' }, { role: 'assistant', content: 'Reply', createdAt: '' },
+      { role: 'user', content: 'Referenced unsent', acpPromptNotSent: true, createdAt: '' },
+    ]
+    initial.chats[0].acpSession = { sessionId: 'native', running: true, processing: false, queueHeld: true,
+      unsentMessageIndices: [2], recoverableUnsentMessageIndices: [], queuedPrompts: [{ id: 'referenced', revision: 1,
+        existingUserMessageIndex: 2, text: 'Referenced unsent', uamAgentId: 'read-only', attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '' }] }
+    let acknowledge = () => { throw new Error('Send not started') }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (JSON.parse(request).action === 'sendAcpPrompt') acknowledge = () => onSuccess('{}')
+      else if (JSON.parse(request).action !== 'getChatMessages') onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const prefix = cefStore.getState().messages['chat-1'].slice(0, 2)
+    const sending = order !== 'none' ? cefStore.getState().sendAcpPrompt('chat-1', 'Later pending input') : undefined
+    if (order === 'ack-before-removal') { acknowledge(); await sending }
+    const optimistic = cefStore.getState().messages['chat-1'].find((message) => message.content === 'Later pending input')
+    const observed: { rows: string[]; known: number[] }[] = []
+    const unsubscribe = cefStore.subscribe((state) => observed.push({ rows: state.messages['chat-1']?.map((message) => message.content) ?? [], known: state.acpBindingBySessionId['chat-1'].unsentMessageIndices ?? [] }))
+    try {
+      testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{ ...initial.chats[0], messages: undefined,
+        messageCount: 2, messagesDigest: 'two', acpSession: { ...initial.chats[0].acpSession, unsentMessageIndices: [], queuedPrompts: [] } }] } })
+      expect(cefStore.getState().messages['chat-1']).toEqual(optimistic ? [...prefix, optimistic] : prefix)
+      expect(cefStore.getState().messages['chat-1'][0]).toBe(prefix[0])
+      expect(observed.every(({ rows, known }) => !rows.includes('Referenced unsent') || known.includes(2))).toBe(true)
+      expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([])
+      if (order === 'removal-before-ack') { acknowledge(); await expect(sending).resolves.toBe(true) }
+      if (order !== 'none') {
+        expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(['Delivered', 'Reply', 'Later pending input'])
+        if (optimistic) expect(cefStore.getState().messages['chat-1'][2]).toBe(optimistic)
+      }
+    } finally { unsubscribe() }
+  })
+
+  it('retires only a matched native failed suffix atomically before a deferred history response', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].messageCount = 3
+    initial.chats[0].messagesDigest = 'old-three'
+    initial.chats[0].messages = [
+      { role: 'user', content: 'Delivered', createdAt: '2026-01-01T00:00:00Z' },
+      { role: 'assistant', content: 'Reply', createdAt: '2026-01-01T00:00:01Z' },
+      { role: 'user', content: 'Failed', acpPromptNotSent: true, createdAt: '2026-01-01T00:00:02Z' },
+    ]
+    initial.chats[0].acpSession = { sessionId: '', running: false, processing: false, unsentMessageIndices: [2] }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (JSON.parse(request).action !== 'getChatMessages') onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const prefix = cefStore.getState().messages['chat-1'].slice(0, 2)
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{ ...initial.chats[0], messages: undefined,
+      messageCount: 2, messagesDigest: 'new-two', acpSession: { ...initial.chats[0].acpSession, unsentMessageIndices: [], queueHeld: true,
+        queuedPrompts: [{ id: 'held-failed', revision: 1, text: 'Failed' }] } }] } })
+    expect(cefStore.getState().messages['chat-1']).toEqual(prefix)
+    expect(cefStore.getState().messages['chat-1'][0]).toBe(prefix[0])
+    expect(cefStore.getState().messages['chat-1'][1].nativeMessageIndex).toBe(1)
+    expect(cefStore.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([])
+  })
+
+  it('preserves a newer optimistic attempt when an older held snapshot and history response arrive', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const initial = makeCppState(1)
+    initial.chats[0].messageCount = 0
+    initial.chats[0].messagesDigest = 'empty'
+    initial.chats[0].acpSession = { sessionId: '', running: false, processing: false }
+    const acknowledgements: Array<() => void> = []
+    let hydrate = () => { throw new Error('Hydration not started') }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const action = JSON.parse(request).action
+      if (action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (action === 'sendAcpPrompt') acknowledgements.push(() => onSuccess('{}'))
+      else if (action === 'getChatMessages') hydrate = () => onSuccess(JSON.stringify({ chatId: 'chat-1', messages: [], startIndex: 0, totalCount: 0, messagesDigest: 'empty', unsentMessageIndices: [], recoverableUnsentMessageIndices: [] }))
+      else onSuccess('{}')
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const first = cefStore.getState().sendAcpPrompt('chat-1', 'Old failed input')
+    acknowledgements[0]()
+    await first
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [{ ...initial.chats[0], messages: undefined,
+      acpSession: { ...initial.chats[0].acpSession, queueHeld: true, queuedPrompts: [{ id: 'held-old', revision: 1, text: 'Old failed input' }] } }] } })
+    const second = cefStore.getState().sendAcpPrompt('chat-1', 'Newer input')
+    acknowledgements[1]()
+    await expect(second).resolves.toBe(true)
+    hydrate()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toContain('Newer input')
+    expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts?.[0].text).toBe('Old failed input')
+  })
+
   it('ignores an older prompt failure after a newer prompt succeeds', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -2083,6 +2282,100 @@ describe('useAppStore Gemini CLI slice', () => {
       'Question',
       'Final answer',
     ])
+  })
+
+  it.each(['adopted', 'unchanged', 'newer-binding', 'rejected'] as const)('applies cold unsent authority atomically only with a current accepted history response (%s)', async (outcome) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].messages = undefined
+    initial.chats[0].messageCount = 2
+    initial.chats[0].messagesDigest = 'cold-summary'
+    initial.chats[0].acpSession = { providerId: 'opencode-cli', sessionId: '', running: false, processing: false, lifecycleState: 'stopped', unsentMessageIndices: [], recoverableUnsentMessageIndices: [] }
+    let finish!: (response: string) => void
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if ((JSON.parse(request) as { action: string }).action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else finish = onSuccess
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    cefStore.getState().loadSessionMessages('chat-1')
+    const rows = [{ role: 'user' as const, content: 'Earlier rejected input', createdAt: '2026-01-01T00:00:00.000Z', interrupted: true, acpPromptNotSent: true },
+      { role: 'user' as const, content: 'Latest rejected input', createdAt: '2026-01-01T00:00:01.000Z', interrupted: true, acpPromptNotSent: true }]
+    if (outcome === 'unchanged') {
+      finish(JSON.stringify({ chatId: 'chat-1', startIndex: 0, totalCount: 2, messagesDigest: 'native-hash', messages: rows }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      cefStore.getState().loadSessionMessages('chat-1')
+    }
+    if (outcome === 'newer-binding') cefStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], turnSerial: 2, unsentMessageIndices: [], recoverableUnsentMessageIndices: [] } } }))
+    const observed: { count: number; known: number[] | undefined; retry: number[] | undefined }[] = []
+    const unsubscribe = cefStore.subscribe((state) => observed.push({ count: state.messages['chat-1']?.length ?? 0, known: state.acpBindingBySessionId['chat-1'].unsentMessageIndices, retry: state.acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices }))
+    try {
+      finish(JSON.stringify(outcome === 'rejected' ? { ok: false, error: 'Chat history changed while loading.' } : {
+        chatId: 'chat-1', startIndex: 0, totalCount: 2, messagesDigest: 'native-hash',
+        ...(outcome === 'unchanged' ? { unchanged: true } : { messages: rows }),
+        unsentMessageIndices: [0, 1], recoverableUnsentMessageIndices: [1],
+      }))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      const binding = cefStore.getState().acpBindingBySessionId['chat-1']
+      if (outcome === 'adopted' || outcome === 'unchanged') {
+        expect(binding.unsentMessageIndices).toEqual([0, 1])
+        expect(binding.recoverableUnsentMessageIndices).toEqual([1])
+        expect(cefStore.getState().messages['chat-1'].map((message) => message.content)).toEqual(rows.map((row) => row.content))
+        expect(observed.filter((state) => state.count === 2).every((state) => state.known?.join() === '0,1' && state.retry?.join() === '1')).toBe(true)
+      } else {
+        expect(binding.unsentMessageIndices).toEqual([])
+        expect(binding.recoverableUnsentMessageIndices).toEqual([])
+        expect(cefStore.getState().messages['chat-1']).toBeUndefined()
+        expect(cefStore.getState().chatHistoryErrorBySessionId['chat-1']).toContain('Chat history changed while loading.')
+        if (outcome === 'newer-binding') {
+          const retrying = cefStore.getState().loadSessionMessages('chat-1', true)
+          finish(JSON.stringify({ chatId: 'chat-1', startIndex: 0, totalCount: 2, messagesDigest: 'native-hash', messages: rows,
+            unsentMessageIndices: [0, 1], recoverableUnsentMessageIndices: [1] }))
+          await retrying
+          expect(cefStore.getState().chatHistoryErrorBySessionId['chat-1']).toBeUndefined()
+          expect(cefStore.getState().messages['chat-1']).toHaveLength(2)
+          expect(cefStore.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([0, 1])
+        }
+      }
+    } finally { unsubscribe() }
+  })
+
+  it.each(['older', 'search'] as const)('applies native unsent authority with an accepted %s page using absolute indices', async (operation) => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats[0].messages = undefined
+    initial.chats[0].messageCount = 4
+    initial.chats[0].messagesDigest = 'cold-summary'
+    initial.chats[0].acpSession = { providerId: 'opencode-cli', sessionId: '', running: false, processing: false, lifecycleState: 'stopped', unsentMessageIndices: [], recoverableUnsentMessageIndices: [] }
+    const rows = [
+      { role: 'user' as const, content: 'Earlier unsent input', acpPromptNotSent: true, interrupted: true, createdAt: '2026-01-01T00:00:00.000Z' },
+      { role: 'assistant' as const, content: '', createdAt: '2026-01-01T00:00:01.000Z' },
+      { role: 'user' as const, content: 'Delivered input', createdAt: '2026-01-01T00:00:02.000Z' },
+      { role: 'assistant' as const, content: 'Delivered response', createdAt: '2026-01-01T00:00:03.000Z' },
+    ]
+    let requests = 0
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const action = (JSON.parse(request) as { action: string }).action
+      if (action === 'getInitialState') { onSuccess(JSON.stringify(initial)); return }
+      if (action !== 'getChatMessages') { onSuccess('{}'); return }
+      requests += 1
+      onSuccess(JSON.stringify(requests === 1
+        ? { chatId: 'chat-1', startIndex: 2, totalCount: 4, messagesDigest: 'full-hash', messages: rows.slice(2) }
+        : { chatId: 'chat-1', startIndex: 0, totalCount: 4, messagesDigest: 'full-hash', messages: operation === 'older' ? rows.slice(0, 2) : rows,
+            unsentMessageIndices: [0], recoverableUnsentMessageIndices: [] }))
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    await cefStore.getState().loadSessionMessages('chat-1')
+    if (operation === 'older') await expect(cefStore.getState().loadOlderSessionMessages('chat-1')).resolves.toBe(true)
+    else await expect(cefStore.getState().jumpToChatSearchHit({ chatId: 'chat-1', messageIndex: 0, messagesDigest: 'full-hash', field: 'content', excerpt: 'Earlier unsent input' }, 'unsent-search')).resolves.toBe(true)
+    expect(cefStore.getState().acpBindingBySessionId['chat-1'].unsentMessageIndices).toEqual([0])
+    expect(cefStore.getState().acpBindingBySessionId['chat-1'].recoverableUnsentMessageIndices).toEqual([])
+    expect(cefStore.getState().messages['chat-1'].map((message) => message.nativeMessageIndex)).toEqual([0, 1, 2, 3])
   })
 
   it('does not mistake a newer summary digest for a transcript already loaded in the browser', async () => {

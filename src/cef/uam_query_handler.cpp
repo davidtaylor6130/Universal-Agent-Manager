@@ -177,6 +177,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setChatRemoteRecovery", &UamQueryHandler::HandleSetChatRemoteRecovery},
 		{"moveChatWorkspace", &UamQueryHandler::HandleMoveChatWorkspace},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
+		{"readCentralInstructionFile", &UamQueryHandler::HandleReadCentralInstructionFile},
+		{"saveCentralInstructionFile", &UamQueryHandler::HandleSaveCentralInstructionFile},
 		{"setCentralProviderConfiguration", &UamQueryHandler::HandleSetCentralProviderConfiguration},
 		{"setMcpServers", &UamQueryHandler::HandleSetMcpServers},
 		{"getProviderMcpStatus", &UamQueryHandler::HandleGetProviderMcpStatus},

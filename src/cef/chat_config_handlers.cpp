@@ -1,6 +1,7 @@
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
+#include "remote/runner_client.h"
 
 #include "app/chat_domain_service.h"
 #include "app/agent_definition_service.h"
@@ -169,7 +170,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	if (!uam::paths::IsControllerLocalWorkspace(*source))
 	{
 		const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, source->execution_host_id);
-		if (host == nullptr || host->runner_status != "ready")
+		if (host == nullptr || !uam::remote::CanAttemptRunnerConnection(*host))
 		{
 			cb->Failure(409, "The remote execution host is not ready to load child history.");
 			return;

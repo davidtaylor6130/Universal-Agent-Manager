@@ -9,6 +9,7 @@
 #include "common/platform/platform_state_fields.h"
 #include "common/platform/observed_process_stop.h"
 #include "common/provider/provider_profile.h"
+#include "common/provider/attached_skill_resources.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 
 #include <atomic>
@@ -17,6 +18,7 @@
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -36,6 +38,7 @@ namespace uam
 	class StartupNativeImportService;
 	class StorageRetentionService;
 	struct WorktreeLaunchPreparationTask;
+	enum class OpenCodeCompactionGateState;
 
 	namespace fs = std::filesystem;
 
@@ -507,6 +510,12 @@ namespace uam
 
 	struct RemoteContextPreparation
 	{
+		std::filesystem::path data_root;
+		std::shared_ptr<const std::uint8_t> incarnation;
+		std::string ownership;
+		std::vector<attached_skills::Span> skill_spans;
+		std::string wire_prompt;
+		bool skills_prepared = false;
 		std::string memory_level = "strict";
 		ExecutionHost host;
 		std::string workspace;
@@ -667,6 +676,8 @@ namespace uam
 		double turn_started_time_s = 0.0;
 		bool turn_computer_use_mode = false;
 		std::string queued_prompt;
+		std::vector<attached_skills::Span> queued_skill_spans;
+		std::shared_ptr<RemoteContextPreparation> attached_skill_preparation;
 		bool defer_prompt_save = false;
 		std::shared_ptr<PendingAcpPromptDelivery> pending_prompt_delivery;
 		std::shared_ptr<PendingLocalAcpLaunch> pending_local_launch;
@@ -1172,6 +1183,9 @@ namespace uam
 		std::string native_chat_refresh_error_status;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
+		/// Application-owned hooks keep native compaction queries outside runtime and transport state.
+		std::function<void(AcpSessionState&, const ChatSession&)> opencode_compaction_before_turn_reset;
+		std::function<OpenCodeCompactionGateState(AcpSessionState&, ChatSession&, std::string&)> opencode_compaction_before_dispatch;
 		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
 		std::vector<AsyncAcpProcessStopTask> acp_process_stop_tasks;
 		std::vector<CliContextPreparationTask> cli_context_preparation_tasks;

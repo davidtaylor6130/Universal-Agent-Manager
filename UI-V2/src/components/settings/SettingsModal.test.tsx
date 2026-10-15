@@ -5,6 +5,7 @@ import { SettingsModal } from './SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
 import { fallbackProviderForId } from '../../utils/providerMetadata'
 import { version as packageVersion } from '../../../package.json'
+import { BUILT_IN_THEME_COLORS } from '../../utils/themeStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -1968,6 +1969,34 @@ describe('SettingsModal memory settings', () => {
     expect(host.querySelector('[aria-label="Add editor group"]')).toBeTruthy()
     expect(useAppStore.getState().closeMemoryLibrary).toHaveBeenCalledTimes(1)
     act(() => root.unmount()); host.remove()
+  })
+
+  it('disables Save for clean and reverted existing theme drafts', () => {
+    const theme = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
+    useAppStore.setState({ theme: theme.id, customThemes: [theme] })
+    const { host, root } = renderModal()
+    const button = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === text)!
+    const changeName = (name: string) => act(() => {
+      const input = host.querySelector<HTMLInputElement>('[aria-label="Theme name"]')!
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, name)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const review = () => { act(() => button('Next').click()); act(() => button('Next').click()) }
+    const editName = () => { act(() => button('Back').click()); act(() => button('Back').click()) }
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Edit theme"]')!.click())
+      review()
+      expect(button('Save theme').disabled).toBe(true)
+      act(() => button('Save theme').click())
+      expect(useAppStore.getState().saveCustomTheme).not.toHaveBeenCalled()
+      editName(); changeName('Changed ocean'); review()
+      expect(button('Save theme').disabled).toBe(false)
+      editName(); changeName('Ocean'); review()
+      expect(button('Save theme').disabled).toBe(true)
+      act(() => button('Cancel').click())
+      expect(host.querySelector('[aria-label="Unsaved theme changes"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Theme name"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
   })
 
   it('creates, previews, and saves a custom theme', async () => {

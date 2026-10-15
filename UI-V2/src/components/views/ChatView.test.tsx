@@ -3,9 +3,12 @@ import { parseUamPushPayload } from '../../store/push/uamPush'
 import { act, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, reviewAssistantLabel } from './ChatView'
+import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgentCycleShortcut, projectUnsentPrompts, reviewAssistantLabel } from './ChatView'
 import { useAppStore } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
+import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
+import type { CppChat } from '../../store/cpp/types'
+import { sanitizeCppAcpSession } from '../../store/cpp/sanitizers'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -1890,6 +1893,561 @@ describe('ChatView', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it.each(['chat-1791274259986-d110b3', 'chat-1792011220733-48d847'])('removes a legacy unsent input from the displayed family member %s while preserving its branch history', async (chatId) => {
+    const previous = useAppStore.getState()
+    let finish!: (ok: boolean) => void
+    const discard = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve }))
+    const original = { ...previous.messages['chat-1'][0], sessionId: chatId, content: 'Explain this please!', acpPromptNotSent: true, interrupted: true }
+    const later = { ...original, id: 'later', content: 'Delivered branch request', acpPromptNotSent: false, interrupted: false }
+    const session = { ...previous.sessions[0], id: chatId, messagesDigest: 'old-digest', userMessageIndices: [0, 1] }
+    useAppStore.setState({ sessions: [session], activeSessionId: chatId, discardUnsentMessage: discard,
+      messages: { [chatId]: [original, later] }, acpBindingBySessionId: { [chatId]: { ...previous.acpBindingBySessionId['chat-1'],
+        sessionId: 'native', running: true, processing: false, lifecycleState: 'error', turnEvents: [], toolCalls: [],
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [0], recoverableUnsentMessageIndices: [], queuedPrompts: [] } } })
+    writeChatComposerDraft(chatId, { text: 'Independent composer draft', attachments: [] })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      const render = () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
+      act(render)
+      const remove = host.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')!
+      expect(remove.disabled).toBe(false)
+      act(() => { remove.click(); remove.click() })
+      expect(discard).toHaveBeenCalledExactlyOnceWith(chatId, 0, original.id)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).toContain(original.content)
+      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(original.content)
+      act(() => {
+        useAppStore.setState({ messages: { [chatId]: [{ ...original, acpPromptDiscarded: true }, later] },
+          sessions: [{ ...session, messagesDigest: 'new-digest' }] })
+        render()
+      })
+      await act(async () => finish(true))
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(original.content)
+      expect(host.querySelector('[data-message-index="1"]')?.textContent).toContain(later.content)
+      expect(useAppStore.getState().messages[chatId]).toHaveLength(2)
+      expect(readChatComposerDraft(chatId).text).toBe('Independent composer draft')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ discardUnsentMessage: previous.discardUnsentMessage }) }
+  })
+
+  it('keeps an explicitly discarded cold portable row hidden without runtime recovery authority', () => {
+    const original = { ...useAppStore.getState().messages['chat-1'][0], acpPromptNotSent: true, acpPromptDiscarded: true }
+    const placeholder = { ...original, role: 'assistant' as const, content: '', acpPromptNotSent: false, acpPromptDiscarded: false }
+    const later = { ...original, id: 'later', content: 'Delivered branch request', acpPromptNotSent: false, acpPromptDiscarded: false }
+    const projection = projectUnsentPrompts([original, placeholder, later], 0, [], [])
+    expect(projection.prompts).toEqual([])
+    expect([...projection.hiddenIndices]).toEqual([0, 1])
+  })
+
+  it.each([{ readOnly: false, nativeSession: '' }, { readOnly: true, nativeSession: '' }, { readOnly: false, nativeSession: 'native-ready' }])('projects legacy unsent inputs outside history with exact recovery indices (readOnly=$readOnly, nativeSession=$nativeSession)', async ({ readOnly, nativeSession }) => {
+    const previous = useAppStore.getState()
+    const retry = vi.fn(async () => ({ ok: false, error: 'Delivery remains unconfirmed.' }))
+    const image = { id: 'image', name: 'retained.png', type: 'file', mimeType: 'image/png', size: 4, path: '/tmp/retained.png' }
+    const skill = { id: '/skills/inspect.md', name: 'inspect.md', type: 'markdown-store', size: 0, path: '/skills/inspect.md' }
+    useAppStore.setState((state) => ({ retryFailedMessage: retry, historyStartIndexBySessionId: { 'chat-1': 7 },
+      sessions: state.sessions.map((session) => ({ ...session, importedReadOnly: readOnly, messagesDigest: 'legacy', userMessageIndices: [7, 8] })),
+      messages: { 'chat-1': [
+        { ...state.messages['chat-1'][0], content: 'Earlier unsent attempt', acpPromptNotSent: true, interrupted: true, attachments: [image, skill] },
+        { ...state.messages['chat-1'][0], id: 'latest', content: 'Latest unsent attempt', acpPromptNotSent: true, interrupted: true },
+      ] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], sessionId: nativeSession, running: Boolean(nativeSession), processing: false,
+        lifecycleState: nativeSession ? 'ready' : 'error', turnEvents: [], toolCalls: [], turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7, 8], recoverableUnsentMessageIndices: [8] } },
+    }))
+    writeChatComposerDraft('chat-1', { text: 'Independent draft', attachments: [] })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const recovery = host.querySelector('[aria-label="Unsent prompts"]')!
+      expect(recovery.textContent).toContain('Earlier unsent attempt')
+      expect(recovery.textContent).toContain('Latest unsent attempt')
+      expect(recovery.textContent).toContain('retained.png')
+      expect(recovery.textContent).toContain('inspect.md')
+      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain('unsent attempt')
+      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(0)
+      expect(host.querySelector('[aria-label="Navigate user messages"]')).toBeNull()
+      expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.querySelector('.uam-composer-dock--centred')).toBeNull()
+      const retryButton = recovery.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')!
+      expect(recovery.querySelectorAll('[aria-label="Retry message"]')).toHaveLength(1)
+      expect(retryButton.disabled).toBe(readOnly)
+      expect(recovery.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')!.disabled).toBe(readOnly)
+      expect(retry).not.toHaveBeenCalled()
+      await act(async () => retryButton.click())
+      if (readOnly) expect(retry).not.toHaveBeenCalled()
+      else {
+        expect(retry).toHaveBeenCalledWith('chat-1', 8)
+        expect(host.textContent).toContain('Delivery remains unconfirmed.')
+        expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1)
+      }
+      const editor = recovery.querySelector<HTMLButtonElement>('[aria-label="Edit message in new branch"]')!
+      expect(editor.disabled).toBe(readOnly)
+      act(() => editor.click())
+      if (readOnly) expect(host.querySelector('[aria-label="Edit message"]')).toBeNull()
+      else {
+        expect(host.querySelector<HTMLTextAreaElement>('[aria-label="Edit message"]')!.value).toBe('Earlier unsent attempt')
+        expect(retryButton.disabled).toBe(true)
+        expect(host.querySelector('[aria-label="Remove retained.png from edited message"]')).toBeTruthy()
+      }
+      expect(useAppStore.getState().messages['chat-1'][0].attachments).toEqual([image, skill])
+      expect(readChatComposerDraft('chat-1').text).toBe('Independent draft')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ retryFailedMessage: previous.retryFailedMessage }) }
+  })
+
+  it('preserves companion branch and retry restrictions for readable legacy unsent inputs', () => {
+    const previousPath = window.location.pathname
+    const previous = useAppStore.getState()
+    window.history.pushState({}, '', '/companion')
+    useAppStore.setState((state) => ({ discoverProviderModels: vi.fn(async () => true),
+      messages: { 'chat-1': [{ ...state.messages['chat-1'][0], content: 'Companion unsent input', acpPromptNotSent: true, interrupted: true }] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, running: false,
+        turnEvents: [], toolCalls: [], pendingPermission: null, pendingUserInput: null,
+        unsentMessageIndices: [0], recoverableUnsentMessageIndices: [0] } } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const recovery = host.querySelector('[aria-label="Unsent prompts"]')!
+      expect(recovery.textContent).toContain('Companion unsent input')
+      expect(recovery.querySelector('[aria-label="Edit message in new branch"]')).toBeNull()
+      expect(recovery.querySelector('[aria-label="Retry message"]')).toBeNull()
+      expect(recovery.querySelector('[aria-label="Remove unsent prompt"]')).toBeNull()
+      expect(host.querySelector('article[aria-label="You"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); window.history.pushState({}, '', previousPath); useAppStore.setState({ discoverProviderModels: previous.discoverProviderModels }) }
+  })
+
+  it('keeps portable read-only unsent history readable when native recovery metadata is absent', () => {
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, importedReadOnly: true })),
+      messages: { 'chat-1': [{ ...state.messages['chat-1'][0], content: 'Portable unsent input', acpPromptNotSent: true, interrupted: true }] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, running: false,
+        turnEvents: [], toolCalls: [], pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [], recoverableUnsentMessageIndices: [] } } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelector('article[aria-label="You"]')?.textContent).toContain('Portable unsent input')
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')!.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Edit message in new branch"]')!.disabled).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([false, true])('keeps the current starting indicator independent of an older hidden unsent input (processing=%s)', (processing) => {
+    useAppStore.setState((state) => ({ messages: { 'chat-1': [{ ...state.messages['chat-1'][0], content: 'Earlier failed input', acpPromptNotSent: true, interrupted: true }] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], running: processing, processing,
+        lifecycleState: processing ? 'processing' : 'stopped', turnEvents: [], toolCalls: [], pendingPermission: null, pendingUserInput: null,
+        turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, unsentMessageIndices: [0], recoverableUnsentMessageIndices: [], queueHeld: !processing,
+        queuedPrompts: [{ id: 'next-native', revision: 1, text: 'Next request', uamAgentId: 'build', attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '' }] } } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(Boolean(host.querySelector('[data-testid="turn-starting"]'))).toBe(processing)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).toContain('Earlier failed input')
+      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(0)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps unloaded native-confirmed unsent inputs out of transcript navigation without renumbering loaded messages', () => {
+    const previous = useAppStore.getState()
+    const navigate = vi.fn(async () => true)
+    useAppStore.setState((state) => ({ jumpToSessionMessage: navigate, historyStartIndexBySessionId: { 'chat-1': 7 },
+      sessions: state.sessions.map((session) => ({ ...session, messagesDigest: 'paged', userMessageIndices: [0, 7] })),
+      messages: { 'chat-1': [{ ...state.messages['chat-1'][0], content: 'Delivered page input' }] },
+      acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, turnEvents: [], toolCalls: [],
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [0], recoverableUnsentMessageIndices: [] } } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const rail = host.querySelector<HTMLElement>('[aria-label="Navigate user messages"]')!
+      expect(rail.getAttribute('aria-valuemax')).toBe('1')
+      act(() => rail.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })))
+      expect(navigate).toHaveBeenCalledWith('chat-1', 7)
+      expect(host.querySelector('[data-message-index="7"]')?.textContent).toContain('Delivered page input')
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ jumpToSessionMessage: previous.jumpToSessionMessage }) }
+  })
+
+  it('keeps an earlier unsent attempt out of history after the latest attempt is queued and delivered', () => {
+    const user = useAppStore.getState().messages['chat-1'][0]
+    const earlier = { ...user, content: 'Earlier rejected input', acpPromptNotSent: true, interrupted: true }
+    const latest = { ...user, id: 'latest', content: 'Latest rejected input', acpPromptNotSent: true, interrupted: true }
+    const binding = { ...useAppStore.getState().acpBindingBySessionId['chat-1'], sessionId: '', running: false, processing: false,
+      lifecycleState: 'error' as const, turnEvents: [], toolCalls: [], pendingPermission: null, pendingUserInput: null,
+      turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, unsentMessageIndices: [0, 1], recoverableUnsentMessageIndices: [1] }
+    useAppStore.setState({ messages: { 'chat-1': [earlier, latest] }, acpBindingBySessionId: { 'chat-1': binding } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    const noEarlierInHistory = () => {
+      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain(earlier.content)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).toContain(earlier.content)
+    }
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />)); noEarlierInHistory()
+      act(() => useAppStore.setState({ messages: { 'chat-1': [earlier] }, acpBindingBySessionId: { 'chat-1': { ...binding,
+        unsentMessageIndices: [0], recoverableUnsentMessageIndices: [], queueHeld: true,
+        queuedPrompts: [{ id: 'native-recovery', revision: 1, text: latest.content, uamAgentId: 'read-only', markdownStoreFiles: [], attachments: [], goalMode: false, goalId: '' }] } } }))
+      noEarlierInHistory()
+      expect(host.querySelector('[aria-label="Queued prompt"]')?.textContent).toContain(latest.content)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')?.textContent).not.toContain(latest.content)
+      act(() => useAppStore.setState({ messages: { 'chat-1': [earlier, { ...latest, acpPromptNotSent: false, interrupted: false },
+        { id: 'answer', sessionId: 'chat-1', role: 'assistant', content: 'Successful provider response', createdAt: new Date() }] },
+        acpBindingBySessionId: { 'chat-1': { ...binding, sessionId: 'new-native', lifecycleState: 'ready', unsentMessageIndices: [0], recoverableUnsentMessageIndices: [], queueHeld: false, queuedPrompts: [] } } }))
+      noEarlierInHistory()
+      expect(host.querySelector('.uam-message-list')?.textContent).toContain(latest.content)
+      expect(host.querySelector('.uam-message-list')?.textContent).toContain('Successful provider response')
+      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(1)
+      expect(host.querySelector('[aria-label="Retry message"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([
+    { content: 'Partial answer' }, { thoughts: 'Partial thought' }, { planSummary: 'Plan' },
+    { toolCalls: [{ id: 'delivered-tool', title: 'Read', kind: 'read', status: 'completed', content: '' }] },
+    { blocks: [{ type: 'assistant_text' as const, text: 'Partial answer' }] },
+    { attachments: [{ id: 'delivered-file', name: 'output.png', type: 'file', size: 1 }] },
+  ])('does not label delivered output as an unsent prompt ($content)', (output) => {
+    const state = useAppStore.getState()
+    const user = { ...state.messages['chat-1'][0], providerId: 'opencode-cli', interrupted: true, acpPromptNotSent: true }
+    const assistant = { ...state.messages['chat-1'][1], providerId: 'opencode-cli', content: '', thoughts: '', interrupted: true, ...output }
+    useAppStore.setState({ expandWorkTraces: true, messages: { 'chat-1': [user, assistant] }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'stopped',
+        pendingPermission: null, pendingUserInput: null, turnEvents: [], unsentMessageIndices: [], recoverableUnsentMessageIndices: [] },
+    } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.textContent).toContain('Response interrupted')
+      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(1)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Remove unsent prompt"]')).toBeNull()
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(user)
+      expect(user.acpPromptNotSent).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([false, true])('keeps one truthful interruption indicator after delivered output (assistantInterrupted=%s)', (assistantInterrupted) => {
+    const state = useAppStore.getState()
+    const user = { ...state.messages['chat-1'][0], providerId: 'opencode-cli', interrupted: true, acpPromptNotSent: true }
+    const assistant = { ...state.messages['chat-1'][1], providerId: 'opencode-cli', content: 'Delivered partial reply', interrupted: assistantInterrupted, stopReason: '' }
+    useAppStore.setState({ messages: { 'chat-1': [user, assistant] }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'stopped',
+        pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+    } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.textContent?.match(/Response interrupted/g)).toHaveLength(1)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([false, true])('reuses a persisted user row while its response streams (staleNonDelivery=%s)', (staleNonDelivery) => {
+    const state = useAppStore.getState()
+    let userContentReads = 0
+    const user = { ...state.messages['chat-1'][0], providerId: 'opencode-cli', interrupted: staleNonDelivery, acpPromptNotSent: staleNonDelivery }
+    Object.defineProperty(user, 'content', { enumerable: true, get: () => { userContentReads += 1; return 'Authored request' } })
+    const assistant = { ...state.messages['chat-1'][1], providerId: 'opencode-cli', content: 'Partial response', interrupted: false }
+    useAppStore.setState({ messages: { 'chat-1': [user, assistant] }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'processing', turnUserMessageIndex: 0,
+        turnAssistantMessageIndex: 1, pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+    } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const initialReads = userContentReads
+      expect(initialReads).toBeGreaterThan(0)
+      for (let index = 0; index < 3; index += 1) {
+        act(() => useAppStore.setState({ messages: { 'chat-1': [user, { ...assistant, content: `Partial response ${index}` }] } }))
+        expect(userContentReads).toBe(initialReads)
+      }
+      expect(host.textContent).toContain('Partial response 2')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each(['empty', 'foreign provider', 'later user'])('preserves uncertain nondelivery without same-turn output (%s)', (boundary) => {
+    const state = useAppStore.getState()
+    const user = { ...state.messages['chat-1'][0], providerId: 'opencode-cli', interrupted: true, acpPromptNotSent: true }
+    const assistant = { ...state.messages['chat-1'][1], providerId: boundary === 'foreign provider' ? 'codex-cli' : 'opencode-cli',
+      content: boundary === 'empty' ? '' : 'Output belonging to another turn', thoughts: '', toolCalls: [], blocks: [], planEntries: [], planSummary: '', attachments: [] }
+    const messages = boundary === 'later user' ? [user, { ...user, id: 'later-user', interrupted: false, acpPromptNotSent: false }, assistant] : [user, assistant]
+    useAppStore.setState({ messages: { 'chat-1': messages }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'stopped',
+        pendingPermission: null, pendingUserInput: null, turnEvents: [], unsentMessageIndices: [], recoverableUnsentMessageIndices: [] },
+    } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).toContain('Message was not sent')
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Remove unsent prompt"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([
+    { content: 'Partial answer' }, { thoughts: 'Partial thought' }, { planSummary: 'Plan' },
+    { toolCalls: [{ id: 'tool', title: 'Read', kind: 'read', status: 'completed', content: '' }] },
+    { blocks: [{ type: 'assistant_text' as const, text: 'Partial answer' }] },
+    { attachments: [{ id: 'file', name: 'output.png', type: 'file', size: 1 }] },
+  ])('retains substantive output even if a stale unsent allowlist names its user ($content)', (output) => {
+    const user = { ...useAppStore.getState().messages['chat-1'][0], acpPromptNotSent: true }
+    const assistant = { ...useAppStore.getState().messages['chat-1'][1], content: '', thoughts: '', ...output }
+    const projection = projectUnsentPrompts([user, assistant], 7, [7], [7])
+    expect(projection.prompts).toEqual([])
+    expect(projection.hiddenIndices.size).toBe(0)
+    expect(projectUnsentPrompts([{ ...user, acpPromptNotSent: false }], 7, [7], [7]).prompts).toEqual([])
+  })
+
+  it.each([false, true])('keeps a failed first prompt in the held outbox without delivered history (readOnly=%s)', async (readOnly) => {
+    const previous = useAppStore.getState()
+    const retry = vi.fn(async () => true)
+    const edit = vi.fn(async () => true)
+    const remove = vi.fn(async () => true)
+    const files = [{ id: 'image', name: 'photo.png', type: 'file', mimeType: 'image/png', size: 4, path: '/tmp/photo.png' }]
+    const failed: CppChat = {
+      id: 'chat-1', title: 'OpenCode', folderId: 'default', providerId: 'opencode-cli',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:01.000Z',
+      messages: [],
+      acpSession: { providerId: 'opencode-cli', running: false, processing: false, lifecycleState: 'error',
+        lastError: 'Remote provider setup failed.', queueHeld: true, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+        queuedPrompts: [{ id: 'native-outbox-1', revision: 1, text: 'Unsent first request', uamAgentId: 'read-only',
+          attachments: files, markdownStoreFiles: ['/skills/inspect.md'], goalMode: false, goalId: '' }] },
+    }
+    useAppStore.setState((state) => ({
+      providers: [...state.providers, { id: 'opencode-cli', name: 'OpenCode', shortName: 'OpenCode', color: '#fff', description: '', outputMode: 'cli', supportsCli: true, supportsStructured: true, structuredProtocol: 'opencode-acp' }],
+      sessions: state.sessions.map((session) => ({ ...session, providerId: 'opencode-cli', importedReadOnly: readOnly })),
+      messages: { 'chat-1': reconcileCppMessages('chat-1', state.messages['chat-1'], failed.messages!, true) },
+      acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat(failed, state.acpBindingBySessionId['chat-1']) },
+      resumeQueuedAcpPrompts: retry, editQueuedAcpPrompt: edit, removeQueuedAcpPrompt: remove,
+    }))
+    writeChatComposerDraft('chat-1', { text: 'Independent draft', attachments: [] })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const queue = host.querySelector('[aria-label="Queued prompt"]')!
+      expect(queue.textContent).toContain('Unsent first request')
+      expect(queue.textContent).toContain('Queue held')
+      expect(queue.textContent).not.toContain('Held after restart')
+      expect(queue.textContent).toContain('photo.png')
+      expect(queue.textContent).toContain('inspect.md')
+      expect(host.querySelector('.uam-message-list')?.textContent).not.toContain('Unsent first request')
+      expect(host.querySelector('article[aria-label="You"]')).toBeNull()
+      expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('Independent draft')
+      const resume = Array.from(queue.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Resume queue')!
+      expect(resume.disabled).toBe(readOnly)
+      expect(queue.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.disabled).toBe(readOnly)
+      expect(queue.querySelector<HTMLButtonElement>('[aria-label="Remove queued prompt"]')!.disabled).toBe(readOnly)
+      expect(queue.querySelector<HTMLButtonElement>('[aria-label="Steer with this prompt now"]')!.disabled).toBe(true)
+      expect(retry).not.toHaveBeenCalled()
+      await act(async () => resume.click())
+      if (readOnly) expect(retry).not.toHaveBeenCalled()
+      else expect(retry).toHaveBeenCalledWith('chat-1', [{ id: 'native-outbox-1', revision: 1 }])
+      expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts?.[0]).toMatchObject({ attachments: files, markdownStoreFiles: ['/skills/inspect.md'], uamAgentId: 'read-only' })
+    } finally {
+      act(() => root.unmount()); host.remove()
+      useAppStore.setState({ resumeQueuedAcpPrompts: previous.resumeQueuedAcpPrompts, editQueuedAcpPrompt: previous.editQueuedAcpPrompt, removeQueuedAcpPrompt: previous.removeQueuedAcpPrompt })
+    }
+  })
+
+  it.each([false, true])('shows an explicitly recovered referenced held prompt once with original index and Resume guards (readOnly=%s)', async (readOnly) => {
+    const previous = useAppStore.getState()
+    const resume = vi.fn(async () => true)
+    const image = { id: 'image', name: 'photo.png', type: 'file', mimeType: 'image/png', size: 4, path: '/tmp/photo.png' }
+    const row = { role: 'user' as const, content: 'Retry this original input', acpPromptNotSent: true, interrupted: true,
+      attachments: [image], markdownStoreFiles: ['/skills/inspect.md'], createdAt: '2026-01-01T00:00:00Z' }
+    const chat: CppChat = { id: 'chat-1', title: 'Codex', providerId: 'codex-cli', createdAt: '', updatedAt: '',
+      acpSession: { providerId: 'codex-cli', sessionId: 'native-original', running: true, processing: false, lifecycleState: 'ready',
+        unsentMessageIndices: [23], recoverableUnsentMessageIndices: [23], queueHeld: false, queuedPrompts: [] } }
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, providerId: 'codex-cli', importedReadOnly: readOnly })),
+      messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, [row], true, 23) }, historyStartIndexBySessionId: { 'chat-1': 23 },
+      acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat(chat, state.acpBindingBySessionId['chat-1']) }, resumeQueuedAcpPrompts: resume }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelectorAll('[data-unsent-message-index="23"]')).toHaveLength(1)
+      act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat,
+        acpSession: { ...chat.acpSession, queueHeld: true, recoverableUnsentMessageIndices: [], queuedPrompts: [{ id: 'fresh-held', revision: 2,
+          existingUserMessageIndex: 23, text: row.content, uamAgentId: 'read-only', attachments: [image], markdownStoreFiles: row.markdownStoreFiles,
+          goalMode: false, goalId: '' }] } }, state.acpBindingBySessionId['chat-1']) } })))
+      expect(host.querySelectorAll('[data-unsent-message-index="23"]')).toHaveLength(0)
+      expect(host.querySelector('article[aria-label="You"]')).toBeNull()
+      const queue = host.querySelector('[aria-label="Queued prompt"]')!
+      expect(queue.textContent).toContain(row.content)
+      expect(host.textContent?.split(row.content)).toHaveLength(2)
+      expect(queue.textContent).toContain('photo.png')
+      expect(queue.textContent).toContain('inspect.md')
+      expect(useAppStore.getState().messages['chat-1'][0].nativeMessageIndex).toBe(23)
+      expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts?.[0].uamAgentId).toBe('read-only')
+      expect(resume).not.toHaveBeenCalled()
+      const button = Array.from(queue.querySelectorAll<HTMLButtonElement>('button')).find((candidate) => candidate.textContent === 'Resume queue')!
+      expect(button.disabled).toBe(readOnly)
+      await act(async () => button.click())
+      if (readOnly) expect(resume).not.toHaveBeenCalled()
+      else expect(resume).toHaveBeenCalledWith('chat-1', [{ id: 'fresh-held', revision: 2 }])
+      if (!readOnly) {
+        // An accepted Resume keeps the same raw reference while asynchronous restart is pending.
+        act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], queueHeld: false, running: false, lifecycleState: 'starting',
+        } } })))
+        expect(host.querySelectorAll('[data-unsent-message-index="23"]')).toHaveLength(0)
+        expect(host.querySelectorAll('[aria-label="Queued prompt"]')).toHaveLength(1)
+        expect(host.textContent?.split(row.content)).toHaveLength(2)
+        expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts?.[0]).toMatchObject({
+          id: 'fresh-held', revision: 2, existingUserMessageIndex: 23,
+        })
+        expect(useAppStore.getState().messages['chat-1'][0].acpPromptNotSent).toBe(true)
+      }
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ resumeQueuedAcpPrompts: previous.resumeQueuedAcpPrompts }) }
+  })
+
+  it('keeps pending direct admission separate from the future queue and restores one Unsent row on failure', () => {
+    const row = { role: 'user' as const, content: 'Direct request', acpPromptNotSent: true, interrupted: true,
+      createdAt: '2026-01-01T00:00:00Z' }
+    const pending = { id: 'direct-receipt', revision: 1, existingUserMessageIndex: 5, text: row.content,
+      uamAgentId: 'build', attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '' }
+    const initial: CppChat = { id: 'chat-1', title: 'Codex', providerId: 'codex-cli', createdAt: '', updatedAt: '',
+      acpSession: { providerId: 'codex-cli', running: false, processing: false, lifecycleState: 'starting',
+        unsentMessageIndices: [], recoverableUnsentMessageIndices: [], queueHeld: false,
+        queuedPrompts: [], pendingDirectPrompts: [pending] } }
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, providerId: 'codex-cli' })),
+      messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, [row], true, 5) },
+      historyStartIndexBySessionId: { 'chat-1': 5 },
+      acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...initial, acpSession: sanitizeCppAcpSession(initial.acpSession) }, state.acpBindingBySessionId['chat-1']) },
+    }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelector('[aria-label="Queued prompt"]')).toBeNull()
+      expect(host.querySelector('[data-message-index="5"]')).not.toBeNull()
+      expect(host.textContent?.split(row.content)).toHaveLength(2)
+      expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.disabled).toBe(true)
+      act(() => useAppStore.setState({ messages: { 'chat-1': [] } }))
+      expect(host.textContent?.split(row.content)).toHaveLength(2)
+      expect(host.textContent).toContain('Sending')
+      expect(host.querySelector('[data-queue-id]')).toBeNull()
+      expect(host.textContent).not.toContain('Queue held')
+      expect(host.querySelector('[aria-label="Retry message"]')).toBeNull()
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')?.disabled).toBe(true)
+      act(() => useAppStore.setState((state) => ({ messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, [row], true, 5) },
+        acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...initial,
+        acpSession: { ...initial.acpSession, lifecycleState: 'error', queueHeld: true,
+          pendingDirectPrompts: [], unsentMessageIndices: [5], recoverableUnsentMessageIndices: [5] },
+      }, state.acpBindingBySessionId['chat-1']) } })))
+      expect(host.querySelectorAll('[data-unsent-message-index="5"]')).toHaveLength(1)
+      expect(host.querySelector('[data-queue-id]')).toBeNull()
+      expect(host.textContent).not.toContain('Queue held')
+      expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(false)
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')?.disabled).toBe(false)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('preserves an unmaterialized cold direct receipt with identity-guarded Delete and disabled Retry', async () => {
+    const previousRemove = useAppStore.getState().removeQueuedAcpPrompt
+    const remove = vi.fn(async () => true)
+    const chat: CppChat = { id: 'chat-1', title: 'Codex', providerId: 'codex-cli', createdAt: '', updatedAt: '',
+      acpSession: { providerId: 'codex-cli', running: false, processing: false, lifecycleState: 'stopped',
+        queueHeld: false, queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [{
+          id: 'cold-direct', revision: 3, text: 'Preserve this direct request', uamAgentId: 'build',
+          attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '',
+        }] } }
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, providerId: 'codex-cli' })),
+      messages: { 'chat-1': [] }, removeQueuedAcpPrompt: remove,
+      acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat({ ...chat,
+        acpSession: sanitizeCppAcpSession(chat.acpSession) }, state.acpBindingBySessionId['chat-1']) } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent?.split('Preserve this direct request')).toHaveLength(2)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).not.toBeNull()
+      expect(host.querySelector('[data-queue-id]')).toBeNull()
+      expect(host.textContent).not.toContain('Queue held')
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(true)
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Select provider and model"]')?.disabled).toBe(true)
+      const removeButton = host.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')!
+      expect(removeButton.disabled).toBe(false)
+      await act(async () => removeButton.click())
+      expect(remove).toHaveBeenCalledWith('chat-1', 0, { id: 'cold-direct', revision: 3 })
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ removeQueuedAcpPrompt: previousRemove }) }
+  })
+
+  it('can delete a stopped cold direct receipt while preserving a held future queue', async () => {
+    const previousRemove = useAppStore.getState().removeQueuedAcpPrompt
+    const remove = vi.fn(async () => true)
+    const future = { id: 'real-future', revision: 2, text: 'Future request', uamAgentId: 'build',
+      attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '' }
+    const chat: CppChat = { id: 'chat-1', title: 'Codex', providerId: 'codex-cli', createdAt: '', updatedAt: '',
+      acpSession: { providerId: 'codex-cli', running: false, processing: false, lifecycleState: 'stopped',
+        queueHeld: true, queuedPrompts: [future], pendingDirectPrompts: [], unsentDirectPrompts: [{
+          id: 'cold-direct', revision: 3, text: 'Failed direct request', uamAgentId: 'build',
+          attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '',
+        }] } }
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, providerId: 'codex-cli' })),
+      messages: { 'chat-1': [] }, removeQueuedAcpPrompt: remove,
+      acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat(chat, state.acpBindingBySessionId['chat-1']) } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const receipt = host.querySelector('[data-unsent-receipt-id="cold-direct"]')!
+      const removeButton = receipt.querySelector<HTMLButtonElement>('[aria-label="Remove unsent prompt"]')!
+      expect(removeButton.disabled).toBe(false)
+      expect(receipt.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(true)
+      expect(host.querySelector('[data-queue-id="real-future"]')?.textContent).toContain('Future request')
+      await act(async () => removeButton.click())
+      expect(remove).toHaveBeenCalledWith('chat-1', 0, { id: 'cold-direct', revision: 3 })
+      expect(useAppStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([future])
+      expect(host.querySelector('[data-queue-id="real-future"]')).not.toBeNull()
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ removeQueuedAcpPrompt: previousRemove }) }
+  })
+
+  it('does not hide distinct same-text rows or substantive output behind a pending direct reference', () => {
+    const rows = reconcileCppMessages('chat-1', undefined, [
+      { role: 'user', content: 'Continue', acpPromptNotSent: true, interrupted: true, createdAt: '' },
+      { role: 'user', content: 'Continue', acpPromptNotSent: true, interrupted: true, createdAt: '' },
+      { role: 'assistant', content: 'Actual response', createdAt: '' },
+    ], true, 4)
+    const reference = { id: 'direct-receipt', revision: 1, existingUserMessageIndex: 5, text: 'Continue',
+      uamAgentId: 'build', attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '' }
+    const projection = projectUnsentPrompts(rows, 4, [4], [4], [], [reference])
+    expect(projection.prompts.map((prompt) => prompt.messageIndex)).toEqual([4])
+    expect(projection.hiddenIndices.has(1)).toBe(false)
+    expect(projection.hiddenIndices.has(2)).toBe(false)
+  })
+
+  it('preserves a stale receipt with different captured skills as a distinct recovery intent', () => {
+    const content = 'Continue'
+    const chat: CppChat = { id: 'chat-1', title: 'Codex', providerId: 'codex-cli', createdAt: '', updatedAt: '',
+      acpSession: { providerId: 'codex-cli', running: false, processing: false, lifecycleState: 'stopped',
+        unsentMessageIndices: [5], recoverableUnsentMessageIndices: [], queuedPrompts: [], pendingDirectPrompts: [],
+        unsentDirectPrompts: [{ id: 'stale-direct', revision: 1, existingUserMessageIndex: 5, text: content,
+          uamAgentId: 'build', attachments: [], markdownStoreFiles: ['/skills/old.md'], goalMode: false, goalId: '' }] } }
+    useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => ({ ...session, providerId: 'codex-cli' })),
+      historyStartIndexBySessionId: { 'chat-1': 5 },
+      messages: { 'chat-1': reconcileCppMessages('chat-1', undefined, [{ role: 'user', content,
+        acpPromptNotSent: true, interrupted: true, markdownStoreFiles: ['/skills/new.md'], createdAt: '' }], true, 5) },
+      acpBindingBySessionId: { 'chat-1': acpBindingFromCppChat(chat, state.acpBindingBySessionId['chat-1']) } }))
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.querySelectorAll('[data-unsent-message-index="5"]')).toHaveLength(1)
+      expect(host.querySelector('[data-unsent-receipt-id="stale-direct"]')).not.toBeNull()
+      expect(host.textContent).toContain('new.md')
+      expect(host.textContent).toContain('old.md')
+      expect(host.querySelector('[data-queue-id]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each(['index', 'attachment', 'skill', 'unheld', 'prepared'] as const)('keeps a separate legacy recovery input when a real queue reference has mismatched %s', (mismatch) => {
+    const image = { id: 'image', name: 'photo.png', type: 'file', mimeType: 'image/png', size: 4, path: '/tmp/photo.png' }
+    const messages = reconcileCppMessages('chat-1', undefined, [{ role: 'user', content: 'Original', acpPromptNotSent: true,
+      markdownStoreFiles: ['/skills/inspect.md'], attachments: [image], createdAt: '' }], true, 23)
+    const queued = { id: 'real-held', revision: 1, existingUserMessageIndex: mismatch === 'index' ? 24 : 23,
+      prepared: mismatch === 'prepared', text: 'Original', uamAgentId: 'read-only', attachments: mismatch === 'attachment' ? [] : [image],
+      markdownStoreFiles: mismatch === 'skill' ? ['/skills/changed.md'] : ['/skills/inspect.md'], goalMode: false, goalId: '' }
+    const projection = projectUnsentPrompts(messages, 23, [23], [], mismatch === 'unheld' ? [] : [queued])
+    expect(projection.prompts).toHaveLength(1)
+    expect(projection.prompts[0].messageIndex).toBe(23)
+    expect(projection.hiddenIndices.has(0)).toBe(true)
   })
 
   it('shows one combined queued prompt in a constrained composer panel', () => {
@@ -6277,7 +6835,7 @@ describe('ChatView', () => {
     })
 
     const form = host.querySelector('form')
-      expect(form?.textContent).toContain('Gemini ACP:')
+      expect(form?.textContent).toContain('Universal Agent Manager · Gemini ACP:')
       expect(form?.textContent).not.toContain('OpenCode ACP:')
       expect(form?.textContent).toContain('Internal ACP failure')
       expect(form?.textContent).not.toContain('Diagnostics')
@@ -6291,6 +6849,7 @@ describe('ChatView', () => {
         await Promise.resolve()
       })
       expect(writeText).toHaveBeenCalled()
+      expect(writeText.mock.calls[0][0]).toContain('Universal Agent Manager · Gemini ACP error')
       expect(writeText.mock.calls[0][0]).toContain('Internal ACP failure')
       expect(writeText.mock.calls[0][0]).toContain('stderr stack trace')
       expect(writeText.mock.calls[0][0]).toContain('Exit code: 137')

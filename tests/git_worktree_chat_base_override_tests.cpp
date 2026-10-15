@@ -92,8 +92,17 @@ UAM_TEST(GitChatBaseOverrideRefusesBeforeAnyOwnedCreationIntent)
 		if (variant == 2 || variant == 4 || variant == 6 || variant >= 7)
 		{
 			std::string error;
-			UAM_ASSERT(!uam::GitWorktreeService().PrepareForFirstLaunch(fixture.app, chat, &error));
-			UAM_ASSERT(!error.empty());
+			if (variant == 4)
+			{
+				// Remote creation is owned by the asynchronous admission below; the local helper skips it.
+				UAM_ASSERT(uam::GitWorktreeService().PrepareForFirstLaunch(fixture.app, chat, &error));
+				UAM_ASSERT(error.empty());
+			}
+			else
+			{
+				UAM_ASSERT(!uam::GitWorktreeService().PrepareForFirstLaunch(fixture.app, chat, &error));
+				UAM_ASSERT(!error.empty());
+			}
 			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Failed);
 			UAM_ASSERT(fixture.app.worktree_launch_preparations.empty());
 			UAM_ASSERT_EQ(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);

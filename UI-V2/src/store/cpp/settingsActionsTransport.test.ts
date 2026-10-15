@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../useAppStore'
 import { sanitizeCppAppState, sanitizeVcsStorageSettings } from './sanitizers'
 
@@ -11,6 +11,50 @@ describe('native settings data actions', () => {
     useAppStore.setState({ voiceInputMode: 'server', voiceInputServerModel: 'fixture-model', providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'lab', enabled: false }], gitAutoWorktree: false, worktreeRetentionDays: 30, backupLogRetentionDays: 0, httpCacheClearIntervalDays: 7 })
     useAppStore.getState().loadFromCef(sanitizeCppAppState({ folders: [], chats: [], providers: [], settings: { theme: 'focus' } })!)
     expect(useAppStore.getState()).toMatchObject({ voiceInputMode: 'server', voiceInputServerModel: 'fixture-model', providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'lab', enabled: false }], gitAutoWorktree: false, worktreeRetentionDays: 30, backupLogRetentionDays: 0, httpCacheClearIntervalDays: 7 })
+  })
+
+  it('preserves independent snapshot booleans and rejects nonboolean values', () => {
+    expect(sanitizeVcsStorageSettings({ gitSnapshotSvn: false, gitSnapshotPlainFolders: true })).toEqual({ gitSnapshotSvn: false, gitSnapshotPlainFolders: true })
+    expect(sanitizeVcsStorageSettings({ gitSnapshotSvn: 'false', gitSnapshotPlainFolders: 0 })).toEqual({})
+  })
+
+  it('hydrates snapshot policy without resetting omitted values and sends explicit false atomically', async () => {
+    useAppStore.setState({ gitSnapshotSvn: false, gitSnapshotPlainFolders: true })
+    useAppStore.getState().loadFromCef(sanitizeCppAppState({ folders: [], chats: [], providers: [], settings: { gitSnapshotPlainFolders: false } })!)
+    expect(useAppStore.getState()).toMatchObject({ gitSnapshotSvn: false, gitSnapshotPlainFolders: false })
+    const requests: Array<{ action: string; payload: unknown }> = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+    await expect(useAppStore.getState().setVcsSettings({ gitEnabled: true, svnEnabled: true, gitSnapshotSvn: true, gitSnapshotPlainFolders: false })).resolves.toBe(true)
+    expect(requests.map(({ action, payload }) => ({ action, payload }))).toEqual([{ action: 'setVcsSettings', payload: { gitEnabled: true, svnEnabled: true, gitSnapshotSvn: true, gitSnapshotPlainFolders: false } }])
+    await expect(useAppStore.getState().setVcsSettings({ gitEnabled: true, svnEnabled: true, gitSnapshotSvn: 'false' as unknown as boolean, gitSnapshotPlainFolders: true })).resolves.toBe(false)
+    expect(requests).toHaveLength(1)
+    expect(useAppStore.getState()).toMatchObject({ gitSnapshotSvn: true, gitSnapshotPlainFolders: false })
+  })
+
+  it('preserves omitted snapshot policy in state patches and adopts explicit false', async () => {
+    const previousPush = window.uamPush
+    vi.resetModules()
+    window.cefQuery = ({ onSuccess }) => onSuccess('{}')
+    try {
+      const { useAppStore: cefStore } = await import('../useAppStore')
+      cefStore.setState({ lastAppliedStateRevision: 1, gitSnapshotSvn: true, gitSnapshotPlainFolders: false })
+      expect(window.uamPush).toBeTypeOf('function')
+      window.uamPush!({ type: 'statePatch', data: { stateRevision: 2, settings: { gitSnapshotSvn: false } } })
+      expect(cefStore.getState()).toMatchObject({ lastAppliedStateRevision: 2, gitSnapshotSvn: false, gitSnapshotPlainFolders: false })
+      window.uamPush!({ type: 'statePatch', data: { stateRevision: 3, settings: { gitEnabled: true } } })
+      expect(cefStore.getState()).toMatchObject({ lastAppliedStateRevision: 3, gitSnapshotSvn: false, gitSnapshotPlainFolders: false })
+    } finally {
+      window.uamPush = previousPush
+      vi.resetModules()
+    }
+  })
+
+  it('rolls both snapshot policies back after failed native save', async () => {
+    const previous = { gitSnapshotSvn: true, gitSnapshotPlainFolders: false }
+    useAppStore.setState(previous)
+    window.cefQuery = ({ onFailure }) => onFailure(500, 'Private save failure')
+    await expect(useAppStore.getState().setVcsSettings({ gitEnabled: true, svnEnabled: true, gitSnapshotSvn: false, gitSnapshotPlainFolders: true })).resolves.toBe(false)
+    expect(useAppStore.getState()).toMatchObject(previous)
   })
 
   it('validates native VCS and storage integer boundaries without coercion', () => {

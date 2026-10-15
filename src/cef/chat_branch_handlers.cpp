@@ -1,3 +1,4 @@
+#include "app/worktree_launch_preparation_service.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
@@ -35,7 +36,7 @@ namespace
 
 	bool BranchRuntimeSettled(const uam::AppState& app, const std::string& chat_id)
 	{
-		if (uam::AcpStopInProgress(app, chat_id) || app.worktree_launch_preparations.contains(chat_id) ||
+		if (uam::AcpStopInProgress(app, chat_id) || uam::IsWorktreeLaunchPreparationPending(app, chat_id) ||
 		    app.git_port_requests.contains(chat_id) || app.pending_chat_save_at_by_chat_id.contains(chat_id) ||
 		    app.pending_chat_save_tasks.contains(chat_id)) return false;
 		for (const std::unique_ptr<uam::AcpSessionState>& session : app.acp_sessions)

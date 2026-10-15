@@ -35,6 +35,11 @@ bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_
 bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id, const std::string& blocked_reason);
 bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app);
 bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+/// <summary>Raw authored indices excluded from delivered history only when their own interval has no output.</summary>
+std::vector<int> KnownUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
+/// <summary>Latest legacy draft authorized for explicit fresh-session retry without replaying any earlier draft.</summary>
+std::vector<int> RecoverableUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
+bool DiscardUnsentAcpMessage(AppState& app, const std::string& chat_id, int message_index, const std::string& expected_messages_digest, std::string* error_out = nullptr);
 bool RetryFailedAcpMessage(AppState& app, const std::string& chat_id, int message_index, std::string* error_out = nullptr);
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSession& chat);
@@ -78,6 +83,8 @@ bool ResolveAcpUserInput(AppState& app,
 	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 	std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 	bool FlushPendingChatSaves(AppState& app, bool force = false);
+	/// <summary>After normal hydration, settle only proven stopped direct receipts without replay.</summary>
+	bool SettleStoppedDirectAcpAdmissions(AppState& app, ChatSession& chat);
 	struct WorkspaceChatSaveTicket;
 	enum class WorkspaceChatSaveRevocation { OwnedRevoked, ForeignNewer, NotOwned };
 	/// <summary>Schedules a full workspace save with an independently owned acknowledgement.</summary>

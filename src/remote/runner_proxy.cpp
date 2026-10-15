@@ -92,6 +92,7 @@ namespace uam::remote
 			std::string context_provider_id;
 			std::filesystem::path context_directory;
 			bool attach_only = false;
+			bool transient_process = false;
 			std::string delivery_token;
 			std::uintmax_t delivered_stdout_cursor = 0;
 			std::uintmax_t delivered_stderr_cursor = 0;
@@ -167,6 +168,7 @@ namespace uam::remote
 				result.context_provider_id = spec.value("contextProviderId", "");
 				result.context_directory = uam::paths::PathFromUtf8(spec.value("contextDirectory", ""));
 				result.attach_only = spec.value("attachOnly", false);
+				result.transient_process = spec.value("transientProcess", false);
 				result.delivery_token = spec.value("deliveryToken", "");
 				result.delivered_stdout_cursor = spec.value(
 				    "deliveredStdoutCursor", static_cast<std::uintmax_t>(0));
@@ -334,13 +336,14 @@ namespace uam::remote
 	    bool attach_only, const std::string& delivery_token,
 	    std::uintmax_t delivered_stdout_cursor,
 	    std::uintmax_t delivered_stderr_cursor, const std::string& context_provider_id,
-	    const std::string& context_directory, const std::string& configuration_provider, const std::string& configuration_directory, const nlohmann::json& session_mcp_servers)
+	    const std::string& context_directory, const std::string& configuration_provider, const std::string& configuration_directory, const nlohmann::json& session_mcp_servers, bool transient_process)
 	{
 		nlohmann::json environment_json = nlohmann::json::object();
 		for (const auto& [name, value] : environment) environment_json[name] = value;
 		return uam::base64::Encode(nlohmann::json{
 		    {"sessionId", session_id}, {"cwd", uam::paths::Utf8PathString(working_directory)}, {"argv", argv},
 		    {"environment", std::move(environment_json)}, {"attachOnly", attach_only},
+		    {"transientProcess", transient_process},
 		    {"deliveryToken", delivery_token},
 		    {"deliveredStdoutCursor", delivered_stdout_cursor},
 		    {"deliveredStderrCursor", delivered_stderr_cursor},
@@ -621,6 +624,11 @@ namespace uam::remote
 			std::cerr << "Remote process specification is missing or invalid.\n";
 			return 2;
 		}
+		if (spec->transient_process && protocol_version < 3)
+		{
+			std::cerr << "Transient remote processes require runner protocol 3.\n";
+			return 2;
+		}
 
 		auto& process_service = ProxyProcessService();
 		RunnerClient client(process_service,
@@ -648,6 +656,7 @@ namespace uam::remote
 		}
 		if (protocol_version >= 3)
 			client.SetProcessControlToken(session_id, spec->delivery_token);
+		bool configuration_rejected = false;
 		if (spec->attach_only)
 		{
 			ProcessPollResult persisted;
@@ -668,9 +677,15 @@ namespace uam::remote
 		}
 		else if (!client.StartProcess(session_id, spec->working_directory, spec->argv,
 		                              spec->environment, &error, false,
-		                              spec->delivery_token, true, spec->configuration_provider, configuration_directory, spec->session_mcp_servers))
+		                              // Empty selects a lease while retaining the token seeded above.
+		                              spec->transient_process ? std::string{} : spec->delivery_token, true, spec->configuration_provider, configuration_directory, spec->session_mcp_servers, &configuration_rejected))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
+			if (configuration_rejected)
+			{
+				std::cerr << kRemoteStartupFailurePrefix << spec->delivery_token << " configuration\n";
+				return kRemoteConfigurationStartupFailureExitCode;
+			}
 			return 70;
 		}
 		RunnerClient poll_client(process_service,

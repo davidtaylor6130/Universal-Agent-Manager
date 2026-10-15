@@ -159,7 +159,7 @@ void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& up
 // Message sync helpers
 Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session);
 bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
-std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
+std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity = {});
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
 bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call);
 bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
@@ -194,7 +194,7 @@ Message* CurrentAssistantMessage(ChatSession& chat, const AcpSessionState& sessi
 const Message* CurrentAssistantMessage(const ChatSession& chat, const AcpSessionState& session);
 bool SyncCurrentAssistantMessageBlocksFromTurnEvents(ChatSession& chat, AcpSessionState& session);
 void AppendContextCompactionEvent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& summary, const std::string& identity = {}, int64_t tokens_before = -1, int64_t tokens_after = -1);
-void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk);
+void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk, const std::string& identity = {});
 bool AppendThoughtTurnEvent(AcpSessionState& session, const std::string& chunk);
 bool HasTurnToolEvent(const AcpSessionState& session, const std::string& tool_call_id);
 void AppendToolTurnEventIfNeeded(AcpSessionState& session, const std::string& tool_call_id);
@@ -310,11 +310,17 @@ bool WriteRemoteAcpRequest(AcpSessionState& session, const AcpRemotePendingReque
 bool StopAcpProcessForRestart(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool FailAcpSessionSetupWrite(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& fallback_message);
 void ReapLocalAcpLaunchTasks(AppState& app);
+/// <summary>Keeps model binding and worker launch ownership on the same effective setup scope.</summary>
+bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
+/// <summary>Reject native permission snapshots on launch paths that cannot enforce them.</summary>
+bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat,
+    const std::string& agent_id, const std::string& snapshot, const std::string& capability,
+    std::string* error_out = nullptr);
 bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpResponseFailureDetails& details);
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
-bool SendStartupModelIfNeeded(AcpSessionState& session, const ChatSession& chat);
+bool SendStartupModelIfNeeded(AcpSessionState& session, ChatSession& chat);
 bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Confirmed remote v3 admission retains legacy and quota compatibility barriers.</summary>
 bool CanDeferRemotePromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);

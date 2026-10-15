@@ -53,6 +53,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
 	constexpr std::string_view kGitEnabledKey = "git_enabled";
 	constexpr std::string_view kGitAutoWorktreeKey = "git_auto_worktree";
+	constexpr std::string_view kGitSnapshotSvnKey = "git_snapshot_svn";
+	constexpr std::string_view kGitSnapshotPlainFoldersKey = "git_snapshot_plain_folders";
 	constexpr std::string_view kGitPortMethodKey = "git_port_method";
 	constexpr std::string_view kGitPullBeforeChatKey = "git_pull_before_chat";
 	constexpr std::string_view kGitDefaultBaseBranchKey = "git_default_base_branch";
@@ -614,6 +616,8 @@ bool SettingsStore::Save(const std::filesystem::path& settings_file, const AppSe
 	WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
 	WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
 	WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
+	WriteBoolSetting(lines, kGitSnapshotSvnKey, normalized.git_snapshot_svn);
+	WriteBoolSetting(lines, kGitSnapshotPlainFoldersKey, normalized.git_snapshot_plain_folders);
 	WriteBoolSetting(lines, kGitPullBeforeChatKey, normalized.git_pull_before_chat);
 	WriteRawSetting(lines, kGitPortMethodKey, normalized.git_port_method == GitPortMethod::Merge ? "merge" : normalized.git_port_method == GitPortMethod::Squash ? "squash" : "patch");
 	WriteEncodedSetting(lines, kGitDefaultBaseBranchKey, normalized.git_default_base_branch);
@@ -780,6 +784,14 @@ SettingsLoadResult SettingsStore::Load(const std::filesystem::path& settings_fil
 		else if (key == kGitAutoWorktreeKey)
 		{
 			settings.git_auto_worktree = uam::parse::BoolOr(value, settings.git_auto_worktree);
+		}
+		else if (key == kGitSnapshotSvnKey)
+		{
+			settings.git_snapshot_svn = uam::parse::BoolOr(value, settings.git_snapshot_svn);
+		}
+		else if (key == kGitSnapshotPlainFoldersKey)
+		{
+			settings.git_snapshot_plain_folders = uam::parse::BoolOr(value, settings.git_snapshot_plain_folders);
 		}
 		else if (key == kGitPortMethodKey)
 		{

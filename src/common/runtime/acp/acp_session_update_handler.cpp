@@ -4,6 +4,8 @@
 #include "cef/cef_push.h"
 #include "app/provider_resolution_service.h"
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_stream_types.h"
@@ -110,13 +112,15 @@ namespace
 
 	/// <summary>Normalizes ACP compaction into the same saved timeline blocks as Codex.</summary>
 	bool HandleCompactionUpdate(AppState& app, AcpSessionState& session, ChatSession& chat,
-	                            const nlohmann::json& update, const std::string& update_type)
+	                            const nlohmann::json& params, const nlohmann::json& update, const std::string& update_type)
 	{
 		const bool chunk = update_type == "compaction_summary_chunk";
 		const bool standard = chunk || update_type == "compaction_update";
 		const nlohmann::json metadata = JsonObjectValue(update, "_meta");
 		const nlohmann::json* marker = uam::nlohmann_json::FindField(metadata, "opencode/compaction");
 		if (!standard && (update_type != "session_info_update" || marker == nullptr || !marker->is_object())) return false;
+		const nlohmann::json* native_session = uam::nlohmann_json::FindField(params, "sessionId");
+		if (native_session != nullptr && (!native_session->is_string() || native_session->get_ref<const std::string&>() != session.session_id)) return true;
 		// Child compaction does not compact the parent conversation.
 		if (metadata.contains("opencode/child-session")) return true;
 		const nlohmann::json& details = standard ? update : *marker;
@@ -124,19 +128,34 @@ namespace
 		if (id.empty()) return true;
 		const std::string identity = "acp-compaction:" + id;
 		const std::string status = JsonDiagnosticStringValue(details, "status");
-		if (!chunk && status.empty()) return true;
+		if (!chunk && status != "started" && status != "in_progress" && status != "completed" && status != "failed" && status != "cancelled") return true;
 		if (session.ignore_session_updates_until_ready)
 		{
 			if (!chunk && status == "completed")
 				ApplyReplayedCompaction(app, session, chat, id, standard ? uam::nlohmann_json::FindField(update, "summary") : nullptr);
 			return true;
 		}
-		if (!uam::AcpSessionHasActiveTurn(session)) return true;
 		auto event = std::ranges::find_if(session.turn_events, [&](const AcpTurnEventState& candidate)
 		{
 			return (candidate.type == "context_compaction" || candidate.type == "context_compaction_pending") &&
 			       candidate.request_id_json == identity;
 		});
+		const bool active = session.processing || session.prompt_request_id != 0 || uam::AcpSessionIsWaitingForInput(session);
+		const int owner = session.turn_assistant_message_index;
+		// Settlement retains this turn's events and assistant; a new turn or process resets them.
+		const bool settled_owner = !active && native_session != nullptr && event != session.turn_events.end() && session.running && session.session_ready &&
+		    !session.last_process_id.empty() && !session.session_id.empty() && session.chat_id == chat.id &&
+		    session.turn_serial > 0 && session.last_settled_turn_serial == session.turn_serial && session.last_turn_outcome == "completed" &&
+		    owner >= 0 && owner < static_cast<int>(chat.messages.size()) && chat.messages[static_cast<std::size_t>(owner)].role == MessageRole::Assistant &&
+		    MessageBlocksEqual(chat.messages[static_cast<std::size_t>(owner)].blocks, MessageBlocksFromTurnEvents(session));
+		if (!active && (!settled_owner || (!chunk && status != "completed" && status != "failed" && status != "cancelled"))) return true;
+		const auto sync_live_state = [&]
+		{
+			session.context_compaction_in_progress = active && std::ranges::any_of(session.turn_events, [](const AcpTurnEventState& pending)
+			{
+				return pending.type == "context_compaction_pending";
+			});
+		};
 		if (chunk)
 		{
 			if (event != session.turn_events.end() && event->type == "context_compaction_pending")
@@ -149,10 +168,12 @@ namespace
 				uam::diagnostics::Write("[ACP] Compaction failed for " + session.provider_id + ": " +
 				    JsonDiagnosticStringValue(details, "error"));
 			if (event != session.turn_events.end() && event->type == "context_compaction_pending") session.turn_events.erase(event);
+			sync_live_state();
 			return true;
 		}
 		if (event == session.turn_events.end())
 		{
+			if (status != "started" && status != "in_progress") return true;
 			// Reserve the start position without displaying a successful boundary prematurely.
 			session.turn_events.push_back({.type = "context_compaction_pending", .request_id_json = identity});
 			event = std::prev(session.turn_events.end());
@@ -161,10 +182,16 @@ namespace
 		if (status == "completed")
 		{
 			event->type = "context_compaction";
-			EnsureAssistantMessage(chat, session);
-			SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
+			if (active)
+			{
+				EnsureAssistantMessage(chat, session);
+				SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
+			}
+			else if (SyncMessageBlocksFromTurnEvents(chat.messages[static_cast<std::size_t>(owner)], session))
+				chat.updated_at = AcpTimestampNow();
 			ScheduleChatSave(app, chat, 0.0);
 		}
+		sync_live_state();
 		return true;
 	}
 }
@@ -260,7 +287,7 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 		}
 		return;
 	}
-	if (HandleCompactionUpdate(app, session, chat, update, update_type)) return;
+	if (HandleCompactionUpdate(app, session, chat, params, update, update_type)) return;
 	if (session.ignore_session_updates_until_ready)
 	{
 		(void)TryConsumeLoadHistoryReplayUpdate(session, update, update_type, content_text, live_text);
@@ -301,7 +328,21 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 			return;
 		}
 
-		const std::string appended = AppendAssistantChunk(chat, session, live_text);
+		std::string identity;
+		const nlohmann::json* native_session = nlohmann_json::FindField(params, "sessionId");
+		if (provider_ids::NormalizeCliProviderAlias(session.provider_id) == provider_ids::kOpenCodeCli &&
+		    native_session && native_session->is_string() && !session.session_id.empty() &&
+		    native_session->get_ref<const std::string&>() == session.session_id)
+		{
+			const nlohmann::json* message_id = nlohmann_json::FindField(update, "messageId");
+			if (message_id && message_id->is_string())
+			{
+				const std::string& id = message_id->get_ref<const std::string&>();
+				if (id.size() <= 512 && execution_hosts::IsPortableId(id) && !id.starts_with('-'))
+					identity = "opencode-message:" + id;
+			}
+		}
+		const std::string appended = AppendAssistantChunk(chat, session, live_text, identity);
 		if (browser && !appended.empty())
 		{
 			uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);

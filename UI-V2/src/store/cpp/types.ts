@@ -48,6 +48,7 @@ export interface CppMessage {
 	interrupted?: boolean
   stopReason?: string
 	acpPromptNotSent?: boolean
+	acpPromptDiscarded?: boolean
 	prioritySteer?: boolean
 	continuesTurn?: boolean
   checkpointSha?: string
@@ -269,7 +270,7 @@ export interface AcpConfigOption {
 export type AcpTurnEvent =
   | { type: 'assistant_text'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
-  | { type: 'context_compaction'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
+  | { type: 'context_compaction' | 'context_compaction_interrupted'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
   | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }
   | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
   | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
@@ -329,6 +330,7 @@ export interface AcpQueuedPrompt {
   id?: string
   revision?: number
   prepared?: boolean
+  existingUserMessageIndex?: number
   text: string
   uamAgentId: string
   markdownStoreFiles: string[]
@@ -451,7 +453,11 @@ export interface CppAcpSession {
   turnAssistantMessageIndex?: number
   turnSerial?: number
   queueHeld?: boolean
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
+  pendingDirectPrompts?: AcpQueuedPrompt[]
+  unsentDirectPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -643,6 +649,8 @@ export interface VoiceInputSettings {
 
 export interface VcsStorageSettings {
   gitAutoWorktree: boolean
+  gitSnapshotSvn: boolean
+  gitSnapshotPlainFolders: boolean
   gitDefaultBaseBranch: string
   gitPullBeforeChat: boolean
   svnUpdateBeforeChat: boolean
@@ -808,6 +816,8 @@ export interface OpenWorkspaceEditorResponse {
 }
 
 export interface ChatMessagesResponse {
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
   userMessageIndices?: number[] | null
   chatId?: string
   messagesDigest?: string
@@ -941,7 +951,11 @@ export interface AcpBinding {
   turnAssistantMessageIndex: number
   turnSerial: number
   queueHeld?: boolean
+  unsentMessageIndices?: number[]
+  recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
+  pendingDirectPrompts?: AcpQueuedPrompt[]
+  unsentDirectPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number

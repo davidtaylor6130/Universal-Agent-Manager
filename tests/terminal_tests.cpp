@@ -723,6 +723,7 @@ UAM_TEST(CliTerminalRoutesRemoteChatsThroughSshWithoutLaunchingTheProviderLocall
 	host.ssh_alias = "home-lab";
 	host.runner_status = "ready";
 	host.runner_version = "4.5.7";
+	host.runner_protocol_version = 3;
 	host.platform = "linux";
 	host.architecture = "arm64";
 	app.settings.execution_hosts = {host};

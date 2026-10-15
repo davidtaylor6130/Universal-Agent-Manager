@@ -15,3 +15,7 @@ CEF accepts bridge messages only from the trusted bundled page and main frame. K
 - Focused checks: `UI-V2/src/store/cpp/`, `UI-V2/src/ipc/companionBridge.test.ts`, `tests/uam_control_transport_tests.cpp`, `tests/state_workspace_snapshot_tests.cpp`.
 
 No stable latency budget is defined for the full bridge. `UI-V2/src/test/interactionBudgets.ts` sets a 250 ms budget for its explicitly covered frontend interactions; do not generalize it to all IPC calls.
+
+## File review presentation
+
+`RepositoryDiffDialog` keeps the fetched patch unchanged for unified view and copying. `UnifiedDiff` omits Git/SVN patch framing before the first split text hunk while preserving rename and permission metadata; metadata-only changes retain their headers. Source gutters use hunk ranges, and new/deleted files leave the opposite side empty. The preamble regressions live in `UnifiedDiff.test.tsx`.

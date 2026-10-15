@@ -889,6 +889,36 @@ describe('working transcript', () => {
 
 
 describe('persisted context compaction', () => {
+  it.each(['saved', 'retained'] as const)('collapses a proven interrupted compaction in %s history without claiming success', async (source) => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const partial = 'The provider received only this part of its compaction summary.'
+    const block = { type: 'context_compaction_interrupted' as const, text: partial, requestId: 'acp-compaction:interrupted-native', tokensBefore: 5000, tokensAfter: 1000 }
+    try {
+      if (source === 'saved') {
+        const message = buildMessageFromCpp('chat', {
+          role: 'assistant', content: partial, createdAt: '2026-10-15T18:08:28Z',
+          blocks: [block], interrupted: true,
+        } as CppMessage, 0)
+        expect(message.blocks?.[0]).toMatchObject(block)
+        await act(async () => root.render(<PersistedMessageContent message={message} workingMode="compact" onSelectTool={vi.fn()} />))
+      } else {
+        await act(async () => root.render(<TurnTimelineContent events={[block]} tools={[]} pendingPermission={null} pendingUserInput={null} onSelectTool={vi.fn()} onResolvePermission={async () => true} onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} workingMode="compact" />))
+      }
+      const details = host.querySelector<HTMLDetailsElement>('details.context-compaction')
+      expect(details).not.toBeNull()
+      expect(details!.open).toBe(false)
+      expect(details!.querySelector('summary')?.textContent).toBe('Context compaction interrupted')
+      expect(details!.textContent).toContain(partial)
+      expect(details!.textContent).not.toContain('reduced')
+      expect(host.querySelector('.conversation-trace__text')).toBeNull()
+    } finally {
+      await act(async () => root.unmount())
+      host.remove()
+    }
+  })
+
   it('hydrates and renders a native compaction marker without summary text', async () => {
     // Native history omits the text field when a compaction has no summary.
     const message = buildMessageFromCpp('chat', {

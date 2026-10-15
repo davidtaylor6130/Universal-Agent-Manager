@@ -110,6 +110,8 @@ namespace uam::settings_frontend_json
 		settings_json["showWorktreePathInSidebar"] = settings.show_worktree_path_in_sidebar;
 		settings_json["gitEnabled"] = settings.git_enabled;
 		settings_json["gitAutoWorktree"] = settings.git_auto_worktree;
+		settings_json["gitSnapshotSvn"] = settings.git_snapshot_svn;
+		settings_json["gitSnapshotPlainFolders"] = settings.git_snapshot_plain_folders;
 		settings_json["gitPullBeforeChat"] = settings.git_pull_before_chat;
 		settings_json["gitPortMethod"] = settings.git_port_method == GitPortMethod::Merge ? "merge" : settings.git_port_method == GitPortMethod::Squash ? "squash" : "patch";
 		settings_json["gitDefaultBaseBranch"] = settings.git_default_base_branch;

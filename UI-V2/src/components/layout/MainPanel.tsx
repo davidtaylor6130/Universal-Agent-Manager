@@ -12,6 +12,7 @@ import type { Session } from '../../types/session'
 import type { Message } from '../../types/message'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
 import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
+import { useCountdownClock } from '../../hooks/useCountdownClock'
 import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
@@ -93,13 +94,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
       timeout: acp?.idleShutdownTimeoutSeconds,
     }
   }))
-  const [runtimeClockMs, setRuntimeClockMs] = useState(Date.now)
-  useEffect(() => {
-    if (!runtimeStopState.visible || runtimeStopState.disabled || !runtimeStopState.deadline) return
-    setRuntimeClockMs(Date.now())
-    const interval = window.setInterval(() => setRuntimeClockMs(Date.now()), 1000)
-    return () => window.clearInterval(interval)
-  }, [runtimeStopState.visible, runtimeStopState.disabled, runtimeStopState.deadline])
+  const runtimeClockMs = useCountdownClock(runtimeStopState.visible && !runtimeStopState.disabled, runtimeStopState.countdownStarts, runtimeStopState.deadline)
   const idleSecondsLeft = runtimeStopState.deadline && runtimeStopState.countdownStarts && runtimeClockMs >= runtimeStopState.countdownStarts
     ? Math.max(0, Math.ceil((runtimeStopState.deadline - runtimeClockMs) / 1000))
     : null

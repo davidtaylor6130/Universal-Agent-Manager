@@ -55,6 +55,8 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
     const readiness = useAppStore((state) => state.cliVersionManager.remoteProviders)
     const save = useAppStore((state) => state.setExecutionRoutingSettings)
     const [draft, setDraft] = useState<RoutingSettings>(() => structuredClone(saved))
+    const [baseline, setBaseline] = useState(saved)
+    const savedRef = useRef(saved)
     const [busy, setBusy] = useState(false)
     const busyRef = useRef(false)
     const [error, setError] = useState('')
@@ -63,7 +65,13 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
     const [repositoryError, setRepositoryError] = useState('')
     const [picking, setPicking] = useState('')
     const matching = saved.repositoryMatching === true
-    const dirty = JSON.stringify(savePayload(draft)) !== JSON.stringify(savePayload(saved))
+    const dirty = JSON.stringify(savePayload(draft)) !== JSON.stringify(savePayload(baseline))
+    const validationError = routingConfigurationError(draft, hosts, folders)
+    useEffect(() => {
+      if (JSON.stringify(savedRef.current) === JSON.stringify(saved)) return
+      savedRef.current = saved
+      if (!busyRef.current) { setBaseline(saved); if (!dirty) setDraft(structuredClone(saved)) }
+    }, [saved])
     useEffect(() => {
       if (!matching) return
       let cancelled = false
@@ -84,7 +92,10 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
     function update(hostId: string, change: (policy: RoutingHostPolicy) => RoutingHostPolicy) {
       setDraft((current) => {
         const policy = current.hosts.find((host) => host.hostId === hostId) ?? { hostId, enabled: false, maxActiveTurns: 1, providers: [], workspaceMappings: [] }
-        return { ...current, hosts: [...current.hosts.filter((host) => host.hostId !== hostId), change(policy)] }
+        const next = change(policy)
+        const implicitDefault = !saved.hosts.some((host) => host.hostId === hostId) && !next.enabled && next.maxActiveTurns === 1 && next.providers.length === 0 && next.workspaceMappings.length === 0
+        const existing = current.hosts.some((host) => host.hostId === hostId)
+        return { ...current, hosts: implicitDefault ? current.hosts.filter((host) => host.hostId !== hostId) : existing ? current.hosts.map((host) => host.hostId === hostId ? next : host) : [...current.hosts, next] }
       })
       setError('')
     }
@@ -95,12 +106,23 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
         entry.connectionIdentity === current.routingConnectionIdentity && entry.providerConfigurationIdentity === current.routingProviderConfigurationIdentity))
     }
     async function submit(next?: () => void) {
-      if (busyRef.current) return
+      if (busyRef.current || !dirty) return
       const validation = routingConfigurationError(draft, hosts, folders)
       if (validation) { setError(validation); return }
+      const beforeSave = useAppStore.getState().executionRouting
       busyRef.current = true; setBusy(true); onBusyChange?.(true); setError('')
-      try { await save(savePayload(draft)); setExit(null); next?.() }
-      catch (failure) { setError(failure instanceof Error ? failure.message : 'Routing settings could not be saved.') }
+      try {
+        await save(savePayload(draft))
+        // Keep the acknowledged confirmation intent while native replaces it with connection identities.
+        savedRef.current = useAppStore.getState().executionRouting
+        setBaseline(draft)
+        setExit(null); next?.()
+      }
+      catch (failure) {
+        const currentSaved = useAppStore.getState().executionRouting
+        if (JSON.stringify(currentSaved) !== JSON.stringify(beforeSave)) setBaseline(currentSaved)
+        setError(failure instanceof Error ? failure.message : 'Routing settings could not be saved.')
+      }
       finally { busyRef.current = false; setBusy(false); onBusyChange?.(false) }
     }
     const sshHosts = hosts.filter((host) => host.transport === 'ssh')
@@ -114,20 +136,23 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
       return { override, automatic }
     }
     function setWorkspaceMapping(hostId: string, source: Folder, next: RoutingWorkspaceMapping | null) {
-      update(hostId, (item) => ({ ...item, workspaceMappings: [...item.workspaceMappings.filter((mapping) => mapping.sourceFolderId !== source.id || mapping.sourceDirectory !== source.directory), ...(next ? [next] : [])] }))
+      update(hostId, (item) => {
+        const index = item.workspaceMappings.findIndex((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)
+        return { ...item, workspaceMappings: next ? index < 0 ? [...item.workspaceMappings, next] : item.workspaceMappings.map((mapping, position) => position === index ? next : mapping) : item.workspaceMappings.filter((_mapping, position) => position !== index) }
+      })
       setPicking('')
     }
-    const errorText = error ? <p role="alert" className="uam-rt-dialog__error">{error}</p> : null
+    const errorText = error || validationError ? <p role="alert" className="uam-rt-dialog__error">{error || validationError}</p> : null
     const footer = variant === 'dialog'
       ? <div className="uam-rt-dialog__foot">
           {errorText}
           <Button variant="ghost" size="md" disabled={busy} onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" loading={busy} onClick={() => void submit(() => onClose?.())}>Save routing</Button>
+          <Button variant="primary" size="md" disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit(() => onClose?.())}>Save routing</Button>
         </div>
       : <div className="flex items-center justify-end gap-2 pt-1">
           {errorText}
-          <Button size="sm" disabled={busy || !dirty} onClick={() => { setDraft(structuredClone(saved)); setError('') }}>Discard</Button>
-          <Button size="sm" variant="primary" disabled={busy || !dirty} loading={busy} onClick={() => void submit()}>Save routing</Button>
+          <Button size="sm" disabled={busy || !dirty} onClick={() => { setDraft(structuredClone(saved)); setBaseline(saved); setError('') }}>Discard</Button>
+          <Button size="sm" variant="primary" disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit()}>Save routing</Button>
         </div>
 
     return <>
@@ -204,7 +229,7 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
                       {localFolders.map((source) => {
                         const id = `routing-map-${host.id}-${source.id}`
                         return <SettingsField key={source.id} label={source.name} htmlFor={id} hint={<span className="uam-rt-alias">{source.directory}</span>}>
-                          <select id={id} className="uam-rv-field w-full" aria-label={`Destination for ${source.name} on ${host.label}`} value={policy?.workspaceMappings.find((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)?.destinationFolderId ?? ''} onChange={(event) => update(host.id, (item) => ({ ...item, workspaceMappings: [...item.workspaceMappings.filter((mapping) => mapping.sourceFolderId !== source.id || mapping.sourceDirectory !== source.directory), ...(event.target.value ? [{ sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: event.target.value }] : [])] }))}>
+                          <select id={id} className="uam-rv-field w-full" aria-label={`Destination for ${source.name} on ${host.label}`} value={policy?.workspaceMappings.find((mapping) => mapping.sourceFolderId === source.id && mapping.sourceDirectory === source.directory)?.destinationFolderId ?? ''} onChange={(event) => setWorkspaceMapping(host.id, source, event.target.value ? { sourceFolderId: source.id, sourceDirectory: source.directory, destinationFolderId: event.target.value } : null)}>
                             <option value="">Don&apos;t route this folder</option>
                             {remoteFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name} · {folder.directory}</option>)}
                           </select>
@@ -217,7 +242,7 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
           })}
       </fieldset>
       {footer}
-      {exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} error={error} onStay={() => setExit(null)}
-        onDiscard={() => { const next = exit; setDraft(structuredClone(saved)); setError(''); setExit(null); next() }} onSave={() => void submit(exit)} />}
+      {exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} saveDisabled={Boolean(validationError)} error={error || validationError} onStay={() => setExit(null)}
+        onDiscard={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setError(''); setExit(null); next() }} onSave={() => void submit(exit)} />}
     </>
   })
