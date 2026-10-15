@@ -469,6 +469,41 @@ describe('ChatView', () => {
     })
   })
 
+  it('keeps the live compaction scene and timer without a fill bar while retaining completed-compaction meters', () => {
+    useAppStore.setState((state) => ({
+      messages: { 'chat-1': [{
+        id: 'previous-compaction', sessionId: 'chat-1', role: 'assistant', content: '',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        blocks: [{ type: 'context_compaction', text: 'Keep the workspace context.', tokensBefore: 1000, tokensAfter: 400 }],
+      }] },
+      acpBindingBySessionId: { 'chat-1': {
+        ...state.acpBindingBySessionId['chat-1'], compacting: true, processing: true,
+        lifecycleState: 'processing', pendingPermission: null, turnEvents: [],
+        turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+        providerUsage: { contextUsage: { usedTokens: 800, windowTokens: 1000, updatedAt: Date.now() }, tokenUsage: null, rateLimits: null },
+      } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const strip = host.querySelector('.chat-status-strip[data-tone="info"]')!
+      expect(strip.getAttribute('data-state')).toBe('open')
+      expect(strip.textContent).toContain('Compacting context')
+      expect(strip.querySelector('.chat-status-strip__scene svg')).not.toBeNull()
+      expect(strip.querySelector('.chat-status-strip__time')?.getAttribute('aria-label')).toMatch(/^for /)
+      expect(strip.querySelector('.conversation-meter')).toBeNull()
+      expect(strip.querySelector('.conversation-status__usage')).toBeNull()
+      const completed = host.querySelector('details.context-compaction')!
+      expect(completed.textContent).toContain('1,000 → 400 tokens')
+      expect(completed.querySelector('.conversation-meter')).not.toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it('retains the observed idle timeout status after native reconciliation', () => {
     useAppStore.setState((state) => ({
       messages: { 'chat-1': [] },

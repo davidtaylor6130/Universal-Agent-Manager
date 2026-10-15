@@ -288,7 +288,7 @@ export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
       requestId: isString(value.requestId) ? value.requestId : undefined,
       tokensBefore: count(value.tokensBefore), tokensAfter: count(value.tokensAfter) }
   }
-  if (type === 'assistant_text' || type === 'thought') {
+  if (type === 'assistant_text' || type === 'thought' || type === 'context_compaction_summary') {
     return {
       type,
       text: stringOr(value.text),

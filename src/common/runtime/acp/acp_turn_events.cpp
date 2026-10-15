@@ -1,6 +1,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/runtime/acp/acp_stream_types.h"
+#include "common/provider/provider_ids.h"
 
 #include <algorithm>
 #include <vector>
@@ -54,6 +55,7 @@ bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<
 bool PersistableTurnEvent(const AcpTurnEventState& event)
 {
 	if (event.type == "context_compaction" || event.type == "context_compaction_interrupted") return true;
+	if (event.type == "context_compaction_summary") return !event.text.empty() && event.request_id_json.starts_with("opencode-message:");
 	if (uam::acp_stream_types::IsTextTurnEventType(event.type))
 	{
 		return !event.text.empty();
@@ -75,7 +77,7 @@ bool PersistableTurnEvent(const AcpTurnEventState& event)
 
 bool CanMergeTurnEventWithLastBlock(const AcpTurnEventState& event, const std::vector<MessageBlock>& blocks)
 {
-	return uam::acp_stream_types::IsTextTurnEventType(event.type) && !blocks.empty() &&
+	return (uam::acp_stream_types::IsTextTurnEventType(event.type) || event.type == "context_compaction_summary") && !blocks.empty() &&
 	    blocks.back().type == event.type && blocks.back().request_id_json == event.request_id_json;
 }
 
@@ -313,7 +315,11 @@ bool SyncCurrentAssistantMessageBlocksFromTurnEvents(ChatSession& chat, AcpSessi
 
 void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk, const std::string& identity)
 {
-	if (!session.turn_events.empty() && session.turn_events.back().type == uam::acp_stream_types::kTurnEventAssistantText &&
+	const bool summary = provider_ids::NormalizeCliProviderAlias(session.provider_id) == provider_ids::kOpenCodeCli && identity.starts_with("opencode-message:") &&
+	    std::ranges::any_of(session.turn_events, [&](const AcpTurnEventState& event)
+	    { return event.type == "context_compaction_summary" && event.request_id_json == identity; });
+	const std::string type = summary ? "context_compaction_summary" : uam::acp_stream_types::kTurnEventAssistantText;
+	if (!session.turn_events.empty() && session.turn_events.back().type == type &&
 	    session.turn_events.back().request_id_json == identity)
 	{
 		session.turn_events.back().text += chunk;
@@ -321,7 +327,7 @@ void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& c
 	}
 
 	AcpTurnEventState event;
-	event.type = uam::acp_stream_types::kTurnEventAssistantText;
+	event.type = type;
 	event.text = chunk;
 	event.request_id_json = identity;
 	session.turn_events.push_back(std::move(event));

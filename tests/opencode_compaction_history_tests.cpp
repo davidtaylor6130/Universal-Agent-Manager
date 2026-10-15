@@ -195,6 +195,32 @@ UAM_TEST(OpenCodeCompactionHistoryRepairsAggregatedOldChatAndCachesSelection)
 	UAM_ASSERT_EQ(fixture.queries.load(), 1);
 }
 
+UAM_TEST(OpenCodeCompactionHistoryRecoversQuarantinedSummaryAfterRestart)
+{
+	for (bool foreign_identity : {false, true})
+	{
+		CompactionHistoryFixture fixture(1);
+		MessageBlock& block = fixture.Chat().messages[1].blocks[1];
+		block.type = "context_compaction_summary";
+		block.request_id_json = foreign_identity ? "opencode-message:foreign" : "opencode-message:msg_summary_0";
+		const auto before = fixture.Chat().messages;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		if (foreign_identity)
+		{
+			UAM_ASSERT(!fixture.Wait(false));
+			UAM_ASSERT_EQ(fixture.Chat().messages, before);
+		}
+		else
+		{
+			UAM_ASSERT(fixture.Wait());
+			UAM_ASSERT_EQ(fixture.Boundaries(), std::size_t{1});
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[1].type, std::string("context_compaction"));
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before[1].content);
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[3], before[1].blocks[3]);
+		}
+	}
+}
+
 UAM_TEST(OpenCodeCompactionHistoryLoadsUnhydratedSelectedChat)
 {
 	CompactionHistoryFixture fixture;

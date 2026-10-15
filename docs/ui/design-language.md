@@ -31,7 +31,7 @@ Patterns:
 - Settings page: page title + one-line muted subtitle; sections = semibold 13–14px heading + muted one-line description; label above field; actions right-aligned; secondary buttons outlined. Sections separated by spacing/hairline, not heavy boxes inside boxes.
 - Lists/rows: identity line (text), detail line (mono, --text-3, for ids/paths), status line (StatusDot + semantic colour); icon-only actions on the right with Tooltip + aria-label.
 - Notices: tinted, calm, plain-language consequence; collapsible/dismissible where long.
-- Sidebar chat tree: each chat appears once, in its workspace (or Unsorted), pinned chats first in their group with a pin icon; "Active" is a filter (header quick toggle and State menu) that narrows the tree to recent or running chats, and active rows keep hover Done and Snooze.
+- Sidebar: keep separate Active Chats and Pinned Chats sections above the workspace tree, including Active Chats collapse, status counts, Clear all, Done and Snooze controls; do not replace these sections with a filter.
 - Changed-file review (end of an assistant turn): a directory browser, not a flat list. Single-child folder chains collapse, folders show aggregated +/- counts, files show a coloured status letter (M/A/D/R) and +/- counts, and the card scrolls inside a 280px max height. Folders beyond the first two levels start collapsed when there are more than 8 files. Keyboard: Up/Down move, Left/Right collapse/expand, Enter opens. Paths are mono. Split text diffs omit patch framing but retain rename and permission metadata; metadata-only changes keep their headers, and unified/copy views retain the original patch.
 - Empty new chat: a short heading and the composer centre in the pane; the first send moves the composer down to its normal position (FLIP, transform only; reduced motion jumps).
 - Transcript turns are quiet: the provider and model show above a turn only when they change from the previous assistant turn (the full time is on hover and for screen readers), day dividers mark day changes, and the "Worked" toggle is hidden for brief turns with no tool or reasoning activity.
@@ -52,6 +52,7 @@ UX rules (enforce):
 ## Notifications
 
 - Chat status notices (compacting, waiting on subagents, stopped/timeout and response interrupted) are inline transcript dividers, never composer-docked or tagged on a message.
+- The compacting divider shows its existing scene, label and elapsed time without a context-fill meter; verified summary text stays hidden during generation and appears only inside the collapsed completed or interrupted summary.
 - Native-confirmed unsent inputs use the existing prompt queue rows outside conversation history; legacy rows retain original message positions, expose explicit new-branch editing and offer Retry only when native recovery guards allow it. A real held entry referencing the same original input replaces its legacy recovery row. Partial-output or uncertain-delivery messages remain in the transcript with their interruption divider.
 - One notifications panel (the bell rail) holds every app-wide message: failures, warnings, completed system actions and available updates.
 - One shared transient alert (`TransientAlertSurface` in `AppShell`, bottom-left, `aria-live="polite"`) briefly shows each new message. It auto-dismisses and the message stays in the panel.

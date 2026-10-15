@@ -81,7 +81,8 @@ std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, co
 	}
 	AppendAssistantTextTurnEvent(session, delta, identity);
 	(void)SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
-	return delta;
+	// Quarantined summary chunks are saved above, but must not enter the plain-text fast stream.
+	return !session.turn_events.empty() && session.turn_events.back().type == "context_compaction_summary" ? std::string{} : delta;
 }
 
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)

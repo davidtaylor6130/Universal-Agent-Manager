@@ -1167,23 +1167,6 @@ describe('SessionItem snooze actions', () => {
     }
   })
 
-  it('offers Done and Snooze on a compact active row and only Done clears it', () => {
-    const setChatSettled = vi.fn(async () => true)
-    useAppStore.setState({ setChatSettled, acpBindingBySessionId: { 'chat-1': makeAcpBinding({ readySinceLastSelect: true }) } } as never)
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const root = createRoot(host)
-    act(() => root.render(<SessionItem sessionId="chat-1" active />))
-    try {
-      expect(host.querySelector('button[aria-label="Snooze Chat 1"]')).toBeTruthy()
-      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Mark Chat 1 done"]')!.click())
-      expect(setChatSettled).toHaveBeenCalledWith('chat-1', true)
-    } finally {
-      act(() => root.unmount())
-      host.remove()
-    }
-  })
-
   it('shows the wake time on a snoozed row and wakes it from the Unsnooze action', () => {
     const setChatSnoozedUntil = vi.fn(async () => ({ ok: true }))
     useAppStore.setState({ setChatSnoozedUntil } as never)

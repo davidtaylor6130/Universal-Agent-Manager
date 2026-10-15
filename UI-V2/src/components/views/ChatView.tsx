@@ -23,7 +23,7 @@ import { GoalBanner } from '../shared/GoalBanner'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, SleepingScene } from '../chat/StatusScenes'
-import { buildAcpErrorCopyText, ChatStatusStrip, ContextUsageStatus, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
@@ -2807,8 +2807,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   )}
                 </section>
               )}
-              <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context"
-                detail={acp?.providerUsage?.contextUsage ? <ContextUsageStatus usage={acp.providerUsage.contextUsage} /> : undefined} />
+              <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context" />
               <SubagentWaitStatus binding={acp} />
               <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
               </div>

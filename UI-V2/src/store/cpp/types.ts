@@ -269,6 +269,7 @@ export interface AcpConfigOption {
 
 export type AcpTurnEvent =
   | { type: 'assistant_text'; text: string; toolCallId?: string; requestId?: string }
+  | { type: 'context_compaction_summary'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'context_compaction' | 'context_compaction_interrupted'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
   | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }

@@ -176,3 +176,44 @@ UAM_TEST(AssistantMessageIdentityLeavesOtherProvidersAndDefaultHelperUnchanged)
 	UAM_ASSERT_EQ(fixture.app.chats.front().messages.back().blocks.size(), std::size_t{1});
 	UAM_ASSERT(fixture.app.chats.front().messages.back().blocks.front().request_id_json.empty());
 }
+
+
+UAM_TEST(OpenCodeVerifiedSummaryReceiptKeepsIncrementalTextOutOfFastStream)
+{
+	NativeCompactionGateFixture fixture;
+	fixture.session.queued_prompt.clear(); fixture.session.prompt_request_id = 13;
+	fixture.session.turn_events.push_back({.type = "context_compaction_summary", .request_id_json = "opencode-message:msg_summary"});
+	UAM_ASSERT(uam::acp_detail::MessageBlocksFromTurnEvents(fixture.session).empty());
+	ChatSession& chat = fixture.app.chats.front();
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(chat, fixture.session, "First ", "opencode-message:msg_summary").empty());
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(chat, fixture.session, "second", "opencode-message:msg_summary").empty());
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("First second"));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), std::size_t{1});
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().type, std::string("context_compaction_summary"));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().text, std::string("First second"));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.front().request_id_json, std::string("opencode-message:msg_summary"));
+	UAM_ASSERT_EQ(uam::acp_detail::AppendAssistantChunk(chat, fixture.session, "Ordinary output.", "opencode-message:msg_ordinary"), std::string("Ordinary output."));
+	UAM_ASSERT_EQ(chat.messages.back().blocks.size(), std::size_t{2});
+	UAM_ASSERT_EQ(chat.messages.back().blocks.back().type, std::string("assistant_text"));
+	uam::AcpSessionState restored;
+	uam::acp_detail::RestoreTurnEventsFromMessageBlocks(restored, chat.messages.back());
+	UAM_ASSERT_EQ(restored.turn_events.front().type, std::string("context_compaction_summary"));
+	UAM_ASSERT_EQ(restored.turn_events.front().text, std::string("First second"));
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(chat.messages.back().blocks, uam::acp_detail::MessageBlocksFromTurnEvents(restored)));
+}
+
+
+UAM_TEST(OpenCodeSummaryQuarantineAcceptsProviderAliasWithoutChangingOtherProviders)
+{
+	for (const std::string provider : {"opencode", "opencode-cli", "claude-code"})
+	{
+		NativeCompactionGateFixture fixture;
+		fixture.session.provider_id = provider;
+		fixture.session.queued_prompt.clear(); fixture.session.prompt_request_id = 13;
+		fixture.session.turn_events.push_back({.type = "context_compaction_summary", .request_id_json = "opencode-message:msg_alias_summary"});
+		const std::string delta = uam::acp_detail::AppendAssistantChunk(fixture.app.chats.front(), fixture.session, "Captured text.", "opencode-message:msg_alias_summary");
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages.back().content, std::string("Captured text."));
+		UAM_ASSERT_EQ(fixture.session.turn_events.back().type, provider == "claude-code" ? std::string("assistant_text") : std::string("context_compaction_summary"));
+		UAM_ASSERT_EQ(delta, provider == "claude-code" ? std::string("Captured text.") : std::string{});
+	}
+}

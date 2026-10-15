@@ -615,6 +615,7 @@ export function PersistedMessageBlocksContent({
       )}
       <div className={workingMode === 'compact' && expanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {renderedBlocks.map((block, index) => {
+        if (block.type === 'context_compaction_summary') return null
         if (block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
         if (block.type === 'assistant_text') {
           if (!expanded && index !== lastAssistantBlockIndex) return null
@@ -890,7 +891,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
   const lastAssistantEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'assistant_text' && event.text.trim() ? index : latest, -1)
   let thoughtIndex = 0
   const activeEventIndex = active && !pendingPermission && !pendingUserInput ? renderedEvents.reduce((latest, event, index) =>
-    (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
+    event.type === 'context_compaction_summary' || (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = renderedEvents.some((event) => event.type === 'plan')
   const lastPlanEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
@@ -922,6 +923,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
       )}
       <div className={workingMode === 'compact' && traceExpanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {renderedEvents.map((event, index) => {
+        if (event.type === 'context_compaction_summary') return null
         if (event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} interrupted={event.type === 'context_compaction_interrupted'} />
         if (event.type === 'assistant_text') {
           if (!traceExpanded && index !== lastAssistantEventIndex) return null

@@ -55,6 +55,26 @@ namespace
 		return version == "1.17.20" || version == "1.18.35";
 	}
 
+	/// <summary>Warm SSH attachment has no initialize reply; durable process ownership permits read-only schema verification.</summary>
+	bool MetadataVersionAvailable(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+	{
+		if (VerifiedVersion(session.agent_version)) return true;
+		if (!session.agent_version.empty() || paths::IsControllerLocalWorkspace(chat)) return false;
+		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+		const std::string process = acp_detail::AcpProcessHandleLabel(session);
+		return host && host->transport == "ssh" && host->runner_protocol_version == 3 &&
+		    remote::CanAttemptRunnerConnection(*host) && session.remote_runner_protocol_version == 3 &&
+		    session.initialized && session.session_ready && session.running && !session.reconnect_pending &&
+		    !session.recovering_remote_process && session.chat_id == chat.id &&
+		    !session.session_id.empty() && session.session_id == chat.native_session_id &&
+		    session.process_execution_host_id == chat.execution_host_id && chat.remote_process_exists &&
+		    !chat.remote_process_control_token.empty() && session.remote_output_delivery_token == chat.remote_process_control_token &&
+		    !session.last_process_id.empty() && !process.empty() && process != "0" && process == session.last_process_id &&
+		    !chat.remote_restart_pending && !chat.remote_stop_cleanup_pending && !chat.remote_source_exit_pending &&
+		    !session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed &&
+		    !session.remote_source_exit_reported && !AcpSessionHasPendingCancel(session);
+	}
+
 	/// <summary>Only explicit UTC assistant timestamps can bound adoption of an already running turn.</summary>
 	std::optional<std::int64_t> AssistantUtcMilliseconds(std::string_view value)
 	{
@@ -116,14 +136,15 @@ namespace
 	{
 		std::filesystem::path root;
 		std::shared_ptr<const std::uint8_t> incarnation;
-		std::string chat_id, created, provider, native, stored_native, process, process_handle, workspace;
+		std::string chat_id, created, provider, native, stored_native, process, process_handle, workspace, warm_control_token;
 		std::vector<std::string> command;
 		std::optional<ExecutionHost> host;
 		bool operator==(const Identity& other) const
 		{
 			return root == other.root && incarnation == other.incarnation && chat_id == other.chat_id &&
 			    created == other.created && provider == other.provider && native == other.native && stored_native == other.stored_native &&
-			    process == other.process && process_handle == other.process_handle && workspace == other.workspace && command == other.command &&
+			    process == other.process && process_handle == other.process_handle && workspace == other.workspace &&
+			    warm_control_token == other.warm_control_token && command == other.command &&
 			    host.has_value() == other.host.has_value() && (!host || execution_hosts::SameConnection(*host, *other.host));
 		}
 	};
@@ -131,7 +152,7 @@ namespace
 	std::optional<Identity> CaptureIdentity(const AppState& app, const AcpSessionState& session,
 	    const ChatSession& chat, std::string& error)
 	{
-		if (!VerifiedVersion(session.agent_version))
+		if (!MetadataVersionAvailable(app, session, chat))
 		{ error = "Native compaction synchronization requires a verified OpenCode metadata schema."; return {}; }
 		if (!session.running || !session.session_ready || session.last_process_id.empty() || session.chat_id != chat.id ||
 		    session.local_stop_pending || session.remote_stop_pending || session.remote_stop_unconfirmed || session.remote_source_exit_reported ||
@@ -145,6 +166,7 @@ namespace
 		identity.chat_id = chat.id; identity.created = chat.created_at; identity.provider = session.provider_id;
 		identity.native = session.session_id; identity.stored_native = chat.native_session_id;
 		identity.process = session.last_process_id; identity.process_handle = acp_detail::AcpProcessHandleLabel(session);
+		if (session.agent_version.empty()) identity.warm_control_token = session.remote_output_delivery_token;
 		identity.workspace = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
 		if (app.provider_model_catalog && !session.model_catalog_scope_key.empty() &&
 		    app.provider_model_catalog->CaptureScopeKey(session.provider_id, identity.workspace, chat.execution_host_id) != session.model_catalog_scope_key)
@@ -275,9 +297,13 @@ namespace
 			bool contiguous = true;
 			for (std::size_t index = 0; index < blocks.size(); ++index)
 			{
-				if (blocks[index].type != "assistant_text" || blocks[index].request_id_json != native_identity) continue;
+				if ((blocks[index].type != "assistant_text" && blocks[index].type != "context_compaction_summary") ||
+				    blocks[index].request_id_json != native_identity || blocks[index].text.empty()) continue;
 				if (first_native == blocks.size()) first_native = index;
-				else if (index != last_native + 1) contiguous = false;
+				else
+					for (std::size_t gap = last_native + 1; gap < index; ++gap)
+						if (blocks[gap].type != "context_compaction_pending" &&
+						    !(blocks[gap].type == "context_compaction_summary" && blocks[gap].text.empty())) contiguous = false;
 				last_native = index;
 				if (blocks[index].text.size() > summary.text.size() - identified_text.size()) { contiguous = false; break; }
 				identified_text += blocks[index].text;
@@ -288,8 +314,11 @@ namespace
 				{
 					Block compacted = blocks[first_native];
 					compacted.type = "context_compaction"; compacted.text = summary.text; compacted.request_id_json = id;
-					blocks.erase(blocks.begin() + static_cast<std::ptrdiff_t>(first_native), blocks.begin() + static_cast<std::ptrdiff_t>(last_native + 1));
-					blocks.insert(blocks.begin() + static_cast<std::ptrdiff_t>(first_native), std::move(compacted));
+					for (std::size_t index = last_native; index > first_native; --index)
+						if ((blocks[index].type == "assistant_text" || blocks[index].type == "context_compaction_summary") &&
+						    blocks[index].request_id_json == native_identity && !blocks[index].text.empty())
+							blocks.erase(blocks.begin() + static_cast<std::ptrdiff_t>(index));
+					blocks[first_native] = std::move(compacted);
 					identity_changed = true;
 				}
 				continue; // A partial or mismatched identified stream cannot fall back to matching prose.
@@ -423,7 +452,7 @@ struct OpenCodeCompactionSyncService::State
 		int armed_turn = 0, finished_turn = 0, failed_attempt = 0;
 		std::optional<Owner> owner;
 		std::string error;
-		std::set<std::string> native_pending_markers, identified, inspected;
+		std::set<std::string> native_pending_markers, native_summary_ids, identified, inspected;
 		int inspected_turn = 0;
 		int native_marker_turn = 0, native_marker_assistant = -1, query_timeouts = 0;
 		std::chrono::steady_clock::time_point retry_at{}, next_live_probe{}, next_publication_probe{};
@@ -463,6 +492,97 @@ struct OpenCodeCompactionSyncService::State
 		    !session.local_stop_pending && !session.remote_stop_pending && !session.remote_stop_unconfirmed && !session.remote_source_exit_reported &&
 		    !chat.imported_read_only && !chat.side_cleanup_requested &&
 		    (identity.host ? chat.execution_host_id == identity.host->id : paths::IsControllerLocalWorkspace(chat));
+	}
+
+	/// <summary>Keep verified native summary identity separate from active status until its exact body is classified.</summary>
+	bool QuarantineNativeSummaries(AppState& app, AcpSessionState& session, ChatSession& chat, Context& context,
+	    const std::set<std::string>& proven)
+	{
+		if (!context.owner || !Owns(app, session, chat, context)) return false;
+		bool changed = false;
+		const bool retained = session.turn_serial == context.owner->serial &&
+		    session.turn_assistant_message_index == context.owner->assistant;
+		if (!retained)
+		{
+			if (context.owner->assistant < 0 || context.owner->assistant >= static_cast<int>(chat.messages.size())) return false;
+			Message& message = chat.messages[context.owner->assistant];
+			for (MessageBlock& block : message.blocks)
+				if (block.type == "assistant_text" && block.request_id_json.starts_with("opencode-message:") &&
+				    proven.contains(block.request_id_json.substr(17)))
+				{ block.type = "context_compaction_summary"; changed = true; }
+			if (changed)
+			{
+				acp_detail::ScheduleChatSave(app, chat, 0.0);
+				context.owner->message = MessageOwnership(message);
+			}
+			return changed;
+		}
+		for (const std::string& id : proven)
+		{
+			const std::string identity = "opencode-message:" + id;
+			context.native_summary_ids.insert(id);
+			for (AcpTurnEventState& event : session.turn_events)
+				if (event.type == "assistant_text" && event.request_id_json == identity)
+				{ event.type = "context_compaction_summary"; changed = true; }
+			if (std::ranges::none_of(session.turn_events, [&](const AcpTurnEventState& event)
+			{ return event.type == "context_compaction_summary" && event.request_id_json == identity; }))
+			{
+				session.turn_events.push_back({.type = "context_compaction_summary", .request_id_json = identity});
+				changed = true;
+			}
+		}
+		if (changed && context.owner->assistant >= 0)
+		{
+			if (acp_detail::SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session))
+				acp_detail::ScheduleChatSave(app, chat, 0.0);
+			context.owner->message = MessageOwnership(chat.messages[context.owner->assistant]);
+		}
+		return changed;
+	}
+
+	/// <summary>Collapse only retained text with previously verified native compaction identity after interruption.</summary>
+	bool InterruptNativeSummaries(AppState& app, AcpSessionState& session, ChatSession& chat, Context& context,
+	    std::set<std::string> interrupted)
+	{
+		if (!context.owner || session.turn_serial != context.owner->serial ||
+		    session.turn_assistant_message_index != context.owner->assistant || session.session_id != context.identity.native ||
+		    session.last_process_id != context.identity.process) return false;
+		bool changed = false;
+		std::vector<AcpTurnEventState> events;
+		events.reserve(session.turn_events.size());
+		for (const AcpTurnEventState& original : session.turn_events)
+		{
+			AcpTurnEventState event = original;
+			if (event.type == "context_compaction_summary" && event.request_id_json.starts_with("opencode-message:") &&
+			    interrupted.contains(event.request_id_json.substr(17)) && context.native_summary_ids.contains(event.request_id_json.substr(17)))
+			{
+				changed = true;
+				if (event.text.empty()) continue;
+				event.type = "context_compaction_interrupted";
+				event.request_id_json = "acp-compaction:" + event.request_id_json.substr(17);
+				if (!events.empty() && events.back().type == event.type && events.back().request_id_json == event.request_id_json)
+				{ events.back().text += event.text; continue; }
+			}
+			events.push_back(std::move(event));
+		}
+		if (!changed) return false;
+		session.turn_events = std::move(events);
+		if (context.owner->assistant >= 0 && context.owner->assistant < static_cast<int>(chat.messages.size()) &&
+		    chat.messages[context.owner->assistant].role == MessageRole::Assistant)
+		{
+			if (acp_detail::SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session))
+				acp_detail::ScheduleChatSave(app, chat, 0.0);
+			context.owner->message = MessageOwnership(chat.messages[context.owner->assistant]);
+		}
+		const bool may_receive_output = session.running &&
+		    (session.processing || session.prompt_request_id != 0 || AcpSessionIsWaitingForInput(session));
+		for (const std::string& id : interrupted)
+		{
+			if (may_receive_output)
+				session.turn_events.push_back({.type = "context_compaction_summary", .request_id_json = "opencode-message:" + id});
+			else context.native_summary_ids.erase(id);
+		}
+		return true;
 	}
 
 	/// <summary>Own only pending markers introduced by this exact native turn; ACP markers remain independent.</summary>
@@ -788,7 +908,7 @@ struct OpenCodeCompactionSyncService::State
 				return false;
 			}
 			if (work.kind == QueryKind::Pending) context.pending.clear();
-			std::set<std::string> unfinished;
+			std::set<std::string> unfinished, proven, failed;
 			if (work.kind != QueryKind::Pending)
 				for (const std::string& marker : context.native_pending_markers) unfinished.insert(marker.substr(15));
 			std::set<std::string> published;
@@ -825,6 +945,11 @@ struct OpenCodeCompactionSyncService::State
 				if (!finish.is_null() && (!finish.is_string() || finish.get_ref<const std::string&>().size() > 128)) throw std::runtime_error("invalid native finish");
 				const bool no_error = row.at("errorType").is_null() || row.at("errorType") == "null";
 				const bool finished = finish.is_string() && !finish.get_ref<const std::string&>().empty();
+				if (row.at("parentProof") == 1)
+				{
+					proven.insert(cursor.id);
+					if (!no_error) failed.insert(cursor.id);
+				}
 				unfinished.erase(cursor.id);
 				if (!finished && no_error && row.at("parentProof") == 1)
 				{
@@ -845,8 +970,14 @@ struct OpenCodeCompactionSyncService::State
 			context.query_timeouts = 0; context.retry_at = {};
 			ChatSession* current_chat = ChatDomainService().FindChatById(app, context.identity.chat_id);
 			AcpSessionState* current_session = FindAcpSessionForChat(app, context.identity.chat_id);
-			const bool state_changed = current_chat && current_session && SyncNativePending(app, *current_session, *current_chat, context,
-			    context.owner->live ? unfinished : std::set<std::string>{});
+			bool state_changed = false;
+			if (current_chat && current_session)
+			{
+				state_changed = QuarantineNativeSummaries(app, *current_session, *current_chat, context, proven);
+				state_changed = InterruptNativeSummaries(app, *current_session, *current_chat, context, failed) || state_changed;
+				state_changed = SyncNativePending(app, *current_session, *current_chat, context,
+				    context.owner->live ? unfinished : std::set<std::string>{}) || state_changed;
+			}
 			if (work.kind == QueryKind::Identified)
 			{
 				context.identified_probe_due = false;
@@ -1030,7 +1161,7 @@ OpenCodeCompactionGateState OpenCodeCompactionSyncService::BeforeDispatch(AppSta
 	if (session.provider_id != provider_ids::kOpenCodeCli || session.model_discovery_only) return OpenCodeCompactionGateState::NotApplicable;
 	if (m_state->stopped) { error = "Native compaction synchronization is stopping."; return OpenCodeCompactionGateState::Failed; }
 	const ExecutionHost* host = paths::IsControllerLocalWorkspace(chat) ? nullptr : execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
-	if (!VerifiedVersion(session.agent_version) || (host && host->runner_protocol_version < 3))
+	if (!MetadataVersionAvailable(app, session, chat) || (host && host->runner_protocol_version < 3))
 	{
 		const std::string scope = chat.execution_host_id + ":" + session.agent_version + ":" + (host ? std::to_string(host->runner_protocol_version) : "local");
 		if (m_state->unsupported_diagnostics.insert(scope).second)
@@ -1092,10 +1223,19 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 		if (!chat || !session || !m_state->CheapOwns(app, *session, *chat, current->second))
 		{
 			if (m_state->active && m_state->active->identity.chat_id == current->first) m_state->active->cancellation.request_stop();
-			if (chat && session) changed = m_state->SyncNativePending(app, *session, *chat, context, {}) || changed;
+			if (chat && session)
+			{
+				if (AcpSessionHasPendingCancel(*session) || !session->running || session->remote_source_exit_reported ||
+				    session->local_stop_pending || session->remote_stop_pending || session->remote_stop_unconfirmed)
+					changed = m_state->InterruptNativeSummaries(app, *session, *chat, context, context.native_summary_ids) || changed;
+				changed = m_state->SyncNativePending(app, *session, *chat, context, {}) || changed;
+			}
 			current = m_state->contexts.erase(current);
 			continue;
 		}
+		if ((!context.error.empty() && !session->processing && !IsActivePrompt(*session, *chat)) ||
+		    (session->last_settled_turn_serial == session->turn_serial && session->last_turn_outcome == "failed" && !session->processing))
+			changed = m_state->InterruptNativeSummaries(app, *session, *chat, context, context.native_summary_ids) || changed;
 		m_state->CaptureOwner(current->second, *session, *chat, false);
 		if (context.owner && context.owner->live && m_state->Owns(app, *session, *chat, context))
 		{
@@ -1106,7 +1246,8 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 			for (const AcpTurnEventState& event : session->turn_events)
 			{
 				if (context.identified.size() >= kPendingLimit) break;
-				if (event.type != "assistant_text" || !event.request_id_json.starts_with("opencode-message:")) continue;
+				if ((event.type != "assistant_text" && event.type != "context_compaction_summary") ||
+				    !event.request_id_json.starts_with("opencode-message:")) continue;
 				const std::string id = event.request_id_json.substr(17);
 				if (PortableId(id) && !context.inspected.contains(id)) context.identified.insert(id);
 			}

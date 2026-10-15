@@ -1419,3 +1419,192 @@ UAM_TEST(OpenCodeMetadataInspectsRetainedSummaryAfterMoreThan128OrdinaryIdentiti
 	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("context_compaction"));
 	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 99);
 }
+
+
+UAM_TEST(OpenCodeMetadataQuarantineSurvivesNativeFinishBeforeFinalStreamChunk)
+{
+	NativeMetadataFixture fixture;
+	fixture.Chat().messages.resize(1);
+	fixture.Session().turn_assistant_message_index = fixture.Session().current_assistant_message_index = -1;
+	fixture.Parent(); fixture.WaitGate();
+	fixture.Session().queued_prompt.clear(); fixture.Session().prompt_request_id = 99;
+	fixture.Summary("cmp_quarantined", 2, "");
+	const auto started_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+	while (!fixture.Session().context_compaction_in_progress && std::chrono::steady_clock::now() < started_deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.Session().context_compaction_in_progress);
+	UAM_ASSERT_EQ(fixture.Chat().messages.size(), std::size_t{1});
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Native ", "opencode-message:cmp_quarantined").empty());
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.front().type, std::string("context_compaction_summary"));
+	fixture.Summary("cmp_quarantined", 2);
+	fixture.SummaryText("cmp_quarantined", "Native summary.");
+	const auto finished_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+	while (fixture.Session().context_compaction_in_progress && std::chrono::steady_clock::now() < finished_deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(!fixture.Session().context_compaction_in_progress);
+	UAM_ASSERT(fixture.Boundaries().empty());
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.front().type, std::string("context_compaction_summary"));
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "summary.", "opencode-message:cmp_quarantined").empty());
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_quarantined"));
+	UAM_ASSERT_EQ(fixture.Boundaries(), std::vector<std::string>{"acp-compaction:cmp_quarantined"});
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.front().text, std::string("Native summary."));
+	UAM_ASSERT_EQ(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Normal next output.", "opencode-message:msg_normal_after_summary"), std::string("Normal next output."));
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.back().type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 99);
+}
+
+UAM_TEST(OpenCodeMetadataQuarantineSurvivesMetadataErrorWhileProviderStillStreams)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Summary("cmp_query_error", 2, "");
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+	while (!fixture.Session().context_compaction_in_progress && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.Session().context_compaction_in_progress);
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Partial ", "opencode-message:cmp_query_error").empty());
+	fixture.fail_queries = 1;
+	const int before = fixture.completed_queries.load();
+	const auto failure_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+	while (fixture.completed_queries.load() == before && std::chrono::steady_clock::now() < failure_deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	(void)fixture.service->Poll(fixture.app);
+	(void)fixture.service->Poll(fixture.app);
+	UAM_ASSERT(fixture.Session().processing);
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "summary tail.", "opencode-message:cmp_query_error").empty());
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.back().type, std::string("context_compaction_summary"));
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.back().text, std::string("Partial summary tail."));
+	UAM_ASSERT(fixture.Boundaries().empty());
+}
+
+UAM_TEST(OpenCodeMetadataFailedTurnCollapsesOnlyVerifiedSummaryPartial)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Summary("cmp_interrupted_hidden", 2, "");
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+	while (!fixture.Session().context_compaction_in_progress && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.Session().context_compaction_in_progress);
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Retained partial summary.", "opencode-message:cmp_interrupted_hidden").empty());
+	fixture.Session().processing = false; fixture.Session().prompt_request_id = 0;
+	fixture.Session().last_settled_turn_serial = fixture.Session().turn_serial;
+	fixture.Session().last_turn_outcome = "failed";
+	(void)fixture.service->Poll(fixture.app);
+	UAM_ASSERT(!fixture.Session().context_compaction_in_progress);
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.front().type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.front().text, std::string("Preserve authored answer"));
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.back().type, std::string("context_compaction_interrupted"));
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.back().text, std::string("Retained partial summary."));
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().content, std::string("Preserve authored answerRetained partial summary."));
+}
+
+
+UAM_TEST(OpenCodeMetadataSummaryCompletionPreservesInterleavedPendingMarker)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Summary("cmp_marker_gap", 2, "");
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+	while (!fixture.Session().context_compaction_in_progress && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.Session().context_compaction_in_progress);
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Split ", "opencode-message:cmp_marker_gap").empty());
+	fixture.Session().turn_events.push_back({.type = "context_compaction_pending", .request_id_json = "acp-compaction:independent-retained"});
+	UAM_ASSERT(uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "summary.", "opencode-message:cmp_marker_gap").empty());
+	fixture.Summary("cmp_marker_gap", 2);
+	fixture.SummaryText("cmp_marker_gap", "Split summary.");
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_marker_gap"));
+	UAM_ASSERT_EQ(fixture.Boundaries(), std::vector<std::string>{"acp-compaction:cmp_marker_gap"});
+	UAM_ASSERT(std::ranges::any_of(fixture.Session().turn_events, [](const uam::AcpTurnEventState& event)
+	{ return event.type == "context_compaction_pending" && event.request_id_json == "acp-compaction:independent-retained"; }));
+	UAM_ASSERT_EQ(fixture.Chat().messages.back().blocks.back().text, std::string("Split summary."));
+	UAM_ASSERT(fixture.Session().context_compaction_in_progress);
+}
+
+
+namespace
+{
+	void RestoreWarmMetadataOwnerWithoutVersion(NativeMetadataFixture& fixture)
+	{
+		fixture.RestoreActiveRemotePrompt();
+		fixture.Session().agent_version.clear();
+		fixture.Session().initialized = true;
+		fixture.Chat().remote_process_exists = true;
+		fixture.Chat().remote_process_control_token = "private-fixture-owned-process-capability";
+		fixture.Session().remote_output_delivery_token = fixture.Chat().remote_process_control_token;
+	}
+}
+
+UAM_TEST(OpenCodeMetadataWarmEmptyVersionRetainsLiveSettlementAndNextDispatchOwnership)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent();
+	fixture.Summary("cmp_warm_without_initialize", 2);
+	fixture.SummaryText("cmp_warm_without_initialize", "Recovered native summary.");
+	fixture.Chat().messages[1].content = "Recovered native summary.";
+	fixture.Chat().messages[1].blocks = {{"assistant_text", "Recovered native summary.", "", "opencode-message:cmp_warm_without_initialize"}};
+	RestoreWarmMetadataOwnerWithoutVersion(fixture);
+	const std::vector<uam::AcpRemotePendingRequestState> requests = fixture.Chat().remote_pending_requests;
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_warm_without_initialize"));
+	UAM_ASSERT(fixture.Session().agent_version.empty());
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 0);
+	UAM_ASSERT_EQ(fixture.Chat().remote_pending_requests, requests);
+	fixture.Settle();
+	fixture.Session().recovering_remote_turn = false;
+	fixture.Chat().remote_turn_reconnect_pending = false;
+	fixture.Chat().remote_pending_requests.clear();
+	fixture.Session().pending_request_methods.clear();
+	UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+	++fixture.Session().turn_serial;
+	fixture.Session().processing = true;
+	fixture.Session().queued_prompt = "Next private staged input";
+	fixture.Session().turn_assistant_message_index = fixture.Session().current_assistant_message_index = -1;
+	UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+	UAM_ASSERT(fixture.Session().agent_version.empty());
+	UAM_ASSERT_EQ(fixture.Session().queued_prompt, std::string("Next private staged input"));
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 0);
+}
+
+UAM_TEST(OpenCodeMetadataWarmEmptyVersionRejectsMissingOwnershipAndUnsupportedVersion)
+{
+	for (const int invalid : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11})
+	{
+		NativeMetadataFixture fixture;
+		RestoreWarmMetadataOwnerWithoutVersion(fixture);
+		if (invalid == 0) fixture.Session().agent_version = "9.99.0";
+		if (invalid == 1) fixture.Chat().remote_process_control_token.clear();
+		if (invalid == 2) fixture.Session().remote_output_delivery_token = "different-private-capability";
+		if (invalid == 3) fixture.Chat().remote_process_exists = false;
+		if (invalid == 4) fixture.Session().process_execution_host_id = "foreign-host";
+		if (invalid == 5) fixture.Session().remote_runner_protocol_version = 2;
+		if (invalid == 6) fixture.Session().initialized = false;
+		if (invalid == 7) fixture.Chat().native_session_id = "ses_foreign";
+		if (invalid == 8) fixture.Chat().remote_restart_pending = true;
+		if (invalid == 9) fixture.Chat().remote_stop_cleanup_pending = true;
+		if (invalid == 10) fixture.Session().cancel_requested = true;
+		if (invalid == 11) fixture.Session().last_process_id.clear();
+		std::string error;
+		UAM_ASSERT(fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.Chat(), error) == uam::OpenCodeCompactionGateState::NotApplicable);
+		UAM_ASSERT_EQ(fixture.queries.load(), 0);
+		UAM_ASSERT(fixture.Boundaries().empty());
+	}
+}

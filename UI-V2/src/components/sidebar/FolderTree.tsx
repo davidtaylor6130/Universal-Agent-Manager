@@ -202,7 +202,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
   const [pendingDeleteFolderId, setPendingDeleteFolderId] = useState<string | null>(null)
   const [deleteFolderError, setDeleteFolderError] = useState('')
   const [deletingFolder, setDeletingFolder] = useState(false)
+  const [activeCollapsed, setActiveCollapsed] = useState(false)
   const [snoozedCollapsed, setSnoozedCollapsed] = useState(false)
+  const [pinnedCollapsed, setPinnedCollapsed] = useState(false)
   const [allChatsCollapsed, setAllChatsCollapsed] = useState(false)
   const [unsortedCollapsed, setUnsortedCollapsed] = useState(false)
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(() => new Set())
@@ -327,12 +329,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     activeStatusCounts.attention ? `${activeStatusCounts.attention} attention` : '',
     activeStatusCounts.done ? `${activeStatusCounts.done} done` : '',
   ].filter(Boolean).join(' · ')
-  const activeChatIds = useMemo(() => new Set(searchModel.activeSessionIds), [searchModel.activeSessionIds])
-  const activeOnly = Boolean(filters?.statusIds.includes('active'))
   const snoozedExpanded = searchModel.isSearching || !snoozedCollapsed
+  const activeExpanded = searchModel.isSearching || !activeCollapsed
+  const pinnedExpanded = searchModel.isSearching || !pinnedCollapsed
   const allChatsExpanded = searchModel.isSearching || !allChatsCollapsed
   // Section rows stay mounted through the exit window, then unmount (collapsed rows are not rendered).
+  const activeList = usePresence(activeExpanded)
   const snoozedList = usePresence(snoozedExpanded)
+  const pinnedList = usePresence(pinnedExpanded)
   const allChatsList = usePresence(allChatsExpanded)
   const previousFamiliesRef = useRef(new Map<string, string[]>())
   const familySessionIdsByRootId = useMemo(() => {
@@ -691,6 +695,28 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
     if (target) commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')
   }
 
+  const renderActivitySessionItem = (id: string) => {
+    const activitySession = sessionsById.get(id)
+    const folder = folders.find((candidate) => candidate.id === activitySession?.folderId)
+    const hostId = activitySession?.executionHostId?.trim() || folder?.executionHostId || 'local'
+    const host = executionHosts.find((candidate) => candidate.id === hostId)
+    return (
+      <SessionItem
+        key={id}
+        sessionId={id}
+        session={activitySession}
+        familySessionIds={familySessionIdsByRootId.get(id)}
+        selected={!companionContext && selectedSessionIds.has(id)}
+        activityLayout
+        activityFolderName={folder?.name}
+        activityFolderIcon={folder?.customIcon}
+        activityHostLabel={`Runs on ${host?.label || hostId}`}
+        activityHostRemote={hostId !== 'local'}
+        onSessionClick={handleSessionClick}
+      />
+    )
+  }
+
   const renderFolderRow = ({ folder, sessionIds, shouldShowSessions }: (typeof searchModel.folderRows)[number]) => {
     const hostId = folder.executionHostId || 'local'
     const machineKind = hostId === 'local' ? 'local' : 'remote'
@@ -735,7 +761,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
       onOpenMemory={() => void openFolderMemoryLibrary(folder.id)}
       sessionsById={sessionsById}
       familySessionIdsByRootId={familySessionIdsByRootId}
-      activeChatIds={activeChatIds}
       selectedSessionIds={companionContext ? EMPTY_SELECTION_IDS : selectedSessionIds}
       onSessionClick={handleSessionClick}
       draggable={!searchModel.isSearching && !isCompanionContext()}
@@ -793,26 +818,60 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           </Button>
         </div>
       )}
-      {activeOnly && searchModel.activeSessionIds.length > 0 && (
-        <div data-testid="active-summary" className="mx-1 mb-1 flex items-center gap-2 rounded-md px-2.5 py-1" style={{ background: 'var(--surface-up)', border: '1px solid var(--border)' }}>
-          <span aria-label="Active chat status counts" className="min-w-0 flex-1 truncate text-xs" style={{ color: 'var(--text-2)' }} title={activeStatusSummary}>
-            {activeStatusSummary || `${searchModel.activeSessionIds.length} recent`}
-          </span>
-          {!companionContext && (
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label="Mark all active chats done"
-              onClick={() => {
-                const { setChatSettled } = useAppStore.getState()
-                // Questions and approvals stay: they need an answer, not a dismissal.
-                for (const id of searchModel.activeSessionIds) {
-                  if (!runtimeStatusBySessionId.get(id)?.startsWith('attention:')) void setChatSettled(id, true)
-                }
-              }}
+      {searchModel.activeSessionIds.length > 0 && (
+        <div className="mb-0.5" data-testid="active-chats">
+          <SidebarSectionHeader
+            label="Active chats"
+            listId="active-chat-list"
+            expanded={activeExpanded}
+            onToggle={() => setActiveCollapsed((collapsed) => !collapsed)}
+            action={!isCompanionContext() && (
+              <button
+                type="button"
+                aria-label="Mark all active chats done"
+                className="rounded px-1.5 text-[10px] hover:bg-[var(--sidebar-item-hover)]"
+                style={{ background: 'var(--surface)', border: 'none', color: 'var(--text-2)', cursor: 'pointer' }}
+                onClick={() => {
+                  const { setChatSettled } = useAppStore.getState()
+                  // Questions and approvals stay: they need an answer, not a dismissal.
+                  for (const id of searchModel.activeSessionIds) {
+                    if (!runtimeStatusBySessionId.get(id)?.startsWith('attention:')) void setChatSettled(id, true)
+                  }
+                }}
+              >
+                Clear all
+              </button>
+            )}
+            trailing={activeStatusSummary && (
+              <span aria-label="Active chat status counts" className="ml-auto text-[10px]" title={activeStatusSummary}>
+                {activeStatusSummary}
+              </span>
+            )}
+          />
+          <div
+            id="active-chat-list"
+            className="uam-sb-collapse"
+            data-state={activeList.closing ? 'closed' : 'open'}
+            hidden={!activeList.mounted}
+            aria-hidden={!activeExpanded}
+            {...(!activeExpanded ? { inert: '' } : {})}
+          >
+            <div className="uam-sb-collapse__inner">
+              {activeList.mounted && searchModel.activeSessionIds.map(renderActivitySessionItem)}
+            </div>
+          </div>
+          {!activeExpanded && activeStatusCounts.attention > 0 && (
+            <button
+              type="button"
+              data-testid="active-attention-strip"
+              className="uam-sb-attention-strip mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-md px-2 py-1 text-left text-[11px]"
+                            onClick={() => setActiveCollapsed(false)}
             >
-              Clear all
-            </Button>
+              <TriangleAlert size={12} aria-hidden />
+              {activeStatusCounts.attention === 1
+                ? '1 chat needs attention'
+                : `${activeStatusCounts.attention} chats need attention`}
+            </button>
           )}
         </div>
       )}
@@ -824,6 +883,32 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           <div id="snoozed-chat-list" className="uam-sb-collapse" data-state={snoozedList.closing ? 'closed' : 'open'} hidden={!snoozedList.mounted} aria-hidden={!snoozedExpanded} {...(!snoozedExpanded ? { inert: '' } : {})}>
             <div className="uam-sb-collapse__inner">
               {snoozedList.mounted && searchModel.snoozedSessionIds.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {searchModel.pinnedSessionIds.length > 0 && (
+        <div className="mb-0.5" data-testid="pinned-chats">
+          <SidebarSectionHeader
+            label="Pinned chats"
+            listId="pinned-chat-list"
+            expanded={pinnedExpanded}
+            onToggle={() => setPinnedCollapsed((collapsed) => !collapsed)}
+            trailing={<span className="ml-auto text-[10px]">{searchModel.pinnedSessionIds.length}</span>}
+          />
+          <div
+            id="pinned-chat-list"
+            className="uam-sb-collapse"
+            data-state={pinnedList.closing ? 'closed' : 'open'}
+            hidden={!pinnedList.mounted}
+            aria-hidden={!pinnedExpanded}
+            {...(!pinnedExpanded ? { inert: '' } : {})}
+          >
+            <div className="uam-sb-collapse__inner">
+              {pinnedList.mounted && searchModel.pinnedSessionIds.map((id) => (
                 <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
               ))}
             </div>
@@ -954,7 +1039,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters }: Folde
           >
             <div className="min-h-0 overflow-hidden">
               {searchModel.unfolderedSessionIds.map((id) => (
-              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} active={activeChatIds.has(id)} onSessionClick={handleSessionClick} />
+              <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={!companionContext && selectedSessionIds.has(id)} onSessionClick={handleSessionClick} />
               ))}
             </div>
           </div>
@@ -1719,7 +1804,6 @@ interface FolderRowProps {
   onOpenMemory: () => void
   sessionsById: Map<string, Session>
   familySessionIdsByRootId: Map<string, string[]>
-  activeChatIds: Set<string>
   selectedSessionIds: Set<string>
   onSessionClick: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
   draggable: boolean
@@ -1756,7 +1840,6 @@ const FolderRow = memo(function FolderRow({
   onOpenMemory,
   sessionsById,
   familySessionIdsByRootId,
-  activeChatIds,
   selectedSessionIds,
   onSessionClick,
   draggable,
@@ -2054,7 +2137,7 @@ const FolderRow = memo(function FolderRow({
                 </div>
               ) : (
                 visibleSessionIds.map((id) => (
-                  <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} active={activeChatIds.has(id)} onSessionClick={onSessionClick} />
+                  <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={selectedSessionIds.has(id)} onSessionClick={onSessionClick} />
                 ))
               )}
               {shouldLimitSessions && (

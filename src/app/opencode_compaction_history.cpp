@@ -353,7 +353,7 @@ namespace
 					if (!PortableId(value.tool_call_id) || !tools.insert(value.tool_call_id).second) return {};
 					stored_tools.push_back(value.tool_call_id); stored_segments.emplace_back();
 				}
-				else if (value.type == "assistant_text" ||
+				else if (value.type == "assistant_text" || value.type == "context_compaction_summary" ||
 				    ((value.type == "context_compaction" || value.type == "context_compaction_interrupted") && !value.text.empty()))
 					stored_segments.back().push_back({message, block});
 			}
@@ -386,6 +386,8 @@ namespace
 					exact_prefix = exact_prefix && block.text == source.text;
 					continue;
 				}
+				if (block.type == "context_compaction_summary" && block.request_id_json != "opencode-message:" + source.summary)
+				{ matched = false; break; }
 				std::string type = "context_compaction";
 				if (!source.verified)
 				{
