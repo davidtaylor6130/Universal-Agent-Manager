@@ -15,8 +15,9 @@ namespace uam::chat
 		bool ordinary_matches = true, complete_matches = true, has_compaction = false;
 		for (const MessageBlock& block : message.blocks)
 		{
-			if (block.type != "assistant_text" && block.type != "context_compaction") continue;
-			has_compaction = has_compaction || block.type == "context_compaction";
+			const bool compaction = block.type == "context_compaction" || block.type == "context_compaction_interrupted";
+			if (block.type != "assistant_text" && !compaction) continue;
+			has_compaction = has_compaction || compaction;
 			if (complete_matches)
 			{
 				complete_matches = message.content.compare(complete_offset, block.text.size(), block.text) == 0;
@@ -43,8 +44,8 @@ namespace uam::chat
 			{
 				for (const MessageBlock& block : message.blocks)
 				{
-					if (block.type == "context_compaction" && !strings::IsBlank(block.text))
-						snapshot += "Conversation summary: " + block.text + "\n\n";
+					if ((block.type == "context_compaction" || block.type == "context_compaction_interrupted") && !strings::IsBlank(block.text))
+						snapshot += (block.type == "context_compaction_interrupted" ? "Interrupted conversation summary: " : "Conversation summary: ") + block.text + "\n\n";
 					else if (block.type == "assistant_text" && !strings::IsBlank(block.text))
 						snapshot += "Assistant: " + block.text + "\n\n";
 				}
@@ -52,8 +53,8 @@ namespace uam::chat
 			else
 			{
 				for (const MessageBlock& block : message.blocks)
-					if (block.type == "context_compaction" && !strings::IsBlank(block.text))
-						snapshot += "Conversation summary: " + block.text + "\n\n";
+					if ((block.type == "context_compaction" || block.type == "context_compaction_interrupted") && !strings::IsBlank(block.text))
+						snapshot += (block.type == "context_compaction_interrupted" ? "Interrupted conversation summary: " : "Conversation summary: ") + block.text + "\n\n";
 				if ((message.role == MessageRole::User || message.role == MessageRole::Assistant) && !strings::IsBlank(message.content))
 					snapshot += (message.role == MessageRole::User ? "User: " : "Assistant: ") + message.content + "\n\n";
 			}

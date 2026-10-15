@@ -352,6 +352,8 @@ namespace
 		}
 		if (prompt.include_prior_context)
 			uam::json::SetBool(obj, "include_prior_context", true);
+		if (prompt.direct_admission)
+			uam::json::SetBool(obj, "direct_admission", true);
 		if (prompt.prepared_for_delivery)
 			uam::json::SetBool(obj, "prepared_for_delivery", true);
 		if (!prompt.claude_quota_continuation_id.empty())
@@ -486,6 +488,11 @@ namespace
 			prompt.existing_user_message_created_at = existing_created->string_value;
 		}
 		prompt.prepared_for_delivery = JsonBoolOrDefault(obj.Find("prepared_for_delivery"), false);
+		if (const JsonValue* direct_admission = obj.Find("direct_admission"); direct_admission != nullptr)
+		{
+			if (direct_admission->type != JsonValue::Type::Bool) return std::nullopt;
+			prompt.direct_admission = direct_admission->bool_value;
+		}
 		if (const JsonValue* prior_context = obj.Find("include_prior_context"); prior_context != nullptr)
 		{
 			if (prior_context->type != JsonValue::Type::Bool) return std::nullopt;
@@ -949,6 +956,7 @@ namespace
 		       lhs.existing_user_message_index == rhs.existing_user_message_index &&
 		       lhs.existing_user_message_created_at == rhs.existing_user_message_created_at &&
 		       lhs.include_prior_context == rhs.include_prior_context &&
+		       lhs.direct_admission == rhs.direct_admission &&
 		       lhs.prepared_for_delivery == rhs.prepared_for_delivery &&
 		       lhs.claude_quota_continuation_id == rhs.claude_quota_continuation_id &&
 		       lhs.prepared_user_message_count == rhs.prepared_user_message_count &&

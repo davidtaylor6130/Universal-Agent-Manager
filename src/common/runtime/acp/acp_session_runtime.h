@@ -83,6 +83,8 @@ bool ResolveAcpUserInput(AppState& app,
 	std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 	std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 	bool FlushPendingChatSaves(AppState& app, bool force = false);
+	/// <summary>After normal hydration, settle only proven stopped direct receipts without replay.</summary>
+	bool SettleStoppedDirectAcpAdmissions(AppState& app, ChatSession& chat);
 	struct WorkspaceChatSaveTicket;
 	enum class WorkspaceChatSaveRevocation { OwnedRevoked, ForeignNewer, NotOwned };
 	/// <summary>Schedules a full workspace save with an independently owned acknowledgement.</summary>

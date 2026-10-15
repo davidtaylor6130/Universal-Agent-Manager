@@ -270,7 +270,7 @@ export interface AcpConfigOption {
 export type AcpTurnEvent =
   | { type: 'assistant_text'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
-  | { type: 'context_compaction'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
+  | { type: 'context_compaction' | 'context_compaction_interrupted'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
   | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }
   | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
   | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
@@ -456,6 +456,8 @@ export interface CppAcpSession {
   unsentMessageIndices?: number[]
   recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
+  pendingDirectPrompts?: AcpQueuedPrompt[]
+  unsentDirectPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -952,6 +954,8 @@ export interface AcpBinding {
   unsentMessageIndices?: number[]
   recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
+  pendingDirectPrompts?: AcpQueuedPrompt[]
+  unsentDirectPrompts?: AcpQueuedPrompt[]
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number

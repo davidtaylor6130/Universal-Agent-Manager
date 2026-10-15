@@ -6,8 +6,50 @@
 
 #include <atomic>
 #include <thread>
+#include <sqlite3.h>
 
 using namespace uam_test;
+
+UAM_TEST(OpenCodeCompactionProofAcceptsNativeCompactionAgentWithTextOnlyParent)
+{
+	for (int variant = 0; variant < 8; ++variant)
+	{
+		sqlite3* opened = nullptr;
+		UAM_ASSERT_EQ(sqlite3_open(":memory:", &opened), SQLITE_OK);
+		std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(opened, sqlite3_close);
+		UAM_ASSERT_EQ(sqlite3_exec(database.get(),
+		    "CREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,data TEXT);"
+		    "CREATE TABLE part(message_id TEXT,session_id TEXT,data TEXT);"
+		    "INSERT INTO message VALUES('parent','owned','{\"role\":\"user\"}');"
+		    "INSERT INTO part VALUES('parent','owned','{\"type\":\"text\",\"text\":\"Continue\"}');",
+		    nullptr, nullptr, nullptr), SQLITE_OK);
+		nlohmann::json info = {{"role", "assistant"}, {"summary", true}, {"agent", "compaction"},
+		    {"mode", "compaction"}, {"parentID", "parent"}, {"finish", "stop"}};
+		if (variant == 1) info["agent"] = "build";
+		if (variant == 2) info["mode"] = "build";
+		if (variant == 3) info["summary"] = false;
+		if (variant == 4) UAM_ASSERT_EQ(sqlite3_exec(database.get(), "UPDATE message SET session_id='foreign' WHERE id='parent'", nullptr, nullptr, nullptr), SQLITE_OK);
+		if (variant == 5) UAM_ASSERT_EQ(sqlite3_exec(database.get(), "UPDATE message SET data='{\"role\":\"assistant\"}' WHERE id='parent'", nullptr, nullptr, nullptr), SQLITE_OK);
+		if (variant == 6)
+		{
+			info.erase("agent"); info.erase("mode");
+			UAM_ASSERT_EQ(sqlite3_exec(database.get(), "INSERT INTO part VALUES('parent','owned','{\"type\":\"compaction\"}')", nullptr, nullptr, nullptr), SQLITE_OK);
+		}
+		if (variant == 7) info["parentID"] = "missing";
+		sqlite3_stmt* opened_statement = nullptr;
+		UAM_ASSERT_EQ(sqlite3_prepare_v2(database.get(), "INSERT INTO message VALUES('summary','owned',?)", -1, &opened_statement, nullptr), SQLITE_OK);
+		std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> insert(opened_statement, sqlite3_finalize);
+		const std::string metadata = info.dump();
+		UAM_ASSERT_EQ(sqlite3_bind_text(insert.get(), 1, metadata.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+		UAM_ASSERT_EQ(sqlite3_step(insert.get()), SQLITE_DONE);
+		const std::string query = "SELECT CASE WHEN " + uam::OpenCodeCompactionProofSql() + " THEN 1 ELSE 0 END FROM message m WHERE m.id='summary'";
+		opened_statement = nullptr;
+		UAM_ASSERT_EQ(sqlite3_prepare_v2(database.get(), query.c_str(), -1, &opened_statement, nullptr), SQLITE_OK);
+		std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(opened_statement, sqlite3_finalize);
+		UAM_ASSERT_EQ(sqlite3_step(statement.get()), SQLITE_ROW);
+		UAM_ASSERT_EQ(sqlite3_column_int(statement.get(), 0), variant == 0 || variant == 6 ? 1 : 0);
+	}
+}
 
 namespace
 {
@@ -163,7 +205,7 @@ UAM_TEST(OpenCodeCompactionHistoryLoadsUnhydratedSelectedChat)
 	UAM_ASSERT(saved && saved->messages[1].blocks[1].type == "context_compaction");
 }
 
-UAM_TEST(OpenCodeCompactionHistoryRejectsUnprovedAndForeignMetadata)
+UAM_TEST(OpenCodeCompactionHistoryIsolatesUnprovedSegmentsAndRejectsForeignMetadata)
 {
 	for (int mode = 0; mode < 7; ++mode)
 	{
@@ -176,9 +218,21 @@ UAM_TEST(OpenCodeCompactionHistoryRejectsUnprovedAndForeignMetadata)
 		if (mode == 4) fixture.foreign_session = "ses_foreign";
 		if (mode == 5) fixture.foreign_directory = "/foreign/workspace";
 		if (mode == 6) fixture.rows[1]["text"] = "Repeated synthetic summary ";
-		UAM_ASSERT(!fixture.Wait(false));
-		UAM_ASSERT_EQ(fixture.Chat().messages, before);
-		UAM_ASSERT_EQ(fixture.Boundaries(), std::size_t{0});
+		const bool independent_segment = mode == 0 || mode == 1 || mode == 2 || mode == 6;
+		if (independent_segment)
+		{
+			UAM_ASSERT(fixture.Wait());
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[1], before[1].blocks[1]);
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[5].type, std::string("context_compaction"));
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before[1].content);
+			UAM_ASSERT_EQ(fixture.Chat().messages[1].tool_calls, before[1].tool_calls);
+		}
+		else
+		{
+			UAM_ASSERT(!fixture.Wait(false));
+			UAM_ASSERT_EQ(fixture.Chat().messages, before);
+		}
+		UAM_ASSERT_EQ(fixture.Boundaries(), independent_segment ? std::size_t{1} : std::size_t{0});
 	}
 }
 
@@ -413,16 +467,56 @@ UAM_TEST(OpenCodeCompactionHistoryPreservesStaleUnsentFlagsAndAdmissionAuthority
 	UAM_ASSERT(saved && saved->messages.front() == before.front());
 }
 
+UAM_TEST(OpenCodeCompactionHistoryRepairsEmptyHeldQueueWithoutResumingIt)
+{
+	for (const bool retained_runtime : {false, true})
+	{
+		CompactionHistoryFixture fixture;
+		fixture.Chat().acp_queue_held = true;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		if (retained_runtime)
+		{
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = fixture.Chat().id; session->provider_id = "opencode-cli";
+			session->session_id = fixture.Chat().native_session_id;
+			session->queue_held = true;
+			session->turn_assistant_message_index = session->current_assistant_message_index = 1;
+			uam::acp_detail::RestoreTurnEventsFromMessageBlocks(*session, fixture.Chat().messages[1]);
+			fixture.app.acp_sessions.push_back(std::move(session));
+		}
+		const ChatSession before = fixture.Chat();
+		UAM_ASSERT(fixture.Wait());
+		UAM_ASSERT_EQ(fixture.Boundaries(), std::size_t{2});
+		UAM_ASSERT(fixture.Chat().acp_queue_held);
+		UAM_ASSERT(fixture.Chat().acp_queued_prompts.empty());
+		UAM_ASSERT_EQ(fixture.Chat().acp_dispatched_queued_prompt_count, std::size_t{0});
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before.messages[1].content);
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].tool_calls, before.messages[1].tool_calls);
+		if (retained_runtime)
+		{
+			UAM_ASSERT(fixture.app.acp_sessions.front()->queue_held);
+			UAM_ASSERT(fixture.app.acp_sessions.front()->queued_user_prompts.empty());
+			UAM_ASSERT_EQ(fixture.app.acp_sessions.front()->turn_events[1].type, std::string("context_compaction"));
+		}
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+		UAM_ASSERT(saved && saved->acp_queue_held && saved->acp_queued_prompts.empty() && saved->messages == fixture.Chat().messages);
+		for (int poll = 0; poll < 50; ++poll) UAM_ASSERT(!fixture.service->Poll(fixture.app));
+		UAM_ASSERT_EQ(fixture.queries.load(), 1);
+	}
+}
+
 UAM_TEST(OpenCodeCompactionHistoryWaitsForActualQueuedWork)
 {
 	for (const bool runtime_queue : {false, true})
 	{
 		CompactionHistoryFixture fixture;
+		fixture.Chat().acp_queue_held = true;
 		if (runtime_queue)
 		{
 			auto session = std::make_unique<uam::AcpSessionState>();
 			session->chat_id = fixture.Chat().id; session->provider_id = "opencode-cli";
 			session->queued_prompt = "Real queued synthetic input";
+			session->queue_held = true;
 			fixture.app.acp_sessions.push_back(std::move(session));
 		}
 		else
@@ -617,4 +711,325 @@ UAM_TEST(OpenCodeCompactionHistoryRepairsCompleteTextOnlyTimeline)
 	for (MessageBlock& block : restored.blocks)
 		if (block.type == "context_compaction") { block.type = "assistant_text"; block.request_id_json.clear(); }
 	UAM_ASSERT_EQ(restored, before);
+}
+
+UAM_TEST(OpenCodeCompactionHistoryKeepsPartialTailWhileRepairingProvenSegments)
+{
+	CompactionHistoryFixture fixture(32);
+	Message& assistant = fixture.Chat().messages[1];
+	for (std::size_t index = 0; index < 24; ++index)
+	{
+		MessageBlock& block = assistant.blocks[1 + index * 4];
+		block.type = "context_compaction";
+		block.request_id_json = "msg_summary_" + std::to_string(index);
+	}
+	// The final native compaction failed, and the interrupted ACP transcript retained only its prefix.
+	fixture.rows[1 + 31 * 3]["text"] = std::string(16800, 'x');
+	fixture.rows[1 + 31 * 3]["finish"] = nullptr;
+	fixture.rows[1 + 31 * 3]["errorType"] = "object";
+	fixture.rows[1 + 31 * 3]["nativeTail"] = 1;
+	fixture.rows[1 + 31 * 3]["turnEnded"] = 1;
+	assistant.blocks[1 + 31 * 4].text = std::string(16638, 'x');
+	assistant.blocks.erase(assistant.blocks.begin() + (2 + 31 * 4), assistant.blocks.end());
+	assistant.tool_calls.pop_back();
+	fixture.rows.erase(fixture.rows.begin() + (2 + 31 * 3), fixture.rows.end());
+	assistant.interrupted = true;
+	fixture.Chat().last_stop_reason = "timeout";
+	assistant.content.clear();
+	for (const MessageBlock& block : assistant.blocks)
+		if (block.type == "assistant_text" || block.type == "context_compaction") assistant.content += block.text;
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+	const Message before = assistant;
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = fixture.Chat().id; session->provider_id = "opencode-cli";
+	session->session_id = fixture.Chat().native_session_id;
+	session->turn_assistant_message_index = session->current_assistant_message_index = 1;
+	uam::acp_detail::RestoreTurnEventsFromMessageBlocks(*session, assistant);
+	session->tool_call_message_indices["earlier_tool"] = 0;
+	fixture.app.acp_sessions.push_back(std::move(session));
+	const auto owners = fixture.app.acp_sessions.front()->tool_call_message_indices;
+	UAM_ASSERT(fixture.Wait());
+	UAM_ASSERT_EQ(fixture.Boundaries(), std::size_t{31});
+	for (std::size_t index = 0; index < 24; ++index)
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[1 + index * 4], before.blocks[1 + index * 4]);
+	for (std::size_t index = 24; index < 31; ++index)
+	{
+		const MessageBlock& block = fixture.Chat().messages[1].blocks[1 + index * 4];
+		UAM_ASSERT_EQ(block.type, std::string("context_compaction"));
+		UAM_ASSERT_EQ(block.text, before.blocks[1 + index * 4].text);
+		UAM_ASSERT_EQ(block.request_id_json, "msg_summary_" + std::to_string(index));
+	}
+	MessageBlock interrupted = before.blocks[1 + 31 * 4];
+	interrupted.type = "context_compaction_interrupted";
+	interrupted.request_id_json = "msg_summary_31";
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[1 + 31 * 4], interrupted);
+	UAM_ASSERT_EQ(fixture.app.acp_sessions.front()->turn_events[1 + 31 * 4].type, interrupted.type);
+	UAM_ASSERT_EQ(fixture.app.acp_sessions.front()->turn_events[1 + 31 * 4].text, interrupted.text);
+	UAM_ASSERT_EQ(fixture.app.acp_sessions.front()->turn_events[1 + 31 * 4].request_id_json, interrupted.request_id_json);
+	UAM_ASSERT_EQ(fixture.app.acp_sessions.front()->tool_call_message_indices, owners);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before.content);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].tool_calls, before.tool_calls);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+	UAM_ASSERT(saved && saved->messages == fixture.Chat().messages);
+	for (int poll = 0; poll < 100; ++poll) (void)fixture.service->Poll(fixture.app);
+	UAM_ASSERT_EQ(fixture.queries.load(), 1);
+}
+
+UAM_TEST(OpenCodeCompactionHistoryRejectsUnprovedInterruptedPrefixes)
+{
+	for (int invalid = 0; invalid < 9; ++invalid)
+	{
+		CompactionHistoryFixture fixture;
+		Message& assistant = fixture.Chat().messages[1];
+		fixture.rows[4]["text"] = "Exact native failed summary with undelivered suffix.";
+		fixture.rows[4]["finish"] = nullptr;
+		fixture.rows[4]["errorType"] = "object";
+		fixture.rows[4]["nativeTail"] = 1;
+		fixture.rows[4]["turnEnded"] = 1;
+		assistant.blocks[5].text = "Exact native failed summary";
+		assistant.blocks.resize(6);
+		assistant.tool_calls.pop_back();
+		fixture.rows.erase(fixture.rows.begin() + 5, fixture.rows.end());
+		assistant.interrupted = true;
+		fixture.Chat().last_stop_reason = "timeout";
+		if (invalid == 0) assistant.blocks[5].text = "Different saved prefix";
+		if (invalid == 1) fixture.rows[3]["toolId"] = "foreign_tool_anchor";
+		if (invalid == 2)
+		{
+			assistant.blocks.push_back({"assistant_text", "Following output", "", ""});
+			fixture.rows.push_back({{"messageId", "msg_after_failed"}, {"partId", "part_after_failed"},
+			    {"type", "text"}, {"text", "Following output"}, {"summary", 0}, {"parentProof", 0}, {"finish", "stop"}, {"errorType", nullptr}});
+		}
+		if (invalid == 3) fixture.rows[4]["errorType"] = nullptr;
+		if (invalid == 4) fixture.rows[4]["parentProof"] = 0;
+		if (invalid == 5) assistant.interrupted = false;
+		if (invalid == 6) fixture.rows[4]["nativeTail"] = 0;
+		if (invalid == 7) fixture.rows[4]["turnEnded"] = 0;
+		if (invalid == 8) { fixture.rows[4].erase("nativeTail"); fixture.rows[4].erase("turnEnded"); }
+		assistant.content.clear();
+		for (const MessageBlock& block : assistant.blocks)
+			if (block.type == "assistant_text") assistant.content += block.text;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		const Message before = assistant;
+		if (invalid == 1) UAM_ASSERT(!fixture.Wait(false));
+		else UAM_ASSERT(fixture.Wait());
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[5], before.blocks[5]);
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before.content);
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].tool_calls, before.tool_calls);
+		UAM_ASSERT_EQ(fixture.Boundaries(), invalid == 1 ? std::size_t{0} : std::size_t{1});
+		UAM_ASSERT(std::ranges::none_of(fixture.Chat().messages[1].blocks,
+		    [](const MessageBlock& block) { return block.type == "context_compaction_interrupted"; }));
+	}
+}
+
+UAM_TEST(OpenCodeCompactionHistoryCommitsOnlyFullyMatchedToolSegments)
+{
+	CompactionHistoryFixture fixture;
+	fixture.rows[2]["text"] = "Unmatched ordinary text after the first summary.";
+	const Message before = fixture.Chat().messages[1];
+	UAM_ASSERT(fixture.Wait());
+	UAM_ASSERT_EQ(fixture.Boundaries(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[1], before.blocks[1]);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[3], before.blocks[3]);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[5].type, std::string("context_compaction"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before.content);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].tool_calls, before.tool_calls);
+}
+
+UAM_TEST(OpenCodeCompactionHistoryRepairsInterruptedTurnBeforeLaterUserTurn)
+{
+	for (const bool already_typed : {false, true})
+	{
+		CompactionHistoryFixture fixture;
+		Message& assistant = fixture.Chat().messages[1];
+		fixture.rows[4]["text"] = "Exact failed summary with an undelivered suffix.";
+		fixture.rows[4]["finish"] = nullptr;
+		fixture.rows[4]["errorType"] = "object";
+		fixture.rows[4]["nativeTail"] = 1;
+		fixture.rows[4]["turnEnded"] = 1;
+		fixture.rows.erase(fixture.rows.begin() + 5, fixture.rows.end());
+		assistant.blocks[5].text = "Exact failed summary";
+		assistant.blocks.resize(6);
+		assistant.tool_calls.pop_back();
+		assistant.interrupted = true;
+		if (already_typed)
+		{
+			assistant.blocks[5].type = "context_compaction_interrupted";
+			assistant.blocks[5].request_id_json = "acp-compaction:msg_summary_1";
+		}
+		assistant.content.clear();
+		for (const MessageBlock& block : assistant.blocks)
+			if (block.type == "assistant_text" || block.type == "context_compaction_interrupted") assistant.content += block.text;
+		const Message before = assistant;
+		Message user;
+		user.role = MessageRole::User; user.content = "A later independent request";
+		fixture.Chat().messages.push_back(std::move(user));
+		Message later;
+		later.role = MessageRole::Assistant; later.content = "A later ordinary answer";
+		later.blocks.push_back({"assistant_text", later.content, "", ""});
+		fixture.Chat().messages.push_back(later);
+		fixture.rows.push_back({{"messageId", "msg_later_reply"}, {"partId", "part_later_reply"},
+		    {"type", "text"}, {"text", later.content}, {"summary", 0}, {"parentProof", 0}, {"finish", "stop"}, {"errorType", nullptr}});
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		UAM_ASSERT(fixture.Wait());
+		UAM_ASSERT_EQ(fixture.Boundaries(), std::size_t{1});
+		const MessageBlock& repaired = fixture.Chat().messages[1].blocks[5];
+		UAM_ASSERT_EQ(repaired.type, std::string("context_compaction_interrupted"));
+		UAM_ASSERT_EQ(repaired.text, before.blocks[5].text);
+		UAM_ASSERT_EQ(repaired.request_id_json, already_typed ? before.blocks[5].request_id_json : std::string("msg_summary_1"));
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].content, before.content);
+		UAM_ASSERT_EQ(fixture.Chat().messages[1].tool_calls, before.tool_calls);
+		UAM_ASSERT_EQ(fixture.Chat().messages[3], later);
+	}
+}
+
+UAM_TEST(OpenCodeCompactionHistoryUsesVerifiedCheckpointWithRealNativeSqliteData)
+{
+	for (int variant = 0; variant < 9; ++variant)
+	{
+		CompactionHistoryFixture fixture(32);
+		fixture.service->Stop();
+		Message& assistant = fixture.Chat().messages[1];
+		for (int index = 0; index < 32; ++index)
+		{
+			MessageBlock& block = assistant.blocks[1 + index * 4];
+			block.text = std::string(index == 31 ? 7107 : 14000, static_cast<char>('a' + index % 26));
+			fixture.rows[1 + index * 3]["text"] = block.text;
+			if (index < 31)
+			{
+				block.type = "context_compaction";
+				block.request_id_json = "msg_summary_" + std::to_string(index);
+			}
+		}
+		if (variant == 1) fixture.rows[91]["text"] = "Changed native checkpoint body";
+		if (variant == 2 || variant == 4)
+		{
+			const int source = variant == 2 ? 91 : 1;
+			nlohmann::json duplicate = fixture.rows[source];
+			duplicate["partId"] = duplicate["partId"].get<std::string>() + "_duplicate";
+			fixture.rows.insert(fixture.rows.begin() + source + 1, duplicate);
+		}
+		if (variant == 3)
+		{
+			assistant.blocks[1].type = "assistant_text";
+			assistant.blocks[1].request_id_json.clear();
+		}
+		if (variant == 5) fixture.rows[90]["toolId"] = "foreign_previous_tool";
+		if (variant == 6) assistant.blocks[121].type = "context_compaction_interrupted";
+		if (variant == 8)
+		{
+			// The checkpoint's independently verified preceding tool still anchors a following interrupted prefix.
+			assistant.blocks.erase(assistant.blocks.begin() + 122, assistant.blocks.begin() + 125);
+			assistant.blocks.resize(123);
+			assistant.blocks.back().text.resize(7000);
+			assistant.interrupted = true;
+			fixture.rows.erase(fixture.rows.begin() + 92, fixture.rows.begin() + 94);
+			fixture.rows.erase(fixture.rows.begin() + 93, fixture.rows.end());
+			fixture.rows.back()["finish"] = nullptr;
+			fixture.rows.back()["errorType"] = "object";
+		}
+		assistant.content.clear();
+		for (const MessageBlock& block : assistant.blocks)
+			if (block.type == "assistant_text" || block.type == "context_compaction" || block.type == "context_compaction_interrupted")
+				assistant.content += block.text;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		const std::vector<Message> before = fixture.Chat().messages;
+		sqlite3* opened = nullptr;
+		UAM_ASSERT_EQ(sqlite3_open(":memory:", &opened), SQLITE_OK);
+		std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(opened, sqlite3_close);
+		UAM_ASSERT_EQ(sqlite3_exec(database.get(),
+		    "CREATE TABLE session(id TEXT PRIMARY KEY,directory TEXT);"
+		    "CREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,data TEXT,time_created INTEGER,time_updated INTEGER);"
+		    "CREATE TABLE part(id TEXT PRIMARY KEY,message_id TEXT,session_id TEXT,data TEXT,time_updated INTEGER);",
+		    nullptr, nullptr, nullptr), SQLITE_OK);
+		const auto insert = [&](const std::string& sql, const std::vector<std::string>& values)
+		{
+			sqlite3_stmt* raw = nullptr;
+			UAM_ASSERT_EQ(sqlite3_prepare_v2(database.get(), sql.c_str(), -1, &raw, nullptr), SQLITE_OK);
+			std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
+			for (std::size_t index = 0; index < values.size(); ++index)
+				UAM_ASSERT_EQ(sqlite3_bind_text(statement.get(), static_cast<int>(index + 1), values[index].c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+			UAM_ASSERT_EQ(sqlite3_step(statement.get()), SQLITE_DONE);
+		};
+		insert("INSERT INTO session VALUES(?,?)", {"ses_history", uam::paths::Utf8PathString(fixture.temp.root)});
+		for (std::size_t index = 0; index < fixture.rows.size(); ++index)
+		{
+			const nlohmann::json& row = fixture.rows[index];
+			const std::string message = row.at("messageId").get<std::string>();
+			nlohmann::json info = {{"role", "assistant"}, {"summary", row.at("summary") == 1}, {"finish", "stop"}};
+			if (row.at("summary") == 1)
+			{
+				const std::string parent = "parent_" + message;
+				info["parentID"] = parent; info["agent"] = "compaction"; info["mode"] = "compaction";
+				if (variant == 7 && message == "msg_summary_30") info["agent"] = "build";
+				if (row.at("finish").is_null()) { info["finish"] = nullptr; info["error"] = nlohmann::json::object(); }
+				insert("INSERT OR IGNORE INTO message VALUES(?,'ses_history',?,0,1)", {parent, nlohmann::json({{"role", "user"}}).dump()});
+				insert("INSERT OR IGNORE INTO part VALUES(?,?,'ses_history',?,1)",
+				    {"part_" + parent, parent, nlohmann::json({{"type", "text"}, {"text", "Continue"}}).dump()});
+			}
+			insert("INSERT OR IGNORE INTO message VALUES(?,'ses_history',?,?,1)", {message, info.dump(), std::to_string(index + 1)});
+			nlohmann::json part = {{"type", row.at("type")}};
+			if (row.at("type") == "text") part["text"] = row.at("text");
+			else part["callID"] = row.at("toolId");
+			insert("INSERT INTO part VALUES(?,?,'ses_history',?,1)", {row.at("partId").get<std::string>(), message, part.dump()});
+		}
+		std::atomic<int> completed{0}, proof{-1}, returned_rows{0};
+		std::atomic<std::size_t> returned_bytes{0};
+		uam::OpenCodeCompactionHistoryService service([&](const uam::OpenCodeCompactionHistoryService::Query& query, std::stop_token)
+		{
+			sqlite3_stmt* raw = nullptr;
+			UAM_ASSERT_EQ(sqlite3_prepare_v2(database.get(), query.sql.c_str(), -1, &raw, nullptr), SQLITE_OK);
+			std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
+			nlohmann::json output = nlohmann::json::array();
+			int status = SQLITE_OK;
+			while ((status = sqlite3_step(statement.get())) == SQLITE_ROW)
+			{
+				nlohmann::json envelope = nlohmann::json::object();
+				for (int column = 0; column < sqlite3_column_count(statement.get()); ++column)
+				{
+					const std::string key = sqlite3_column_name(statement.get(), column);
+					if (sqlite3_column_type(statement.get(), column) == SQLITE_INTEGER) envelope[key] = sqlite3_column_int64(statement.get(), column);
+					else envelope[key] = reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), column));
+				}
+				proof = envelope.at("checkpointProof").get<int>();
+				returned_rows = static_cast<int>(nlohmann::json::parse(envelope.at("rows").get<std::string>()).size());
+				output.push_back(std::move(envelope));
+			}
+			UAM_ASSERT_EQ(status, SQLITE_DONE);
+			ProcessExecutionResult result;
+			result.ok = true; result.exit_code = 0; result.output = output.dump();
+			returned_bytes = result.output.size(); ++completed;
+			return result;
+		});
+		bool changed = false;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (std::chrono::steady_clock::now() < deadline && !changed)
+		{
+			changed = service.Poll(fixture.app);
+			if (completed.load() > 0 && variant == 5) break;
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		service.Stop();
+		UAM_ASSERT_EQ(completed.load(), 1);
+		const bool verified = variant == 0 || variant == 6 || variant == 8;
+		UAM_ASSERT_EQ(proof.load(), verified ? 1 : 0);
+		if (verified)
+		{
+			UAM_ASSERT(returned_rows.load() < 10);
+			UAM_ASSERT(returned_bytes.load() < 25000);
+		}
+		else UAM_ASSERT(returned_bytes.load() > 400000);
+		if (variant == 5) UAM_ASSERT(!changed);
+		else UAM_ASSERT(changed);
+		const Message& after = fixture.Chat().messages[1];
+		UAM_ASSERT_EQ(after.content, before[1].content);
+		UAM_ASSERT_EQ(after.tool_calls, before[1].tool_calls);
+		UAM_ASSERT_EQ(fixture.Chat().messages.front(), before.front());
+		const std::size_t newest = variant == 8 ? 122 : 125;
+		UAM_ASSERT_EQ(after.blocks[newest].type, variant == 5 ? std::string("assistant_text") :
+		    variant == 8 ? std::string("context_compaction_interrupted") : std::string("context_compaction"));
+		for (std::size_t block = 0; block < before[1].blocks.size(); ++block)
+			if (block != newest && !(variant == 3 && block == 1)) UAM_ASSERT_EQ(after.blocks[block], before[1].blocks[block]);
+		if (variant == 3) UAM_ASSERT_EQ(after.blocks[1].type, std::string("context_compaction"));
+	}
 }

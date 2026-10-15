@@ -282,7 +282,7 @@ export function sanitizeToolCall(value: unknown): AcpToolCall | null {
 export function sanitizeTurnEvent(value: unknown): AcpTurnEvent | null {
   if (!isRecord(value)) return null
   const type = value.type
-  if (type === 'context_compaction') {
+  if (type === 'context_compaction' || type === 'context_compaction_interrupted') {
     const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
     return { type, text: stringOr(value.text), toolCallId: isString(value.toolCallId) ? value.toolCallId : undefined,
       requestId: isString(value.requestId) ? value.requestId : undefined,
@@ -837,6 +837,18 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     recoverableUnsentMessageIndices: Array.isArray(value.recoverableUnsentMessageIndices) ? value.recoverableUnsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
     queuedPrompts: Array.isArray(value.queuedPrompts)
       ? value.queuedPrompts.flatMap((prompt) => {
+          const sanitized = sanitizeQueuedPrompt(prompt)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    pendingDirectPrompts: Array.isArray(value.pendingDirectPrompts)
+      ? value.pendingDirectPrompts.flatMap((prompt) => {
+          const sanitized = sanitizeQueuedPrompt(prompt)
+          return sanitized ? [sanitized] : []
+        })
+      : [],
+    unsentDirectPrompts: Array.isArray(value.unsentDirectPrompts)
+      ? value.unsentDirectPrompts.flatMap((prompt) => {
           const sanitized = sanitizeQueuedPrompt(prompt)
           return sanitized ? [sanitized] : []
         })

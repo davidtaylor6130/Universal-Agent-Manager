@@ -188,9 +188,16 @@ function hasSubstantiveOutput(message: Message) {
     message.planEntries?.length || message.toolCalls?.length || message.blocks?.length || message.attachments?.length)
 }
 
-/** Native certainty owns recovery; keep original message positions for branch and retry requests. */
-export function projectUnsentPrompts(messages: Message[], historyStartIndex: number, knownIndices: readonly number[], retryIndices: readonly number[], heldPrompts: readonly AcpQueuedPrompt[] = []) {
-  if (knownIndices.length === 0 && !messages.some((message) => message.acpPromptDiscarded === true)) return { prompts: [] as UnsentPrompt[], hiddenIndices: new Set<number>() }
+function promptReferencesMessage(prompt: AcpQueuedPrompt, nativeIndex: number, message: Message) {
+  return Boolean(prompt.id && Number.isSafeInteger(prompt.revision) && prompt.revision! > 0 &&
+    !prompt.prepared && prompt.existingUserMessageIndex === nativeIndex && prompt.text === message.content &&
+    attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
+}
+
+/** Native certainty owns recovery; pending direct input stays visible without granting Retry authority. */
+export function projectUnsentPrompts(messages: Message[], historyStartIndex: number, knownIndices: readonly number[], retryIndices: readonly number[], heldPrompts: readonly AcpQueuedPrompt[] = [], pendingDirectPrompts: readonly AcpQueuedPrompt[] = []) {
+  const pendingIndices = new Set<number>()
+  if (knownIndices.length === 0 && heldPrompts.length === 0 && pendingDirectPrompts.length === 0 && !messages.some((message) => message.acpPromptDiscarded === true)) return { prompts: [] as UnsentPrompt[], hiddenIndices: new Set<number>(), pendingIndices }
   const known = new Set(knownIndices)
   const retryable = new Set(retryIndices)
   const hiddenIndices = new Set<number>()
@@ -198,17 +205,20 @@ export function projectUnsentPrompts(messages: Message[], historyStartIndex: num
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]
     const nativeIndex = historyStartIndex + index
-    if (message.role !== 'user' || !message.acpPromptNotSent || (!message.acpPromptDiscarded && !known.has(nativeIndex))) continue
+    if (message.role !== 'user' || !message.acpPromptNotSent) continue
     let end = index + 1
     while (end < messages.length && messages[end].role !== 'user') end += 1
     if (messages.slice(index + 1, end).some((output) => output.role !== 'assistant' || hasSubstantiveOutput(output))) continue
-    const representedByQueue = heldPrompts.some((prompt) => prompt.id && Number.isSafeInteger(prompt.revision) && prompt.revision! > 0 &&
-      !prompt.prepared && prompt.existingUserMessageIndex === nativeIndex && prompt.text === message.content &&
-      attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
+    if (!message.acpPromptDiscarded && pendingDirectPrompts.some((prompt) => promptReferencesMessage(prompt, nativeIndex, message))) {
+      pendingIndices.add(index)
+      continue
+    }
+    const representedByQueue = heldPrompts.some((prompt) => promptReferencesMessage(prompt, nativeIndex, message))
+    if (!representedByQueue && !message.acpPromptDiscarded && !known.has(nativeIndex)) continue
     if (!representedByQueue && !message.acpPromptDiscarded) prompts.push({ messageIndex: nativeIndex, text: message.content, attachments: message.attachments ?? [], retryable: retryable.has(nativeIndex) })
     for (let hidden = index; hidden < end; hidden += 1) hiddenIndices.add(hidden)
   }
-  return { prompts, hiddenIndices }
+  return { prompts, hiddenIndices, pendingIndices }
 }
 
 function canRetryMessageInPlace(messages: Message[], messageIndex: number) {
@@ -352,6 +362,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   message,
   hasDeliveredResponse,
   hasStoppedResponse,
+  pendingDirectAdmission,
   disclosureState,
   index,
   assistantLabel,
@@ -372,6 +383,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   message: Message
   hasDeliveredResponse: boolean
   hasStoppedResponse: boolean
+  pendingDirectAdmission: boolean
   disclosureState: WorkTraceDisclosureState
   index: number
   assistantLabel: string
@@ -389,9 +401,9 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectBranch: (parentId: string, index: number, sessionId: string) => void
   onSelectTool: (messageId: string, toolId: string) => void
 }) {
-  if (message.blocks?.length === 1 && message.blocks[0].type === 'context_compaction') {
+  if (message.blocks?.length === 1 && (message.blocks[0].type === 'context_compaction' || message.blocks[0].type === 'context_compaction_interrupted')) {
     const block = message.blocks[0]
-    return <CompactionSeparator summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} />
+    return <CompactionSeparator summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
   }
   const isUserMessage = message.role === 'user'
   const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
@@ -443,7 +455,7 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
           workingMode={workingMode}
         />
 		</MessageFrame>
-      {isUserMessage && message.interrupted && !(hasDeliveredResponse && hasStoppedResponse) &&
+      {isUserMessage && message.interrupted && !pendingDirectAdmission && !(hasDeliveredResponse && hasStoppedResponse) &&
         <InterruptedDivider label={message.acpPromptNotSent && !hasDeliveredResponse ? 'Message was not sent' : 'Response interrupted'} />}
       {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
         <InterruptedDivider label={stoppedResponseLabel(message.stopReason, message.interrupted)} />}
@@ -548,8 +560,21 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const historyLoading = messages.length === 0 && !chatHistoryError && (
     (historyPageMissing && (session.messageCount ?? 0) > 0) || chatHistoryRetryingIds.has(session.id)
   )
-  const unsentProjection = useMemo(() => projectUnsentPrompts(messages, historyStartIndex, acp?.unsentMessageIndices ?? [], acp?.recoverableUnsentMessageIndices ?? [], acp?.queueHeld ? acp.queuedPrompts ?? [] : []),
-    [messages, historyStartIndex, acp?.unsentMessageIndices, acp?.recoverableUnsentMessageIndices, acp?.queueHeld, acp?.queuedPrompts])
+  const unsentProjection = useMemo(() => projectUnsentPrompts(messages, historyStartIndex, acp?.unsentMessageIndices ?? [], acp?.recoverableUnsentMessageIndices ?? [], acp?.queuedPrompts ?? [], acp?.pendingDirectPrompts ?? []),
+    [messages, historyStartIndex, acp?.unsentMessageIndices, acp?.recoverableUnsentMessageIndices, acp?.queuedPrompts, acp?.pendingDirectPrompts])
+  const unsentPrompts = useMemo<UnsentPrompt[]>(() => [
+    ...unsentProjection.prompts,
+    ...(acp?.unsentDirectPrompts ?? []).map((prompt, index) => ({
+      recoveryPending: true, messageIndex: -1 - index, text: prompt.text, attachments: messageAttachments(prompt), retryable: true,
+      receipt: prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined,
+    })),
+    ...(acp?.pendingDirectPrompts ?? []).filter((prompt) => !messages.some((message, index) =>
+      message.role === 'user' && promptReferencesMessage(prompt, historyStartIndex + index, message))).map((prompt, index) => ({
+      sending: true, recoveryPending: true, messageIndex: -1 - (acp?.unsentDirectPrompts?.length ?? 0) - index,
+      text: prompt.text, attachments: messageAttachments(prompt), retryable: false,
+      receipt: prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined,
+    })),
+  ], [unsentProjection.prompts, acp?.unsentDirectPrompts, acp?.pendingDirectPrompts, messages, historyStartIndex])
   const navigableUserMessageIndices = useMemo(() => {
     if (!acp?.unsentMessageIndices?.length && unsentProjection.hiddenIndices.size === 0) return session.userMessageIndices
     const known = new Set(acp?.unsentMessageIndices ?? [])
@@ -1435,6 +1460,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     acp?.pendingPermission ||
     acp?.pendingUserInput ||
     (acp?.queuedPrompts?.length ?? 0) > 0 ||
+    (acp?.pendingDirectPrompts?.length ?? 0) > 0 ||
+    (acp?.unsentDirectPrompts?.length ?? 0) > 0 ||
     cli?.running
   )
   const openWorkspace = async () => {
@@ -1571,7 +1598,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const unsupportedProviderMessage = providerSupported
     ? ''
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
-  const canChangeProvider = !acp?.processing && !(acp?.queuedPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
+  const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
+  const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
+  const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
   const createMessageBranch = useCallback(async (messageIndex: number, content?: string, retainedAttachmentIds?: string[]) => {
     const generation = ++messageBranchGenerationRef.current
     const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
@@ -2581,6 +2610,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         message={message}
                         hasDeliveredResponse={hasDeliveredResponse}
                         hasStoppedResponse={hasStoppedResponse}
+                        pendingDirectAdmission={unsentProjection.pendingIndices.has(index)}
                         disclosureState={disclosureState}
                         index={index + historyStartIndex}
                         assistantLabel={reviewAssistantLabel(messageProviderName, message)}
@@ -2589,7 +2619,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         sessionBranchFromMessageIndex={session.branchFromMessageIndex}
                         sessionBranchMessageEdited={session.branchMessageEdited}
                         branchSessions={branchSessions}
-                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || unsentProjection.pendingIndices.has(index)}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
                         retryInPlace={index === retryInPlaceMessageIndex}
@@ -2927,11 +2957,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 {attachmentError}
               </Notice>
             )}
-            <InlinePromptQueue key={session.id} unsentPrompts={unsentProjection.prompts}
-              unsentActionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null}
+            <InlinePromptQueue key={session.id} unsentPrompts={unsentPrompts}
+              unsentActionsDisabled={session.importedReadOnly || !canManageUnsent || branchingMessageIndex !== null || editingMessageIndex !== null}
+              unsentReceiptDeleteDisabled={session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null}
               onEditUnsent={isCompanionContext() ? undefined : beginEditingMessage}
-              onRemoveUnsent={isCompanionContext() ? undefined : (index) => {
-                if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return Promise.resolve(false)
+              onRemoveUnsent={isCompanionContext() ? undefined : (index, receipt) => {
+                if (session.importedReadOnly || (receipt ? !canDeleteUnsentReceipt : !canManageUnsent) || branchingMessageIndex !== null || editingMessageIndex !== null) return Promise.resolve(false)
+                if (receipt) return removeQueuedAcpPrompt(session.id, 0, receipt)
                 return discardUnsentMessage(session.id, index, messages[index - historyStartIndex]?.id ?? '')
               }}
               onRetryUnsent={isCompanionContext() ? undefined : async (index) => {
@@ -2948,7 +2980,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   if (ownsFeedback()) setBranchingMessageIndex(null)
                 }
               }}
-              held={acp?.queueHeld ?? false} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
+              held={Boolean(acp?.queueHeld && acp.queuedPrompts?.length)} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
               onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}
               onReorder={(expected, orderedIds) => reorderQueuedAcpPrompts(session.id, expected, orderedIds)}
               onRemove={(index, expected) => expected ? removeQueuedAcpPrompt(session.id, index, expected) : removeQueuedAcpPrompt(session.id, index)}

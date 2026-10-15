@@ -454,7 +454,8 @@ function turnEventsEquivalent(existing: AcpTurnEvent[], next: AcpTurnEvent[]) {
   return existing.every((event, index) => {
     const other = next[index]
     if (event.type !== other.type) return false
-    if (event.type === 'context_compaction' && other.type === 'context_compaction' &&
+    if ((event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') &&
+      (other.type === 'context_compaction' || other.type === 'context_compaction_interrupted') &&
       (event.tokensBefore !== other.tokensBefore || event.tokensAfter !== other.tokensAfter)) return false
     if ('text' in event || 'text' in other) {
       if ((event as { text?: string }).text !== (other as { text?: string }).text) return false
@@ -570,6 +571,8 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     sameArrayEntries(existing.unsentMessageIndices ?? [], next.unsentMessageIndices ?? []) &&
     sameArrayEntries(existing.recoverableUnsentMessageIndices ?? [], next.recoverableUnsentMessageIndices ?? []) &&
     queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
+    queuedPromptsEquivalent(existing.pendingDirectPrompts ?? [], next.pendingDirectPrompts ?? []) &&
+    queuedPromptsEquivalent(existing.unsentDirectPrompts ?? [], next.unsentDirectPrompts ?? []) &&
     existing.waitIsStale === next.waitIsStale &&
     existing.waitStaleReason === next.waitStaleReason &&
     existing.waitSeconds === next.waitSeconds &&
@@ -688,6 +691,8 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     unsentMessageIndices: acp?.unsentMessageIndices ?? [],
     recoverableUnsentMessageIndices: acp?.recoverableUnsentMessageIndices ?? [],
     queuedPrompts: acp?.queuedPrompts ?? [],
+    pendingDirectPrompts: acp?.pendingDirectPrompts ?? [],
+    unsentDirectPrompts: acp?.unsentDirectPrompts ?? [],
     waitIsStale: Boolean(acp?.waitIsStale),
     waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
     waitSeconds: typeof acp?.waitSeconds === 'number' ? acp.waitSeconds : 0,
@@ -987,7 +992,8 @@ export function messageBlocksEquivalent(existing: MessageBlock[], next: MessageB
   if (existing.length !== next.length) return false
   return existing.every((block, index) => {
     const other = next[index]
-    if (block.type === 'context_compaction' && other.type === 'context_compaction' &&
+    if ((block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') &&
+      (other.type === 'context_compaction' || other.type === 'context_compaction_interrupted') &&
       (block.tokensBefore !== other.tokensBefore || block.tokensAfter !== other.tokensAfter)) return false
     return (
       block.type === other.type &&

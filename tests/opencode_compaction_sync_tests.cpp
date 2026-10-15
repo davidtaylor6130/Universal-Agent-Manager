@@ -81,3 +81,98 @@ UAM_TEST(OpenCodeNativeCompactionBaselineFailurePreservesUnsentInput)
 	UAM_ASSERT(fixture.app.chats.front().messages.front().acp_prompt_not_sent);
 	UAM_ASSERT(fixture.session.last_error.find("metadata schema") != std::string::npos);
 }
+
+namespace
+{
+	void SendNativeAssistantText(NativeCompactionGateFixture& fixture, const std::string& text,
+	                             const nlohmann::json& message_id, const nlohmann::json& native_session = "ses_owned")
+	{
+		fixture.session.prompt_request_id = 13;
+		fixture.session.queued_prompt.clear();
+		UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, fixture.session, fixture.app.chats.front(),
+		    nlohmann::json{{"method", "session/update"}, {"params", {{"sessionId", native_session},
+		        {"update", {{"sessionUpdate", "agent_message_chunk"}, {"messageId", message_id},
+		            {"content", {{"type", "text"}, {"text", text}}}}}}}}.dump()));
+	}
+}
+
+UAM_TEST(OpenCodeAssistantMessageIdentityMergesOnlyMatchingNativeChunks)
+{
+	NativeCompactionGateFixture fixture;
+	SendNativeAssistantText(fixture, "Same", "msg_first");
+	SendNativeAssistantText(fixture, " text", "msg_first");
+	SendNativeAssistantText(fixture, "Same text", "msg_second");
+	SendNativeAssistantText(fixture, "Same text extended", "msg_third");
+	const std::vector<uam::AcpTurnEventState>& events = fixture.session.turn_events;
+	UAM_ASSERT_EQ(events.size(), std::size_t{3});
+	UAM_ASSERT_EQ(events[0].text, std::string("Same text"));
+	UAM_ASSERT_EQ(events[1].text, std::string("Same text"));
+	UAM_ASSERT_EQ(events[2].text, std::string("Same text extended"));
+	const std::vector<MessageBlock>& blocks = fixture.app.chats.front().messages.back().blocks;
+	UAM_ASSERT_EQ(blocks.size(), std::size_t{3});
+	for (std::size_t index = 0; index < events.size(); ++index)
+	{
+		UAM_ASSERT_EQ(blocks[index].text, events[index].text);
+		UAM_ASSERT_EQ(blocks[index].request_id_json, events[index].request_id_json);
+	}
+	UAM_ASSERT_EQ(blocks[0].request_id_json, std::string("opencode-message:msg_first"));
+	UAM_ASSERT_EQ(blocks[1].request_id_json, std::string("opencode-message:msg_second"));
+	UAM_ASSERT_EQ(blocks[2].request_id_json, std::string("opencode-message:msg_third"));
+	NativeCompactionGateFixture prefix;
+	SendNativeAssistantText(prefix, "Prefix", "msg_before");
+	SendNativeAssistantText(prefix, "Prefix extended", "msg_after");
+	UAM_ASSERT_EQ(prefix.session.turn_events.back().text, std::string("Prefix extended"));
+	NativeCompactionGateFixture incremental;
+	SendNativeAssistantText(incremental, "a", "msg_incremental");
+	SendNativeAssistantText(incremental, "ab", "msg_incremental");
+	UAM_ASSERT_EQ(incremental.session.turn_events.front().text, std::string("aab"));
+	SendNativeAssistantText(incremental, "aaa", "msg_incremental");
+	SendNativeAssistantText(incremental, "aaa", "msg_incremental");
+	UAM_ASSERT_EQ(incremental.session.turn_events.size(), std::size_t{1});
+	UAM_ASSERT_EQ(incremental.session.turn_events.front().text, std::string("aabaaaaaa"));
+	UAM_ASSERT_EQ(incremental.app.chats.front().messages.back().content, std::string("aabaaaaaa"));
+	UAM_ASSERT_EQ(incremental.app.chats.front().messages.back().blocks.front().text, std::string("aabaaaaaa"));
+}
+
+UAM_TEST(OpenCodeAssistantMessageIdentityRejectsInvalidNativeIds)
+{
+	for (const nlohmann::json& invalid : {nlohmann::json(""), nlohmann::json("msg bad"),
+	     nlohmann::json("../msg"), nlohmann::json("-msg"), nlohmann::json(std::string(513, 'x')),
+	     nlohmann::json(42), nlohmann::json(nullptr)})
+	{
+		NativeCompactionGateFixture fixture;
+		SendNativeAssistantText(fixture, "First", invalid);
+		SendNativeAssistantText(fixture, " second", invalid);
+		UAM_ASSERT_EQ(fixture.session.turn_events.size(), std::size_t{1});
+		UAM_ASSERT(fixture.session.turn_events.front().request_id_json.empty());
+		UAM_ASSERT_EQ(fixture.app.chats.front().messages.back().blocks.size(), std::size_t{1});
+		UAM_ASSERT(fixture.app.chats.front().messages.back().blocks.front().request_id_json.empty());
+	}
+	NativeCompactionGateFixture boundary;
+	SendNativeAssistantText(boundary, "Bounded", std::string(512, 'x'));
+	UAM_ASSERT_EQ(boundary.session.turn_events.front().request_id_json, "opencode-message:" + std::string(512, 'x'));
+	for (const nlohmann::json& foreign : {nlohmann::json("ses_foreign"), nlohmann::json(7), nlohmann::json(nullptr)})
+	{
+		NativeCompactionGateFixture fixture;
+		SendNativeAssistantText(fixture, "Foreign scope", "msg_known", foreign);
+		for (const uam::AcpTurnEventState& event : fixture.session.turn_events)
+			UAM_ASSERT(event.request_id_json.empty());
+		for (const Message& message : fixture.app.chats.front().messages)
+			for (const MessageBlock& block : message.blocks)
+				UAM_ASSERT(block.request_id_json.empty());
+	}
+}
+
+UAM_TEST(AssistantMessageIdentityLeavesOtherProvidersAndDefaultHelperUnchanged)
+{
+	NativeCompactionGateFixture fixture;
+	fixture.session.provider_id = fixture.app.chats.front().provider_id = "gemini-cli";
+	SendNativeAssistantText(fixture, "First", "msg_first");
+	SendNativeAssistantText(fixture, " second", "msg_second");
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.app.chats.front(), fixture.session, " third");
+	UAM_ASSERT_EQ(fixture.session.turn_events.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.session.turn_events.front().text, std::string("First second third"));
+	UAM_ASSERT(fixture.session.turn_events.front().request_id_json.empty());
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.back().blocks.size(), std::size_t{1});
+	UAM_ASSERT(fixture.app.chats.front().messages.back().blocks.front().request_id_json.empty());
+}

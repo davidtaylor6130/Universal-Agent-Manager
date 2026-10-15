@@ -23,12 +23,23 @@
 
 namespace uam
 {
+std::string OpenCodeCompactionProofSql()
+{
+	// Native compaction can retain an ordinary text-only user parent.
+	return "json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.summary')=1 AND "
+	    "EXISTS(SELECT 1 FROM message u WHERE u.id=json_extract(m.data,'$.parentID') AND u.session_id=m.session_id "
+	    "AND json_extract(u.data,'$.role')='user' AND ("
+	    "(json_extract(m.data,'$.agent')='compaction' AND json_extract(m.data,'$.mode')='compaction') OR "
+	    "EXISTS(SELECT 1 FROM part c WHERE c.message_id=u.id AND c.session_id=u.session_id "
+	    "AND json_extract(c.data,'$.type')='compaction')))";
+}
+
 namespace
 {
 	constexpr std::size_t kPrimaryBytes = 8 * 1024 * 1024;
 	constexpr std::size_t kQueryBytes = 4 * 1024 * 1024;
 	constexpr std::size_t kPartLimit = 4096;
-	constexpr int kQueryTimeoutMs = 5000;
+	constexpr int kQueryTimeoutMs = 30000;
 
 	struct Identity
 	{
@@ -55,9 +66,10 @@ namespace
 
 	bool Idle(const AppState& app, const ChatSession& chat)
 	{
+		// An empty held queue is a dispatch policy, not pending work; classification preserves it.
 		if (chat.provider_id != provider_ids::kOpenCodeCli || chat.native_session_id.empty() ||
 		    chat.imported_read_only || chat.side_cleanup_requested || chat.native_session_reset_pending ||
-		    chat.acp_queue_storage_error || chat.acp_queue_held || !chat.acp_queued_prompts.empty() ||
+		    chat.acp_queue_storage_error || !chat.acp_queued_prompts.empty() ||
 		    chat.acp_dispatched_queued_prompt_count != 0 || chat.remote_turn_reconnect_pending ||
 		    chat.remote_stop_cleanup_pending || chat.remote_restart_pending || chat.remote_source_exit_pending ||
 		    !chat.remote_active_turn_id.empty() || !chat.remote_prompt_delivery_id.empty() ||
@@ -131,22 +143,91 @@ namespace
 		return result + "'";
 	}
 
-	std::string HistorySql(const Identity& identity)
+	struct Checkpoint
 	{
-		return "WITH selected AS (SELECT m.id message_id,p.id part_id,json_extract(p.data,'$.type') type,"
+		std::size_t message = 0, block = 0;
+		std::string id, text, previous_tool;
+		nlohmann::json prefix_counts = nlohmann::json::object();
+	};
+
+	/// <summary>Captures a completed saved boundary; native SQL must still prove its identity and prefix coverage.</summary>
+	std::optional<Checkpoint> SavedCheckpoint(const ChatSession& chat)
+	{
+		std::optional<Checkpoint> checkpoint;
+		nlohmann::json counts = nlohmann::json::object();
+		std::string previous_tool;
+		for (std::size_t message = 0; message < chat.messages.size(); ++message)
+		{
+			if (chat.messages[message].role != MessageRole::Assistant) continue;
+			for (std::size_t block = 0; block < chat.messages[message].blocks.size(); ++block)
+			{
+				const MessageBlock& value = chat.messages[message].blocks[block];
+				if (value.type == "tool_call") previous_tool = value.tool_call_id;
+				if ((value.type != "context_compaction" && value.type != "context_compaction_interrupted") || value.text.empty()) continue;
+				const std::string id = value.request_id_json.starts_with("acp-compaction:") ? value.request_id_json.substr(15) : value.request_id_json;
+				if (!PortableId(id)) return {};
+				counts[id] = counts.value(id, 0) + 1;
+				if (value.type == "context_compaction" && value.text.size() <= 64 * 1024 && value.text.find('\0') == std::string::npos &&
+				    (previous_tool.empty() || PortableId(previous_tool)))
+					checkpoint = Checkpoint{message, block, id, value.text, previous_tool, counts};
+			}
+		}
+		return checkpoint;
+	}
+
+	std::string HistorySql(const Identity& identity, const std::optional<Checkpoint>& checkpoint = {})
+	{
+		std::string prefix;
+		if (checkpoint)
+		{
+			prefix = "candidate AS (SELECT m.time_created created,m.id message_id,p.id part_id FROM message m JOIN part p "
+			    "ON p.message_id=m.id AND p.session_id=m.session_id WHERE m.session_id=" + SqlLiteral(identity.native) +
+			    " AND m.id=" + SqlLiteral(checkpoint->id) + " AND json_extract(m.data,'$.role')='assistant' AND " +
+			    OpenCodeCompactionProofSql() + " AND json_extract(p.data,'$.type')='text' AND json_extract(p.data,'$.text')=" +
+			    SqlLiteral(checkpoint->text) + " AND json_type(m.data,'$.finish')='text' "
+			    "AND length(CAST(json_extract(m.data,'$.finish') AS BLOB)) BETWEEN 1 AND 128 AND coalesce(json_type(m.data,'$.error'),'null')='null'),"
+			    "checkpoint AS (SELECT c.* FROM candidate c WHERE (SELECT count(*) FROM candidate)=1 AND NOT EXISTS("
+			    "SELECT m.id FROM message m JOIN part p ON p.message_id=m.id AND p.session_id=m.session_id "
+			    "WHERE m.session_id=" + SqlLiteral(identity.native) + " AND json_extract(m.data,'$.role')='assistant' "
+			    "AND json_extract(m.data,'$.summary')=1 AND json_extract(p.data,'$.type')='text' "
+			    "AND (m.time_created,m.id,p.id)<=(c.created,c.message_id,c.part_id) GROUP BY m.id "
+			    "HAVING count(*)!=coalesce((SELECT value FROM json_each(" + SqlLiteral(checkpoint->prefix_counts.dump()) +
+			    ") WHERE key=m.id),0)) AND coalesce((SELECT json_extract(p.data,'$.callID') FROM message m JOIN part p "
+			    "ON p.message_id=m.id AND p.session_id=m.session_id WHERE m.session_id=" + SqlLiteral(identity.native) +
+			    " AND json_extract(m.data,'$.role')='assistant' AND json_extract(p.data,'$.type')='tool' "
+			    "AND (m.time_created,m.id,p.id)<(c.created,c.message_id,c.part_id) "
+			    "ORDER BY m.time_created DESC,m.id DESC,p.id DESC LIMIT 1),'')=" + SqlLiteral(checkpoint->previous_tool);
+			if (!checkpoint->previous_tool.empty())
+				prefix += " AND (SELECT count(*) FROM part WHERE session_id=" + SqlLiteral(identity.native) +
+				    " AND json_extract(data,'$.type')='tool' AND json_extract(data,'$.callID')=" + SqlLiteral(checkpoint->previous_tool) + ")=1";
+			prefix += "),";
+		}
+		return "WITH " + prefix + "selected AS (SELECT m.id message_id,p.id part_id,json_extract(p.data,'$.type') type,"
 		    "CASE WHEN json_extract(p.data,'$.type')='text' THEN json_extract(p.data,'$.text') ELSE NULL END text,"
 		    "CASE WHEN json_extract(p.data,'$.type')='tool' THEN json_extract(p.data,'$.callID') ELSE NULL END tool_id,"
 		    "coalesce(json_extract(m.data,'$.summary'),0) summary,json_extract(m.data,'$.finish') finish,"
-		    "json_type(m.data,'$.error') error_type,CASE WHEN json_extract(m.data,'$.summary')=1 THEN "
-		    "EXISTS(SELECT 1 FROM message u WHERE u.id=json_extract(m.data,'$.parentID') AND u.session_id=m.session_id "
-		    "AND json_extract(u.data,'$.role')='user' AND EXISTS(SELECT 1 FROM part c WHERE c.message_id=u.id "
-		    "AND c.session_id=u.session_id AND json_extract(c.data,'$.type')='compaction')) ELSE 0 END parent_proof "
+		    "json_type(m.data,'$.error') error_type,CASE WHEN " + OpenCodeCompactionProofSql() + " THEN 1 ELSE 0 END parent_proof,"
+		    "NOT EXISTS(SELECT 1 FROM part tail WHERE tail.message_id=m.id AND tail.session_id=m.session_id "
+		    "AND tail.id>p.id AND json_extract(tail.data,'$.type') IN ('text','tool')) native_tail,"
+		    "CASE WHEN json_extract(m.data,'$.summary')=1 AND json_type(m.data,'$.error')='object' THEN "
+		    "NOT EXISTS(SELECT 1 FROM message n JOIN part np ON np.message_id=n.id AND np.session_id=n.session_id "
+		    "WHERE n.session_id=m.session_id AND json_extract(n.data,'$.role')='assistant' "
+		    "AND json_extract(np.data,'$.type') IN ('text','tool') AND (n.time_created,n.id)>(m.time_created,m.id) "
+		    "AND NOT EXISTS(SELECT 1 FROM message fresh WHERE fresh.session_id=m.session_id "
+		    "AND json_extract(fresh.data,'$.role')='user' AND (fresh.time_created,fresh.id)>(m.time_created,m.id) "
+		    "AND (fresh.time_created,fresh.id)<(n.time_created,n.id) "
+		    "AND EXISTS(SELECT 1 FROM part ft WHERE ft.message_id=fresh.id AND ft.session_id=fresh.session_id "
+		    "AND json_extract(ft.data,'$.type')='text') "
+		    "AND NOT EXISTS(SELECT 1 FROM part fc WHERE fc.message_id=fresh.id AND fc.session_id=fresh.session_id "
+		    "AND json_extract(fc.data,'$.type')='compaction'))) ELSE 0 END turn_ended "
 		    "FROM message m JOIN part p ON p.message_id=m.id AND p.session_id=m.session_id WHERE m.session_id=" + SqlLiteral(identity.native) +
-		    " AND json_extract(m.data,'$.role')='assistant' AND json_extract(p.data,'$.type') IN ('text','tool') "
+		    " AND json_extract(m.data,'$.role')='assistant' AND json_extract(p.data,'$.type') IN ('text','tool') " +
+		    (checkpoint ? "AND (NOT EXISTS(SELECT 1 FROM checkpoint) OR (m.time_created,m.id,p.id)>(SELECT created,message_id,part_id FROM checkpoint)) " : "") +
 		    "ORDER BY m.time_created,m.id,p.id LIMIT " + std::to_string(kPartLimit + 1) +
-		    ") SELECT s.id sessionId,s.directory,(SELECT json_group_array(json_object('messageId',message_id,"
+		    ") SELECT s.id sessionId,s.directory," + (checkpoint ? "(SELECT count(*) FROM checkpoint)" : "0") +
+		    " checkpointProof,(SELECT json_group_array(json_object('messageId',message_id,"
 		    "'partId',part_id,'type',type,'text',text,'toolId',tool_id,'summary',summary,'parentProof',parent_proof,"
-		    "'finish',finish,'errorType',error_type)) FROM selected) rows FROM session s WHERE s.id=" + SqlLiteral(identity.native);
+		    "'finish',finish,'errorType',error_type,'nativeTail',native_tail,'turnEnded',turn_ended)) FROM selected) rows FROM session s WHERE s.id=" + SqlLiteral(identity.native);
 	}
 
 	ProcessExecutionResult Execute(const OpenCodeCompactionHistoryService::Query& query, std::stop_token stop)
@@ -186,17 +267,22 @@ namespace
 		std::size_t message = 0, block = 0;
 		std::string id;
 		bool remove = false;
+		std::string type = "context_compaction";
 	};
 	struct NativeText
 	{
 		std::string text, summary;
+		bool verified = true;
+		bool interrupted = false;
+		bool native_tail = false;
+		bool turn_ended = false;
 	};
 	struct StoredText
 	{
 		std::size_t message = 0, block = 0;
 	};
 
-	std::optional<std::vector<Change>> Classify(ChatSession& chat, const Identity& identity, const ProcessExecutionResult& result)
+	std::optional<std::vector<Change>> Classify(ChatSession& chat, const Identity& identity, const ProcessExecutionResult& result, const std::optional<Checkpoint>& checkpoint = {})
 	{
 		if (!result.ok || result.exit_code != 0 || result.canceled || result.timed_out || result.output_truncated || result.output.size() > kQueryBytes) return {};
 		const nlohmann::json output = nlohmann::json::parse(result.output);
@@ -209,10 +295,17 @@ namespace
 		if (!workspace_matches) return {};
 		const nlohmann::json rows = nlohmann::json::parse(envelope.at("rows").get<std::string>());
 		if (!rows.is_array() || rows.size() > kPartLimit) return {};
+		const int checkpoint_proof = envelope.value("checkpointProof", 0);
+		if (checkpoint_proof != 0 && checkpoint_proof != 1) return {};
+		const bool resumed = checkpoint_proof == 1;
+		if (resumed && !checkpoint) return {};
 		std::vector<std::string> native_tools, stored_tools;
-		std::vector<std::vector<NativeText>> native_segments(1);
-		std::vector<std::vector<StoredText>> stored_segments(1);
+		const bool anchored = resumed && !checkpoint->previous_tool.empty();
+		if (anchored) { native_tools.push_back(checkpoint->previous_tool); stored_tools.push_back(checkpoint->previous_tool); }
+		std::vector<std::vector<NativeText>> native_segments(anchored ? 2 : 1);
+		std::vector<std::vector<StoredText>> stored_segments(anchored ? 2 : 1);
 		std::set<std::string> parts, tools;
+		if (anchored) tools.insert(checkpoint->previous_tool);
 		for (const nlohmann::json& row : rows)
 		{
 			const std::string message = row.at("messageId").get<std::string>();
@@ -233,22 +326,26 @@ namespace
 				if (summary)
 				{
 					const nlohmann::json& finish = row.at("finish");
-					if (text.text.empty() || row.at("parentProof") != 1 || !finish.is_string() ||
-					    finish.get_ref<const std::string&>().empty() || finish.get_ref<const std::string&>().size() > 128 ||
-					    (!row.at("errorType").is_null() && row.at("errorType") != "null")) return {};
+					const bool parent_proven = !text.text.empty() && row.at("parentProof") == 1;
 					text.summary = message;
+					text.verified = parent_proven && finish.is_string() && !finish.get_ref<const std::string&>().empty() &&
+					    finish.get_ref<const std::string&>().size() <= 128 && (row.at("errorType").is_null() || row.at("errorType") == "null");
+					text.interrupted = parent_proven && finish.is_null() && row.at("errorType") == "object";
+					text.native_tail = row.contains("nativeTail") && row.at("nativeTail") == 1;
+					text.turn_ended = row.contains("turnEnded") && row.at("turnEnded") == 1;
 				}
 				native_segments.back().push_back(std::move(text));
 			}
 			else return {};
 		}
 		tools.clear();
-		for (std::size_t message = 0; message < chat.messages.size(); ++message)
+		if (anchored) tools.insert(checkpoint->previous_tool);
+		for (std::size_t message = resumed ? checkpoint->message : 0; message < chat.messages.size(); ++message)
 		{
 			const Message& row = chat.messages[message];
 			if (row.role != MessageRole::Assistant) continue;
 			if (row.blocks.empty() && (!row.content.empty() || !row.tool_calls.empty())) return {};
-			for (std::size_t block = 0; block < row.blocks.size(); ++block)
+			for (std::size_t block = resumed && message == checkpoint->message ? checkpoint->block + 1 : 0; block < row.blocks.size(); ++block)
 			{
 				const MessageBlock& value = row.blocks[block];
 				if (value.type == "tool_call")
@@ -256,7 +353,8 @@ namespace
 					if (!PortableId(value.tool_call_id) || !tools.insert(value.tool_call_id).second) return {};
 					stored_tools.push_back(value.tool_call_id); stored_segments.emplace_back();
 				}
-				else if (value.type == "assistant_text" || (value.type == "context_compaction" && !value.text.empty()))
+				else if (value.type == "assistant_text" ||
+				    ((value.type == "context_compaction" || value.type == "context_compaction_interrupted") && !value.text.empty()))
 					stored_segments.back().push_back({message, block});
 			}
 		}
@@ -264,33 +362,66 @@ namespace
 		if (native_tools != stored_tools) return {};
 		std::vector<Change> changes;
 		std::set<std::string> proven_summaries;
+		// Each tool-delimited segment is atomic: an interrupted or unmatched later segment
+		// must not discard independent, fully proven earlier summaries.
 		for (std::size_t segment = 0; segment < native_segments.size(); ++segment)
 		{
 			const std::vector<NativeText>& native = native_segments[segment];
 			if (!std::ranges::any_of(native, [](const NativeText& text) { return !text.summary.empty(); })) continue;
 			const std::vector<StoredText>& stored = stored_segments[segment];
-			if (native.size() != stored.size()) return {};
+			if (native.size() != stored.size()) continue;
+			std::vector<Change> segment_changes;
+			std::set<std::string> segment_summaries;
+			bool matched = true, exact_prefix = true;
 			for (std::size_t index = 0; index < native.size(); ++index)
 			{
-				MessageBlock& block = chat.messages[stored[index].message].blocks[stored[index].block];
-				if (native[index].summary.empty())
+				const StoredText& position = stored[index];
+				const Message& assistant = chat.messages[position.message];
+				const MessageBlock& block = assistant.blocks[position.block];
+				const NativeText& source = native[index];
+				if (source.summary.empty())
 				{
-					if (block.type != "assistant_text" || strings::Trim(block.text) != strings::Trim(native[index].text)) return {};
+					if (block.type != "assistant_text" || strings::Trim(block.text) != strings::Trim(source.text))
+					{ matched = false; break; }
+					exact_prefix = exact_prefix && block.text == source.text;
 					continue;
 				}
-				if (block.text != native[index].text) return {};
-				const std::string& id = native[index].summary;
-				proven_summaries.insert(id);
-				if (block.type == "context_compaction")
+				std::string type = "context_compaction";
+				if (!source.verified)
 				{
-					if (block.request_id_json != id && block.request_id_json != "acp-compaction:" + id) return {};
-					continue;
+					// A failed native compaction can outlive the ACP stream. Fold only its
+					// proven nonempty prefix at the interrupted assistant's terminal output.
+					bool terminal = assistant.interrupted && segment > 0 && exact_prefix && source.interrupted &&
+					    source.native_tail && source.turn_ended && !block.text.empty() && block.text.size() < source.text.size() &&
+					    source.text.starts_with(block.text);
+					for (std::size_t following = position.block + 1; terminal && following < assistant.blocks.size(); ++following)
+						if (!assistant.blocks[following].text.empty() || !assistant.blocks[following].tool_call_id.empty()) terminal = false;
+					for (std::size_t following = position.message + 1; terminal && following < chat.messages.size(); ++following)
+					{
+						const Message& next = chat.messages[following];
+						if (next.role == MessageRole::User && !next.priority_steer && !next.continues_turn) break;
+						if (next.role == MessageRole::Assistant && (!next.blocks.empty() || !next.content.empty() || !next.tool_calls.empty())) terminal = false;
+					}
+					if (!terminal) { matched = false; break; }
+					type = "context_compaction_interrupted";
 				}
-				changes.push_back({stored[index].message, stored[index].block, id});
+				else if (block.text != source.text) { matched = false; break; }
+				const std::string& id = source.summary;
+				if (block.type == "context_compaction" || block.type == "context_compaction_interrupted")
+				{
+					if (block.type != type || (block.request_id_json != id && block.request_id_json != "acp-compaction:" + id))
+					{ matched = false; break; }
+				}
+				else segment_changes.push_back({position.message, position.block, id, false, type});
+				segment_summaries.insert(id);
+				exact_prefix = exact_prefix && block.text == source.text;
 			}
+			if (!matched) continue;
+			changes.insert(changes.end(), segment_changes.begin(), segment_changes.end());
+			proven_summaries.insert(segment_summaries.begin(), segment_summaries.end());
 		}
-		for (std::size_t message = 0; message < chat.messages.size(); ++message)
-			for (std::size_t block = 0; block < chat.messages[message].blocks.size(); ++block)
+		for (std::size_t message = resumed ? checkpoint->message : 0; message < chat.messages.size(); ++message)
+			for (std::size_t block = resumed && message == checkpoint->message ? checkpoint->block + 1 : 0; block < chat.messages[message].blocks.size(); ++block)
 			{
 				const MessageBlock& value = chat.messages[message].blocks[block];
 				const std::string id = value.request_id_json.starts_with("acp-compaction:") ? value.request_id_json.substr(15) : value.request_id_json;
@@ -308,7 +439,7 @@ namespace
 				continue;
 			}
 			MessageBlock& block = chat.messages[change.message].blocks[change.block];
-			block.type = "context_compaction"; block.request_id_json = change.id;
+			block.type = change.type; block.request_id_json = change.id;
 		}
 		return changes;
 	}
@@ -351,6 +482,7 @@ ProcessExecutionResult OpenCodeCompactionHistoryService::CollectBoundedPages(con
 	const std::size_t chunk_size = windows ? 256 : linux_host ? 8192 : 2048;
 	constexpr std::size_t kMaximumPages = 4096;
 	std::string rows, session, directory, revision;
+	int checkpoint_proof = 0;
 	std::size_t total = 0, offset = 1;
 	try
 	{
@@ -358,7 +490,8 @@ ProcessExecutionResult OpenCodeCompactionHistoryService::CollectBoundedPages(con
 		{
 			if (interrupted()) return failure("Native history pages were interrupted.");
 			Query page = query;
-			page.sql = "SELECT h.sessionId,h.directory,length(h.rows) total," + std::to_string(offset) +
+			page.sql = "SELECT h.sessionId,h.directory," + std::string(query.checkpoint_projection ? "h.checkpointProof" : "0") +
+			    " checkpointProof,length(h.rows) total," + std::to_string(offset) +
 			    " offset,substr(h.rows," + std::to_string(offset) + "," + std::to_string(chunk_size) + ") chunk,"
 			    "json_array((SELECT json_array(count(*),coalesce(max(time_updated),0),coalesce(sum(time_updated),0),max(id)) "
 			    "FROM message WHERE session_id=h.sessionId),(SELECT json_array(count(*),coalesce(max(time_updated),0),"
@@ -369,7 +502,14 @@ ProcessExecutionResult OpenCodeCompactionHistoryService::CollectBoundedPages(con
 			const ProcessExecutionResult result = execute(page, stop);
 			if (interrupted()) return failure("Native history pages were interrupted.");
 			if (!result.ok || result.exit_code != 0 || result.canceled || result.timed_out || result.output_truncated || result.output.size() > kQueryBytes)
-				return failure("Native history page could not be completely read.");
+			{
+				ProcessExecutionResult failed = failure("Native history page could not be completely read. " + result.error);
+				failed.exit_code = result.exit_code;
+				failed.canceled = failed.canceled || result.canceled;
+				failed.timed_out = failed.timed_out || result.timed_out;
+				failed.output_truncated = result.output_truncated;
+				return failed;
+			}
 			const nlohmann::json output = nlohmann::json::parse(result.output);
 			if (!output.is_array() || output.size() != 1 || !output.front().is_object()) return failure("Native history page envelope is invalid.");
 			const auto& envelope = output.front();
@@ -380,15 +520,17 @@ ProcessExecutionResult OpenCodeCompactionHistoryService::CollectBoundedPages(con
 			const std::string page_session = envelope.at("sessionId").get<std::string>();
 			const std::string page_directory = envelope.at("directory").get<std::string>();
 			const std::string page_revision = envelope.at("revision").get<std::string>();
+			const int page_checkpoint = envelope.value("checkpointProof", 0);
+			if (page_checkpoint != 0 && page_checkpoint != 1) return failure("Native history checkpoint proof is invalid.");
 			if (page_session.empty() || page_session.size() > 512 || page_directory.empty() || page_directory.size() > 16384 ||
 			    page_revision.empty() || page_revision.size() > 4096) return failure("Native history page identity is invalid.");
 			if (page_index == 0)
 			{
 				total = static_cast<std::size_t>(length); session = page_session;
-				directory = page_directory; revision = page_revision;
+				directory = page_directory; revision = page_revision; checkpoint_proof = page_checkpoint;
 				if (total > chunk_size * kMaximumPages) return failure("Native history requires too many pages.");
 			}
-			else if (total != static_cast<std::size_t>(length) || session != page_session || directory != page_directory || revision != page_revision)
+			else if (total != static_cast<std::size_t>(length) || session != page_session || directory != page_directory || revision != page_revision || checkpoint_proof != page_checkpoint)
 				return failure("Native history changed between pages.");
 			const std::string chunk = envelope.at("chunk").get<std::string>();
 			if (rows.size() + chunk.size() > kQueryBytes) return failure("Native history text exceeded its byte limit.");
@@ -399,7 +541,7 @@ ProcessExecutionResult OpenCodeCompactionHistoryService::CollectBoundedPages(con
 			if (offset - 1 + expected == total)
 			{
 				if (!nlohmann::json::parse(rows).is_array()) return failure("Native history reconstruction is invalid.");
-				direct.output = nlohmann::json::array({{{"sessionId", session}, {"directory", directory}, {"rows", rows}}}).dump();
+				direct.output = nlohmann::json::array({{{"sessionId", session}, {"directory", directory}, {"checkpointProof", checkpoint_proof}, {"rows", rows}}}).dump();
 				if (direct.output.size() > kQueryBytes) return failure("Native history envelope exceeded its byte limit.");
 				return direct;
 			}
@@ -476,12 +618,32 @@ struct OpenCodeCompactionHistoryService::State
 					work->original = chat->messages;
 					Query query;
 					query.workspace = paths::PathFromUtf8(identity.workspace); query.host = identity.host;
-					query.sql = HistorySql(identity); query.argv = identity.command;
+					std::optional<Checkpoint> checkpoint = SavedCheckpoint(*chat);
+					query.sql = HistorySql(identity, checkpoint);
+					const std::size_t maximum_sql = identity.host && (identity.host->platform == "windows" || identity.host->platform == "Windows") ? 24 * 1024 : 64 * 1024;
+					if (query.sql.size() > maximum_sql) { checkpoint.reset(); query.sql = HistorySql(identity); }
+					query.checkpoint_projection = checkpoint.has_value();
+					query.argv = identity.command;
 					query.argv.insert(query.argv.end(), {"db", query.sql, "--format", "json", "--pure"});
 					const ProcessExecutionResult result = executor(query, work->stop.get_token());
 					if (work->stop.stop_requested()) return;
-					const auto changes = Classify(*chat, identity, result);
-					if (!changes) { work->error = "Native summary metadata did not match the saved transcript."; return; }
+					if (!result.ok || result.exit_code != 0 || result.canceled || result.timed_out || result.output_truncated || result.output.size() > kQueryBytes)
+					{
+						std::string error = result.error.substr(0, 512);
+						std::replace(error.begin(), error.end(), '\n', ' ');
+						std::replace(error.begin(), error.end(), '\r', ' ');
+						work->error = "Native history query failed. [chat=" + identity.chat + ", native=" + identity.native +
+						    ", exit=" + std::to_string(result.exit_code) + ", timeout=" + std::to_string(result.timed_out) +
+						    ", canceled=" + std::to_string(result.canceled) + ", truncated=" + std::to_string(result.output_truncated) +
+						    ", outputBytes=" + std::to_string(result.output.size()) + "] " + error;
+						return;
+					}
+					const auto changes = Classify(*chat, identity, result, checkpoint);
+					if (!changes)
+					{
+						work->error = "Native summary metadata did not match the saved transcript. [chat=" + identity.chat + ", native=" + identity.native + "]";
+						return;
+					}
 					if (changes->empty()) return;
 					work->changes = *changes;
 					work->prepared = ChatRepository::PrepareChatSave(identity.root, *chat, *revision);
@@ -536,7 +698,7 @@ struct OpenCodeCompactionHistoryService::State
 						continue;
 					}
 					AcpTurnEventState& event = session->turn_events[change.block];
-					event.type = "context_compaction"; event.request_id_json = change.id;
+					event.type = change.type; event.request_id_json = change.id;
 				}
 		}
 		chat->messages = std::move(work.repaired->messages);

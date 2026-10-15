@@ -462,6 +462,67 @@ namespace uam
 			return result;
 		}
 
+		bool HasExactRawPromptReference(const ChatSession& chat, const AcpQueuedUserPromptState& prompt)
+		{
+			if (!chat.messages_loaded || prompt.id.empty() || prompt.revision <= 0 || prompt.existing_user_message_index < 0 ||
+			    static_cast<std::size_t>(prompt.existing_user_message_index) >= chat.messages.size()) return false;
+			const Message& message = chat.messages[static_cast<std::size_t>(prompt.existing_user_message_index)];
+			return message.role == MessageRole::User && message.acp_prompt_not_sent && !message.acp_prompt_discarded &&
+			    !prompt.existing_user_message_created_at.empty() && prompt.existing_user_message_created_at == message.created_at &&
+			    prompt.text == message.content && prompt.attachments == message.attachments &&
+			    prompt.markdown_store_files == message.markdown_store_files &&
+			    prompt.markdown_store_prompt_blocks == message.markdown_store_prompt_blocks;
+		}
+
+		/// <summary>Separates direct admission receipts from future input queued behind a provider turn.</summary>
+		void SerializePromptAdmissionQueues(nlohmann::json& result, const AppState& app, const ChatSession& chat,
+		                                    const AcpSessionState* session, const std::vector<const AcpQueuedUserPromptState*>& prompts)
+		{
+			result["queuedPrompts"] = nlohmann::json::array();
+			result["pendingDirectPrompts"] = nlohmann::json::array();
+			result["unsentDirectPrompts"] = nlohmann::json::array();
+			const std::vector<int> recoverable = RecoverableUnsentAcpMessageIndices(app, chat);
+			const std::vector<int> known = KnownUnsentAcpMessageIndices(app, chat);
+			const bool uncertain = chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty() ||
+			    !chat.remote_prompt_delivery_id.empty() || !chat.remote_prompt_delivery_session_id.empty() ||
+			    !chat.remote_prompt_delivery_payload.empty() || !chat.remote_pending_requests.empty() ||
+			    !chat.remote_interaction_responses.empty() || (session && (session->remote_stop_unconfirmed ||
+			    !session->pending_request_methods.empty() || !session->pending_steer_requests.empty()));
+			const bool pending = uncertain || (session && !session->queue_held &&
+			    (session->processing || !session->queued_prompt.empty() || session->pending_agent_input ||
+			     session->pending_local_launch || session->pending_prompt_delivery || session->pending_local_session_receipt ||
+			     session->reconnect_pending || session->recovering_remote_turn || session->recovering_remote_process ||
+			     session->worktree_launch_pending || ((session->remote_stop_pending || session->restart_marker_save_pending) &&
+			     session->restart_after_remote_stop_cleanup)));
+			for (const AcpQueuedUserPromptState* prompt : prompts)
+			{
+				if (prompt->prepared_for_delivery || !prompt->claude_quota_continuation_id.empty()) continue;
+				if (prompt->direct_admission)
+				{
+					if (pending)
+					{
+						result["pendingDirectPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+						continue;
+					}
+					// An unmaterialized cold receipt must remain reachable until native recovery owns a raw row.
+					if (HasExactRawPromptReference(chat, *prompt))
+					{
+						if (std::ranges::find(known, prompt->existing_user_message_index) == known.end())
+							result["pendingDirectPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+						continue;
+					}
+					result["unsentDirectPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+					continue;
+				}
+				// Legacy direct receipts stay native-owned; show one Unsent row only when Retry is authoritative.
+				const int index = prompt->existing_user_message_index;
+				if (prompts.size() == 1 && !pending && HasExactRawPromptReference(chat, *prompt) &&
+				    std::ranges::find(recoverable, index) != recoverable.end()) continue;
+				result["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(*prompt));
+			}
+			result["queueHeld"] = (session ? session->queue_held : chat.acp_queue_held) && !result["queuedPrompts"].empty();
+		}
+
 		nlohmann::json SerializeMessageForFrontend(const Message& message,
 		                                           bool defer_tool_call_content = false)
 		{
@@ -1012,14 +1073,11 @@ namespace uam
 			acp_json["turnUserMessageIndex"] = -1;
 			acp_json["turnAssistantMessageIndex"] = -1;
 			acp_json["turnSerial"] = 0;
-			acp_json["queuedPrompts"] = nlohmann::json::array();
+			std::vector<const AcpQueuedUserPromptState*> prompts;
 			const std::size_t dispatched = std::min(chat.acp_dispatched_queued_prompt_count, chat.acp_queued_prompts.size());
 			for (std::size_t index = dispatched; index < chat.acp_queued_prompts.size(); ++index)
-			{
-				const AcpQueuedUserPromptState& prompt = chat.acp_queued_prompts[index];
-				if (!prompt.prepared_for_delivery && prompt.claude_quota_continuation_id.empty()) acp_json["queuedPrompts"].push_back(SerializeQueuedAcpUserPrompt(prompt));
-			}
-			acp_json["queueHeld"] = chat.acp_queue_held;
+				prompts.push_back(&chat.acp_queued_prompts[index]);
+			SerializePromptAdmissionQueues(acp_json, app, chat, nullptr, prompts);
 			acp_json["unsentMessageIndices"] = KnownUnsentAcpMessageIndices(app, chat);
 			acp_json["recoverableUnsentMessageIndices"] = RecoverableUnsentAcpMessageIndices(app, chat);
 			acp_json["waitIsStale"] = false;
@@ -1097,13 +1155,9 @@ namespace uam
 			acp_json["turnUserMessageIndex"] = session->turn_user_message_index;
 			acp_json["turnAssistantMessageIndex"] = session->turn_assistant_message_index;
 			acp_json["turnSerial"] = session->turn_serial;
-			nlohmann::json queued_prompts = JsonArrayWithCapacity(session->queued_user_prompts.size());
-			for (const AcpQueuedUserPromptState& prompt : session->queued_user_prompts)
-			{
-				queued_prompts.push_back(SerializeQueuedAcpUserPrompt(prompt));
-			}
-			acp_json["queuedPrompts"] = std::move(queued_prompts);
-			acp_json["queueHeld"] = session->queue_held;
+			std::vector<const AcpQueuedUserPromptState*> prompts;
+			for (const AcpQueuedUserPromptState& prompt : session->queued_user_prompts) prompts.push_back(&prompt);
+			SerializePromptAdmissionQueues(acp_json, app, chat, session, prompts);
 			acp_json["unsentMessageIndices"] = KnownUnsentAcpMessageIndices(app, chat);
 			acp_json["recoverableUnsentMessageIndices"] = RecoverableUnsentAcpMessageIndices(app, chat);
 			acp_json["goalTurnKind"] = session->goal_turn_kind;

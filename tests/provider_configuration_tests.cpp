@@ -194,6 +194,85 @@ UAM_TEST(RemoteOpenCodeVersionWaitRejectsChangedCentralConfiguration)
 #endif
 }
 
+UAM_TEST(RemoteOpenCodePublicPromptKeepsSelectedModelAcrossColdVersionWait)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "provider";
+	fixture.app.chats.front().model_id = "private/selected-model";
+	fixture.Session().goal_turn_model_id = "private/previous-model";
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Private authored input", &error));
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr && !fixture.Session().running);
+	UAM_ASSERT_EQ(fixture.Session().goal_turn_model_id, std::string("private/selected-model"));
+	UAM_ASSERT(fixture.Session().prompt_request_id == 0);
+	const std::string queued = fixture.Session().queued_prompt;
+	const std::vector<Message> messages = fixture.app.chats.front().messages;
+	fixture.Checked();
+	UAM_ASSERT(fixture.Start(&error));
+	UAM_ASSERT(fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT_EQ(fixture.Session().queued_prompt, queued);
+	UAM_ASSERT(fixture.app.chats.front().messages == messages);
+	UAM_ASSERT(fixture.Session().prompt_request_id == 0);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodePublicPromptNormalizesModelOptionsBeforeColdVersionWait)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "provider";
+	fixture.app.chats.front().model_id = "private/selected-model";
+	fixture.app.chats.front().reasoning_effort = "unsupported-effort";
+	fixture.app.chats.front().service_tier = "unsupported-tier";
+	uam::AcpModelState model;
+	model.id = fixture.app.chats.front().model_id;
+	model.supported_reasoning_efforts = {"medium"};
+	model.default_reasoning_effort = "medium";
+	fixture.Session().available_models = {model};
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.app.chats.front().id, "Private authored input", &error));
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr && !fixture.Session().running);
+	UAM_ASSERT_EQ(fixture.app.chats.front().reasoning_effort, std::string("medium"));
+	UAM_ASSERT(fixture.app.chats.front().service_tier.empty());
+	fixture.Checked();
+	UAM_ASSERT(fixture.Start(&error));
+	UAM_ASSERT(fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.Session().prompt_request_id == 0);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodePublicLaunchFailureRestoresSelectedModelOptions)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.app.settings.provider_chat_defaults["opencode-cli"].feature_preference = "provider";
+	fixture.app.settings.execution_hosts.back().runner_protocol_version = 0;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.model_id = "private/selected-model";
+	chat.reasoning_effort = "original-effort";
+	chat.service_tier = "original-tier";
+	chat.service_tier_explicit = false;
+	fixture.Session().goal_turn_model_id = "private/previous-model";
+	uam::AcpModelState model;
+	model.id = chat.model_id;
+	model.supported_reasoning_efforts = {"medium"};
+	model.default_reasoning_effort = "medium";
+	fixture.Session().available_models = {model};
+	std::string error;
+	UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Private authored input", &error));
+	UAM_ASSERT_EQ(error, std::string("The selected remote runner is not ready. Recheck it in Settings."));
+	UAM_ASSERT_EQ(fixture.Session().last_error, error);
+	UAM_ASSERT_EQ(fixture.Session().lifecycle_state, std::string(uam::acp_detail::kAcpLifecycleError));
+	UAM_ASSERT_EQ(fixture.Session().goal_turn_model_id, std::string("private/previous-model"));
+	UAM_ASSERT_EQ(chat.reasoning_effort, std::string("original-effort"));
+	UAM_ASSERT_EQ(chat.service_tier, std::string("original-tier"));
+	UAM_ASSERT(!chat.service_tier_explicit);
+	UAM_ASSERT(!fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(chat.messages.empty() && fixture.Session().prompt_request_id == 0);
+#endif
+}
+
 UAM_TEST(RemoteOpenCodeFailedVersionCheckHoldsRawQueueUntilExplicitRetry)
 {
 #if defined(__APPLE__)

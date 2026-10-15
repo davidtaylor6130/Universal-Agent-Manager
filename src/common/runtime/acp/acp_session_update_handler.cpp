@@ -4,6 +4,8 @@
 #include "cef/cef_push.h"
 #include "app/provider_resolution_service.h"
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
+#include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_statuses.h"
 #include "common/runtime/acp/acp_stream_types.h"
@@ -326,7 +328,21 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 			return;
 		}
 
-		const std::string appended = AppendAssistantChunk(chat, session, live_text);
+		std::string identity;
+		const nlohmann::json* native_session = nlohmann_json::FindField(params, "sessionId");
+		if (provider_ids::NormalizeCliProviderAlias(session.provider_id) == provider_ids::kOpenCodeCli &&
+		    native_session && native_session->is_string() && !session.session_id.empty() &&
+		    native_session->get_ref<const std::string&>() == session.session_id)
+		{
+			const nlohmann::json* message_id = nlohmann_json::FindField(update, "messageId");
+			if (message_id && message_id->is_string())
+			{
+				const std::string& id = message_id->get_ref<const std::string&>();
+				if (id.size() <= 512 && execution_hosts::IsPortableId(id) && !id.starts_with('-'))
+					identity = "opencode-message:" + id;
+			}
+		}
+		const std::string appended = AppendAssistantChunk(chat, session, live_text, identity);
 		if (browser && !appended.empty())
 		{
 			uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);

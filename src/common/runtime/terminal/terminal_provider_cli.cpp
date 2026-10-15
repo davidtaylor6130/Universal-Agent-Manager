@@ -210,7 +210,8 @@ std::string BuildProviderHandoffContext(const ChatSession& chat, std::stop_token
 		{
 			for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
 			{
-				if (block->type == "context_compaction") append("Conversation summary: ", block->text);
+				if (block->type == "context_compaction" || block->type == "context_compaction_interrupted")
+					append(block->type == "context_compaction_interrupted" ? "Interrupted conversation summary: " : "Conversation summary: ", block->text);
 				else if (block->type == "assistant_text") append("Assistant: ", block->text);
 			}
 		}
@@ -219,7 +220,8 @@ std::string BuildProviderHandoffContext(const ChatSession& chat, std::stop_token
 			if (message->role == MessageRole::User || message->role == MessageRole::Assistant)
 				append(message->role == MessageRole::User ? "User: " : "Assistant: ", message->content);
 			for (std::vector<MessageBlock>::const_reverse_iterator block = message->blocks.crbegin(); block != message->blocks.crend(); ++block)
-				if (block->type == "context_compaction") append("Conversation summary: ", block->text);
+				if (block->type == "context_compaction" || block->type == "context_compaction_interrupted")
+					append(block->type == "context_compaction_interrupted" ? "Interrupted conversation summary: " : "Conversation summary: ", block->text);
 		}
 	}
 	std::string context;

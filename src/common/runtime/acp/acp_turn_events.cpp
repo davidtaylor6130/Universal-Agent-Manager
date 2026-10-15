@@ -53,7 +53,7 @@ bool MessageBlocksEqual(const std::vector<MessageBlock>& lhs, const std::vector<
 
 bool PersistableTurnEvent(const AcpTurnEventState& event)
 {
-	if (event.type == "context_compaction") return true;
+	if (event.type == "context_compaction" || event.type == "context_compaction_interrupted") return true;
 	if (uam::acp_stream_types::IsTextTurnEventType(event.type))
 	{
 		return !event.text.empty();
@@ -75,7 +75,8 @@ bool PersistableTurnEvent(const AcpTurnEventState& event)
 
 bool CanMergeTurnEventWithLastBlock(const AcpTurnEventState& event, const std::vector<MessageBlock>& blocks)
 {
-	return uam::acp_stream_types::IsTextTurnEventType(event.type) && !blocks.empty() && blocks.back().type == event.type;
+	return uam::acp_stream_types::IsTextTurnEventType(event.type) && !blocks.empty() &&
+	    blocks.back().type == event.type && blocks.back().request_id_json == event.request_id_json;
 }
 
 bool HasMatchingTurnBlock(const std::vector<MessageBlock>& blocks, const AcpTurnEventState& event)
@@ -310,9 +311,10 @@ bool SyncCurrentAssistantMessageBlocksFromTurnEvents(ChatSession& chat, AcpSessi
 	return false;
 }
 
-void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk)
+void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& chunk, const std::string& identity)
 {
-	if (!session.turn_events.empty() && session.turn_events.back().type == uam::acp_stream_types::kTurnEventAssistantText)
+	if (!session.turn_events.empty() && session.turn_events.back().type == uam::acp_stream_types::kTurnEventAssistantText &&
+	    session.turn_events.back().request_id_json == identity)
 	{
 		session.turn_events.back().text += chunk;
 		return;
@@ -321,6 +323,7 @@ void AppendAssistantTextTurnEvent(AcpSessionState& session, const std::string& c
 	AcpTurnEventState event;
 	event.type = uam::acp_stream_types::kTurnEventAssistantText;
 	event.text = chunk;
+	event.request_id_json = identity;
 	session.turn_events.push_back(std::move(event));
 }
 
