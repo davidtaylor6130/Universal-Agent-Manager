@@ -128,7 +128,7 @@ namespace uam
 		bool PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr) const;
 		GitWorktreeOperationResult CreateForChat(AppState& app, ChatSession& chat) const;
 		/// Creates Git artifacts on an owned worker snapshot; records intent before mutation and never saves chat history.
-		GitWorktreeOperationResult PrepareForChat(AppState& snapshot, ChatSession& metadata, const GitWorktreeIntentRecorder& record, std::stop_token stop) const;
+		GitWorktreeOperationResult PrepareForChat(AppState& snapshot, ChatSession& metadata, const GitWorktreeIntentRecorder& record, std::stop_token stop, bool explicit_create = false) const;
 		bool ValidateRemotePreparedWorkspace(const ExecutionHost& host, const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}, bool* definite_failure_out = nullptr) const;
 		bool ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}) const;
 		GitWorktreeOperationResult CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const;

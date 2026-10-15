@@ -1550,7 +1550,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     : ''
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
-  const currentErrorSource = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
+  const currentErrorSource = `Universal Agent Manager · ${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
   const currentErrorTitle = `${currentErrorSource} error`
   const currentAcpError = acp?.promptActionError?.message || acp?.lastError || ''
   const currentAcpErrorKey = acp?.promptActionError ? `${session.id}:prompt:${acp.promptActionError.id}` : currentAcpError ? `${session.id}:${currentAcpError}` : ''

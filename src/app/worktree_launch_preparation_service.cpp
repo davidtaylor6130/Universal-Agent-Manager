@@ -195,6 +195,7 @@ namespace uam
 
 		bool ReferencesPreparedWorkspace(const ChatSession& other, const ChatSession& prepared, std::string_view remote_platform = {})
 		{
+			if (!paths::IsGitWorktreeIsolated(prepared) || prepared.workspace_worktree_directory.empty()) return false;
 			if (other.id == prepared.id) return false;
 			if (!paths::IsControllerLocalWorkspace(prepared))
 			{
@@ -359,7 +360,7 @@ namespace uam
 			{ result.message = "The isolated SSH worktree has no owned receipt. Its files were preserved."; return result; }
 			const GitWorktreeIntentRecorder record = [task, policy, metadata](const GitWorktreeCreationIntent& intent, std::string& error)
 			{ return RemoteRecordIntent(task->data_root, task->receipt_file, metadata, *task->remote_host, policy, intent, error); };
-			return GitWorktreeService().PrepareForChat(snapshot, metadata, record, task->cancellation->get_token());
+			return GitWorktreeService().PrepareForChat(snapshot, metadata, record, task->cancellation->get_token(), task->explicit_create);
 		}
 
 		void BeginSave(AppState& app, ChatSession& chat, const std::shared_ptr<WorktreeLaunchPreparationTask>& task)
@@ -590,6 +591,12 @@ namespace uam
 			if (task->merged && task->cancellation->stop_requested()) task->cancellation = std::make_shared<std::stop_source>();
 			if (task->saved && *task->saved && task->error.empty())
 			{
+				if (explicit_create && task->remote_host && !paths::IsGitWorktreeIsolated(chat))
+				{
+					// An automatic plain-folder result cannot satisfy an explicit isolation request.
+					app.worktree_launch_preparations.erase(found);
+					return PrepareWorktreeForLaunch(app, chat, true);
+				}
 				const std::shared_ptr<std::stop_source> cancellation = task->cancellation;
 				if (!task->remote_host) app.worktree_launch_preparations.erase(found);
 				return {WorktreeLaunchPreparationState::Ready, {}, cancellation};

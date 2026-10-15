@@ -318,20 +318,159 @@ UAM_TEST(RemoteWorktreeCachedReadyRevokesChangedInheritedFolder)
 #endif
 }
 
-UAM_TEST(RemoteWorktreePullAndNonGitRefuseBeforeMutation)
+UAM_TEST(RemoteWorktreeAutomaticPlainDirectorySkipsInapplicablePull)
 {
 #if !defined(_WIN32) && UAM_ENABLE_SSH
 	if (!GitAvailableForTests()) return;
 	for (const bool pull : {false, true})
 	{
 		RemoteWorktreeFixture fixture;
+		const fs::path plain = fs::canonical(fixture.temp.root) / "plain-source";
+		fs::create_directory(plain);
+		UAM_ASSERT(uam::io::WriteTextFile(plain / "sentinel.txt", "Plain source must remain unchanged.\n"));
 		fixture.app.settings.git_pull_before_chat = pull;
-		if (!pull) fixture.app.chats.front().workspace_directory = fs::canonical(fixture.temp.root).string();
+		fixture.app.chats.front().workspace_directory = plain.string();
+		fixture.app.chats.front().native_session_id = "private-existing-native";
+		const std::vector<Message> messages = fixture.app.chats.front().messages;
+		ChatSession neighbor = ChatDomainService().CreateNewChat("", "gemini-cli");
+		neighbor.id = "unrelated-absolute-remote-chat";
+		neighbor.execution_host_id = fixture.app.chats.front().execution_host_id;
+		neighbor.workspace_directory = fixture.source.string();
+		fixture.app.chats.push_back(neighbor);
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.back()));
 		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.Start();
+		UAM_ASSERT(fixture.Settle(task));
+		const ChatSession& chat = fixture.app.chats.front();
+		UAM_ASSERT(chat.workspace_isolation_kind.empty() && chat.workspace_worktree_directory.empty());
+		UAM_ASSERT(chat.workspace_source_directory.empty() && chat.workspace_branch_name.empty() && chat.workspace_base_ref.empty());
+		UAM_ASSERT_EQ(chat.workspace_directory, plain.string());
+		UAM_ASSERT_EQ(chat.native_session_id, std::string("private-existing-native"));
+		UAM_ASSERT_EQ(chat.messages, messages);
+		UAM_ASSERT(!fs::exists(task->receipt_file) && !fs::exists(plain / ".git"));
+		UAM_ASSERT_EQ(ReadFile(plain / "sentinel.txt"), std::string("Plain source must remain unchanged.\n"));
+		UAM_ASSERT_EQ(std::distance(fs::directory_iterator(plain), fs::directory_iterator{}), 1);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->workspace_isolation_kind.empty() && saved->workspace_worktree_directory.empty());
+		UAM_ASSERT_EQ(saved->native_session_id, chat.native_session_id);
+		UAM_ASSERT_EQ(saved->messages, messages);
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Ready);
+		UAM_ASSERT(!uam::IsWorktreeLaunchPreparationPending(fixture.app, chat.id));
+		UAM_ASSERT(fixture.app.acp_sessions.empty() && fixture.app.cli_terminals.empty());
+	}
+#endif
+}
+
+UAM_TEST(RemoteWorktreePlainExplicitOverrideAndCorruptGitStillFailClosed)
+{
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+	if (!GitAvailableForTests()) return;
+	for (const std::string scenario : {"explicit", "base-override", "corrupt-git", "corrupt-ancestor-git"})
+	{
+		RemoteWorktreeFixture fixture;
+		const fs::path plain = fs::canonical(fixture.temp.root) / "plain-source";
+		fs::create_directory(plain);
+		UAM_ASSERT(uam::io::WriteTextFile(plain / "sentinel.txt", "Untouched plain source."));
+		fixture.app.chats.front().workspace_directory = plain.string();
+		fixture.app.settings.git_pull_before_chat = true;
+		if (scenario == "base-override") fixture.app.chats.front().git_base_branch_override = "main";
+		const fs::path marker = scenario == "corrupt-ancestor-git" ? fs::canonical(fixture.temp.root) / ".git" : plain / ".git";
+		if (scenario == "corrupt-git" || scenario == "corrupt-ancestor-git")
+			UAM_ASSERT(uam::io::WriteTextFile(marker, "gitdir: missing-private-git-metadata\n"));
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.Start(scenario == "explicit");
 		UAM_ASSERT(!fixture.Settle(task));
 		UAM_ASSERT(!task->error.empty());
-		UAM_ASSERT(!fs::exists(task->receipt_file));
+		UAM_ASSERT_EQ(fixture.app.chats.front().workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
 		UAM_ASSERT(fixture.app.chats.front().workspace_worktree_directory.empty());
+		UAM_ASSERT(!fs::exists(task->receipt_file));
+		UAM_ASSERT_EQ(ReadFile(plain / "sentinel.txt"), std::string("Untouched plain source."));
+		if (scenario == "corrupt-git" || scenario == "corrupt-ancestor-git")
+			UAM_ASSERT_EQ(ReadFile(marker), std::string("gitdir: missing-private-git-metadata\n"));
+		UAM_ASSERT(fixture.app.acp_sessions.empty() && fixture.app.cli_terminals.empty());
+	}
+#endif
+}
+
+UAM_TEST(RemoteWorktreeOptionalPullUsesCurrentHeadWithoutFetching)
+{
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+	if (!GitAvailableForTests()) return;
+	RemoteWorktreeFixture fixture;
+	const fs::path upstream = fs::canonical(fixture.temp.root) / "private-upstream.git";
+	UAM_ASSERT(RunTestCommand("git clone --bare " + ShellQuoteForTest(fixture.source.string()) + " " + ShellQuoteForTest(upstream.string())));
+	UAM_ASSERT(RunGitForTest(fixture.source, "remote add origin " + ShellQuoteForTest(upstream.string())));
+	IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+	const ProcessExecutionResult head = process.ExecuteCommand("git -C " + ShellQuoteForTest(fixture.source.string()) + " rev-parse HEAD", 10000);
+	const ProcessExecutionResult branch = process.ExecuteCommand("git -C " + ShellQuoteForTest(fixture.source.string()) + " symbolic-ref --short HEAD", 10000);
+	UAM_ASSERT(head.ok && head.exit_code == 0 && branch.ok && branch.exit_code == 0);
+	const std::string branch_name = uam::strings::Trim(branch.output);
+	UAM_ASSERT(RunGitForTest(fixture.source, "config " + ShellQuoteForTest("branch." + branch_name + ".remote") + " origin"));
+	UAM_ASSERT(RunGitForTest(fixture.source, "config " + ShellQuoteForTest("branch." + branch_name + ".merge") + " " + ShellQuoteForTest("refs/heads/" + branch_name)));
+	const std::string source_config = ReadFile(fixture.source / ".git" / "config");
+	const std::string upstream_head = ReadFile(upstream / "HEAD");
+	UAM_ASSERT(!fs::exists(fixture.source / ".git" / "FETCH_HEAD"));
+	fixture.app.settings.git_pull_before_chat = true;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.Start();
+	UAM_ASSERT(fixture.Settle(task));
+	const ChatSession& chat = fixture.app.chats.front();
+	UAM_ASSERT(uam::paths::IsGitWorktreeIsolated(chat));
+	UAM_ASSERT_EQ(chat.workspace_base_ref, uam::strings::Trim(head.output));
+	UAM_ASSERT_EQ(ReadFile(fs::path(chat.workspace_worktree_directory) / "source.txt"), std::string("committed source\n"));
+	UAM_ASSERT(task->prepared.has_value());
+	const std::string warning = uam::strings::TrimAndLowerAscii(task->prepared->operation.status.warning);
+	UAM_ASSERT(warning.find("pull") != std::string::npos && warning.find("skip") != std::string::npos);
+	UAM_ASSERT(!fs::exists(fixture.source / ".git" / "FETCH_HEAD"));
+	UAM_ASSERT_EQ(ReadFile(fixture.source / ".git" / "config"), source_config);
+	UAM_ASSERT_EQ(ReadFile(upstream / "HEAD"), upstream_head);
+	const ProcessExecutionResult after = process.ExecuteCommand("git -C " + ShellQuoteForTest(fixture.source.string()) + " rev-parse HEAD", 10000);
+	UAM_ASSERT(after.ok && after.exit_code == 0);
+	UAM_ASSERT_EQ(after.output, head.output);
+	UAM_ASSERT(fixture.app.acp_sessions.empty() && fixture.app.cli_terminals.empty());
+#endif
+}
+
+UAM_TEST(RemoteWorktreePlainCancellationAndSaveRetryPreservePendingMetadata)
+{
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+	if (!GitAvailableForTests()) return;
+	for (const bool canceled : {true, false})
+	{
+		RemoteWorktreeFixture fixture;
+		const fs::path plain = fs::canonical(fixture.temp.root) / "plain-source";
+		fs::create_directory(plain);
+		UAM_ASSERT(uam::io::WriteTextFile(plain / "sentinel.txt", "Untouched plain source."));
+		fixture.app.chats.front().workspace_directory = plain.string();
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.Start();
+		fixture.Worker(task);
+		const fs::path preserved = fixture.temp.root / "preserved-data";
+		if (canceled)
+		{
+			uam::CancelWorktreeLaunchPreparation(fixture.app, fixture.app.chats.front().id, task->cancellation);
+			(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+			UAM_ASSERT(!task->merged && !task->saved.value_or(false));
+		}
+		else
+		{
+			fs::rename(fixture.app.data_root, preserved);
+			UAM_ASSERT(uam::io::WriteTextFile(fixture.app.data_root, "Private unavailable storage."));
+			UAM_ASSERT(!fixture.Settle(task));
+			UAM_ASSERT(!task->error.empty());
+			fs::remove(fixture.app.data_root);
+			fs::rename(preserved, fixture.app.data_root);
+		}
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.app.chats.front().id);
+		UAM_ASSERT(saved && saved->workspace_isolation_kind == uam::paths::kPendingGitWorktreeIsolationKind);
+		UAM_ASSERT(saved->workspace_worktree_directory.empty() && !fs::exists(task->receipt_file));
+		UAM_ASSERT_EQ(ReadFile(plain / "sentinel.txt"), std::string("Untouched plain source."));
+		if (!canceled)
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> retry = fixture.Start();
+		UAM_ASSERT(fixture.Settle(retry));
+		UAM_ASSERT(fixture.app.chats.front().workspace_isolation_kind.empty());
+		UAM_ASSERT(!fs::exists(plain / ".git") && !fs::exists(retry->receipt_file));
+		UAM_ASSERT_EQ(ReadFile(plain / "sentinel.txt"), std::string("Untouched plain source."));
+		UAM_ASSERT(fixture.app.acp_sessions.empty() && fixture.app.cli_terminals.empty());
 	}
 #endif
 }
@@ -714,6 +853,141 @@ UAM_TEST(RemoteWorktreeSettledCleanupFailuresDoNotRejectCompletedWorkspace)
 		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Ready);
 		UAM_ASSERT_EQ(ReadFile(fs::path(fixture.app.chats.front().workspace_worktree_directory) / "source.txt"), std::string("committed source\n"));
 		UAM_ASSERT(fixture.app.acp_sessions.empty() && fixture.app.cli_terminals.empty());
+	}
+#endif
+}
+
+UAM_TEST(RemoteWorktreeExplicitRequestDoesNotReusePlainSuccess)
+{
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+	if (!GitAvailableForTests()) return;
+	RemoteWorktreeFixture fixture;
+	const fs::path plain = fs::canonical(fixture.temp.root) / "plain-source";
+	fs::create_directory(plain);
+	fixture.app.chats.front().workspace_directory = plain.string();
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> automatic = fixture.Start();
+	UAM_ASSERT(fixture.Settle(automatic));
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> explicit_request = fixture.Start(true);
+	UAM_ASSERT(!fixture.Settle(explicit_request));
+	UAM_ASSERT(!explicit_request->error.empty());
+	UAM_ASSERT(fixture.app.chats.front().workspace_isolation_kind.empty());
+	UAM_ASSERT(!fs::exists(plain / ".git") && !fs::exists(explicit_request->receipt_file));
+#endif
+}
+
+UAM_TEST(RemoteWorktreeDamagedBareRepositoryIsNotPlain)
+{
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+	if (!GitAvailableForTests()) return;
+	for (const std::string missing : {"HEAD", "objects"})
+	{
+		RemoteWorktreeFixture fixture;
+		const fs::path bare = fs::canonical(fixture.temp.root) / "damaged-bare.git";
+		UAM_ASSERT(RunTestCommand("git clone --bare " + ShellQuoteForTest(fixture.source.string()) + " " + ShellQuoteForTest(bare.string())));
+		fs::remove_all(bare / missing);
+		fixture.app.chats.front().workspace_directory = bare.string();
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.Start();
+		UAM_ASSERT(!fixture.Settle(task));
+		UAM_ASSERT(!task->error.empty());
+		UAM_ASSERT_EQ(fixture.app.chats.front().workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
+		UAM_ASSERT(!fs::exists(task->receipt_file));
+		UAM_ASSERT(fs::exists(bare / "config") && fs::exists(bare / "refs"));
+	}
+#endif
+}
+
+UAM_TEST(RemotePlainWorkspacePreparationKeepsAcceptedInputUnheldUntilRealFailure)
+{
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+	if (!GitAvailableForTests()) return;
+	for (const bool malformed_git : {false, true})
+	{
+		RemoteWorktreeFixture fixture;
+		const fs::path plain = fs::canonical(fixture.temp.root) / "plain-acp-source";
+		fs::create_directory(plain);
+		UAM_ASSERT(uam::io::WriteTextFile(plain / "sentinel.txt", "Preserve the unstarted source."));
+		if (malformed_git)
+			UAM_ASSERT(uam::io::WriteTextFile(plain / ".git", "gitdir: missing-private-metadata\n"));
+		fixture.app.settings.git_pull_before_chat = true;
+		fixture.app.settings.central_provider_configuration.enabled = false;
+		ChatSession& chat = fixture.app.chats.front();
+		chat.workspace_directory = plain.string();
+		chat.approval_mode.clear();
+		chat.memory_enabled = false;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const std::vector<Message> messages = chat.messages;
+		std::string error;
+		if (!uam::SendAcpPrompt(fixture.app, chat.id, "Continue with this work", &error))
+			throw TestFailure("Plain workspace ACP admission failed: " + error);
+		uam::AcpSessionState* session = uam::FindAcpSessionForChat(fixture.app, chat.id);
+		UAM_ASSERT(session && session->queued_user_prompts.size() == 1);
+		const uam::AcpQueuedUserPromptState raw = session->queued_user_prompts.front();
+		UAM_ASSERT_EQ(raw.text, std::string("Continue with this work"));
+		UAM_ASSERT(!raw.prepared_for_delivery);
+		UAM_ASSERT(!raw.id.empty() && raw.revision > 0);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts, std::vector<uam::AcpQueuedUserPromptState>{raw});
+		UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, std::size_t{0});
+		UAM_ASSERT(!session->queue_held && !chat.acp_queue_held);
+		std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->acp_queued_prompts == std::vector<uam::AcpQueuedUserPromptState>{raw});
+
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		uam::WorktreeLaunchPreparationState state = uam::acp_detail::PrepareAcpWorkspaceForLaunch(fixture.app, *session, chat, &error);
+		UAM_ASSERT_EQ(state, uam::WorktreeLaunchPreparationState::Pending);
+		UAM_ASSERT(session->worktree_launch_pending);
+		UAM_ASSERT_EQ(session->lifecycle_state, std::string("waiting_workspace"));
+		UAM_ASSERT(!session->queue_held && !chat.acp_queue_held);
+		while (state == uam::WorktreeLaunchPreparationState::Pending && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::FlushPendingChatSaves(fixture.app);
+			// Poll preparation only: reaching Ready must not launch or drain a provider here.
+			state = uam::acp_detail::PrepareAcpWorkspaceForLaunch(fixture.app, *session, chat, &error);
+			UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{1});
+			UAM_ASSERT(session->queued_user_prompts.front() == raw);
+			UAM_ASSERT(!session->running && session->prompt_request_id == 0);
+			if (state == uam::WorktreeLaunchPreparationState::Pending)
+			{
+				UAM_ASSERT(!session->queue_held && !chat.acp_queue_held);
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			}
+		}
+		if (state == uam::WorktreeLaunchPreparationState::Pending)
+			throw TestFailure("Plain workspace ACP preparation exceeded 30 seconds.");
+		UAM_ASSERT_EQ(state, malformed_git ? uam::WorktreeLaunchPreparationState::Failed : uam::WorktreeLaunchPreparationState::Ready);
+		UAM_ASSERT_EQ(session->queue_held, malformed_git);
+		UAM_ASSERT_EQ(chat.acp_queue_held, malformed_git);
+		UAM_ASSERT(!session->worktree_launch_pending);
+		if (malformed_git)
+		{
+			UAM_ASSERT(!session->last_error.empty() && !error.empty());
+			UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
+			UAM_ASSERT_EQ(ReadFile(plain / ".git"), std::string("gitdir: missing-private-metadata\n"));
+		}
+		else
+		{
+			UAM_ASSERT(session->last_error.empty() && error.empty());
+			UAM_ASSERT(chat.workspace_isolation_kind.empty());
+			UAM_ASSERT(!fs::exists(plain / ".git"));
+		}
+		while ((fixture.app.pending_chat_save_at_by_chat_id.contains(chat.id) || fixture.app.pending_chat_save_tasks.contains(chat.id)) && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::FlushPendingChatSaves(fixture.app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		UAM_ASSERT(!fixture.app.pending_chat_save_at_by_chat_id.contains(chat.id) && !fixture.app.pending_chat_save_tasks.contains(chat.id));
+		UAM_ASSERT_EQ(chat.acp_queued_prompts, std::vector<uam::AcpQueuedUserPromptState>{raw});
+		UAM_ASSERT_EQ(chat.acp_dispatched_queued_prompt_count, std::size_t{0});
+		UAM_ASSERT_EQ(chat.messages, messages);
+		saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->acp_queued_prompts == std::vector<uam::AcpQueuedUserPromptState>{raw});
+		UAM_ASSERT_EQ(saved->acp_dispatched_queued_prompt_count, std::size_t{0});
+		UAM_ASSERT_EQ(saved->acp_queue_held, malformed_git);
+		UAM_ASSERT_EQ(saved->messages, messages);
+		UAM_ASSERT_EQ(saved->workspace_isolation_kind, chat.workspace_isolation_kind);
+		UAM_ASSERT(!session->running && session->prompt_request_id == 0);
+		UAM_ASSERT(chat.remote_pending_requests.empty() && chat.remote_prompt_delivery_payload.empty());
+		UAM_ASSERT(chat.workspace_worktree_directory.empty() && fixture.app.cli_terminals.empty());
+		UAM_ASSERT_EQ(ReadFile(plain / "sentinel.txt"), std::string("Preserve the unstarted source."));
 	}
 #endif
 }

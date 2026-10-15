@@ -1000,6 +1000,38 @@ namespace uam
 			return path.substr(0, separator);
 		}
 
+		bool RemoteWorkspaceHasGitMetadata(remote::RunnerClient& client, const ExecutionHost& host,
+		    const std::string& source, bool& found, std::string& error, std::stop_token stop)
+		{
+			found = false;
+			std::string directory = source;
+			for (int depth = 0; depth < 256 && !stop.stop_requested(); ++depth)
+			{
+				remote::PathInspection marker, head, objects;
+				if (!client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, ".git"), true, marker, &error, stop)) return false;
+				if (marker.exists) { found = true; return true; }
+				// Bare repositories also count as Git; broken metadata must never become a plain-folder fallback.
+				if (!client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, "HEAD"), true, head, &error, stop) ||
+				    !client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, "objects"), true, objects, &error, stop)) return false;
+				if (head.exists && objects.exists) { found = true; return true; }
+				if (head.exists || objects.exists)
+				{
+					remote::PathInspection refs, config;
+					if (!client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, "refs"), true, refs, &error, stop) ||
+					    !client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, "config"), true, config, &error, stop)) return false;
+					if (refs.exists && config.exists) { found = true; return true; }
+				}
+				const std::string normalized = execution_hosts::NormalizeRemotePath(host.platform, directory);
+				const std::string parent = RemoteParent(host, directory);
+				const std::size_t server_end = normalized.find('/', 2);
+				const bool share_root = normalized.starts_with("//") && server_end != std::string::npos && normalized.find('/', server_end + 1) == std::string::npos;
+				if (parent.empty() || execution_hosts::RemotePathsMatch(host.platform, parent, directory) || share_root) return true;
+				directory = parent;
+			}
+			error = "The remote workspace ancestry could not be safely inspected.";
+			return false;
+		}
+
 		bool RemoteGitIdentity(remote::RunnerClient& client, const ExecutionHost& host, const std::string& source,
 		    const std::string& common, const ChatSession& chat, std::string& error, std::stop_token stop)
 		{
@@ -1056,22 +1088,34 @@ namespace uam
 		}
 
 		GitWorktreeOperationResult PrepareRemoteWorktree(AppState& snapshot, ChatSession& chat,
-		    const GitWorktreeIntentRecorder& record, std::stop_token stop)
+		    const GitWorktreeIntentRecorder& record, std::stop_token stop, bool explicit_create)
 		{
 			GitWorktreeOperationResult result;
 			const ExecutionHost* host = execution_hosts::Find(snapshot.settings.execution_hosts, chat.execution_host_id);
 			if (!host || !remote::CanAttemptRunnerConnection(*host) || host->runner_protocol_version < 3)
 			{ result.message = "Remote worktrees require an available protocol-3 SSH helper."; return result; }
 			if (!record) { result.message = "Remote worktrees require owned asynchronous preparation."; return result; }
-			if (snapshot.settings.git_pull_before_chat)
-			{ result.message = "Pull before chat is not supported for SSH worktree creation. Disable it before retrying."; return result; }
 			if (chat.svn_update_pending)
 			{ result.message = "SSH worktree creation supports existing Git repositories only; SVN preparation is unavailable."; return result; }
 			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
 			    remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version), host->runner_version, host->runner_protocol_version);
 			std::string requested, source, common, output;
+			bool git_metadata = false;
 			if (!InspectRemoteDirectory(client, chat.workspace_directory, requested, result.message, stop) ||
-			    !RemoteGit(client, *host, requested, {"rev-parse", "--show-toplevel"}, output, result.message, stop) ||
+			    !RemoteWorkspaceHasGitMetadata(client, *host, requested, git_metadata, result.message, stop)) return result;
+			if (!git_metadata)
+			{
+				if (explicit_create || chat.git_base_branch_override || chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind ||
+				    !chat.workspace_source_directory.empty() || !chat.workspace_worktree_directory.empty() || !chat.workspace_branch_name.empty() || !chat.workspace_base_ref.empty())
+				{ result.message = "Creating an SSH Git worktree requires a Git repository."; return result; }
+				chat.workspace_isolation_kind.clear();
+				chat.updated_at = time::TimestampNow();
+				result.ok = true;
+				result.status.source_directory = requested;
+				result.message = "Git preparation skipped for an ordinary SSH workspace.";
+				return result;
+			}
+			if (!RemoteGit(client, *host, requested, {"rev-parse", "--show-toplevel"}, output, result.message, stop) ||
 			    !InspectRemoteDirectory(client, output, source, result.message, stop) ||
 			    !RemoteGit(client, *host, source, {"rev-parse", "--path-format=absolute", "--git-common-dir"}, output, result.message, stop) ||
 			    !InspectRemoteDirectory(client, output, common, result.message, stop)) return result;
@@ -1135,6 +1179,11 @@ namespace uam
 			result.message = "Created an isolated SSH Git worktree.";
 			result.status = {.is_git_repository = true, .isolated = true, .source_directory = source,
 			    .worktree_directory = chat.workspace_worktree_directory, .branch_name = chat.workspace_branch_name, .base_ref = chat.workspace_base_ref};
+			if (snapshot.settings.git_pull_before_chat)
+			{
+				result.status.warning = "Pull before chat was skipped because SSH pulling is unavailable; the current Git base was used.";
+				diagnostics::Write("[SSH worktree] " + result.status.warning);
+			}
 			return result;
 		}
 	}
@@ -1147,6 +1196,16 @@ namespace uam
 		{
 			if (host.runner_protocol_version < 3 || !remote::CanAttemptRunnerConnection(host) ||
 			    !paths::IsSameOrInsideRoot(root, receipt) || paths::IsLinkOrReparsePointNoThrow(receipt) || paths::IsLinkOrReparsePointNoThrow(receipt.parent_path())) return false;
+			if (metadata.workspace_isolation_kind.empty() && metadata.workspace_source_directory.empty() && metadata.workspace_worktree_directory.empty() &&
+			    metadata.workspace_branch_name.empty() && metadata.workspace_base_ref.empty() && !metadata.git_base_branch_override && !paths::PathExistsNoThrow(receipt))
+			{
+				remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+				    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+				std::string source;
+				bool git_metadata = false;
+				return InspectRemoteDirectory(client, metadata.workspace_directory, source, error, stop) &&
+				    RemoteWorkspaceHasGitMetadata(client, host, source, git_metadata, error, stop) && !git_metadata;
+			}
 			std::string bytes;
 			if (!io::TryReadTextFile(receipt, bytes, 64 * 1024)) return false;
 			nlohmann::json saved = nlohmann::json::parse(bytes);
@@ -1408,10 +1467,10 @@ namespace uam
 		return CreateForChatCore(app, chat, true, {}, {});
 	}
 
-	GitWorktreeOperationResult GitWorktreeService::PrepareForChat(AppState& snapshot, ChatSession& metadata, const GitWorktreeIntentRecorder& record, std::stop_token stop) const
+	GitWorktreeOperationResult GitWorktreeService::PrepareForChat(AppState& snapshot, ChatSession& metadata, const GitWorktreeIntentRecorder& record, std::stop_token stop, bool explicit_create) const
 	{
 		if (!record) return {.message = "Workspace ownership recording is required."};
-		if (!paths::IsControllerLocalWorkspace(metadata)) return PrepareRemoteWorktree(snapshot, metadata, record, stop);
+		if (!paths::IsControllerLocalWorkspace(metadata)) return PrepareRemoteWorktree(snapshot, metadata, record, stop, explicit_create);
 		return CreateForChatCore(snapshot, metadata, false, record, stop);
 	}
 
@@ -1500,8 +1559,14 @@ namespace uam
 			const std::string reference = selected_base.empty() ? "HEAD" : "refs/heads/" + selected_base;
 			if (!GitOutput(repository, "rev-parse --verify --end-of-options " + uam::shell::EscapeArg(reference + "^{commit}"), &override_head, &result.message, stop)) return result;
 		}
-		if (record && !managed_repository && app.settings.git_pull_before_chat &&
-		    !PullCheckedOutBase(repository, selected_base, result.message, stop)) return result;
+		if (record && !managed_repository && app.settings.git_pull_before_chat)
+		{
+			std::string common_directory;
+			if (!GitOutput(repository, "rev-parse --path-format=absolute --git-common-dir", &common_directory, &result.message, stop)) return result;
+			// A directly selected UAM snapshot is still owned storage, even in a new chat.
+			const bool owned_baseline = !app.data_root.empty() && PathIsWithin(paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(common_directory)), paths::NormalizeExistingOrAbsolutePath(app.data_root / "worktrees"));
+			if (!owned_baseline && !PullCheckedOutBase(repository, selected_base, result.message, stop)) return result;
+		}
 		if (chat.git_base_branch_override && record && app.settings.git_pull_before_chat)
 		{
 			const std::string reference = selected_base.empty() ? "HEAD" : "refs/heads/" + selected_base;

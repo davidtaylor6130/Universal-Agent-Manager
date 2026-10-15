@@ -6649,7 +6649,7 @@ describe('ChatView', () => {
     })
 
     const form = host.querySelector('form')
-      expect(form?.textContent).toContain('Gemini ACP:')
+      expect(form?.textContent).toContain('Universal Agent Manager · Gemini ACP:')
       expect(form?.textContent).not.toContain('OpenCode ACP:')
       expect(form?.textContent).toContain('Internal ACP failure')
       expect(form?.textContent).not.toContain('Diagnostics')
@@ -6663,6 +6663,7 @@ describe('ChatView', () => {
         await Promise.resolve()
       })
       expect(writeText).toHaveBeenCalled()
+      expect(writeText.mock.calls[0][0]).toContain('Universal Agent Manager · Gemini ACP error')
       expect(writeText.mock.calls[0][0]).toContain('Internal ACP failure')
       expect(writeText.mock.calls[0][0]).toContain('stderr stack trace')
       expect(writeText.mock.calls[0][0]).toContain('Exit code: 137')
