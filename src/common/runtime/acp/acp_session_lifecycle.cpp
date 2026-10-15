@@ -1015,6 +1015,14 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (error_out != nullptr) *error_out = startup_error;
 		return false;
 	}
+	if (remote && session.model_discovery_only && session.ephemeral_model_discovery && execution_host->runner_protocol_version < 3)
+	{
+		const std::string startup_error = "This SSH helper cannot safely clean up background model discovery. Update the helper in Settings.";
+		session.lifecycle_state = kAcpLifecycleError;
+		session.last_error = startup_error;
+		if (error_out != nullptr) *error_out = startup_error;
+		return false;
+	}
 	if (!remote)
 	{
 		ProviderCliCompatibilityService().Poll(app);
@@ -1374,7 +1382,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 					                            (session.recovering_remote_turn || session.recovering_remote_process)
 					                                ? chat.remote_delivered_stderr_cursor : 0, {}, {},
 					                            configuration_bundle.local_directory.empty() ? "" : provider.id,
-					                            uam::paths::Utf8PathString(configuration_bundle.local_directory), launch_control_servers)}};
+					                            uam::paths::Utf8PathString(configuration_bundle.local_directory), launch_control_servers,
+					                            session.model_discovery_only && session.ephemeral_model_discovery)}};
 		}
 	}
 	if (remote && startup_error.empty())

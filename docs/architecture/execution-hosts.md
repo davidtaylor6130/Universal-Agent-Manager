@@ -19,6 +19,8 @@ Remote memory publication and context policy are separate from local memory stor
 
 Spool caps and process timeouts are defined by the runner and operation; this page sets no additional budget. Preserve bounded buffering and report the actual remote exit result.
 
+Hidden ephemeral model-discovery processes use the runner's token-owned 60-second transient lease on protocol 3. Ordinary owned polling renews it; an app crash or transport outage beyond the lease lets the runner drainer terminate the process tree. Confirmed exit or expiry is retired lazily on the next busy/request check, and failed retirement keeps the busy guard. If final output acknowledgement is withheld beyond the lease, discovery may expire and require a catalogue retry; do not replay or attach to the expired process. Protocol 2 cannot safely launch hidden ephemeral discovery and is rejected for that route. Visible discovery and user or goal processes remain durable. This lease does not journal cleanup authority or recover tokens from older orphaned processes.
+
 ## Repository matches and launch checks
 
 Repository matching reads VCS identity on background workers for saved workspace folders. Git matches normalized remote identity and relative workspace location; SVN matches the normalized repository root URL and checkout path. Automatic matching requires exactly one destination on a host; ambiguous matches need a manual mapping. Configured manual mappings remain available when discovery cannot establish a match. Inventory snapshots belong to the data root, folders and host connection identities, expire after 30 seconds, and are discarded when those inputs change.

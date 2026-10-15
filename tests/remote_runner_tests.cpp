@@ -1194,6 +1194,118 @@ UAM_TEST(RemoteRunnerTransientLeaseReclaimsAnAbandonedLiveProcess)
 	UAM_ASSERT(!state.HasManagedProcesses());
 }
 
+UAM_TEST(RemoteEphemeralDiscoveryLeasePreservesOwnedAuthorityAndDurableChats)
+{
+#if defined(__APPLE__)
+	for (const int kind : {0, 1, 2, 3, 4})
+	{
+		TempDir temp("uam-discovery-lease");
+		const fs::path log = temp.root / "requests.jsonl";
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec \"$UAM_TEST_CREATE_EXECUTABLE\" --uam-test-remote-opencode-create\n"));
+		fs::permissions(temp.root / "ssh", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+		ScopedEnvVar executable("UAM_TEST_CREATE_EXECUTABLE", PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string());
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", "success");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = {ProviderProfileStore::DefaultOpenCodeProfile()};
+		ExecutionHost host{"private-lease", "Private", "ssh", "private-fixture", "ready", "development", "linux", "x86_64", "", "runner", kind == 4 ? 2 : 3};
+		app.settings.execution_hosts.push_back(host);
+		ChatSession chat;
+		chat.id = "private-lease-chat";
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = temp.root.string();
+		chat.memory_enabled = false;
+		chat.remote_process_control_token = "private-owned-discovery-token";
+		const bool ephemeral = kind >= 3;
+		if (ephemeral) app.model_discovery_chats.push_back(chat);
+		else app.chats.push_back(chat);
+		ChatSession& launched = ephemeral ? app.model_discovery_chats.front() : app.chats.front();
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.model_discovery_only = kind == 1 || ephemeral;
+		session.ephemeral_model_discovery = ephemeral;
+		session.goal_internal_session = kind == 2;
+		std::string error;
+		const bool started = uam::acp_detail::StartAcpProcessForChat(app, session, launched, &error);
+		struct Guard
+		{
+			uam::AcpSessionState& session;
+			~Guard()
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+			}
+		} guard{session};
+		if (kind == 4)
+		{
+			UAM_ASSERT(!started && error.find("Update the helper") != std::string::npos);
+			UAM_ASSERT(!session.running && !fs::exists(log));
+			continue;
+		}
+		UAM_ASSERT(started);
+		nlohmann::json start;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (start.is_null() && std::chrono::steady_clock::now() < deadline)
+		{
+			std::ifstream requests(log);
+			std::string line;
+			while (std::getline(requests, line))
+			{
+				const nlohmann::json request = nlohmann::json::parse(line, nullptr, false);
+				if (request.is_object() && request.value("type", "") == "process.start") start = request;
+			}
+			if (start.is_null()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(!start.is_null());
+		UAM_ASSERT_EQ(start.value("controlToken", ""), chat.remote_process_control_token);
+		UAM_ASSERT_EQ(start.value("transientLeaseMs", 0), ephemeral ? 60000 : 0);
+		UAM_ASSERT_EQ(session.remote_output_delivery_token, chat.remote_process_control_token);
+		if (ephemeral) UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, chat.id));
+	}
+#endif
+}
+
+UAM_TEST(RemoteDiscoveryLeaseRenewalIsolationAndExpiredBusyCleanup)
+{
+#if defined(__APPLE__)
+	uam::remote::RunnerState state;
+	const auto request = [&](std::string type, std::string id, std::string token)
+	{
+		return uam::remote::HandleRunnerRequest({{"id", "lease-check"}, {"type", type},
+		    {"sessionId", id}, {"controlToken", token}}, "test-version", &state);
+	};
+	for (const bool transient : {false, true})
+	{
+		nlohmann::json start = {{"id", "lease-start"}, {"type", "process.start"},
+		    {"sessionId", transient ? "discovery" : "user-chat"}, {"controlToken", "owned-token"},
+		    {"cwd", fs::temp_directory_path().string()}, {"argv", {"/bin/sh", "-c", "sleep 10"}}};
+		if (transient) start["transientLeaseMs"] = 250;
+		UAM_ASSERT(uam::remote::HandleRunnerRequest(start, "test-version", &state).value("ok", false));
+	}
+	for (int heartbeat = 0; heartbeat < 5; ++heartbeat)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		const nlohmann::json polled = request("process.poll", "discovery", "owned-token");
+		UAM_ASSERT(polled.value("ok", false) && polled["result"].value("running", false));
+	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(150));
+	const nlohmann::json denied = request("process.poll", "discovery", "wrong-token");
+	UAM_ASSERT(!denied.value("ok", true) && denied["error"].value("code", "") == "unauthorized");
+	std::this_thread::sleep_for(std::chrono::milliseconds(150));
+	UAM_ASSERT(state.HasManagedProcesses());
+	const nlohmann::json expired = request("process.poll", "discovery", "owned-token");
+	UAM_ASSERT(!expired.value("ok", true) && expired["error"].value("code", "") == "session_not_found");
+	const nlohmann::json durable = request("process.poll", "user-chat", "owned-token");
+	UAM_ASSERT(durable.value("ok", false) && durable["result"].value("running", false));
+	UAM_ASSERT(request("process.stop", "user-chat", "owned-token").value("ok", false));
+	UAM_ASSERT(request("process.remove", "user-chat", "owned-token").value("ok", false));
+	UAM_ASSERT(!state.HasManagedProcesses());
+#endif
+}
+
 UAM_TEST(RemoteTerminalUsesAForcedSshPtyAndExecutesOnlyTheEncodedArgv)
 {
 	TempDir temp("uam-terminal-unicode");
