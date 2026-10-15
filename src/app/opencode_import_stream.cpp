@@ -1,5 +1,6 @@
 #include "app/opencode_import_stream.h"
 #include "app/runtime_orchestration_services.h"
+#include "core/native_import_content.h"
 #include "common/platform/platform_services.h"
 #include "common/paths/app_paths.h"
 #include <utility>
@@ -61,6 +62,13 @@ namespace
 			if (m_frames.empty())
 			{
 				if (m_depth == 0 || (m_depth == 1 && (m_root_key == "info" || m_root_key == "messages")) || (m_depth == 2 && m_in_messages)) return Fail("OpenCode export contained malformed message data.");
+				if (m_depth == 1)
+				{
+					if ((m_root_key == "nextCursor" || m_root_key == "next_cursor") && !value.is_null() && (!value.is_string() || !value.get_ref<const std::string&>().empty()))
+						return Fail("OpenCode export returned incomplete paginated history. Retry the import.");
+					if ((m_root_key == "hasMore" || m_root_key == "has_more") && (!value.is_boolean() || value.get<bool>()))
+						return Fail("OpenCode export returned incomplete paginated history. Retry the import.");
+				}
 				return true;
 			}
 			Append(std::move(value));
@@ -74,6 +82,7 @@ namespace
 		bool Start(bool array)
 		{
 			if (m_stop.stop_requested()) return Fail("OpenCode history loading was canceled.");
+			if (m_depth == 1 && (m_root_key == "nextCursor" || m_root_key == "next_cursor" || m_root_key == "hasMore" || m_root_key == "has_more")) return Fail("OpenCode export returned invalid pagination metadata.");
 			if (m_depth == 0 && array) return Fail("OpenCode export is missing valid session information.");
 			if (m_frames.empty() && m_depth == 1 && m_root_key == "messages")
 			{
@@ -111,6 +120,7 @@ namespace
 			wrapper["messages"].push_back(std::move(value));
 			ChatHistorySyncService::RemoteOpenCodeTranscript mapped = ChatHistorySyncService::ParseRemoteOpenCodeTranscript(wrapper.dump());
 			if (!mapped.success) return Fail(mapped.error);
+			if (!mapped.verified_empty && !uam::HasImportedConversationContent(mapped.messages)) return Fail("OpenCode history contains entries that could not be imported. Retry after updating the provider.");
 			for (const Message& message : mapped.messages)
 				if (m_stop.stop_requested() || !m_emit(message)) return Fail("OpenCode history loading was canceled or its destination could not be written.");
 			return true;

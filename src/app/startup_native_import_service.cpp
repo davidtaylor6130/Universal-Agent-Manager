@@ -30,6 +30,7 @@ namespace uam
 			result.execution_host_id = chat.execution_host_id;
 			result.workspace_directory = chat.workspace_directory;
 			result.workspace_worktree_directory = chat.workspace_worktree_directory;
+			result.messages_loaded = false;
 			return result;
 		}
 	}
