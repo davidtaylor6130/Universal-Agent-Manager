@@ -94,6 +94,8 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   const [newGroupName, setNewGroupName] = useState('')
   const [toolbarTarget, setToolbarTarget] = useState<HTMLElement | null>(null)
   const dirty = JSON.stringify(actions) !== JSON.stringify(appliedActions)
+  const invalidAction = actions.find(action => !action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath))
+  const validationError = invalidAction ? 'Each action needs a label and input type; enabled skill actions also need a skill.' : ''
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
   useImperativeHandle(ref, () => ({ requestLeave(next) {
@@ -132,16 +134,20 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
     revealGroup(groupPath)
   }
 
+  const revealInvalidAction = () => {
+    if (!invalidAction) return
+    pendingActionFocus.current = { id: invalidAction.id, field: 'name' }
+    revealGroup(invalidAction.groupPath)
+    setExpandedActions(current => ({ ...current, [invalidAction.id]: true }))
+  }
+
   const apply = async () => {
     if (applyingRef.current) return false
     const prepared = actions.map(action => ({ ...action, label: action.label.trim() }))
-    const invalid = prepared.find((action) => !action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath))
-    if (invalid) {
-      setError('Each action needs a label and input type; enabled skill actions also need a skill.')
+    if (invalidAction) {
+      setError(validationError)
       setPendingExit(null)
-      pendingActionFocus.current = { id: invalid.id, field: 'name' }
-      revealGroup(invalid.groupPath)
-      setExpandedActions(current => ({ ...current, [invalid.id]: true }))
+      revealInvalidAction()
       return false
     }
     setError('')
@@ -170,7 +176,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   ].flatMap(path => { const parts = parseGroupPath(path); return parts.map((_, index) => parts.slice(0, index + 1).join(' / ')) }))).filter(Boolean).sort()
   const toolbar = <div className="flex items-center gap-2">
     {dirty && <StatusIndicator issues={['Unsaved shell action changes']} />}
-    <Button size="sm" variant="primary" leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty} onClick={() => void apply()}>Save</Button>
+    <Button size="sm" variant="primary" leadingIcon={<Save size={14} />} aria-label="Save shell actions" disabled={applying || !dirty || Boolean(invalidAction)} onClick={() => void apply()}>Save</Button>
   </div>
   // Collapsed groups stay mounted (hidden), so open editors and drafts inside them are kept.
   const renderEntries = (entries: ActionEntry[], renderAction: (action: ShellAction) => ReactNode): ReactNode[] => entries.map((entry, index) => {
@@ -199,8 +205,8 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
         <Overlay open zIndex={80} onBackdropMouseDown={() => { if (!applying) setPendingExit(null) }}>
           <div role="alertdialog" aria-modal="true" aria-label="Unsaved shell actions" tabIndex={-1} className="uam-mcp-dialog max-w-sm" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (!applying) setPendingExit(null) } }}>
             <h3 className="text-sm font-semibold">Save shell actions before leaving?</h3>
-            {error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error}</p>}
-            <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="primary" disabled={applying} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next?.() } }}>Save and leave</Button></div>
+            {(validationError || error) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError || error}</p>}
+            <div className="flex justify-end gap-2"><Button autoFocus disabled={applying} onClick={() => { setPendingExit(null); revealInvalidAction() }}>Go back</Button><Button variant="primary" disabled={applying || Boolean(invalidAction)} onClick={async () => { if (await apply()) { const next = pendingExit; setPendingExit(null); next?.() } }}>Save and leave</Button></div>
           </div>
         </Overlay>
       </Presence>
@@ -335,6 +341,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
         </fieldset>
       </SettingsSection>
 
+      {validationError && validationError !== (error || notification) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{validationError}</p>}
       {(error || notification) && <div role="status" className="flex items-center justify-between gap-2 text-xs" style={{ color: error ? 'var(--error)' : 'var(--text-2)' }}><span>{error || notification}</span><IconButton icon={<X size={14} />} label="Dismiss shell action message" onClick={() => { setError(''); void useAppStore.getState().dismissShellActionNotification() }} /></div>}
     </div>
   )

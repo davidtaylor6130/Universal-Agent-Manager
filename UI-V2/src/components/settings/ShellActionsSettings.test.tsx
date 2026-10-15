@@ -156,6 +156,87 @@ describe('ShellActionsSettings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it.each([
+    ['input', { acceptsFiles: false, acceptsFolders: false }],
+    ['skill', { skillPath: '' }],
+  ] as const)('disables invalid shell %s saves and enables a corrected draft', async (_label, invalid) => {
+    useAppStore.setState({ shellActions: [{ ...useAppStore.getState().shellActions[0], ...invalid }] })
+    const ref = createRef<ShellActionsHandle>()
+    const leave = vi.fn()
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<ShellActionsSettings ref={ref} />))
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add shell action"]')!.click())
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
+      act(() => ref.current?.requestLeave(leave))
+      expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!.disabled).toBe(true)
+      act(() => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.click())
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Label for Review Selection')
+      const control = host.querySelector<HTMLButtonElement>(`[aria-label="${_label === 'input' ? 'Input type' : 'Action'} for Review Selection"]`)!
+      act(() => control.click())
+      const option = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find(button => button.textContent?.startsWith(_label === 'input' ? 'Files and folders' : 'Open as Workspace'))!
+      act(() => option.click())
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(false)
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.click())
+      expect(useAppStore.getState().setShellActions).toHaveBeenCalledOnce()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each(['notification', 'backend error'] as const)('keeps a shell %s visible and dismissible beside invalid-draft validation', async kind => {
+    const message = kind === 'notification' ? 'Shell integration needs refreshing.' : 'Could not save shell actions.'
+    const dismiss = vi.fn(async () => { useAppStore.setState({ shellActionNotification: '' }) })
+    useAppStore.setState({
+      shellActionNotification: kind === 'notification' ? message : '',
+      dismissShellActionNotification: dismiss,
+      ...(kind === 'backend error' ? { setShellActions: vi.fn(async () => false) } : {}),
+    })
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<ShellActionsSettings />))
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add shell action"]')!.click())
+      if (kind === 'backend error') await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand Review Selection"]')!.click())
+      const label = host.querySelector<HTMLInputElement>('[aria-label="Label for Review Selection"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(label, '')
+        label.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(host.querySelector('[role="status"]')?.textContent).toContain(message)
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Each action needs a label')
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss shell action message"]')!.click())
+      expect(dismiss).toHaveBeenCalledOnce()
+      expect(host.textContent).not.toContain(message)
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Each action needs a label')
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Dismiss shell action message"]')).toBeNull()
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('keeps a reverted shell label clean and permits a valid new action', async () => {
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<ShellActionsSettings />))
+    try {
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand Review Selection"]')!.click())
+      const label = host.querySelector<HTMLInputElement>('[aria-label="Label for Review Selection"]')!
+      const change = (value: string) => act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(label, value)
+        label.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      change('Changed')
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(false)
+      change('Review Selection')
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Add shell action"]')!.click())
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(false)
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.click())
+      expect(useAppStore.getState().setShellActions).toHaveBeenCalledOnce()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   describe('grouped actions', () => {
     const action = (id: string, label: string, groupPath: string[]) => ({
       id, label, groupPath, skillPath: '', providerId: '', modelId: '',
@@ -290,7 +371,7 @@ describe('ShellActionsSettings', () => {
       } finally { act(() => root.unmount()); host.remove() }
     })
 
-    it('closes the leave dialog and focuses an invalid action inside a collapsed group', async () => {
+    it('keeps invalid Save disabled and returns focus to the action inside a collapsed group', async () => {
       useAppStore.setState({ shellActions: grouped() })
       const { host, root, ref } = await mount()
       const leave = vi.fn()
@@ -300,7 +381,10 @@ describe('ShellActionsSettings', () => {
         act(() => header(host, 'Code').click())
         act(() => ref.current?.requestLeave(leave))
         expect(document.body.querySelector('[aria-label="Unsaved shell actions"]')).not.toBeNull()
-        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!.click())
+        expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(true)
+        expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!.disabled).toBe(true)
+        expect(document.body.querySelector('[aria-label="Unsaved shell actions"]')?.textContent).toContain('Each action needs a label')
+        await act(async () => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.click())
         expect(document.body.querySelector('[aria-label="Unsaved shell actions"]')).toBeNull()
         expect(leave).not.toHaveBeenCalled()
         expect(group(host, 'Code').hidden).toBe(false)

@@ -421,3 +421,38 @@ it.each(['http', 'sse', 'stdio'] as const)('omits long %s endpoint and workspace
   expect(useAppStore.getState().mcpServers).toEqual([configured])
   expect(saveServers).not.toHaveBeenCalled()
 })
+
+
+it.each([
+  ['malformed JSON', '{ not json', 'not valid'],
+  ['relative command', '{"mcp":{"docs":{"type":"local","command":["relative"]}}}', 'full path'],
+  ['invalid URL', '{"mcp":{"docs":{"type":"remote","url":"file:///tmp/tool"}}}', 'http:// or https://'],
+] as const)('disables invalid Save for %s, explains it, and restores clean JSON state', async (_label, invalid, detail) => {
+  await click('JSON')
+  const area = document.querySelector<HTMLTextAreaElement>('[aria-label="MCP JSON"]')!
+  const original = area.value
+  await type(area, invalid)
+  expect(button('Save').disabled).toBe(true)
+  expect(document.body.textContent).toContain(detail)
+  await click('Save')
+  expect(saveServers).not.toHaveBeenCalled()
+  await type(area, original)
+  expect(button('Save').disabled).toBe(true)
+  await type(area, toJsonText([server], false))
+  expect(button('Save').disabled).toBe(false)
+  await click('Save')
+  expect(saveServers).toHaveBeenCalledOnce()
+})
+
+it('disables same-scope duplicate names until the new server is corrected', async () => {
+  await click('Add server'); await click('Manual form')
+  const inputs = [...document.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')]
+  await type(inputs[0], 'playwright')
+  await type(inputs[1], '/opt/docs/server')
+  expect(button('Save').disabled).toBe(true)
+  expect(document.body.textContent).toContain('Two servers share the same name')
+  await type(inputs[0], 'docs')
+  expect(button('Save').disabled).toBe(false)
+  await click('Save')
+  expect(saveServers.mock.calls[0][0]).toHaveLength(2)
+})

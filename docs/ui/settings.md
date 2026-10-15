@@ -33,6 +33,8 @@ The VCS settings page has a separate SVN “Update before new chat” row, selec
 
 ## Grouped settings and instruction editing
 
-David selected mock A on 2026-10-15: Shell Actions uses collapsible groups in sidebar order, Git and SVN have separate stacked sections with neutral switches, and shared instruction files open in an inline editor. Collapsing a group retains its drafts; invalid actions reveal their group when Save is pressed. Boolean controls retain the existing explicit Save and Discard flow.
+David selected mock A on 2026-10-15: Shell Actions uses collapsible groups in sidebar order, Git and SVN have separate stacked sections with neutral switches, and shared instruction files open in an inline editor. Collapsing a group retains its drafts; choosing Go back from the unsaved-changes dialog reveals and focuses the invalid action. Boolean controls retain the existing explicit Save and Discard flow.
 
 Central Setup edits only instruction paths already saved in its configuration. File edits have a separate Save file action, disabled while unchanged, and participate in the existing unsaved-changes guard. Read and save failures retain the draft and show the error next to the editor. Saving an unchanged disabled setup still enables shared instructions; an enabled setup with no changes has a disabled Save action.
+
+Save actions use the existing dirty and validation state, including save-and-leave dialogs. Unchanged skill and theme drafts keep Save disabled; invalid Shell Actions, routing, MCP and memory drafts cannot be saved. Keep editing and Discard remain available. Validation appears alongside dismissible backend errors and notifications. MCP guided-setup navigation keeps its own step validation.

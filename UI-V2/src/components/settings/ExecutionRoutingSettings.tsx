@@ -66,6 +66,7 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
     const [picking, setPicking] = useState('')
     const matching = saved.repositoryMatching === true
     const dirty = JSON.stringify(savePayload(draft)) !== JSON.stringify(savePayload(baseline))
+    const validationError = routingConfigurationError(draft, hosts, folders)
     useEffect(() => {
       if (JSON.stringify(savedRef.current) === JSON.stringify(saved)) return
       savedRef.current = saved
@@ -141,17 +142,17 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
       })
       setPicking('')
     }
-    const errorText = error ? <p role="alert" className="uam-rt-dialog__error">{error}</p> : null
+    const errorText = error || validationError ? <p role="alert" className="uam-rt-dialog__error">{error || validationError}</p> : null
     const footer = variant === 'dialog'
       ? <div className="uam-rt-dialog__foot">
           {errorText}
           <Button variant="ghost" size="md" disabled={busy} onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" disabled={busy || !dirty} loading={busy} onClick={() => void submit(() => onClose?.())}>Save routing</Button>
+          <Button variant="primary" size="md" disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit(() => onClose?.())}>Save routing</Button>
         </div>
       : <div className="flex items-center justify-end gap-2 pt-1">
           {errorText}
           <Button size="sm" disabled={busy || !dirty} onClick={() => { setDraft(structuredClone(saved)); setBaseline(saved); setError('') }}>Discard</Button>
-          <Button size="sm" variant="primary" disabled={busy || !dirty} loading={busy} onClick={() => void submit()}>Save routing</Button>
+          <Button size="sm" variant="primary" disabled={busy || !dirty || Boolean(validationError)} loading={busy} onClick={() => void submit()}>Save routing</Button>
         </div>
 
     return <>
@@ -241,7 +242,7 @@ export const ExecutionRoutingSettings = forwardRef<ExecutionRoutingSettingsHandl
           })}
       </fieldset>
       {footer}
-      {exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} error={error} onStay={() => setExit(null)}
+      {exit && <UnsavedChangesDialog title="Unsaved routing settings" busy={busy} saveDisabled={Boolean(validationError)} error={error || validationError} onStay={() => setExit(null)}
         onDiscard={() => { const next = exit; setDraft(structuredClone(saved)); setBaseline(saved); setError(''); setExit(null); next() }} onSave={() => void submit(exit)} />}
     </>
   })

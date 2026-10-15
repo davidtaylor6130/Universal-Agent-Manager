@@ -719,7 +719,7 @@ export const MemoryLibraryModal = forwardRef<MemoryLibraryHandle, { embedded?: b
         <div role="alertdialog" aria-modal="true" aria-label="Unsaved memory" tabIndex={-1} className="rounded-xl p-5 space-y-4 max-w-sm mx-4" style={{background:'var(--surface)',border:'1px solid var(--border-bright)'}}>
           <h3 className="text-sm font-semibold">Save this memory before leaving?</h3>
           {localError && <p role="alert" className="text-xs" style={{color:'var(--error)'}}>{localError}</p>}
-          <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
+          <div className="flex justify-end gap-2"><Button autoFocus disabled={submitting} onClick={() => setPendingExit(null)}>Go back</Button><Button variant="danger" disabled={submitting} onClick={() => {const next=pendingExit; setPendingExit(null); setDraft(EMPTY_DRAFT); setIsAdding(false); next()}}>Discard</Button><Button variant="primary" disabled={submitting || !draft.title.trim() || !draft.memory.trim()} onClick={async () => { if(await submitDraft()) {const next = pendingExit; setPendingExit(null); next()} }}>Save and leave</Button></div>
         </div>
       </div>}
 
