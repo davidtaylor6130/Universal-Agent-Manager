@@ -350,6 +350,8 @@ type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planA
 
 const PersistedMessageRow = memo(function PersistedMessageRow({
   message,
+  hasDeliveredResponse,
+  hasStoppedResponse,
   disclosureState,
   index,
   assistantLabel,
@@ -368,6 +370,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectTool,
 }: {
   message: Message
+  hasDeliveredResponse: boolean
+  hasStoppedResponse: boolean
   disclosureState: WorkTraceDisclosureState
   index: number
   assistantLabel: string
@@ -439,7 +443,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
           workingMode={workingMode}
         />
 		</MessageFrame>
-      {isUserMessage && message.interrupted && <InterruptedDivider label={message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'} />}
+      {isUserMessage && message.interrupted && !(hasDeliveredResponse && hasStoppedResponse) &&
+        <InterruptedDivider label={message.acpPromptNotSent && !hasDeliveredResponse ? 'Message was not sent' : 'Response interrupted'} />}
       {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
         <InterruptedDivider label={stoppedResponseLabel(message.stopReason, message.interrupted)} />}
 		</>
@@ -2491,6 +2496,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
                 const followingResponse = message.role === 'user' && messages[index + 1]?.role === 'assistant' ? messages[index + 1] : undefined
+                const hasDeliveredResponse = Boolean(message.interrupted && message.acpPromptNotSent && followingResponse?.providerId?.trim() &&
+                  followingResponse.providerId.trim() === message.providerId?.trim() && hasSubstantiveOutput(followingResponse))
+                const hasStoppedResponse = Boolean(hasDeliveredResponse && stoppedResponseLabel(followingResponse?.stopReason, followingResponse?.interrupted))
                 const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
@@ -2571,6 +2579,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     ) : (
                       <PersistedMessageRow
                         message={message}
+                        hasDeliveredResponse={hasDeliveredResponse}
+                        hasStoppedResponse={hasStoppedResponse}
                         disclosureState={disclosureState}
                         index={index + historyStartIndex}
                         assistantLabel={reviewAssistantLabel(messageProviderName, message)}

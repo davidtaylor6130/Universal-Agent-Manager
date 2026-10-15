@@ -2065,6 +2065,90 @@ describe('ChatView', () => {
 
   it.each([
     { content: 'Partial answer' }, { thoughts: 'Partial thought' }, { planSummary: 'Plan' },
+    { toolCalls: [{ id: 'delivered-tool', title: 'Read', kind: 'read', status: 'completed', content: '' }] },
+    { blocks: [{ type: 'assistant_text' as const, text: 'Partial answer' }] },
+    { attachments: [{ id: 'delivered-file', name: 'output.png', type: 'file', size: 1 }] },
+  ])('does not label delivered output as an unsent prompt ($content)', (output) => {
+    const state = useAppStore.getState()
+    const user = { ...state.messages['chat-1'][0], providerId: 'opencode-cli', interrupted: true, acpPromptNotSent: true }
+    const assistant = { ...state.messages['chat-1'][1], providerId: 'opencode-cli', content: '', thoughts: '', interrupted: true, ...output }
+    useAppStore.setState({ expandWorkTraces: true, messages: { 'chat-1': [user, assistant] }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'stopped',
+        pendingPermission: null, pendingUserInput: null, turnEvents: [], unsentMessageIndices: [], recoverableUnsentMessageIndices: [] },
+    } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.textContent).toContain('Response interrupted')
+      expect(host.querySelectorAll('article[aria-label="You"]')).toHaveLength(1)
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Remove unsent prompt"]')).toBeNull()
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(user)
+      expect(user.acpPromptNotSent).toBe(true)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([false, true])('keeps one truthful interruption indicator after delivered output (assistantInterrupted=%s)', (assistantInterrupted) => {
+    const state = useAppStore.getState()
+    const user = { ...state.messages['chat-1'][0], providerId: 'opencode-cli', interrupted: true, acpPromptNotSent: true }
+    const assistant = { ...state.messages['chat-1'][1], providerId: 'opencode-cli', content: 'Delivered partial reply', interrupted: assistantInterrupted, stopReason: '' }
+    useAppStore.setState({ messages: { 'chat-1': [user, assistant] }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'stopped',
+        pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+    } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).not.toContain('Message was not sent')
+      expect(host.textContent?.match(/Response interrupted/g)).toHaveLength(1)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([false, true])('reuses a persisted user row while its response streams (staleNonDelivery=%s)', (staleNonDelivery) => {
+    const state = useAppStore.getState()
+    let userContentReads = 0
+    const user = { ...state.messages['chat-1'][0], providerId: 'opencode-cli', interrupted: staleNonDelivery, acpPromptNotSent: staleNonDelivery }
+    Object.defineProperty(user, 'content', { enumerable: true, get: () => { userContentReads += 1; return 'Authored request' } })
+    const assistant = { ...state.messages['chat-1'][1], providerId: 'opencode-cli', content: 'Partial response', interrupted: false }
+    useAppStore.setState({ messages: { 'chat-1': [user, assistant] }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: true, lifecycleState: 'processing', turnUserMessageIndex: 0,
+        turnAssistantMessageIndex: 1, pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+    } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const initialReads = userContentReads
+      expect(initialReads).toBeGreaterThan(0)
+      for (let index = 0; index < 3; index += 1) {
+        act(() => useAppStore.setState({ messages: { 'chat-1': [user, { ...assistant, content: `Partial response ${index}` }] } }))
+        expect(userContentReads).toBe(initialReads)
+      }
+      expect(host.textContent).toContain('Partial response 2')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each(['empty', 'foreign provider', 'later user'])('preserves uncertain nondelivery without same-turn output (%s)', (boundary) => {
+    const state = useAppStore.getState()
+    const user = { ...state.messages['chat-1'][0], providerId: 'opencode-cli', interrupted: true, acpPromptNotSent: true }
+    const assistant = { ...state.messages['chat-1'][1], providerId: boundary === 'foreign provider' ? 'codex-cli' : 'opencode-cli',
+      content: boundary === 'empty' ? '' : 'Output belonging to another turn', thoughts: '', toolCalls: [], blocks: [], planEntries: [], planSummary: '', attachments: [] }
+    const messages = boundary === 'later user' ? [user, { ...user, id: 'later-user', interrupted: false, acpPromptNotSent: false }, assistant] : [user, assistant]
+    useAppStore.setState({ messages: { 'chat-1': messages }, acpBindingBySessionId: {
+      'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'stopped',
+        pendingPermission: null, pendingUserInput: null, turnEvents: [], unsentMessageIndices: [], recoverableUnsentMessageIndices: [] },
+    } })
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).toContain('Message was not sent')
+      expect(host.querySelector('[aria-label="Unsent prompts"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Remove unsent prompt"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([
+    { content: 'Partial answer' }, { thoughts: 'Partial thought' }, { planSummary: 'Plan' },
     { toolCalls: [{ id: 'tool', title: 'Read', kind: 'read', status: 'completed', content: '' }] },
     { blocks: [{ type: 'assistant_text' as const, text: 'Partial answer' }] },
     { attachments: [{ id: 'file', name: 'output.png', type: 'file', size: 1 }] },

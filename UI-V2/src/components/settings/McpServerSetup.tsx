@@ -282,7 +282,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       <SettingRow title="UAM MCP service" description="Agent questions, goals and UAM skills."
         status={uamEnabled ? undefined : 'Off in this draft until you save.'}
         control={uamEnabled
-          ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />Always on</span>
+          ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />On</span>
           : <Button size="sm" disabled={busy} onClick={() => { setUamEnabled(true); setMessage('') }}>Turn back on</Button>} />
       {COMPUTER_USE_ENABLED && typeof computerUseEnabled === 'boolean'
         ? <SettingRow title="UAM Computer Use"
