@@ -362,14 +362,22 @@ namespace uam::remote
 		if (!uam::provider_setup::ValidateManifest(manifest, error)) { if (error_out) *error_out = error; return false; }
 		nlohmann::json response;
 		if (!Request({{"type", "configuration.prepare"}, {"directory", uam::paths::Utf8PathString(target)}, {"manifest", manifest}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
-		const nlohmann::json missing = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json::array());
+		const nlohmann::json missing = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json());
 		if (!missing.is_array()) { if (error_out) *error_out = "SSH helper returned an invalid resource list."; return false; }
+		if (missing.empty()) return true;
 		for (const nlohmann::json& entry : missing)
 		{
 			if (!entry.is_string() || !manifest["files"].contains(entry.get<std::string>())) { if (error_out) *error_out = "SSH helper requested an unknown resource."; return false; }
 			const std::string name = entry.get<std::string>();
 			if (!uam::provider_setup::ReadFile(source / uam::paths::PathFromUtf8(name), bytes, error)) { if (error_out) *error_out = error; return false; }
 			if (!UploadFile("configuration-" + Nonce(), target / uam::paths::PathFromUtf8(name), bytes, error_out, stop_token)) return false;
+		}
+		if (!Request({{"type", "configuration.prepare"}, {"directory", uam::paths::Utf8PathString(target)}, {"manifest", manifest}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json verified = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json());
+		if (!verified.is_array() || !verified.empty())
+		{
+			if (error_out) *error_out = "SSH helper could not verify the installed resources.";
+			return false;
 		}
 		return true;
 	}

@@ -584,6 +584,9 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.turn_serial = chat.execution_host_id == uam::execution_hosts::kLocalHostId
 	    ? 0 : std::max(session.turn_serial, chat.remote_turn_serial);
 	session.queued_prompt.clear();
+	session.queued_skill_spans.clear();
+	if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
+	session.attached_skill_preparation.reset();
 	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
@@ -1049,6 +1052,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	const bool recovering_remote_process = session.recovering_remote_process;
 	const bool was_processing = session.processing;
 	const std::string pending_prompt = session.queued_prompt;
+	const std::vector<attached_skills::Span> pending_skill_spans = session.queued_skill_spans;
 	const int turn_first_user_message_index = session.turn_first_user_message_index;
 	const int turn_user_message_index = session.turn_user_message_index;
 	const int current_assistant_message_index = session.current_assistant_message_index;
@@ -1086,7 +1090,11 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	if (retrying_undelivered_prompt || recovering_remote_turn || recovering_remote_process)
 	{
-		if (retrying_undelivered_prompt) session.queued_prompt = pending_prompt;
+		if (retrying_undelivered_prompt)
+		{
+			session.queued_prompt = pending_prompt;
+			session.queued_skill_spans = pending_skill_spans;
+		}
 		session.processing = was_processing;
 		session.recovering_remote_turn = recovering_remote_turn;
 		session.recovering_remote_process = recovering_remote_process;
@@ -1731,12 +1739,52 @@ static std::string PreparedPromptText(const AcpSessionState& session)
 	return prompt;
 }
 
+static std::vector<attached_skills::Span> PreparedSkillSpans(const AcpSessionState& session)
+{
+	std::vector<attached_skills::Span> spans = session.queued_skill_spans;
+	if (session.memory_recall_preparation != nullptr && session.memory_recall_position.has_value())
+	{
+		const std::shared_ptr<MemoryRecallPreparation>& state = session.memory_recall_preparation->state;
+		if (state->finished.load(std::memory_order_acquire) && state->error.empty())
+			for (attached_skills::Span& span : spans)
+				if (span.offset >= *session.memory_recall_position) span.offset += state->context.size();
+	}
+	return spans;
+}
+
+static std::string AttachedSkillOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	return nlohmann::json::array({LocalLaunchOwnership(app, session, chat), session.turn_serial,
+	    session.turn_first_user_message_index, session.turn_user_message_index, session.goal_command_revision,
+	    session.protocol_kind, session.process_execution_host_id, session.remote_output_delivery_token,
+	    session.queued_prompt}).dump();
+}
+
+static bool OwnsAttachedSkillPreparation(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+{
+	const RemoteContextPreparation& state = *session.attached_skill_preparation;
+	const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	return state.data_root == app.data_root && state.incarnation == chat.metadata_incarnation &&
+	    host != nullptr && execution_hosts::SameConnection(state.host, *host) &&
+	    state.workspace == paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)) &&
+	    state.ownership == AttachedSkillOwnership(app, session, chat) &&
+	    state.prompt == PreparedPromptText(session) && state.skill_spans == PreparedSkillSpans(session) &&
+	    !state.cancel.stop_requested() && !session.cancel_requested && session.processing && !session.remote_source_exit_reported;
+}
+
+static std::string WirePromptText(const AcpSessionState& session)
+{
+	const std::shared_ptr<RemoteContextPreparation>& state = session.attached_skill_preparation;
+	return state != nullptr && state->finished.load(std::memory_order_acquire) && state->skills_prepared
+	    ? state->wire_prompt : PreparedPromptText(session);
+}
+
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 static ClaudeInputIdentity ClaudeInputSnapshot(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 {
 	const int first = session.turn_first_user_message_index >= 0 ? session.turn_first_user_message_index : session.turn_user_message_index;
 	return {chat.id, session.provider_id, chat.provider_id, session.session_id,
-	    session.process_execution_host_id, chat.execution_host_id, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)), PreparedPromptText(session),
+	    session.process_execution_host_id, chat.execution_host_id, paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat)), WirePromptText(session),
 	    chat.model_id, session.goal_turn_model_id, chat.approval_mode, chat.computer_use_backend, chat.computer_use_enabled,
 	    session.turn_serial, first, session.turn_user_message_index, uam::claude_input::TurnImages(chat, first, session.turn_user_message_index)};
 }
@@ -1962,6 +2010,9 @@ static bool DeliverPreparedPrompt(AppState& app, AcpSessionState& session, ChatS
 		if (remote) ScheduleChatSave(app, chat, 0.0);
 	}
 	session.queued_prompt.clear();
+	session.queued_skill_spans.clear();
+	if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
+	session.attached_skill_preparation.reset();
 	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
@@ -2031,6 +2082,18 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		return true;
 	}
 
+	if (session.attached_skill_preparation != nullptr && !OwnsAttachedSkillPreparation(app, session, chat))
+	{
+		session.attached_skill_preparation->cancel.request_stop();
+		session.attached_skill_preparation.reset();
+		if (!session.queued_prompt.empty())
+		{
+			FailAcpTurnOrSession(session, &chat, "Attached skill preparation ownership changed. Retry the prompt.");
+			ScheduleChatSave(app, chat, 0.0);
+		}
+		return true;
+	}
+
 	if (!provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id)) return false;
 	if (app.pending_chat_save_at_by_chat_id.contains(chat.id)) return false;
 	if (session.memory_recall_preparation != nullptr &&
@@ -2078,6 +2141,9 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			RestorePendingPromptDelivery(session, chat);
 			ScheduleChatSave(app, chat, 0.0);
 			session.queued_prompt.clear();
+			session.queued_skill_spans.clear();
+			if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
+			session.attached_skill_preparation.reset();
 			session.turn_computer_use_mode = false;
 			session.memory_recall_position.reset();
 			session.memory_recall_query.clear();
@@ -2203,7 +2269,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			return true;
 		}
 	}
-	const std::string prompt = PreparedPromptText(session);
+	std::string prompt = PreparedPromptText(session);
 	std::string context;
 	if (chat.execution_host_id != execution_hosts::kLocalHostId)
 	{
@@ -2255,6 +2321,55 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			}
 			context = preparation->context;
 		}
+	}
+	if (!session.queued_skill_spans.empty())
+	{
+		const std::vector<attached_skills::Span> spans = PreparedSkillSpans(session);
+		std::string error;
+		if (!attached_skills::Validate(prompt, spans, error))
+		{
+			FailAcpTurnOrSession(session, &chat, error);
+			ScheduleChatSave(app, chat, 0.0);
+			return true;
+		}
+		std::shared_ptr<RemoteContextPreparation>& preparation = session.attached_skill_preparation;
+		if (preparation == nullptr)
+		{
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			if (host == nullptr) { FailAcpTurnOrSession(session, &chat, "The execution host no longer exists."); return true; }
+			const std::size_t active = std::ranges::count_if(app.remote_context_tasks, [](const RemoteContextTask& task)
+			{ return task.state != nullptr && !task.state->finished.load(std::memory_order_acquire); });
+			if (active >= 2) return false;
+			preparation = std::make_shared<RemoteContextPreparation>();
+			preparation->data_root = app.data_root; preparation->incarnation = chat.metadata_incarnation;
+			preparation->host = *host;
+			preparation->workspace = paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
+			preparation->ownership = AttachedSkillOwnership(app, session, chat);
+			preparation->prompt = prompt; preparation->skill_spans = spans;
+			RemoteContextTask task;
+			task.state = preparation;
+			task.worker = std::make_unique<std::jthread>([state = preparation](std::stop_token shutdown)
+			{
+				std::stop_callback canceled(shutdown, [state]() { state->cancel.request_stop(); });
+				try
+				{
+					state->skills_prepared = attached_skills::Prepare(state->data_root, state->host, state->workspace,
+					    state->prompt, state->skill_spans, state->wire_prompt, state->error, state->cancel.get_token());
+				}
+				catch (...) { state->error = "Attached skill files could not be prepared."; }
+				state->finished.store(true, std::memory_order_release);
+			});
+			app.remote_context_tasks.push_back(std::move(task));
+			return false;
+		}
+		if (!preparation->finished.load(std::memory_order_acquire)) return false;
+		if (!preparation->error.empty())
+		{
+			// Only preparation failure can use the captured inline form, before any delivery receipt.
+			AppendAcpDiagnostic(session, "skills", "resource_preparation_inline_fallback", "", "", false, 0, preparation->error);
+			preparation->error.clear();
+		}
+		prompt = WirePromptText(session);
 	}
 	session.lifecycle_state = kAcpLifecycleProcessing;
 
@@ -2653,6 +2768,9 @@ void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_sta
 	session.cancel_requested_time_s = 0.0;
 	session.inactivity_timeout_pending = false;
 	session.queued_prompt.clear();
+	session.queued_skill_spans.clear();
+	if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
+	session.attached_skill_preparation.reset();
 	session.turn_computer_use_mode = false;
 	session.memory_recall_position.reset();
 	session.memory_recall_query.clear();
@@ -2695,6 +2813,9 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		// Only a newly admitted explicit control can retry its retained exact queued intent.
 		session.queued_prompt.clear();
+		session.queued_skill_spans.clear();
+		if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
+		session.attached_skill_preparation.reset();
 		session.turn_computer_use_mode = false;
 	}
 	if (!async_receipt && session.goal_queue_admission != AcpSessionState::GoalQueueAdmission::None &&

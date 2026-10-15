@@ -9,6 +9,7 @@
 #include "common/platform/platform_state_fields.h"
 #include "common/platform/observed_process_stop.h"
 #include "common/provider/provider_profile.h"
+#include "common/provider/attached_skill_resources.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 
 #include <atomic>
@@ -509,6 +510,12 @@ namespace uam
 
 	struct RemoteContextPreparation
 	{
+		std::filesystem::path data_root;
+		std::shared_ptr<const std::uint8_t> incarnation;
+		std::string ownership;
+		std::vector<attached_skills::Span> skill_spans;
+		std::string wire_prompt;
+		bool skills_prepared = false;
 		std::string memory_level = "strict";
 		ExecutionHost host;
 		std::string workspace;
@@ -669,6 +676,8 @@ namespace uam
 		double turn_started_time_s = 0.0;
 		bool turn_computer_use_mode = false;
 		std::string queued_prompt;
+		std::vector<attached_skills::Span> queued_skill_spans;
+		std::shared_ptr<RemoteContextPreparation> attached_skill_preparation;
 		bool defer_prompt_save = false;
 		std::shared_ptr<PendingAcpPromptDelivery> pending_prompt_delivery;
 		std::shared_ptr<PendingLocalAcpLaunch> pending_local_launch;
