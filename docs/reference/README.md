@@ -1,0 +1,30 @@
+# Engineering reference
+
+These pages preserve useful source-level details from the trial base, outside the short feature agreements. They can include historical verification and old implementation states. The [feature guide](../README.md) and [documented corrections](../documentation-review.md) take precedence; these references are not proof of current full support or user acceptance. Follow source and tests when changing implementation rather than copying historical receipts into feature paragraphs.
+
+| Reference | Purpose |
+|---|---|
+| [Previous agent code map](agent-code-map.md) | Retained bridge/actions and source detail, not current instructions |
+| [Source map](source-map.md) | Entry points for checking implementation routes |
+| [Provider parity evidence](provider-runtime-parity.md) | Existing provider limits and investigation evidence |
+| [Provider sessions](architecture/provider-sessions.md) | Native identities, recovery and compaction details |
+| [Chat/workspace services](architecture/chats-imports-workspaces.md) | Imports, ownership, worktrees and deletion |
+| [Persistence](architecture/app-state-persistence.md) | Storage/cache relationships |
+| [React/CEF](architecture/react-cef-transport.md) | Bridge and history transport |
+| [Execution hosts](architecture/execution-hosts.md) | Helper and routing details |
+| [Memory](architecture/durable-memory.md) | Recall/extraction policy and file delivery |
+| [Permissions](architecture/permissions-notifications.md) | Native/UAM approval mapping and imports |
+| [Usage](architecture/usage-history.md) | Collection and paged snapshots |
+| [Build/release](architecture/build-test-release.md) | Incremental builds, tests and signing |
+| [Central setup](central-configuration.md) | Resource delivery and launch constraints |
+| [Computer use](computer-use.md) | Controller, trust boundaries and platform packaging |
+| [Security](security-enterprise.md) | Existing security controls and deployment checks |
+| [Settings history](settings-history.md) | Recorded layout choices and implementation notes |
+| [Visual Studio](visual-studio-solution.md) | Platform-specific developer setup |
+| [Duplication audit](codebase-dedup-report.md) | Prior code investigation, not product behaviour |
+
+Exact current acceptance and assigned owners remain in the [V5 log](<../../V5 Improvement Change log.md>).
+
+## Previous entry points
+
+These short compatibility pages preserve existing repository links: [provider parity](../provider-runtime-parity.md), [central configuration](../central-configuration.md), [duplication audit](../codebase-dedup-report.md) and [Visual Studio](../visual-studio-solution.md).

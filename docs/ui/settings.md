@@ -1,44 +1,25 @@
 # Settings design language
 
-Approved by David in the V5 sweep (2026-10-12). Every settings page must use ONE language, modelled on the MCP Servers page David liked. Reference implementation: the Chat Defaults page (`selectedSection === 'defaults'` in UI-V2/src/components/settings/SettingsModal.tsx) .
+Settings use the single approved V5 row language, modelled on MCP Servers and Chat Defaults. The shell supplies a title-only page header; short section labels organise related rows without decorative descriptions or nested cards. Each row has one concept, a concise consequence where needed and a right-aligned control. This page owns presentation; [Settings](../settings/settings.md) and its feature pages own behaviour.
 
-Primitives (import from './SettingsPrimitives'):
-- `<SettingsSection title description actions flush>`: uppercase tracked section label + one-line muted description + right-aligned section actions, then a bordered card. Title in sentence case in code ("AI permission reviewer"); CSS uppercases it.
-- `<SettingRow title description control icon status htmlFor>`: title (13px medium) + muted description on the left, control on the right (Switch, MenuSelect/renderDefaultsMenu, small Button, IconButton). `status` = muted live state line (what is happening). Extra children render under the row (expanded detail, inline error).
-- `<SettingsField label hint htmlFor>`: label ABOVE a wide input (paths, text areas, JSON, multi-field forms). Use inside a SettingsSection card.
-- `<SettingsLoading rows>`: animated skeleton. Use for any "Loading…" text in settings.
-- Legacy `SectionCard` already renders in this language; prefer converting its content into SettingRow/SettingsField.
+## Controls and disclosure
 
-Rules:
-1. One concept per row: toggles → `<Switch hideLabel label=… />` as the row control, never a Switch with its own label inside a row (no double labels). Selects → MenuSelect/existing renderDefaultsMenu as control. Buttons → small secondary/ghost on the right.
-2. Switches are NEUTRAL by default (on = ink). Only safety/important switches use `className="uam-switch--accent"` (e.g. YOLO-type, Computer Use master switch). Never decorative orange.
-3. No nested cards, no custom boxes, no hard-coded colours, no ad-hoc headings. Page header comes from the shell (don't add another title).
-4. Status vs configuration: live state (connected, running, installed version, failed) is a `status` line or StatusDot text, never a control.
-5. Disclosure/collapsible blocks only when content is genuinely optional/advanced ("Advanced" at the bottom). Primary settings are always visible.
-6. Copy: plain language, describe the consequence, sentence case. Every row has a description unless trivially obvious.
-   - Copy diet (2026-10-14): page header is title only; section labels are one short word or phrase with no description; row descriptions are one line (about 60 characters) and never repeat the title; no wrapper card that only adds a heading; sections with 1-2 rows merge into a neighbour.
-7. Lists (hosts, servers, agents, skills, editors): each item is a SettingRow (icon + name + mono detail in description + status; MCP server summaries omit URLs, program paths, arguments and workspace directories, which remain in the editor) with icon-only actions in control; "Add …" is a section action button; add/edit flows that are multi-field open in a modal (Overlay + Presence, like the import dialog), not inline.
-8. Empty states: one muted sentence + the add action.
-9. Motion: sections fade/rise in (built into primitives); expand/collapse uses the existing presence/grid-rows pattern; no flashing of whole lists on refresh (keep previous data while refreshing; disable only the control being saved).
-   - Settings nav: the active page shows its tinted selection background (`--accent-dim`) on the item, plus a single straight 3px vertical accent line at the item's left edge (no curved or rounded shape). The line glides between items with transform; the tint sits on the active item. Hover backgrounds use the same item box as the active tint, so their size matches exactly. Reduced motion disables the glide.
-   - Appearance > Motion: Default, Fast, Slow or Off scales the `--dur-*` tokens through `data-motion` on the root (persisted in localStorage `uam-motion`). New motion-driven CSS should use the tokens, not fixed durations, so the setting applies.
-10. Keep every aria-label/role that tests query; when a test asserts exact old copy you intentionally changed, update that assertion minimally.
-11. Environment scope bar: the one way to choose a computer in Settings. `SettingsScopeBar` sits above the page content on Overview, provider pages, Chat Defaults and MCP Servers: "Applying settings for" + a MenuSelect of "All environments" (default) and each SSH execution host. Pages do not have their own host pickers. The scope is session-only (`settingsScopeHostId` in the UI store) and clears any pending CLI install when it changes. Per-computer actions on provider pages (CLI version install/refresh, provider MCP status and toggles, model refresh) target the selected host, or this computer for "All environments"; with "All environments" the CLI section shows "Choose a computer above to manage its CLI version." Saves of Chat Defaults and MCP server lists send `scopeExecutionHostId` (via `withSettingsScope`) only when the backend sets `settings.hostScopedSettings: true` and a host is selected; then the global AI permission reviewer is hidden too. Without that flag the selector is enabled only on provider pages (for the per-computer actions) and disabled with the tooltip "Per-computer settings need an update to UAM" elsewhere. Pages local to this computer (Appearance, Typography, Motion, Version Control, Editors, Shell Actions, Computer Use, Central Setup, Memory) do not show the bar.
+Use [settings primitives](primitives.md#settings-primitives), with `Switch hideLabel` inside a SettingRow to avoid duplicate labels, MenuSelect for choices and small secondary/ghost buttons for actions. Neutral switches are the default; reserve `uam-switch--accent` for safety-important choices. Labels sit above wide text inputs. Primary settings stay visible; disclose genuinely optional advanced details. No hard-coded colours, ad-hoc boxes, repeated headings or wrapper cards that only add a heading.
 
-One line of text per item; no stacked headers.
+## Copy and lists
 
-## SVN new-chat updates
+Use sentence case and plain consequences. A row description is roughly one short line, about 60 characters, and does not repeat its title; a trivially obvious row can omit it. Merge one- or two-row sections with a related neighbour. Hosts, servers, agents, skills and editors use identity/detail/status rows with labelled icon actions and an Add section action; multi-field add/edit flows use the shared Overlay/Presence modal. MCP summaries omit endpoints, executable paths, arguments and workspace directories, which remain in the editor. Empty states have one muted sentence and the add action.
 
-The VCS settings page has a separate SVN “Update before new chat” row, selected from mock B by David on 2026-10-14. It defaults to off and cannot be edited while SVN is disabled. Changes remain in the draft until “Save VCS settings”; “Discard” restores saved values. Enabling this setting requests an SVN working-copy update before a new chat and does not authorize an SVN commit. Claude review and actual component visual/user acceptance remain pending.
+## State and drafts
 
-## Grouped settings and instruction editing
+Observed connected/running/version/failed state is a status line, separate from saved configuration. Keep current content during refresh and disable only the control being saved. Loading uses SettingsLoading. Save/Discard and unsaved-changes handling follow the feature’s real draft state: unchanged saves stay disabled, validation blocks invalid saves, and failures retain drafts and show useful nearby feedback. Group collapse must retain drafts.
 
-David selected mock A on 2026-10-15: Shell Actions uses collapsible groups in sidebar order, Git and SVN have separate stacked sections with neutral switches, and shared instruction files open in an inline editor. Collapsing a group retains its drafts; choosing Go back from the unsaved-changes dialog reveals and focuses the invalid action. Boolean controls retain the existing explicit Save and Discard flow.
+## Navigation and motion
 
-Central Setup edits only instruction paths already saved in its configuration. File edits have a separate Save file action, disabled while unchanged, and participate in the existing unsaved-changes guard. Read and save failures retain the draft and show the error next to the editor. Saving an unchanged disabled setup still enables shared instructions; an enabled setup with no changes has a disabled Save action.
+The active settings item has its tinted `--accent-dim` background and one straight 3 px vertical accent line at the left edge. The line glides using transform; hover and active backgrounds share the same item box. Reduced motion disables the glide. Sections use the existing fade/rise and disclosure presence patterns, with shared [motion tokens](motion.md), not flashing lists.
 
-Save actions use the existing dirty and validation state, including save-and-leave dialogs. Unchanged skill and theme drafts keep Save disabled; invalid Shell Actions, routing, MCP and memory drafts cannot be saved. Keep editing and Discard remain available. Validation appears alongside dismissible backend errors and notifications. MCP guided-setup navigation keeps its own step validation.
+## Environment control
 
-## Local snapshot Git
+Use one SettingsScopeBar above applicable page content, labelled “Applying settings for”, with All environments and configured SSH environments. Pages must not invent their own host selectors. The broader behaviour and current implementation gaps live in [Environment scope](../settings/environment-scope.md); the currently narrower UI must not redefine that agreement. `settingsScopeHostId` is session-only and scope changes clear pending CLI installation. Host saves send `scopeExecutionHostId` only when the backend advertises `hostScopedSettings`; otherwise the supported provider-computer actions remain distinct from global saves.
 
-As clarified by David on 2026-10-15, SVN contains a Local snapshot Git switch, and a separate No VCS section contains Enable local Git files for plain folders. Both default on to preserve existing behavior. Turning either off makes future automatic chats of that workspace kind use the original folder; existing isolated workspaces remain intact. These controls use the existing draft Save and Discard flow and depend on Git being enabled, independently of SVN tracking. David explicitly requested the existing style without mock alternatives.
+[Reusable primitives](primitives.md) · [Accessibility](accessibility.md) · [Historical settings choices](../reference/settings-history.md).

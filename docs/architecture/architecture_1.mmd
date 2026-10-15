@@ -8,19 +8,25 @@ flowchart LR
   REGISTRY --> CLAUDE["Claude Code CLI"]
   REGISTRY --> OPENCODE["OpenCode CLI"]
   REGISTRY --> COPILOT["GitHub Copilot CLI"]
+  REGISTRY --> ANTIGRAVITY["Antigravity CLI: terminal release scope"]
 
-  REGISTRY --> STRUCTURED["Structured sessions\nGemini/OpenCode/Copilot ACP\nCodex app-server\nClaude stream-json"]
-  REGISTRY --> TERMINAL["xterm.js terminal fallback"]
-  STRUCTURED --> MIDDLEMAN["UAM permission middleman\nAlways ask / YOLO / AI review\nPlan hard read-only ceiling"]
-  MIDDLEMAN --> UI
+  REGISTRY --> STRUCTURED["Structured sessions: ACP, app-server, stream JSON"]
+  REGISTRY --> TERMINAL["Native CLI in xterm.js"]
+  STRUCTURED --> POLICY["Native and UAM permission decisions: Default, Accept Edits, AI Review, YOLO"]
+  POLICY --> UI
 
-  STRUCTURED --> PROCESS["Platform process service"]
-  TERMINAL --> PTY["Platform PTY service"]
-  PROCESS --> CONTAINMENT["Owned process-tree containment"]
-  PTY --> CONTAINMENT
+  APP --> SETUP["Shared instructions, skills, agents and MCP setup"]
+  SETUP --> REGISTRY
+  APP --> EXECUTION["Local execution or verified SSH helper"]
+  STRUCTURED --> EXECUTION
+  TERMINAL --> EXECUTION
+  EXECUTION --> CONTAINMENT["Owned process and PTY lifecycles"]
 
-  APP --> AGENTS["Provider-neutral UAM agents"]
-  AGENTS --> SCHEDULER["Bounded durable agent-run scheduler"]
-  SCHEDULER --> REGISTRY
-  APP --> WORKERS["Isolated bounded text workers"]
-  WORKERS --> PROCESS
+  APP --> AGENTS["Provider-neutral UAM agents and bounded goal work"]
+  AGENTS --> REGISTRY
+  APP --> WORKERS["Bounded worker processes"]
+  WORKERS --> EXECUTION
+
+  PHONE["Optional phone browser"] --> COMPANION["Restricted authenticated companion interface"]
+  COMPANION --> APP
+  STRUCTURED --> COMPUTER["Selected local UAM or provider computer-use route"]

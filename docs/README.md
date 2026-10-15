@@ -1,25 +1,33 @@
-# Documentation map
+# UAM feature guide
 
-Start here for repository system notes. Each page describes the current implementation and names the code and focused tests to read before changing it.
+These docs describe what UAM’s features mean and how they are expected to behave. Start with the relevant introduction, then follow the specific feature. Read [How these docs work](documentation-rules.md) before implementing or assessing a feature. **An agreement is not a claim that it is implemented or accepted.** Provider checklists and explicit gap notes keep those distinctions visible.
 
-## Systems
+## System overview
 
-- [App state and persistence](architecture/app-state-persistence.md)
-- [React and CEF transport](architecture/react-cef-transport.md)
-- [Provider sessions](architecture/provider-sessions.md)
-- [Chats, imports and workspaces](architecture/chats-imports-workspaces.md)
-- [Durable memory](architecture/durable-memory.md)
-- [Permissions and notifications](architecture/permissions-notifications.md)
-- [Usage history](architecture/usage-history.md)
-- [Execution hosts and remote runner](architecture/execution-hosts.md)
-- [Build, test and release](architecture/build-test-release.md)
-- [Recorded product decisions](architecture/decisions.md)
+[Architecture](architecture.md) · [Build flags](build-flags.md) · [Building UAM](building.md) · [Security and managed deployment](security-enterprise.md) · [Recorded decisions](architecture/decisions.md)
 
-## UI contract and diagrams
+## Features
 
-- [UI design language](ui/design-language.md)
-- [Settings design rules](ui/settings.md)
-- [System flow](architecture/architecture_1.mmd)
-- [Data and workspace flow](architecture/architecture_2.mmd)
+| Area | Start here |
+|---|---|
+| Providers and runtimes | [Shared requirements and six provider checklists](providers/providers.md) |
+| Chat | [Lifecycle, messages, sending, goals, imports and panes](chat/chat.md) |
+| Composer | [Input, attachments, voice and workspace actions](chat/composer/composer.md) |
+| Sidebar | [Active, Snoozed, Pinned and All Chats](sidebar/sidebar.md) |
+| Settings | [Defaults, scope, providers and shared configuration](settings/settings.md) |
+| Memory | [Durable knowledge and the memory store](memory/memory.md) |
+| Workspaces and VCS | [Workspaces](workspaces/workspaces.md), [Git, SVN and snapshots](settings/version-control/version-control.md) |
+| Execution environments | [Local and SSH execution](remote-environments/remote-environments.md) |
+| Computer use | [Shared controller and native-provider routing](computer-use.md) |
+| Phone access | [Browser interface published by the main device](phone-access.md) |
+| Usage | [Tokens, context, account allowances and history](usage/usage.md) |
+| UI | [Visual language, primitives, accessibility and interaction](ui/design-language.md) |
 
-The top-level [README](../README.md) covers the product and setup. [AGENTS.md](../AGENTS.md) and [CLAUDE.md](../CLAUDE.md) contain repository workflow and code maps.
+## Implementation and maintenance
+
+- [Documentation review](documentation-review.md): corrected contradictions, unresolved decisions and known implementation gaps.
+- [Engineering reference](reference/README.md): useful technical detail and source navigation, outside the short feature agreements.
+- [V5 change log](<../V5 Improvement Change log.md>): work ownership, verification, review and David’s specific acceptance.
+- [Repository instructions](../AGENTS.md): required workflow, builds and documentation maintenance.
+
+Before committing behaviour changes, update the owning feature page and applicable provider checklist in the same commit. Follow [the maintenance agreement](documentation-rules.md#changes-and-commits) even when the user did not request documentation. Run `python3 scripts/check_docs.py`; it checks documentation integrity, not feature correctness. This isolated trial is intended for real development use before David decides whether to merge it.
