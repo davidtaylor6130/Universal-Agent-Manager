@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -36,6 +37,7 @@ namespace uam
 	class StartupNativeImportService;
 	class StorageRetentionService;
 	struct WorktreeLaunchPreparationTask;
+	enum class OpenCodeCompactionGateState;
 
 	namespace fs = std::filesystem;
 
@@ -1172,6 +1174,9 @@ namespace uam
 		std::string native_chat_refresh_error_status;
 		std::vector<std::unique_ptr<CliTerminalState>> cli_terminals;
 		std::vector<std::unique_ptr<AcpSessionState>> acp_sessions;
+		/// Application-owned hooks keep native compaction queries outside runtime and transport state.
+		std::function<void(AcpSessionState&, const ChatSession&)> opencode_compaction_before_turn_reset;
+		std::function<OpenCodeCompactionGateState(AcpSessionState&, ChatSession&, std::string&)> opencode_compaction_before_dispatch;
 		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
 		std::vector<AsyncAcpProcessStopTask> acp_process_stop_tasks;
 		std::vector<CliContextPreparationTask> cli_context_preparation_tasks;

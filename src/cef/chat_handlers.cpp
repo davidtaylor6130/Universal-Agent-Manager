@@ -1,3 +1,4 @@
+#include "app/worktree_launch_preparation_service.h"
 #include "uam_query_handler.h"
 #include "uam_query_handler_async.h"
 #include "uam_query_handler_internal.h"
@@ -823,7 +824,7 @@ namespace
 		{
 			if (chat.id != source.id && (chat.workspace_worktree_directory != source.workspace_worktree_directory ||
 			    uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local") != uam::strings::NonEmptyOrFallback(source.execution_host_id, "local"))) continue;
-			if (app.worktree_operation_chat_ids.contains(chat.id) || app.worktree_launch_preparations.contains(chat.id) ||
+			if (app.worktree_operation_chat_ids.contains(chat.id) || uam::IsWorktreeLaunchPreparationPending(app, chat.id) ||
 			    app.git_port_requests.contains(chat.id)) return true;
 		}
 		return false;

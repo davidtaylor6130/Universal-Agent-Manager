@@ -13,6 +13,7 @@ function input(element: HTMLInputElement, value: string) {
   element.dispatchEvent(new Event('input', { bubbles: true }))
 }
 function button(host: HTMLElement, text: string) { return Array.from(host.querySelectorAll('button')).find((value) => value.textContent === text)! }
+function toggle(host: HTMLElement, label: string) { return host.querySelector<HTMLInputElement>(`input[type="checkbox"][aria-label="${label}"]`)! }
 function mount() {
   const host = document.createElement('div'); document.body.appendChild(host)
   const root = createRoot(host); const ref = createRef<VcsSettingsSectionHandle>()
@@ -25,7 +26,7 @@ describe('VCS defaults controls', () => {
     window.cefQuery = ({ request, onSuccess }) => { const message = JSON.parse(request); requests.push({ action: message.action, payload: message.payload }); onSuccess('{}') }
     const { host, root } = mount()
     try {
-      const branch = '\u00a0feature/日本語\u00a0'
+      const branch = ' feature/日本語 '
       act(() => input(host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!, branch))
       expect(requests).toHaveLength(0)
       await act(async () => button(host, 'Save VCS settings').click())
@@ -38,10 +39,10 @@ describe('VCS defaults controls', () => {
     window.cefQuery = ({ onFailure }) => onFailure(500, 'Disk full')
     const { host, root, ref } = mount()
     try {
-      act(() => host.querySelector<HTMLElement>('[aria-label="Git"] button:nth-child(2)')!.click())
+      act(() => toggle(host, 'Enable Git').click())
       await act(async () => button(host, 'Save VCS settings').click())
       expect(useAppStore.getState().gitEnabled).toBe(true)
-      expect(host.querySelector('[aria-label="Git"] button:nth-child(2)')?.getAttribute('aria-pressed')).toBe('true')
+      expect(toggle(host, 'Enable Git').checked).toBe(false)
       expect(host.textContent).toContain('Your changes are retained')
       let left = false
       act(() => ref.current!.requestLeave(() => { left = true }))
@@ -53,6 +54,68 @@ describe('VCS defaults controls', () => {
   })
 })
 
+describe('separate Git and SVN sections', () => {
+  it('stacks Git then SVN sections and uses one switch per boolean setting', () => {
+    const { host, root } = mount()
+    try {
+      const sections = Array.from(host.querySelectorAll('section')).map((section) => section.getAttribute('aria-label'))
+      expect(sections).toEqual(['Git', 'SVN'])
+      expect(host.querySelector('[aria-label="Git and SVN"]')).toBeNull()
+      const git = host.querySelector<HTMLElement>('section[aria-label="Git"]')!
+      const svn = host.querySelector<HTMLElement>('section[aria-label="SVN"]')!
+      for (const label of ['Enable Git', 'Automatic isolation', 'Pull before first chat']) expect(git.contains(toggle(host, label)), label).toBe(true)
+      expect(git.querySelector('[aria-label="Default local Git base branch"]')).not.toBeNull()
+      expect(git.querySelector('[role="group"][aria-label="Port method"]')).not.toBeNull()
+      for (const label of ['Enable SVN', 'Update before new chat']) expect(svn.contains(toggle(host, label)), label).toBe(true)
+      expect(button(svn, 'Not supported').disabled).toBe(true)
+      expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(5)
+      expect(Array.from(host.querySelectorAll('button')).filter((control) => control.textContent === 'Enabled' || control.textContent === 'Disabled')).toHaveLength(0)
+      expect([toggle(host, 'Enable Git'), toggle(host, 'Automatic isolation'), toggle(host, 'Pull before first chat'), toggle(host, 'Enable SVN'), toggle(host, 'Update before new chat')].map((control) => control.checked))
+        .toEqual([true, true, false, true, false])
+      expect(Array.from(git.querySelectorAll('[role="group"][aria-label="Port method"] button')).map((control) => [control.textContent, control.getAttribute('aria-pressed')]))
+        .toEqual([['Patch', 'true'], ['Merge', 'false'], ['Squash', 'false']])
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('disables only dependent controls and restores them when the parent switch returns', () => {
+    const { host, root } = mount()
+    try {
+      const gitDependents = () => [toggle(host, 'Automatic isolation'), toggle(host, 'Pull before first chat'), host.querySelector<HTMLInputElement>('[aria-label="Default local Git base branch"]')!, ...Array.from(host.querySelectorAll<HTMLButtonElement>('[aria-label="Port method"] button'))]
+      expect(gitDependents().every((control) => !control.disabled)).toBe(true)
+      act(() => toggle(host, 'Automatic isolation').click())
+      expect(toggle(host, 'Pull before first chat').disabled).toBe(true)
+      expect(toggle(host, 'Enable Git').disabled).toBe(false)
+      act(() => toggle(host, 'Automatic isolation').click())
+      act(() => toggle(host, 'Enable Git').click())
+      expect(gitDependents().every((control) => control.disabled)).toBe(true)
+      expect(toggle(host, 'Enable SVN').disabled).toBe(false)
+      expect(toggle(host, 'Update before new chat').disabled).toBe(false)
+      act(() => toggle(host, 'Enable SVN').click())
+      expect(toggle(host, 'Update before new chat').disabled).toBe(true)
+      act(() => toggle(host, 'Enable Git').click())
+      expect(gitDependents().every((control) => !control.disabled)).toBe(true)
+      expect(useAppStore.getState().gitEnabled).toBe(true)
+      expect(useAppStore.getState().svnEnabled).toBe(true)
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('keeps every switch draft after a failed save and disables switches while saving', async () => {
+    let fail: (() => void) | undefined
+    window.cefQuery = ({ onFailure }) => { fail = () => onFailure(500, 'Disk full') }
+    const { host, root } = mount()
+    try {
+      act(() => { toggle(host, 'Pull before first chat').click(); toggle(host, 'Update before new chat').click() })
+      act(() => { toggle(host, 'Automatic isolation').click() })
+      await act(async () => button(host, 'Save VCS settings').click())
+      expect(Array.from(host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')).every((control) => control.disabled)).toBe(true)
+      await act(async () => fail?.())
+      expect(host.textContent).toContain('Your changes are retained')
+      expect([toggle(host, 'Automatic isolation').checked, toggle(host, 'Pull before first chat').checked, toggle(host, 'Update before new chat').checked]).toEqual([false, true, true])
+      expect(toggle(host, 'Pull before first chat').disabled).toBe(true)
+      expect(useAppStore.getState()).toMatchObject({ gitAutoWorktree: true, gitPullBeforeChat: false, svnUpdateBeforeChat: false })
+    } finally { act(() => root.unmount()) }
+  })
+})
 
 describe('SVN update before new chat', () => {
   it('defaults off and saves only after an explicit draft save', async () => {
@@ -60,9 +123,9 @@ describe('SVN update before new chat', () => {
     window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
     const { host, root } = mount()
     try {
-      const group = host.querySelector<HTMLElement>('[aria-label="Update before new chat"]')!
-      expect(group.querySelector('button:nth-child(2)')?.getAttribute('aria-pressed')).toBe('true')
-      act(() => group.querySelector<HTMLButtonElement>('button')!.click())
+      const update = toggle(host, 'Update before new chat')
+      expect(update.checked).toBe(false)
+      act(() => update.click())
       expect(requests).toHaveLength(0)
       expect(useAppStore.getState().svnUpdateBeforeChat).toBe(false)
       await act(async () => button(host, 'Save VCS settings').click())
@@ -75,12 +138,12 @@ describe('SVN update before new chat', () => {
   it('discards the update draft and disables editing when SVN is disabled', () => {
     const { host, root } = mount()
     try {
-      const group = () => host.querySelector<HTMLElement>('[aria-label="Update before new chat"]')!
-      act(() => group().querySelector<HTMLButtonElement>('button')!.click())
+      const update = () => toggle(host, 'Update before new chat')
+      act(() => update().click())
       act(() => button(host, 'Discard').click())
-      expect(group().querySelector('button:nth-child(2)')?.getAttribute('aria-pressed')).toBe('true')
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="SVN"] button:nth-child(2)')!.click())
-      expect(Array.from(group().querySelectorAll('button')).every((control) => control.disabled)).toBe(true)
+      expect(update().checked).toBe(false)
+      act(() => toggle(host, 'Enable SVN').click())
+      expect(update().disabled).toBe(true)
       expect(useAppStore.getState().svnUpdateBeforeChat).toBe(false)
     } finally { act(() => root.unmount()) }
   })
@@ -89,10 +152,10 @@ describe('SVN update before new chat', () => {
     window.cefQuery = ({ onFailure }) => onFailure(500, 'Disk full')
     const { host, root } = mount()
     try {
-      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Update before new chat"] button')!.click())
+      act(() => toggle(host, 'Update before new chat').click())
       await act(async () => button(host, 'Save VCS settings').click())
       expect(useAppStore.getState().svnUpdateBeforeChat).toBe(false)
-      expect(host.querySelector('[aria-label="Update before new chat"] button')?.getAttribute('aria-pressed')).toBe('true')
+      expect(toggle(host, 'Update before new chat').checked).toBe(true)
       expect(host.textContent).toContain('Your changes are retained')
     } finally { act(() => root.unmount()) }
   })

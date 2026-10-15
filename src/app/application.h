@@ -6,6 +6,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "app/startup_native_import_service.h"
 #include "app/model_discovery_service.h"
+#include "app/opencode_compaction_sync_service.h"
 #include "app/computer_use_service.h"
 #include "app/worktree_retention_service.h"
 
@@ -48,6 +49,7 @@ class Application
   private:
 	uam::AppState m_app;
 	uam::StartupModelDiscoveryService m_startupModelDiscovery;
+	std::shared_ptr<uam::OpenCodeCompactionSyncService> m_openCodeCompactionSync;
 	uam::ComputerUseService m_computerUseService;
 	uam::WorktreeRetentionService m_worktreeRetention;
 	PlatformServices* m_platformServices = nullptr;

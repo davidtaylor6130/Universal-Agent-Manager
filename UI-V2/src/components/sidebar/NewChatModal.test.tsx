@@ -22,6 +22,7 @@ describe('NewChatModal', () => {
       ],
       defaultNewChatProviderId: 'gemini-cli',
       providerChatDefaults: {},
+      hostScopedSettingsValues: {},
       newChatFolderId: 'project',
       resourceCollections: [],
 	  sessions: [],
@@ -403,6 +404,7 @@ describe('NewChatModal', () => {
 	  providers: [{ id: 'opencode-cli', name: 'OpenCode CLI', shortName: 'OpenCode', color: '#22c55e', description: '' }],
 	  defaultNewChatProviderId: 'opencode-cli',
 	  providerChatDefaults: { 'opencode-cli': { modelId: 'controller-default', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, reasoningEffort: 'high', serviceTier: '' } },
+      hostScopedSettingsValues: { lab: { defaultNewChatProviderId: 'opencode-cli', providerChatDefaults: { 'opencode-cli': { modelId: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, reasoningEffort: '', serviceTier: '' } }, mcpServers: [] } },
 	  sessions: [{
 		id: 'existing-remote-chat',
 		name: 'Existing remote chat',
@@ -454,40 +456,42 @@ describe('NewChatModal', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
+    try {
+      await act(async () => { root.render(<NewChatModal />); await Promise.resolve() })
 
-    const remoteHost = host.querySelector<HTMLButtonElement>('button[aria-label="Home lab"]')
-    act(() => remoteHost?.click())
-    discoverProviderModels.mockClear()
-    const remoteWorkspace = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
-	act(() => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(remoteWorkspace, '/srv/project')
-	  remoteWorkspace.dispatchEvent(new Event('input', { bubbles: true }))
-	})
-	expect(discoverProviderModels).not.toHaveBeenCalled()
-	await act(async () => {
-	  Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-		.find((button) => button.getAttribute('aria-label') === 'Discover remote models')?.click()
-	  await Promise.resolve()
-	})
-	const modelMenu = host.querySelector('[data-testid="model-options"]')
-	expect(modelMenu?.textContent).toContain('Remote Only')
-	expect(modelMenu?.textContent).not.toContain('Local Only')
-	expect(modelMenu?.textContent).not.toContain('Wrong Case')
-	expect(modelMenu?.textContent).not.toContain('Controller Default')
-	act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
-	  .find((option) => option.textContent?.includes('Remote Only'))?.click())
-    const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Create chat')
-    await act(async () => { create?.click(); await Promise.resolve() })
+      const remoteHost = host.querySelector<HTMLButtonElement>('button[aria-label="Home lab"]')
+      act(() => remoteHost?.click())
+      discoverProviderModels.mockClear()
+      const remoteWorkspace = host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(remoteWorkspace, '/srv/project')
+        remoteWorkspace.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+      await act(async () => {
+        Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.getAttribute('aria-label') === 'Discover remote models')?.click()
+        await Promise.resolve()
+      })
+      const modelMenu = host.querySelector('[data-testid="model-options"]')
+      expect(modelMenu?.textContent).toContain('Remote Only')
+      expect(modelMenu?.textContent).not.toContain('Local Only')
+      expect(modelMenu?.textContent).not.toContain('Wrong Case')
+      expect(modelMenu?.textContent).not.toContain('Controller Default')
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+        .find((option) => option.textContent?.includes('Remote Only'))?.click())
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Create chat')
+      await act(async () => { create?.click(); await Promise.resolve() })
 
-	expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/srv/project', 'lab')
-    expect(host.textContent).toContain('Computer Use is off for remote chats.')
-	expect(host.textContent).not.toContain('A workspace is required')
-    expect(addSession).toHaveBeenCalledWith('New chat', null, 'opencode-cli', 'remote-only', '', 'chat', 'lab', '/srv/project')
-
-    act(() => root.unmount())
-    host.remove()
+      expect(discoverProviderModels).toHaveBeenCalledWith('', 'opencode-cli', '/srv/project', 'lab')
+      expect(host.textContent).toContain('Computer Use is off for remote chats.')
+      expect(host.textContent).not.toContain('A workspace is required')
+      expect(addSession).toHaveBeenCalledWith('New chat', null, 'opencode-cli', 'remote-only', '', 'chat', 'lab', '/srv/project')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
 	it('accepts Windows drive and UNC workspace paths for a ready remote host', async () => {
@@ -874,13 +878,17 @@ describe('NewChatModal', () => {
     host.remove()
   })
 
-  it('remembers host workspaces and provider choices without applying local model defaults remotely', async () => {
+  it('remembers host workspaces and provider choices with explicit remote default overrides', async () => {
     const addSession = vi.fn().mockResolvedValue(false)
     const defaults = { modelId: 'reasoning-model', approvalMode: 'default' as const, commandSafetyTier: 'off' as const, memoryEnabled: true, reasoningEffort: 'high', serviceTier: '' }
     useAppStore.setState({
       addSession,
       defaultNewChatProviderId: 'codex-cli',
       providerChatDefaults: { 'codex-cli': defaults },
+      hostScopedSettingsValues: {
+        lab: { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: { 'codex-cli': { ...defaults, modelId: '', reasoningEffort: '' } }, mcpServers: [] },
+        pc: { defaultNewChatProviderId: 'codex-cli', providerChatDefaults: { 'codex-cli': { ...defaults, modelId: '', reasoningEffort: '' } }, mcpServers: [] },
+      },
       executionHosts: [...useAppStore.getState().executionHosts,
         { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'lab', runnerStatus: 'ready', runnerVersion: '1', platform: 'linux', architecture: 'x64', lastSeenAt: '' },
         { id: 'pc', label: 'Desktop PC', transport: 'ssh', sshAlias: 'pc', runnerStatus: 'ready', runnerVersion: '1', platform: 'windows', architecture: 'x64', lastSeenAt: '' }],
@@ -893,43 +901,46 @@ describe('NewChatModal', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
-    await act(async () => { root.render(<NewChatModal />) })
-    const click = (label: string) => act(() => {
-      const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.getAttribute('aria-label') === label || (item.getAttribute('role') === 'option' && item.querySelector('span.block')?.textContent === label) || (item.getAttribute('role') === 'menuitemradio' && item.querySelector('.uam-np-model__name > span')?.textContent === label))!
-      button.click()
-    })
-    const setInput = (label: string, value: string) => act(() => {
-      const input = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
-    expect(host.querySelector('[aria-label="Codex"]')?.getAttribute('aria-pressed')).toBe('true')
-    expect(host.querySelector('[aria-label="This computer"]')?.getAttribute('aria-pressed')).toBe('true')
-    setInput('Chat name', 'Keep my draft')
-    click('Home lab')
-    expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Default')
-    click('Folder')
-    click('New remote workspace…')
-    setInput('Remote workspace path', '/srv/custom')
-    click('Desktop PC')
-    click('Home lab')
-    expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.value).toBe('/srv/custom')
-    expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.readOnly).toBe(false)
-    act(() => useAppStore.setState({ folders: [...useAppStore.getState().folders] }))
-    expect(host.querySelector('[aria-label="Home lab"]')?.getAttribute('aria-pressed')).toBe('true')
-    click('This computer')
-    expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Reasoning model')
-    expect(host.querySelector('[aria-label="Reasoning effort"]')?.textContent).toContain('High')
-    click('Plain model')
-    expect(host.querySelector('[aria-label="Reasoning effort"]')).toBeNull()
-    click('Gemini')
-    click('Codex')
-    expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Plain model')
-    await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click() })
-    expect(addSession).toHaveBeenCalledWith('Keep my draft', 'project', 'codex-cli', 'plain-model', '', 'chat')
-    expect(host.querySelector<HTMLInputElement>('[aria-label="Chat name"]')?.value).toBe('Keep my draft')
-    act(() => root.unmount())
-    host.remove()
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      const click = (label: string) => act(() => {
+        const button = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.getAttribute('aria-label') === label || (item.getAttribute('role') === 'option' && item.querySelector('span.block')?.textContent === label) || (item.getAttribute('role') === 'menuitemradio' && item.querySelector('.uam-np-model__name > span')?.textContent === label))!
+        button.click()
+      })
+      const setInput = (label: string, value: string) => act(() => {
+        const input = host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(host.querySelector('[aria-label="Codex"]')?.getAttribute('aria-pressed')).toBe('true')
+      expect(host.querySelector('[aria-label="This computer"]')?.getAttribute('aria-pressed')).toBe('true')
+      setInput('Chat name', 'Keep my draft')
+      click('Home lab')
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Default')
+      click('Folder')
+      click('New remote workspace…')
+      setInput('Remote workspace path', '/srv/custom')
+      click('Desktop PC')
+      click('Home lab')
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.value).toBe('/srv/custom')
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Remote workspace path"]')?.readOnly).toBe(false)
+      act(() => useAppStore.setState({ folders: [...useAppStore.getState().folders] }))
+      expect(host.querySelector('[aria-label="Home lab"]')?.getAttribute('aria-pressed')).toBe('true')
+      click('This computer')
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Reasoning model')
+      expect(host.querySelector('[aria-label="Reasoning effort"]')?.textContent).toContain('High')
+      click('Plain model')
+      expect(host.querySelector('[aria-label="Reasoning effort"]')).toBeNull()
+      click('Gemini')
+      click('Codex')
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain('Plain model')
+      await act(async () => { Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!.click() })
+      expect(addSession).toHaveBeenCalledWith('Keep my draft', 'project', 'codex-cli', 'plain-model', '', 'chat')
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Chat name"]')?.value).toBe('Keep my draft')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('keeps all five providers selectable and honors the saved provider default', () => {

@@ -30,3 +30,9 @@ One line of text per item; no stacked headers.
 ## SVN new-chat updates
 
 The VCS settings page has a separate SVN “Update before new chat” row, selected from mock B by David on 2026-10-14. It defaults to off and cannot be edited while SVN is disabled. Changes remain in the draft until “Save VCS settings”; “Discard” restores saved values. Enabling this setting requests an SVN working-copy update before a new chat and does not authorize an SVN commit. Claude review and actual component visual/user acceptance remain pending.
+
+## Grouped settings and instruction editing
+
+David selected mock A on 2026-10-15: Shell Actions uses collapsible groups in sidebar order, Git and SVN have separate stacked sections with neutral switches, and shared instruction files open in an inline editor. Collapsing a group retains its drafts; invalid actions reveal their group when Save is pressed. Boolean controls retain the existing explicit Save and Discard flow.
+
+Central Setup edits only instruction paths already saved in its configuration. File edits have a separate Save file action, disabled while unchanged, and participate in the existing unsaved-changes guard. Read and save failures retain the draft and show the error next to the editor. Saving an unchanged disabled setup still enables shared instructions; an enabled setup with no changes has a disabled Save action.

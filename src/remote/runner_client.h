@@ -41,6 +41,14 @@ namespace uam::remote
 		bool truncated = false;
 	};
 
+	struct PathInspection
+	{
+		std::string path;
+		bool exists = false;
+		bool directory = false;
+		bool regular_file = false;
+	};
+
 	std::vector<std::string> SshBridgeArgv(const std::string& ssh_alias,
 	                                       const std::string& platform,
 	                                       const std::string& version,
@@ -75,10 +83,12 @@ namespace uam::remote
 		                  bool attach_if_exists = false,
 		                  std::string control_token = {},
 		                  bool retry_lost_reply = true, const std::string& configuration_provider = {}, const std::filesystem::path& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array(), bool* configuration_rejected_out = nullptr);
+		/// A nonempty retained token requires saved intent; caller owns stop/removal after durable settlement.
 		ProcessExecutionResult ExecuteCommand(const std::string& session_id,
 		    const std::filesystem::path& working_directory,
 		    const std::vector<std::string>& argv, int timeout_ms,
-		    std::stop_token stop_token = {}, std::string_view standard_input = {});
+		    std::stop_token stop_token = {}, std::string_view standard_input = {},
+		    std::string retained_control_token = {}, bool* start_request_attempted_out = nullptr);
 		void SetProcessControlToken(const std::string& session_id,
 		                            std::string control_token);
 		bool WriteProcess(const std::string& session_id, std::string_view bytes,
@@ -89,7 +99,8 @@ namespace uam::remote
 		                 std::string* error_out = nullptr,
 		                 const std::function<bool()>& interrupt = {},
 		                 bool* interrupted_out = nullptr,
-		                 const ProcessPollResult* resume_after = nullptr);
+		                 const ProcessPollResult* resume_after = nullptr,
+		                 bool* missing_out = nullptr);
 		bool AcknowledgeProcessOutput(const std::string& session_id,
 		                              const ProcessPollResult& result,
 		                              std::string* error_out = nullptr);
@@ -137,6 +148,10 @@ namespace uam::remote
 		bool ListDirectories(const std::filesystem::path& remote_path,
 		                     DirectoryListing& result,
 		                     std::string* error_out = nullptr);
+		/// Read-only native path snapshot without links; recheck before mutation, and allow only a missing final leaf.
+		bool InspectPath(const std::string& absolute_path, bool allow_missing_leaf,
+		                 PathInspection& result, std::string* error_out = nullptr,
+		                 std::stop_token stop_token = {});
 		void Disconnect();
 
 	  private:
@@ -160,6 +175,7 @@ namespace uam::remote
 		std::uint64_t m_nextRequestId = 1;
 		bool m_connected = false;
 		bool m_directoryBrowsing = false;
+		bool m_safePathInspection = false;
 		bool m_contextRead = false;
 		bool m_workspaceFileRead = false;
 		bool m_usageAccounting = false;

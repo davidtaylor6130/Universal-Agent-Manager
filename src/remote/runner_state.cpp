@@ -28,6 +28,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <ranges>
 #include <sstream>
@@ -80,6 +81,126 @@ namespace uam::remote
 		inline constexpr std::int64_t kMaxTransientLeaseMs = 60000;
 		inline constexpr std::size_t kMaxListedDirectories = 200;
 		inline constexpr std::uintmax_t kMaxUploadBytes = 25ull * 1024ull * 1024ull;
+
+		bool InspectNativePath(const std::string& text, bool allow_missing_leaf,
+		    nlohmann::json& proof, std::string& error)
+		try
+		{
+			error = "The path must be absolute and contain no links, device names or ambiguous components.";
+			if (text.empty() || text.size() > kMaxWorkingDirectoryBytes ||
+			    std::ranges::any_of(text, [](unsigned char c) { return c < 32 || c == 127; })) return false;
+			(void)nlohmann::json(text).dump();
+			std::filesystem::path path = uam::paths::PathFromUtf8(text);
+			if (!path.is_absolute()) return false;
+			for (const std::filesystem::path& component : path.relative_path())
+			{
+				if (component == "." || component == "..") return false;
+#if defined(_WIN32)
+				const std::wstring name = component.native();
+				if (!name.empty() && (name.back() == L'.' || name.back() == L' ' ||
+				    name.find_first_of(L":*?\"<>|") != std::wstring::npos)) return false;
+				std::wstring stem = name.substr(0, name.find(L'.'));
+				for (wchar_t& c : stem) if (c >= L'a' && c <= L'z') c -= L'a' - L'A';
+				if (stem == L"CON" || stem == L"PRN" || stem == L"AUX" || stem == L"NUL" ||
+				    stem == L"CONIN$" || stem == L"CONOUT$" || stem == L"CLOCK$" ||
+				    (stem.size() == 4 && (stem.starts_with(L"COM") || stem.starts_with(L"LPT")) &&
+				     ((stem[3] >= L'1' && stem[3] <= L'9') || stem[3] == L'\u00b9' || stem[3] == L'\u00b2' || stem[3] == L'\u00b3'))) return false;
+#endif
+			}
+			path = path.lexically_normal();
+			while (path != path.root_path() && path.filename().empty()) path = path.parent_path();
+			bool exists = true, directory = true, regular_file = false;
+#if defined(_WIN32)
+			path.make_preferred();
+			const std::wstring root_name = path.root_name().native();
+			const bool drive = root_name.size() == 2 && root_name[1] == L':' &&
+			    ((root_name[0] >= L'A' && root_name[0] <= L'Z') || (root_name[0] >= L'a' && root_name[0] <= L'z'));
+			const bool unc = root_name.size() > 2 && root_name.starts_with(L"\\\\") &&
+			    root_name.find_first_of(L":*?\"<>|", 2) == std::wstring::npos;
+			if (!drive && !unc) return false;
+			std::vector<std::filesystem::path> components;
+			for (const std::filesystem::path& component : path.relative_path()) components.push_back(component);
+			std::filesystem::path current = path.root_path();
+			std::size_t next_component = 0;
+			if (unc)
+			{
+				if (components.empty() || root_name == L"\\\\." || root_name == L"\\\\..") return false;
+				current /= components.front();
+				next_component = 1;
+			}
+			std::vector<uam::workspace_files::detail::OwnedFile> handles;
+			for (;;)
+			{
+				const bool final = next_component == components.size();
+				uam::workspace_files::detail::OwnedFile handle = uam::workspace_files::detail::Open(current, true);
+				const DWORD opened_error = handle ? ERROR_SUCCESS : GetLastError();
+				if (!handle)
+				{
+					if (final && !handles.empty() && allow_missing_leaf && opened_error == ERROR_FILE_NOT_FOUND)
+					{ exists = directory = false; break; }
+					return false;
+				}
+				BY_HANDLE_FILE_INFORMATION info{};
+				if (GetFileType(handle.get()) != FILE_TYPE_DISK || !GetFileInformationByHandle(handle.get(), &info) ||
+				    (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) return false;
+				directory = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+				regular_file = !directory;
+				if (!final && !directory) return false;
+				std::wstring actual = uam::workspace_files::detail::FinalPath(handle.get());
+				if (actual.starts_with(L"\\\\?\\UNC\\")) actual = L"\\\\" + actual.substr(8);
+				else if (actual.starts_with(L"\\\\?\\")) actual.erase(0, 4);
+				// FinalPath trims separators; restore a drive root before comparing absolute paths.
+				if (drive && actual.size() == 2 && actual[1] == L':') actual += L'\\';
+				const std::wstring expected = current.native();
+				if (actual.empty() || CompareStringOrdinal(actual.data(), static_cast<int>(actual.size()),
+				    expected.data(), static_cast<int>(expected.size()), TRUE) != CSTR_EQUAL) return false;
+				handles.push_back(std::move(handle));
+				if (final)
+				{
+					path = std::filesystem::path(actual);
+					break;
+				}
+				current /= components[next_component++];
+			}
+#else
+			struct OwnedDirectory
+			{
+				int descriptor = -1;
+				~OwnedDirectory() { if (descriptor >= 0) close(descriptor); }
+			} parent{open(path.root_path().c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)};
+			if (parent.descriptor < 0) return false;
+			const std::filesystem::path relative = path.relative_path();
+			for (std::filesystem::path::const_iterator item = relative.begin(); item != relative.end(); ++item)
+			{
+				const bool final = std::next(item) == relative.end();
+				struct stat info{};
+				if (fstatat(parent.descriptor, item->c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0)
+				{
+					if (final && allow_missing_leaf && errno == ENOENT) { exists = directory = false; break; }
+					return false;
+				}
+				directory = S_ISDIR(info.st_mode);
+				regular_file = S_ISREG(info.st_mode);
+				if ((!directory && !regular_file) || (!final && !directory)) return false;
+				if (final) break;
+				const int next = openat(parent.descriptor, item->c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+				if (next < 0) return false;
+				struct stat opened{};
+				if (fstat(next, &opened) != 0 || opened.st_dev != info.st_dev || opened.st_ino != info.st_ino)
+				{ close(next); return false; }
+				close(parent.descriptor);
+				parent.descriptor = next;
+			}
+#endif
+			proof = {{"path", uam::paths::Utf8PathString(path)}, {"exists", exists},
+			    {"directory", directory}, {"regularFile", regular_file}};
+			return true;
+		}
+		catch (const std::exception&)
+		{
+			error = "The remote path could not be inspected safely.";
+			return false;
+		}
 
 		IPlatformProcessService& ProcessService()
 		{
@@ -654,6 +775,18 @@ namespace uam::remote
 		SweepExpiredTransientProcesses();
 		std::unique_lock state_lock(m_stateMutex);
 		const std::string type = request["type"].get<std::string>();
+		if (type == "path.inspect")
+		{
+			state_lock.unlock();
+			if (!request.contains("path") || !request["path"].is_string() ||
+			    !request.contains("allowMissingLeaf") || !request["allowMissingLeaf"].is_boolean())
+				return ProcessError(request, "invalid_request", "An absolute path and missing-leaf boolean are required.");
+			nlohmann::json proof;
+			std::string error;
+			if (!InspectNativePath(request["path"].get<std::string>(), request["allowMissingLeaf"].get<bool>(), proof, error))
+				return ProcessError(request, "unsafe_path", error);
+			return ProcessSuccess(request, std::move(proof));
+		}
 		if (type == "usage.accounting")
 		{
 			const bool streamed = request.value("format", nlohmann::json{}) == "jsonl-v3";

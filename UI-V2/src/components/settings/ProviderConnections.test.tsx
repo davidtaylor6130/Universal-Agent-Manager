@@ -14,7 +14,7 @@ const server = { id: 'docs', name: 'Docs', executionHostId: '', workspaceDirecto
 const status = (hostId = 'local') => ({ executionHostId: hostId, connectedProofAvailable: false, handshakeProofAvailable: false, computerUseBuiltInAvailable: hostId === 'local', providers: SUPPORTED_CLI_PROVIDER_IDS.map(providerId => ({ providerId, status: 'configured-unverified', detail: '', activeSessionCount: 0, configuredSessionCount: 0, uamControlEnabled: true, sharedSetupEnabled: true, mcpServers: [{ id: 'docs', name: 'Docs', enabled: true }] })) })
 beforeEach(() => {
   vi.mocked(sendToCEF).mockReset().mockImplementation(async request => ({ ok: true, data: status(request.payload?.executionHostId as string) }))
-  useAppStore.setState(state => ({ settingsScopeHostId: '*', sessions: [], mcpServers: [server], providers: [], executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], centralProviderConfiguration: { ...state.centralProviderConfiguration, enabled: true, uamControlEnabled: true }, cliVersionManager: { providers: [], remoteProviders: [] } }))
+  useAppStore.setState(state => ({ settingsScopeHostId: '*', hostScopedSettings: true, hostScopedSettingsValues: {}, sessions: [], mcpServers: [server], providers: [], executionHosts: [{ id: 'local', label: 'Local', transport: 'local' }, { id: 'ssh-lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab' }], centralProviderConfiguration: { ...state.centralProviderConfiguration, enabled: true, uamControlEnabled: true }, cliVersionManager: { providers: [], remoteProviders: [] } }))
   host = document.createElement('div'); document.body.appendChild(host); root = createRoot(host)
 })
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers() })
@@ -228,4 +228,77 @@ it('keeps endpoint and workspace paths out of MCP server overview summaries', as
   expect(host.textContent).not.toContain(server.workspaceDirectory)
   const headers = [...host.querySelectorAll('th')]
   expect(headers.find(header => header.textContent === server.name)?.hasAttribute('title')).toBe(false)
+})
+
+it('shows only the selected host effective MCP servers in the popup without guessing connectivity', async () => {
+  const remoteServers = Array.from({ length: 4 }, (_, index) => ({ ...server, id: `remote-${index}`, name: `Remote ${index}`, executionHostId: 'ssh-lab' }))
+  useAppStore.setState({ mcpServers: Array.from({ length: 4 }, (_, index) => ({ ...server, id: `global-${index}`, name: `Global ${index}` })), hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: '', providerChatDefaults: {}, mcpServers: remoteServers } } })
+  vi.mocked(sendToCEF).mockImplementation(async request => {
+    const reply = status(request.payload?.executionHostId as string)
+    for (const row of reply.providers) row.mcpServers = remoteServers.map(item => ({ id: item.id, name: item.name, enabled: true }))
+    if (request.action === 'setProviderMcpConfiguration') reply.providers.find(row => row.providerId === 'codex-cli')!.mcpServers[0].enabled = false
+    return { ok: true, data: reply }
+  })
+  await render('codex-cli', 'ssh-lab')
+  await click('Codex MCP servers, 4 of 4 on')
+  const popup = document.querySelector('[role="dialog"][aria-label="Codex MCP servers"]')!
+  expect(popup.textContent).toContain('Remote 0')
+  expect(popup.textContent).not.toContain('Global')
+  expect(popup.querySelector('[aria-label="Codex Remote 0"]')?.getAttribute('aria-checked')).toBe('true')
+  expect(host.querySelector('.uam-prov-status')?.textContent).toBe('Configured, unverified')
+  expect(host.textContent).not.toContain('Connected')
+  await act(async () => popup.querySelector<HTMLButtonElement>('[aria-label="Codex Remote 0"]')!.click())
+  expect(sendToCEF).toHaveBeenLastCalledWith({ action: 'setProviderMcpConfiguration', payload: { executionHostId: 'ssh-lab', providerId: 'codex-cli', serverId: 'remote-0', enabled: false } })
+  expect(popup.querySelector('[aria-label="Codex Remote 0"]')?.getAttribute('aria-checked')).toBe('false')
+})
+
+it('refreshes when scoped MCP identities change and respects an explicitly empty host list', async () => {
+  const remote = { ...server, id: 'remote', name: 'Remote', executionHostId: 'ssh-lab' }
+  useAppStore.setState({ hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: '', providerChatDefaults: {}, mcpServers: [remote] } } })
+  vi.mocked(sendToCEF).mockImplementation(async () => {
+    const reply = status('ssh-lab')
+    for (const row of reply.providers) row.mcpServers = useAppStore.getState().hostScopedSettingsValues['ssh-lab'].mcpServers.map(item => ({ id: item.id, name: item.name, enabled: true }))
+    return { ok: true, data: reply }
+  })
+  await render('codex-cli', 'ssh-lab')
+  const initial = vi.mocked(sendToCEF).mock.calls.length
+  await act(async () => useAppStore.setState({ hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: '', providerChatDefaults: {}, mcpServers: [{ ...remote, id: 'replacement', name: 'Replacement' }] } } }))
+  expect(vi.mocked(sendToCEF).mock.calls.length).toBe(initial + 1)
+  expect(host.querySelector('thead')?.textContent).toContain('Replacement')
+  expect(host.querySelector('thead')?.textContent).not.toContain('Docs')
+  expect(host.querySelector('[aria-label="Codex Replacement"]')?.getAttribute('aria-checked')).toBe('true')
+  await act(async () => useAppStore.setState({ hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: '', providerChatDefaults: {}, mcpServers: [] } } }))
+  expect(host.querySelectorAll('th')).toHaveLength(5)
+  expect(host.textContent).toContain('Configured, unverified')
+})
+
+it('filters foreign-host MCP definitions from inherited global columns', async () => {
+  useAppStore.setState({ mcpServers: [server, { ...server, id: 'foreign', name: 'Foreign', executionHostId: 'ssh-other' }] })
+  await render('codex-cli', 'ssh-lab')
+  expect(host.querySelector('thead')?.textContent).toContain('Docs')
+  expect(host.querySelector('thead')?.textContent).not.toContain('Foreign')
+})
+
+it('describes UAM MCP as on or off without implying opt-outs are forbidden', async () => {
+  await render('codex-cli')
+  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('title')).toBe('On. Managed in the UAM MCP service section.')
+  const disabled = status()
+  disabled.providers.find(row => row.providerId === 'codex-cli')!.uamControlEnabled = false
+  vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: disabled })
+  await click('Refresh provider connections')
+  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('aria-checked')).toBe('false')
+  expect(host.querySelector('[aria-label="Codex UAM MCP"]')?.getAttribute('title')).toBe('Off for this provider.')
+})
+
+it('closes an open MCP popup when its scoped list no longer has a chip', async () => {
+  vi.useFakeTimers()
+  const remoteServers = Array.from({ length: 4 }, (_, index) => ({ ...server, id: `remote-${index}`, name: `Remote ${index}`, executionHostId: 'ssh-lab' }))
+  useAppStore.setState({ hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: '', providerChatDefaults: {}, mcpServers: remoteServers } } })
+  await render('codex-cli', 'ssh-lab')
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!.click())
+  expect(document.querySelector('[role="dialog"][aria-label="Codex MCP servers"]')).not.toBeNull()
+  await act(async () => useAppStore.setState({ hostScopedSettingsValues: { 'ssh-lab': { defaultNewChatProviderId: '', providerChatDefaults: {}, mcpServers: [] } } }))
+  expect(host.querySelector('button[aria-haspopup="dialog"]')).toBeNull()
+  await act(async () => vi.advanceTimersByTime(500))
+  expect(document.querySelector('[role="dialog"][aria-label="Codex MCP servers"]')).toBeNull()
 })

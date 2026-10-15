@@ -1,4 +1,5 @@
 #include "app/storage_retention_service.h"
+#include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
 #include "common/config/settings_store.h"
@@ -775,6 +776,85 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser>, con
 #endif
 }
 
+void UamQueryHandler::HandleReadCentralInstructionFile(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	using namespace uam::query_handler_async;
+	if (!payload.contains("path") || !payload["path"].is_string())
+	{ cb->Failure(400, "Choose a configured instruction file."); return; }
+	const std::string path = payload["path"].get<std::string>();
+	const CentralProviderConfiguration configuration = m_app.settings.central_provider_configuration;
+	if (!uam::central_instruction_files::Authorized(configuration, path))
+	{ cb->Failure(403, "Save this instruction path in Shared setup before editing it."); return; }
+	if (m_pendingCentralInstructionFiles >= 4)
+	{ cb->Failure(429, "Instruction files are busy. Try again shortly."); return; }
+	if (!m_instructionQueries) m_instructionQueries = CefThread::CreateThread("uam-instruction-files");
+	if (!m_instructionQueries) { cb->Failure(503, "The instruction file worker is unavailable."); return; }
+	++m_pendingCentralInstructionFiles;
+	if (!m_instructionQueries->GetTaskRunner()->PostTask(new CefQueryWorkerTask(m_asyncLifetime, cb,
+	    [configuration, path]()
+	    {
+		    const uam::central_instruction_files::TextFile file = uam::central_instruction_files::Read(configuration, path);
+		    return file.ok ? AsyncSuccess({{"path", file.path}, {"content", file.content}}) : AsyncFailure(file.status, file.error);
+	    },
+	    [this, path](AsyncCefResult& result)
+	    {
+		    --m_pendingCentralInstructionFiles;
+		    if (result.ok && !uam::central_instruction_files::Authorized(m_app.settings.central_provider_configuration, path))
+			    result = AsyncFailure(409, "The configured instruction paths changed. Save Shared setup and reopen the file.");
+	    })))
+	{
+		--m_pendingCentralInstructionFiles;
+		cb->Failure(503, "The instruction file worker is unavailable.");
+	}
+}
+
+void UamQueryHandler::HandleSaveCentralInstructionFile(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	using namespace uam::query_handler_async;
+	for (const char* key : {"path", "content", "expectedContent"})
+		if (!payload.contains(key) || !payload[key].is_string())
+		{ cb->Failure(400, "Instruction path, text and original text are required."); return; }
+	const std::string path = payload["path"].get<std::string>();
+	const std::string content = payload["content"].get<std::string>();
+	const std::string expected_content = payload["expectedContent"].get<std::string>();
+	const CentralProviderConfiguration configuration = m_app.settings.central_provider_configuration;
+	if (!uam::central_instruction_files::Authorized(configuration, path))
+	{ cb->Failure(403, "Save this instruction path in Shared setup before editing it."); return; }
+	if (content.size() > uam::provider_setup::kMaxFileBytes || expected_content.size() > uam::provider_setup::kMaxFileBytes)
+	{ cb->Failure(400, "Instruction files are limited to 2 MiB."); return; }
+	if (m_pendingCentralInstructionFiles >= 4)
+	{ cb->Failure(429, "Instruction files are busy. Try again shortly."); return; }
+	const std::shared_ptr<std::shared_ptr<uam::central_instruction_files::PreparedSave>> prepared =
+	    std::make_shared<std::shared_ptr<uam::central_instruction_files::PreparedSave>>();
+	if (!m_instructionQueries) m_instructionQueries = CefThread::CreateThread("uam-instruction-files");
+	if (!m_instructionQueries) { cb->Failure(503, "The instruction file worker is unavailable."); return; }
+	++m_pendingCentralInstructionFiles;
+	if (!m_instructionQueries->GetTaskRunner()->PostTask(new CefQueryWorkerTask(m_asyncLifetime, cb,
+	    [configuration, path, content, expected_content, prepared]()
+	    {
+		    *prepared = uam::central_instruction_files::PrepareSave(configuration, path, content, expected_content);
+		    const uam::central_instruction_files::TextFile& file = (*prepared)->result;
+		    return file.ok ? AsyncSuccess(nlohmann::json::object()) : AsyncFailure(file.status, file.error);
+	    },
+	    [this, path, prepared](AsyncCefResult& result)
+	    {
+		    --m_pendingCentralInstructionFiles;
+		    if (!result.ok) return;
+		    if (!uam::central_instruction_files::Authorized(m_app.settings.central_provider_configuration, path))
+		    {
+			    result = AsyncFailure(409, "The configured instruction paths changed. Save Shared setup and reopen the file.");
+			    return;
+		    }
+		    // Final bounded reread, atomic replacement and directory sync stay in this settings-owning UI turn.
+		    const uam::central_instruction_files::TextFile file = uam::central_instruction_files::CommitSave(m_app.settings.central_provider_configuration, **prepared);
+		    result = file.ok ? AsyncSuccess({{"path", file.path}, {"content", file.content}}) : AsyncFailure(file.status, file.error);
+	    })))
+	{
+		--m_pendingCentralInstructionFiles;
+		cb->Failure(503, "The instruction file worker is unavailable.");
+	}
+}
+
 void UamQueryHandler::HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	CentralProviderConfiguration configuration;
@@ -897,7 +977,7 @@ void UamQueryHandler::HandleSetProviderMcpConfiguration(CefRefPtr<CefBrowser> br
 		const bool enabled = payload.at("enabled").get<bool>();
 		if (uam::execution_hosts::Find(m_app.settings.execution_hosts, host) == nullptr || !uam::provider_ids::ContainsProviderId(uam::provider_ids::kAllCliProviderIds, provider))
 		{ cb->Failure(404, "Provider or execution host not found."); return; }
-		if (server != "uam-mcp" && server != "shared-setup" && std::ranges::none_of(m_app.settings.mcp_servers, [&](const McpServerConfiguration& item) { return item.id == server && (item.execution_host_id.empty() || item.execution_host_id == host); }))
+		if (server != "uam-mcp" && server != "shared-setup" && std::ranges::none_of(uam::host_scoped_settings::McpServers(m_app.settings, host), [&](const McpServerConfiguration& item) { return item.id == server && (item.execution_host_id.empty() || item.execution_host_id == host); }))
 		{ cb->Failure(404, "MCP server is not configured on this host."); return; }
 		const CentralProviderConfiguration previous = m_app.settings.central_provider_configuration;
 		CentralProviderConfiguration candidate = previous;

@@ -3,6 +3,12 @@
 #include <barrier>
 #include <thread>
 #include "app/provider_configuration_service.h"
+#include "app/central_instruction_file_service.h"
+#if defined(__APPLE__)
+#include <sys/acl.h>
+#include <sys/xattr.h>
+#include <membership.h>
+#endif
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
 #include "remote/runner_state.h"
@@ -1059,3 +1065,216 @@ UAM_TEST(RemoteCodexCentralSetupUsesCompleteInstructionsAndIdempotentInput)
 	UAM_ASSERT_EQ(delivered["params"]["threadId"], nlohmann::json("saved-native"));
 	UAM_ASSERT(request({{"type", "process.remove"}}).value("ok", false));
 }
+
+#if defined(__APPLE__) || defined(_WIN32)
+UAM_TEST(CentralInstructionFilesAuthorizeSavedPathsAndPreserveBytes)
+{
+	TempDir temp("uam-central-file-edit");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string original = "\xef\xbb\xbf# Shared\r\nKeep exact bytes.\r\n";
+	UAM_ASSERT(uam::io::WriteTextFile(path, original));
+	const fs::file_time_type old_modified = fs::file_time_type::clock::now() - std::chrono::hours(24);
+	fs::last_write_time(path, old_modified);
+	CentralProviderConfiguration configuration;
+	const std::string requested = uam::paths::Utf8PathString(path);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+	configuration.instruction_files = {requested};
+	const auto loaded = uam::central_instruction_files::Read(configuration, requested);
+	UAM_ASSERT(loaded.ok);
+	UAM_ASSERT_EQ(loaded.content, original);
+	const std::string changed = original + "More rules.\r\n";
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, changed, original);
+	UAM_ASSERT(prepared->result.ok);
+	UAM_ASSERT_EQ(ReadFile(path), original);
+	const auto saved = uam::central_instruction_files::CommitSave(configuration, *prepared);
+	UAM_ASSERT(saved.ok);
+	UAM_ASSERT_EQ(saved.content, changed);
+	UAM_ASSERT_EQ(ReadFile(path), changed);
+	UAM_ASSERT(fs::last_write_time(path) > old_modified);
+	const fs::file_time_type saved_modified = fs::last_write_time(path);
+	const auto retry = uam::central_instruction_files::PrepareSave(configuration, requested, changed, original);
+	UAM_ASSERT(retry->result.ok);
+	UAM_ASSERT(retry->temporary.empty());
+	UAM_ASSERT(uam::central_instruction_files::CommitSave(configuration, *retry).ok);
+	UAM_ASSERT_EQ(fs::last_write_time(path), saved_modified);
+	const auto empty = uam::central_instruction_files::PrepareSave(configuration, requested, "", changed);
+	UAM_ASSERT(empty->result.ok);
+	UAM_ASSERT(uam::central_instruction_files::CommitSave(configuration, *empty).ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string{});
+}
+#endif
+
+#if defined(__APPLE__) || defined(_WIN32)
+UAM_TEST(CentralInstructionFilesRejectStaleContentAndConfiguration)
+{
+	TempDir temp("uam-central-file-stale");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	UAM_ASSERT(!uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "stale")->result.ok);
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(prepared->result.ok);
+	CentralProviderConfiguration removed;
+	UAM_ASSERT(!uam::central_instruction_files::CommitSave(removed, *prepared).ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("original"));
+	UAM_ASSERT(uam::io::WriteTextFile(path, "external"));
+	UAM_ASSERT(!uam::central_instruction_files::CommitSave(configuration, *prepared).ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("external"));
+}
+#endif
+
+UAM_TEST(CentralInstructionFilesRejectUnsafeTextAndFiles)
+{
+	TempDir temp("uam-central-file-validation");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+	for (const std::string& text : {std::string("a\0b", 3), std::string("\xc0\xaf", 2), std::string(2 * 1024 * 1024 + 1, 'x')})
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(path, text));
+		UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+		UAM_ASSERT(uam::io::WriteTextFile(path, "safe"));
+		UAM_ASSERT(!uam::central_instruction_files::PrepareSave(configuration, requested, text, "safe")->result.ok);
+		UAM_ASSERT_EQ(ReadFile(path), std::string("safe"));
+	}
+	fs::remove(path);
+	fs::create_directory(path);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+	fs::remove(path);
+#if !defined(_WIN32)
+	const fs::path outside = temp.root / "outside.md";
+	UAM_ASSERT(uam::io::WriteTextFile(outside, "outside"));
+	fs::create_symlink(outside, path);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+	UAM_ASSERT(!uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "outside")->result.ok);
+	UAM_ASSERT_EQ(ReadFile(outside), std::string("outside"));
+	fs::remove(path);
+	UAM_ASSERT(mkfifo(path.c_str(), 0600) == 0);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, requested).ok);
+#endif
+}
+
+#if defined(__APPLE__) || defined(_WIN32)
+UAM_TEST(CentralInstructionFilesStageFailureAndMetadataStaySafe)
+{
+	TempDir temp("uam-central-file-durable");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	const auto failed = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original",
+	    [](uam::io::AtomicWriteStage stage) { return stage != uam::io::AtomicWriteStage::DuringWrite; });
+	UAM_ASSERT(!failed->result.ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("original"));
+#if defined(__APPLE__)
+	UAM_ASSERT(chmod(path.c_str(), 0640) == 0);
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(prepared->result.ok);
+	UAM_ASSERT(uam::central_instruction_files::CommitSave(configuration, *prepared).ok);
+	struct stat info{};
+	UAM_ASSERT(stat(path.c_str(), &info) == 0);
+	UAM_ASSERT_EQ(info.st_mode & 0777, 0640);
+#endif
+}
+#endif
+
+#if defined(__APPLE__) || defined(_WIN32)
+UAM_TEST(CentralInstructionFilesRecheckIdentityAndRejectParentLinks)
+{
+	TempDir temp("uam-central-file-races");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(prepared->result.ok);
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	UAM_ASSERT(!uam::central_instruction_files::CommitSave(configuration, *prepared).ok);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("original"));
+	fs::path abandoned;
+	{
+		const auto cancelled = uam::central_instruction_files::PrepareSave(configuration, requested, "cancelled", "original");
+		UAM_ASSERT(cancelled->result.ok);
+		abandoned = cancelled->temporary;
+		UAM_ASSERT(fs::exists(abandoned));
+	}
+	UAM_ASSERT(!fs::exists(abandoned));
+#if !defined(_WIN32)
+	const fs::path linked = temp.root / "linked";
+	fs::create_directory_symlink(temp.root, linked);
+	const std::string alias = uam::paths::Utf8PathString(linked / "AGENTS.md");
+	configuration.instruction_files.push_back(alias);
+	UAM_ASSERT(!uam::central_instruction_files::Read(configuration, alias).ok);
+	const auto before_link = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(before_link->result.ok);
+	const fs::path outside = temp.root / "outside.md";
+	UAM_ASSERT(uam::io::WriteTextFile(outside, "outside"));
+	fs::remove(path);
+	fs::create_symlink(outside, path);
+	UAM_ASSERT(!uam::central_instruction_files::CommitSave(configuration, *before_link).ok);
+	UAM_ASSERT_EQ(ReadFile(outside), std::string("outside"));
+#endif
+}
+#endif
+
+UAM_TEST(CentralInstructionFilesAcceptBoundedEscapedBridgePayload)
+{
+	TempDir temp("uam-central-file-cap");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	const std::string content(2 * 1024 * 1024, '\x01');
+	UAM_ASSERT(uam::io::WriteTextFile(path, content));
+	CentralProviderConfiguration configuration;
+	configuration.instruction_files = {requested};
+	UAM_ASSERT_EQ(uam::central_instruction_files::Read(configuration, requested).content, content);
+	const nlohmann::json request = {{"action", "saveCentralInstructionFile"}, {"payload", {{"path", requested}, {"content", content}, {"expectedContent", content}}}};
+	const auto parsed = uam::cef::ParseBridgeRequest(request.dump());
+	UAM_ASSERT(parsed.ok);
+	UAM_ASSERT_EQ(parsed.request.payload.at("content").get<std::string>(), content);
+	UAM_ASSERT_EQ(parsed.request.payload.at("expectedContent").get<std::string>(), content);
+}
+
+#if defined(__APPLE__)
+UAM_TEST(CentralInstructionFilesPreserveAclAndExtendedAttributes)
+{
+	TempDir temp("uam-central-file-metadata");
+	const fs::path path = temp.root / "AGENTS.md";
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	UAM_ASSERT(setxattr(path.c_str(), "com.uam.instruction-test", "keep", 4, 0, 0) == 0);
+	acl_t acl = acl_init(1);
+	UAM_ASSERT(acl != nullptr);
+	acl_entry_t entry;
+	UAM_ASSERT(acl_create_entry(&acl, &entry) == 0);
+	UAM_ASSERT(acl_set_tag_type(entry, ACL_EXTENDED_ALLOW) == 0);
+	uuid_t identifier;
+	UAM_ASSERT(mbr_uid_to_uuid(getuid(), identifier) == 0);
+	UAM_ASSERT(acl_set_qualifier(entry, identifier) == 0);
+	acl_permset_t permissions;
+	UAM_ASSERT(acl_get_permset(entry, &permissions) == 0);
+	UAM_ASSERT(acl_add_perm(permissions, ACL_READ_DATA) == 0);
+	UAM_ASSERT(acl_set_file(path.c_str(), ACL_TYPE_EXTENDED, acl) == 0);
+	CentralProviderConfiguration configuration;
+	const std::string requested = uam::paths::Utf8PathString(path);
+	configuration.instruction_files = {requested};
+	const auto prepared = uam::central_instruction_files::PrepareSave(configuration, requested, "mine", "original");
+	UAM_ASSERT(prepared->result.ok);
+	UAM_ASSERT(uam::central_instruction_files::CommitSave(configuration, *prepared).ok);
+	acl_t after = acl_get_file(path.c_str(), ACL_TYPE_EXTENDED);
+	UAM_ASSERT(after != nullptr);
+	ssize_t before_length = 0; ssize_t after_length = 0;
+	char* before_text = acl_to_text(acl, &before_length);
+	char* after_text = acl_to_text(after, &after_length);
+	UAM_ASSERT(before_text != nullptr && after_text != nullptr);
+	UAM_ASSERT_EQ(std::string(before_text, before_length), std::string(after_text, after_length));
+	acl_free(before_text); acl_free(after_text); acl_free(after); acl_free(acl);
+	char attribute[4]{};
+	UAM_ASSERT_EQ(getxattr(path.c_str(), "com.uam.instruction-test", attribute, sizeof(attribute), 0, 0), ssize_t(4));
+	UAM_ASSERT_EQ(std::string(attribute, sizeof(attribute)), std::string("keep"));
+}
+#endif

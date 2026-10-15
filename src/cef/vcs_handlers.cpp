@@ -7,6 +7,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "app/vcs_commit_service.h"
 #include "app/workspace_vcs_context_service.h"
+#include "app/worktree_launch_preparation_service.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
@@ -19,6 +20,7 @@
 #include "common/utils/nlohmann_json_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -35,6 +37,33 @@ using namespace uam::query_handler_async;
 
 namespace
 {
+	class PendingWorktreeCreationTask final : public CefTask
+	{
+	  public:
+		PendingWorktreeCreationTask(std::weak_ptr<void> lifetime, std::function<bool(bool)> resume)
+		    : m_lifetime(std::move(lifetime)), m_resume(std::move(resume)), m_deadline(std::chrono::steady_clock::now() + std::chrono::minutes(3)) {}
+		void Execute() override
+		{
+			if (m_lifetime.expired() || !m_resume) return;
+			CEF_REQUIRE_UI_THREAD();
+			try
+			{
+				if (m_resume(std::chrono::steady_clock::now() >= m_deadline)) m_resume = {};
+				else if (!CefPostDelayedTask(TID_UI, this, 50)) { (void)m_resume(true); m_resume = {}; }
+			}
+			catch (...)
+			{
+				(void)m_resume(true);
+				m_resume = {};
+			}
+		}
+	  private:
+		std::weak_ptr<void> m_lifetime;
+		std::function<bool(bool)> m_resume;
+		std::chrono::steady_clock::time_point m_deadline;
+		IMPLEMENT_REFCOUNTING(PendingWorktreeCreationTask);
+	};
+
 	std::shared_ptr<void> BeginRemoteVcsOperationLease(uam::AppState& app,
 	                                                   const std::string& host_id)
 	{
@@ -327,6 +356,11 @@ void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, co
 	{
 		return;
 	}
+	if (chat->imported_read_only || !chat->agent_run_id.empty() || !chat->goal_owner_chat_id.empty() || !chat->temporary_parent_chat_id.empty())
+	{
+		cb->Failure(409, "Workspace isolation can only be changed on an editable primary chat.");
+		return;
+	}
 	if (m_app.pending_chat_save_at_by_chat_id.contains(chat->id))
 	{
 		cb->Failure(409, "Wait for chat history to finish saving before changing workspace isolation.");
@@ -335,6 +369,66 @@ void UamQueryHandler::HandleCreateChatWorktree(CefRefPtr<CefBrowser> browser, co
 	if (ChatRuntimeBusy(m_app, chat->id))
 	{
 		cb->Failure(409, "Stop the chat runtime before changing workspace isolation.");
+		return;
+	}
+
+
+	if (!uam::paths::IsControllerLocalWorkspace(*chat))
+	{
+		uam::AppState* app = &m_app;
+		const std::filesystem::path root = m_app.data_root;
+		const std::string id = chat->id, created = chat->created_at, provider = chat->provider_id,
+		    native = chat->native_session_id, host = chat->execution_host_id;
+		const auto incarnation = chat->metadata_incarnation;
+		auto resume = [app, browser, cb, root, id, created, provider, native, host, incarnation,
+		               expected = std::shared_ptr<uam::WorktreeLaunchPreparationTask>{}](bool expired) mutable
+		{
+			ChatSession* current = ChatDomainService().FindChatById(*app, id);
+			const auto pending = app->worktree_launch_preparations.find(id);
+			if (expired || app->data_root != root || !current || current->created_at != created ||
+			    current->metadata_incarnation != incarnation || current->provider_id != provider ||
+			    current->native_session_id != native || current->execution_host_id != host ||
+			    (expected && (pending == app->worktree_launch_preparations.end() || pending->second != expected)))
+			{
+				if (expected) uam::CancelWorktreeLaunchPreparation(*app, id, expected->cancellation);
+				cb->Failure(409, expired ? "Workspace preparation did not finish. Its owned artifacts were preserved; retry to inspect them."
+				    : "The chat changed while preparing its workspace. Retry the operation.");
+				return true;
+			}
+			const uam::WorktreeLaunchPreparationResult result = uam::PrepareWorktreeForLaunch(*app, *current, true);
+			if (result.state == uam::WorktreeLaunchPreparationState::Pending)
+			{
+				if (!expected)
+					if (const auto found = app->worktree_launch_preparations.find(id); found != app->worktree_launch_preparations.end()) expected = found->second;
+				return false;
+			}
+			if (result.state == uam::WorktreeLaunchPreparationState::Failed)
+			{
+				cb->Failure(409, FailureDetailOrFallback(result.error, "Failed to prepare the remote worktree."));
+				return true;
+			}
+			uam::GitWorktreeOperationResult operation;
+			if (expected && expected->prepared) operation = expected->prepared->operation;
+			operation.ok = true;
+			operation.status.is_git_repository = true;
+			operation.status.isolated = uam::paths::HasGitWorktreeDirectory(*current);
+			operation.status.source_directory = current->workspace_source_directory;
+			operation.status.worktree_directory = current->workspace_worktree_directory;
+			operation.status.branch_name = current->workspace_branch_name;
+			operation.status.base_ref = current->workspace_base_ref;
+			uam::PushStateUpdateIfChanged(browser, *app);
+			cb->Success(SerializeGitWorktreeResult(operation).dump());
+			return true;
+		};
+		if (!resume(false))
+		{
+			CefRefPtr<PendingWorktreeCreationTask> task = new PendingWorktreeCreationTask(m_asyncLifetime, std::move(resume));
+			if (!CefPostDelayedTask(TID_UI, task, 50))
+			{
+				uam::CancelWorktreeLaunchPreparation(m_app, id);
+				cb->Failure(503, "The workspace task queue is unavailable. Retry the operation.");
+			}
+		}
 		return;
 	}
 

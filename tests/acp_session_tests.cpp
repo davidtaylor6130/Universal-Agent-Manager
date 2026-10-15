@@ -3211,7 +3211,7 @@ UAM_TEST(RemoteAcpReachesTheHostBoundaryAndUsesPortableAgentInstructions)
 	error.clear();
 	UAM_ASSERT(!uam::SendAcpPrompt(app, "remote-opencode", "Use the desktop.", {}, {}, false,
 	                               &error, {}, true));
-	UAM_ASSERT(uam::strings::Contains(error, "Computer Use is disabled"));
+	UAM_ASSERT(uam::strings::Contains(error, "Computer Use is not enabled for this chat."));
 	UAM_ASSERT(app.acp_sessions.empty());
 }
 
@@ -11260,6 +11260,7 @@ UAM_TEST(AcpRemoteStartupFailureMarkerWithForeignAuthorityKeepsRecovery)
 		owned_session->provider_id = chat.provider_id;
 		owned_session->protocol_kind = "codex-app-server";
 		owned_session->running = true;
+		owned_session->last_runtime_activity_time_s = uam::GetAppTimeSeconds();
 		owned_session->initialized = rejection == "initialized";
 		owned_session->remote_source_exit_reported = rejection == "source-exited";
 		owned_session->remote_source_exit_code = rejection == "source-exited" ? 71 : -1;
@@ -13787,6 +13788,13 @@ UAM_TEST(AcpInteractionRepliesAdvanceRecencyOnlyAfterSuccessfulDelivery)
 		UAM_ASSERT(delivered);
 		UAM_ASSERT(app.chats.front().interaction_at > chat.interaction_at);
 		UAM_ASSERT_EQ(session->interaction_at, app.chats.front().interaction_at);
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (app.pending_chat_save_at_by_chat_id.contains(chat.id) && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
 		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
 		UAM_ASSERT(saved.has_value());
 		UAM_ASSERT_EQ(saved->interaction_at, app.chats.front().interaction_at);
@@ -15056,4 +15064,118 @@ UAM_TEST(RemoteEphemeralModelDiscoveryTransportLossRetainsOwnedCleanupAuthority)
 		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, chat.id).has_value());
 	}
 #endif
+}
+
+namespace
+{
+	void VerifyLocalInteractionResponseStorageBudget(bool permission)
+	{
+		TempDir temp("uam-local-response-save");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "private-local-response";
+		chat.provider_id = permission ? "gemini-cli" : "codex-cli";
+		chat.interaction_at = "2000-01-01T00:00:00.000Z";
+		chat.messages.push_back({MessageRole::User, "Private interaction history"});
+		app.chats.push_back(chat);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+		ChatSession unrelated;
+		unrelated.id = "private-unrelated-publication";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, unrelated));
+		const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareChatSave(app.data_root, unrelated);
+		UAM_ASSERT(prepared != nullptr);
+
+		std::unique_ptr<uam::AcpSessionState> owned = std::make_unique<uam::AcpSessionState>();
+		uam::AcpSessionState& session = *owned;
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = permission ? "gemini-acp" : "codex-app-server";
+		session.running = session.processing = session.session_ready = true;
+		session.interaction_at = chat.interaction_at;
+		session.waiting_for_permission = permission;
+		session.pending_permission.request_id_json = permission ? "7" : "";
+		session.pending_permission.options.push_back({"allow-once", "Allow once", "allow_once"});
+		session.waiting_for_user_input = !permission;
+		session.pending_user_input.request_id_json = permission ? "" : "7";
+		const std::map<std::string, std::vector<std::string>> answers{{"scope", {"Focused"}}};
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+		const nlohmann::json expected = permission ? runtime.OnAcpBuildPermissionResponse(session, "allow-once", false)
+		                                          : runtime.OnAcpBuildUserInputResponse(session, answers);
+		const fs::path captured = temp.root / "responses.jsonl";
+#if defined(_WIN32)
+		const fs::path script = temp.root / "capture.cmd";
+		UAM_ASSERT(uam::io::WriteTextFile(script,
+		    "@echo off\r\nsetlocal EnableDelayedExpansion\r\n:read\r\nset \"line=\"\r\nset /p \"line=\"\r\nif not defined line goto :eof\r\n>>\"%~1\" echo(!line!\r\ngoto read\r\n"));
+		const std::vector<std::string> command{"cmd", "/D", "/C", script.string(), captured.string()};
+#else
+		const std::vector<std::string> command{"/bin/sh", "-c", "cat > \"$1\"", "private-response-capture", captured.string()};
+#endif
+		IPlatformProcessService& process = PlatformServicesFactory::Instance().process_service;
+		std::string error;
+		UAM_ASSERT(process.StartStdioProcess(session, temp.root, command, &error));
+		struct Cleanup
+		{
+			uam::AcpSessionState& session;
+			~Cleanup()
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+			}
+		} cleanup{session};
+		app.acp_sessions.push_back(std::move(owned));
+		std::promise<void> entered;
+		std::future<void> locked = entered.get_future();
+		std::jthread publication([&entered, prepared]()
+		{
+			(void)ChatRepository::PublishPreparedChatSave(prepared, true, nullptr, [&entered]()
+			{
+				entered.set_value();
+				std::this_thread::sleep_for(std::chrono::milliseconds(350));
+				return false;
+			});
+		});
+		UAM_ASSERT(locked.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		const bool delivered = permission ? uam::ResolveAcpPermission(app, chat.id, "7", "allow-once", false, &error)
+		                                  : uam::ResolveAcpUserInput(app, chat.id, "7", answers, &error);
+		const std::chrono::steady_clock::duration elapsed = std::chrono::steady_clock::now() - started;
+		publication.join();
+		UAM_ASSERT(delivered);
+		UAM_ASSERT(elapsed <= std::chrono::milliseconds(250));
+		UAM_ASSERT(permission ? !session.waiting_for_permission : !session.waiting_for_user_input);
+		UAM_ASSERT(!(permission ? uam::ResolveAcpPermission(app, chat.id, "7", "allow-once", false, &error)
+		                         : uam::ResolveAcpUserInput(app, chat.id, "7", answers, &error)));
+		const std::string interaction = app.chats.front().interaction_at;
+		UAM_ASSERT(interaction > chat.interaction_at && interaction.size() == 24 && interaction[10] == 'T' && interaction.ends_with('Z'));
+		UAM_ASSERT_EQ(session.interaction_at, interaction);
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (app.pending_chat_save_at_by_chat_id.contains(chat.id) && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::FlushPendingChatSaves(app);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+		UAM_ASSERT(saved && saved->interaction_at == interaction && saved->messages == app.chats.front().messages);
+		std::string responses;
+		while (responses.find('\n') == std::string::npos && std::chrono::steady_clock::now() < deadline)
+		{
+			responses = ReadFile(captured);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT_EQ(std::count(responses.begin(), responses.end(), '\n'), 1);
+		UAM_ASSERT_EQ(nlohmann::json::parse(responses), expected);
+	}
+}
+
+UAM_TEST(AcpLocalPermissionResponseReturnsWithinBudgetDuringUnrelatedPublication)
+{
+	VerifyLocalInteractionResponseStorageBudget(true);
+}
+
+UAM_TEST(AcpLocalUserInputResponseReturnsWithinBudgetDuringUnrelatedPublication)
+{
+	VerifyLocalInteractionResponseStorageBudget(false);
 }

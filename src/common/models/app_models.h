@@ -99,6 +99,8 @@ namespace uam
 		/// <summary>Optional exact durable raw row reused by prepared agent input instead of appending it twice.</summary>
 		int existing_user_message_index = -1;
 		std::string existing_user_message_created_at;
+		/// <summary>Expand branch context at dispatch while persisted text still identifies the raw row.</summary>
+		bool include_prior_context = false;
 		bool prepared_for_delivery = false;
 		std::string claude_quota_continuation_id;
 		int prepared_user_message_count = 0;

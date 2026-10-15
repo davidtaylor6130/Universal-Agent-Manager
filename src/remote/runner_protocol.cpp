@@ -167,6 +167,7 @@ namespace uam::remote
 		        {"architecture", ArchitectureName()},
 		        {"capabilities", {{"computerUse", false},
 			                          {"directoryBrowsing", state != nullptr},
+			                          {"safePathInspection", state != nullptr},
 			                          {"contextRead", state != nullptr},
 			                          {"workspaceFileRead", state != nullptr},
 			                          {"usageAccounting", state != nullptr},

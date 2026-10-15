@@ -34,7 +34,6 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const runtimeProviders = useAppStore(useShallow(state => state.providers))
   const versions = useAppStore(state => state.cliVersionManager)
   const central = useAppStore(state => state.centralProviderConfiguration)
-  const servers = useAppStore(useShallow(state => state.mcpServers))
   const computerUseEnabled = useAppStore(state => state.computerUseEnabled)
   const hostId = selectedHostId ?? 'local'
   const [busy, setBusy] = useState(false)
@@ -48,6 +47,11 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const busyRef = useRef(false)
   const ids = providerId ? [providerId] : SUPPORTED_CLI_PROVIDER_IDS
   const activeHostId = hosts.some(host => host.id === hostId) || hostId === 'local' ? hostId : 'local'
+  const servers = useAppStore(useShallow(state => {
+    const scoped = state.hostScopedSettings && hosts.some(host => host.id === activeHostId && host.transport === 'ssh')
+    const effective = scoped ? state.hostScopedSettingsValues?.[activeHostId]?.mcpServers ?? state.mcpServers : state.mcpServers
+    return effective.filter(server => !server.executionHostId || server.executionHostId === activeHostId)
+  }))
   const currentHost = useRef(activeHostId)
   currentHost.current = activeHostId
   const hostVersions = activeHostId === 'local' ? versions.providers : (versions.remoteProviders ?? []).filter(version => version.executionHostId === activeHostId)
@@ -109,6 +113,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   const menuAnchor = useRef<HTMLElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => setMenuId(null), [activeHostId])
+  useEffect(() => { if (!collapseServers) setMenuId(null) }, [collapseServers])
   useEffect(() => {
     if (!menuId) return
     const onPointerDown = (event: MouseEvent) => {
@@ -169,7 +174,7 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
             <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span><span className="uam-prov-detail whitespace-nowrap">{cli}</span></span></button></td>
             <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusDot tone={healthTone}/>{terminalOnly ? 'Terminal only' : healthLabel}</span>
               {!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</td>
-            <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'Always on. Managed in the UAM MCP service section.' : uamOn === false ? 'Off. Turn UAM MCP on in the UAM MCP service section.' : 'Not known yet')}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUse === undefined ? undefined : computerUse && computerUseEnabled !== false, computerUseEnabled === false && computerUse ? 'Off. Turn Computer Use on in the Built in section.' : computerUse ? 'Available. Chat permissions are set in the composer.' : computerUse === false ? 'Not available for this provider' : 'Not known yet')}</td>
             <td className="uam-prov-glyph-cell px-1 py-2">{checkbox(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), `${id}:shared-setup`)}</td>
             {collapseServers

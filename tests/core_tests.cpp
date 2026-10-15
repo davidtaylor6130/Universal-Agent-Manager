@@ -5270,11 +5270,9 @@ UAM_TEST(RemoteHelperUpdateBlocksEveryRemoteCleanupState)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
 	const std::string source = ReadFile(source_root / "src/cef/remote_host_handlers.cpp");
-	const std::size_t guard = source.find("bool HostHasActiveRuntimeWork");
-	const std::size_t handler = source.find("void UamQueryHandler::HandlePreviewRemoteHost", guard);
-	UAM_ASSERT(guard != std::string::npos);
-	UAM_ASSERT(handler != std::string::npos);
-	const std::string body = source.substr(guard, handler - guard);
+	UAM_ASSERT(source.find("remote_host_install_guard.h") != std::string::npos);
+	const std::string body = ReadFile(source_root / "src/cef/remote_host_install_guard.h");
+	UAM_ASSERT(body.find("bool HostHasActiveRuntimeWork") != std::string::npos);
 	UAM_ASSERT(body.find("chat.remote_stop_cleanup_pending") != std::string::npos);
 	UAM_ASSERT(body.find("session->remote_stop_pending") != std::string::npos);
 	UAM_ASSERT(body.find("session->remote_stop_unconfirmed") != std::string::npos);
@@ -11013,7 +11011,8 @@ UAM_TEST(RemoteWorkspaceLocalWorktreeActionsFailClosedAndMissingHostBlocksVcs)
 	const uam::GitWorktreeService worktrees;
 	const uam::GitWorktreeStatus worktree_status = worktrees.Status(app, chat);
 	UAM_ASSERT(!worktree_status.is_git_repository);
-	UAM_ASSERT(worktree_status.warning.find("remote") != std::string::npos);
+	UAM_ASSERT(!worktree_status.error.empty());
+	UAM_ASSERT(!worktree_status.worktree_missing);
 	UAM_ASSERT(worktrees.CreateForChat(app, chat).message.find("remote") != std::string::npos);
 	UAM_ASSERT(worktrees.DiscardChatChanges(app, chat).message.find("remote") != std::string::npos);
 	UAM_ASSERT(worktrees.PortChatChanges(app, chat).message.find("remote") != std::string::npos);
@@ -11201,7 +11200,9 @@ UAM_TEST(GitWorktreeNamesUseAgentAndTitleWithSafeFallbacksAndCollisions)
 	ChatSession legacy;
 	legacy.id = "chat-legacy";
 	legacy.title = "Legacy compatibility";
+	legacy.folder_id = "legacy-workspace";
 	legacy.workspace_directory = repo.string();
+	app.folders.push_back(ChatFolder{legacy.folder_id, "Legacy workspace", repo.string(), false});
 	UAM_ASSERT(service.CreateForChat(app, legacy).ok);
 	const fs::path named_path = legacy.workspace_worktree_directory;
 	const fs::path legacy_path = named_path.parent_path().parent_path() / legacy.id;
@@ -11618,11 +11619,36 @@ UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone
 	UAM_ASSERT(legacy.workspace_worktree_directory.empty());
 	chat.workspace_directory = (temp.root / "missing").string();
 	app.chats.push_back(chat);
-	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Fix login", &error));
-	UAM_ASSERT(error.find("Could not create this chat's worktree") != std::string::npos);
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Fix login", &error));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	const uam::AcpSessionState* failed_session = nullptr;
+	do
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		failed_session = uam::FindAcpSessionForChat(app, chat.id);
+		if (failed_session != nullptr && failed_session->queue_held && !failed_session->last_error.empty()) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	} while (std::chrono::steady_clock::now() < deadline);
+	UAM_ASSERT(failed_session != nullptr && failed_session->queue_held);
+	UAM_ASSERT_EQ(failed_session->last_error, std::string("Source workspace is not an available directory."));
+	UAM_ASSERT(!failed_session->running && !failed_session->processing && !failed_session->reconnect_pending);
 	UAM_ASSERT(app.chats.front().messages.empty());
-	const uam::AcpSessionState* failed_session = uam::FindAcpSessionForChat(app, chat.id);
-	UAM_ASSERT(failed_session == nullptr || !failed_session->running);
+	UAM_ASSERT_EQ(failed_session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(failed_session->queued_user_prompts.front().text, std::string("Fix login"));
+	while (app.pending_chat_save_at_by_chat_id.contains(chat.id) && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(held && held->acp_queue_held && held->messages.empty());
+	UAM_ASSERT_EQ(held->acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, std::string("Fix login"));
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(failed_session->queue_held && !failed_session->running && !failed_session->reconnect_pending);
+	UAM_ASSERT_EQ(failed_session->queued_user_prompts.size(), std::size_t{1});
 	app.chats.clear();
 	UAM_ASSERT(!service.PrepareForFirstLaunch(app, chat, &error));
 	UAM_ASSERT(error.find("Could not create this chat's worktree") != std::string::npos);
@@ -22917,9 +22943,10 @@ UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(nested.string())));
 	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(nested), nested));
 	UAM_ASSERT(uam::FindImportedWorkspaceFolder(app.folders, fs::path{}) == nullptr);
-	// Broken metadata and missing main subfolders must retain the native location.
+	// Proven linked children group under the main checkout even when absent there.
 	fs::remove_all(repo / "subfolder");
-	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree / "subfolder"), worktree / "subfolder"));
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree / "subfolder"), repo / "subfolder"));
+	// Broken metadata retains the native location.
 	UAM_ASSERT(uam::io::WriteTextFile(worktree / ".git", "gitdir: missing\n"));
 	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree), worktree));
 }
@@ -24944,6 +24971,7 @@ std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv);
 std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv);
 std::optional<int> RunRemoteEmptyArgumentsFixture(int argc, char** argv);
 std::optional<int> RunRemoteOldStartupEchoFixture(int argc, char** argv);
+std::optional<int> RunRemoteWorktreeReceiptFixture(int argc, char** argv);
 std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv);
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[]);
 
@@ -24955,6 +24983,7 @@ int main(int argc, char** argv)
 {
 	if (const std::optional<int> result = RunRemoteEmptyArgumentsFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOldStartupEchoFixture(argc, argv)) return *result;
+	if (const std::optional<int> result = RunRemoteWorktreeReceiptFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteCodexSetupFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOpenCodeCreateFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunOpenCodeSessionCreateFixtureIfRequested(argc, argv)) return *result;

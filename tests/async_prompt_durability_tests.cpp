@@ -2068,8 +2068,14 @@ done
 					if (variation == "busysummaryroot") restarted.data_root = temp.root / "replacement-data-root";
 					if (variation == "busysummarystop") UAM_ASSERT(uam::StopAcpSession(restarted, restarted.chats.front().id, uam::AcpStopPurpose::Interrupt, true));
 					if (variation == "busysummaryrevision")
-						UAM_ASSERT(uam::EditQueuedAcpPrompt(restarted, restarted.chats.front().id, restored.id, restored.revision,
+					{
+						UAM_ASSERT(!uam::EditQueuedAcpPrompt(restarted, restarted.chats.front().id, restored.id, restored.revision,
 						    "Revised pending input must not inherit the old raw-row authority", &error));
+						UAM_ASSERT(!error.empty());
+						// Inject replacement ownership while the public edit remains safely blocked.
+						++resumed.queued_user_prompts.front().revision;
+						++restarted.chats.front().acp_queued_prompts.front().revision;
+					}
 					if (variation == "busysummarystorage")
 					{
 						ChatSession replacement = *restart_primary;
@@ -2113,8 +2119,14 @@ done
 					UAM_ASSERT(!resumed.running && resumed.queued_user_prompts.size() == 1);
 					if (variation == "busyrelaunchsettings") restarted.chats.front().uam_agent_id = "replacement-agent";
 					if (variation == "busyrelaunchqueue")
-						UAM_ASSERT(uam::EditQueuedAcpPrompt(restarted, restarted.chats.front().id, restored.id, restored.revision,
+					{
+						UAM_ASSERT(!uam::EditQueuedAcpPrompt(restarted, restarted.chats.front().id, restored.id, restored.revision,
 						    "Revised queued input must not launch an obsolete agent snapshot", &error));
+						UAM_ASSERT(!error.empty());
+						// Force the stale-result race independently of the guarded public editor.
+						++resumed.queued_user_prompts.front().revision;
+						++restarted.chats.front().acp_queued_prompts.front().revision;
+					}
 					while (!resumed.pending_referenced_queue_launch_fingerprint.empty() && std::chrono::steady_clock::now() < stage_deadline)
 					{
 						const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();

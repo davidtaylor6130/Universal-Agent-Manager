@@ -1763,6 +1763,12 @@ UAM_TEST(WindowsBootstrapLockFitsOpenSshCommandLimit)
 	UAM_ASSERT(script.find("[Console]::WriteLine('UAM_INSTALL_LOCK_READY:") != std::string::npos);
 	UAM_ASSERT(script.find("finally { try { $installed=Join-Path") != std::string::npos);
 	UAM_ASSERT(script.find("powershell.exe") == std::string::npos);
+	UAM_ASSERT(script.find("Restore-UamRunnerFile $backup $installed; & $installed start") != std::string::npos);
+	UAM_ASSERT(script.find("Runner service is busy; recovery was not performed.") != std::string::npos);
+	UAM_ASSERT(script.find("Copy-Item -LiteralPath $backup -Destination $installed") == std::string::npos);
+	const std::size_t helper = script.find("function Set-UamRunnerFile");
+	UAM_ASSERT(helper != std::string::npos);
+	UAM_ASSERT(script.find("function Set-UamRunnerFile", helper + 1) == std::string::npos);
 }
 
 UAM_TEST(RemoteRunnerBootstrapSelectsAndHardensTheWindowsArtifact)
@@ -1831,18 +1837,31 @@ esac
 	UAM_ASSERT(uam::remote::FinalizeBootstrapPlan(plan, result, true, &error));
 	const std::string commands = uam::io::ReadTextFile(log);
 	UAM_ASSERT(commands.find("-EncodedCommand") != std::string::npos);
-	UAM_ASSERT(commands.find("-Command \"") == std::string::npos);
+	UAM_ASSERT(commands.find("-Command \"& ([scriptblock]::Create") != std::string::npos);
 	std::string decoded_commands;
 	std::istringstream command_lines(commands);
 	for (std::string command; std::getline(command_lines, command);)
 	{
 		const std::string marker = "-EncodedCommand ";
 		const std::size_t offset = command.find(marker);
-		if (offset == std::string::npos) continue;
-		std::string utf16_le;
-		UAM_ASSERT(uam::base64::Decode(command.substr(offset + marker.size()), utf16_le));
-		for (std::size_t index = 0; index + 1 < utf16_le.size(); index += 2)
-			decoded_commands.push_back(utf16_le[index]);
+		if (offset != std::string::npos)
+		{
+			std::string utf16_le;
+			UAM_ASSERT(uam::base64::Decode(command.substr(offset + marker.size()), utf16_le));
+			for (std::size_t index = 0; index + 1 < utf16_le.size(); index += 2)
+				decoded_commands.push_back(utf16_le[index]);
+		}
+		else
+		{
+			const std::string utf8_marker = "FromBase64String('";
+			const std::size_t begin = command.find(utf8_marker);
+			if (begin == std::string::npos) continue;
+			const std::size_t start = begin + utf8_marker.size();
+			const std::size_t end = command.find("'", start);
+			std::string utf8;
+			UAM_ASSERT(uam::base64::Decode(command.substr(start, end - start), utf8));
+			decoded_commands += utf8;
+		}
 		decoded_commands.push_back('\n');
 	}
 	UAM_ASSERT(decoded_commands.find("Get-FileHash") != std::string::npos);
@@ -1857,8 +1876,16 @@ esac
 	           std::string::npos);
 	UAM_ASSERT(decoded_commands.find("Remove-Item -LiteralPath $marker -Force -ErrorAction Stop") !=
 	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop") !=
-	           std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $installed") == std::string::npos);
+	UAM_ASSERT(decoded_commands.find("[IO.File]::Replace($source,$target,$save)") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("[IO.File]::Replace($source,$target,[NullString]::Value)") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $restore -Force -ErrorAction Stop") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Restore-UamRunnerFile $backup $installed") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("$failed.Exception.Message+' Rollback failed: '+$_.Exception.Message") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Runner service is busy; rollback was not performed.") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("$ProgressPreference='SilentlyContinue'") != std::string::npos);
+	const std::size_t stop_guard = decoded_commands.find("Runner service is busy with active chats.");
+	UAM_ASSERT(stop_guard < decoded_commands.find("Set-UamRunnerFile $file $installed $backup"));
 	UAM_ASSERT(decoded_commands.find("Runner protocol verification failed") != std::string::npos);
 	UAM_ASSERT(decoded_commands.find("old-tools/uam/4.4.0/uam-runner.exe") ==
 	           std::string::npos);
@@ -2440,6 +2467,7 @@ UAM_TEST(RemoteGitInitialCommitDoesNotRequireAnExistingIndexFile)
 	ExecutionHost host;
 	host.id = "remote-initial-git";
 	host.label = "Remote initial Git";
+	host.transport = "ssh";
 	host.ssh_alias = "test-host";
 	host.platform = "linux";
 	host.architecture = "arm64";
@@ -4875,10 +4903,13 @@ namespace
 			chat.messages.push_back({.role = MessageRole::User, .content = "Previously saved remote history"});
 			ExecutionHost host;
 			host.id = chat.execution_host_id;
+			host.transport = "ssh";
 			host.ssh_alias = "private-test-host";
 			host.platform = "linux";
 			host.runner_status = "ready";
+			host.runner_version = version;
 			host.runner_protocol_version = 3;
+			UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
 			app.settings.execution_hosts.push_back(host);
 			app.chats.push_back(std::move(chat));
 			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));

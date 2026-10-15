@@ -70,6 +70,19 @@ namespace uam::remote
 			       uam::base64::Encode(script) + "'))))\"";
 		}
 
+		/// <summary>Replace mapped Windows images atomically; rollback always stages an unexecuted copy.</summary>
+		std::string WindowsRunnerReplacementScript()
+		{
+			return "$ProgressPreference='SilentlyContinue'; "
+			    "function Set-UamRunnerFile($source,$target,$save) { $failure=$null; for ($i=0; $i -lt 50; $i++) { try { "
+			    "if (Test-Path -LiteralPath $target) { if ($save) { [IO.File]::Replace($source,$target,$save) } "
+			    "else { [IO.File]::Replace($source,$target,[NullString]::Value) } } else { [IO.File]::Move($source,$target) }; return "
+			    "} catch { $failure=$_; Start-Sleep -Milliseconds 100 } }; throw $failure }; "
+			    "function Restore-UamRunnerFile($backup,$installed) { $restore=$backup+'.restore'; "
+			    "if ((Test-Path -LiteralPath $restore) -and ((Get-Item -LiteralPath $restore).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Runner restore file cannot be a link.' }; "
+			    "Copy-Item -LiteralPath $backup -Destination $restore -Force -ErrorAction Stop; Set-UamRunnerFile $restore $installed $null }; ";
+		}
+
 		bool RunStep(const BootstrapStep& step, std::string& output, std::string& diagnostic,
 		             std::string& error,
 		             std::stop_token stop_token)
@@ -325,12 +338,13 @@ namespace uam::remote
 				std::string script = "$installed=Join-Path $HOME '" + installed +
 				    "'; $backup=Join-Path $HOME '" + backup +
 				    "'; $marker=Join-Path $HOME '" + marker +
-				    "'; if (Test-Path -LiteralPath $marker) { try { & $installed stop | Out-Null } catch {}; "
-				    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop } "
+				    "'; if (Test-Path -LiteralPath $marker) { if (Test-Path -LiteralPath $installed) { & $installed stop | Out-Null; "
+				    "if ($LASTEXITCODE -ne 0) { throw 'Runner service is busy; rollback was not performed.' } }; "
+				    "if (Test-Path -LiteralPath $backup) { Restore-UamRunnerFile $backup $installed } "
 				    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop } }; "
 				    "if (Test-Path -LiteralPath $marker) { Remove-Item -LiteralPath $marker -Force -ErrorAction Stop }; "
 				    "if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction Stop }; ";
-				command = wrap_powershell ? PowerShellCommand(script) : script;
+				command = wrap_powershell ? PowerShellCommand(WindowsRunnerReplacementScript() + script) : script;
 			}
 		}
 		return command;
@@ -427,11 +441,11 @@ namespace uam::remote
 			    "$backup=Join-Path $directory ('uam-runner.rollback-'+$receipt[1]+'.exe'); $marker=Join-Path $directory ('uam-runner.activation-'+$receipt[1]); "
 			    "if (Test-Path -LiteralPath $marker) { foreach ($file in @($installed,$backup,$marker)) { if ((Test-Path -LiteralPath $file) -and "
 			    "((Get-Item -LiteralPath $file).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Transaction files cannot be links.' } }; "
-			    "if (Test-Path -LiteralPath $installed) { & $installed stop | Out-Null }; "
-			    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force; & $installed start | Out-Null; "
+			    "if (Test-Path -LiteralPath $installed) { & $installed stop | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Runner service is busy; recovery was not performed.' } }; "
+			    "if (Test-Path -LiteralPath $backup) { Restore-UamRunnerFile $backup $installed; & $installed start | Out-Null; "
 			    "if ($LASTEXITCODE -ne 0) { throw 'The previous runner could not restart.' } } elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop }; "
 			    "foreach ($optional in @($marker,$backup)) { if (Test-Path -LiteralPath $optional) { Remove-Item -LiteralPath $optional -Force -ErrorAction Stop } } }; Remove-Item -LiteralPath $journal -Force -ErrorAction Stop }; ";
-			command = PowerShellUtf8Command("$ErrorActionPreference='Stop'; $root=Join-Path $HOME '" + root + "'; "
+			command = PowerShellUtf8Command(WindowsRunnerReplacementScript() + "$ErrorActionPreference='Stop'; $root=Join-Path $HOME '" + root + "'; "
 			    "New-Item -ItemType Directory -Path $root -Force | Out-Null; $path=Join-Path $root 'install.lock'; "
 			    "if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'The helper lock cannot be a link.' }; "
 			    "try { $lock=[IO.File]::Open($path,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None) } "
@@ -637,7 +651,7 @@ namespace uam::remote
 			const std::string installed = relative + "/uam-runner.exe";
 			const std::string backup = relative + "/uam-runner.rollback-" + plan.nonce + ".exe";
 			const std::string marker = relative + "/uam-runner.activation-" + plan.nonce;
-			const std::string verify = PowerShellCommand(
+			const std::string verify = PowerShellUtf8Command(WindowsRunnerReplacementScript() +
 			    "$file=Join-Path $HOME '" + temporary + "'; "
 			    "$installed=Join-Path $HOME '" + installed + "'; $backup=Join-Path $HOME '" + backup + "'; " +
 			    "$marker=Join-Path $HOME '" + marker + "'; "
@@ -647,18 +661,17 @@ namespace uam::remote
 			    "& $file stop | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Runner service is busy with active chats.' }; "
 			    "[IO.File]::WriteAllLines((Join-Path $HOME '" + root + "/install.transaction'), @('" + plan.version + "','" + plan.nonce + "','" + std::to_string(kRunnerProtocolVersion) + "')); "
 			    "New-Item -ItemType File -Path $marker -Force -ErrorAction Stop | Out-Null; "
-			    "$moved=$false; for ($i=0; $i -lt 50 -and -not $moved; $i++) { "
-			    "try { Move-Item -LiteralPath $file -Destination $installed -Force -ErrorAction Stop; $moved=$true } "
-			    "catch { Start-Sleep -Milliseconds 100 } }; if (-not $moved) { throw 'Runner service did not release its executable.' }; "
+			    "Set-UamRunnerFile $file $installed $backup; "
 			    "& $installed start; if ($LASTEXITCODE -ne 0) { throw 'Runner service could not start.' }; "
 			    "if ((& $installed --version) -ne '" + plan.version + "') { throw 'Runner version verification failed.' }; "
 			    "if ((& $installed --protocol-version) -ne '" + std::to_string(kRunnerProtocolVersion) + "') { throw 'Runner protocol verification failed.' }; "
-			    "} catch { $failed=$_; if (Test-Path -LiteralPath $marker) { "
-			    "try { & $installed stop | Out-Null } catch {}; "
-			    "if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop } "
+			    "} catch { $failed=$_; try { if (Test-Path -LiteralPath $marker) { "
+			    "if (Test-Path -LiteralPath $installed) { & $installed stop | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Runner service is busy; rollback was not performed.' } }; "
+			    "if (Test-Path -LiteralPath $backup) { Restore-UamRunnerFile $backup $installed } "
 			    "elseif (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Force -ErrorAction Stop }; "
 			    "Remove-Item -LiteralPath $marker -Force -ErrorAction Stop; "
-			    "if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction Stop } }; throw $failed } "
+			    "if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction Stop } } } "
+			    "catch { throw ($failed.Exception.Message+' Rollback failed: '+$_.Exception.Message) }; throw $failed } "
 			    "finally { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force } }");
 			install_steps = {
 			    {"Create private runner directory", SshCommand(plan.ssh_alias,

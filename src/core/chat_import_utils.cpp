@@ -161,14 +161,16 @@ namespace uam
 			{
 				// Stop at the nearest repository boundary, including submodules and ordinary checkouts.
 				std::string git_file;
-				if (!uam::io::TryReadTextFile(marker, git_file, 16384)) return workspace;
+				if (!uam::paths::IsRegularFileNoThrow(marker) || !uam::io::TryReadTextFile(marker, git_file, 16384)) return workspace;
 				const std::string_view pointer = uam::strings::TrimAsciiView(git_file);
 				if (!pointer.starts_with("gitdir: ")) return workspace;
 				const fs::path git_directory = uam::paths::NormalizeExistingOrAbsolutePath(
 				    root / uam::paths::PathFromUtf8(uam::strings::TrimAsciiView(pointer.substr(8))));
 				std::string common_file;
 				std::string backlink;
-				if (!uam::io::TryReadTextFile(git_directory / "commondir", common_file, 16384) ||
+				if (!uam::paths::IsRegularFileNoThrow(git_directory / "commondir") ||
+				    !uam::paths::IsRegularFileNoThrow(git_directory / "gitdir") ||
+				    !uam::io::TryReadTextFile(git_directory / "commondir", common_file, 16384) ||
 				    !uam::io::TryReadTextFile(git_directory / "gitdir", backlink, 16384) ||
 				    !FolderDirectoryMatches(git_directory / uam::paths::PathFromUtf8(uam::strings::Trim(backlink)), marker)) return workspace;
 				const fs::path common = uam::paths::NormalizeExistingOrAbsolutePath(

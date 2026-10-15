@@ -10,6 +10,7 @@
 #include "app/execution_routing_integration.h"
 #include "app/provider_configuration_service.h"
 #include "app/worktree_launch_preparation_service.h"
+#include "app/opencode_compaction_sync_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_model_json.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -2104,6 +2105,22 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		return false;
 	}
+	if (app.opencode_compaction_before_dispatch)
+	{
+		std::string error;
+		const OpenCodeCompactionGateState gate = app.opencode_compaction_before_dispatch(session, chat, error);
+		if (gate == OpenCodeCompactionGateState::Pending) return false;
+		if (gate != OpenCodeCompactionGateState::Ready && gate != OpenCodeCompactionGateState::NotApplicable)
+		{
+			session.goal_resume_suppressed = true;
+			FailAcpTurnOrSession(session, &chat, strings::NonEmptyOrFallback(std::move(error), "Native compaction metadata could not be verified. The prompt was not sent."));
+			// Failed authored rows retain Retry/Delete; only a real future outbox needs Resume.
+			session.queue_held = chat.acp_queue_held = !session.queued_user_prompts.empty();
+			AppendAcpDiagnostic(session, "native_history", "compaction_metadata_failed", "", "", false, 0, session.last_error);
+			ScheduleChatSave(app, chat, 0.0);
+			return true;
+		}
+	}
 	if (!ValidateClaudeQuotaDelivery(app, session, chat))
 	{
 		(void)CancelClaudeQuotaWait(app, chat);
@@ -2658,6 +2675,21 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 {
 	const bool async_receipt = static_cast<bool>(continuation_owned) && static_cast<bool>(completion);
 	if (static_cast<bool>(continuation_owned) != static_cast<bool>(completion) || (async_receipt && !continuation_owned())) return false;
+	if (fresh_session && !prompt.empty() && !session.processing && !session.waiting_for_permission &&
+	    !session.waiting_for_user_input && !session.cancel_requested && session.prompt_request_id == 0 && session.cancel_request_id == 0 &&
+	    session.queued_user_prompts.empty() && (session.queued_prompt.empty() ||
+	        (async_receipt && session.goal_queue_admission == AcpSessionState::GoalQueueAdmission::Held &&
+	         session.goal_queue_admission_turn_serial == session.turn_serial && session.queued_prompt == prompt)))
+	{
+		const WorktreeLaunchPreparationResult workspace = PrepareWorktreeForLaunch(app, chat);
+		if (workspace.state != WorktreeLaunchPreparationState::Ready)
+		{
+			session.last_error = workspace.state == WorktreeLaunchPreparationState::Pending
+			    ? "Workspace preparation is still running. Retry Resume after it finishes." : workspace.error;
+			return false;
+		}
+	}
+	if (app.opencode_compaction_before_turn_reset) app.opencode_compaction_before_turn_reset(session, chat);
 	if (async_receipt && session.goal_queue_admission == AcpSessionState::GoalQueueAdmission::Held &&
 	    session.goal_queue_admission_turn_serial == session.turn_serial && session.queued_prompt == prompt)
 	{

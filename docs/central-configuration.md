@@ -4,6 +4,8 @@ Configure shared resources in Settings > Central Setup, then enable them. UAM in
 
 Instructions can come from the text field or absolute paths on the desktop. UAM adds the selected agent's instructions and an index of installed skills and agent definitions. Every provider can read the installed files. UAM also reads the workspace's AGENTS.md on the executing computer. Nested workspace instructions continue to follow each provider's own rules.
 
+On the desktop, use Edit beside a saved instruction file to change its contents inline. New paths must be saved in Central Setup before editing. Save file replaces the existing file atomically and retains its permissions; it rejects files changed outside UAM, links, invalid UTF-8, NUL bytes and files larger than 2 MiB. Failed saves retain the draft. These edits apply to subsequent provider launches, including SSH launches that receive the shared file. Remote-host-specific instruction paths remain separate.
+
 Skill folders may contain one SKILL.md or several child skill folders. UAM copies each skill's scripts, references and other files. The existing Skills library is included too; imported SKILL.md entries retain their supporting files while the original source folder is available. A library entry without its original folder remains a Markdown skill. Paths to resources in the instruction index point to the installed copy on the executing computer.
 
 Global agents stay in UAM's existing agent library. The default agent and UAM tools switches affect new chats. Explicit choices in existing chats are retained. Per-provider model, permissions and other defaults remain in Settings > Defaults. Selecting a read-only agent restricts native CLI launches to Plan mode.

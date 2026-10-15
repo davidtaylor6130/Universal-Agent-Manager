@@ -350,6 +350,8 @@ namespace
 			uam::json::SetNumber(obj, "existing_user_message_index", prompt.existing_user_message_index);
 			uam::json::SetString(obj, "existing_user_message_created_at", prompt.existing_user_message_created_at);
 		}
+		if (prompt.include_prior_context)
+			uam::json::SetBool(obj, "include_prior_context", true);
 		if (prompt.prepared_for_delivery)
 			uam::json::SetBool(obj, "prepared_for_delivery", true);
 		if (!prompt.claude_quota_continuation_id.empty())
@@ -484,6 +486,12 @@ namespace
 			prompt.existing_user_message_created_at = existing_created->string_value;
 		}
 		prompt.prepared_for_delivery = JsonBoolOrDefault(obj.Find("prepared_for_delivery"), false);
+		if (const JsonValue* prior_context = obj.Find("include_prior_context"); prior_context != nullptr)
+		{
+			if (prior_context->type != JsonValue::Type::Bool) return std::nullopt;
+			prompt.include_prior_context = prior_context->bool_value;
+			if (prompt.include_prior_context && (prompt.append_user_message || prompt.existing_user_message_index < 0 || prompt.prepared_for_delivery)) return std::nullopt;
+		}
 		prompt.claude_quota_continuation_id = JsonStringOrEmpty(obj.Find("claude_quota_continuation_id"));
 		prompt.prepared_user_message_count = std::min(NonNegativeIntFieldOrZero(
 		    obj.Find("prepared_user_message_count")), 64);
@@ -938,6 +946,9 @@ namespace
 		       lhs.markdown_store_prompt_blocks == rhs.markdown_store_prompt_blocks &&
 		       MessageAttachmentsEquivalentForRecovery(lhs.attachments, rhs.attachments) &&
 		       lhs.append_user_message == rhs.append_user_message &&
+		       lhs.existing_user_message_index == rhs.existing_user_message_index &&
+		       lhs.existing_user_message_created_at == rhs.existing_user_message_created_at &&
+		       lhs.include_prior_context == rhs.include_prior_context &&
 		       lhs.prepared_for_delivery == rhs.prepared_for_delivery &&
 		       lhs.claude_quota_continuation_id == rhs.claude_quota_continuation_id &&
 		       lhs.prepared_user_message_count == rhs.prepared_user_message_count &&

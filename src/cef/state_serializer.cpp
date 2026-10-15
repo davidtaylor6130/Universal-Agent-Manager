@@ -192,9 +192,7 @@ namespace uam
 				const std::string host = uam::strings::NonEmptyOrFallback(
 				    uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
 				const bool remote = host != uam::execution_hosts::kLocalHostId;
-				const std::string scope_key = remote
-				    ? uam::paths::WorkspaceOwnershipKey(app, host, workspace)
-				    : host + "\n" + workspace;
+				const std::string scope_key = uam::paths::WorkspaceOwnershipKey(app, host, workspace);
 				if (!seen.insert(provider_id + "\n" + scope_key).second) return;
 				ChatSession scope;
 				scope.provider_id = provider_id;
