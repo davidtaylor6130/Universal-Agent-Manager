@@ -3,7 +3,7 @@ import type { AcpAttentionKind } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 
 export type ChatSearchIndex = Record<string, string>
-export type ChatStatusFilterId = 'pinned' | 'running' | 'attention' | 'done' | 'idle'
+export type ChatStatusFilterId = 'pinned' | 'active' | 'running' | 'attention' | 'done' | 'idle'
 
 export interface ChatSearchFilters {
   providerIds: string[]
@@ -134,6 +134,18 @@ export function displayedChatStatus(
   return null
 }
 
+
+/** Shared by the Active filter and the section model so both agree on what is active. */
+function chatActivity(session: Session, status: DisplayedChatStatus, updatedMs: number, nowMs: number) {
+  const snoozed = (session.snoozedUntilMs ?? 0) > nowMs && (status?.type !== 'attention' || status.kind === 'error')
+  const wokeAt = (session.snoozedUntilMs ?? 0) > 0 && !snoozed ? session.snoozedUntilMs! : 0
+  const active = !snoozed && (
+    status?.type === 'processing' || status?.type === 'attention' || isUnsettledChat(updatedMs, session.settledAt, nowMs) ||
+    isUnsettledChat(wokeAt, session.settledAt, nowMs) || (status?.type === 'done' && !session.settledAt)
+  )
+  return { snoozed, active, returnedAtMs: Math.max(updatedMs, wokeAt) }
+}
+
 function sessionMatchesStatusFilter(
   session: Session,
   statusId: ChatStatusFilterId,
@@ -145,6 +157,12 @@ function sessionMatchesStatusFilter(
 
   if (statusId === 'pinned') {
     return Boolean(session.isPinned)
+  }
+
+  if (statusId === 'active') {
+    // Structured runtimes only, like the section model; a snoozed chat is never active.
+    const updatedMs = session.interactionAt === null ? 0 : sessionRecentTime(session)
+    return chatActivity(session, displayedChatStatus([], [acpBinding]), updatedMs, context.nowMs ?? Date.now()).active
   }
 
   if (statusId === 'running') {
@@ -271,16 +289,14 @@ export function buildChatSearchSessionGroups(
       ? session.interactionAt === null ? 0 : sessionRecentTime(session)
       : familyUpdatedMs.get(rootId) ?? 0
     // Marking done clears a stale "ready" too; only running turns and questions outrank it.
-    const unsettled = isUnsettledChat(updatedMs, session.settledAt, nowMs)
-    const snoozed = (session.snoozedUntilMs ?? 0) > nowMs && (status?.type !== 'attention' || status.kind === 'error')
-    const wokeAt = (session.snoozedUntilMs ?? 0) > 0 && !snoozed ? session.snoozedUntilMs! : 0
-    if (snoozed) snoozedSessionIds.push(session.id)
-    if (!snoozed && (status?.type === 'processing' || status?.type === 'attention' || unsettled || isUnsettledChat(wokeAt, session.settledAt, nowMs) || (status?.type === 'done' && !session.settledAt))) {
+    const activity = chatActivity(session, status, updatedMs, nowMs)
+    if (activity.snoozed) snoozedSessionIds.push(session.id)
+    if (activity.active) {
       activeSessionIds.push(session.id)
-      returnedAtMs.set(session.id, Math.max(updatedMs, wokeAt))
+      returnedAtMs.set(session.id, activity.returnedAtMs)
     }
 
-    if (session.isPinned && !snoozed) {
+    if (session.isPinned && !activity.snoozed) {
       pinnedSessionIds.push(session.id)
     }
 
@@ -296,6 +312,12 @@ export function buildChatSearchSessionGroups(
 
   // One history: most recent activity on top, running chats included.
   activeSessionIds.sort((a, b) => (returnedAtMs.get(b) ?? 0) - (returnedAtMs.get(a) ?? 0))
+
+  // Pinned chats lead their own group (workspace or Unsorted); everything else keeps recency order.
+  const pinnedIds = new Set(sortedSessions.filter((session) => session.isPinned).map((session) => session.id))
+  const pinnedFirst = (ids: string[]) => [...ids.filter((id) => pinnedIds.has(id)), ...ids.filter((id) => !pinnedIds.has(id))]
+  for (const [folderId, ids] of sessionIdsByFolderId) sessionIdsByFolderId.set(folderId, pinnedFirst(ids))
+  unfolderedSessionIds.splice(0, unfolderedSessionIds.length, ...pinnedFirst(unfolderedSessionIds))
 
   return {
     isSearching,
