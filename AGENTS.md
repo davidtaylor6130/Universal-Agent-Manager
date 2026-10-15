@@ -41,6 +41,37 @@ Do not remove any of these six provider implementations. Provider removal requir
 
 ## Build Commands
 
+Reuse one isolated build folder for the task. Do not delete it, run `clean`/`--clean-first`,
+or reinstall frontend dependencies after every edit. Run `npm --prefix UI-V2 ci` on first
+setup or when `package-lock.json` changes. CMake tracks native headers, frontend sources,
+configuration, installed-package locks and packaged resources automatically.
+
+For agent work, configure once, then build only the affected target:
+
+```bash
+cmake -S . -B Builds/agent -DCMAKE_BUILD_TYPE=Release -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
+cmake --build Builds/agent --config Release --target universal_agent_manager --parallel 2
+# Native test changes: compile tests without rebuilding the desktop app or frontend.
+cmake --build Builds/agent --config Release --target uam_core_tests --parallel 2
+# Run relevant exact cases first; names come from --list-tests.
+python3 scripts/run_native_tests.py Builds/agent/uam_core_tests ExactCaseName AnotherCaseName
+# Final native inventory, then the remaining CTest gates without rerunning the same core cases.
+cmake --build Builds/agent --config Release --parallel 2
+cmake --build Builds/agent --config Release --target uam_check_core --parallel 2
+ctest --test-dir Builds/agent -C Release --output-on-failure -E '^uam_core_tests$'
+```
+
+On Visual Studio generators, the test binary is `Builds/agent/Release/uam_core_tests.exe`.
+The existing serial `ctest` path remains available. Never shorten timing assertions or
+remove cases to speed up verification. Batch connected shared-code edits before the final
+full run, and repeat it only after a new change, failure or unresolved concern.
+
+Install optional `ccache` to cache native compiler results (`brew install ccache` on macOS).
+CMake uses it automatically with Make/Ninja and respects explicit compiler launchers.
+Visual Studio/Xcode generators do not support this launcher; Windows caching needs Ninja
+in an initialized MSVC environment. Use separate build folders for different generators.
+Do not use `build.sh`/`build.ps1` for ordinary iteration: those prepare complete remote-helper packages.
+
 ```bash
 npm --prefix UI-V2 ci
 npm --prefix UI-V2 run test

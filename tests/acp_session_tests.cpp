@@ -11919,7 +11919,9 @@ UAM_TEST(AcpCompletedTurnStoresAssistantProcessingTime)
 	session.processing = true;
 	session.current_assistant_message_index = 0;
 	session.turn_assistant_message_index = 0;
-	session.turn_started_time_s = uam::GetAppTimeSeconds() - 2.0;
+	// Fresh test processes may have less than two seconds of app-clock uptime.
+	session.turn_started_time_s = std::max(uam::GetAppTimeSeconds(), 0.001);
+	std::this_thread::sleep_for(std::chrono::seconds(2));
 
 	uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, app.chats.front(), "ready", nullptr);
 

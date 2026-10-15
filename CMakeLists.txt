@@ -26,6 +26,19 @@ if(APPLE)
   enable_language(OBJCXX)
 endif()
 
+# Compiler launchers are supported by Make and Ninja; preserve explicit toolchain choices.
+if(CMAKE_GENERATOR MATCHES "Makefiles|Ninja")
+  find_program(UAM_CCACHE_EXECUTABLE NAMES ccache)
+  if(UAM_CCACHE_EXECUTABLE)
+    foreach(_language IN ITEMS C CXX OBJCXX)
+      if(NOT DEFINED CMAKE_${_language}_COMPILER_LAUNCHER)
+        set(CMAKE_${_language}_COMPILER_LAUNCHER "${UAM_CCACHE_EXECUTABLE}")
+      endif()
+    endforeach()
+    message(STATUS "Compiler cache available: ${UAM_CCACHE_EXECUTABLE}")
+  endif()
+endif()
+
 if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
 endif()
@@ -348,7 +361,10 @@ set_target_properties(uam_runner PROPERTIES
   CXX_EXTENSIONS OFF
   FOLDER "Remote"
 )
-target_include_directories(uam_runner PRIVATE src)
+# A header avoids rewriting Make's shared flags file when only the fingerprint changes.
+file(CONFIGURE OUTPUT "${CMAKE_BINARY_DIR}/generated/uam_runner_build.h"
+  CONTENT "#pragma once\n#define UAM_RUNNER_SOURCE_FINGERPRINT \"@UAM_RUNNER_SOURCE_FINGERPRINT@\"\n" @ONLY)
+target_include_directories(uam_runner PRIVATE src "${CMAKE_BINARY_DIR}/generated")
 # OpenCode and other provider histories use SQLite. Read them directly with read-only connections.
 FetchContent_Declare(uam_sqlite
   URL https://www.sqlite.org/2026/sqlite-amalgamation-3540000.zip
@@ -405,7 +421,6 @@ target_compile_definitions(uam_runner PRIVATE
   NOMINMAX
   UAM_REMOTE_RUNNER_VERSION="${UAM_PRODUCT_VERSION}"
   UAM_HEADLESS_RUNNER=1
-  UAM_RUNNER_SOURCE_FINGERPRINT="${UAM_RUNNER_SOURCE_FINGERPRINT}"
   UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
   UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
   UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
@@ -980,33 +995,11 @@ endif()
 #           live beside the binary in Contents/MacOS/, which would cause
 #           codesign to scan them as code objects and produce a broken signature.
 # On Windows: flat layout next to the executable.
-set(UAM_UI_DIST_SRC "${CMAKE_BINARY_DIR}/UI-V2/dist")
-if(WIN32)
-  unset(UAM_NPM_EXECUTABLE CACHE)
-  find_program(UAM_NPM_EXECUTABLE NAMES npm.cmd REQUIRED)
-else()
-  find_program(UAM_NPM_EXECUTABLE NAMES npm REQUIRED)
-endif()
-string(TIMESTAMP UAM_UI_BUILD_TIMESTAMP "%Y%m%dT%H%M%SZ" UTC)
-set(UAM_UI_BUILD_VERSION "${UAM_PRESENTATION_VERSION}")
-if(UAM_UI_BUILD_VERSION STREQUAL "")
-  set(UAM_UI_BUILD_VERSION "local")
-endif()
-set(UAM_UI_BUILD_ID "${UAM_UI_BUILD_VERSION}-${CMAKE_SYSTEM_NAME}-${UAM_UI_BUILD_TIMESTAMP}")
-
-add_custom_target(uam_ui_v2_build
-  BYPRODUCTS "${UAM_UI_DIST_SRC}/index.html"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/UI-V2"
-  COMMAND ${CMAKE_COMMAND} -E env "VITE_UAM_UI_BUILD_ID=${UAM_UI_BUILD_ID}" "VITE_UAM_OUT_DIR=${UAM_UI_DIST_SRC}" "VITE_UAM_COMPUTER_USE=${UAM_ENABLE_COMPUTER_USE}" "VITE_UAM_SSH=${UAM_ENABLE_SSH}" "VITE_UAM_MOBILE_COMPANION=${UAM_ENABLE_MOBILE_COMPANION}" ${UAM_NPM_EXECUTABLE} run build
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/UI-V2"
-  COMMENT "Building UI-V2 dist in ${UAM_UI_DIST_SRC} (build id: ${UAM_UI_BUILD_ID})"
-  VERBATIM
-)
+include("${CMAKE_SOURCE_DIR}/cmake/ui_build.cmake")
 add_dependencies(universal_agent_manager uam_ui_v2_build)
 if(UAM_ENABLE_SSH)
   add_dependencies(universal_agent_manager uam_runner)
 endif()
-set_property(TARGET universal_agent_manager APPEND PROPERTY LINK_DEPENDS "${UAM_UI_DIST_SRC}/index.html")
 
 if(APPLE AND UAM_MACOS_BUNDLE)
   set(UAM_REMOTE_ARTIFACT_DEST
@@ -1148,6 +1141,8 @@ if(APPLE AND UAM_MACOS_BUNDLE)
   )
 endif()
 
+include("${CMAKE_SOURCE_DIR}/cmake/package_inputs.cmake")
+
 foreach(_disabled_feature IN ITEMS COMPUTER_USE SSH MOBILE_COMPANION)
   if(NOT UAM_ENABLE_${_disabled_feature})
     if(APPLE AND UAM_MACOS_BUNDLE)
@@ -1226,6 +1221,10 @@ if(UAM_BUILD_TESTS)
   set_tests_properties(uam_runner_binary_stdio PROPERTIES TIMEOUT 40)
   add_test(NAME uam_local_build_version
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/build-configurator/test_local_build_version.py")
+  add_test(NAME uam_ui_build_incremental
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ui_build_incremental_test.py")
+  add_test(NAME uam_native_test_runner
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/native_test_runner_test.py")
   foreach(parent_stop terminate kill)
     add_test(NAME uam_crash_supervisor_parent_${parent_stop}
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")
@@ -1535,11 +1534,17 @@ if(UAM_BUILD_TESTS)
   set_target_properties(uam_core_tests PROPERTIES FOLDER "Tests")
   add_dependencies(uam_core_tests uam_runner)
   add_test(NAME uam_core_tests COMMAND uam_core_tests)
+  add_custom_target(uam_check_core
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/run_native_tests.py"
+      "$<TARGET_FILE:uam_core_tests>" --jobs 2
+    DEPENDS uam_core_tests
+    USES_TERMINAL
+    COMMENT "Running the complete native inventory in two isolated processes")
 
   # Explicitly built connected bridge fixtures use the real handler/router sources.
   # This target inherits compile/link settings only, never app packaging or startup.
   get_target_property(UAM_ICON_HANDLER_TEST_SOURCES universal_agent_manager SOURCES)
-  list(REMOVE_ITEM UAM_ICON_HANDLER_TEST_SOURCES src/main.cpp)
+  list(REMOVE_ITEM UAM_ICON_HANDLER_TEST_SOURCES src/main.cpp "${CMAKE_BINARY_DIR}/uam-package-inputs-$<CONFIG>.cpp")
   set(UAM_CONNECTED_HANDLER_TEST_SOURCES ${UAM_ICON_HANDLER_TEST_SOURCES})
   list(REMOVE_ITEM UAM_CONNECTED_HANDLER_TEST_SOURCES
     src/common/platform/platform_pty_macos.cpp src/common/platform/platform_pty_windows.cpp)

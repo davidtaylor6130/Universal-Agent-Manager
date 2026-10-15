@@ -24930,6 +24930,13 @@ int main(int argc, char** argv)
 	}
 #endif
 	int failures = 0;
+	if (argc == 2 && std::string_view(argv[1]) == "--list-tests")
+	{
+		for (const TestCase& test : Registry()) std::cout << test.name << '\n';
+		return 0;
+	}
+	int executed = 0;
+	const bool report_timing = uam::env::GetNonEmptyString("UAM_TEST_TIMINGS").has_value();
 	const std::string test_filter =
 	    uam::env::GetNonEmptyString("UAM_TEST_FILTER").value_or("");
 	for (const TestCase& test : Registry())
@@ -24941,6 +24948,8 @@ int main(int argc, char** argv)
 		{
 			continue;
 		}
+		++executed;
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 		try
 		{
 			test.fn();
@@ -24951,6 +24960,16 @@ int main(int argc, char** argv)
 			++failures;
 			std::cerr << "[FAIL] " << test.name << ": " << ex.what() << '\n';
 		}
+		if (report_timing)
+		{
+			const double milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+			std::cerr << "[TIME] " << test.name << ": " << milliseconds << " ms\n";
+		}
+	}
+	if (executed == 0)
+	{
+		std::cerr << "No tests matched the requested selection.\n";
+		return 2;
 	}
 
 	if (failures != 0)
