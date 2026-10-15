@@ -759,7 +759,7 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
     expect(host.querySelector('article.conversation-turn--assistant')?.getAttribute('aria-label')).toBe(`Codex · historical-model · ${time}`)
-    expect(host.querySelector('time.conversation-turn-start')?.textContent).toBe(`Codex · historical-model · ${prompt.createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`)
+    expect(host.querySelector('time.conversation-turn-start')?.textContent).toBe('Codex · historical-model')
     expect(host.querySelector('article.conversation-turn--assistant footer')?.textContent ?? '').not.toContain('historical-model')
     expect(host.querySelector('article.conversation-turn--assistant button[aria-label="Copy message"]')).toBeNull()
     act(() => root.unmount())
@@ -1192,6 +1192,39 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shows turn identity only on change, puts the full time in screen-reader text, and quiets brief turns', () => {
+    const day = new Date(2026, 4, 10, 9, 0)
+    const nextDay = new Date(2026, 4, 11, 9, 0)
+    const turn = (id: string, createdAt: Date, answer: Partial<Message>) => [
+      { id: `${id}-user`, sessionId: 'chat-1', role: 'user' as const, content: `Ask ${id}`, createdAt },
+      { id: `${id}-answer`, sessionId: 'chat-1', role: 'assistant' as const, content: `Answer ${id}`, providerId: 'claude-cli', modelId: 'claude-opus-5-5', createdAt, ...answer },
+    ]
+    useAppStore.setState((state) => ({
+      messages: { ...state.messages, 'chat-1': [
+        ...turn('brief', day, { processingTimeMs: 1000 }),
+        ...turn('traced', day, { processingTimeMs: 1000, thoughts: 'Checked the files' }),
+        ...turn('other-model', nextDay, { modelId: 'claude-sonnet-5', processingTimeMs: 4000 }),
+      ] },
+      acpBindingBySessionId: {},
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const times = Array.from(host.querySelectorAll<HTMLTimeElement>('time.conversation-turn-start'))
+    expect(times.map((time) => time.textContent)).toEqual([
+      'Claude · claude-opus-5-5',
+      day.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
+      'Claude · claude-sonnet-5',
+    ])
+    expect(times.map((time) => time.classList.contains('sr-only'))).toEqual([false, true, false])
+    expect(host.querySelectorAll('.conversation-day-divider')).toHaveLength(2)
+    const summaries = Array.from(host.querySelectorAll('[data-testid="working-summary"]'))
+    expect(summaries.map((summary) => summary.textContent)).toEqual(['Worked 1s', 'Worked 4s'])
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps settled turn dates cached while typing and streaming, but refreshes changed metadata', () => {
     const createdAt = new Date('2026-01-01T00:00:00Z')
     const messages: Message[] = Array.from({ length: 200 }, (_, index) => ({
@@ -1226,7 +1259,7 @@ describe('ChatView', () => {
       expect(first.textContent).toContain('Claude · replacement-model')
       act(() => useAppStore.setState((state) => ({ messages: { 'chat-1': state.messages['chat-1'].map((message, index) => index === 0 ? { ...message, modelId: 'model-only-change' } : message) } })))
       expect(first.textContent).toContain('Claude · model-only-change')
-      expect(format).toHaveBeenCalledTimes(initialFormats + 3)
+      expect(format).toHaveBeenCalledTimes(initialFormats + 1)
     } finally { act(() => root.unmount()); host.remove() }
   })
 
@@ -1489,8 +1522,8 @@ describe('ChatView', () => {
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toContain('Worked for 1m 23s')
-    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).not.toContain('Worked for 0s')
+    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toContain('Worked 1m 23s')
+    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).not.toContain('Worked 0s')
 
     act(() => root.unmount())
     host.remove()
@@ -1592,7 +1625,7 @@ describe('ChatView', () => {
       'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false },
     } })))
     const completedText = host.querySelector('[data-testid="working-summary"]')?.textContent
-    expect(completedText).toContain('Worked for')
+    expect(completedText).toContain('Worked')
     act(() => vi.advanceTimersByTime(3000))
     expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toBe(completedText)
     expect(host.querySelector('[data-processing-step="true"]')).toBeNull()

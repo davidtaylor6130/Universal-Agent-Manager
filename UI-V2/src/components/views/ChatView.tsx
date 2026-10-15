@@ -67,7 +67,11 @@ const RENDERED_MESSAGE_BATCH_SIZE = 100
 const SCROLL_NEAR_BOTTOM_THRESHOLD = 100
 const ALWAYS_OPEN_WORK_SECTION = { expanded: true, toggle: () => undefined }
 
-type WorkSection = { id: string; firstIndex: number; lastAssistantIndex: number; workedSeconds: number; hasAssistant: boolean }
+type WorkSection = { id: string; firstIndex: number; lastAssistantIndex: number; workedSeconds: number; hasAssistant: boolean; hasTrace: boolean }
+
+function messageHasTrace(message: Message) {
+  return Boolean(message.toolCalls?.length || message.thoughts?.trim() || message.blocks?.some((block) => block.type === 'tool_call' || (block.type === 'thought' && block.text.trim())))
+}
 
 function findWorkSectionStartIndex(messages: Message[], index: number) {
   let start = Math.min(index, messages.length - 1)
@@ -80,13 +84,14 @@ export function buildVisibleWorkSections(messages: Message[], firstVisibleIndex:
   if (messages.length === 0) return sections
 
   const startIndex = findWorkSectionStartIndex(messages, firstVisibleIndex)
-  let section: WorkSection = { id: '', firstIndex: startIndex, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false }
+  let section: WorkSection = { id: '', firstIndex: startIndex, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false, hasTrace: false }
   for (let index = startIndex; index < messages.length; index += 1) {
     const message = messages[index]
     if (index === 0 || (message.role === 'user' && !message.continuesTurn))
-      section = { id: message.id, firstIndex: index, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false }
+      section = { id: message.id, firstIndex: index, lastAssistantIndex: -1, workedSeconds: 0, hasAssistant: false, hasTrace: false }
     section.workedSeconds = Math.max(section.workedSeconds, (message.processingTimeMs ?? 0) / 1000)
     section.hasAssistant ||= message.role === 'assistant'
+    section.hasTrace ||= message.role === 'assistant' && messageHasTrace(message)
     if (message.role === 'assistant') section.lastAssistantIndex = index
     sections.set(index, section)
   }
@@ -310,14 +315,35 @@ export function reviewAssistantLabel(provider: string, message?: Message) {
   return [provider, model, time].filter(Boolean).join(' · ')
 }
 
+// ponytail: WeakMap keeps composer/stream renders from re-formatting settled message dates.
+const turnTimeLabels = new WeakMap<Date, string>()
+function turnTimestampLabel(date: Date) {
+  let label = turnTimeLabels.get(date)
+  if (label === undefined) turnTimeLabels.set(date, label = date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }))
+  return label
+}
+
+/** Day divider wording: Today, Yesterday, or the calendar date. */
+function dayDividerLabel(date: Date, now = new Date()) {
+  const dayOf = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime()
+  const daysAgo = Math.round((dayOf(now) - dayOf(date)) / 86_400_000)
+  if (daysAgo === 0) return 'Today'
+  if (daysAgo === 1) return 'Yesterday'
+  return date.toLocaleDateString([], { dateStyle: 'medium' })
+}
+
+function previousAssistantMessage(messages: Message[], beforeIndex: number) {
+  for (let index = beforeIndex - 1; index >= 0; index -= 1) if (messages[index].role === 'assistant') return messages[index]
+  return undefined
+}
+
 /** Settled turn metadata must not reformat dates on composer or stream updates. */
-const TurnStartTime = memo(function TurnStartTime({ timestamp, providerName, modelId }: { timestamp: number; providerName: string; modelId?: string }) {
+const TurnStartTime = memo(function TurnStartTime({ timestamp, identity, showIdentity }: { timestamp: number; identity: string; showIdentity: boolean }) {
   const createdAt = new Date(timestamp)
-  return <time className="conversation-turn-start" dateTime={createdAt.toISOString()}>{[
-    providerName,
-    modelId,
-    createdAt.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }),
-  ].filter(Boolean).join(' · ')}</time>
+  // Provider and model show only when they change; otherwise the time is screen-reader text (the row title shows it on hover).
+  return <time className={showIdentity ? 'conversation-turn-start' : 'conversation-turn-start sr-only'} dateTime={createdAt.toISOString()}>
+    {showIdentity ? identity : turnTimestampLabel(createdAt)}
+  </time>
 })
 
 type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planActions']
@@ -2481,18 +2507,32 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 const sectionResponse = messages[section.firstIndex + 1]?.role === 'assistant' ? messages[section.firstIndex + 1] : undefined
                 const sectionProviderId = sectionStart.providerId?.trim() || sectionResponse?.providerId?.trim() || currentProviderId
                 const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
-                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
+                // Brief turns with no tool or reasoning activity drop the "Worked" toggle; live turns always show it.
+                const briefTurn = !sectionActive && !section.hasTrace && section.workedSeconds < 2
+                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) && !briefTurn ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
                   sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
                   duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
                   onSelectTool={selectLiveTool}
                 /></div> : null
+                const turnStart = firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) ? sectionStart : undefined
+                const turnModelId = sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : '') || ''
+                const turnIdentity = [sectionProviderName, turnModelId].filter(Boolean).join(' · ')
+                const previousAssistant = turnStart ? previousAssistantMessage(messages, section.firstIndex) : undefined
+                const previousProviderId = previousAssistant ? previousAssistant.providerId?.trim() || currentProviderId : ''
+                const previousIdentity = previousAssistant
+                  ? [providerShortName(providers.find((candidate) => candidate.id === previousProviderId), previousProviderId), previousAssistant.modelId?.trim()].filter(Boolean).join(' · ')
+                  : ''
+                const showTurnIdentity = Boolean(turnStart && turnIdentity && (!previousAssistant || turnIdentity !== previousIdentity))
+                const priorMessage = section.firstIndex > 0 ? messages[section.firstIndex - 1] : undefined
+                const dayChanged = Boolean(turnStart) && (!priorMessage || priorMessage.createdAt.toDateString() !== sectionStart.createdAt.toDateString())
                 return (
                   <WorkSectionContext.Provider key={message.id} value={sectionControl}>
-                  <div className="space-y-1" data-message-index={index + historyStartIndex}>
-                    {firstVisibleInSection && sectionStart.role === 'user' && Number.isFinite(sectionStart.createdAt.getTime()) && <TurnStartTime
-                      timestamp={sectionStart.createdAt.getTime()}
-                      providerName={sectionProviderName}
-                      modelId={sectionStart.modelId?.trim() || sectionResponse?.modelId?.trim() || (section.firstIndex === activeWorkSectionFirstIndex ? acp?.currentModelId || session.modelId : '')}
+                  <div className="space-y-1" data-message-index={index + historyStartIndex} title={turnStart ? turnTimestampLabel(turnStart.createdAt) : undefined}>
+                    {dayChanged && turnStart && <div className="conversation-day-divider"><span>{dayDividerLabel(turnStart.createdAt)}</span></div>}
+                    {turnStart && <TurnStartTime
+                      timestamp={turnStart.createdAt.getTime()}
+                      identity={turnIdentity}
+                      showIdentity={showTurnIdentity}
                     />}
                     {message.role !== 'user' && heading}
                     {shouldRenderTimelineAtAssistant ? (
