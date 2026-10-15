@@ -163,6 +163,8 @@ interface SessionItemProps {
   activityFolderIcon?: CustomIconValue
   activityHostLabel?: string
   activityHostRemote?: boolean
+  /** Recent or running chat in the tree: its hover actions offer Done and Snooze. */
+  active?: boolean
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
 }
 
@@ -229,7 +231,7 @@ function CopyDetailItems({ items }: { items: CopyDetail[] }) {
   </>
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, active = false, onSessionClick }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
     if (session) {
@@ -298,6 +300,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     return starts.length > 0 ? Math.min(...starts) : null
   })
   const setChatSettled = useAppStore((s) => s.setChatSettled)
+  const markChatDone = (event: ReactMouseEvent) => {
+    event.stopPropagation()
+    if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
+    void setChatSettled(sessionId, true)
+  }
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const selectChat = () => {
     if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
@@ -370,6 +377,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const [snoozePos, setSnoozePos] = useState<{ x: number; y: number } | null>(null)
   const snoozeRef = useRef<HTMLDivElement>(null)
   const setChatSnoozedUntil = useAppStore((s) => s.setChatSnoozedUntil)
+  const openSnooze = (e: ReactMouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation()
+    if (snoozePos) { setSnoozePos(null); return }
+    const r = e.currentTarget.getBoundingClientRect()
+    setSnoozePos({ x: r.right, y: r.bottom + 4 })
+  }
   const snoozedUntilMs = sessionSummary.snoozedUntilMs
   const isSnoozed = snoozedUntilMs > Date.now()
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -609,11 +622,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                         aria-label={`Mark ${sessionName} done`}
                         className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
                         style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
-                          void setChatSettled(sessionId, true)
-                        }}
+                        onClick={markChatDone}
                         onDoubleClick={(e) => e.stopPropagation()}
                       >
                         <Check size={12} aria-hidden />
@@ -626,12 +635,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                         icon={<Clock size={12} aria-hidden />}
                         aria-haspopup="menu"
                         aria-expanded={snoozePos !== null}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          if (snoozePos) { setSnoozePos(null); return }
-                          const r = e.currentTarget.getBoundingClientRect()
-                          setSnoozePos({ x: r.right, y: r.bottom + 4 })
-                        }}
+                        onClick={openSnooze}
                         onDoubleClick={(e) => e.stopPropagation()}
                       />
                     </span>
@@ -780,6 +784,31 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
               }`}
             >
+              {active && (
+                <>
+                  <button
+                    type="button"
+                    aria-label={`Mark ${sessionName} done`}
+                    className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
+                    style={{ color: 'var(--text-2)', background: 'var(--sidebar-item-hover)', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4, height: 20 }}
+                    onClick={markChatDone}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                  >
+                    <Check size={12} aria-hidden />
+                    Done
+                  </button>
+                  <IconButton
+                    size="sm"
+                    label={`Snooze ${sessionName}`}
+                    tooltip="Snooze"
+                    icon={<Clock size={12} aria-hidden />}
+                    aria-haspopup="menu"
+                    aria-expanded={snoozePos !== null}
+                    onClick={openSnooze}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                  />
+                </>
+              )}
               {isSnoozed && (
                 <IconButton
                   size="sm"

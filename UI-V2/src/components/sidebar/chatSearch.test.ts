@@ -80,7 +80,7 @@ function visibleSessionIds(model: ReturnType<typeof searchModel>): string[] {
     expect(visibleSessionIds(searchModel('Side', folders, sessions))).not.toContain('side')
   })
 
-  it('duplicates every displayed status and pinned chat without removing it from all chats', () => {
+  it('lists every displayed status and pinned chat once, pinned first in its workspace', () => {
     const folders = [makeFolder('general')]
     const sessions = [
       makeSession('pinned', 'Pinned', 'general', now, now, true),
@@ -95,8 +95,8 @@ function visibleSessionIds(model: ReturnType<typeof searchModel>): string[] {
     } })
     expect(model.pinnedSessionIds).toEqual(['pinned'])
     expect(model.activeSessionIds.sort()).toEqual(['done', 'pinned', 'running'])
-    expect(model.folderRows[0].sessionIds).toEqual(['done', 'idle', 'pinned', 'running'])
-    expect(new Set(visibleSessionIds(model)).size).toBe(4)
+    expect(model.folderRows[0].sessionIds).toEqual(['pinned', 'done', 'idle', 'running'])
+    expect(visibleSessionIds(model)).toHaveLength(4)
   })
 
 it('lets Done clear stale ready chats and ignores CLI launch noise for Working', () => {
@@ -249,7 +249,7 @@ describe('chatSearch', () => {
     expect(model.folderRows[0].sessionIds).toEqual(['s-new', 's-middle', 's-old'])
   })
 
-  it('duplicates pinned chats into the top section and their normal folder', () => {
+  it('keeps each pinned chat in its workspace group, first in that group', () => {
     const folders = [makeFolder('general'), makeFolder('work')]
     const sessions = [
       makeSession('s-pinned', 'Pinned Chat', 'general', now, now, true),
@@ -264,12 +264,12 @@ describe('chatSearch', () => {
       folderId: row.folder.id,
       sessionIds: row.sessionIds,
     }))).toEqual([
-      { folderId: 'general', sessionIds: ['s-folder', 's-pinned'] },
+      { folderId: 'general', sessionIds: ['s-pinned', 's-folder'] },
       { folderId: 'work', sessionIds: ['s-work'] },
     ])
   })
 
-  it('searches pinned chats and hides the pinned section when none match', () => {
+  it('searches pinned chats and keeps them first in matching workspace groups', () => {
     const folders = [makeFolder('general')]
     const sessions = [
       makeSession('s-pinned-match', 'Pinned Needle', 'general', now, now, true),
@@ -279,11 +279,38 @@ describe('chatSearch', () => {
 
     const matchModel = searchModel('needle', folders, sessions)
     expect(matchModel.pinnedSessionIds).toEqual(['s-pinned-match'])
-    expect(matchModel.folderRows[0].sessionIds).toEqual(['s-folder-match', 's-pinned-match'])
+    expect(matchModel.folderRows[0].sessionIds).toEqual(['s-pinned-match', 's-folder-match'])
 
     const folderOnlyModel = searchModel('folder', folders, sessions)
     expect(folderOnlyModel.pinnedSessionIds).toEqual([])
     expect(folderOnlyModel.folderRows[0].sessionIds).toEqual(['s-folder-match'])
+  })
+
+  it('puts pinned unsorted chats at the top of the unsorted group', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('loose', 'Loose', null, now, now),
+      makeSession('loose-pinned', 'Loose pinned', null, now, now, true),
+    ]
+    expect(searchModel('', folders, sessions).unfolderedSessionIds).toEqual(['loose-pinned', 'loose'])
+  })
+
+  it('narrows to recent or running chats with the Active filter and hides snoozed ones', () => {
+    const folders = [makeFolder('general')]
+    const nowMs = Date.now()
+    const snoozed = makeSession('snoozed', 'Snoozed', 'general', now, now)
+    snoozed.snoozedUntilMs = nowMs + 60_000
+    const sessions = [
+      makeSession('running', 'Running', 'general'),
+      makeSession('idle', 'Idle', 'general'),
+      snoozed,
+    ]
+    const context = { nowMs, acpBindingBySessionId: { running: { processing: true }, snoozed: { processing: true } } }
+    const filters: ChatSearchFilters = { providerIds: [], statusIds: ['active'] }
+    const model = searchModel('', folders, sessions, filters, context)
+    expect(visibleSessionIds(model)).toEqual(['running'])
+    expect(model.snoozedSessionIds).toEqual([])
+    expect(model.isSearching).toBe(true)
   })
 
   it('keeps chats with missing folders in unsorted instead of dropping them', () => {

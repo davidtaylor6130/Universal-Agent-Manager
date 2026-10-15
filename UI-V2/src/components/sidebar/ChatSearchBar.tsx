@@ -23,6 +23,7 @@ interface ChatSearchBarProps {
 }
 
 const STATUS_OPTIONS: Array<{ id: ChatStatusFilterId; label: string }> = [
+  { id: 'active', label: 'Active' },
   { id: 'pinned', label: 'Pinned' },
   { id: 'running', label: 'Running' },
   { id: 'attention', label: 'Needs attention' },
@@ -49,6 +50,7 @@ export function ChatSearchBar({
   const menuId = useId()
   const closeFilters = useCallback(() => setFiltersOpen(false), [])
   const activeFilterCount = filters.providerIds.length + filters.statusIds.length + (deepSearch ? 1 : 0)
+  const activeOnly = filters.statusIds.includes('active')
 
   useEffect(() => {
     if (!filtersOpen) return
@@ -141,6 +143,23 @@ export function ChatSearchBar({
             </Tooltip>
           )}
         </div>
+        <button
+          type="button"
+          aria-pressed={activeOnly}
+          aria-label="Show only active chats"
+          title="Show only chats with recent or running activity"
+          className="flex h-8 flex-shrink-0 items-center rounded-md px-2 text-xs transition-colors duration-fast"
+          style={{
+            border: `1px solid ${activeOnly ? 'color-mix(in srgb, var(--accent) 40%, transparent)' : 'transparent'}`,
+            background: activeOnly ? 'var(--accent-dim)' : 'var(--surface-up)',
+            color: activeOnly ? 'var(--accent)' : 'var(--text-2)',
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+          }}
+          onClick={() => onToggleStatusFilter('active')}
+        >
+          Active
+        </button>
         <div className="relative" ref={popoverRef}>
           <Tooltip label={activeFilterCount > 0 ? `${activeFilterCount} chat filter${activeFilterCount === 1 ? '' : 's'} active` : 'Filter chats'} side="bottom">
           <button

@@ -36,7 +36,7 @@ export function WorkingHeading({ active, duration = '0s', startedAt }: { active:
   }, [active, startedAt])
   const seconds = Math.max(0, Math.floor((now - (startedAt ?? now)) / 1000))
   const elapsed = startedAt == null ? duration : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-  return <span>{active ? `Working ${elapsed}` : `Worked for ${duration}`}</span>
+  return <span>{active ? `Working ${elapsed}` : `Worked ${duration}`}</span>
 }
 
 export const WorkSectionContext = createContext<{ expanded: boolean; toggle: () => void } | null>(null)

@@ -141,7 +141,7 @@ describe('working transcript', () => {
 
   it('keeps completed compact work visible in chronological order', () => {
     const { host, root } = renderTimeline('compact')
-    expect(host.textContent).toContain('Worked for 1m 23s')
+    expect(host.textContent).toContain('Worked 1m 23s')
     const text = host.textContent!
     expect(text.indexOf('I will inspect')).toBeLessThan(text.indexOf('Thoughts'))
     expect(text.indexOf('Thoughts')).toBeLessThan(text.indexOf('/bin/zsh'))
@@ -253,7 +253,7 @@ describe('working transcript', () => {
     ))
 
     const text = host.textContent ?? ''
-    expect(text.indexOf('Worked for 12s')).toBeLessThan(text.indexOf('Final answer.'))
+    expect(text.indexOf('Worked 12s')).toBeLessThan(text.indexOf('Final answer.'))
     expect(host.querySelector('[data-testid="working-summary"] .conversation-work__reasoning')).toBeNull()
     expect(host.querySelector('[data-testid="working-summary"] .conversation-work__tool')).toBeTruthy()
 
@@ -353,7 +353,7 @@ describe('working transcript', () => {
   it('preserves chronological thinking and tool rows in verbose mode', () => {
     const { host, root } = renderTimeline('verbose')
 
-    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toContain('Worked for')
+    expect(host.querySelector('[data-testid="working-summary"]')?.textContent).toContain('Worked')
     expect(host.querySelector('[data-testid="thinking-block"]')).toBeTruthy()
     expect(host.querySelector('.uam-tool-row')).toBeTruthy()
 
