@@ -3339,9 +3339,17 @@ UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 		        .parent_path() / "uam-runner";
 		const fs::path ssh = temp.root / "ssh";
 		const fs::path opencode = temp.root / "opencode";
+		const fs::path shell = temp.root / "sh";
 		UAM_ASSERT(uam::io::WriteTextFile(
 		    ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+		// Emulate the remote login shell without loading this Mac's profile or replacing private PATH/HOME.
+		UAM_ASSERT(uam::io::WriteTextFile(shell,
+		    "#!/bin/sh\nif [ \"$1\" = '-lc' ]; then shift; exec /bin/sh -c \"$@\"; fi\nexec /bin/sh \"$@\"\n"));
 		UAM_ASSERT(uam::io::WriteTextFile(opencode, R"(#!/bin/sh
+	if [ "$1" = '--version' ]; then
+	  printf '%s\n' '1.18.36'
+	  exit 0
+	fi
 	while IFS= read -r line; do
 	  case "$line" in
 	    *'"method":"initialize"'*)
@@ -3361,9 +3369,10 @@ UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 		                         fs::perms::owner_exec);
 		fs::permissions(opencode, fs::perms::owner_read | fs::perms::owner_write |
 		                              fs::perms::owner_exec);
-		const std::string inherited_path =
-		    uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
-		ScopedEnvVar path("PATH", temp.root.string() + ":" + inherited_path);
+		fs::permissions(shell, fs::perms::owner_read | fs::perms::owner_write |
+		                           fs::perms::owner_exec);
+		ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+		ScopedEnvVar home("HOME", temp.root.string());
 		ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
 
 		uam::AppState app;
@@ -3403,6 +3412,12 @@ UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 				break;
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
+		const uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id.at(
+		    CliProviderVersionStateKey(uam::provider_ids::kOpenCodeCli, host.id));
+		UAM_ASSERT(version.checked && version.check_error.empty());
+		UAM_ASSERT(uam::execution_hosts::SameConnection(version.execution_host, host));
+		UAM_ASSERT_EQ(version.installed_version, std::string("1.18.36"));
+		UAM_ASSERT(version.raw_output.find("[UAM CLI PATH] " + opencode.string() + "|") != std::string::npos);
 		UAM_ASSERT(app.acp_sessions.front()->session_ready);
 		UAM_ASSERT(!app.acp_sessions.front()->processing);
 		UAM_ASSERT_EQ(app.chats.front().messages.back().role, MessageRole::Assistant);

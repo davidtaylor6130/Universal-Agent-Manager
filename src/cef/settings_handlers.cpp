@@ -1096,6 +1096,13 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	{
 		cb->Failure(400, "Git port method must be patch, merge or squash."); return;
 	}
+	const std::optional<bool> snapshot_svn = uam::nlohmann_json::BoolFieldStrict(payload, "gitSnapshotSvn");
+	const std::optional<bool> snapshot_plain_folders = uam::nlohmann_json::BoolFieldStrict(payload, "gitSnapshotPlainFolders");
+	if ((payload.contains("gitSnapshotSvn") && !snapshot_svn) ||
+	    (payload.contains("gitSnapshotPlainFolders") && !snapshot_plain_folders))
+	{
+		cb->Failure(400, "Managed Git snapshot settings must be booleans."); return;
+	}
 	const std::optional<bool> automatic_worktree = uam::nlohmann_json::BoolFieldStrict(payload, "gitAutoWorktree");
 	const nlohmann::json* base_value = uam::nlohmann_json::FindStringField(payload, "gitDefaultBaseBranch");
 	const std::string base_branch = base_value == nullptr ? std::string() : uam::strings::Trim(base_value->get<std::string>());
@@ -1129,6 +1136,8 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	m_app.settings.git_enabled = *git_enabled;
 	m_app.settings.svn_enabled = *svn_enabled;
 	if (automatic_worktree) m_app.settings.git_auto_worktree = *automatic_worktree;
+	if (snapshot_svn) m_app.settings.git_snapshot_svn = *snapshot_svn;
+	if (snapshot_plain_folders) m_app.settings.git_snapshot_plain_folders = *snapshot_plain_folders;
 	if (pull_before_chat) m_app.settings.git_pull_before_chat = *pull_before_chat;
 	if (svn_update_before_chat) m_app.settings.svn_update_before_chat = *svn_update_before_chat;
 	if (port_value) m_app.settings.git_port_method = port_method == "merge" ? GitPortMethod::Merge : port_method == "squash" ? GitPortMethod::Squash : GitPortMethod::Patch;

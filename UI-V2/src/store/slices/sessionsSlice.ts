@@ -389,6 +389,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     providerAvailability: [],
     voiceInputMode: 'system' as VoiceInputMode,
     gitAutoWorktree: true,
+    gitSnapshotSvn: true,
+    gitSnapshotPlainFolders: true,
     gitDefaultBaseBranch: '',
     gitPullBeforeChat: false,
     svnUpdateBeforeChat: false,

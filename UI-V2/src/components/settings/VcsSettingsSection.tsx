@@ -10,6 +10,7 @@ export interface VcsSettingsSectionHandle { requestLeave: (next: () => void) => 
 export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function VcsSettingsSection(_props, ref) {
   const saved = useAppStore(useShallow((state) => ({
     gitEnabled: state.gitEnabled, svnEnabled: state.svnEnabled,
+    gitSnapshotSvn: state.gitSnapshotSvn, gitSnapshotPlainFolders: state.gitSnapshotPlainFolders,
     gitAutoWorktree: state.gitAutoWorktree, gitDefaultBaseBranch: state.gitDefaultBaseBranch,
     gitPortMethod: state.gitPortMethod, gitPullBeforeChat: state.gitPullBeforeChat, svnUpdateBeforeChat: state.svnUpdateBeforeChat,
   })))
@@ -38,7 +39,8 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     try {
       if (!await saveSettings({ ...draft, gitDefaultBaseBranch: base! })) { setError('Could not save VCS settings. Your changes are retained.'); return }
       const current = useAppStore.getState()
-      const accepted = { gitEnabled: current.gitEnabled, svnEnabled: current.svnEnabled, gitAutoWorktree: current.gitAutoWorktree,
+      const accepted = { gitEnabled: current.gitEnabled, svnEnabled: current.svnEnabled,
+        gitSnapshotSvn: current.gitSnapshotSvn, gitSnapshotPlainFolders: current.gitSnapshotPlainFolders, gitAutoWorktree: current.gitAutoWorktree,
         gitDefaultBaseBranch: current.gitDefaultBaseBranch, gitPortMethod: current.gitPortMethod, gitPullBeforeChat: current.gitPullBeforeChat, svnUpdateBeforeChat: current.svnUpdateBeforeChat }
       setDraft(accepted); setBaseline(accepted)
     } catch { setError('Could not save VCS settings. Your changes are retained.') }
@@ -61,7 +63,11 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
     <SettingsSection title="SVN">
       <SettingRow title="SVN" control={toggle('Enable SVN', draft.svnEnabled, (value) => edit({ svnEnabled: value }))} />
       <SettingRow title="Update before new chat" description="Run svn update before a new chat." control={toggle('Update before new chat', draft.svnUpdateBeforeChat, (value) => edit({ svnUpdateBeforeChat: value }), !draft.svnEnabled)} />
+      <SettingRow title="Local snapshot Git" description="Off means new chats edit the original working copy." control={toggle('Local snapshot Git for SVN', draft.gitSnapshotSvn, (value) => edit({ gitSnapshotSvn: value }), !draft.gitEnabled)} />
       <SettingRow title="SVN branch and merge defaults" control={<Button size="sm" disabled>Not supported</Button>} />
+    </SettingsSection>
+    <SettingsSection title="No VCS">
+      <SettingRow title="Enable local Git files" description="Off means new chats edit the original folder directly." control={toggle('Enable local Git files', draft.gitSnapshotPlainFolders, (value) => edit({ gitSnapshotPlainFolders: value }), !draft.gitEnabled)} />
     </SettingsSection>
     {(error || validation) && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{error || validation}</p>}
     <div className="flex justify-end gap-2">

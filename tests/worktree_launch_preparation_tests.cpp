@@ -754,3 +754,140 @@ UAM_TEST(SvnUpdateBeforeChatReceiptRecoveryNeverRepeatsCompletedUpdate)
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
 #endif
 }
+
+UAM_TEST(ManagedSnapshotDisabledAutomaticLaunchUsesOriginalFolder)
+{
+	TempDir temp("uam-snapshot-async-disabled");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path source = temp.root / "source";
+	fs::create_directories(source);
+	const fs::path settings = temp.root / "settings.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(settings, "git_snapshot_plain_folders=false\n"));
+	UAM_ASSERT(SettingsStore::Load(settings, app.settings).loaded);
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	chat.workspace_directory = source.string();
+	app.chats.push_back(chat);
+	const uam::WorktreeLaunchPreparationResult result = uam::PrepareWorktreeForLaunch(app, app.chats.front());
+	UAM_ASSERT_EQ(result.state, uam::WorktreeLaunchPreparationState::Ready);
+	UAM_ASSERT(app.chats.front().workspace_isolation_kind.empty());
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, source.string());
+	UAM_ASSERT(app.worktree_launch_preparations.empty());
+	UAM_ASSERT(!fs::exists(app.data_root / "worktrees"));
+}
+
+UAM_TEST(ManagedSnapshotPolicyChangeRevokesPreparedPublication)
+{
+	LaunchFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	const fs::path source = fixture.temporary.root / "plain";
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / "keep.txt", "original"));
+	chat.workspace_directory = source.string();
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(task);
+	const fs::path settings = fixture.temporary.root / "settings.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(settings, "git_snapshot_plain_folders=false\n"));
+	UAM_ASSERT(SettingsStore::Load(settings, fixture.app.settings).loaded);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(!task->merged);
+	UAM_ASSERT(task->cancellation->stop_requested());
+	UAM_ASSERT(chat.workspace_worktree_directory.empty());
+	UAM_ASSERT_EQ(ReadFile(source / "keep.txt"), std::string("original"));
+	fixture.AssertForeignSurvivors();
+}
+
+UAM_TEST(ManagedSnapshotLegacyReceiptUsesEnabledPolicyDefaults)
+{
+	LaunchFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	const fs::path source = fixture.temporary.root / "legacy-plain";
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / "keep.txt", "original"));
+	chat.workspace_directory = source.string();
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> interrupted = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(interrupted);
+	const uam::PreparedLaunchWorktree prepared = interrupted->worker.get();
+	UAM_ASSERT(prepared.operation.ok);
+	nlohmann::json receipt = nlohmann::json::parse(ReadFile(interrupted->receipt_file));
+	UAM_ASSERT(receipt["launchPolicy"].value("snapshotSvn", false));
+	UAM_ASSERT(receipt["launchPolicy"].value("snapshotPlainFolders", false));
+	receipt["launchPolicy"].erase("snapshotSvn");
+	receipt["launchPolicy"].erase("snapshotPlainFolders");
+	UAM_ASSERT(uam::io::WriteTextFile(interrupted->receipt_file, receipt.dump()));
+	fixture.app.worktree_launch_preparations.clear();
+	fixture.app.worktree_operation_chat_ids.clear();
+	interrupted->lease.reset();
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> recovered = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(recovered);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(recovered->merged);
+	UAM_ASSERT_EQ(chat.workspace_worktree_directory, prepared.metadata.workspace_worktree_directory);
+	fixture.WaitForSave(recovered);
+	UAM_ASSERT(*recovered->saved);
+	fixture.AssertForeignSurvivors();
+}
+
+UAM_TEST(ManagedSnapshotOptOutPreservesInterruptedCreationReceipt)
+{
+	LaunchFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	const fs::path source = fixture.temporary.root / "interrupted-plain";
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / "keep.txt", "original"));
+	chat.workspace_directory = source.string();
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> interrupted = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(interrupted);
+	const uam::PreparedLaunchWorktree prepared = interrupted->worker.get();
+	UAM_ASSERT(prepared.operation.ok);
+	const std::string receipt = ReadFile(interrupted->receipt_file);
+	UAM_ASSERT(uam::io::WriteTextFile(fs::path(prepared.metadata.workspace_worktree_directory) / "owned-change.txt", "preserve me"));
+	fixture.app.worktree_launch_preparations.clear();
+	fixture.app.worktree_operation_chat_ids.clear();
+	interrupted->lease.reset();
+	fixture.app.settings.git_snapshot_plain_folders = false;
+	std::string error;
+	UAM_ASSERT(!uam::GitWorktreeService().PrepareForFirstLaunch(fixture.app, chat, &error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT_EQ(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
+	int intents = 0;
+	UAM_ASSERT(!uam::GitWorktreeService().PrepareForChat(fixture.app, chat,
+	    [&intents](const uam::GitWorktreeCreationIntent&, std::string&) { ++intents; return true; }, {}, false).ok);
+	UAM_ASSERT_EQ(intents, 0);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Failed);
+	UAM_ASSERT_EQ(ReadFile(interrupted->receipt_file), receipt);
+	UAM_ASSERT_EQ(ReadFile(fs::path(prepared.metadata.workspace_worktree_directory) / "owned-change.txt"), std::string("preserve me"));
+	UAM_ASSERT_EQ(ReadFile(source / "keep.txt"), std::string("original"));
+	fixture.AssertForeignSurvivors();
+}
+
+UAM_TEST(ManagedSnapshotOptOutRejectsPartialOwnershipMetadata)
+{
+	TempDir temp("uam-snapshot-partial-ownership");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.git_snapshot_plain_folders = false;
+	const fs::path source = temp.root / "plain";
+	fs::create_directories(source);
+	for (std::string ChatSession::* field : {&ChatSession::workspace_source_directory, &ChatSession::workspace_worktree_directory, &ChatSession::workspace_branch_name, &ChatSession::workspace_base_ref})
+	{
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		chat.workspace_directory = source.string();
+		chat.*field = "retained-owned-metadata";
+		std::string error;
+		UAM_ASSERT(!uam::GitWorktreeService().PrepareForFirstLaunch(app, chat, &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT_EQ(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
+		UAM_ASSERT_EQ(chat.*field, std::string("retained-owned-metadata"));
+		app.chats = {chat};
+		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(app, app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
+		UAM_ASSERT(!fs::exists(app.data_root / "worktrees"));
+	}
+}

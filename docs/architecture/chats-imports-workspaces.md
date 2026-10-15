@@ -21,6 +21,10 @@ Provider-agent Markdown imports expand leading `~/` paths through the platform p
 
 Selected OpenCode historical-compaction repair is classification-only and uses the exact primary through `LoadLocalChatBounded`; it never substitutes a backup or reimports the whole native session. The bounded loader preserves normal summary metadata overlay while limiting actual primary and summary reads. Publication retains the existing original backup and chat/summary/queue revision guards. Its detailed proof and admission rules are described in [Provider sessions](provider-sessions.md#opencode-compaction-synchronization).
 
+## Local Git and SVN setting scopes
+
+The `No VCS` section contains the `Enable local Git files` row. The existing SVN section contains the `Local snapshot Git` row. Each defaults ON independently; these master controls affect local Git snapshot behavior only and do not disable remote Git operations. Turning local snapshots off does not delete existing worktrees. Existing partial or interrupted owned receipts fail closed; damaged `.git` metadata does not trigger a hidden fallback. Remote Git behavior is unchanged. The corresponding controls are documented separately so the SVN update option and local snapshot option remain distinguishable.
+
 ## SVN before first launch
 
 `svn_update_before_chat` defaults to OFF. An explicit new local chat captures `svn_update_pending` when SVN and the update setting are enabled. Existing chats, native imports, historical edit/branch children, selected existing worktrees, temporary side chats and subagents do not acquire that intent. Turning the setting OFF skips the update and preserves normal local Git preparation.

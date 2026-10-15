@@ -16,8 +16,235 @@
 #include "app/uam_control_service.h"
 #include "cef/state_serializer.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
+#include "common/runtime/acp/acp_session_internal.h"
 
 using namespace uam_test;
+
+#if defined(__APPLE__)
+namespace
+{
+	/// <summary>Private transport and an unrelated pending check keep launch tests off real SSH/providers.</summary>
+	struct RemoteOpenCodeVersionLaunchFixture
+	{
+		TempDir temp{"uam-opencode-version-launch"};
+		ScopedEnvVar path{"PATH", temp.root.string() + ":/usr/bin:/bin"};
+		uam::AppState app;
+		ExecutionHost host{"private-opencode", "Private", "ssh", "private-fixture", "ready", "development", "linux", "x86_64", "", "runner", 3};
+		RemoteOpenCodeVersionLaunchFixture()
+		{
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexit 0\n"));
+			fs::permissions(temp.root / "ssh", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+			app.data_root = temp.root / "data";
+			app.provider_profiles = {ProviderProfileStore::DefaultOpenCodeProfile()};
+			app.settings.git_auto_worktree = false;
+			app.settings.central_provider_configuration.uam_control_enabled = false;
+			app.settings.execution_hosts.push_back(host);
+			ChatSession chat;
+			chat.id = "private-opencode-launch"; chat.provider_id = "opencode-cli";
+			chat.execution_host_id = host.id; chat.workspace_directory = temp.root.string();
+			chat.remote_process_control_token = "private-opencode-owner";
+			app.chats.push_back(chat);
+			app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+			Session().chat_id = chat.id; Session().provider_id = chat.provider_id;
+			app.runtime_cli_version_check_task.running = true;
+			app.runtime_cli_version_check_task.state = std::make_shared<AsyncProcessTaskState>();
+			app.runtime_cli_version_check_task.execution_host = ExecutionHost{};
+			app.runtime_cli_version_provider_id = "codex-cli";
+		}
+		~RemoteOpenCodeVersionLaunchFixture()
+		{
+			PlatformServicesFactory::Instance().process_service.StopStdioProcess(Session(), true);
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(Session());
+		}
+		uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
+		bool Start(std::string* error = nullptr) { return uam::acp_detail::StartAcpProcessForChat(app, Session(), app.chats.front(), error); }
+		void Checked(std::string version = "1.17.20")
+		{
+			uam::CliProviderVersionState& state = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", host.id)];
+			state.execution_host = host; state.checked = true; state.supported = true; state.installed_version = std::move(version);
+		}
+	};
+}
+#endif
+
+UAM_TEST(RemoteOpenCodeUncachedLaunchWaitsAndUsesItsCompletedVersionDespiteUnrelatedCheck)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	UAM_ASSERT(!fixture.Session().running);
+	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+	UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
+	UAM_ASSERT(fixture.Start());
+	const std::pair<std::string, std::string> target{"opencode-cli", fixture.host.id};
+	UAM_ASSERT_EQ(std::ranges::count(fixture.app.runtime_cli_version_check_queue, target), 1);
+	fixture.Checked(); // The existing async version service publishes only metadata at completion.
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.Session().running);
+	const nlohmann::json manifest = nlohmann::json::parse(ReadFile(fixture.Session().provider_configuration_directory / "owner.json"));
+	UAM_ASSERT(manifest.value("openCodeCodeMode", false));
+	UAM_ASSERT_EQ(fixture.app.runtime_cli_version_provider_id, std::string("codex-cli"));
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeForeignVersionCacheCannotAuthorizeLaunchAndHostEditRevokesPending)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.Checked();
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", fixture.host.id)].execution_host.ssh_alias = "foreign-fixture";
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	UAM_ASSERT(!fixture.Session().running);
+	fixture.app.settings.execution_hosts.back().ssh_alias = "replacement-fixture";
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(!fixture.Session().running);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeCanceledVersionPreparationCannotLaunchAfterCheckCompletes)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	UAM_ASSERT(uam::StopAcpSession(fixture.app, fixture.app.chats.front().id, uam::AcpStopPurpose::Interrupt, true));
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	fixture.Checked();
+	uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT(!fixture.Session().running);
+	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeCompletedUnknownVersionKeepsEagerLaunchCompatibility)
+{
+#if defined(__APPLE__)
+	for (const std::string version : {"1.18.36", "1.17.19", ""})
+	{
+		RemoteOpenCodeVersionLaunchFixture fixture;
+		fixture.Checked(version);
+		fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", fixture.host.id)].supported = false;
+		UAM_ASSERT(fixture.Start());
+		UAM_ASSERT(fixture.Session().running);
+		UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+		UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
+	}
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeMatchingVersionCacheLaunchesWithoutWaitingForUnrelatedCheck)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.Checked();
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().running && fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
+	UAM_ASSERT_EQ(fixture.app.runtime_cli_version_provider_id, std::string("codex-cli"));
+	const nlohmann::json manifest = nlohmann::json::parse(ReadFile(fixture.Session().provider_configuration_directory / "owner.json"));
+	UAM_ASSERT(manifest.value("openCodeCodeMode", false));
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeVersionHealthPublicationPreservesPendingLaunchOwnership)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	fixture.app.runtime_cli_version_check_task.execution_host = fixture.host;
+	fixture.app.runtime_cli_version_provider_id = "opencode-cli";
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr && !fixture.Session().running);
+	UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
+	// The normal application tick can consume this owned worker after ACP polling, before its next call.
+	const std::shared_ptr<AsyncProcessTaskState> result = fixture.app.runtime_cli_version_check_task.state;
+	result->result.ok = true;
+	result->result.exit_code = 0;
+	result->result.output = "1.17.20\n";
+	result->remote_helper_connected = true;
+	result->completed.store(true, std::memory_order_release);
+	ProviderCliCompatibilityService().Poll(fixture.app);
+	UAM_ASSERT(!fixture.app.settings.execution_hosts.back().last_seen_at.empty());
+	UAM_ASSERT(fixture.app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey("opencode-cli", fixture.host.id)).checked);
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && fixture.Session().running);
+	const nlohmann::json manifest = nlohmann::json::parse(ReadFile(fixture.Session().provider_configuration_directory / "owner.json"));
+	UAM_ASSERT(manifest.value("openCodeCodeMode", false));
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeVersionWaitRejectsChangedCentralConfiguration)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	fixture.app.settings.central_provider_configuration.enabled = true;
+	fixture.Checked();
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
+	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeFailedVersionCheckHoldsRawQueueUntilExplicitRetry)
+{
+#if defined(__APPLE__)
+	RemoteOpenCodeVersionLaunchFixture fixture;
+	uam::AcpQueuedUserPromptState raw;
+	raw.id = "private-version-input"; raw.revision = 7; raw.text = "Private raw input";
+	raw.markdown_store_prompt_blocks = {"EXACT_CAPTURED_PRIVATE_SKILL"};
+	fixture.Session().queued_user_prompts = {raw};
+	fixture.app.chats.front().acp_queued_prompts = {raw};
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	fixture.Checked("");
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", fixture.host.id)].check_error = "Private version transport failed";
+	std::string error;
+	UAM_ASSERT(!fixture.Start(&error));
+	UAM_ASSERT(error.find("Private version transport failed") != std::string::npos);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+	UAM_ASSERT(fixture.Session().queue_held && fixture.app.chats.front().acp_queue_held);
+	UAM_ASSERT(!fixture.Session().reconnect_pending && !fixture.Session().running);
+	uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
+	UAM_ASSERT(fixture.Session().queued_user_prompts.front() == raw);
+	UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.front() == raw);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(fixture.app.chats.front().id));
+	UAM_ASSERT(fixture.Start()); // A new explicit attempt may refresh the failed check, but sends nothing.
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr && !fixture.Session().running);
+	fixture.Checked();
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", fixture.host.id)].check_error.clear();
+	UAM_ASSERT(fixture.Start());
+	UAM_ASSERT(fixture.Session().running && fixture.Session().queue_held);
+	UAM_ASSERT(fixture.Session().prompt_request_id == 0);
+	UAM_ASSERT(fixture.Session().queued_user_prompts.front() == raw);
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeWarmAndRecoveryLaunchesDoNotProbeOrReconfigure)
+{
+#if defined(__APPLE__)
+	for (const bool recovery : {false, true})
+	{
+		RemoteOpenCodeVersionLaunchFixture fixture;
+		fixture.Session().running = !recovery;
+		fixture.Session().recovering_remote_process = recovery;
+		UAM_ASSERT(fixture.Start());
+		UAM_ASSERT(fixture.Session().pending_local_launch == nullptr);
+		UAM_ASSERT(fixture.app.runtime_cli_version_check_queue.empty());
+		UAM_ASSERT(fixture.Session().provider_configuration_directory.empty());
+		if (!recovery) fixture.Session().running = false; // No OS process belongs to the warm-state fixture.
+	}
+#endif
+}
 
 UAM_TEST(OpenCodeDiscoveryUsesOnlyCheckedVersionsOnTheSelectedHost)
 {

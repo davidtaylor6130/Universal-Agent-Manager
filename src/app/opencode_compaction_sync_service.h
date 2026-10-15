@@ -27,7 +27,7 @@ namespace uam
 		Failed
 	};
 
-	/// <summary>Reconciles completed native OpenCode boundaries using one owned metadata worker.</summary>
+	/// <summary>Classifies native OpenCode summaries in owned live turns and gates prior-turn reconciliation.</summary>
 	class OpenCodeCompactionSyncService
 	{
 	  public:

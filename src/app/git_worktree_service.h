@@ -9,6 +9,10 @@
 
 namespace uam
 {
+	/// <summary>Reports disabled snapshots only for known ordinary local folders, preserving Git and unsafe-path validation.</summary>
+	std::string ManagedSnapshotDisabledReason(const AppState& app, const ChatSession& chat);
+	/// <summary>Refuses original-workspace fallback while prior snapshot ownership is unresolved.</summary>
+	std::string ManagedSnapshotBypassError(const AppState& app, const ChatSession& chat);
 	void CancelGitPortRequest(AppState& app, const std::string& chat_id);
 	void PollGitPortRequests(AppState& app);
 

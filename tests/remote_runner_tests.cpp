@@ -1212,6 +1212,12 @@ UAM_TEST(RemoteEphemeralDiscoveryLeasePreservesOwnedAuthorityAndDurableChats)
 		app.provider_profiles = {ProviderProfileStore::DefaultOpenCodeProfile()};
 		ExecutionHost host{"private-lease", "Private", "ssh", "private-fixture", "ready", "development", "linux", "x86_64", "", "runner", kind == 4 ? 2 : 3};
 		app.settings.execution_hosts.push_back(host);
+		// Version admission and code-mode setup are covered separately from process lease ownership.
+		uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", host.id)];
+		version.execution_host = host;
+		version.checked = true;
+		version.supported = true;
+		version.installed_version = "1.15.13";
 		ChatSession chat;
 		chat.id = "private-lease-chat";
 		chat.provider_id = "opencode-cli";

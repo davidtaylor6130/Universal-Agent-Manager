@@ -32,6 +32,8 @@ namespace uam
 		bool pull_before_chat = false;
 		bool git_enabled = true;
 		bool automatic_worktree = true;
+		bool snapshot_svn = true;
+		bool snapshot_plain_folders = true;
 		bool svn_enabled = true;
 		bool svn_update_before_chat = false;
 		bool update_only = false;

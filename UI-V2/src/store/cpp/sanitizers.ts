@@ -1555,7 +1555,7 @@ export function sanitizeVoiceInputSettings(value: unknown): VoiceInputSettings {
 export function sanitizeVcsStorageSettings(value: unknown): Partial<VcsStorageSettings> {
   if (!isRecord(value)) return {}
   const settings: Partial<VcsStorageSettings> = {}
-  for (const key of ['gitAutoWorktree', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'worktreeCleanupEnabled'] as const) {
+  for (const key of ['gitAutoWorktree', 'gitSnapshotSvn', 'gitSnapshotPlainFolders', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'worktreeCleanupEnabled'] as const) {
     if (typeof value[key] === 'boolean') settings[key] = value[key]
   }
   const branch = sanitizeGitBaseBranch(value.gitDefaultBaseBranch)

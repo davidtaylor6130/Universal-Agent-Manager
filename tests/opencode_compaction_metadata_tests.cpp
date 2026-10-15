@@ -23,6 +23,7 @@ namespace
 		std::atomic<int> completed_queries{0};
 		std::atomic<int> fail_queries{0};
 		bool ready_observed = false;
+		std::atomic<bool> allow_summary_text{false};
 		uam::AcpQueuedUserPromptState captured_agent;
 		std::unique_ptr<uam::OpenCodeCompactionSyncService> service;
 
@@ -30,9 +31,9 @@ namespace
 		{
 			UAM_ASSERT_EQ(sqlite3_open(":memory:", &database), SQLITE_OK);
 			const char* schema = "CREATE TABLE session(id TEXT PRIMARY KEY,directory TEXT);"
-			    "CREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,time_created INTEGER,data TEXT);"
+			    "CREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT,time_created INTEGER,data TEXT,time_updated INTEGER DEFAULT 0);"
 			    "CREATE INDEX message_session_time_created_id_idx ON message(session_id,time_created,id);"
-			    "CREATE TABLE part(id TEXT PRIMARY KEY,message_id TEXT,session_id TEXT,data TEXT);"
+			    "CREATE TABLE part(id TEXT PRIMARY KEY,message_id TEXT,session_id TEXT,data TEXT,time_updated INTEGER DEFAULT 0);"
 			    "CREATE INDEX part_message_id_id_idx ON part(message_id,id);";
 			UAM_ASSERT_EQ(sqlite3_exec(database, schema, nullptr, nullptr, nullptr), SQLITE_OK);
 			app.data_root = temp.root;
@@ -73,7 +74,7 @@ namespace
 			service = std::make_unique<uam::OpenCodeCompactionSyncService>([this](const uam::OpenCodeCompactionSyncService::Query& query, std::stop_token stop)
 			{
 				UAM_ASSERT(!stop.stop_requested());
-				UAM_ASSERT(query.sql.find("$.text") == std::string::npos);
+				UAM_ASSERT(allow_summary_text.load() || query.sql.find("$.text") == std::string::npos);
 				UAM_ASSERT(query.sql.find("SELECT *") == std::string::npos);
 				UAM_ASSERT(std::ranges::find(query.argv, query.sql) != query.argv.end());
 				UAM_ASSERT(std::ranges::find(query.argv, "db") != query.argv.end());
@@ -128,7 +129,7 @@ namespace
 		{
 			std::lock_guard<std::mutex> lock(database_mutex);
 			sqlite3_stmt* statement = nullptr;
-			UAM_ASSERT_EQ(sqlite3_prepare_v2(database, "INSERT OR REPLACE INTO message VALUES (?,?,?,?)", -1, &statement, nullptr), SQLITE_OK);
+			UAM_ASSERT_EQ(sqlite3_prepare_v2(database, "INSERT OR REPLACE INTO message(id,session_id,time_created,data) VALUES (?,?,?,?)", -1, &statement, nullptr), SQLITE_OK);
 			const std::string json = metadata.dump();
 			sqlite3_bind_text(statement, 1, id.c_str(), -1, SQLITE_TRANSIENT);
 			sqlite3_bind_text(statement, 2, session.c_str(), -1, SQLITE_TRANSIENT);
@@ -143,7 +144,7 @@ namespace
 			NativeMessage(id, time, {{"role", "user"}, {"summary", {{"title", "Native user metadata"}}}}, session);
 			std::lock_guard<std::mutex> lock(database_mutex);
 			sqlite3_stmt* statement = nullptr;
-			UAM_ASSERT_EQ(sqlite3_prepare_v2(database, "INSERT OR REPLACE INTO part VALUES (?,?,?,?)", -1, &statement, nullptr), SQLITE_OK);
+			UAM_ASSERT_EQ(sqlite3_prepare_v2(database, "INSERT OR REPLACE INTO part(id,message_id,session_id,data) VALUES (?,?,?,?)", -1, &statement, nullptr), SQLITE_OK);
 			const std::string part_id = "part_" + id;
 			const std::string data = nlohmann::json{{"type", "compaction"}, {"text", std::string(1024 * 1024, 'x')}}.dump();
 			sqlite3_bind_text(statement, 1, part_id.c_str(), -1, SQLITE_TRANSIENT);
@@ -160,6 +161,85 @@ namespace
 			if (!finish.empty()) metadata["finish"] = finish;
 			if (error) metadata["error"] = {{"name", "PrivateFixtureError"}};
 			NativeMessage(std::move(id), time, std::move(metadata));
+		}
+
+		void Tool(const std::string& id, std::int64_t time, const std::string& call)
+		{
+			NativeMessage(id, time, {{"role", "assistant"}});
+			std::lock_guard<std::mutex> lock(database_mutex);
+			sqlite3_stmt* statement = nullptr;
+			UAM_ASSERT_EQ(sqlite3_prepare_v2(database, "INSERT OR REPLACE INTO part(id,message_id,session_id,data) VALUES (?,?,?,?)", -1, &statement, nullptr), SQLITE_OK);
+			const std::string part = "tool_" + id;
+			const std::string data = nlohmann::json{{"type", "tool"}, {"callID", call}}.dump();
+			sqlite3_bind_text(statement, 1, part.c_str(), -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(statement, 2, id.c_str(), -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(statement, 3, "ses_owned", -1, SQLITE_STATIC);
+			sqlite3_bind_text(statement, 4, data.c_str(), -1, SQLITE_TRANSIENT);
+			UAM_ASSERT_EQ(sqlite3_step(statement), SQLITE_DONE);
+			sqlite3_finalize(statement);
+		}
+
+		void SummaryText(const std::string& id, const std::string& text, const std::string& part_id = {})
+		{
+			allow_summary_text = true;
+			std::lock_guard<std::mutex> lock(database_mutex);
+			sqlite3_stmt* statement = nullptr;
+			UAM_ASSERT_EQ(sqlite3_prepare_v2(database, "INSERT OR REPLACE INTO part(id,message_id,session_id,data) VALUES (?,?,?,?)", -1, &statement, nullptr), SQLITE_OK);
+			const std::string part = part_id.empty() ? "text_" + id : part_id;
+			const std::string data = nlohmann::json{{"type", "text"}, {"text", text}}.dump();
+			sqlite3_bind_text(statement, 1, part.c_str(), -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(statement, 2, id.c_str(), -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(statement, 3, "ses_owned", -1, SQLITE_STATIC);
+			sqlite3_bind_text(statement, 4, data.c_str(), -1, SQLITE_TRANSIENT);
+			UAM_ASSERT_EQ(sqlite3_step(statement), SQLITE_DONE);
+			sqlite3_finalize(statement);
+		}
+
+		void StartStreaming()
+		{
+			// The preloaded ACP answer belongs to this turn and must have an ordinary native projection.
+			NativeMessage("zz_stream_prefix", 1, {{"role", "assistant"}});
+			SummaryText("zz_stream_prefix", Chat().messages[1].content);
+			Session().queued_prompt.clear();
+			Session().prompt_request_id = 99;
+			Session().current_assistant_message_index = Session().turn_assistant_message_index = 1;
+			uam::acp_detail::RestoreTurnEventsFromMessageBlocks(Session(), Chat().messages[1]);
+		}
+
+		void RestoreActiveRemotePrompt()
+		{
+			ExecutionHost host;
+			host.id = "compaction-recovery-host"; host.transport = "ssh"; host.ssh_alias = "fixture";
+#if defined(_WIN32)
+			host.platform = "windows";
+#else
+			host.platform = "linux";
+#endif
+			host.runner_status = "ready"; host.runner_version = "development"; host.runner_protocol_version = 3;
+			app.settings.execution_hosts.push_back(host);
+			Chat().execution_host_id = Session().process_execution_host_id = host.id;
+			Chat().remote_turn_reconnect_pending = true;
+			Chat().remote_turn_serial = 7;
+			Chat().remote_turn_user_message_index = 0;
+			Chat().remote_pending_requests.push_back({.request_id = 73, .method = "session/prompt", .turn_serial = 7});
+			Session().turn_serial = 0; Session().prompt_request_id = 0; Session().queued_prompt.clear();
+			Session().recovering_remote_turn = true; Session().remote_runner_protocol_version = 3;
+			Session().agent_version = "1.17.20";
+			uam::acp_detail::RestoreRemoteAcpRequests(Session(), Chat());
+			uam::acp_detail::RestoreRemoteAcpTranscript(Session(), Chat());
+		}
+
+		bool AwaitBoundary(const std::string& id, std::chrono::milliseconds timeout = std::chrono::seconds(4))
+		{
+			const auto deadline = std::chrono::steady_clock::now() + timeout;
+			while (std::chrono::steady_clock::now() < deadline)
+			{
+				(void)service->Poll(app);
+				const auto boundaries = Boundaries();
+				if (std::ranges::find(boundaries, "acp-compaction:" + id) != boundaries.end()) return true;
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			return false;
 		}
 
 		uam::OpenCodeCompactionGateState WaitGate()
@@ -741,4 +821,360 @@ UAM_TEST(OpenCodeMetadataMissingAssistantOwnerRetryTakesFreshBaseline)
 	UAM_ASSERT(fixture.Boundaries().empty());
 	UAM_ASSERT_EQ(fixture.queries.load(), 2);
 	UAM_ASSERT(fixture.Chat().messages.back().acp_prompt_not_sent);
+}
+
+UAM_TEST(OpenCodeMetadataAcceptsVerified11720Schema)
+{
+	NativeMetadataFixture fixture;
+	fixture.Session().agent_version = "1.17.20";
+	fixture.Parent();
+	UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+	UAM_ASSERT_EQ(fixture.queries.load(), 1);
+}
+
+UAM_TEST(OpenCodeMetadataClassifiesActiveSummaryInlineWithoutResettingOwners)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	const std::string summary = "Native completed summary.";
+	fixture.NativeMessage("msg_inline_prefix", 2, {{"role", "assistant"}});
+	fixture.SummaryText("msg_inline_prefix", " Before ");
+	fixture.Summary("cmp_live_inline", 3);
+	fixture.SummaryText("cmp_live_inline", summary);
+	fixture.Session().tool_call_message_indices["retained-tool-owner"] = 1;
+	const std::unordered_map<std::string, int> owners = fixture.Session().tool_call_message_indices;
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), " Before " + summary + " After");
+	const std::string content = fixture.Chat().messages[1].content;
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_live_inline"));
+	const std::vector<MessageBlock>& blocks = fixture.Chat().messages[1].blocks;
+	UAM_ASSERT_EQ(blocks.size(), std::size_t{3});
+	UAM_ASSERT_EQ(blocks[0].type, std::string("assistant_text"));
+	UAM_ASSERT_EQ(blocks[0].text, std::string("Preserve authored answer Before "));
+	UAM_ASSERT_EQ(blocks[1].type, std::string("context_compaction"));
+	UAM_ASSERT_EQ(blocks[1].text, summary);
+	UAM_ASSERT_EQ(blocks[2].text, std::string(" After"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, content);
+	UAM_ASSERT_EQ(fixture.Session().tool_call_message_indices, owners);
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(blocks, uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+	UAM_ASSERT(fixture.Session().processing && fixture.Session().prompt_request_id == 99);
+	const int queries = fixture.queries.load();
+	for (int tick = 0; tick < 100; ++tick) (void)fixture.service->Poll(fixture.app);
+	UAM_ASSERT(fixture.queries.load() <= queries + 1);
+}
+
+UAM_TEST(OpenCodeMetadataWaitsForBothNativeProofAndStreamedSummary)
+{
+	for (const bool native_first : {false, true})
+	{
+		NativeMetadataFixture fixture;
+		fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+		const std::string summary = "A summary arriving on separate transports.";
+		if (native_first)
+		{
+			fixture.Summary("cmp_arrival_order", 2);
+			fixture.SummaryText("cmp_arrival_order", summary);
+			UAM_ASSERT(!fixture.AwaitBoundary("cmp_arrival_order", std::chrono::milliseconds(2300)));
+		}
+		(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary);
+		if (!native_first)
+		{
+			fixture.Summary("cmp_arrival_order", 2, "");
+			fixture.SummaryText("cmp_arrival_order", summary);
+			UAM_ASSERT(!fixture.AwaitBoundary("cmp_arrival_order", std::chrono::milliseconds(2300)));
+			fixture.Summary("cmp_arrival_order", 2);
+		}
+		UAM_ASSERT(fixture.AwaitBoundary("cmp_arrival_order"));
+		UAM_ASSERT_EQ(fixture.Boundaries().size(), std::size_t{1});
+		UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(fixture.Chat().messages[1].blocks,
+		    uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+	}
+}
+
+UAM_TEST(OpenCodeMetadataAdoptsAlreadyRunningCurrentTurnWithoutHistoricalWrites)
+{
+	NativeMetadataFixture fixture;
+	fixture.Session().agent_version = "1.17.20";
+	fixture.Chat().messages[0].created_at = "2026-10-15 19:06:39"; // Naive user timestamps are not UTC anchors.
+	fixture.Chat().messages[1].created_at = "1970-01-01T00:00:00.001Z";
+	fixture.Session().turn_first_user_message_index = fixture.Session().turn_user_message_index = 0;
+	fixture.Parent();
+	fixture.Summary("cmp_prior_native_turn", 0);
+	fixture.SummaryText("cmp_prior_native_turn", "Prior native summary.");
+	fixture.Tool("msg_adoption_anchor", 2, "chatcmpl-tool-adoption");
+	fixture.Summary("cmp_adopted_live", 3);
+	fixture.SummaryText("cmp_adopted_live", "Current owned summary.");
+	fixture.StartStreaming();
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Prior native summary.");
+	uam::acp_detail::AppendToolTurnEventIfNeeded(fixture.Session(), "chatcmpl-tool-adoption");
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Current owned summary.");
+	const Message user = fixture.Chat().messages[0];
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_adopted_live"));
+	UAM_ASSERT_EQ(fixture.Boundaries(), std::vector<std::string>{"acp-compaction:cmp_adopted_live"});
+	UAM_ASSERT_EQ(fixture.Chat().messages[0], user);
+	UAM_ASSERT(fixture.Session().processing && fixture.Session().prompt_request_id == 99);
+}
+
+UAM_TEST(OpenCodeMetadataRejectsAmbiguousLiveSummaryText)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.NativeMessage("msg_unproven_prefix", 2, {{"role", "assistant"}});
+	fixture.SummaryText("msg_unproven_prefix", "Native prefix absent from the ACP projection.");
+	fixture.Summary("cmp_ambiguous", 3);
+	fixture.SummaryText("cmp_ambiguous", "Repeated exact summary.");
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Repeated exact summary.Repeated exact summary.");
+	const Message before = fixture.Chat().messages[1];
+	UAM_ASSERT(!fixture.AwaitBoundary("cmp_ambiguous", std::chrono::milliseconds(2300)));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1], before);
+}
+
+UAM_TEST(OpenCodeMetadataSeparatesRepeatedNativeSummariesByToolAnchor)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	const std::string summary = "Identical native compaction summary.";
+	for (int index = 0; index < 2; ++index)
+	{
+		const std::string suffix = std::to_string(index);
+		const std::string native = "cmp_anchored_" + suffix;
+		const std::string tool = "chatcmpl-tool-anchor-" + suffix;
+		fixture.NativeMessage("msg_tool_" + suffix, 2 + index * 2, {{"role", "assistant"}});
+		{
+			std::lock_guard<std::mutex> lock(fixture.database_mutex);
+			const std::string sql = "INSERT INTO part(id,message_id,session_id,data) VALUES ('part_tool_" + suffix + "','msg_tool_" + suffix +
+			    "','ses_owned','{\"type\":\"tool\",\"callID\":\"" + tool + "\"}')";
+			UAM_ASSERT_EQ(sqlite3_exec(fixture.database, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+		}
+		fixture.Summary(native, 3 + index * 2);
+		fixture.SummaryText(native, summary);
+		uam::acp_detail::AppendToolTurnEventIfNeeded(fixture.Session(), tool);
+		(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary);
+	}
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_anchored_0"));
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_anchored_1"));
+	UAM_ASSERT_EQ(fixture.Boundaries().size(), std::size_t{2});
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(fixture.Chat().messages[1].blocks,
+	    uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+}
+
+UAM_TEST(OpenCodeMetadataPaginatesUnicodeSummaryAndReplacesMatchingEmptyMarker)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	std::string summary;
+	for (int index = 0; index < 8300; ++index) summary += "é😀";
+	fixture.Summary("cmp_unicode_live", 2);
+	fixture.SummaryText("cmp_unicode_live", summary);
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary);
+	fixture.Session().turn_events.push_back({.type = "context_compaction", .request_id_json = "cmp_unicode_live"});
+	fixture.Session().turn_events.push_back({.type = "context_compaction", .request_id_json = "unrelated-boundary"});
+	(void)uam::acp_detail::SyncCurrentAssistantMessageBlocksFromTurnEvents(fixture.Chat(), fixture.Session());
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_unicode_live"));
+	UAM_ASSERT_EQ(fixture.Boundaries(), (std::vector<std::string>{"acp-compaction:cmp_unicode_live", "unrelated-boundary"}));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[1].text, summary);
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Ordinary following answer.");
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().text, std::string("Ordinary following answer."));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[1].text, summary);
+}
+
+UAM_TEST(OpenCodeMetadataDoesNotAdoptNaiveAssistantTimestamp)
+{
+	NativeMetadataFixture fixture;
+	fixture.Chat().messages[1].created_at = "2026-10-15 19:06:39";
+	fixture.Parent();
+	fixture.Summary("cmp_without_utc_anchor", 2);
+	fixture.SummaryText("cmp_without_utc_anchor", "Unscoped native summary.");
+	fixture.StartStreaming();
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Unscoped native summary.");
+	for (int tick = 0; tick < 100; ++tick) (void)fixture.service->Poll(fixture.app);
+	UAM_ASSERT_EQ(fixture.queries.load(), 0);
+	UAM_ASSERT(fixture.Boundaries().empty());
+}
+
+UAM_TEST(OpenCodeMetadataRetiresPublishedSummariesDuringLongActiveTurn)
+{
+	NativeMetadataFixture fixture;
+	fixture.Chat().messages[1].created_at = "1970-01-01T00:00:00.001Z";
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Session().tool_call_message_indices["retained-owner"] = 1;
+	const std::unordered_map<std::string, int> owners = fixture.Session().tool_call_message_indices;
+	std::vector<std::string> summaries;
+	for (int index = 0; index < 66; ++index)
+	{
+		summaries.push_back("Exact native summary [" + std::to_string(index) + "].");
+		(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summaries.back());
+	}
+	const std::string content = fixture.Chat().messages[1].content;
+	for (int batch = 0; batch < 3; ++batch)
+	{
+		for (int index = batch * 22; index < (batch + 1) * 22; ++index)
+		{
+			const std::string id = "cmp_long_active_" + std::to_string(index);
+			fixture.Summary(id, index + 2);
+			fixture.SummaryText(id, summaries[index]);
+		}
+		UAM_ASSERT(fixture.AwaitBoundary("cmp_long_active_" + std::to_string((batch + 1) * 22 - 1)));
+		UAM_ASSERT_EQ(fixture.Boundaries().size(), static_cast<std::size_t>((batch + 1) * 22));
+	}
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, content);
+	UAM_ASSERT_EQ(fixture.Session().tool_call_message_indices, owners);
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(fixture.Chat().messages[1].blocks,
+	    uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+	// A restarted reconciler must also skip the 66 persisted typed identities before its unresolved-work cap.
+	fixture.service = std::make_unique<uam::OpenCodeCompactionSyncService>([&fixture](const uam::OpenCodeCompactionSyncService::Query& query, std::stop_token stop)
+	{
+		UAM_ASSERT(!stop.stop_requested());
+		++fixture.queries;
+		return fixture.Execute(query.sql);
+	});
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summaries.front());
+	const int queries = fixture.queries.load();
+	for (int tick = 0; tick < 100; ++tick) (void)fixture.service->Poll(fixture.app);
+	UAM_ASSERT_EQ(fixture.Boundaries().size(), std::size_t{66});
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("assistant_text"));
+	UAM_ASSERT(fixture.queries.load() <= queries + 1);
+	fixture.Settle();
+	UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+	UAM_ASSERT(fixture.queries.load() <= 80); // Three bounded metadata batches, 66 body fetches and settlement.
+}
+
+UAM_TEST(OpenCodeMetadataDoesNotRetypeEarlierOrdinaryOccurrenceBeforeSummaryArrives)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	const std::string summary = "Identical ordinary answer and native summary.";
+	fixture.NativeMessage("msg_ordinary_before_summary", 2, {{"role", "assistant"}});
+	fixture.SummaryText("msg_ordinary_before_summary", summary);
+	fixture.Summary("cmp_after_ordinary_duplicate", 3);
+	fixture.SummaryText("cmp_after_ordinary_duplicate", summary);
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary);
+	UAM_ASSERT(!fixture.AwaitBoundary("cmp_after_ordinary_duplicate", std::chrono::milliseconds(2300)));
+	UAM_ASSERT(fixture.Boundaries().empty());
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), summary);
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_after_ordinary_duplicate"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.front().text, std::string("Preserve authored answer") + summary);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("context_compaction"));
+}
+
+UAM_TEST(OpenCodeMetadataDefersOwnershipUntilFirstAssistantChunk)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate();
+	fixture.Chat().messages.resize(1);
+	fixture.Session().queued_prompt.clear();
+	fixture.Session().prompt_request_id = 99;
+	fixture.Session().turn_assistant_message_index = fixture.Session().current_assistant_message_index = -1;
+	fixture.Session().turn_events.clear();
+	for (int tick = 0; tick < 100; ++tick) (void)fixture.service->Poll(fixture.app);
+	fixture.Summary("cmp_first_assistant_chunk", 2);
+	fixture.SummaryText("cmp_first_assistant_chunk", "First native summary.");
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "First native summary.");
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_first_assistant_chunk"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT(fixture.Session().processing && fixture.Session().prompt_request_id == 99);
+}
+
+UAM_TEST(OpenCodeMetadataUsesNativeToolPartBoundaryWithinOneMessage)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Tool("msg_part_order", 2, "chatcmpl-tool-part-order");
+	fixture.SummaryText("msg_part_order", "Text before native tool.", "aa_before_tool");
+	fixture.SummaryText("msg_part_order", "é😀Text after native tool.", "zz_after_tool");
+	fixture.Summary("cmp_part_order", 3);
+	fixture.SummaryText("cmp_part_order", "Part-anchored summary.");
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Text before native tool.");
+	uam::acp_detail::AppendToolTurnEventIfNeeded(fixture.Session(), "chatcmpl-tool-part-order");
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "é😀Text after native tool.Part-anchored summary.");
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_part_order"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[2].text, std::string("é😀Text after native tool."));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks[3].type, std::string("context_compaction"));
+}
+
+UAM_TEST(OpenCodeMetadataExcludesBaselineTupleFromLivePrefix)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent();
+	fixture.Tool("msg_old_tool", 1, "chatcmpl-tool-prior-turn");
+	fixture.NativeMessage("msg_old_text", 1, {{"role", "assistant"}});
+	fixture.SummaryText("msg_old_text", "Ordinary text before the baseline tuple.");
+	fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Summary("cmp_after_same_time_baseline", 2);
+	fixture.SummaryText("cmp_after_same_time_baseline", "Current turn summary.");
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Current turn summary.");
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_after_same_time_baseline"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.front().text, std::string("Preserve authored answer"));
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("context_compaction"));
+}
+
+UAM_TEST(OpenCodeMetadataStartsPendingGraceWhenActiveTurnSettles)
+{
+	NativeMetadataFixture fixture;
+	fixture.Parent(); fixture.WaitGate(); fixture.StartStreaming();
+	fixture.Summary("cmp_settlement_grace", 2, "");
+	fixture.SummaryText("cmp_settlement_grace", "Summary finishing just after the ACP turn.");
+	(void)uam::acp_detail::AppendAssistantChunk(fixture.Chat(), fixture.Session(), "Summary finishing just after the ACP turn.");
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	while (fixture.completed_queries.load(std::memory_order_acquire) < 2 && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)fixture.service->Poll(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT_EQ(fixture.completed_queries.load(), 2); // Baseline plus active page, before its pending probe.
+	(void)fixture.service->Poll(fixture.app);
+	fixture.Settle();
+	std::string error;
+	UAM_ASSERT(fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.Chat(), error) == uam::OpenCodeCompactionGateState::Pending);
+	fixture.Summary("cmp_settlement_grace", 2);
+	UAM_ASSERT(fixture.WaitGate() == uam::OpenCodeCompactionGateState::Ready);
+	UAM_ASSERT_EQ(fixture.Boundaries(), std::vector<std::string>{"acp-compaction:cmp_settlement_grace"});
+	UAM_ASSERT(fixture.queries.load() <= 8);
+}
+
+UAM_TEST(OpenCodeMetadataAdoptsDurablyRecoveredRemotePromptWithoutPromptId)
+{
+	NativeMetadataFixture fixture;
+	fixture.Chat().messages[1].created_at = "1970-01-01T00:00:00.001Z";
+	fixture.Parent();
+	fixture.Tool("msg_recovery_tool", 2, "chatcmpl-tool-recovery");
+	fixture.Summary("cmp_recovered_prompt", 3);
+	fixture.SummaryText("cmp_recovered_prompt", "Recovered native summary.");
+	fixture.Chat().messages[1].content += "Recovered native summary.";
+	fixture.Chat().messages[1].blocks.push_back({"tool_call", "", "chatcmpl-tool-recovery", ""});
+	fixture.Chat().messages[1].blocks.push_back({"assistant_text", "Recovered native summary.", "", ""});
+	fixture.RestoreActiveRemotePrompt();
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 0);
+	UAM_ASSERT_EQ(fixture.Session().pending_request_methods.at(73), std::string("session/prompt"));
+	const std::vector<uam::AcpRemotePendingRequestState> requests = fixture.Chat().remote_pending_requests;
+	const std::string content = fixture.Chat().messages[1].content;
+	UAM_ASSERT(fixture.AwaitBoundary("cmp_recovered_prompt"));
+	UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 0);
+	UAM_ASSERT_EQ(fixture.Chat().remote_pending_requests, requests);
+	UAM_ASSERT_EQ(fixture.Chat().messages[1].content, content);
+	UAM_ASSERT(fixture.Session().processing && fixture.Session().recovering_remote_turn);
+	UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(fixture.Chat().messages[1].blocks,
+	    uam::acp_detail::MessageBlocksFromTurnEvents(fixture.Session())));
+}
+
+UAM_TEST(OpenCodeMetadataRejectsUnownedRecoveredPromptProof)
+{
+	for (int invalid = 0; invalid < 7; ++invalid)
+	{
+		NativeMetadataFixture fixture;
+		fixture.Chat().messages[1].created_at = "1970-01-01T00:00:00.001Z";
+		fixture.Parent();
+		fixture.RestoreActiveRemotePrompt();
+		if (invalid == 0) fixture.Chat().remote_pending_requests.front().turn_serial = 6;
+		if (invalid == 1) fixture.Chat().remote_pending_requests.front().response_consumed = true;
+		if (invalid == 2) fixture.Session().pending_request_methods[73] = "session/cancel";
+		if (invalid == 3) fixture.Session().recovering_remote_turn = false;
+		if (invalid == 4) fixture.Chat().remote_turn_reconnect_pending = false;
+		if (invalid == 5) fixture.Chat().remote_pending_requests.front().method = "session/cancel";
+		if (invalid == 6) fixture.Chat().remote_pending_requests.front().request_id = 0;
+		const Message before = fixture.Chat().messages[1];
+		for (int tick = 0; tick < 100; ++tick) (void)fixture.service->Poll(fixture.app);
+		UAM_ASSERT_EQ(fixture.queries.load(), 0);
+		UAM_ASSERT_EQ(fixture.Chat().messages[1], before);
+		UAM_ASSERT_EQ(fixture.Session().prompt_request_id, 0);
+	}
 }

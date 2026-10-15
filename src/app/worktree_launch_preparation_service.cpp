@@ -50,7 +50,8 @@ namespace uam
 			    chat.agent_run_id != task.original.agent_run_id || chat.goal_owner_chat_id != task.original.goal_owner_chat_id ||
 			    chat.temporary_parent_chat_id != task.original.temporary_parent_chat_id ||
 			    chat.workspace_directory != task.original.workspace_directory || chat.folder_id != task.original.folder_id) return false;
-			if (app.settings.git_enabled != task.git_enabled || app.settings.git_auto_worktree != task.automatic_worktree ||
+			if ((!task.remote_host && (app.settings.git_snapshot_svn != task.snapshot_svn || app.settings.git_snapshot_plain_folders != task.snapshot_plain_folders)) ||
+			    app.settings.git_enabled != task.git_enabled || app.settings.git_auto_worktree != task.automatic_worktree ||
 			    app.settings.git_default_base_branch != task.base_branch || app.settings.git_pull_before_chat != task.pull_before_chat ||
 			    app.settings.svn_enabled != task.svn_enabled || app.settings.svn_update_before_chat != task.svn_update_before_chat) return false;
 			if (task.merged)
@@ -215,6 +216,17 @@ namespace uam
 			return false;
 		}
 
+		bool SnapshotLaunchPoliciesMatch(nlohmann::json saved, const nlohmann::json& expected)
+		{
+			// Receipts predating these controls used the enabled defaults.
+			if (saved.is_object())
+			{
+				if (!saved.contains("snapshotSvn")) saved["snapshotSvn"] = true;
+				if (!saved.contains("snapshotPlainFolders")) saved["snapshotPlainFolders"] = true;
+			}
+			return saved == expected;
+		}
+
 		bool RecoverOwnedWorkspace(const std::filesystem::path& root, const std::vector<ChatSession>& live_chats,
 		    ChatSession& metadata, const nlohmann::json& policy, std::filesystem::path& receipt, bool& found, std::string& error, std::stop_token stop)
 		{
@@ -238,7 +250,7 @@ namespace uam
 					}
 					const nlohmann::json record = nlohmann::json::parse(receipt_text);
 					if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at ||
-					    record.at("launchPolicy") != policy ||
+					    !SnapshotLaunchPoliciesMatch(record.at("launchPolicy"), policy) ||
 					    !paths::IsSameOrInsideRoot(paths::PathFromUtf8(record.at("source").get<std::string>()), paths::PathFromUtf8(metadata.workspace_directory))) return false;
 					metadata.workspace_isolation_kind = paths::kGitWorktreeIsolationKind;
 					metadata.workspace_source_directory = record.at("source").get<std::string>();
@@ -609,8 +621,12 @@ namespace uam
 					    chat.metadata_incarnation != task->original.metadata_incarnation ||
 					    chat.workspace_directory != task->original.workspace_directory || chat.folder_id != task->original.folder_id)
 						return {WorktreeLaunchPreparationState::Failed, "The prepared workspace no longer belongs to this chat.", task->cancellation};
+					if (!task->remote_host && (task->snapshot_svn != app.settings.git_snapshot_svn || task->snapshot_plain_folders != app.settings.git_snapshot_plain_folders))
+						return {WorktreeLaunchPreparationState::Failed, "Managed Git snapshot policy changed before publication. Its files were preserved.", task->cancellation};
 					task->git_enabled = app.settings.git_enabled;
 					task->automatic_worktree = app.settings.git_auto_worktree;
+					task->snapshot_svn = app.settings.git_snapshot_svn;
+					task->snapshot_plain_folders = app.settings.git_snapshot_plain_folders;
 					task->base_branch = app.settings.git_default_base_branch;
 					task->pull_before_chat = app.settings.git_pull_before_chat;
 					task->svn_enabled = app.settings.svn_enabled;
@@ -639,9 +655,21 @@ namespace uam
 		if ((chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind && !chat.svn_update_pending &&
 		     !(remote_workspace && (explicit_create || paths::IsGitWorktreeIsolated(chat)))) ||
 		    chat.imported_read_only || !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() || !chat.temporary_parent_chat_id.empty()) return {};
+		const bool snapshot_disabled = !chat.git_base_branch_override && !ManagedSnapshotDisabledReason(app, chat).empty();
+		if (snapshot_disabled)
+		{
+			const std::string error = explicit_create ? ManagedSnapshotDisabledReason(app, chat) : ManagedSnapshotBypassError(app, chat);
+			if (!error.empty()) return {WorktreeLaunchPreparationState::Failed, error, {}};
+		}
 		if ((!app.settings.git_enabled || (!app.settings.git_auto_worktree && !explicit_create)) && !chat.svn_update_pending && !(remote_workspace && paths::IsGitWorktreeIsolated(chat)))
 		{
 			chat.workspace_isolation_kind.clear();
+			return {};
+		}
+
+		if (snapshot_disabled && !chat.svn_update_pending)
+		{
+			if (chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind) chat.workspace_isolation_kind.clear();
 			return {};
 		}
 		if (app.worktree_operation_chat_ids.contains(chat.id)) return {WorktreeLaunchPreparationState::Failed, "Wait for the chat's workspace operation to finish.", {}};
@@ -679,9 +707,11 @@ namespace uam
 		task->pull_before_chat = app.settings.git_pull_before_chat;
 		task->git_enabled = app.settings.git_enabled;
 		task->automatic_worktree = app.settings.git_auto_worktree;
+		task->snapshot_svn = app.settings.git_snapshot_svn;
+		task->snapshot_plain_folders = app.settings.git_snapshot_plain_folders;
 		task->svn_enabled = app.settings.svn_enabled;
 		task->svn_update_before_chat = app.settings.svn_update_before_chat;
-		task->update_only = chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind || !task->git_enabled || !task->automatic_worktree;
+		task->update_only = snapshot_disabled || chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind || !task->git_enabled || !task->automatic_worktree;
 		task->explicit_create = remote_workspace && explicit_create;
 		if (remote_host)
 		{
@@ -697,6 +727,8 @@ namespace uam
 		settings.svn_enabled = app.settings.svn_enabled;
 		settings.svn_update_before_chat = app.settings.svn_update_before_chat;
 		settings.git_auto_worktree = app.settings.git_auto_worktree;
+		settings.git_snapshot_svn = app.settings.git_snapshot_svn;
+		settings.git_snapshot_plain_folders = app.settings.git_snapshot_plain_folders;
 		settings.git_default_base_branch = app.settings.git_default_base_branch;
 		settings.git_pull_before_chat = app.settings.git_pull_before_chat;
 		if (remote_host) settings.execution_hosts = {*remote_host};
@@ -740,6 +772,7 @@ namespace uam
 			const nlohmann::json policy = {{"version", 1}, {"requestedSource", metadata.workspace_directory}, {"baseBranch", snapshot.settings.git_default_base_branch},
 			    {"pullBeforeChat", snapshot.settings.git_pull_before_chat}, {"gitEnabled", snapshot.settings.git_enabled},
 			    {"automaticWorktree", snapshot.settings.git_auto_worktree},
+			    {"snapshotSvn", snapshot.settings.git_snapshot_svn}, {"snapshotPlainFolders", snapshot.settings.git_snapshot_plain_folders},
 			    {"baseOverride", metadata.git_base_branch_override ? nlohmann::json(*metadata.git_base_branch_override) : nlohmann::json(nullptr)}};
 			bool recovered = false;
 			GitWorktreeOperationResult recovery;

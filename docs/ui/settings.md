@@ -38,3 +38,7 @@ David selected mock A on 2026-10-15: Shell Actions uses collapsible groups in si
 Central Setup edits only instruction paths already saved in its configuration. File edits have a separate Save file action, disabled while unchanged, and participate in the existing unsaved-changes guard. Read and save failures retain the draft and show the error next to the editor. Saving an unchanged disabled setup still enables shared instructions; an enabled setup with no changes has a disabled Save action.
 
 Save actions use the existing dirty and validation state, including save-and-leave dialogs. Unchanged skill and theme drafts keep Save disabled; invalid Shell Actions, routing, MCP and memory drafts cannot be saved. Keep editing and Discard remain available. Validation appears alongside dismissible backend errors and notifications. MCP guided-setup navigation keeps its own step validation.
+
+## Local snapshot Git
+
+As clarified by David on 2026-10-15, SVN contains a Local snapshot Git switch, and a separate No VCS section contains Enable local Git files for plain folders. Both default on to preserve existing behavior. Turning either off makes future automatic chats of that workspace kind use the original folder; existing isolated workspaces remain intact. These controls use the existing draft Save and Discard flow and depend on Git being enabled, independently of SVN tracking. David explicitly requested the existing style without mock alternatives.

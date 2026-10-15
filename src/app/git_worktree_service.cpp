@@ -281,6 +281,36 @@ namespace uam
 			return false;
 		}
 
+		enum class LocalSnapshotSource { Unknown, Git, Svn, Plain };
+
+		LocalSnapshotSource ClassifyLocalSnapshotSource(const std::filesystem::path& source)
+		{
+			std::error_code source_error;
+			const std::filesystem::path physical = std::filesystem::canonical(source, source_error);
+			if (source_error || !paths::IsDirectoryNoThrow(physical)) return LocalSnapshotSource::Unknown;
+			bool svn = false;
+			for (std::filesystem::path directory = physical; !directory.empty(); directory = directory.parent_path())
+			{
+				bool markers[5]{};
+				const char* names[] = {".git", "HEAD", "objects", "refs", "config"};
+				for (std::size_t index = 0; index < 5; ++index)
+				{
+					std::error_code error;
+					const std::filesystem::file_status status = std::filesystem::symlink_status(directory / names[index], error);
+					if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
+					markers[index] = std::filesystem::exists(status);
+				}
+				// Broken Git markers and bare repositories must retain normal Git validation.
+				if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) return LocalSnapshotSource::Git;
+				std::error_code error;
+				const std::filesystem::file_status status = std::filesystem::symlink_status(directory / ".svn", error);
+				if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
+				svn = svn || std::filesystem::exists(status);
+				if (directory == directory.parent_path()) break;
+			}
+			return svn ? LocalSnapshotSource::Svn : LocalSnapshotSource::Plain;
+		}
+
 		std::filesystem::path WorktreeRootForChat(const AppState& app, const std::filesystem::path& source_root, const std::string& relative_name)
 		{
 			const std::string normalized_source_root = uam::paths::NormalizedPortablePathString(source_root);
@@ -1439,6 +1469,40 @@ namespace uam
 		return true;
 	}
 
+	std::string ManagedSnapshotDisabledReason(const AppState& app, const ChatSession& chat)
+	{
+		if ((app.settings.git_snapshot_svn && app.settings.git_snapshot_plain_folders) ||
+		    !paths::IsControllerLocalWorkspace(chat) || paths::IsGitWorktreeIsolated(chat)) return {};
+		const LocalSnapshotSource source = ClassifyLocalSnapshotSource(EffectiveSourceWorkspace(app, chat));
+		if (source == LocalSnapshotSource::Svn && !app.settings.git_snapshot_svn)
+			return "Managed Git snapshots for SVN workspaces are disabled in VCS settings.";
+		if (source == LocalSnapshotSource::Plain && !app.settings.git_snapshot_plain_folders)
+			return "Managed Git snapshots for plain folders are disabled in VCS settings.";
+		return {};
+	}
+
+	std::string ManagedSnapshotBypassError(const AppState& app, const ChatSession& chat)
+	{
+		if (!chat.workspace_source_directory.empty() || !chat.workspace_worktree_directory.empty() ||
+		    !chat.workspace_branch_name.empty() || !chat.workspace_base_ref.empty())
+			return "Existing snapshot ownership must be resolved before using the original workspace. Its files were preserved.";
+		const std::filesystem::path directory = app.data_root / ".worktree-launch";
+		std::error_code error;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(directory, error);
+		if (error == std::errc::no_such_file_or_directory || status.type() == std::filesystem::file_type::not_found) return {};
+		if (error || !std::filesystem::is_directory(status)) return "Snapshot ownership storage could not be verified. Its files were preserved.";
+		const std::string prefix = hashing::Hex64(hashing::Fnv1a64(chat.id)) + "-";
+		std::filesystem::directory_iterator iterator(directory, error), end;
+		while (!error && iterator != end)
+		{
+			const std::filesystem::path receipt = iterator->path();
+			if (receipt.filename().string().starts_with(prefix) && receipt.extension() == ".json")
+				return "Interrupted snapshot creation must be resolved before using the original workspace. Its files were preserved.";
+			iterator.increment(error);
+		}
+		return error ? "Snapshot ownership storage could not be verified. Its files were preserved." : std::string{};
+	}
+
 	bool GitWorktreeService::PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out) const
 	{
 		std::string scope_error;
@@ -1448,8 +1512,14 @@ namespace uam
 		    !uam::paths::IsControllerLocalWorkspace(chat) || chat.imported_read_only ||
 		    !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() ||
 		    !chat.temporary_parent_chat_id.empty()) return true;
-		if (!app.settings.git_enabled || !app.settings.git_auto_worktree)
+		if (!app.settings.git_enabled || !app.settings.git_auto_worktree ||
+		    (!chat.git_base_branch_override && !ManagedSnapshotDisabledReason(app, chat).empty()))
 		{
+			if (!ManagedSnapshotDisabledReason(app, chat).empty())
+			{
+				const std::string ownership_error = ManagedSnapshotBypassError(app, chat);
+				if (!ownership_error.empty()) { if (error_out) *error_out = ownership_error; return false; }
+			}
 			// Only an uncreated default is cleared; existing isolated paths remain owned.
 			chat.workspace_isolation_kind.clear();
 			return true;
@@ -1471,6 +1541,13 @@ namespace uam
 	{
 		if (!record) return {.message = "Workspace ownership recording is required."};
 		if (!paths::IsControllerLocalWorkspace(metadata)) return PrepareRemoteWorktree(snapshot, metadata, record, stop, explicit_create);
+		if (!explicit_create && !metadata.git_base_branch_override && !ManagedSnapshotDisabledReason(snapshot, metadata).empty())
+		{
+			const std::string ownership_error = ManagedSnapshotBypassError(snapshot, metadata);
+			if (!ownership_error.empty()) return {.message = ownership_error};
+			if (metadata.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind) metadata.workspace_isolation_kind.clear();
+			return {.ok = true};
+		}
 		return CreateForChatCore(snapshot, metadata, false, record, stop);
 	}
 
@@ -1545,6 +1622,17 @@ namespace uam
 		}
 		const std::filesystem::path source_root = result.status.is_git_repository ? uam::paths::PathFromUtf8(result.status.source_directory) : EffectiveSourceWorkspace(app, chat);
 		const bool managed_repository = !result.status.is_git_repository;
+		if (managed_repository)
+		{
+			const LocalSnapshotSource source_kind = ClassifyLocalSnapshotSource(source_root);
+			if (source_kind == LocalSnapshotSource::Git || source_kind == LocalSnapshotSource::Unknown)
+			{
+				result.message = source_kind == LocalSnapshotSource::Git ? "Source Git metadata could not be verified. No managed snapshot was created." : "Source workspace is not an available directory.";
+				return result;
+			}
+			result.message = ManagedSnapshotDisabledReason(app, chat);
+			if (!result.message.empty()) return result;
+		}
 		const std::filesystem::path repository = managed_repository ? ManagedRepositoryRoot(app, source_root, chat.id) : source_root;
 		const std::string selected_base = uam::strings::Trim(chat.git_base_branch_override.value_or(app.settings.git_default_base_branch));
 		std::string override_head;

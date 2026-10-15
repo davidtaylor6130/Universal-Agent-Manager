@@ -63,6 +63,7 @@ namespace uam
 		ProviderConfigurationBundle bundle;
 		std::string instructions;
 		std::string error;
+		bool version_only = false;
 		bool success = false;
 		std::atomic<bool> finished{false};
 		std::unique_ptr<std::jthread> worker;
@@ -131,9 +132,19 @@ namespace
 		    std::move(chat.goals), std::move(chat.remote_pending_requests), std::move(chat.uam_control_audit), std::move(chat.linked_files)};
 		return chat;
 	}
-	std::string LocalLaunchOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
+	std::string LocalLaunchOwnership(const AppState& app, const AcpSessionState& session, const ChatSession& chat, bool ignore_host_health = false)
 	{
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+		nlohmann::json settings = settings_frontend_json::SerializeFingerprintSettingsFields(app.settings);
+		if (ignore_host_health)
+		{
+			// The version worker publishes health, without changing launch configuration or connection identity.
+			for (nlohmann::json& host : settings["executionHosts"])
+			{
+				host.erase("runnerStatus");
+				host.erase("lastSeenAt");
+			}
+		}
 		return nlohmann::json::array({provider.id, provider.interactive_command, provider.runtime_flags, provider.resume_argument,
 		    provider.supports_structured, provider.structured_protocol, provider.execution_mode, provider.output_mode,
 		    provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.git_auto_worktree,
@@ -148,7 +159,7 @@ namespace
 		    session.active_uam_agent_instructions, session.active_uam_agent_execution_capability,
 		    session.active_uam_agent_workspace_access, session.last_process_id, session.session_id, AcpProcessHandleLabel(session),
 		    session.model_discovery_only, session.goal_internal_session, session.recovering_remote_turn, session.recovering_remote_process,
-		    settings_frontend_json::SerializeFingerprintSettingsFields(app.settings),
+		    std::move(settings),
 		    PromptDeliveryConfiguration(app, session, chat)}).dump();
 	}
 }
@@ -849,14 +860,14 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 {
 	const WorktreeLaunchPreparationState workspace = PrepareAcpWorkspaceForLaunch(app, session, chat, error_out);
 	if (workspace != WorktreeLaunchPreparationState::Ready) return workspace == WorktreeLaunchPreparationState::Pending;
-	const std::shared_ptr<PendingLocalAcpLaunch> prepared = session.pending_local_launch;
+	std::shared_ptr<PendingLocalAcpLaunch> prepared = session.pending_local_launch;
 	if (prepared)
 	{
 		const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
 		const std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>>::const_iterator workspace_preparation = app.worktree_launch_preparations.find(chat.id);
 		if (prepared->incarnation != chat.metadata_incarnation || prepared->root != app.data_root ||
 		    host == nullptr || !execution_hosts::SameConnection(prepared->host, *host) ||
-		    prepared->ownership != LocalLaunchOwnership(app, session, chat) ||
+		    prepared->ownership != LocalLaunchOwnership(app, session, chat, prepared->version_only) ||
 		    app.worktree_operation_chat_ids.contains(chat.id) || app.branch_preparations.contains(chat.id) ||
 		    (workspace_preparation != app.worktree_launch_preparations.end() &&
 		     !(workspace_preparation->second->saved && *workspace_preparation->second->saved)))
@@ -867,8 +878,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			if (error_out) *error_out = session.last_error;
 			return false;
 		}
-		if (!prepared->finished.load(std::memory_order_acquire)) return true;
-		if (!prepared->success)
+		if (!prepared->version_only && !prepared->finished.load(std::memory_order_acquire)) return true;
+		if (!prepared->version_only && !prepared->success)
 		{
 			session.pending_local_launch.reset();
 			session.last_error = prepared->error;
@@ -1026,6 +1037,72 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		session.last_error = startup_error;
 		if (error_out != nullptr) *error_out = startup_error;
 		return false;
+	}
+	// A new remote OpenCode process needs its own host's version before its setup manifest is captured.
+	// Reuse the existing asynchronous version worker and launch ownership packet; reconnect never reconfigures.
+	if (remote && execution_host->runner_protocol_version >= 3 && !session.model_discovery_only &&
+	    !session.recovering_remote_turn && !session.recovering_remote_process &&
+	    provider_ids::CanonicalCliProviderLookupId(provider.id) == provider_ids::kOpenCodeCli)
+	{
+		ProviderCliCompatibilityService versions;
+		versions.Poll(app);
+		const std::string key = CliProviderVersionStateKey(provider.id, execution_host->id);
+		CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[key];
+		const bool checked = version.checked && execution_hosts::SameConnection(version.execution_host, *execution_host);
+		const auto fail_version = [&](const std::string& error)
+		{
+			session.pending_local_launch.reset();
+			session.reconnect_pending = false;
+			session.queue_held = chat.acp_queue_held = true;
+			session.last_error = "Could not prepare OpenCode on this host: " + error;
+			session.lifecycle_state = kAcpLifecycleError;
+			ScheduleChatSave(app, chat, 0.0);
+			if (error_out) *error_out = session.last_error;
+			return false;
+		};
+		if (checked && prepared && !version.check_error.empty()) return fail_version(version.check_error);
+		if (checked && version.check_error.empty())
+		{
+			std::erase(app.runtime_cli_version_check_queue, std::pair<std::string, std::string>{provider_ids::kOpenCodeCli, execution_host->id});
+			if (prepared && prepared->version_only)
+			{
+				session.pending_local_launch.reset();
+				prepared.reset();
+			}
+		}
+		else
+		{
+			if (!prepared)
+			{
+				prepared = std::make_shared<PendingLocalAcpLaunch>();
+				prepared->incarnation = chat.metadata_incarnation;
+				prepared->root = app.data_root;
+				prepared->host = *execution_host;
+				prepared->ownership = LocalLaunchOwnership(app, session, chat, true);
+				prepared->version_only = true;
+				session.pending_local_launch = prepared;
+				if (!execution_hosts::SameConnection(version.execution_host, *execution_host)) version = {};
+				version.provider_id = provider_ids::kOpenCodeCli;
+				version.execution_host = *execution_host;
+				version.checked = false; // A previous failed check is retried only by a new owned launch attempt.
+			}
+			const std::pair<std::string, std::string> target{provider_ids::kOpenCodeCli, execution_host->id};
+			const bool checking_target = app.runtime_cli_version_check_task.running &&
+			    app.runtime_cli_version_provider_id == target.first &&
+			    execution_hosts::SameConnection(app.runtime_cli_version_check_task.execution_host, *execution_host);
+			if (!checking_target)
+			{
+				std::erase(app.runtime_cli_version_check_queue, target);
+				if (app.runtime_cli_version_check_task.running) app.runtime_cli_version_check_queue.push_front(target);
+				else
+				{
+					std::string error;
+					if (!versions.StartProviderVersionCheck(app, target.first, true, target.second, &error)) return fail_version(error);
+				}
+			}
+			session.lifecycle_state = kAcpLifecycleStarting;
+			return true;
+		}
 	}
 	if (!remote)
 	{

@@ -721,6 +721,8 @@ struct AppSettings
 	bool show_worktree_path_in_sidebar = true;
 	bool git_enabled = true;
 	bool git_auto_worktree = true;
+	bool git_snapshot_svn = true;
+	bool git_snapshot_plain_folders = true;
 	bool git_pull_before_chat = false;
 	GitPortMethod git_port_method = GitPortMethod::Patch;
 	std::string git_default_base_branch;

@@ -31,6 +31,8 @@ namespace
 	constexpr int kQueryTimeoutMs = 5000;
 	constexpr std::chrono::seconds kPendingProbeInterval{2};
 	constexpr std::chrono::seconds kPendingDeadline{10};
+	constexpr std::chrono::seconds kSummaryDeadline{90};
+	constexpr std::chrono::milliseconds kStreamPublicationInterval{200};
 
 	struct Cursor
 	{
@@ -43,7 +45,69 @@ namespace
 		}
 	};
 
-	enum class QueryKind { Baseline, Pending, Page };
+	enum class QueryKind { Baseline, Pending, Page, Text };
+
+	bool VerifiedVersion(std::string_view version)
+	{
+		return version == "1.17.20" || version == "1.18.35";
+	}
+
+	/// <summary>Only explicit UTC assistant timestamps can bound adoption of an already running turn.</summary>
+	std::optional<std::int64_t> AssistantUtcMilliseconds(std::string_view value)
+	{
+		if (value.size() < 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+		    value[13] != ':' || value[16] != ':' || value.back() != 'Z') return {};
+		const auto number = [&](std::size_t offset, std::size_t length) -> int
+		{
+			int result = 0;
+			for (std::size_t index = offset; index < offset + length; ++index)
+			{
+				if (value[index] < '0' || value[index] > '9') return -1;
+				result = result * 10 + value[index] - '0';
+			}
+			return result;
+		};
+		const int year = number(0, 4), month = number(5, 2), day = number(8, 2);
+		const int hour = number(11, 2), minute = number(14, 2), second = number(17, 2);
+		const std::chrono::year_month_day date{std::chrono::year{year}, std::chrono::month{static_cast<unsigned>(month)}, std::chrono::day{static_cast<unsigned>(day)}};
+		if (!date.ok() || year < 1970 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) return {};
+		int milliseconds = 0;
+		if (value.size() != 20)
+		{
+			if (value[19] != '.' || value.size() < 22 || value.size() > 30) return {};
+			for (std::size_t index = 20; index + 1 < value.size(); ++index)
+			{
+				if (value[index] < '0' || value[index] > '9') return {};
+				if (index < 23) milliseconds += (value[index] - '0') * (index == 20 ? 100 : index == 21 ? 10 : 1);
+			}
+		}
+		return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::sys_days{date}.time_since_epoch()).count() +
+		    ((hour * 60LL + minute) * 60 + second) * 1000 + milliseconds;
+	}
+
+	struct Summary
+	{
+		std::string id, text, prefix, previous_tool, revision;
+		std::int64_t characters = -1, offset = 0, prefix_bytes = 0;
+		bool has_text = false, ready = false, requires_tool = false;
+		std::chrono::steady_clock::time_point deadline{};
+	};
+
+	/// <summary>Recovered OpenCode prompts retain durable RPC ownership even when the runtime prompt ID is unset.</summary>
+	bool IsActivePrompt(const AcpSessionState& session, const ChatSession& chat)
+	{
+		if (session.prompt_request_id != 0) return true;
+		if (paths::IsControllerLocalWorkspace(chat) || session.remote_runner_protocol_version != 3 ||
+		    !session.recovering_remote_turn || !chat.remote_turn_reconnect_pending || session.turn_serial <= 0 ||
+		    chat.remote_turn_serial != session.turn_serial || session.process_execution_host_id != chat.execution_host_id) return false;
+		return std::ranges::any_of(chat.remote_pending_requests, [&](const AcpRemotePendingRequestState& request)
+		{
+			if (request.response_consumed || request.request_id <= 0 || request.method != "session/prompt" ||
+			    request.turn_serial != session.turn_serial) return false;
+			const std::unordered_map<int, std::string>::const_iterator pending = session.pending_request_methods.find(request.request_id);
+			return pending != session.pending_request_methods.end() && pending->second == request.method;
+		});
+	}
 
 	struct Identity
 	{
@@ -64,8 +128,8 @@ namespace
 	std::optional<Identity> CaptureIdentity(const AppState& app, const AcpSessionState& session,
 	    const ChatSession& chat, std::string& error)
 	{
-		if (session.agent_version != "1.18.35")
-		{ error = "Native compaction synchronization requires verified OpenCode 1.18.35 metadata."; return {}; }
+		if (!VerifiedVersion(session.agent_version))
+		{ error = "Native compaction synchronization requires a verified OpenCode metadata schema."; return {}; }
 		if (!session.running || !session.session_ready || session.last_process_id.empty() || session.chat_id != chat.id ||
 		    session.local_stop_pending || session.remote_stop_pending || session.remote_stop_unconfirmed || session.remote_source_exit_reported ||
 		    session.provider_id != chat.provider_id || chat.imported_read_only || chat.side_cleanup_requested ||
@@ -129,11 +193,13 @@ namespace
 			filter += ')';
 		}
 		// Message.data is native info metadata. Transcript text and tool output live in part.data,
-		// which this query inspects only for the indexed parent compaction type predicate.
+		// which this query inspects only for indexed part types and the parent compaction predicate.
 		return "WITH selected AS (SELECT m.id,m.time_created,json_extract(m.data,'$.role') role,"
 		    "CASE WHEN json_extract(m.data,'$.role')='assistant' THEN json_extract(m.data,'$.summary') ELSE NULL END summary,"
 		    "json_extract(m.data,'$.parentID') parent,"
 		    "json_extract(m.data,'$.finish') finish,json_type(m.data,'$.error') error_type,"
+		    "CASE WHEN json_extract(m.data,'$.summary')=1 THEN (SELECT count(*) FROM part t WHERE t.message_id=m.id "
+		    "AND t.session_id=m.session_id AND json_extract(t.data,'$.type')='text') ELSE 0 END text_parts,"
 		    "CASE WHEN json_extract(m.data,'$.summary')=1 THEN EXISTS(SELECT 1 FROM message u WHERE "
 		    "u.id=json_extract(m.data,'$.parentID') AND u.session_id=m.session_id AND json_extract(u.data,'$.role')='user' "
 		    "AND EXISTS(SELECT 1 FROM part p WHERE p.message_id=u.id AND p.session_id=u.session_id AND "
@@ -145,8 +211,116 @@ namespace
 		    "coalesce((SELECT time_created FROM message WHERE session_id=s.id ORDER BY time_created DESC,id DESC LIMIT 1),0) upperTime,"
 		    "coalesce((SELECT id FROM message WHERE session_id=s.id ORDER BY time_created DESC,id DESC LIMIT 1),'') upperId,"
 		    "(SELECT json_group_array(json_object('id',id,'created',time_created,'role',role,'summary',summary,"
-		    "'parent',parent,'finish',finish,'errorType',error_type,'parentProof',parent_proof)) FROM selected) rows "
+		    "'parent',parent,'finish',finish,'errorType',error_type,'parentProof',parent_proof,'textParts',text_parts)) FROM selected) rows "
 		    "FROM session s WHERE s.id=" + session;
+	}
+
+	std::string SummarySql(const Identity& identity, const Summary& summary, const Cursor& scope)
+	{
+		// The CLI can exit before draining large stdout. Page the prefix and body together below its pipe bound.
+		const int page = identity.host && identity.host->platform == "windows" ? 256 : 8192;
+		const std::string bound = std::to_string(kMetadataBytes);
+		return "WITH owned AS (SELECT m.id,m.session_id,m.time_created,m.time_updated,m.data FROM message m WHERE m.session_id=" + SqlLiteral(identity.native) +
+		    " AND m.id=" + SqlLiteral(summary.id) + " AND json_extract(m.data,'$.role')='assistant' "
+		    "AND json_extract(m.data,'$.summary')=1 AND json_type(m.data,'$.finish')='text' AND json_extract(m.data,'$.finish')<>'' "
+		    "AND (json_type(m.data,'$.error') IS NULL OR json_type(m.data,'$.error')='null') "
+		    "AND EXISTS(SELECT 1 FROM message u JOIN part c ON c.message_id=u.id AND c.session_id=u.session_id "
+		    "WHERE u.id=json_extract(m.data,'$.parentID') AND u.session_id=m.session_id AND json_extract(u.data,'$.role')='user' "
+		    "AND json_extract(c.data,'$.type')='compaction')), anchor AS ("
+		    "SELECT tm.time_created created,tm.id message_id,tp.id part_id,json_extract(tp.data,'$.callID') tool "
+		    "FROM owned m JOIN message tm ON tm.session_id=m.session_id JOIN part tp ON tp.message_id=tm.id AND tp.session_id=tm.session_id "
+		    "WHERE (tm.time_created,tm.id)<(m.time_created,m.id) AND (tm.time_created,tm.id)>(" +
+		    std::to_string(scope.time) + "," + SqlLiteral(scope.id) + ") AND json_extract(tm.data,'$.role')='assistant' "
+		    "AND json_extract(tp.data,'$.type')='tool' ORDER BY tm.time_created DESC,tm.id DESC,tp.id DESC LIMIT 1), "
+		    "prefix_parts AS (SELECT tm.id message_id,p.id part_id,p.time_updated updated,length(p.data) size,"
+		    "json_extract(p.data,'$.text') text,json_type(p.data,'$.text') text_type "
+		    "FROM owned m JOIN message tm ON tm.session_id=m.session_id JOIN part p ON p.message_id=tm.id AND p.session_id=tm.session_id "
+		    "WHERE json_extract(tm.data,'$.role')='assistant' AND json_extract(p.data,'$.type')='text' "
+		    "AND (tm.time_created,tm.id)<(m.time_created,m.id) AND (tm.time_created,tm.id)>(" +
+		    std::to_string(scope.time) + "," + SqlLiteral(scope.id) + ") AND (NOT EXISTS(SELECT 1 FROM anchor) OR "
+		    "(tm.time_created,tm.id,p.id)>(SELECT created,message_id,part_id FROM anchor)) ORDER BY tm.time_created,tm.id,p.id LIMIT 129), "
+		    "body_parts AS (SELECT p.id part_id,p.time_updated updated,length(p.data) size,json_extract(p.data,'$.text') text,"
+		    "json_type(p.data,'$.text') text_type FROM owned m JOIN part p ON p.message_id=m.id AND p.session_id=m.session_id "
+		    "WHERE json_extract(p.data,'$.type')='text' ORDER BY p.id LIMIT 129), "
+		    "bounds AS (SELECT (SELECT count(*) FROM prefix_parts) prefix_count,(SELECT count(*) FROM body_parts) body_count,"
+		    "(SELECT coalesce(sum(CASE WHEN text_type='text' THEN length(CAST(text AS BLOB)) ELSE " + bound + "+1 END),0) FROM prefix_parts)+"
+		    "(SELECT coalesce(sum(CASE WHEN text_type='text' THEN length(CAST(text AS BLOB)) ELSE " + bound + "+1 END),0) FROM body_parts) bytes), "
+		    "prefix AS (SELECT coalesce(group_concat(text,''),'') text,coalesce(group_concat(message_id||':'||part_id||':'||updated||':'||size,'|'),'') revision "
+		    "FROM prefix_parts CROSS JOIN bounds WHERE bytes<=" + bound + " AND prefix_count<=128 AND body_count<=128), "
+		    "body AS (SELECT coalesce(group_concat(text,''),'') text,coalesce(group_concat(part_id||':'||updated||':'||size,'|'),'') revision "
+		    "FROM body_parts CROSS JOIN bounds WHERE bytes<=" + bound + " AND prefix_count<=128 AND body_count<=128), "
+		    "snapshot AS (SELECT prefix.text||body.text text,length(CAST(prefix.text AS BLOB)) prefix_bytes,prefix.revision||':'||body.revision revision FROM prefix CROSS JOIN body) "
+		    "SELECT s.id sessionId,s.directory,m.time_updated||':'||m.data||':'||b.revision revision,length(b.text) characters,"
+		    "b.prefix_bytes prefixBytes,length(substr(b.text,1," + std::to_string(summary.offset) + ")) offset,substr(b.text," +
+		    std::to_string(summary.offset + 1) + "," + std::to_string(page) + ") chunk,"
+		    "length(substr(b.text," + std::to_string(summary.offset + 1) + "," + std::to_string(page) + ")) chunkCharacters,"
+		    "coalesce((SELECT tool FROM anchor),'') previousTool FROM owned m JOIN session s ON s.id=m.session_id CROSS JOIN snapshot b CROSS JOIN bounds "
+		    "WHERE bytes<=" + bound + " AND prefix_count<=128 AND body_count<=128";
+	}
+
+	/// <summary>Replace summaries only at their native byte position after an exactly matching tool-segment prefix.</summary>
+	template<typename Block> bool RetypeSummaries(std::vector<Block>& blocks, const std::map<Cursor, Summary>& summaries)
+	{
+		struct Match { std::size_t block, offset, length; std::string id; };
+		std::vector<Match> matches;
+		for (const std::pair<const Cursor, Summary>& item : summaries)
+		{
+			const Summary& summary = item.second;
+			if (!summary.ready || summary.text.empty()) continue;
+			const std::string id = "acp-compaction:" + summary.id;
+			if (std::ranges::any_of(blocks, [&](const Block& block) { return block.type == "context_compaction" &&
+			    (block.request_id_json == id || block.request_id_json == summary.id) && block.text == summary.text; })) continue;
+			if (summary.requires_tool && summary.previous_tool.empty()) continue;
+			std::size_t begin = 0;
+			if (!summary.previous_tool.empty())
+			{
+				int anchors = 0;
+				for (std::size_t index = 0; index < blocks.size(); ++index)
+					if (blocks[index].type == "tool_call" && blocks[index].tool_call_id == summary.previous_tool) { begin = index + 1; ++anchors; }
+				if (anchors != 1) continue;
+			}
+			std::size_t consumed = 0;
+			for (std::size_t index = begin; index < blocks.size(); ++index)
+			{
+				const Block& block = blocks[index];
+				if (block.type == "tool_call") break;
+				if (block.type != "assistant_text" && block.type != "context_compaction") continue;
+				const std::size_t prefix = std::min(summary.prefix.size() - consumed, block.text.size());
+				if (block.text.compare(0, prefix, summary.prefix, consumed, prefix) != 0) break;
+				consumed += prefix;
+				if (consumed != summary.prefix.size() || prefix == block.text.size()) continue;
+				// The native prefix proves the exact position; uniqueness in an incomplete ACP stream cannot.
+				if (block.type == "assistant_text" && block.text.compare(prefix, summary.text.size(), summary.text) == 0)
+					matches.push_back({index, prefix, summary.text.size(), id});
+				break;
+			}
+		}
+		std::sort(matches.begin(), matches.end(), [](const Match& left, const Match& right)
+		{ return left.block > right.block || (left.block == right.block && left.offset > right.offset); });
+		for (std::size_t index = 1; index < matches.size(); ++index)
+			if (matches[index].block == matches[index - 1].block && matches[index].offset + matches[index].length > matches[index - 1].offset) return false;
+		bool changed = false;
+		for (const Match& match : matches)
+		{
+			const Block original = blocks[match.block];
+			std::vector<Block> replacement;
+			if (match.offset != 0) { Block before = original; before.text.resize(match.offset); replacement.push_back(std::move(before)); }
+			Block compacted = original;
+			compacted.type = "context_compaction"; compacted.text = original.text.substr(match.offset, match.length); compacted.request_id_json = match.id;
+			replacement.push_back(std::move(compacted));
+			if (match.offset + match.length < original.text.size())
+			{ Block after = original; after.text = original.text.substr(match.offset + match.length); replacement.push_back(std::move(after)); }
+			blocks.erase(blocks.begin() + static_cast<std::ptrdiff_t>(match.block));
+			blocks.insert(blocks.begin() + static_cast<std::ptrdiff_t>(match.block), replacement.begin(), replacement.end());
+			changed = true;
+		}
+		if (changed)
+			std::erase_if(blocks, [&](const Block& block)
+			{
+				return block.type == "context_compaction" && block.text.empty() && std::ranges::any_of(matches, [&](const Match& match)
+				{ return block.request_id_json == match.id || "acp-compaction:" + block.request_id_json == match.id; });
+			});
+		return changed;
 	}
 
 	ProcessExecutionResult ExecuteNativeQuery(const OpenCodeCompactionSyncService::Query& query, std::stop_token stop)
@@ -195,20 +369,22 @@ struct OpenCodeCompactionSyncService::State
 		int serial = 0, assistant = -1;
 		std::uint64_t message = 0;
 		int handoff_serial = 0;
-		bool pages_finished = false;
+		bool pages_finished = false, live = false, scan_complete = false;
+		std::string created;
 		std::chrono::steady_clock::time_point pending_deadline{};
 		std::chrono::steady_clock::time_point next_pending_probe{};
-		std::map<Cursor, std::string> completed;
+		std::map<Cursor, Summary> completed;
 	};
 	struct Context
 	{
 		Identity identity;
-		Cursor cursor;
+		Cursor cursor, scope;
 		std::set<std::string> pending;
-		bool baseline = false;
+		bool baseline = false, adopted = false;
 		int armed_turn = 0, finished_turn = 0, failed_attempt = 0;
 		std::optional<Owner> owner;
 		std::string error;
+		std::chrono::steady_clock::time_point next_live_probe{}, next_publication_probe{};
 	};
 	struct Work
 	{
@@ -216,10 +392,12 @@ struct OpenCodeCompactionSyncService::State
 		QueryKind kind = QueryKind::Baseline;
 		Cursor cursor;
 		std::set<std::string> pending;
-		std::map<Cursor, std::string> completed;
+		std::map<Cursor, Summary> completed;
 		std::stop_source cancellation;
 		std::atomic<bool> finished{false};
 		ProcessExecutionResult result;
+		Cursor summary_cursor;
+		int owner_serial = 0, owner_assistant = -1;
 	};
 	ExecuteQuery execute;
 	std::map<std::string, Context> contexts;
@@ -262,14 +440,32 @@ struct OpenCodeCompactionSyncService::State
 	{
 		if (context.owner)
 		{
+			if (context.owner->live && session.turn_serial == context.owner->serial && !session.processing && session.prompt_request_id == 0)
+			{
+				if (session.last_settled_turn_serial != session.turn_serial || session.last_turn_outcome != "completed")
+				{
+					context.finished_turn = context.armed_turn; context.baseline = false; context.pending.clear(); context.owner.reset();
+					if (active && active->identity.chat_id == chat.id) active->cancellation.request_stop();
+					return;
+				}
+				if (context.owner->assistant < 0 || context.owner->assistant >= static_cast<int>(chat.messages.size())) return;
+				context.owner->live = false;
+				// Active probes have no settlement deadline; take a final page before starting that grace period.
+				context.owner->pages_finished = context.owner->scan_complete = false;
+				context.owner->pending_deadline = context.owner->next_pending_probe = {};
+				context.owner->message = MessageOwnership(chat.messages[context.owner->assistant]);
+				context.next_live_probe = {};
+			}
 			if (handoff && (context.owner->serial == session.turn_serial || context.failed_attempt == session.turn_serial))
 				context.owner->handoff_serial = session.turn_serial + 1;
 			return;
 		}
 		if (!context.baseline || context.armed_turn == 0 || context.finished_turn == context.armed_turn ||
-		    session.turn_serial != context.armed_turn || session.last_settled_turn_serial != context.armed_turn ||
-		    session.processing || session.prompt_request_id != 0 || AcpSessionHasPendingCancel(session)) return;
-		if (session.last_turn_outcome != "completed")
+		    session.turn_serial != context.armed_turn || AcpSessionHasPendingCancel(session)) return;
+		const bool live = session.processing && IsActivePrompt(session, chat) && session.queued_prompt.empty() &&
+		    session.current_assistant_message_index == session.turn_assistant_message_index;
+		if (!live && (session.last_settled_turn_serial != context.armed_turn || session.processing || session.prompt_request_id != 0)) return;
+		if (!live && session.last_turn_outcome != "completed")
 		{
 			context.finished_turn = context.armed_turn;
 			context.baseline = false;
@@ -277,6 +473,7 @@ struct OpenCodeCompactionSyncService::State
 			return;
 		}
 		const int index = session.turn_assistant_message_index;
+		if (live && index < 0) return; // ACP creates the owned assistant lazily on its first output chunk.
 		if (index < 0 || index >= static_cast<int>(chat.messages.size()) || chat.messages[index].role != MessageRole::Assistant)
 		{
 			context.finished_turn = context.armed_turn;
@@ -285,8 +482,10 @@ struct OpenCodeCompactionSyncService::State
 			context.error = "Native compaction has no unchanged completed assistant owner.";
 			return;
 		}
+		if (live && !acp_detail::MessageBlocksEqual(chat.messages[index].blocks, acp_detail::MessageBlocksFromTurnEvents(session))) return;
 		context.owner = Owner{.serial = session.turn_serial, .assistant = index,
-		    .message = MessageOwnership(chat.messages[index]), .handoff_serial = handoff ? session.turn_serial + 1 : 0};
+		    .message = MessageOwnership(chat.messages[index]), .handoff_serial = handoff ? session.turn_serial + 1 : 0,
+		    .live = live, .created = chat.messages[index].created_at};
 	}
 
 	bool Owns(const AppState& app, const AcpSessionState& session, const ChatSession& chat, const Context& context) const
@@ -298,7 +497,10 @@ struct OpenCodeCompactionSyncService::State
 		if (!context.owner) return true;
 		const Owner& owner = *context.owner;
 		if (owner.assistant < 0 || owner.assistant >= static_cast<int>(chat.messages.size()) ||
-		    chat.messages[owner.assistant].role != MessageRole::Assistant || MessageOwnership(chat.messages[owner.assistant]) != owner.message) return false;
+		    chat.messages[owner.assistant].role != MessageRole::Assistant || chat.messages[owner.assistant].created_at != owner.created) return false;
+		if (owner.live) return session.turn_serial == owner.serial && session.processing && IsActivePrompt(session, chat) &&
+		    session.queued_prompt.empty() && session.turn_assistant_message_index == owner.assistant && session.current_assistant_message_index == owner.assistant;
+		if (MessageOwnership(chat.messages[owner.assistant]) != owner.message) return false;
 		return (session.turn_serial == owner.serial && session.last_settled_turn_serial == owner.serial &&
 		        !session.processing && session.prompt_request_id == 0) ||
 		    (owner.handoff_serial == session.turn_serial && session.prompt_request_id == 0 && !session.queued_prompt.empty()) ||
@@ -308,33 +510,71 @@ struct OpenCodeCompactionSyncService::State
 
 	bool Publish(AppState& app, AcpSessionState& session, ChatSession& chat, Context& context)
 	{
-		if (!Owns(app, session, chat, context))
+		if (!context.owner || !Owns(app, session, chat, context))
 		{ context.error = "Native compaction ownership changed before publication."; return false; }
 		Owner& owner = *context.owner;
-		bool changed = false;
-		for (const std::pair<const Cursor, std::string>& completed : owner.completed)
+		Message& message = chat.messages[owner.assistant];
+		const bool retained = session.turn_serial == owner.serial && session.turn_assistant_message_index == owner.assistant && !session.turn_events.empty();
+		if (retained && !acp_detail::MessageBlocksEqual(message.blocks, acp_detail::MessageBlocksFromTurnEvents(session))) return false;
+		std::vector<MessageBlock> blocks = message.blocks;
+		if (blocks.empty() && !owner.live)
 		{
-			const std::string& id = completed.second;
-			const std::string identity = "acp-compaction:" + id;
-			const bool exists = std::ranges::any_of(chat.messages, [&](const Message& message)
-			{
-				return std::ranges::any_of(message.blocks, [&](const MessageBlock& block)
-				{ return block.type == "context_compaction" && (block.request_id_json == id || block.request_id_json == identity); });
-			});
-			if (exists) continue;
-			Message& message = chat.messages[owner.assistant];
-			if (message.blocks.empty())
-			{
-				AcpSessionState restored;
-				acp_detail::RestoreTurnEventsFromMessageBlocks(restored, message);
-				message.blocks = acp_detail::MessageBlocksFromTurnEvents(restored);
-			}
-			message.blocks.push_back({"context_compaction", "", "", identity});
-			changed = true;
+			AcpSessionState restored;
+			acp_detail::RestoreTurnEventsFromMessageBlocks(restored, message);
+			blocks = acp_detail::MessageBlocksFromTurnEvents(restored);
 		}
-		context.finished_turn = owner.serial;
-		context.owner.reset();
-		if (changed) acp_detail::ScheduleChatSave(app, chat, 0.0);
+		bool changed = RetypeSummaries(blocks, owner.completed);
+		if (changed && retained)
+		{
+			std::vector<AcpTurnEventState> events = session.turn_events;
+			if (!RetypeSummaries(events, owner.completed)) return false;
+			// Updating retained events directly preserves every tool owner and delivery field.
+			session.turn_events = std::move(events);
+			blocks = acp_detail::MessageBlocksFromTurnEvents(session);
+		}
+		bool unresolved = false;
+		for (const std::pair<const Cursor, Summary>& completed : owner.completed)
+		{
+			const Summary& summary = completed.second;
+			const std::string identity = "acp-compaction:" + summary.id;
+			if (summary.has_text)
+			{
+				if (!std::ranges::any_of(blocks, [&](const MessageBlock& block) { return block.type == "context_compaction" &&
+				    (block.request_id_json == identity || block.request_id_json == summary.id) && block.text == summary.text; })) unresolved = true;
+				continue;
+			}
+			// Metadata-only providers retain the existing completed-turn empty-boundary contract.
+			if (owner.live) continue;
+			const bool exists = std::ranges::any_of(chat.messages, [&](const Message& row)
+			{ return std::ranges::any_of(row.blocks, [&](const MessageBlock& block) { return block.type == "context_compaction" &&
+			    (block.request_id_json == summary.id || block.request_id_json == identity); }); });
+			if (!exists)
+			{
+				blocks.push_back({"context_compaction", "", "", identity});
+				if (retained) session.turn_events.push_back({.type = "context_compaction", .request_id_json = identity});
+				changed = true;
+			}
+		}
+		if (changed)
+		{
+			message.blocks = std::move(blocks);
+			acp_detail::ScheduleChatSave(app, chat, 0.0);
+		}
+		owner.message = MessageOwnership(message);
+		context.next_publication_probe = std::chrono::steady_clock::now() + kStreamPublicationInterval;
+		// Published IDs remain in the saved projection and behind the native cursor; only unresolved work needs caching.
+		std::erase_if(owner.completed, [&](const std::pair<const Cursor, Summary>& item)
+		{
+			const Summary& summary = item.second;
+			return summary.ready && !summary.text.empty() && !context.pending.contains(summary.id) &&
+			    std::ranges::any_of(message.blocks, [&](const MessageBlock& block)
+			    { return block.type == "context_compaction" && block.text == summary.text &&
+			        (block.request_id_json == summary.id || block.request_id_json == "acp-compaction:" + summary.id); });
+		});
+		if (!owner.live && owner.scan_complete && !unresolved && context.pending.empty())
+		{ context.finished_turn = owner.serial; context.owner.reset(); }
+		else if (!owner.live && owner.pending_deadline == std::chrono::steady_clock::time_point{})
+			owner.pending_deadline = std::chrono::steady_clock::now() + kPendingDeadline;
 		return changed;
 	}
 
@@ -359,6 +599,37 @@ struct OpenCodeCompactionSyncService::State
 			const bool directory_matches = context.identity.host
 			    ? execution_hosts::RemotePathsMatch(context.identity.host->platform, directory, context.identity.workspace)
 			    : paths::PathFromUtf8(directory).lexically_normal() == paths::PathFromUtf8(context.identity.workspace).lexically_normal();
+			if (work.kind == QueryKind::Text)
+			{
+				if (envelope.at("sessionId") != context.identity.native || !directory_matches || !context.owner) throw std::runtime_error("summary ownership mismatch");
+				Summary& summary = context.owner->completed.at(work.summary_cursor);
+				const std::int64_t characters = envelope.at("characters").get<std::int64_t>();
+				const std::int64_t offset = envelope.at("offset").get<std::int64_t>();
+				const std::int64_t count = envelope.at("chunkCharacters").get<std::int64_t>();
+				const std::int64_t prefix_bytes = envelope.at("prefixBytes").get<std::int64_t>();
+				const std::string revision = envelope.at("revision").get<std::string>();
+				const std::string previous_tool = envelope.at("previousTool").get<std::string>();
+				const std::string chunk = envelope.at("chunk").get<std::string>();
+				if (characters < 0 || characters > static_cast<std::int64_t>(kMetadataBytes) || prefix_bytes < 0 || prefix_bytes > static_cast<std::int64_t>(kMetadataBytes) || offset != summary.offset || count < 0 || count > 8192 ||
+				    count > characters - offset || (count == 0 && offset != characters) || summary.text.size() + chunk.size() > kMetadataBytes ||
+				    (!previous_tool.empty() && !PortableId(previous_tool)) || (summary.characters >= 0 &&
+				        (characters != summary.characters || summary.prefix_bytes != prefix_bytes || summary.revision != revision || summary.previous_tool != previous_tool)))
+					throw std::runtime_error("summary text snapshot changed or exceeded its bound");
+				summary.characters = characters; summary.prefix_bytes = prefix_bytes; summary.revision = revision; summary.previous_tool = previous_tool;
+				summary.text += chunk; summary.offset += count; summary.ready = summary.offset == characters;
+				if (summary.ready)
+				{
+					if (static_cast<std::size_t>(prefix_bytes) > summary.text.size()) throw std::runtime_error("invalid native prefix boundary");
+					summary.prefix = summary.text.substr(0, static_cast<std::size_t>(prefix_bytes));
+					summary.text.erase(0, static_cast<std::size_t>(prefix_bytes));
+				}
+				std::size_t total = 0;
+				for (const std::pair<const Cursor, Summary>& item : context.owner->completed) total += item.second.text.size() + item.second.prefix.size();
+				if (total > 4 * 1024 * 1024) throw std::runtime_error("turn summary text limit exceeded");
+				ChatSession* chat = ChatDomainService().FindChatById(app, context.identity.chat_id);
+				AcpSessionState* session = FindAcpSessionForChat(app, context.identity.chat_id);
+				return summary.ready && chat && session ? Publish(app, *session, *chat, context) : false;
+			}
 			if (envelope.at("sessionId") != context.identity.native || !directory_matches || envelope.at("schemaCompatible") != 1)
 				throw std::runtime_error("native session, workspace or schema mismatch");
 			const nlohmann::json rows = nlohmann::json::parse(envelope.at("rows").get<std::string>());
@@ -371,9 +642,19 @@ struct OpenCodeCompactionSyncService::State
 				context.cursor = {envelope.at("upperTime").get<std::int64_t>(), envelope.at("upperId").get<std::string>()};
 				if (context.cursor.time < 0 || (!context.cursor.id.empty() && !PortableId(context.cursor.id))) throw std::runtime_error("invalid baseline cursor");
 				context.baseline = true;
+				context.scope = context.cursor;
 				return false;
 			}
 			if (work.kind == QueryKind::Pending) context.pending.clear();
+			std::set<std::string> published;
+			if (context.owner)
+			{
+				const ChatSession* chat = ChatDomainService().FindChatById(app, context.identity.chat_id);
+				if (chat && context.owner->assistant >= 0 && context.owner->assistant < static_cast<int>(chat->messages.size()))
+					for (const MessageBlock& block : chat->messages[context.owner->assistant].blocks)
+						if (block.type == "context_compaction" && !block.text.empty())
+							published.insert(block.request_id_json.starts_with("acp-compaction:") ? block.request_id_json.substr(15) : block.request_id_json);
+			}
 			Cursor previous = work.cursor;
 			const std::size_t count = std::min(rows.size(), kPageSize);
 			for (std::size_t index = 0; index < count; ++index)
@@ -395,12 +676,32 @@ struct OpenCodeCompactionSyncService::State
 				const bool finished = finish.is_string() && !finish.get_ref<const std::string&>().empty();
 				if (!finished && no_error && row.at("parentProof") == 1) context.pending.insert(cursor.id);
 				else if (finished && no_error && row.at("parentProof") == 1 && context.owner)
-					context.owner->completed.emplace(cursor, cursor.id);
+				{
+					if (published.contains(cursor.id)) continue; // Adoption never requeues an already typed native identity.
+					const bool has_text = row.value("textParts", 0) > 0;
+					if (context.owner->live && !has_text) context.pending.insert(cursor.id);
+					else context.owner->completed.try_emplace(cursor, Summary{.id = cursor.id, .has_text = has_text, .requires_tool = context.adopted});
+				}
 				if (context.pending.size() > kPendingLimit || (context.owner && context.owner->completed.size() > kPendingLimit))
 					throw std::runtime_error("compaction metadata limit exceeded");
 			}
 			if (!context.owner) throw std::runtime_error("settled owner was replaced");
-			if (work.kind == QueryKind::Pending) { context.owner->pages_finished = false; return false; }
+			if (work.kind == QueryKind::Pending)
+			{
+				context.owner->scan_complete = false;
+				context.owner->pages_finished = false;
+				if (context.owner->live) context.next_live_probe = std::chrono::steady_clock::now() + kPendingProbeInterval;
+				return false;
+			}
+			context.owner->scan_complete = rows.size() <= kPageSize;
+			if (context.owner->live)
+			{
+				context.owner->pages_finished = rows.size() <= kPageSize && !context.pending.empty();
+				context.next_live_probe = rows.size() > kPageSize ? std::chrono::steady_clock::time_point{} : std::chrono::steady_clock::now() + kPendingProbeInterval;
+				ChatSession* chat = ChatDomainService().FindChatById(app, context.identity.chat_id);
+				AcpSessionState* session = FindAcpSessionForChat(app, context.identity.chat_id);
+				return chat && session ? Publish(app, *session, *chat, context) : false;
+			}
 			if (rows.size() > kPageSize) return false;
 			if (!context.pending.empty())
 			{
@@ -434,7 +735,7 @@ struct OpenCodeCompactionSyncService::State
 		{
 			if (current == contexts.end()) current = contexts.begin();
 			Context& context = current->second;
-			if (context.owner && context.owner->pages_finished)
+			if (context.owner && !context.owner->live && context.owner->pages_finished)
 			{
 				const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 				if (now >= context.owner->pending_deadline)
@@ -447,12 +748,27 @@ struct OpenCodeCompactionSyncService::State
 				work->identity = context.identity;
 				work->cursor = context.cursor;
 				work->pending = context.pending;
-				if (context.owner) work->completed = context.owner->completed;
+				if (context.owner)
+				{
+					work->owner_serial = context.owner->serial; work->owner_assistant = context.owner->assistant;
+					work->completed = context.owner->completed;
+				}
 				work->kind = !context.baseline ? QueryKind::Baseline :
-				    (context.owner->pages_finished && !context.pending.empty() ? QueryKind::Pending : QueryKind::Page);
+				    ((!context.pending.empty() && context.owner->pages_finished) ? QueryKind::Pending : QueryKind::Page);
+				const Summary* text = nullptr;
+				if (context.owner)
+					for (std::pair<const Cursor, Summary>& item : context.owner->completed)
+						if (item.second.has_text && !item.second.ready)
+						{
+							if (item.second.deadline == std::chrono::steady_clock::time_point{}) item.second.deadline = std::chrono::steady_clock::now() + kSummaryDeadline;
+							if (std::chrono::steady_clock::now() >= item.second.deadline) { context.error = "Native compaction summary text exceeded its 90 second deadline."; break; }
+							work->kind = QueryKind::Text; work->summary_cursor = item.first; text = &item.second; break;
+						}
+				if (!context.error.empty()) { ++current; continue; }
+				if (context.owner && context.owner->live && !text && std::chrono::steady_clock::now() < context.next_live_probe) { ++current; continue; }
 				Query query;
 				query.workspace = paths::PathFromUtf8(context.identity.workspace); query.host = context.identity.host;
-				query.sql = MetadataSql(context.identity, work->kind, context.cursor, context.pending);
+				query.sql = text ? SummarySql(context.identity, *text, context.scope) : MetadataSql(context.identity, work->kind, context.cursor, context.pending);
 				query.argv = context.identity.command;
 				query.argv.insert(query.argv.end(), {"db", query.sql, "--format", "json", "--pure"});
 				last_scheduled = current->first;
@@ -535,7 +851,7 @@ OpenCodeCompactionGateState OpenCodeCompactionSyncService::BeforeDispatch(AppSta
 	if (session.provider_id != provider_ids::kOpenCodeCli || session.model_discovery_only) return OpenCodeCompactionGateState::NotApplicable;
 	if (m_state->stopped) { error = "Native compaction synchronization is stopping."; return OpenCodeCompactionGateState::Failed; }
 	const ExecutionHost* host = paths::IsControllerLocalWorkspace(chat) ? nullptr : execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
-	if (session.agent_version != "1.18.35" || (host && host->runner_protocol_version < 3))
+	if (!VerifiedVersion(session.agent_version) || (host && host->runner_protocol_version < 3))
 	{
 		const std::string scope = chat.execution_host_id + ":" + session.agent_version + ":" + (host ? std::to_string(host->runner_protocol_version) : "local");
 		if (m_state->unsupported_diagnostics.insert(scope).second)
@@ -553,7 +869,9 @@ OpenCodeCompactionGateState OpenCodeCompactionSyncService::BeforeDispatch(AppSta
 	}
 	m_state->Schedule();
 	if (!context->baseline || context->owner) return OpenCodeCompactionGateState::Pending;
+	if (context->armed_turn != session.turn_serial) context->scope = context->cursor;
 	context->armed_turn = session.turn_serial;
+	context->adopted = false;
 	context->failed_attempt = 0;
 	return OpenCodeCompactionGateState::Ready;
 }
@@ -562,10 +880,28 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 {
 	if (m_state->stopped) return false;
 	bool changed = m_history && m_history->Poll(app);
+	for (const std::unique_ptr<AcpSessionState>& candidate : app.acp_sessions)
+	{
+		if (!candidate || candidate->provider_id != provider_ids::kOpenCodeCli || candidate->model_discovery_only ||
+		    !candidate->processing || !candidate->queued_prompt.empty() ||
+		    m_state->contexts.contains(candidate->chat_id)) continue;
+		ChatSession* chat = ChatDomainService().FindChatById(app, candidate->chat_id);
+		const int assistant = candidate->turn_assistant_message_index;
+		if (!chat || !IsActivePrompt(*candidate, *chat) || assistant < 0 || assistant >= static_cast<int>(chat->messages.size()) ||
+		    candidate->current_assistant_message_index != assistant || chat->messages[assistant].role != MessageRole::Assistant ||
+		    !acp_detail::MessageBlocksEqual(chat->messages[assistant].blocks, acp_detail::MessageBlocksFromTurnEvents(*candidate))) continue;
+		const std::optional<std::int64_t> lower = AssistantUtcMilliseconds(chat->messages[assistant].created_at);
+		if (!lower) continue;
+		std::string ignored;
+		State::Context* context = m_state->FindOrCreate(app, *candidate, *chat, ignored);
+		if (!context) continue;
+		context->baseline = context->adopted = true; context->armed_turn = candidate->turn_serial;
+		context->cursor = context->scope = Cursor{*lower, ""};
+	}
 	for (std::map<std::string, State::Context>::iterator current = m_state->contexts.begin(); current != m_state->contexts.end();)
 	{
 		State::Context& context = current->second;
-		if (context.error.empty() && context.owner && context.owner->pending_deadline != std::chrono::steady_clock::time_point{} &&
+		if (context.error.empty() && context.owner && !context.owner->live && context.owner->pending_deadline != std::chrono::steady_clock::time_point{} &&
 		    std::chrono::steady_clock::now() >= context.owner->pending_deadline)
 		{
 			context.error = "Native compaction metadata remained pending after its completed turn. The next prompt was not sent; retry after checking the provider.";
@@ -581,6 +917,14 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 			continue;
 		}
 		m_state->CaptureOwner(current->second, *session, *chat, false);
+		if (context.error.empty() && context.owner && context.owner->live && !context.owner->completed.empty() &&
+		    std::chrono::steady_clock::now() >= context.next_publication_probe)
+		{
+			context.next_publication_probe = std::chrono::steady_clock::now() + kStreamPublicationInterval;
+			if (context.owner->assistant >= 0 && context.owner->assistant < static_cast<int>(chat->messages.size()) &&
+			    context.owner->message != MessageOwnership(chat->messages[context.owner->assistant]))
+				changed = m_state->Publish(app, *session, *chat, context) || changed;
+		}
 		++current;
 	}
 	if (m_state->active && m_state->active->finished.load(std::memory_order_acquire))
@@ -596,6 +940,8 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 			ChatSession* chat = ChatDomainService().FindChatById(app, current->first);
 			AcpSessionState* session = FindAcpSessionForChat(app, current->first);
 			if (!chat || !session || !m_state->Owns(app, *session, *chat, current->second)) m_state->contexts.erase(current);
+			else if (work->owner_serial != 0 && (!current->second.owner || current->second.owner->serial != work->owner_serial ||
+			    current->second.owner->assistant != work->owner_assistant)) { /* The old turn's worker cannot publish into a replacement owner. */ }
 			else
 			{
 				changed = m_state->Consume(app, current->second, *work) || changed;

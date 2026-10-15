@@ -647,6 +647,8 @@ export interface VoiceInputSettings {
 
 export interface VcsStorageSettings {
   gitAutoWorktree: boolean
+  gitSnapshotSvn: boolean
+  gitSnapshotPlainFolders: boolean
   gitDefaultBaseBranch: string
   gitPullBeforeChat: boolean
   svnUpdateBeforeChat: boolean
