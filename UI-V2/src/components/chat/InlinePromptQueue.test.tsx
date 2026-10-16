@@ -37,7 +37,7 @@ describe('inline queued prompts', () => {
     expect(remove).toBeTruthy()
     expect(remove.disabled).toBe(false)
     act(() => { remove.click(); remove.click() })
-    expect(props.onRemoveUnsent).toHaveBeenCalledExactlyOnceWith(0)
+    expect(props.onRemoveUnsent).toHaveBeenCalledExactlyOnceWith(0, undefined)
     expect(remove.disabled).toBe(true)
     expect(host.textContent).toContain('Legacy unsent input')
     await act(async () => finish(false))

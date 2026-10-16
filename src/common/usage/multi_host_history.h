@@ -20,6 +20,9 @@ namespace uam::usage
 		void SetHosts(std::vector<ExecutionHost> hosts);
 		nlohmann::json Query(std::string_view host_id, int days, const std::map<ModelKey, ModelPrices>& prices = {}) const;
 		const std::filesystem::path& DataRoot() const { return m_dataRoot; }
+		/// <summary>Counts successfully imported receipt rows for background-work diagnostics.</summary>
+		std::uint64_t ImportedRecordCount() const { return m_importedRecords.load(); }
+		std::uint64_t LedgerBuildCount() const { return m_ledgerBuilds.load(); }
 
 	private:
 		struct View
@@ -32,6 +35,8 @@ namespace uam::usage
 		const std::filesystem::path m_dataRoot;
 		const std::shared_ptr<Collector> m_local;
 		const RemoteAccountingFetcher m_fetch;
+		std::atomic<std::uint64_t> m_importedRecords{0};
+		std::atomic<std::uint64_t> m_ledgerBuilds{0};
 		mutable std::mutex m_mutex;
 		std::vector<ExecutionHost> m_hosts;
 		std::map<std::string, View> m_views;

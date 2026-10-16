@@ -25,6 +25,9 @@ namespace uam::usage
 		std::int64_t as_of = 0;
 		std::uint64_t bytes = 0;
 		std::string fingerprint;
+		/// <summary>Local cache identity of exact fact lines, excluding the transport header.</summary>
+		std::string facts_fingerprint;
+		std::uint64_t facts_bytes = 0;
 		bool lifetime = true;
 		bool owned = false;
 		~ReceiptSnapshot();

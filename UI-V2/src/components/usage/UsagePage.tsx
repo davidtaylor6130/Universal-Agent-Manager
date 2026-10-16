@@ -192,7 +192,8 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
   }
   const tipLabel = (startMs: number) => new Date(startMs).toLocaleString(undefined, hourly ? { hour: 'numeric', month: 'short', day: 'numeric' } : { year: days === 0 ? 'numeric' : undefined, month: 'short', day: 'numeric', timeZone: 'UTC' })
   const noCostData = metric === 'cost' && totals.totalTokens > 0 && totals.reportedCostTokens + totals.estimatedCostTokens === 0
-  const hasReported = totals.reportedCostUsd > 0
+  const hasReported = totals.reportedCostTokens > 0 || totals.reportedCostUsd > 0
+  const partialCost = totals.unpricedTokens > 0 && totals.reportedCostTokens + totals.estimatedCostTokens > 0
   const coverageLabel = (status: string) => status === 'ready' ? 'Current' : status === 'cached' ? 'Cached' : status === 'loading' ? 'Loading' : 'Unavailable'
   const coverage = (data?.coverage ?? []).map(machine => [`${machine.label || machine.executionHostId}: ${coverageLabel(machine.status)}`, machine.asOfMs ? new Date(machine.asOfMs).toLocaleString() : '', machine.error].filter(Boolean).join(' · '))
   // Status lives in one header icon (tooltip + screen-reader list), not as text on the page.
@@ -206,10 +207,11 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing && 'All Time includes recorded and available history. Previously deleted receipts may be missing.',
     data.listingLimited && 'Some history is outside the scan limit. These totals are incomplete.',
     noCostData && 'No cost data for this range. Tokens were recorded, but no prices are known. Add model prices under Breakdown, or switch to Tokens.',
+    metric === 'cost' && partialCost && `${totals.unpricedTokens.toLocaleString()} tokens have no known price and are excluded from costs.`,
     !hiddenProviders.has('copilot-cli') && data.providers.some(provider => provider.providerId === 'copilot-cli' && provider.records > 0) && 'Copilot history is grouped by saved checkpoint time.',
     ...warnings.map(provider => `${providerLabel(provider.providerId)}: ${provider.errors} read errors, ${provider.invalidLines} invalid records, ${provider.oversizedLines} oversized records, ${provider.pendingLines} unfinished lines.`),
   ].filter((line): line is string => Boolean(line)) : []
-  const attention = Boolean(data && (!data.complete || data.listingLimited || data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing || warnings.length > 0 || noCostData || data.coverage?.some(machine => machine.status !== 'ready')))
+  const attention = Boolean(data && (!data.complete || data.listingLimited || data.historyCoverage?.previouslyPrunedReceiptsMayBeMissing || warnings.length > 0 || noCostData || metric === 'cost' && partialCost || data.coverage?.some(machine => machine.status !== 'ready')))
   const statusLines = [...notes, ...coverage]
   return <main aria-label="Usage workspace" className="uam-usage flex h-full min-h-0 min-w-0 flex-1 flex-col" style={{ background: 'var(--bg)', color: 'var(--text)' }} onKeyDown={event => {
     if (event.key === 'Escape' && !event.defaultPrevented && !document.querySelector('[aria-modal="true"]') && !editingPrice) { event.preventDefault(); onClose() }
@@ -247,10 +249,10 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
             <div className="grid content-start gap-4">
               <div className="uam-usage-tiles">
                 {metric === 'cost' ? <>
-                  <StatTile label={hasReported ? 'Total cost' : 'Estimated cost'} value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`API list prices · ${totals.sessions.toLocaleString()} sessions`} />
+                  <StatTile label={partialCost ? 'Known cost' : hasReported ? 'Total cost' : 'Estimated cost'} value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${hasReported ? 'Provider charges and API estimates' : 'API list prices'} · ${totals.sessions.toLocaleString()} sessions`} />
                   {hasReported && <StatTile label="Reported" value={money(totals.reportedCostUsd)} sub="Provider-reported" />}
                   {hasReported && <StatTile label="Estimated" value={totals.estimatedCostTokens || !totals.totalTokens ? money(totals.estimatedCostUsd) : 'Unknown'} sub="API list prices" />}
-                  {!hasReported && <StatTile label="Unpriced tokens" value={formatUsageCount(totals.unpricedTokens)} sub="No known price" />}
+                  {(!hasReported || totals.unpricedTokens > 0) && <StatTile label="Unpriced tokens" value={formatUsageCount(totals.unpricedTokens)} sub="No known price" />}
                 </> : <>
                   <StatTile label="Total tokens" value={amount(totals)} title={totals.totalTokens.toLocaleString()} sub={`${totals.sessions.toLocaleString()} sessions`} />
                   <StatTile label="Cache read" value={percentOf(totals.cachedInputTokens, totals.totalTokens)} sub={`${formatUsageCount(totals.cachedInputTokens)} tokens`} />
@@ -259,10 +261,10 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
               </div>
             </div>
             <div className="grid content-start gap-3">
-              <h2 className="text-sm font-medium">{hourly ? 'Hourly' : 'Daily'} {metric === 'cost' ? 'estimated cost' : 'tokens'}</h2>
+              <h2 className="text-sm font-medium">{hourly ? 'Hourly' : 'Daily'} {metric === 'cost' ? 'cost' : 'tokens'}</h2>
               <div className="uam-usage-chart">
                 <div className="uam-usage-axis text-xs tabular-nums" aria-hidden><span>{axisValue(peak)}</span><span>{axisValue(peak / 2)}</span><span>0</span></div>
-                <div key={plotKey} role="group" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'estimated costs, unpriced tokens excluded' : 'tokens'} from loaded history. Use arrow keys to move between columns.`} className="uam-usage-plot" style={{ gap: periods.length > 31 ? 1 : 4 }} onKeyDown={moveColumnFocus}>
+                <div key={plotKey} role="group" aria-label={`${hourly ? 'Hourly' : 'Daily'} ${metric === 'cost' ? 'costs, unpriced tokens excluded' : 'tokens'} from loaded history. Use arrow keys to move between columns.`} className="uam-usage-plot" style={{ gap: periods.length > 31 ? 1 : 4 }} onKeyDown={moveColumnFocus}>
                   {metric === 'cost' && peak === 0 && totals.unpricedTokens > 0 && <span className="absolute inset-0 flex items-center justify-center text-xs">No priced usage in this range.</span>}
                   {periods.map((period, index) => {
                     const total = numeric(period)

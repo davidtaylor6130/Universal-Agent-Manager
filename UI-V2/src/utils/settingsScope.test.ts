@@ -14,15 +14,16 @@ describe('withSettingsScope', () => {
   })
 })
 
-it('inherits global defaults unless a configured SSH host has explicit overrides', () => {
+it('isolates unconfigured SSH defaults while retaining local globals and explicit remote overrides', () => {
   const initial = useAppStore.getState()
   const overrides = { defaultNewChatProviderId: 'remote-provider', providerChatDefaults: {}, mcpServers: [] }
   const state: Parameters<typeof defaultsForExecutionHost>[0] = {
     ...initial,
+    defaultNewChatProviderId: 'local-provider',
     executionHosts: [{ id: 'lab', label: 'Lab', transport: 'ssh', sshAlias: 'lab', runnerStatus: 'ready', runnerVersion: '1', platform: 'linux', architecture: 'x64', lastSeenAt: '' }],
     hostScopedSettingsValues: {},
   }
-  expect(defaultsForExecutionHost(state, 'lab')).toBe(state)
+  expect(defaultsForExecutionHost(state, 'lab')).toEqual({ defaultNewChatProviderId: '', providerChatDefaults: {} })
   state.hostScopedSettingsValues = { lab: overrides, local: overrides, removed: overrides }
   expect(defaultsForExecutionHost(state, 'lab')).toBe(overrides)
   expect(defaultsForExecutionHost(state, 'local')).toBe(state)
