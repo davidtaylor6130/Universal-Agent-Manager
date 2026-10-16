@@ -10,7 +10,7 @@ Universal Agent Manager (UAM) is a native desktop AI chat and agent application.
 
 System design pages and the repository documentation map are indexed in [docs/README.md](../README.md). Keep them aligned with the source, and preserve the UI contract in `docs/ui/design-language.md` and `docs/ui/settings.md`.
 
-UAM has structured chat routes for Gemini CLI, Codex CLI, Claude Code, OpenCode and GitHub Copilot through provider-specific stdio protocols (Gemini ACP, Codex app-server, Claude stream-json and generic ACP for OpenCode/Copilot). All six supported CLIs have an xterm.js terminal path; Antigravity is terminal-only.
+UAM has structured chat routes for all six providers through provider-specific stdio protocols: Gemini/OpenCode/Copilot ACP, Codex app-server and Claude/Antigravity native stream JSON. All six also have an xterm.js native CLI View path. David confirmed Antigravity’s inclusion in both views on 2026-10-16.
 
 ## Architecture
 
@@ -235,9 +235,9 @@ ctest --test-dir Builds/tests -C Debug --output-on-failure
 Data root resolution:
 
 1. `UAM_DATA_DIR`
-2. `<cwd>/data`
-3. OS default app-data location
-4. Temp fallback
+2. OS default app-data location
+3. Temp fallback
+4. Relative `data` only if no temporary directory can be resolved
 
 Workspace-local memories are stored at `<workspace>/.UAM/`.
 

@@ -1,10 +1,10 @@
 # Providers
 
-Providers are the AI CLI runtimes UAM integrates through programmable interfaces such as ACP, app-server or stream JSON, with a native terminal where available. UAM supports Gemini CLI, Codex CLI, Claude Code CLI, OpenCode CLI, GitHub Copilot CLI and Antigravity CLI; the recorded release boundary for Antigravity is terminal only. UAM supplies shared features when a provider lacks an equivalent. Provider implementation is judged by the outcomes below, not just successful process launch or protocol connection.
+Providers are the AI CLI runtimes UAM integrates through programmable interfaces such as ACP, app-server or stream JSON, with a native terminal where available. UAM supports Gemini CLI, Codex CLI, Claude Code CLI, OpenCode CLI, GitHub Copilot CLI and Antigravity CLI, with both structured Chat and native CLI View in scope for every provider. UAM supplies shared features when a provider lacks an equivalent. Provider implementation is judged by the outcomes below, not just successful process launch or protocol connection.
 
 ## Required capabilities
 
-Every provider checklist must account for every row. Conditional features must clearly report unavailable choices rather than inventing provider capabilities. Terminal-only Antigravity is an explicit release exception for structured chat; it does not automatically exempt the provider from shared UAM outcomes. Its conflicting README/source claims are [recorded for confirmation](../documentation-review.md#antigravity-scope).
+Every provider checklist must account for every row. Conditional features must clearly report unavailable choices rather than inventing provider capabilities. Antigravity follows the same shared requirements as the other five providers; its native stream JSON protocol is a structured-chat implementation route, not a scope exception. David’s [scope confirmation](../documentation-review.md#antigravity-scope) does not mark unverified capabilities complete.
 
 | Capability ID | Agreement |
 |---|---|

@@ -1,4 +1,4 @@
-# Documentation review and open decisions
+# Documentation review and decisions
 
 This page records the outcome of the isolated documentation trial based on `3a7c8477`. Expected behaviour comes from David’s instructions in this conversation and recorded repository decisions. Source inspection identifies implementation routes; no application was built, installed or exercised, and no provider was prompted. The [V5 log](<../V5 Improvement Change log.md>) remains the acceptance and ownership register.
 
@@ -20,11 +20,11 @@ This page records the outcome of the isolated documentation trial based on `3a7c
 
 ## Antigravity scope
 
-**Decision needed.** AGENTS.md and CLAUDE.md define Antigravity as terminal only. The base README and `src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp` describe a structured stream path. This trial preserves the explicit release boundary and records structured code as present but outside accepted scope; it neither removes that code nor authorizes advertising structured support. David should confirm whether the release boundary should now expand.
+**Resolved by David, 2026-10-16.** Antigravity is fully included in structured Chat and native CLI View, with the same shared provider requirements as the other five. Its existing structured adapter uses native stream JSON, not ACP on the wire. Remove the previous terminal-only exception from repository instructions, provider agreements and diagrams; keep actual capability gaps and unverified platform combinations explicit. This scope decision is not acceptance of every implementation. [Antigravity checklist](providers/antigravity/antigravity.md).
 
 ## Data root
 
-**Decision needed.** Repository instructions say `UAM_DATA_DIR` → existing `<cwd>/data` → OS app-data → temporary fallback. Actual startup uses `UAM_DATA_DIR` or `AppPaths::DefaultDataRootPath`, which selects OS app-data, then temporary storage, then relative `data`. This trial keeps the instruction’s stated order as the intended agreement and separately describes actual source behaviour. Do not change application storage routing as part of this docs rewrite; confirm whether the instruction or implementation should change.
+**Resolved by David, 2026-10-16.** Keep existing data-storage behaviour. Startup uses an explicit `UAM_DATA_DIR` when set; otherwise `AppPaths::DefaultDataRootPath` selects OS app-data, then temporary storage, then relative `data` only if no temporary directory is available. Correct the old working-directory-first instructions rather than changing application routing or moving user data. [Persistence agreement](architecture/app-state-persistence.md).
 
 ## Environment scope
 
@@ -53,9 +53,6 @@ Do not reassign the owners of these existing V5 tasks or mark them fixed from th
 
 The local checker validates navigation, heading targets, reachability and one explicit row for each required capability in every provider checklist. The trial passes six negative scenarios: omitted capability, acceptance used as implementation status, duplicate capability, missing local target, missing heading and unreachable feature page. A manual reading check traced provider completeness, memory Off semantics, editor actions, waking chats and build exclusion to their owning agreements. This is documentation validation, not an independent user study or application acceptance.
 
-## Questions for David
+## Decision status
 
-1. Should Antigravity remain terminal only in this release, or should its existing structured implementation become part of the supported agreement?
-2. Should data-root routing follow the documented working-directory-first order, or should the instructions adopt the current OS-app-data-first implementation?
-
-Everything else above follows the instructions already given or remains an explicitly recorded implementation gap, rather than requiring another product decision before this trial can be used.
+Both questions raised by the trial are resolved above. Review and David’s real-development trial remain outstanding; implementation gaps are still tracked separately and are not closed by these documentation decisions.

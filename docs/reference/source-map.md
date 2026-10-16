@@ -20,7 +20,7 @@ These are repository entry points inspected for the documentation trial, not an 
 | Voice | [Bridge](../../src/cef/dictation_handlers.cpp), [settings](../../src/common/config/voice_input_settings.h) | [Voice tests](../../tests/voice_input_tests.cpp) |
 | Phone | [Server](../../src/cef/companion_server.cpp), [browser UI](../../UI-V2/src/components/companion/CompanionShell.tsx) | [Integration checks](../../tests/companion_integration.py) |
 | Memory | [Service](../../src/app/memory_service.cpp), [store](../../src/common/memory/memory_library_store.cpp) | [Policy tests](../../tests/memory_policy_tests.cpp) |
-| Storage root | [Startup](../../src/app/application.cpp), [platform defaults](../../src/common/paths/app_paths.cpp) | [Open decision](../documentation-review.md#data-root) |
+| Storage root | [Startup](../../src/app/application.cpp), [platform defaults](../../src/common/paths/app_paths.cpp) | [Confirmed storage decision](../documentation-review.md#data-root) |
 | Build exclusions | [CMake](../../CMakeLists.txt), [feature macros](../../src/common/config/build_features.h) | [Configurator checks](../../tools/build-configurator/test_configurator.py) |
 
 The provider checklist labels **Implemented** only identify an existing source route. Partial and Needs verification rows deliberately retain limits from the base evidence; a full audit must exercise the relevant native CLI, platform and remote combinations.

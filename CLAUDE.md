@@ -8,4 +8,4 @@ Start feature work at [docs/README.md](docs/README.md), then read [How these doc
 
 React changes follow [the UI language](docs/ui/design-language.md), including primitives, accessibility, motion and interaction. Settings also follow [the settings layout agreement](docs/ui/settings.md). Required Claude review and David’s specific approval remain separate from builds, tests and installation, as specified in AGENTS.md.
 
-Keep Gemini, Codex, Claude Code, OpenCode, Copilot and Antigravity provider implementations. The recorded release scope is Antigravity terminal only; its existing structured code is an [unresolved scope decision](docs/documentation-review.md#antigravity-scope), not authorization to remove or advertise it.
+Keep Gemini, Codex, Claude Code, OpenCode, Copilot and Antigravity provider implementations, with structured Chat and native CLI View in scope for all six. David confirmed Antigravity’s full inclusion and retention of the current data-storage routing on 2026-10-16; see the [recorded decisions](docs/documentation-review.md). Scope inclusion does not establish that every capability is implemented or accepted.

@@ -3,7 +3,7 @@
   Universal Agent Manager
 </h1>
 
-UAM brings AI CLI runtimes into one desktop application on macOS and Windows, with persistent conversations, native terminals, shared configuration and optional SSH execution. It integrates Gemini CLI, Codex CLI, Claude Code CLI, OpenCode CLI, GitHub Copilot CLI and Antigravity CLI. The recorded Antigravity release scope is terminal only; structured support claims remain [under review](docs/documentation-review.md#antigravity-scope).
+UAM brings AI CLI runtimes into one desktop application on macOS and Windows, with persistent conversations, native terminals, shared configuration and optional SSH execution. It integrates Gemini CLI, Codex CLI, Claude Code CLI, OpenCode CLI, GitHub Copilot CLI and Antigravity CLI. Structured Chat and native CLI View are in scope for all six providers, including Antigravity; its structured adapter uses native stream JSON. Individual capability gaps remain explicit in the provider checklists.
 
 ## Start here
 

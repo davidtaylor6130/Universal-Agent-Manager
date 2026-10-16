@@ -2,7 +2,7 @@
 
 > Engineering reference retained from the trial base (`3a7c8477`, 2026-10-16). This records implementation detail and historical verification, not full feature acceptance. Start with the [feature guide](../README.md); its agreements and [documented corrections](../documentation-review.md) take precedence over stale claims here.
 
-This document captures the current security posture for the six-provider release slice, with Antigravity terminal only under the recorded release agreement of Universal Agent Manager. It is not a formal penetration test or compliance attestation; it is the repository-level review checklist for enterprise readiness work.
+This document captures the current security posture for Universal Agent Manager’s six-provider release slice, including structured Chat and native CLI View for Antigravity. It is not a formal penetration test or compliance attestation; it is the repository-level review checklist for enterprise readiness work.
 
 ## Trust Model
 

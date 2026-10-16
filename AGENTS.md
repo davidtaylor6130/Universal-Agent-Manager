@@ -45,7 +45,7 @@ Questions and unresolved contradictions belong in [Documentation review](docs/do
 
 ## Release Slice
 
-This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, GitHub Copilot CLI, and Antigravity CLI (terminal only). Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
+This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, GitHub Copilot CLI, and Antigravity CLI, including structured Chat and native CLI View for all six providers. Keep the app focused on React/CEF, structured chat through ACP or native provider protocols, xterm.js terminal sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
 
 Do not remove any of these six provider implementations. Provider removal requires explicit user direction. RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output remain outside this release slice.
 
@@ -168,8 +168,8 @@ Use [docs/README.md](docs/README.md) as the feature map and [docs/architecture.m
 ## Data Root Resolution
 
 1. `UAM_DATA_DIR` env var
-2. `<cwd>/data`
-3. OS default app-data location
-4. Temp fallback
+2. OS default app-data location
+3. Temp fallback
+4. Relative `data` directory only if no temporary directory can be resolved
 
-The data-root order above is the recorded intended rule; current startup differs. See the [open data-root decision](docs/documentation-review.md#data-root) before changing storage routing.
+David confirmed on 2026-10-16 that the existing storage behaviour should remain. Do not add working-directory-first routing; see the [recorded storage decision](docs/documentation-review.md#data-root).
