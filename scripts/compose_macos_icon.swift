@@ -16,7 +16,17 @@ func writeIcon(_ image: CGImage, size: Int, destination: URL) throws
     let body = side * 824 / 1024
     let inset = (side - body) / 2
     let tileRect = CGRect(x: inset, y: inset + side * 10 / 1024, width: body, height: body)
-    let tile = CGPath(roundedRect: tileRect, cornerWidth: body * 0.2237, cornerHeight: body * 0.2237, transform: nil)
+    // Superellipse (n = 5) matches the artwork's inner window, so the gradient rim stays an even width.
+    let tile = CGMutablePath()
+    for step in 0...720
+    {
+        let angle = Double(step) / 720 * 2 * Double.pi
+        let c = cos(angle), s = sin(angle)
+        let x = tileRect.midX + body / 2 * CGFloat(copysign(pow(abs(c), 0.4), c))
+        let y = tileRect.midY + body / 2 * CGFloat(copysign(pow(abs(s), 0.4), s))
+        if step == 0 { tile.move(to: CGPoint(x: x, y: y)) } else { tile.addLine(to: CGPoint(x: x, y: y)) }
+    }
+    tile.closeSubpath()
     let fill = CGColor(colorSpace: colorSpace, components: [24.0 / 255, 24.0 / 255, 26.0 / 255, 1])!
     context.saveGState()
     context.setShadow(offset: CGSize(width: 0, height: -side * 10 / 1024), blur: side * 28 / 1024,
