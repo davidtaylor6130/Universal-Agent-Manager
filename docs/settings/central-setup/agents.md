@@ -1,0 +1,7 @@
+# Agents
+
+An agent is a reusable definition of role, instructions, allowed skills and execution constraints, with shared UAM selection across providers. Native provider-agent imports must preserve supported restrictions and explicitly reject or acknowledge fields that cannot be represented; importing a read-only definition must not silently make it writable. Build/Plan choices, provider-spawned subagents and user-created side chats are related but distinct concepts.
+
+[Provider agent selection](../../providers/agent-selection.md) · [Subagent history](../../providers/agent-history.md) · [Side chats](../../providers/side-chats.md).
+
+Built-in definitions are read-only; custom definitions can be created, edited or explicitly deleted with their supported role, workspace access and skill attachments. Favourites and the configured cycling shortcut select Build, Plan and eligible custom agents without weakening imported restrictions. [Central Setup](central-setup.md) owns shared default agents/skills; a saved definition does not retroactively replace setup captured by a running session.

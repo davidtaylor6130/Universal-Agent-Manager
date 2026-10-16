@@ -1,0 +1,5 @@
+# Chat and workspace actions
+
+Chat rows offer rename, regenerate/cancel title generation, copy details, pinning, snooze, collections and explicit deletion; actions target the chosen chat or disclosed branch family, not whichever row becomes selected during background work. A title worker changes only the title and must not overwrite a newer manual rename. Multi-selection, drag/drop and ordering change organisation while preserving conversation identity. Workspace menus separately offer naming, host/directory choices, project memory and native-session review. Deletion confirms affected chats/families/workspace entries, reports real cleanup progress and retains failures; deleting a workspace entry does not delete the user's underlying directory. Reusing an existing owned worktree for a new chat is distinct from creating another isolated worktree.
+
+[Lifecycle](../chat/lifecycle.md) · [Collections](collections.md) · [Icons](custom-icons.md) · [Folder recovery](../workspaces/folder-recovery.md) · [New chat](../chat/new-chat.md).

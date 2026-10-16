@@ -1,6 +1,6 @@
 # Build UAM
 
-Open **Build UAM.command** on macOS or **Build UAM.bat** on Windows. Install Python 3 from python.org if the launcher requests it. A local browser page lets you select providers, optional features and a new output folder inside `Builds/`.
+Open **Build UAM.command** on macOS or **Build UAM.bat** on Windows. Install Python 3 from python.org if the launcher requests it. A local browser page lets you select its listed providers, optional features and a new output folder inside `Builds/`. See the provider-exclusion gap below before using it for an organisation-restricted build.
 
 Click **Check prerequisites**. Install any missing tools named by the page: Node.js LTS, CMake, Apple command line tools on macOS or Visual Studio Build Tools with **Desktop development with C++** on Windows. The configurator finds installed Visual Studio tools and initializes their environment itself. An internet connection is needed to download locked frontend packages, CEF and zlib when the toolchain does not already provide it. CMake dependency sources and binaries remain inside the selected build folder. Frontend dependencies are installed in the selected source folder’s `UI-V2/node_modules`.
 
@@ -10,7 +10,7 @@ The configurator protects existing build directories. It reuses only output mark
 
 ## Optional feature flags
 
-All feature flags default to **ON**. All five provider flags retain their existing **ON** defaults. Set at least one `UAM_ENABLE_RUNTIME_<GEMINI|CODEX|CLAUDE|OPENCODE|COPILOT>_CLI=ON`.
+CMake feature and all six provider flags default to **ON**. **Known configurator gap:** the browser configurator currently enumerates only Gemini, Codex, Claude, OpenCode and Copilot; it does not emit an Antigravity flag, so a restricted selection can leave Antigravity enabled by default. Use explicit CMake flags for a restricted profile until this is fixed. Set at least one `UAM_ENABLE_RUNTIME_<GEMINI|CODEX|CLAUDE|OPENCODE|COPILOT|ANTIGRAVITY>_CLI=ON`.
 
 | CMake flag | ON includes | OFF excludes |
 | --- | --- | --- |
@@ -18,18 +18,18 @@ All feature flags default to **ON**. All five provider flags retain their existi
 | `UAM_ENABLE_SSH` | Remote connection support and the current platform's SSH helper | SSH connection admission, remote host controls and bundled remote helper artifacts |
 | `UAM_ENABLE_MOBILE_COMPANION` | Companion HTTP server, mobile frontend and optional Caddy HTTPS resources | Companion server source, mobile frontend chunk, phone access controls and HTTPS resources |
 
-Core configuration/history compatibility code remains compiled so older settings and chats remain readable. A disabled feature cannot be enabled through saved settings or bridge requests. Rebuilding with a feature OFF removes its old generated bundle artifacts.
+Core configuration/history compatibility code remains compiled so older settings and chats remain readable. The stricter [product agreement](../../docs/build-flags.md) requires no mention of excluded capabilities in the resulting application or shipped content; complete artifact-level removal remains unverified and compatibility code is not a compliance claim. A disabled feature cannot be enabled through saved settings or bridge requests. Rebuilding with a feature OFF removes its old generated bundle artifacts.
 
 `UAM_PACKAGE_REMOTE_RUNNERS=ON` validates and packages helper artifacts for every supported remote platform. It requires SSH ON and matching files in `UAM_REMOTE_RUNNER_ARTIFACT_DIR`. The configurator uses OFF, which packages only the helper built for the current platform when SSH is enabled. Add cross-platform helper artifacts through the documented developer/release pipeline. `UAM_RUNNER_ONLY=ON` also requires SSH ON.
 
 Example local build with only Codex and no optional features:
 
 ```sh
-cmake -S . -B Builds/minimal -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_ENABLE_COMPUTER_USE=OFF -DUAM_ENABLE_SSH=OFF -DUAM_ENABLE_MOBILE_COMPANION=OFF -DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF
+cmake -S . -B Builds/minimal -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DUAM_ENABLE_RUNTIME_CODEX_CLI=ON -DUAM_ENABLE_COMPUTER_USE=OFF -DUAM_ENABLE_SSH=OFF -DUAM_ENABLE_MOBILE_COMPANION=OFF -DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF -DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF -DUAM_ENABLE_RUNTIME_OPENCODE_CLI=OFF -DUAM_ENABLE_RUNTIME_COPILOT_CLI=OFF -DUAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=OFF
 cmake --build Builds/minimal --config Release --target universal_agent_manager
 ```
 
-The main CI workflow builds and tests the application with all optional features and all five providers enabled. The configurator workflow runs its focused unit tests without additional application builds. Configurator regressions run with `python3 tools/build-configurator/test_configurator.py`.
+The default build configuration enables all optional features and all six provider flags; CI and release verification must check the actual selected artifact profile. The configurator workflow runs its focused unit tests without additional application builds. Configurator regressions run with `python3 tools/build-configurator/test_configurator.py`.
 
 Local configurator, `build.sh` and `build.ps1` builds reserve one `X.Y.Z-alpha-Q` version per requested build. Linked worktrees share a locked counter in the main checkout’s ignored `Builds/local-versions/` folder. The release version and remote runner protocol version stay unchanged. To reserve a version for separately packaged local artifacts without starting a build:
 

@@ -33,9 +33,19 @@ Move completed implementation into the main Changes table while retaining unreso
 acceptance in Incomplete Work; preserve a recorded disposition before removing a
 resolved task. A completed implementation is not David's user sign-off.
 
+## Feature documentation agreement
+
+Before changing a feature, read [docs/README.md](docs/README.md), [the documentation rules](docs/documentation-rules.md), its parent introduction and the owning feature page. These describe expected behaviour; code and old engineering notes can contain defects or incomplete work. Do not silently rewrite the agreement to match an implementation gap. Shared UI rules apply logically across features, including primitives, accessibility, interaction and motion.
+
+Every behaviour-changing commit must update the owning feature agreement when the expectation changes, any affected provider capability rows, relevant system relationships and the V5 log in the same commit. Review documentation impact during commit preparation even when the human did not mention docs. If no documentation change is needed, explain why in the commit/PR description rather than making a cosmetic edit. Preserve explicit implementation gaps and pending acceptance; documenting a feature does not implement or approve it.
+
+All six [provider checklists](docs/providers/providers.md#provider-checklists) must account for every shared required capability. Use explicit Implemented, Partial, Not implemented, Needs verification or reasoned Not applicable entries, with provider/UAM delivery recorded. A missing file or row is a documentation defect, not an unsupported-feature convention. Avoid repeating common requirements in provider-specific pages. Run `python3 scripts/check_docs.py` before committing documentation or provider-capability changes; this gate checks documentation integrity, not runtime support or acceptance.
+
+Questions and unresolved contradictions belong in [Documentation review](docs/documentation-review.md). Useful implementation detail lives under [engineering reference](docs/reference/README.md); feature pages should stay around one paragraph per concept, retaining important behavioural boundaries. Source tests, installation records and debug receipts do not belong in feature prose.
+
 ## Release Slice
 
-This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, GitHub Copilot CLI, and Antigravity CLI (terminal only). Keep the app focused on React/CEF, ACP structured chat sessions, xterm.js terminal fallback sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
+This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, GitHub Copilot CLI, and Antigravity CLI, including structured Chat and native CLI View for all six providers. Keep the app focused on React/CEF, structured chat through ACP or native provider protocols, xterm.js terminal sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
 
 Do not remove any of these six provider implementations. Provider removal requires explicit user direction. RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output remain outside this release slice.
 
@@ -153,11 +163,17 @@ React/UI changes follow `docs/ui/design-language.md`; settings pages also follow
 
 ## System documentation
 
-Use [docs/README.md](docs/README.md) to find the system pages, existing architecture diagrams, and UI rules. Update the relevant system page when its implementation changes; keep recorded decisions separate from pending implementation.
+Use [docs/README.md](docs/README.md) as the feature map and [docs/architecture/architecture.md](docs/architecture/architecture.md) for high-level system relationships and existing diagrams. Follow the Feature documentation agreement above; preserve the distinction between agreed behaviour, implementation, verification and acceptance.
 
 ## Data Root Resolution
 
 1. `UAM_DATA_DIR` env var
-2. `<cwd>/data`
-3. OS default app-data location
-4. Temp fallback
+2. OS default app-data location
+3. Temp fallback
+4. Relative `data` directory only if no temporary directory can be resolved
+
+David confirmed on 2026-10-16 that the existing storage behaviour should remain. Do not add working-directory-first routing; see the [recorded storage decision](docs/documentation-review.md#data-root).
+
+## Engineering agreements
+
+Read [the architecture overview](docs/architecture/architecture.md), [data authority](docs/architecture/source-of-truth.md) and [engineering rules](docs/engineering/engineering.md) before changing system behaviour. OS-specific code belongs behind platform interfaces, provider-specific code behind runtime adapters, and Git/SVN-specific code behind VCS service/module boundaries. Existing exceptions do not authorize new scattered conditionals or an unrequested refactor. Use [proportional testing](docs/engineering/testing.md), [bounded private-data-safe logging](docs/engineering/logging.md) and the existing mandatory build/review gates. Keep the relevant feature and engineering agreements aligned when behaviour changes; a passing link check does not establish feature correctness.

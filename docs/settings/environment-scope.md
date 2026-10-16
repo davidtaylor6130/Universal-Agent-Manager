@@ -1,0 +1,5 @@
+# Environment scope
+
+Every settings page whose values can meaningfully differ by provider or execution environment should make the applicable environment clear, using the shared “Applying settings for” control and All environments as the default. Provider-specific defaults remain provider-specific within that environment; explicit overrides must not silently overwrite other environments. Shared instructions, skills and agents are centrally managed definitions, not separate copies per computer. Permission and computer-use policy belong in the scope assessment, while local appearance does not.
+
+**Implementation: Partial.** The scope bar is currently shown on provider pages, Chat Defaults and MCP Servers. Host-scoped saves depend on backend support; version and discovery actions target the selected computer. The UI does not yet establish the broader permission/computer-use scope described above, and computer use remains local only. See [scope follow-up](../documentation-review.md#environment-scope).
