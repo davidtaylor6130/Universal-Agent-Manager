@@ -131,10 +131,10 @@ UAM_TEST(ClaudeUsageScopesResumedTotalsAndSerializesUnknownLastTurn)
 	session.provider_usage.rate_limits.available = true;
 	ConsumeClaudeUsage(session, {{"type", "system"}, {"subtype", "init"}, {"session_id", "reset-session"}});
 	UAM_ASSERT(!session.provider_usage.token_usage.available);
+	UAM_ASSERT(!session.provider_usage.rate_limits.available);
 	const nlohmann::json reset_serialized = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
 	UAM_ASSERT(reset_serialized.is_object());
-	UAM_ASSERT(reset_serialized["providerUsage"]["tokenUsage"].is_null());
-	UAM_ASSERT(reset_serialized["providerUsage"]["rateLimits"].is_object());
+	UAM_ASSERT(reset_serialized["providerUsage"].is_null());
 	nlohmann::json reset = ClaudeUsageResult("reset-session");
 	reset.erase("modelUsage");
 	ConsumeClaudeUsage(session, reset);

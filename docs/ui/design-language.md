@@ -38,6 +38,7 @@ Patterns:
 - Context chips (`components/chat/ContextChip.tsx`): referenced context (attachments, skills) is a 24px pill with a type icon, name and kind label on var(--surface-up). Full path is a Tooltip in mono; files open the preview on click; remove is an icon button on composer chips only. Kinds include file, folder, skill, image and branch (GitBranch icon). Assistant replies chip inline code that is clearly a file path, folder or branch; in prose the chip is vertical-align middle with negative block margin so the line height does not change.
 
 - Custom icons (chats, workspaces, hosts, collections): pick from the searchable Lucide library first (stored as text `lucide:<name>`), with Emoji and PNG upload as secondary tabs; render through `components/shared/CustomIcon.tsx`.
+- Usage and limits: only provider-reported durations name allowance periods; missing periods stay Primary/Secondary and unavailable percentages stay unknown. Limits reads account allowances independently of chats, shows cached values immediately, refreshes without erasing them, labels unavailable/error states, and provides Refresh allowances; context and consumed-token details remain session-scoped. A mounted Limits page updates relative reset and freshness labels on one shared 30-second local clock without requesting history, and live snapshots use the current time immediately. Future resets must not announce that they have passed; unknown allowance tracks are decorative, while known values including zero use numeric meter semantics. Cost totals with missing prices are labelled Known cost, retain a visible unpriced-token count and disclose excluded tokens; cost charts include both reported charges and estimates.
 
 UX rules (enforce):
 1. One clear primary action per section; rest secondary/ghost.
@@ -65,3 +66,5 @@ UX rules (enforce):
 - Keep existing tests' intent; when copy or structure changes on purpose, update the assertion minimally rather than deleting it.
 - Run `npm --prefix UI-V2 run test` and `npm --prefix UI-V2 run build` (the build type-checks more strictly than `tsc --noEmit`).
 - Dialogs rendered through `Overlay` are portalled to `document.body`; tests must query `document.body` for them.
+
+The Limits page distinguishes a ready provider that did not report a window from a provider whose account feed is unavailable; explicit no-data errors do not repeat empty window tracks. Fresh provider snapshots describe past reset timestamps as provider-reported, while cached snapshots may await an update. Numeric credit balances use grouped numbers with at most two decimal places and retain the provider text on hover. A recent-refresh cooldown disables manual refresh with visible feedback until another read is allowed.

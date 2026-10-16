@@ -17,6 +17,7 @@
 #include "common/usage/transcript_usage.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,49 @@ namespace uam::acp_detail
 
 	namespace
 	{
+		/// <summary>Projects only declared generic subscription windows from the owning native session.</summary>
+		void ObserveClaudeAllowance(AcpSessionState& session, const ChatSession& chat, const nlohmann::json& message)
+		{
+			const nlohmann::json* identity = uam::nlohmann_json::FindStringField(message, "session_id");
+			if (session.provider_id != "claude-cli" || chat.provider_id != "claude-cli" || session.chat_id != chat.id ||
+			    session.goal_internal_session || session.model_discovery_only || session.session_id.empty() ||
+			    session.session_id != chat.native_session_id || identity == nullptr || identity->get_ref<const std::string&>() != session.session_id)
+				return;
+			const nlohmann::json* info = uam::nlohmann_json::FindObjectField(message, "rate_limit_info");
+			if (info == nullptr) return;
+			const std::string status = JsonDiagnosticStringValue(*info, "status");
+			if (status != "allowed" && status != "allowed_warning" && status != "rejected") return;
+			const std::string type = JsonDiagnosticStringValue(*info, "rateLimitType");
+			if (type != "five_hour" && type != "seven_day") return;
+			const nlohmann::json* utilization = uam::nlohmann_json::FindField(*info, "utilization");
+			if (utilization == nullptr || !utilization->is_number()) return;
+			const double fraction = utilization->get<double>();
+			if (!std::isfinite(fraction) || fraction < 0 || fraction > 1) return;
+			AcpRateLimitsState& limits = session.provider_usage.rate_limits;
+			for (AcpRateLimitWindowState* observed : {&limits.primary, &limits.secondary})
+				if (observed->available && observed->updated_at_ms == 0) observed->updated_at_ms = limits.updated_at_ms;
+			AcpRateLimitWindowState& window = type == "five_hour" ? limits.primary : limits.secondary;
+			// The SDK forwards a fraction; unlike the OAuth usage endpoint, it does not send an integer percentage.
+			// One ULP corrects products such as 0.29 * 100 without rounding a partial percentage up to exhaustion.
+			const int percent = static_cast<int>(std::floor(std::nextafter(fraction * 100, 101.0)));
+			window.used_percent = fraction < 1 ? std::min(percent, 99) : 100;
+			window.window_duration_minutes = type == "five_hour" ? 300 : 10080;
+			if (const nlohmann::json* reset = uam::nlohmann_json::FindField(*info, "resetsAt"); reset != nullptr && reset->is_number_integer())
+			{
+				constexpr int64_t maximum_reset = 253402300799;
+				if ((!reset->is_number_unsigned() || reset->get<uint64_t>() <= static_cast<uint64_t>(maximum_reset)) &&
+				    reset->get<int64_t>() >= 0 && reset->get<int64_t>() <= maximum_reset)
+					window.resets_at = reset->get<int64_t>();
+			}
+			window.available = true;
+			window.updated_at_ms = uam::time::SystemEpochMillisecondsNow();
+			limits.available = true;
+			// The shared wire timestamp describes every visible window, including the older one in a partial update.
+			limits.updated_at_ms = window.updated_at_ms;
+			for (const AcpRateLimitWindowState* observed : {&limits.primary, &limits.secondary})
+				if (observed->available) limits.updated_at_ms = std::min(limits.updated_at_ms, observed->updated_at_ms);
+		}
+
 		/// <summary>Render Claude result blocks without exposing binary payloads or protocol envelopes.</summary>
 		std::string ClaudeToolResultText(const nlohmann::json& content)
 		{
@@ -604,6 +648,7 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	if (type == "rate_limit_event")
 	{
 		ObserveClaudeQuota(session, chat, message, uam::time::TimestampNowSec());
+		ObserveClaudeAllowance(session, chat, message);
 		return;
 	}
 	if (type == "system" && HandleClaudeTaskEvent(app, session, chat, message)) return;
@@ -716,6 +761,7 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 		const std::string session_id = uam::nlohmann_json::TrimmedStringValueOr(message, "session_id", "");
 		if (!session_id.empty())
 		{
+			if (session.session_id != session_id) session.provider_usage.rate_limits = {};
 			session.session_id = session_id;
 			const std::string previous_native_session_id = chat.native_session_id;
 			if (!session.goal_internal_session && SetChatNativeSessionIdIfChanged(chat, session_id))

@@ -300,6 +300,8 @@ namespace uam
 		int used_percent = 0;
 		std::int64_t resets_at = 0;
 		std::int64_t window_duration_minutes = 0;
+		// Internal observation time for independently reported windows; zero retains legacy snapshot timing.
+		std::int64_t updated_at_ms = 0;
 	};
 
 	struct AcpCreditsState

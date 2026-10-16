@@ -36,6 +36,7 @@ namespace
 UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url) : m_app(app), m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
 {
 	m_usageHistory = std::make_shared<uam::usage::MultiHostHistory>(m_app.data_root, m_app.settings.execution_hosts);
+	RefreshAllowanceTargets();
 }
 
 UamQueryHandler::~UamQueryHandler()
@@ -116,6 +117,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 
 	static constexpr Route kRoutes[] = {
 		{"getUsageHistory", &UamQueryHandler::HandleGetUsageHistory},
+		{"getProviderAllowances", &UamQueryHandler::HandleGetProviderAllowances},
 		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
 		{"getStartupNativeImports", &UamQueryHandler::HandleGetStartupNativeImports},
 		{"resolveStartupNativeImports", &UamQueryHandler::HandleResolveStartupNativeImports},

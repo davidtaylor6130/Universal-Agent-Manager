@@ -25,7 +25,7 @@
 
 namespace uam::query_handler_async { struct AsyncCefResult; }
 namespace uam { struct WorkspaceDeletionTask; }
-namespace uam::usage { class MultiHostHistory; class HistoryTransport; }
+namespace uam::usage { class MultiHostHistory; class HistoryTransport; class AccountAllowanceService; }
 
 /// <summary>
 /// Handles all window.cefQuery() requests from the React frontend.
@@ -54,6 +54,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	uam::AppState& m_app;
 	uam::TranscriptRetentionService m_transcriptRetention;
 	std::shared_ptr<uam::usage::MultiHostHistory> m_usageHistory;
+	std::shared_ptr<uam::usage::AccountAllowanceService> m_providerAllowances;
 	CefRefPtr<CefThread> m_usageQueries;
 	std::shared_ptr<uam::usage::HistoryTransport> m_usageTransport;
 	CefRefPtr<CefThread> m_titleQueries;
@@ -102,6 +103,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	// ---- action handlers -------------------------------------------------
 	void RefreshUsageTargets();
 	void HandleGetUsageHistory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetProviderAllowances(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void RefreshAllowanceTargets();
 	void HandleGetStartupNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleResolveStartupNativeImports(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetInitialState(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

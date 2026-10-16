@@ -397,17 +397,21 @@ namespace uam::usage
 				if (!row.contains(key) || !row[key].is_number_integer() || row[key] < 0 || row[key] > kMaxExactTokenCount) { error = "Accounting provider counters are invalid."; return {}; }
 		}
 
+		const std::uint64_t facts_offset = static_cast<std::uint64_t>(input.tellg());
 		input.clear(); input.seekg(0);
-		std::uint64_t hash = hashing::kFnv1a64OffsetBasis;
+		std::uint64_t hash = hashing::kFnv1a64OffsetBasis, facts_hash = hashing::kFnv1a64OffsetBasis;
 		while (input)
 		{
 			if (cancelled && cancelled()) { error = "Usage collection was cancelled."; return {}; }
 			input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
 			const std::size_t count = static_cast<std::size_t>(input.gcount());
+			const std::size_t facts_start = static_cast<std::size_t>(std::min<std::uint64_t>(count, facts_offset > snapshot->bytes ? facts_offset - snapshot->bytes : 0));
+			hashing::UpdateFnv1a64(facts_hash, std::string_view(buffer.data() + facts_start, count - facts_start)); snapshot->facts_bytes += count - facts_start;
 			hashing::UpdateFnv1a64(hash, std::string_view(buffer.data(), count)); snapshot->bytes += count;
 		}
 		if (input.bad() || snapshot->bytes > static_cast<std::uint64_t>(kMaxExactTokenCount)) { error = "Could not read accounting receipts."; return {}; }
 		snapshot->fingerprint = hashing::Hex64Padded(hash);
+		snapshot->facts_fingerprint = hashing::Hex64Padded(facts_hash);
 		return snapshot;
 	}
 
@@ -416,22 +420,25 @@ namespace uam::usage
 		const std::filesystem::path path = io::MakeTempWritePath(m_path.parent_path() / "receipts.jsonl");
 		if (!paths::CreateDirectoriesNoThrow(path.parent_path())) { error = "Could not create accounting snapshot."; return {}; }
 		std::shared_ptr<ReceiptSnapshot> snapshot = std::make_shared<ReceiptSnapshot>(); snapshot->path = path; snapshot->owned = true; snapshot->metadata = metadata; snapshot->as_of = generated_ms;
-		std::uint64_t hash = hashing::kFnv1a64OffsetBasis;
+		std::uint64_t hash = hashing::kFnv1a64OffsetBasis, facts_hash = hashing::kFnv1a64OffsetBasis;
 		io::AtomicWriteResult written;
 		const bool success = io::WriteAndSyncAtomicTemp(path, io::AtomicTempProducer([&](const std::function<bool(std::string_view)>& append)
 		{
-			const std::function<bool(const nlohmann::json&)> write = [&](const nlohmann::json& row)
+			const std::function<bool(const nlohmann::json&, bool)> write = [&](const nlohmann::json& row, bool fact)
 			{
 				const std::string line = row.dump() + "\n";
 				if (line.size() > 512 * 1024 || line.size() > static_cast<std::uint64_t>(kMaxExactTokenCount) - snapshot->bytes || !append(line)) return false;
-				hashing::UpdateFnv1a64(hash, line); snapshot->bytes += line.size(); return true;
+				hashing::UpdateFnv1a64(hash, line); snapshot->bytes += line.size();
+				if (fact) { hashing::UpdateFnv1a64(facts_hash, line); snapshot->facts_bytes += line.size(); }
+				return true;
 			};
-			return write({{"version", 3}, {"range", "all-recorded"}, {"asOfMs", generated_ms}, {"metadata", metadata}}) &&
-			    VisitLifetimeRecords(generated_ms, [&](const AccountingRecord& entry) { return write(EncodeAccountingRecord(entry)); }, error, cancelled);
+			return write({{"version", 3}, {"range", "all-recorded"}, {"asOfMs", generated_ms}, {"metadata", metadata}}, false) &&
+			    VisitLifetimeRecords(generated_ms, [&](const AccountingRecord& entry) { return write(EncodeAccountingRecord(entry), true); }, error, cancelled);
 		}), {}, written);
 		if (!success) { if (error.empty()) error = "Could not save accounting snapshot."; return {}; }
 
 		snapshot->fingerprint = hashing::Hex64Padded(hash);
+		snapshot->facts_fingerprint = hashing::Hex64Padded(facts_hash);
 		return snapshot;
 	}
 

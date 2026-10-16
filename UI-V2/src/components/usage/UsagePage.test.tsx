@@ -1,22 +1,46 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { USAGE_PROVIDERS, type UsageTotals } from '../../services/usageHistory'
 import { useAppStore } from '../../store/useAppStore'
 import { UsagePage, parseUsagePrices } from './UsagePage'
 import { UsageLimits } from './UsageLimits'
+import { clearProviderAllowanceCache } from '../../services/providerAllowances'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const values = new Map<string, string>()
 const total: UsageTotals = { inputTokens: 10, cachedInputTokens: 5, cacheWriteTokens: 0, outputTokens: 2, reasoningTokens: 1, totalTokens: 17,
   reportedCostUsd: 0, estimatedCostUsd: 0, estimatedCacheSavingsUsd: 0, reportedCostTokens: 0, estimatedCostTokens: 0, unpricedTokens: 17, records: 1, sessions: 1 }
 const blank = { ...total, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, unpricedTokens: 0, records: 0, sessions: 0 }
+beforeEach(() => clearProviderAllowanceCache())
 afterEach(() => { delete window.cefQuery; vi.restoreAllMocks(); values.clear() })
 function storage() {
   vi.spyOn(window, 'localStorage', 'get').mockReturnValue({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) }, removeItem: key => { values.delete(key) }, clear: () => values.clear(), length: 0, key: () => null })
 }
 
 describe('UsagePage', () => {
+  it.each([0, 0.05])('discloses unpriced tokens beside a partial reported cost of %s', async reportedCostUsd => {
+    storage()
+    const mixed = { ...total, reportedCostUsd, reportedCostTokens: 10, unpricedTokens: 7 }
+    window.cefQuery = request => {
+      const { payload } = JSON.parse(request.request)
+      request.onSuccess(JSON.stringify({ version: 2, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, totals: mixed, complete: true, listingLimited: false,
+        filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 0, unidentifiedRecords: 0,
+        providers: USAGE_PROVIDERS.map(providerId => ({ ...(providerId === 'codex-cli' ? mixed : blank), providerId, available: true, files: 1, errors: 0, invalidLines: 0, oversizedLines: 0, suppressedForkRecords: 0, pendingLines: 0 })),
+        models: [], days: [], hours: [], providerDays: [], providerHours: [] }))
+    }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      await act(async () => root.render(<UsagePage onClose={() => {}} />))
+      const tiles = host.querySelector('.uam-usage-tiles')!
+      expect(tiles.textContent).toContain('Known cost')
+      expect(tiles.textContent).toContain('Unpriced tokens7')
+      expect(tiles.textContent).toContain('Provider-reported')
+      expect(host.textContent).toContain('7 tokens have no known price and are excluded from costs.')
+      expect(host.querySelector('[aria-label="Usage status"]')?.classList.contains('is-attention')).toBe(true)
+    } finally { act(() => root.unmount()) }
+  })
+
   it('requests All Time and renders bounded cohorts across the full retained date range', async () => {
     storage()
     const requests: { windowDays: number; startMs: number }[] = []
@@ -99,9 +123,15 @@ describe('UsagePage', () => {
   it('shows unknown costs, request diagnostics, token subsets and editable zero/blank rates', async () => {
     storage()
     const requests: Record<string, unknown>[] = []
+    const allowanceRequests: string[] = []
     let modelCount = 1
     window.cefQuery = request => {
-      const { payload } = JSON.parse(request.request)
+      const { action, payload } = JSON.parse(request.request)
+      if (action === 'getProviderAllowances') {
+        allowanceRequests.push(payload.executionHostId)
+        request.onSuccess(JSON.stringify({ executionHostId: payload.executionHostId, refreshing: false, providers: [] }))
+        return
+      }
       requests.push(payload)
       request.onSuccess(JSON.stringify({ version: 2, executionHostId: payload.executionHostId, source: 'native-transcripts', startMs: payload.startMs, endMs: payload.endMs, totals: total, complete: true, listingLimited: true,
         filesChecked: 1, filesTotal: 1, bytesRead: 0, duplicates: 1, unidentifiedRecords: 0,
@@ -136,7 +166,8 @@ describe('UsagePage', () => {
       const count = requests.length
       await act(async () => button('Limits').click())
       expect(requests).toHaveLength(count)
-      expect(host.textContent).toContain('Not readable at this time')
+      expect(allowanceRequests).toContain('local')
+      expect(host.textContent).toContain('Account allowances unavailable.')
     } finally { act(() => root.unmount()); host.remove() }
   })
   it('filters totals, chart bands and models together without rescanning history', async () => {
@@ -270,34 +301,48 @@ describe('UsageLimits', () => {
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 
-  it('keeps machine allowances separate in the all-machines view', () => {
+  it('keeps local allowances separate from unavailable remote account reads without chats', async () => {
     const previous = useAppStore.getState()
     const limits = (percent: number) => ({ updatedAt: Date.now(), limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: null, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
     useAppStore.setState({ executionHosts: [{ id: 'local', label: 'Mac' }, { id: 'peer', label: 'Windows' }] as typeof previous.executionHosts,
-      sessions: [{ id: 'local-chat', providerId: 'codex-cli', executionHostId: 'local' }, { id: 'remote-chat', providerId: 'codex-cli', executionHostId: 'peer' }] as typeof previous.sessions,
-      acpBindingBySessionId: { 'local-chat': { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(25) } }, 'remote-chat': { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(90) } } } as typeof previous.acpBindingBySessionId })
+      sessions: [], acpBindingBySessionId: {} })
+    const requestedHosts: string[] = []
+    window.cefQuery = request => {
+      const { action, payload } = JSON.parse(request.request)
+      expect(action).toBe('getProviderAllowances')
+      requestedHosts.push(payload.executionHostId)
+      const local = payload.executionHostId === 'local'
+      request.onSuccess(JSON.stringify({ executionHostId: payload.executionHostId, refreshing: false, providers: [{ providerId: 'codex-cli', scope: local ? 'local:codex-command' : 'remote-unavailable', status: local ? 'ready' : 'unavailable', limits: local ? limits(25) : null, error: local ? '' : 'Account allowance reads are unavailable on remote hosts.' }] }))
+    }
     const host = document.createElement('div'), root = createRoot(host)
     try {
-      act(() => root.render(<UsageLimits executionHostId="*" />))
+      await act(async () => root.render(<UsageLimits executionHostId="*" />))
+      expect(requestedHosts).toEqual(['local', 'peer'])
       expect(host.querySelector('[aria-label="Mac limits"]')?.textContent).toContain('75% remaining')
-      expect(host.querySelector('[aria-label="Windows limits"]')?.textContent).toContain('10% remaining')
-      expect(host.querySelector('[aria-label="Mac limits"]')?.textContent).not.toContain('10% remaining')
+      const remote = host.querySelector('[aria-label="Windows limits"]')!
+      expect(remote.textContent).toContain('Account allowances are not available for remote computers.')
+      expect(remote.textContent).toContain('Account allowance reads are unavailable on remote hosts.')
+      expect(remote.textContent).not.toContain('75% remaining')
+      expect(remote.querySelector('button')).toBeNull()
+      expect(host.querySelector('[aria-label="Mac limits"]')?.querySelector('button')?.textContent).toBe('Refresh allowances')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 
-  it('uses the newest matching provider/host snapshot and labels passed resets', () => {
+  it('reads account allowances independently while retaining matching chat context and passed resets', async () => {
     const previous = useAppStore.getState()
-    const limits = (percent: number, time: number) => ({ updatedAt: time, limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: Date.now() / 1000 - 60, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
+    const limits = (percent: number, time: number) => ({ updatedAt: time, limitId: '', limitName: '', planType: '', primary: { usedPercent: percent, resetsAt: Math.floor(Date.now() / 1000) - 60, windowDurationMinutes: 300 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
     useAppStore.setState({ sessions: [{ id: 'older', providerId: 'codex-cli' }, { id: 'newer', name: 'Latest chat', providerId: 'codex-cli' }, { id: 'remote', providerId: 'codex-cli', executionHostId: 'ssh' }, { id: 'mismatch', providerId: 'claude-cli' }] as typeof previous.sessions,
-      acpBindingBySessionId: { older: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(90, 1) } }, newer: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, contextUsage: { updatedAt: 2, usedTokens: 1234, windowTokens: 200000 }, rateLimits: limits(25, 2) } }, remote: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(10, 3) } }, mismatch: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(5, 4) } } } as typeof previous.acpBindingBySessionId })
+      acpBindingBySessionId: { older: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(90, 1) } }, newer: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, contextUsage: { updatedAt: 2, usedTokens: 1234, windowTokens: 200000 }, rateLimits: limits(80, 2) } }, remote: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(10, 3) } }, mismatch: { providerId: 'codex-cli', providerUsage: { tokenUsage: null, rateLimits: limits(5, 4) } } } as typeof previous.acpBindingBySessionId })
+    window.cefQuery = request => request.onSuccess(JSON.stringify({ executionHostId: 'local', refreshing: false, providers: [{ providerId: 'codex-cli', scope: 'local:codex-command', status: 'ready', limits: limits(25, Date.now()), error: '' }] }))
     const host = document.createElement('div'), root = createRoot(host)
     try {
-      act(() => root.render(<UsageLimits executionHostId="local" />))
+      await act(async () => root.render(<UsageLimits executionHostId="local" />))
       expect(host.textContent).toContain('75% remaining')
       expect(host.textContent).toContain('Context in Latest chat: 1,234 of 200,000 tokens')
       expect(host.textContent).not.toContain('90% remaining')
       expect(host.textContent).not.toContain('95% remaining')
-      expect(host.textContent).toContain('reset passed, awaiting update')
+      expect(host.textContent).not.toContain('80% used')
+      expect(host.textContent).toContain('Provider-reported reset time has passed')
       expect(host.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('25')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })

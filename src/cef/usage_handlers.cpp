@@ -4,6 +4,11 @@
 #include "common/usage/history_transport.h"
 #include "common/config/execution_host_config.h"
 #include "common/utils/nlohmann_json_utils.h"
+#include "common/usage/account_allowance_service.h"
+#include "common/usage/claude_account_allowance.h"
+#include "common/usage/google_account_allowance.h"
+#include "common/provider/provider_profile.h"
+#include "common/utils/command_line_words.h"
 
 using namespace uam::query_handler_async;
 
@@ -29,6 +34,42 @@ namespace
 void UamQueryHandler::RefreshUsageTargets()
 {
 	if (m_usageHistory) m_usageHistory->SetHosts(m_app.settings.execution_hosts);
+}
+
+void UamQueryHandler::RefreshAllowanceTargets()
+{
+	std::vector<uam::usage::AccountAllowanceProviderConfig> providers;
+	for (const char* id : {"codex-cli", "claude-cli", "copilot-cli", "gemini-cli", "antigravity-cli"})
+		if (const ProviderProfile* profile = ProviderProfileStore::FindById(m_app.provider_profiles, id))
+			providers.push_back({id, uam::command_line::SplitWords(profile->interactive_command)});
+	if (m_providerAllowances) { m_providerAllowances->SetProviders(std::move(providers)); return; }
+	m_providerAllowances = std::make_shared<uam::usage::AccountAllowanceService>(m_app.data_root, std::move(providers),
+	    [](const uam::usage::AccountAllowanceProviderConfig& config, const std::filesystem::path& root, std::stop_token stop)
+	    {
+		    const auto validated = uam::usage::ValidateAccountAllowanceCommand(config.provider_id, config.command);
+		    if (!validated.error.empty())
+		    {
+			    uam::usage::AccountAllowanceFetchResult result;
+			    result.error = validated.error;
+			    return result;
+		    }
+		    if (config.provider_id == "claude-cli") return uam::usage::FetchClaudeAccountAllowance(root, stop);
+		    if (config.provider_id == "gemini-cli") return uam::usage::FetchGeminiAccountAllowance(root, stop);
+		    if (config.provider_id == "antigravity-cli") return uam::usage::FetchAntigravityAccountAllowance(root, stop);
+		    return uam::usage::FetchCliAccountAllowance(config.provider_id, validated.command, root, stop);
+	    });
+}
+
+void UamQueryHandler::HandleGetProviderAllowances(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const auto host = payload.find("executionHostId");
+	if (host == payload.end() || !host->is_string() || host->get_ref<const std::string&>().empty() || host->get_ref<const std::string&>().size() > 128 ||
+	    (payload.contains("refresh") && !payload["refresh"].is_boolean())) { cb->Failure(400, "Account allowance request is invalid."); return; }
+	const std::string id = host->get<std::string>();
+	if (!uam::execution_hosts::Find(m_app.settings.execution_hosts, id)) { cb->Failure(404, "Usage machine is no longer configured."); return; }
+	if (m_providerAllowances && m_providerAllowances->DataRoot() != m_app.data_root) { cb->Failure(409, "Account storage changed. Restart UAM to read this data root."); return; }
+	RefreshAllowanceTargets();
+	cb->Success(m_providerAllowances->Query(id, payload.value("refresh", false)).dump());
 }
 
 void UamQueryHandler::HandleGetUsageHistory(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

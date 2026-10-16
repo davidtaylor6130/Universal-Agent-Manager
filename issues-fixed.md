@@ -82,3 +82,62 @@
 - Files changed: `UI-V2/src/components/views/ChatView.tsx`, `UI-V2/src/components/layout/MainPanel.tsx`, and session store types/slice.
 - Regression test: IME input, page-hide draft flushing, stable slash options, idle transcript eviction, and deferred eviction after a closed active turn.
 - Verification: the `4.9.0-alpha-3` isolated package with 200 rendered messages measured 100 inputs at 9.2 ms p95 idle and 8.9 ms p95 with eight synthetic stream chunks per input; both runs had zero frames over 16.7 ms and zero long tasks. Under stream pressure, renderer JS heap was 23.0 MiB; total app-process RSS was 368.2 MiB and snapshot CPU was 0.0%.
+
+
+## Usage limits — snapshot presentation and cost coverage
+
+- Status: Implemented and focused-validated; required Claude review, full native gate and David acceptance remain pending.
+- Found from: Usage and Limits task group and independent data-flow review.
+- Symptom: Missing periods looked like five-hour/weekly allowances, future resets announced that they had passed, quiet pages retained stale freshness, and mixed cost totals concealed unpriced tokens.
+- Root cause: Presentation inferred periods, included unconditional accessible reset text, lacked a mounted clock, exposed unknown values as numeric meters, and gated missing-price coverage on reported charges.
+- Data flow reviewed: `host-scoped session snapshots → allowance cards/composer indicator`; `historical accounting → cost totals/status/chart`.
+- Fix: Neutral missing periods, decorative unknown tracks, one shared display clock, accurate reset announcements including individual spend expiry, matching-provider composer allowances and visible partial-cost coverage.
+- Regression: New UsageLimits and UsagePage cases plus composer allowance checks reproduce the original failures and pass after correction.
+- Validation: Full frontend 1835 unit +23 timing cases pass; TypeScript/Vite production build and Release native build pass; browser fixture screenshots inspected.
+- Residual risk: An isolated packaged Usage/Limits smoke check passes; authenticated-provider and full visual acceptance remain pending, and Claude review is blocked by its recorded session limit.
+
+## Usage limits — Claude declared allowance events
+
+- Status: Implemented; 118/118 related native cases pass; full native gate remains failing outside the changed usage paths.
+- Found from: Provider contract and session-identity review.
+- Symptom: Verified Claude numeric rate-limit events did not reach allowance views.
+- Root cause: Only continuation status consumed those events.
+- Data flow reviewed: `Claude rate_limit_event → native session usage → existing serialized allowance → Limits and composer`.
+- Fix: Project confirmed fractional utilization only for owning-session generic five-hour/weekly windows, preserve unknown values and quota continuation, conservatively floor percentages, retain per-window freshness, and clear old allowances on native-session change.
+- Regression: Seven allowance cases cover units, malformed and absent values, identity, rejected continuation, reset, rounding and partial-update age; existing resumed-usage assertion now requires cleared old-session allowance state.
+- Validation: Shipped Anthropic CLI unit semantics verified; linked RED regressions followed by passing native cases and Release build.
+- Residual risk: No live authenticated Claude event test; Codex read-only allowance acquisition succeeds, a bounded all-provider pass also acquires Copilot SDK quotas but its ACP method is unavailable; Gemini sign-in and Antigravity trust gates remain, with further adapters deferred per David.
+
+## Usage accounting — retained peer projections
+
+- Status: Implemented and focused-validated; installed CPU improvement and David acceptance remain unverified.
+- Found from: Cached accounting audit and read-only installed-process sample.
+- Symptom: Cached individual hosts advertised complete collection and metadata-only refreshes repeatedly imported unchanged receipts.
+- Root cause: Completeness ignored cache state and temporary accounting stores were rebuilt for every projection using whole-header identities.
+- Data flow reviewed: `immutable local/peer receipts → ordered scoped accounting cache → lifetime ledger → host and combined views`.
+- Fix: Preserve cached totals with incomplete coverage; retain disk-backed stores and same-interval immutable ledgers using facts-only identity, invalidating changed facts, sources and narrowed receipt scopes.
+- Regression: Legacy and streamed import counters remain unchanged during metadata refresh; token/cost changes and regressed/rolling bounds force revalidation.
+- Validation: 118/118 related native cases pass, including existing paging and accounting neighbors; independent cache source review found no remaining concrete findings; Release build passes.
+- Residual risk: Periodic lifetime scans and collector export rebuilding remain; process sampling is not a before/after benchmark. The broad native run reports 42 failures, one corrected neighboring Claude assertion subsequently passes and 41 separate runtime/queue/provider assertions remain unresolved.
+
+## Usage verification — stale frontend fixture contracts
+
+- Status: Test-only corrections validated; product settings and queue behavior unchanged.
+- Found from: Full frontend verification; both failures reproduced against the untouched starting revision archive.
+- Root cause: An unconfigured SSH default fixture expected inherited local defaults and a legacy queue callback expected omission of an explicit optional undefined argument.
+- Fix: Assert existing host-scoped empty defaults and exact callback arguments while retaining configured-host, duplicate-removal and failed-save protections.
+- Validation: 26 neighboring cases and the full 1858-case frontend run pass.
+
+
+## Usage limits — account reads without chats
+
+- Status: Four independent account feeds are implemented and live-verified; full native acceptance remains incomplete because the broad inventory fails outside these account paths.
+- Found from: David rejected the session-only Limits page because allowances must be available without running a chat.
+- Root cause: The page selected allowance snapshots from active chat bindings rather than acquiring account allowances independently.
+- Data flow reviewed: Existing provider login → bounded account-only reader → scoped native cache and persisted presentation fields → immediate CEF query → account cards, independently of history collection and session state.
+- Change: Startup account workers, immediate persisted snapshots, independent refresh, honest unknown values, per-model windows, auth-failure invalidation, command validation, local/remote isolation and bounded owned processes.
+- Native acceptance evidence: An isolated rebuilt desktop data root contains zero chat files and displays real Codex, Claude, Copilot and Antigravity values in `.UAM/AINotes/account-allowance-native-final.png`.
+- Credential wait correction: A real macOS Keychain read took 20.9 seconds before HTTPS; a cancellable no-prompt system helper now has a 120-second account-access budget separate from the 10-second network budget, without changing permissions or initiating login.
+- Review: Actual Claude Sonnet/high broad and follow-up source/visual reviews pass with all eight findings resolved; the remaining original event, merge, paging and accounting contracts also receive a no-material-findings source verdict.
+- Verification: All 1,861 frontend unit cases, 23 serialized performance cases, 42 account-native cases and 20 auxiliary CTests pass; full Release build and strict deep signing pass; broad native inventory is 2,389/2,432 with 43 failures, including two Git fixture cases that pass unchanged isolated rechecks.
+- Remaining limits: Gemini returns an unsupported-client entitlement response, which David accepts as unavailable to him; the current OpenCode local/self-hosted setup has no hosted subscription identity to query (OpenCode Go itself has limits), and native Windows acceptance is unverified.
