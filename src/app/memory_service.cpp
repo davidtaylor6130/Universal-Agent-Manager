@@ -14,6 +14,8 @@
 #include "common/chat/chat_repository.h"
 #include "common/config/execution_host_config.h"
 #include "common/memory/memory_categories.h"
+#include "common/memory/memory_recall_preview.h"
+#include "common/provider/provider_setup.h"
 #include "common/memory/memory_levels.h"
 #include "common/memory/memory_policy.h"
 #include "common/paths/path_utils.h"
@@ -427,6 +429,7 @@ namespace
 		for (std::size_t index = start; index < chat.messages.size() && !matched && byte_limit > 0; ++index)
 		{
 			const Message& message = chat.messages[index];
+			if (message.acp_prompt_discarded) continue;
 			feed(RoleToString(message.role));
 			feed(": ");
 			feed(uam::strings::TrimAsciiView(message.content));
@@ -1272,6 +1275,7 @@ namespace
 		for (std::size_t i = start; i < chat.messages.size(); ++i)
 		{
 			const Message& message = chat.messages[i];
+			if (message.acp_prompt_discarded) continue;
 			out << RoleToString(message.role) << ": " << uam::strings::Trim(message.content) << "\n\n";
 		}
 		out << "</transcript>\n";
@@ -1488,44 +1492,7 @@ namespace
 	{
 		std::ifstream file;
 		if (!uam::io::OpenReadFile(path, file)) return {};
-		constexpr std::string_view marker = "## Memory";
-		std::array<char, 8192> buffer{};
-		std::string overlap;
-		std::streamoff offset = 0;
-		std::streamoff body_offset = 0;
-		while (file)
-		{
-			file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-			const std::size_t count = static_cast<std::size_t>(file.gcount());
-			const std::string chunk = overlap + std::string(buffer.data(), count);
-			const std::size_t found = chunk.find(marker);
-			if (found != std::string::npos)
-			{
-				body_offset = offset - static_cast<std::streamoff>(overlap.size()) + static_cast<std::streamoff>(found + marker.size());
-				break;
-			}
-			offset += static_cast<std::streamoff>(count);
-			overlap = chunk.substr(chunk.size() - std::min(chunk.size(), marker.size() - 1));
-		}
-		if (file.bad()) return {};
-		file.clear();
-		file.seekg(body_offset);
-		std::string preview;
-		char ch = 0;
-		while (file.get(ch))
-		{
-			if (preview.empty() && uam::strings::IsAsciiSpace(static_cast<unsigned char>(ch))) continue;
-			if (preview.size() == 321)
-			{
-				// Preserve a whitespace suffix if later content makes it internal rather than trailing.
-				if (uam::strings::IsAsciiSpace(static_cast<unsigned char>(ch))) continue;
-				preview += 'x';
-				break;
-			}
-			preview += ch;
-			if (preview.size() == 321 && !uam::strings::IsAsciiSpace(static_cast<unsigned char>(ch))) break;
-		}
-		return file.bad() ? std::string{} : uam::strings::SafeLine(preview, 320);
+		return uam::memory::ReadFactPreview(file);
 	}
 
 	template <typename Visit> void ForEachMemoryFileInRoot(const fs::path& root, Visit&& visit, std::stop_token stop_token = {})
@@ -1726,6 +1693,64 @@ bool MemoryService::EnsureMemoryLayout(const fs::path& root)
 			return false;
 		}
 	}
+	return true;
+}
+
+bool MemoryService::BuildRecallResources(const fs::path& data_root, const AppSettings& settings, const ChatSession& chat,
+    const fs::path& workspace, std::map<std::string, std::string>& files, std::string& error)
+{
+	error.clear();
+	if (chat.imported_read_only || chat.execution_host_id != uam::execution_hosts::kLocalHostId ||
+	    !uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(settings, chat)) || settings.memory_recall_budget_bytes <= 0 || workspace.empty()) return true;
+	const fs::path assigned_workspace = uam::paths::HasGitWorktreeDirectory(chat)
+	    ? uam::paths::PathFromUtf8(chat.workspace_worktree_directory) : uam::paths::PathFromUtf8(chat.workspace_directory);
+	if (!assigned_workspace.empty() && uam::paths::NormalizeExistingOrAbsolutePath(workspace) != uam::paths::NormalizeExistingOrAbsolutePath(assigned_workspace))
+	{ error = "Memory resource workspace changed before preparation."; return false; }
+	std::map<std::string, std::string> pending;
+	std::size_t total_bytes = 0;
+	for (const auto& [name, bytes] : files) total_bytes += bytes.size();
+	std::string index = "Memory details. Paths below are relative to this index file's directory.\n";
+	for (const auto& [scope, root] : std::vector<std::pair<std::string, fs::path>>{
+	         {"global", GlobalMemoryRoot(data_root)}, {"workspace", LocalMemoryRoot(workspace)}})
+	{
+		std::error_code ec;
+		if (!fs::exists(root, ec) && !ec) continue;
+		if (ec || !uam::provider_setup::NoSymlinks(root)) { error = "Memory resources require an accessible unlinked root."; return false; }
+		for (const std::string& category : uam::memory::SupportedCategories())
+		{
+			const fs::path directory = root / category;
+			if (!fs::exists(directory, ec) && !ec) continue;
+			if (ec || !uam::provider_setup::NoSymlinks(directory)) { error = "Memory resource categories cannot be linked."; return false; }
+			std::vector<fs::path> entries;
+			fs::directory_iterator iterator(directory, ec);
+			for (; !ec && iterator != fs::directory_iterator{}; iterator.increment(ec))
+				if (iterator->path().extension() == ".md") entries.push_back(iterator->path());
+			if (ec) { error = "Memory resources could not be listed."; return false; }
+			std::ranges::sort(entries);
+			for (const fs::path& entry : entries)
+			{
+				const std::string relative = scope + "/" + category + "/" + uam::paths::Utf8PathString(entry.filename());
+				const std::string name = "memory/" + relative;
+				std::string bytes;
+				if (!uam::provider_setup::SafeRelativePath(name) || !uam::memory::IsSafeDetailReference(relative))
+				{ error = "Memory resource paths must be safe single-line references."; return false; }
+				if (!uam::provider_setup::ReadFile(entry, bytes, error)) return false;
+				if (files.contains(name) || files.size() + pending.size() + 2 > uam::provider_setup::kMaxFiles ||
+				    bytes.size() > uam::provider_setup::kMaxBundleBytes - std::min(total_bytes, uam::provider_setup::kMaxBundleBytes))
+				{ error = "Memory resources exceed the approved setup bundle."; return false; }
+				total_bytes += bytes.size();
+				const std::string title = uam::strings::SafeLine(uam::paths::Utf8PathString(entry.stem()), 160, true);
+				index += "- " + title + ": " + relative + "\n";
+				pending.emplace(name, std::move(bytes));
+			}
+		}
+	}
+	if (pending.empty()) return true;
+	if (files.contains("memory/index.md") || index.size() > uam::provider_setup::kMaxFileBytes ||
+	    index.size() > uam::provider_setup::kMaxBundleBytes - std::min(total_bytes, uam::provider_setup::kMaxBundleBytes))
+	{ error = "Memory index exceeds the approved setup bundle."; return false; }
+	pending.emplace("memory/index.md", std::move(index));
+	files.merge(pending);
 	return true;
 }
 
@@ -1965,7 +1990,8 @@ ChatSession MemoryService::CaptureWorkerInput(const ChatSession& chat, int start
 		const Message& source = chat.messages[index];
 		Message message;
 		message.role = source.role;
-		if (index >= start) message.content = source.content;
+		message.acp_prompt_discarded = source.acp_prompt_discarded;
+		if (index >= start && !source.acp_prompt_discarded) message.content = source.content;
 		result.messages.push_back(std::move(message));
 	}
 	return result;

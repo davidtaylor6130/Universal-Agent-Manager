@@ -1,3 +1,6 @@
+import type { AcpQueuedPrompt } from '../../store/cpp/types'
+import { attachmentsEquivalent } from '../../store/cpp/reconcile'
+import { messageAttachments } from '../../store/cpp/sanitizers'
 import { formatContextReferences, sanitizeContextReferences } from '../../utils/contextReferences'
 import { FileInspectionProvider } from '../shared/FileInspectionProvider'
 import { chatHasUnfinishedWork } from '../../utils/chatWork'
@@ -5,7 +8,7 @@ import { MessageNavigationRail } from '../chat/MessageNavigationRail'
 import { ChangedFilesTree } from '../chat/ChangedFilesTree'
 import { changedLineTotals } from '../chat/changedFilesTreeModel'
 import { SubagentWaitStatus, isWaitingOnSubagents } from '../chat/SubagentWaitStatus'
-import { InlinePromptQueue } from '../chat/InlinePromptQueue'
+import { InlinePromptQueue, type UnsentPrompt } from '../chat/InlinePromptQueue'
 import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactNode, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -20,7 +23,7 @@ import { GoalBanner } from '../shared/GoalBanner'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, SleepingScene } from '../chat/StatusScenes'
-import { buildAcpErrorCopyText, ChatStatusStrip, ContextUsageStatus, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
@@ -190,6 +193,39 @@ function hasSubstantiveOutput(message: Message) {
     message.planEntries?.length || message.toolCalls?.length || message.blocks?.length || message.attachments?.length)
 }
 
+function promptReferencesMessage(prompt: AcpQueuedPrompt, nativeIndex: number, message: Message) {
+  return Boolean(prompt.id && Number.isSafeInteger(prompt.revision) && prompt.revision! > 0 &&
+    !prompt.prepared && prompt.existingUserMessageIndex === nativeIndex && prompt.text === message.content &&
+    attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
+}
+
+/** Native certainty owns recovery; pending direct input stays visible without granting Retry authority. */
+export function projectUnsentPrompts(messages: Message[], historyStartIndex: number, knownIndices: readonly number[], retryIndices: readonly number[], heldPrompts: readonly AcpQueuedPrompt[] = [], pendingDirectPrompts: readonly AcpQueuedPrompt[] = []) {
+  const pendingIndices = new Set<number>()
+  if (knownIndices.length === 0 && heldPrompts.length === 0 && pendingDirectPrompts.length === 0 && !messages.some((message) => message.acpPromptDiscarded === true)) return { prompts: [] as UnsentPrompt[], hiddenIndices: new Set<number>(), pendingIndices }
+  const known = new Set(knownIndices)
+  const retryable = new Set(retryIndices)
+  const hiddenIndices = new Set<number>()
+  const prompts: UnsentPrompt[] = []
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    const nativeIndex = historyStartIndex + index
+    if (message.role !== 'user' || !message.acpPromptNotSent) continue
+    let end = index + 1
+    while (end < messages.length && messages[end].role !== 'user') end += 1
+    if (messages.slice(index + 1, end).some((output) => output.role !== 'assistant' || hasSubstantiveOutput(output))) continue
+    if (!message.acpPromptDiscarded && pendingDirectPrompts.some((prompt) => promptReferencesMessage(prompt, nativeIndex, message))) {
+      pendingIndices.add(index)
+      continue
+    }
+    const representedByQueue = heldPrompts.some((prompt) => promptReferencesMessage(prompt, nativeIndex, message))
+    if (!representedByQueue && !message.acpPromptDiscarded && !known.has(nativeIndex)) continue
+    if (!representedByQueue && !message.acpPromptDiscarded) prompts.push({ messageIndex: nativeIndex, text: message.content, attachments: message.attachments ?? [], retryable: retryable.has(nativeIndex) })
+    for (let hidden = index; hidden < end; hidden += 1) hiddenIndices.add(hidden)
+  }
+  return { prompts, hiddenIndices, pendingIndices }
+}
+
 function canRetryMessageInPlace(messages: Message[], messageIndex: number) {
   const message = messages[messageIndex]
   if (message?.role !== 'user') return false
@@ -350,6 +386,9 @@ type PersistedPlanActions = Parameters<typeof PersistedMessageContent>[0]['planA
 
 const PersistedMessageRow = memo(function PersistedMessageRow({
   message,
+  hasDeliveredResponse,
+  hasStoppedResponse,
+  pendingDirectAdmission,
   disclosureState,
   index,
   assistantLabel,
@@ -368,6 +407,9 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectTool,
 }: {
   message: Message
+  hasDeliveredResponse: boolean
+  hasStoppedResponse: boolean
+  pendingDirectAdmission: boolean
   disclosureState: WorkTraceDisclosureState
   index: number
   assistantLabel: string
@@ -385,9 +427,9 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
   onSelectBranch: (parentId: string, index: number, sessionId: string) => void
   onSelectTool: (messageId: string, toolId: string) => void
 }) {
-  if (message.blocks?.length === 1 && message.blocks[0].type === 'context_compaction') {
+  if (message.blocks?.length === 1 && (message.blocks[0].type === 'context_compaction' || message.blocks[0].type === 'context_compaction_interrupted')) {
     const block = message.blocks[0]
-    return <CompactionSeparator summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} />
+    return <CompactionSeparator summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
   }
   const isUserMessage = message.role === 'user'
   const branchParentId = sessionParentChatId && sessionBranchFromMessageIndex === index
@@ -439,7 +481,8 @@ const PersistedMessageRow = memo(function PersistedMessageRow({
           workingMode={workingMode}
         />
 		</MessageFrame>
-      {isUserMessage && message.interrupted && <InterruptedDivider label={message.acpPromptNotSent ? 'Message was not sent' : 'Response interrupted'} />}
+      {isUserMessage && message.interrupted && !pendingDirectAdmission && !(hasDeliveredResponse && hasStoppedResponse) &&
+        <InterruptedDivider label={message.acpPromptNotSent && !hasDeliveredResponse ? 'Message was not sent' : 'Response interrupted'} />}
       {!isUserMessage && stoppedResponseLabel(message.stopReason, message.interrupted) &&
         <InterruptedDivider label={stoppedResponseLabel(message.stopReason, message.interrupted)} />}
 		</>
@@ -533,6 +576,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   }, [session.id])
   const slashGroupButtonRefs = useRef<Record<string, HTMLSpanElement | null>>({})
   const messages = useAppStore(useShallow((s) => s.messages[session.id] ?? []))
+  const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const historyStartIndex = useAppStore((s) => s.historyStartIndexBySessionId[session.id] ?? 0)
   const searchNavigation = useAppStore((s) => s.chatSearchNavigation?.chatId === session.id ? s.chatSearchNavigation : null)
   const searchNavigationRef = useRef(searchNavigation)
@@ -542,8 +586,32 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const historyLoading = messages.length === 0 && !chatHistoryError && (
     (historyPageMissing && (session.messageCount ?? 0) > 0) || chatHistoryRetryingIds.has(session.id)
   )
-  // Empty chat with no history to wait for (a new chat, even while its first history request is in flight): the composer centres.
-  const composerCentred = messages.length === 0 && !chatHistoryError && !historyLoading
+  const unsentProjection = useMemo(() => projectUnsentPrompts(messages, historyStartIndex, acp?.unsentMessageIndices ?? [], acp?.recoverableUnsentMessageIndices ?? [], acp?.queuedPrompts ?? [], acp?.pendingDirectPrompts ?? []),
+    [messages, historyStartIndex, acp?.unsentMessageIndices, acp?.recoverableUnsentMessageIndices, acp?.queuedPrompts, acp?.pendingDirectPrompts])
+  const unsentPrompts = useMemo<UnsentPrompt[]>(() => [
+    ...unsentProjection.prompts,
+    ...(acp?.unsentDirectPrompts ?? []).map((prompt, index) => ({
+      recoveryPending: true, messageIndex: -1 - index, text: prompt.text, attachments: messageAttachments(prompt), retryable: true,
+      receipt: prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined,
+    })),
+    ...(acp?.pendingDirectPrompts ?? []).filter((prompt) => !messages.some((message, index) =>
+      message.role === 'user' && promptReferencesMessage(prompt, historyStartIndex + index, message))).map((prompt, index) => ({
+      sending: true, recoveryPending: true, messageIndex: -1 - (acp?.unsentDirectPrompts?.length ?? 0) - index,
+      text: prompt.text, attachments: messageAttachments(prompt), retryable: false,
+      receipt: prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined,
+    })),
+  ], [unsentProjection.prompts, acp?.unsentDirectPrompts, acp?.pendingDirectPrompts, messages, historyStartIndex])
+  const navigableUserMessageIndices = useMemo(() => {
+    if (!acp?.unsentMessageIndices?.length && unsentProjection.hiddenIndices.size === 0) return session.userMessageIndices
+    const known = new Set(acp?.unsentMessageIndices ?? [])
+    const indices = session.userMessageIndices ?? messages.flatMap((message, index) => message.role === 'user' ? [historyStartIndex + index] : [])
+    return indices.filter((index) => {
+      const loadedIndex = index - historyStartIndex
+      return loadedIndex < 0 || loadedIndex >= messages.length ? !known.has(index) : !unsentProjection.hiddenIndices.has(loadedIndex)
+    })
+  }, [messages, historyStartIndex, session.userMessageIndices, unsentProjection, acp?.unsentMessageIndices])
+  // Definitively unsent inputs do not turn an otherwise empty chat into delivered history.
+  const composerCentred = historyStartIndex === 0 && messages.length === unsentProjection.hiddenIndices.size && !chatHistoryError && !historyLoading
   const composerFormRef = useRef<HTMLFormElement>(null)
   const composerCentredRef = useRef(composerCentred)
   const composerTopRef = useRef(0)
@@ -586,7 +654,6 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   )
   const workspaceDirectory = session.workspaceDirectory?.trim() || folderDirectory.trim()
   const folderIcon = useAppStore((s) => session.folderId ? s.folders.find((folder) => folder.id === session.folderId)?.customIcon : undefined)
-  const acp = useAppStore((s) => s.acpBindingBySessionId[session.id])
   const workingDisplayMode = useAppStore((s) => s.workingDisplayMode)
   const cli = useAppStore((s) => s.cliBindingBySessionId[session.id])
   const providers = useAppStore((s) => s.providers)
@@ -619,6 +686,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const removeQueuedAcpPrompt = useAppStore((s) => s.removeQueuedAcpPrompt)
+  const discardUnsentMessage = useAppStore((s) => s.discardUnsentMessage)
   const resumeQueuedAcpPrompts = useAppStore((s) => s.resumeQueuedAcpPrompts)
   const steerQueuedAcpPrompt = useAppStore((s) => s.steerQueuedAcpPrompt)
   const editQueuedAcpPrompt = useAppStore((s) => s.editQueuedAcpPrompt)
@@ -917,11 +985,12 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     if (state.activeSessionId !== session.id || state.chatSearchNavigation?.generation !== searchNavigation.generation ||
         state.chatSearchNavigation.chatId !== session.id) return
     const target = transcriptContentRef.current?.querySelector<HTMLElement>(`[data-message-index="${searchNavigation.messageIndex}"]`)
+      ?? composerFormRef.current?.querySelector<HTMLElement>(`[data-unsent-message-index="${searchNavigation.messageIndex}"]`)
     if (!target) return
     isNearBottomRef.current = false
     target.scrollIntoView?.({ block: 'center' })
     useAppStore.getState().consumeChatSearchJump(session.id, searchNavigation.generation)
-  }, [searchNavigation, messages, historyStartIndex, session.id])
+  }, [searchNavigation, messages, historyStartIndex, session.id, unsentProjection])
 
   const scrollToBottom = useCallback(() => {
     const followLatest = () => {
@@ -1417,6 +1486,8 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     acp?.pendingPermission ||
     acp?.pendingUserInput ||
     (acp?.queuedPrompts?.length ?? 0) > 0 ||
+    (acp?.pendingDirectPrompts?.length ?? 0) > 0 ||
+    (acp?.unsentDirectPrompts?.length ?? 0) > 0 ||
     cli?.running
   )
   const openWorkspace = async () => {
@@ -1532,7 +1603,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
     : ''
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
-  const currentErrorSource = `${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
+  const currentErrorSource = `Universal Agent Manager · ${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
   const currentErrorTitle = `${currentErrorSource} error`
   const currentAcpError = acp?.promptActionError?.message || acp?.lastError || ''
   const currentAcpErrorKey = acp?.promptActionError ? `${session.id}:prompt:${acp.promptActionError.id}` : currentAcpError ? `${session.id}:${currentAcpError}` : ''
@@ -1553,7 +1624,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
   const unsupportedProviderMessage = providerSupported
     ? ''
     : `${currentProviderName} is not supported in this build. Switch this chat to Gemini CLI to continue.`
-  const canChangeProvider = !acp?.processing && !(acp?.queuedPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
+  const canDeleteUnsentReceipt = !acp?.processing && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy' && ['ready', 'stopped', 'error'].includes(acp?.lifecycleState ?? 'stopped')
+  const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
+  const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
   const createMessageBranch = useCallback(async (messageIndex: number, content?: string, retainedAttachmentIds?: string[]) => {
     const generation = ++messageBranchGenerationRef.current
     const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
@@ -2474,10 +2547,13 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
               )}
               {visibleMessages.map((message, visibleIndex) => {
                 const index = earliestRenderedMessageIndex + visibleIndex
-                if (index === redundantStreamingMessageIndex) return null
+                if (index === redundantStreamingMessageIndex || unsentProjection.hiddenIndices.has(index)) return null
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
                 const followingResponse = message.role === 'user' && messages[index + 1]?.role === 'assistant' ? messages[index + 1] : undefined
+                const hasDeliveredResponse = Boolean(message.interrupted && message.acpPromptNotSent && followingResponse?.providerId?.trim() &&
+                  followingResponse.providerId.trim() === message.providerId?.trim() && hasSubstantiveOutput(followingResponse))
+                const hasStoppedResponse = Boolean(hasDeliveredResponse && stoppedResponseLabel(followingResponse?.stopReason, followingResponse?.interrupted))
                 const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
@@ -2541,7 +2617,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         assistantLabel={reviewAssistantLabel(messageProviderName, message)}
                         goalReview={Boolean(goalReviewForMessage(message))}
                         streaming={Boolean(acp?.processing)}
-                        actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null}
                       >
                         <TurnTimelineContent
                           disclosureState={liveWorkDisclosure}
@@ -2572,6 +2648,9 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                     ) : (
                       <PersistedMessageRow
                         message={message}
+                        hasDeliveredResponse={hasDeliveredResponse}
+                        hasStoppedResponse={hasStoppedResponse}
+                        pendingDirectAdmission={unsentProjection.pendingIndices.has(index)}
                         disclosureState={disclosureState}
                         index={index + historyStartIndex}
                         assistantLabel={reviewAssistantLabel(messageProviderName, message)}
@@ -2580,7 +2659,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                         sessionBranchFromMessageIndex={session.branchFromMessageIndex}
                         sessionBranchMessageEdited={session.branchMessageEdited}
                         branchSessions={branchSessions}
-                        actionsDisabled={!canChangeProvider || branchingMessageIndex !== null}
+                        actionsDisabled={session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || unsentProjection.pendingIndices.has(index)}
                         planActions={index === latestPlanMessageIndex ? activePlanActions : undefined}
                         workingMode={workingDisplayMode}
                         retryInPlace={index === retryInPlaceMessageIndex}
@@ -2631,7 +2710,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   </WorkSectionContext.Provider>
                 )
               })}
-              {acp?.processing && turnEvents.length === 0 && activeWorkMessageIndex < 0 && (
+              {acp?.processing && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
                   role="status"
@@ -2728,8 +2807,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                   )}
                 </section>
               )}
-              <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context"
-                detail={acp?.providerUsage?.contextUsage ? <ContextUsageStatus usage={acp.providerUsage.contextUsage} /> : undefined} />
+              <ChatStatusStrip open={Boolean(acp?.compacting)} tone="info" scene={<CompactingScene />} title="Compacting context" />
               <SubagentWaitStatus binding={acp} />
               <ChatStatusStrip open={Boolean(stoppedStatusLabel)} tone="warning" scene={<SleepingScene />} title={stoppedStatusLabel} timeMode="since" />
               </div>
@@ -2739,7 +2817,7 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
             <div ref={bottomRef} />
           </div>
           {session.messagesDigest && <MessageNavigationRail key={session.id}
-            userMessageIndices={session.userMessageIndices} startIndex={historyStartIndex} messages={messages}
+            userMessageIndices={navigableUserMessageIndices} startIndex={historyStartIndex} messages={messages}
             currentIndex={searchNavigation?.messageIndex ?? Math.max(0, historyStartIndex + messages.length - 1)}
             viewportRef={scrollRef} busy={searchNavigation?.phase === 'loading'}
             onNavigate={(index) => { isNearBottomRef.current = false; void useAppStore.getState().jumpToSessionMessage(session.id, index) }} />}
@@ -2918,7 +2996,30 @@ export const ChatView = memo(function ChatView({ session, accentColor }: ChatVie
                 {attachmentError}
               </Notice>
             )}
-            <InlinePromptQueue key={session.id} held={acp?.queueHeld ?? false} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
+            <InlinePromptQueue key={session.id} unsentPrompts={unsentPrompts}
+              unsentActionsDisabled={session.importedReadOnly || !canManageUnsent || branchingMessageIndex !== null || editingMessageIndex !== null}
+              unsentReceiptDeleteDisabled={session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null}
+              onEditUnsent={isCompanionContext() ? undefined : beginEditingMessage}
+              onRemoveUnsent={isCompanionContext() ? undefined : (index, receipt) => {
+                if (session.importedReadOnly || (receipt ? !canDeleteUnsentReceipt : !canManageUnsent) || branchingMessageIndex !== null || editingMessageIndex !== null) return Promise.resolve(false)
+                if (receipt) return removeQueuedAcpPrompt(session.id, 0, receipt)
+                return discardUnsentMessage(session.id, index, messages[index - historyStartIndex]?.id ?? '')
+              }}
+              onRetryUnsent={isCompanionContext() ? undefined : async (index) => {
+                if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
+                const generation = ++messageBranchGenerationRef.current
+                const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
+                setBranchingMessageIndex(index)
+                setMessageBranchError('')
+                try {
+                  const result = await retryFailedMessage(session.id, index)
+                  if (!result.ok) throw new Error(result.error || 'Could not retry the failed message.')
+                  return true
+                } finally {
+                  if (ownsFeedback()) setBranchingMessageIndex(null)
+                }
+              }}
+              held={Boolean(acp?.queueHeld && acp.queuedPrompts?.length)} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
               onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}
               onReorder={(expected, orderedIds) => reorderQueuedAcpPrompts(session.id, expected, orderedIds)}
               onRemove={(index, expected) => expected ? removeQueuedAcpPrompt(session.id, index, expected) : removeQueuedAcpPrompt(session.id, index)}

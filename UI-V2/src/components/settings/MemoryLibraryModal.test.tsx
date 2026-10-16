@@ -366,4 +366,38 @@ describe('MemoryLibraryModal all memory scope', () => {
     })
     host.remove()
   })
+  it.each(['title', 'memory'] as const)('disables invalid memory Save and leave until the %s is restored', async missing => {
+    const createMemoryEntry = vi.fn().mockResolvedValue(true)
+    const { host, root } = renderModal({ createMemoryEntry })
+    try {
+      clickButton(host, 'Add memory')
+      const title = host.querySelector<HTMLInputElement>('[aria-label="Title"]')!
+      const memory = Array.from(host.querySelectorAll('label')).find(label => label.textContent?.startsWith('Memory'))!.querySelector('textarea')!
+      const setMemory = (value: string) => act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(memory, value)
+        memory.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      changeInput(title, 'Remember this')
+      setMemory('Useful memory')
+      if (missing === 'title') changeInput(title, '  ')
+      else setMemory('  ')
+      expect(Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Save memory')!.disabled).toBe(true)
+      act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+      const leaveSave = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Save and leave')!
+      expect(leaveSave().disabled).toBe(true)
+      expect(Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Go back')!.disabled).toBe(false)
+      expect(Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Discard')!.disabled).toBe(false)
+      clickButton(host, 'Save and leave')
+      expect(createMemoryEntry).not.toHaveBeenCalled()
+      clickButton(host, 'Go back')
+      if (missing === 'title') changeInput(title, 'Remember this')
+      else setMemory('Useful memory')
+      act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+      expect(leaveSave().disabled).toBe(false)
+      await act(async () => clickButton(host, 'Save and leave'))
+      expect(createMemoryEntry).toHaveBeenCalledOnce()
+      expect(createMemoryEntry).toHaveBeenCalledWith(expect.objectContaining({ title: 'Remember this', memory: 'Useful memory' }))
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
 })

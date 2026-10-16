@@ -116,6 +116,96 @@ UAM_TEST(PerformanceInitialStateSummaryResponse)
 	RequireBudget("initial-state summary service response (not application launch)", started, kStartupBudget);
 }
 
+UAM_TEST(PerformanceColdLocalSummaryCatalogue)
+{
+	TempDir temp("uam-performance-cold-summary-catalogue");
+	const fs::path chats = AppPaths::UamChatsRootPath(temp.root);
+	fs::create_directories(chats);
+	for (int index = 0; index < 1000; ++index)
+	{
+		const std::string id = "cold-summary-" + std::to_string(index);
+		const nlohmann::json document = {
+		    {"id", id}, {"title", id}, {"provider_id", "gemini-cli"},
+		    {"created_at", "2026-01-01 12:00:00"}, {"updated_at", "2026-01-01 12:00:00"},
+		    {"messages", nlohmann::json::array({{{"role", "user"}, {"content", "Request"}},
+		                                      {{"role", "assistant"}, {"content", "Response"}}})}};
+		std::ofstream file(chats / (id + ".json"));
+		file << document.dump();
+		UAM_ASSERT(file.good());
+	}
+	const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	const std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+	UAM_ASSERT_EQ(summaries.size(), std::size_t{1000});
+	for (const ChatSession& chat : summaries)
+	{
+		UAM_ASSERT(chat.messages.empty());
+		UAM_ASSERT_EQ(chat.persisted_message_count, std::size_t{2});
+	}
+	RequireBudget("cold 1000-chat summary catalogue with cache regeneration", started, kHistoryPageBudget);
+}
+
+UAM_TEST(ColdSummaryCacheRegenerationPreservesPrimaryHistory)
+{
+	TempDir temp("uam-cold-summary-recovery");
+	const ChatSession fixture = HistoryFixture(20);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, fixture));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, fixture.id);
+	const fs::path cache = AppPaths::UamChatSummaryFilePath(temp.root, fixture.id);
+	const std::string original = uam::io::ReadTextFile(primary);
+	for (const bool corrupt : {false, true})
+	{
+		if (corrupt) UAM_ASSERT(uam::io::WriteTextFile(cache, "invalid cache"));
+		else fs::remove(cache);
+		std::vector<ChatSession> summaries = ChatRepository::LoadLocalChatSummaries(temp.root);
+		UAM_ASSERT_EQ(summaries.size(), std::size_t{1});
+		UAM_ASSERT_EQ(summaries.front().persisted_message_count, std::size_t{20});
+		UAM_ASSERT(summaries.front().messages.empty());
+		UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, summaries.front()));
+		UAM_ASSERT_EQ(summaries.front().messages.back().content, fixture.messages.back().content);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), original);
+		UAM_ASSERT(!uam::io::ReadTextFile(cache).empty());
+	}
+}
+
+UAM_TEST(AtomicCacheWritesPreserveFaultSafetyAndDurableDefaults)
+{
+	TempDir temp("uam-atomic-cache-safety");
+	const fs::path cache = temp.root / "cache.json";
+	bool synced = false;
+	UAM_ASSERT(uam::io::AtomicWriteFileDetailed(cache, "old", [&](uam::io::AtomicWriteStage stage)
+	{
+		if (stage == uam::io::AtomicWriteStage::AfterFileSync) synced = true;
+		return true;
+	}).success);
+	UAM_ASSERT(synced);
+	for (const uam::io::AtomicWriteStage fault : {uam::io::AtomicWriteStage::DuringWrite, uam::io::AtomicWriteStage::BeforeReplace})
+	{
+		const uam::io::AtomicWriteResult interrupted = uam::io::AtomicWriteFileDetailed(cache, "partial replacement", [&](uam::io::AtomicWriteStage stage)
+		{
+			return stage != fault;
+		}, false, false);
+		UAM_ASSERT(!interrupted.success);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(cache), std::string("old"));
+	}
+	synced = false;
+	UAM_ASSERT(uam::io::AtomicWriteFileDetailed(cache, "new", [&](uam::io::AtomicWriteStage stage)
+	{
+		if (stage == uam::io::AtomicWriteStage::AfterFileSync) synced = true;
+		return true;
+	}, false, false).success);
+	UAM_ASSERT(!synced);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(cache), std::string("new"));
+	UAM_ASSERT(uam::io::WriteCacheFile(cache, "complete"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(cache), std::string("complete"));
+	UAM_ASSERT(!uam::io::WriteCacheFile(temp.root, "invalid destination"));
+#if !defined(_WIN32)
+	const fs::path link = temp.root / "linked-cache.json";
+	fs::create_symlink(cache, link);
+	UAM_ASSERT(!uam::io::WriteCacheFile(link, "invalid link write"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(cache), std::string("complete"));
+#endif
+}
+
 UAM_TEST(PerformanceSettingsSaveResponse)
 {
 	TempDir temp("uam-performance-settings-save");

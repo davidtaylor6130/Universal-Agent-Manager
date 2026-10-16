@@ -26,6 +26,9 @@ void ResetAcpPendingInteractionState(AcpSessionState& session)
 
 void ResetAcpTurnStreamState(AcpSessionState& session)
 {
+	session.queued_skill_spans.clear();
+	if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
+	session.attached_skill_preparation.reset();
 	session.claude_quota_delivery_id.clear();
 	session.claude_quota_usage_error = false;
 	session.claude_quota_reset_epoch_s = 0;

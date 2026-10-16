@@ -7,8 +7,10 @@
 #include "common/usage/usage_collector.h"
 #include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/provider_setup.h"
 #include "common/provider/provider_native_context.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_model_json.h"
 #include "remote/runner_service_posix.h"
 
 #include <set>
@@ -59,6 +61,7 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 			log << request.dump() << '\n';
 		}
 		const std::string type = request.value("type", "");
+		if (mode == "handshake-offline" && type == "hello") return 0;
 		nlohmann::json result = nlohmann::json::object();
 		if (mode == "command-lost-start" && type == "process.start") return 0;
 		if (mode == "teardown-lost-reply" && type == "process.closeInput") return 0;
@@ -126,6 +129,8 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
 		    : nlohmann::json{{"id", request["id"]}, {"ok", true}, {"result", result}};
 		if (mode == "old-context-capability" && type == "hello") response["capabilities"].erase("providerNativeContext");
+		if (mode == "handshake-version" && type == "hello") response["runnerVersion"] = "incompatible";
+		if (mode == "handshake-protocol" && type == "hello") response["protocolVersion"] = 99;
 		if (mode == "startup-write-exited" && type == "process.write")
 			response = {{"id", request["id"]}, {"ok", false},
 			            {"error", {{"code", "process_exited"}, {"message", "The remote process has exited."}}}};
@@ -133,6 +138,107 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		std::cout.flush();
 	}
 	return 0;
+}
+
+UAM_TEST(RemoteRunnerConnectionAttemptsIgnoreCachedHealthButRejectInvalidConfiguration)
+{
+	ExecutionHost host{"lab", "Lab", "ssh", "lab", "error", "development", "linux", "x86_64", "", "runner", uam::remote::kRunnerProtocolVersion};
+	for (const std::string status : {"ready", "error", "offline"})
+	{
+		host.runner_status = status;
+		UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+	}
+	const ExecutionHost installed = host;
+	for (int change = 0; change < 10; ++change)
+	{
+		host = installed;
+		switch (change)
+		{
+		case 0: host.runner_status = "uninstalled"; break;
+		case 1: host.runner_status = "installing"; break;
+		case 2: host.runner_status = "disabled"; break;
+		case 3: host.runner_version.clear(); break;
+		case 4: host.runner_protocol_version = 0; break;
+		case 5: host.runner_protocol_version = uam::remote::kRunnerProtocolVersion + 1; break;
+		case 6: host.ssh_alias = "-foreign"; break;
+		case 7: host.runner_directory = "../foreign"; break;
+		case 8: host.transport = "foreign"; break;
+		case 9: host.platform = "foreign"; break;
+		}
+		UAM_ASSERT(!uam::remote::CanAttemptRunnerConnection(host));
+	}
+}
+
+UAM_TEST(RemoteRunnerCachedErrorsStillRequireACompatibleLiveHandshake)
+{
+	TempDir temp("uam-cached-health-handshake");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	for (const std::string status : {"ready", "error", "offline"})
+	for (const std::string mode : {"healthy", "handshake-offline", "handshake-version", "handshake-protocol"})
+	{
+		ExecutionHost host{"lab", "Lab", "ssh", "lab", status, "development", "linux", "x86_64", "", "runner", uam::remote::kRunnerProtocolVersion};
+		UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+		const fs::path log = temp.root / (status + "-" + mode + ".jsonl");
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", mode);
+		uam::remote::RunnerClient client(service,
+		    {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"}, host.runner_version, host.runner_protocol_version);
+		std::string error;
+		UAM_ASSERT_EQ(client.Connect(&error), mode == "healthy");
+		UAM_ASSERT_EQ(client.IsConnected(), mode == "healthy");
+		client.Disconnect();
+		std::istringstream requests(ReadFile(log));
+		std::string line;
+		int hellos = 0;
+		while (std::getline(requests, line))
+		{
+			UAM_ASSERT_EQ(nlohmann::json::parse(line).at("type").get<std::string>(), "hello");
+			++hellos;
+		}
+		UAM_ASSERT_EQ(hellos, 1);
+	}
+}
+
+UAM_TEST(RemoteCliVersionRecheckCanRecoverAnInstalledHelperWithCachedErrors)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-cached-health-cli-check");
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+	// Keep this private fixture's executable path independent of the machine's login profile.
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "sh", "#!/bin/sh\nexec /bin/sh -c \"$2\"\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "codex", "#!/bin/sh\nprintf 'checked\\n' >> \"$UAM_TEST_CLI_CHECK_LOG\"\nprintf 'codex-cli 0.162.1\\n'\n"));
+	for (const char* executable : {"ssh", "sh", "codex"})
+		fs::permissions(temp.root / executable, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+	ScopedEnvVar path("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+	ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
+	ScopedEnvVar check_log("UAM_TEST_CLI_CHECK_LOG", (temp.root / "checks.txt").string());
+	for (const std::string status : {"error", "offline"})
+	{
+		uam::AppState app;
+		app.data_root = temp.root / status;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host{"lab", "Lab", "ssh", "lab", status,
+		    std::string(uam::constants::kAppVersion).substr(1), "macos", "arm64", "", "runner", uam::remote::kRunnerProtocolVersion};
+		app.settings.execution_hosts = {host};
+		std::string error;
+		ProviderCliCompatibilityService compatibility;
+		UAM_ASSERT(compatibility.StartProviderVersionCheck(app, uam::provider_ids::kCodexCli, true, host.id, &error));
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (app.runtime_cli_version_check_task.running && std::chrono::steady_clock::now() < deadline)
+		{
+			compatibility.Poll(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(!app.runtime_cli_version_check_task.running);
+		const auto& version = app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey(uam::provider_ids::kCodexCli, host.id));
+		UAM_ASSERT_EQ(version.installed_version, "0.162.1");
+		UAM_ASSERT(version.check_error.empty());
+		UAM_ASSERT_EQ(app.settings.execution_hosts.front().runner_status, "ready");
+	}
+	UAM_ASSERT_EQ(ReadFile(temp.root / "checks.txt"), "checked\nchecked\n");
+#endif
 }
 
 UAM_TEST(RemoteCommandRecoversLostStartWithoutReplayingAndPreservesOutputAndExit)
@@ -1088,6 +1194,124 @@ UAM_TEST(RemoteRunnerTransientLeaseReclaimsAnAbandonedLiveProcess)
 	UAM_ASSERT(!state.HasManagedProcesses());
 }
 
+UAM_TEST(RemoteEphemeralDiscoveryLeasePreservesOwnedAuthorityAndDurableChats)
+{
+#if defined(__APPLE__)
+	for (const int kind : {0, 1, 2, 3, 4})
+	{
+		TempDir temp("uam-discovery-lease");
+		const fs::path log = temp.root / "requests.jsonl";
+		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec \"$UAM_TEST_CREATE_EXECUTABLE\" --uam-test-remote-opencode-create\n"));
+		fs::permissions(temp.root / "ssh", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+		ScopedEnvVar executable("UAM_TEST_CREATE_EXECUTABLE", PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string());
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", "success");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = {ProviderProfileStore::DefaultOpenCodeProfile()};
+		ExecutionHost host{"private-lease", "Private", "ssh", "private-fixture", "ready", "development", "linux", "x86_64", "", "runner", kind == 4 ? 2 : 3};
+		app.settings.execution_hosts.push_back(host);
+		// Version admission and code-mode setup are covered separately from process lease ownership.
+		uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("opencode-cli", host.id)];
+		version.execution_host = host;
+		version.checked = true;
+		version.supported = true;
+		version.installed_version = "1.15.13";
+		ChatSession chat;
+		chat.id = "private-lease-chat";
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = temp.root.string();
+		chat.memory_enabled = false;
+		chat.remote_process_control_token = "private-owned-discovery-token";
+		const bool ephemeral = kind >= 3;
+		if (ephemeral) app.model_discovery_chats.push_back(chat);
+		else app.chats.push_back(chat);
+		ChatSession& launched = ephemeral ? app.model_discovery_chats.front() : app.chats.front();
+		uam::AcpSessionState session;
+		session.chat_id = chat.id;
+		session.model_discovery_only = kind == 1 || ephemeral;
+		session.ephemeral_model_discovery = ephemeral;
+		session.goal_internal_session = kind == 2;
+		std::string error;
+		const bool started = uam::acp_detail::StartAcpProcessForChat(app, session, launched, &error);
+		struct Guard
+		{
+			uam::AcpSessionState& session;
+			~Guard()
+			{
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+			}
+		} guard{session};
+		if (kind == 4)
+		{
+			UAM_ASSERT(!started && error.find("Update the helper") != std::string::npos);
+			UAM_ASSERT(!session.running && !fs::exists(log));
+			continue;
+		}
+		UAM_ASSERT(started);
+		nlohmann::json start;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+		while (start.is_null() && std::chrono::steady_clock::now() < deadline)
+		{
+			std::ifstream requests(log);
+			std::string line;
+			while (std::getline(requests, line))
+			{
+				const nlohmann::json request = nlohmann::json::parse(line, nullptr, false);
+				if (request.is_object() && request.value("type", "") == "process.start") start = request;
+			}
+			if (start.is_null()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT(!start.is_null());
+		UAM_ASSERT_EQ(start.value("controlToken", ""), chat.remote_process_control_token);
+		UAM_ASSERT_EQ(start.value("transientLeaseMs", 0), ephemeral ? 60000 : 0);
+		UAM_ASSERT_EQ(session.remote_output_delivery_token, chat.remote_process_control_token);
+		if (ephemeral) UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, chat.id));
+	}
+#endif
+}
+
+UAM_TEST(RemoteDiscoveryLeaseRenewalIsolationAndExpiredBusyCleanup)
+{
+#if defined(__APPLE__)
+	uam::remote::RunnerState state;
+	const auto request = [&](std::string type, std::string id, std::string token)
+	{
+		return uam::remote::HandleRunnerRequest({{"id", "lease-check"}, {"type", type},
+		    {"sessionId", id}, {"controlToken", token}}, "test-version", &state);
+	};
+	for (const bool transient : {false, true})
+	{
+		nlohmann::json start = {{"id", "lease-start"}, {"type", "process.start"},
+		    {"sessionId", transient ? "discovery" : "user-chat"}, {"controlToken", "owned-token"},
+		    {"cwd", fs::temp_directory_path().string()}, {"argv", {"/bin/sh", "-c", "sleep 10"}}};
+		if (transient) start["transientLeaseMs"] = 250;
+		UAM_ASSERT(uam::remote::HandleRunnerRequest(start, "test-version", &state).value("ok", false));
+	}
+	for (int heartbeat = 0; heartbeat < 5; ++heartbeat)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		const nlohmann::json polled = request("process.poll", "discovery", "owned-token");
+		UAM_ASSERT(polled.value("ok", false) && polled["result"].value("running", false));
+	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(150));
+	const nlohmann::json denied = request("process.poll", "discovery", "wrong-token");
+	UAM_ASSERT(!denied.value("ok", true) && denied["error"].value("code", "") == "unauthorized");
+	std::this_thread::sleep_for(std::chrono::milliseconds(150));
+	UAM_ASSERT(state.HasManagedProcesses());
+	const nlohmann::json expired = request("process.poll", "discovery", "owned-token");
+	UAM_ASSERT(!expired.value("ok", true) && expired["error"].value("code", "") == "session_not_found");
+	const nlohmann::json durable = request("process.poll", "user-chat", "owned-token");
+	UAM_ASSERT(durable.value("ok", false) && durable["result"].value("running", false));
+	UAM_ASSERT(request("process.stop", "user-chat", "owned-token").value("ok", false));
+	UAM_ASSERT(request("process.remove", "user-chat", "owned-token").value("ok", false));
+	UAM_ASSERT(!state.HasManagedProcesses());
+#endif
+}
+
 UAM_TEST(RemoteTerminalUsesAForcedSshPtyAndExecutesOnlyTheEncodedArgv)
 {
 	TempDir temp("uam-terminal-unicode");
@@ -1545,6 +1769,12 @@ UAM_TEST(WindowsBootstrapLockFitsOpenSshCommandLimit)
 	UAM_ASSERT(script.find("[Console]::WriteLine('UAM_INSTALL_LOCK_READY:") != std::string::npos);
 	UAM_ASSERT(script.find("finally { try { $installed=Join-Path") != std::string::npos);
 	UAM_ASSERT(script.find("powershell.exe") == std::string::npos);
+	UAM_ASSERT(script.find("Restore-UamRunnerFile $backup $installed; & $installed start") != std::string::npos);
+	UAM_ASSERT(script.find("Runner service is busy; recovery was not performed.") != std::string::npos);
+	UAM_ASSERT(script.find("Copy-Item -LiteralPath $backup -Destination $installed") == std::string::npos);
+	const std::size_t helper = script.find("function Set-UamRunnerFile");
+	UAM_ASSERT(helper != std::string::npos);
+	UAM_ASSERT(script.find("function Set-UamRunnerFile", helper + 1) == std::string::npos);
 }
 
 UAM_TEST(RemoteRunnerBootstrapSelectsAndHardensTheWindowsArtifact)
@@ -1613,18 +1843,31 @@ esac
 	UAM_ASSERT(uam::remote::FinalizeBootstrapPlan(plan, result, true, &error));
 	const std::string commands = uam::io::ReadTextFile(log);
 	UAM_ASSERT(commands.find("-EncodedCommand") != std::string::npos);
-	UAM_ASSERT(commands.find("-Command \"") == std::string::npos);
+	UAM_ASSERT(commands.find("-Command \"& ([scriptblock]::Create") != std::string::npos);
 	std::string decoded_commands;
 	std::istringstream command_lines(commands);
 	for (std::string command; std::getline(command_lines, command);)
 	{
 		const std::string marker = "-EncodedCommand ";
 		const std::size_t offset = command.find(marker);
-		if (offset == std::string::npos) continue;
-		std::string utf16_le;
-		UAM_ASSERT(uam::base64::Decode(command.substr(offset + marker.size()), utf16_le));
-		for (std::size_t index = 0; index + 1 < utf16_le.size(); index += 2)
-			decoded_commands.push_back(utf16_le[index]);
+		if (offset != std::string::npos)
+		{
+			std::string utf16_le;
+			UAM_ASSERT(uam::base64::Decode(command.substr(offset + marker.size()), utf16_le));
+			for (std::size_t index = 0; index + 1 < utf16_le.size(); index += 2)
+				decoded_commands.push_back(utf16_le[index]);
+		}
+		else
+		{
+			const std::string utf8_marker = "FromBase64String('";
+			const std::size_t begin = command.find(utf8_marker);
+			if (begin == std::string::npos) continue;
+			const std::size_t start = begin + utf8_marker.size();
+			const std::size_t end = command.find("'", start);
+			std::string utf8;
+			UAM_ASSERT(uam::base64::Decode(command.substr(start, end - start), utf8));
+			decoded_commands += utf8;
+		}
 		decoded_commands.push_back('\n');
 	}
 	UAM_ASSERT(decoded_commands.find("Get-FileHash") != std::string::npos);
@@ -1639,8 +1882,16 @@ esac
 	           std::string::npos);
 	UAM_ASSERT(decoded_commands.find("Remove-Item -LiteralPath $marker -Force -ErrorAction Stop") !=
 	           std::string::npos);
-	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $installed -Force -ErrorAction Stop") !=
-	           std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $installed") == std::string::npos);
+	UAM_ASSERT(decoded_commands.find("[IO.File]::Replace($source,$target,$save)") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("[IO.File]::Replace($source,$target,[NullString]::Value)") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Copy-Item -LiteralPath $backup -Destination $restore -Force -ErrorAction Stop") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Restore-UamRunnerFile $backup $installed") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("$failed.Exception.Message+' Rollback failed: '+$_.Exception.Message") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("Runner service is busy; rollback was not performed.") != std::string::npos);
+	UAM_ASSERT(decoded_commands.find("$ProgressPreference='SilentlyContinue'") != std::string::npos);
+	const std::size_t stop_guard = decoded_commands.find("Runner service is busy with active chats.");
+	UAM_ASSERT(stop_guard < decoded_commands.find("Set-UamRunnerFile $file $installed $backup"));
 	UAM_ASSERT(decoded_commands.find("Runner protocol verification failed") != std::string::npos);
 	UAM_ASSERT(decoded_commands.find("old-tools/uam/4.4.0/uam-runner.exe") ==
 	           std::string::npos);
@@ -2222,6 +2473,7 @@ UAM_TEST(RemoteGitInitialCommitDoesNotRequireAnExistingIndexFile)
 	ExecutionHost host;
 	host.id = "remote-initial-git";
 	host.label = "Remote initial Git";
+	host.transport = "ssh";
 	host.ssh_alias = "test-host";
 	host.platform = "linux";
 	host.architecture = "arm64";
@@ -4341,6 +4593,39 @@ UAM_TEST(RemoteWorkspaceFilePreviewClientReassemblesLargeUnicodeSources)
 	UAM_ASSERT(!error.empty());
 }
 
+UAM_TEST(RemoteRunnerCentralConfigurationAcceptsTrailingWorkspaceSeparatorsAndRejectsOtherWorkspaces)
+{
+	TempDir temp("uam-runner-central-workspace");
+	const fs::path workspace = temp.root / "workspace";
+	const nlohmann::json manifest = {{"format", 1}, {"mcpOnly", true}, {"files", nlohmann::json::object()}};
+	const fs::path configuration = workspace / ".UAM" / "provider-setup" / uam::provider_setup::Digest(manifest.dump());
+	fs::create_directories(configuration);
+	UAM_ASSERT(uam::io::WriteTextFile(configuration / "owner.json", manifest.dump()));
+	const std::string executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().string();
+	const std::string cwd = uam::paths::Utf8PathString(workspace);
+	for (const std::string& spelling : {cwd, cwd + std::string(1, fs::path::preferred_separator), cwd + "/./"})
+	{
+		uam::remote::RunnerState state;
+		nlohmann::json start = {{"id", "start"}, {"type", "process.start"}, {"sessionId", "central-path"},
+		    {"controlToken", kProcessControlToken}, {"cwd", spelling},
+		    {"argv", nlohmann::json::array({executable, "--uam-test-empty-arguments"})},
+		    {"configurationDirectory", uam::paths::Utf8PathString(configuration)}, {"configurationProvider", "opencode-cli"}};
+		const nlohmann::json started = state.HandleProcessRequest(start);
+		UAM_ASSERT(started.value("ok", false));
+	}
+	for (const fs::path& outside : {temp.root / ".UAM" / "provider-setup" / "fixture",
+	    workspace / ".UAM" / "wrong-directory" / "fixture", workspace / "other" / ".UAM" / "provider-setup" / "fixture"})
+	{
+		uam::remote::RunnerState state;
+		const nlohmann::json rejected = state.HandleProcessRequest({{"id", "outside"}, {"type", "process.start"},
+		    {"sessionId", "central-path"}, {"controlToken", kProcessControlToken}, {"cwd", cwd + "/"},
+		    {"argv", nlohmann::json::array({executable, "--uam-test-empty-arguments"})},
+		    {"configurationDirectory", uam::paths::Utf8PathString(outside)}, {"configurationProvider", "opencode-cli"}});
+		UAM_ASSERT(!rejected.value("ok", true));
+		UAM_ASSERT_EQ(rejected["error"].value("message", ""), "Central resource folder does not belong to this workspace.");
+	}
+}
+
 UAM_TEST(RemoteRunnerPreservesEmptyOptionValuesButRejectsAnEmptyExecutable)
 {
 	TempDir temp("uam-runner-empty-argv");
@@ -4624,10 +4909,13 @@ namespace
 			chat.messages.push_back({.role = MessageRole::User, .content = "Previously saved remote history"});
 			ExecutionHost host;
 			host.id = chat.execution_host_id;
+			host.transport = "ssh";
 			host.ssh_alias = "private-test-host";
 			host.platform = "linux";
 			host.runner_status = "ready";
+			host.runner_version = version;
 			host.runner_protocol_version = 3;
+			UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
 			app.settings.execution_hosts.push_back(host);
 			app.chats.push_back(std::move(chat));
 			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
@@ -4770,6 +5058,149 @@ UAM_TEST(AcpRemoteDeliveryMarkerReturnsWithinInputBudgetBeforeRunnerInput)
 	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
 	UAM_ASSERT(input.find("Remote prompt after both receipts") != std::string::npos);
 	UAM_ASSERT_EQ(app.chats.front().remote_prompt_delivery_id, delivery_id);
+}
+
+UAM_TEST(AcpRemoteSetupReplyPreservesOwnedPromptReceiptAcrossProviders)
+{
+	for (const bool codex : {true, false})
+	{
+		RemoteAdmissionFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = codex ? "codex-cli" : "opencode-cli";
+		chat.native_session_id = session.session_id = "01a13bf6-87d5-7691-889f-79a8bf5a7b25";
+		chat.model_id = codex ? "gpt-6.1-sol" : "inferdeck/normal";
+		session.current_model_id = chat.model_id;
+		session.available_models.push_back({.id = chat.model_id});
+		chat.reasoning_effort = "medium";
+		chat.service_tier = "priority";
+		chat.service_tier_explicit = true;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		session.protocol_kind = codex ? "codex-app-server" : "acp";
+		session.codex_thread_id = session.session_id;
+		session.session_ready = false;
+		session.initialized = true;
+		session.session_setup_request_id = 11;
+		session.next_request_id = 12;
+		session.pending_request_methods[11] = codex ? "thread/resume" : "session/load";
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "New authored input after the completed thread resumes.", &error));
+		UAM_ASSERT(session.processing && session.prompt_request_id == 0 && !session.session_ready);
+		fixture.AwaitSave();
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		const nlohmann::json resumed = {{"jsonrpc", "2.0"}, {"id", 11}, {"result", {
+		    {"thread", {{"id", chat.native_session_id}, {"cwd", chat.workspace_directory},
+		        {"path", R"(\\?\C:\Users\private\.codex\sessions\rollout.jsonl)"}, {"turns", nlohmann::json::array()},
+		        {"historyMode", "paginated"}, {"itemsCursor", "192"}}},
+		    {"model", chat.model_id}, {"approvalPolicy", "on-request"}, {"approvalsReviewer", "auto_review"}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(app, session, chat, (codex ? resumed : nlohmann::json{{"jsonrpc", "2.0"}, {"id", 11}, {"result", nlohmann::json::object()}}).dump()));
+		UAM_ASSERT(session.session_ready && session.processing && session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+		UAM_ASSERT_EQ(chat.remote_pending_requests.front().request_id, 12);
+		UAM_ASSERT(!chat.remote_pending_requests.front().response_consumed);
+		UAM_ASSERT(!session.pending_request_methods.contains(12));
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		fixture.AwaitSave();
+		fixture.AwaitInput();
+		const std::string input = ReadFile(fixture.input_log);
+		UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+		const nlohmann::json wire = nlohmann::json::parse(input);
+		UAM_ASSERT_EQ(wire.at("method"), nlohmann::json(codex ? "turn/start" : "session/prompt"));
+		UAM_ASSERT_EQ(wire.at("params").at(codex ? "threadId" : "sessionId"), nlohmann::json(chat.native_session_id));
+		UAM_ASSERT(wire.at("params").at(codex ? "input" : "prompt").at(0).at("text").get<std::string>().find("New authored input after the completed thread resumes.") != std::string::npos);
+		UAM_ASSERT_EQ(session.prompt_request_id, 12);
+		UAM_ASSERT(session.last_error.empty());
+		UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent);
+	}
+}
+
+UAM_TEST(AcpRemoteRequestRetirementPreservesOnlyOwnedStagedInput)
+{
+	for (const int revoke : {0, 1, 2, 3})
+	{
+		RemoteAdmissionFixture fixture;
+		uam::AppState& app = fixture.app;
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Keep this original input behind its receipt.", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		UAM_ASSERT(session.pending_prompt_delivery && chat.remote_pending_requests.size() == 1);
+		const int staged_id = chat.remote_pending_requests.front().request_id;
+		chat.remote_pending_requests.push_back({.request_id = 999, .method = "model/list", .turn_serial = session.turn_serial});
+		uam::acp_detail::RetireRemoteAcpRequests(app, session, chat);
+		UAM_ASSERT(!chat.remote_pending_requests.front().response_consumed);
+		UAM_ASSERT(chat.remote_pending_requests.back().response_consumed);
+		UAM_ASSERT(!session.pending_request_methods.contains(staged_id));
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		if (revoke == 0) session.remote_output_delivery_token = "foreign-proxy";
+		if (revoke == 1) ++session.turn_serial;
+		if (revoke == 2) session.cancel_requested = true;
+		if (revoke == 3) chat.model_id = "changed-selected-model";
+		uam::acp_detail::RetireRemoteAcpRequests(app, session, chat);
+		UAM_ASSERT(chat.remote_pending_requests.front().response_consumed);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+	}
+}
+
+UAM_TEST(AcpRecoveredPreparedPrefixResumesAsOneFreshReadOnlyNativeInput)
+{
+	RemoteAdmissionFixture fixture;
+	uam::AppState& app = fixture.app;
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = app.chats.front();
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	chat.provider_id = session.provider_id = "codex-cli";
+	chat.native_session_id = session.session_id = session.codex_thread_id = "01a13bf6-87d5-7691-889f-79a8bf5a7b25";
+	chat.uam_agent_id = "plan";
+	chat.created_at = chat.updated_at = "2026-10-14T20:17:11.000Z";
+	chat.remote_process_exists = true;
+	chat.messages.push_back({.role = MessageRole::User, .content = "Original raw input.", .created_at = "2026-10-14T20:17:08.000Z", .interrupted = true, .acp_prompt_not_sent = true});
+	uam::AcpQueuedUserPromptState old;
+	old.text = "Old injected agent context.\n\nOriginal raw input.";
+	old.id = "old-prepared";
+	old.append_user_message = false;
+	old.prepared_for_delivery = true;
+	old.prepared_user_message_count = 1;
+	chat.acp_queued_prompts = {old, {.text = "Keep future input held until its own turn.", .id = "future"}};
+	chat.acp_dispatched_queued_prompt_count = 1;
+	chat.acp_queue_held = session.queue_held = true;
+	session.queued_user_prompts.push_back(chat.acp_queued_prompts.back());
+	session.lifecycle_state = "error";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	std::string error;
+	UAM_ASSERT(uam::RetryFailedAcpMessage(app, chat.id, 1, &error));
+	UAM_ASSERT(!fs::exists(fixture.input_log));
+	UAM_ASSERT(chat.acp_queue_held && session.queue_held && chat.messages.size() == 2);
+	UAM_ASSERT_EQ(session.queued_user_prompts.front().uam_agent_workspace_access, std::string("read"));
+	const std::string fresh_id = session.queued_user_prompts.front().id;
+	UAM_ASSERT(uam::EditQueuedAcpPrompt(app, chat.id, fresh_id, 1, "Edited raw input.", &error));
+	UAM_ASSERT_EQ(chat.messages.back().content, std::string("Edited raw input."));
+	std::vector<std::pair<std::string, int>> expected;
+	for (const uam::AcpQueuedUserPromptState& queued : session.queued_user_prompts) expected.emplace_back(queued.id, queued.revision);
+	if (!uam::ResumeQueuedAcpPrompts(app, chat.id, expected, &error)) throw std::runtime_error("Recovered Resume rejected: " + error);
+	fixture.AwaitSave();
+	(void)uam::DrainNextQueuedAcpUserPrompt(app, session, chat);
+	fixture.AwaitInput();
+	const std::string input = ReadFile(fixture.input_log);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+	const nlohmann::json wire = nlohmann::json::parse(input);
+	UAM_ASSERT_EQ(wire.at("method"), nlohmann::json("turn/start"));
+	UAM_ASSERT_EQ(wire.at("params").at("sandboxPolicy").at("type"), nlohmann::json("readOnly"));
+	const std::string delivered = wire.at("params").at("input").at(0).at("text").get<std::string>();
+	UAM_ASSERT(delivered.find("Edited raw input.") != std::string::npos);
+	UAM_ASSERT(delivered.find("Original raw input.") == std::string::npos);
+	UAM_ASSERT(delivered.find("Old injected agent context.") == std::string::npos);
+	UAM_ASSERT(delivered.find("Keep future input held until its own turn.") == std::string::npos);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+	UAM_ASSERT(!chat.messages.back().acp_prompt_not_sent && !chat.messages.back().interrupted);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
 }
 
 UAM_TEST(AcpRemoteBusyQueueAdmissionReturnsWithinInputBudget)
@@ -5160,4 +5591,338 @@ UAM_TEST(AcpUnreadyRemoteQueueReplacementProcessKeepsCurrentTurn)
 	CheckUnreadyRemoteQueueRevocation(3);
 }
 
+#endif
+
+UAM_TEST(OpenCodeAdvertisedModelResolutionPreservesExactIdsAndRejectsAmbiguousAliases)
+{
+	uam::AcpSessionState session;
+	session.provider_id = uam::provider_ids::kOpenCodeCli;
+	session.available_config_options.push_back({.id = "model", .category = "model", .choices = {{"inferdeck/normal", "Normal", ""}}});
+	std::string error;
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error).value_or(""), "inferdeck/normal");
+	UAM_ASSERT(error.empty());
+	session.current_model_id = "inferdeck/Normal"; // Optimistic state is not proof that this native ID exists.
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error).value_or(""), "inferdeck/normal");
+	session.available_config_options.front().choices.push_back({"inferdeck/NORMAL", "Other native ID", ""});
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error));
+	UAM_ASSERT(error.find("multiple provider models") != std::string::npos);
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/NORMAL", error).value_or(""), "inferdeck/NORMAL");
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Pro", error));
+	UAM_ASSERT(error.find("no longer offers") != std::string::npos);
+	session.provider_id = uam::provider_ids::kGeminiCli;
+	session.current_model_id.clear();
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error));
+	session.available_config_options.clear();
+	session.provider_id = uam::provider_ids::kOpenCodeCli;
+	session.available_models.push_back({.id = "inferdeck/normal", .name = "Normal"});
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error).value_or(""), "inferdeck/normal");
+	session.provider_id = uam::provider_ids::kGeminiCli;
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "custom-native-model", error).value_or(""), "custom-native-model");
+}
+
+UAM_TEST(OpenCodeStartupRepairsUniqueAdvertisedModelCasingBeforeFirstPrompt)
+{
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.model_id = "inferdeck/Normal";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id;
+	session.running = true;
+	session.session_ready = true;
+	session.session_id = "native-model-casing";
+	session.current_model_id = "inferdeck/normal";
+	session.goal_turn_model_id = chat.model_id;
+	session.available_config_options.push_back({.id = "model", .category = "model", .choices = {{"inferdeck/normal", "Normal", ""}}});
+	UAM_ASSERT(!uam::acp_detail::SendStartupModelIfNeeded(session, chat));
+	UAM_ASSERT_EQ(chat.model_id, "inferdeck/normal");
+	UAM_ASSERT(session.last_error.empty());
+	UAM_ASSERT_EQ(session.next_request_id, 1);
+	UAM_ASSERT_EQ(session.goal_turn_model_id, "inferdeck/normal");
+	chat.model_id = "ordinary-chat-model";
+	session.goal_turn_model_id = "inferdeck/Normal";
+	session.goal_turn_kind = "review";
+	session.goal_review_turn = true;
+	UAM_ASSERT(!uam::acp_detail::SendStartupModelIfNeeded(session, chat));
+	UAM_ASSERT_EQ(session.goal_turn_model_id, "inferdeck/normal");
+	UAM_ASSERT_EQ(chat.model_id, "ordinary-chat-model");
+}
+
+UAM_TEST(OptInRealRemoteOpenCodeFirstMessageUsesFullSetupAndRepairsSavedModel)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	const std::optional<std::string> alias = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_ALIAS");
+	const std::optional<std::string> workspace = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_WORKSPACE");
+	const std::optional<std::string> executable = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_EXECUTABLE");
+	const std::optional<std::string> resources = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_RESOURCES");
+	if (!alias || !workspace || !executable || !resources) return;
+	TempDir temp("uam-real-remote-first-message");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kOpenCodeCli);
+	UAM_ASSERT(profile != nullptr);
+	profile->interactive_command = *executable;
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.central_provider_configuration.instructions = uam::io::ReadTextFile(fs::path(*resources) / "AGENTS.md");
+	app.settings.central_provider_configuration.skill_directories = {(fs::path(*resources) / "skills").string()};
+	UAM_ASSERT(!app.settings.central_provider_configuration.instructions.empty());
+	ExecutionHost host;
+	host.id = "private-real-first-message-host";
+	host.transport = "ssh";
+	host.ssh_alias = *alias;
+	host.platform = "linux";
+	host.runner_directory = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_RUNNER_DIRECTORY").value_or("");
+	host.runner_status = "ready";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+	ChatSession chat;
+	chat.id = "real-first-message-" + temp.root.filename().string();
+	chat.provider_id = uam::provider_ids::kOpenCodeCli;
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = *workspace;
+	chat.model_id = "inferdeck/Normal";
+	chat.approval_mode = "default";
+	chat.command_safety_tier = "yolo";
+	chat.uam_agent_id = "build";
+	app.chats.push_back(chat);
+	struct Cleanup
+	{
+		uam::AppState& app;
+		std::string chat_id;
+		~Cleanup()
+		{
+			(void)uam::StopAcpSession(app, chat_id);
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::FlushPendingChatSaves(app);
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+		}
+	} cleanup{app, chat.id};
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Respond with the single word OK. Do not use any tools.", {}, {}, false, &error));
+	uam::AcpSessionState* session = nullptr;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		if (!app.acp_sessions.empty())
+		{
+			session = app.acp_sessions.front().get();
+			if (!session->last_error.empty() || (session->session_ready && !session->processing && session->prompt_request_id == 0)) break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(session != nullptr);
+	UAM_ASSERT(session->last_error.empty());
+	UAM_ASSERT(session->session_ready && !session->processing && session->prompt_request_id == 0);
+	UAM_ASSERT_EQ(app.chats.front().model_id, "inferdeck/normal");
+	int users = 0, assistants = 0;
+	for (const Message& message : app.chats.front().messages)
+	{
+		users += message.role == MessageRole::User;
+		assistants += message.role == MessageRole::Assistant;
+		UAM_ASSERT(!message.acp_prompt_not_sent && !message.interrupted);
+	}
+	UAM_ASSERT_EQ(users, 1);
+	UAM_ASSERT_EQ(assistants, 1);
+	UAM_ASSERT(!app.chats.front().messages.back().content.empty());
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.empty());
+	UAM_ASSERT(session->provider_configuration_directory.filename() != "");
+	const nlohmann::json manifest = nlohmann::json::parse(uam::io::ReadTextFile(session->provider_configuration_directory / "owner.json"));
+	UAM_ASSERT(!manifest.value("mcpOnly", true));
+	UAM_ASSERT(manifest["files"].size() >= 12);
+#endif
+}
+
+
+UAM_TEST(OptInRealRemoteWindowsCodexCompletesPromptAfterIdleResume)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_CODEX_CLI
+	const std::optional<std::string> alias = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_CODEX_RESUME_ALIAS");
+	const std::optional<std::string> workspace = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_CODEX_RESUME_WORKSPACE");
+	const std::optional<std::string> resources = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_CODEX_RESUME_RESOURCES");
+	if (!alias || !workspace || !resources) return;
+	TempDir temp("uam-real-windows-codex-resume");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kCodexCli);
+	UAM_ASSERT(profile != nullptr);
+	// Codex uses its configured home; this read-only private-workspace test leaves new synthetic provider history.
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.central_provider_configuration.instructions = uam::io::ReadTextFile(fs::path(*resources) / "AGENTS.md");
+	app.settings.central_provider_configuration.skill_directories = {(fs::path(*resources) / "skills").string()};
+	UAM_ASSERT(!app.settings.central_provider_configuration.instructions.empty());
+	ExecutionHost host;
+	host.id = "private-real-windows-codex-resume-host";
+	host.transport = "ssh";
+	host.ssh_alias = *alias;
+	host.platform = "windows";
+	host.runner_directory = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_CODEX_RESUME_RUNNER_DIRECTORY").value_or("");
+	host.runner_status = "ready";
+	host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+	host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+	app.settings.execution_hosts = {host};
+	uam::execution_hosts::Normalize(app.settings.execution_hosts);
+	ChatSession chat;
+	chat.id = "chat-real-windows-codex-resume-" + temp.root.filename().string();
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = *workspace;
+	chat.model_id = "gpt-6.1-sol";
+	chat.reasoning_effort = "medium";
+	chat.service_tier = "priority";
+	chat.service_tier_explicit = true;
+	chat.approval_mode = "default";
+	chat.command_safety_tier = "safe";
+	chat.uam_agent_id = "plan";
+	app.chats.push_back(chat);
+	struct Cleanup
+	{
+		uam::AppState& app;
+		std::string chat_id;
+		~Cleanup()
+		{
+			(void)uam::StopAcpSession(app, chat_id);
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+			while (!app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::FlushPendingChatSaves(app);
+				(void)uam::PollAllAcpSessions(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
+		}
+	} cleanup{app, chat.id};
+	const auto wait_for_turn = [&]()
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::FlushPendingChatSaves(app);
+			(void)uam::PollAllAcpSessions(app);
+			uam::AcpSessionState* current = uam::FindAcpSessionForChat(app, chat.id);
+			if (current != nullptr)
+			{
+				UAM_ASSERT(!current->waiting_for_permission && !current->waiting_for_user_input);
+				UAM_ASSERT(current->last_error.empty());
+				if (current->session_ready && !current->processing && current->prompt_request_id == 0)
+				{
+					UAM_ASSERT_EQ(current->active_uam_agent_workspace_access, std::string("read"));
+					return;
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		UAM_ASSERT(false);
+	};
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Respond with the single word OK. Do not use any tools.", {}, {}, false, &error));
+	wait_for_turn();
+	const std::string native_id = app.chats.front().native_session_id;
+	UAM_ASSERT(!native_id.empty());
+	(void)uam::StopAcpSession(app, chat.id, uam::AcpStopPurpose::Timeout);
+	const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	while (std::chrono::steady_clock::now() < stop_deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		const uam::AcpSessionState* current = uam::FindAcpSessionForChat(app, chat.id);
+		if (app.pending_acp_remote_stops.empty() && (current == nullptr || !current->running)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	const uam::AcpSessionState* stopped = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(stopped == nullptr || !stopped->running);
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, native_id);
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Respond with the single word READY. Do not use any tools.", {}, {}, false, &error));
+	wait_for_turn();
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, native_id);
+	int users = 0, assistants = 0;
+	for (const Message& message : app.chats.front().messages)
+	{
+		users += message.role == MessageRole::User;
+		assistants += message.role == MessageRole::Assistant;
+		UAM_ASSERT(!message.acp_prompt_not_sent && !message.interrupted);
+		if (message.role == MessageRole::Assistant) UAM_ASSERT(!message.content.empty());
+	}
+	UAM_ASSERT_EQ(users, 2);
+	UAM_ASSERT_EQ(assistants, 2);
+	UAM_ASSERT(app.chats.front().acp_queued_prompts.empty());
+#endif
+}
+
+UAM_TEST(RemoteMemoryDetailReferencesAreReadableScopedAndEvidenceFree)
+{
+	TempDir temp("uam-remote-memory-details");
+	const fs::path workspace = fs::canonical(temp.root);
+	const fs::path entry = workspace / ".UAM/Lessons/User_Lessons/lesson.md";
+	UAM_ASSERT(uam::io::WriteTextFile(entry, "## Memory\nKeep tests.\n\n## Evidence\nREMOTE_DETAIL_é"));
+	uam::remote::RunnerState state;
+	const auto call = [&](const nlohmann::json& request) { return uam::remote::HandleRunnerRequest(request, "4.11.0", &state); };
+	const nlohmann::json response = call({{"id", "details"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}});
+	UAM_ASSERT(response.value("ok", false));
+	const std::string text = response["result"].value("text", "");
+	UAM_ASSERT(text.find("Keep tests.") != std::string::npos);
+	UAM_ASSERT(text.find("REMOTE_DETAIL") == std::string::npos);
+	UAM_ASSERT(text.find("## Evidence") == std::string::npos);
+	UAM_ASSERT(text.size() <= 512);
+	const std::size_t start = text.find(" [details: ");
+	UAM_ASSERT(start != std::string::npos);
+	const std::string path = text.substr(start + 11, text.find(']', start) - start - 11);
+	const nlohmann::json read = call({{"id", "read-detail"}, {"type", "workspace.file.read"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"path", path}});
+	UAM_ASSERT(read.value("ok", false));
+	std::string detail;
+	UAM_ASSERT(uam::base64::Decode(read["result"].value("dataBase64", ""), detail));
+	UAM_ASSERT(detail.find("REMOTE_DETAIL_é") != std::string::npos);
+	UAM_ASSERT(!call({{"id", "foreign"}, {"type", "workspace.file.read"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"path", "../foreign.md"}}).value("ok", true));
+	UAM_ASSERT(!call({{"id", "invalid"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", "yes"}}).value("ok", true));
+#if !defined(_WIN32)
+	fs::create_symlink(entry, entry.parent_path() / "linked.md");
+	UAM_ASSERT(!call({{"id", "linked"}, {"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}}).value("ok", true));
+#endif
+}
+
+UAM_TEST(RemoteMemoryOptionalReferencesNeverDisplaceFactsOrOverflowTheBudget)
+{
+	TempDir temp("uam-remote-memory-facts-first");
+	fs::path workspace = fs::canonical(temp.root);
+	for (int index = 0; index < 5; ++index) workspace /= std::string(95, 'w');
+	const fs::path directory = workspace / ".UAM/Lessons/User_Lessons";
+	for (int index = 0; index < 2; ++index)
+		UAM_ASSERT(uam::io::WriteTextFile(directory / (std::to_string(index) + ".md"), "## Memory\nFact" + std::to_string(index) + std::string(195, 'f') + "\n## Evidence\nNOT_INLINE"));
+	uam::remote::RunnerState state;
+	const auto read = [&](bool references)
+	{
+		return uam::remote::HandleRunnerRequest({{"id", "facts"}, {"type", "context.memory"},
+		    {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", references}}, "4.11.0", &state);
+	};
+	const nlohmann::json fallback = read(false);
+	const nlohmann::json progressive = read(true);
+	UAM_ASSERT(fallback.value("ok", false) && progressive.value("ok", false));
+	const std::string facts = progressive["result"].value("text", "");
+	UAM_ASSERT_EQ(facts, fallback["result"].value("text", ""));
+	UAM_ASSERT(facts.find("Fact0") != std::string::npos && facts.find("Fact1") != std::string::npos);
+	UAM_ASSERT(facts.find("NOT_INLINE") == std::string::npos);
+	UAM_ASSERT(facts.size() <= 512);
+}
+
+#if !defined(_WIN32)
+UAM_TEST(RemoteMemoryDetailReferenceRejectsLineBreakFilenameWithoutDroppingFact)
+{
+	TempDir temp("uam-remote-memory-reference-injection");
+	const fs::path workspace = fs::canonical(temp.root);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / ".UAM/Lessons/User_Lessons/unsafe\nname.md", "## Memory\nFirst fact.\nSecond fact.\n## Evidence\nNOT_INLINE"));
+	uam::remote::RunnerState state;
+	const nlohmann::json response = uam::remote::HandleRunnerRequest({{"id", "unsafe-reference"}, {"type", "context.memory"},
+	    {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", 512}, {"detailReferences", true}}, "4.11.0", &state);
+	UAM_ASSERT(response.value("ok", false));
+	UAM_ASSERT_EQ(response["result"].value("text", ""), "- First fact. Second fact.\n");
+}
 #endif

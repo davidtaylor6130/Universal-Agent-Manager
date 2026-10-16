@@ -1,0 +1,21 @@
+# Generate the diagnostic ID only when the frontend actually builds.
+string(TIMESTAMP timestamp "%Y%m%dT%H%M%SZ" UTC)
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env
+    "VITE_UAM_UI_BUILD_ID=@UAM_PRESENTATION_VERSION@-@CMAKE_SYSTEM_NAME@-${timestamp}"
+    "VITE_UAM_OUT_DIR=@UAM_UI_DIST_SRC@"
+    "VITE_UAM_COMPUTER_USE=@UAM_ENABLE_COMPUTER_USE@"
+    "VITE_UAM_SSH=@UAM_ENABLE_SSH@"
+    "VITE_UAM_MOBILE_COMPANION=@UAM_ENABLE_MOBILE_COMPANION@"
+    "@UAM_NPM_EXECUTABLE@" run build
+  WORKING_DIRECTORY "@CMAKE_SOURCE_DIR@/UI-V2"
+  RESULT_VARIABLE result)
+if(NOT result STREQUAL "0")
+  file(REMOVE "@UAM_UI_DIST_SRC@/index.html")
+  message(FATAL_ERROR "UI-V2 build failed (${result}).")
+endif()
+if(NOT EXISTS "@UAM_UI_DIST_SRC@/index.html" OR
+   NOT EXISTS "@UAM_UI_DIST_SRC@/.vite/manifest.json")
+  file(REMOVE "@UAM_UI_DIST_SRC@/index.html")
+  message(FATAL_ERROR "UI-V2 build did not produce its index and manifest.")
+endif()

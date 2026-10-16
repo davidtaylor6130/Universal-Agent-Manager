@@ -534,13 +534,13 @@ export function InterruptedDivider({ label }: { label: string }) {
   return <div className="conversation-interrupted"><CircleAlert size={12} aria-hidden /><span>{label}</span></div>
 }
 
-export function CompactionSeparator({ summary, tokensBefore, tokensAfter }: { summary: string; tokensBefore?: number; tokensAfter?: number }) {
+export function CompactionSeparator({ summary, tokensBefore, tokensAfter, interrupted = false }: { summary: string; tokensBefore?: number; tokensAfter?: number; interrupted?: boolean }) {
   const known = (value: number | undefined): value is number => value !== undefined && Number.isSafeInteger(value) && value >= 0
-  const counts = known(tokensBefore) && known(tokensAfter) ? `${tokensBefore.toLocaleString()} → ${tokensAfter.toLocaleString()} tokens` : undefined
+  const counts = !interrupted && known(tokensBefore) && known(tokensAfter) ? `${tokensBefore.toLocaleString()} → ${tokensAfter.toLocaleString()} tokens` : undefined
   const reduction = counts && tokensBefore! > 0 && tokensAfter! <= tokensBefore! ? ` (${Math.round((1 - tokensAfter! / tokensBefore!) * 100)}% reduced)` : ''
   const remaining = counts && tokensBefore! > 0 ? tokensAfter! / tokensBefore! : undefined
   return <details className="context-compaction">
-    <summary>Context compacted{counts && ` · ${counts}${reduction}`}{remaining !== undefined && <ContextMeter ratio={remaining} />}</summary>
+    <summary>{interrupted ? 'Context compaction interrupted' : 'Context compacted'}{counts && ` · ${counts}${reduction}`}{remaining !== undefined && <ContextMeter ratio={remaining} />}</summary>
     <div>{summary.trim() ? <MarkdownContent content={summary} /> : 'The provider did not include a summary.'}</div>
   </details>
 }
@@ -615,7 +615,8 @@ export function PersistedMessageBlocksContent({
       )}
       <div className={workingMode === 'compact' && expanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {renderedBlocks.map((block, index) => {
-        if (block.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} />
+        if (block.type === 'context_compaction_summary') return null
+        if (block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
         if (block.type === 'assistant_text') {
           if (!expanded && index !== lastAssistantBlockIndex) return null
           const review = parseGoalReviewDecision(block.text)
@@ -890,7 +891,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
   const lastAssistantEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'assistant_text' && event.text.trim() ? index : latest, -1)
   let thoughtIndex = 0
   const activeEventIndex = active && !pendingPermission && !pendingUserInput ? renderedEvents.reduce((latest, event, index) =>
-    (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
+    event.type === 'context_compaction_summary' || (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
   const hasPlanEvent = renderedEvents.some((event) => event.type === 'plan')
   const lastPlanEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
@@ -922,7 +923,8 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
       )}
       <div className={workingMode === 'compact' && traceExpanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
       {renderedEvents.map((event, index) => {
-        if (event.type === 'context_compaction') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} />
+        if (event.type === 'context_compaction_summary') return null
+        if (event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} interrupted={event.type === 'context_compaction_interrupted'} />
         if (event.type === 'assistant_text') {
           if (!traceExpanded && index !== lastAssistantEventIndex) return null
           return <div className="conversation-trace__text" key={`text-${index}`}><MarkdownContent content={event.text} chips /></div>

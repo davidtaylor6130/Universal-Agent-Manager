@@ -1,5 +1,8 @@
 #include "test_harness.h"
 #include "cef/state_serializer.h"
+#include "common/chat/conversation_handoff.h"
+#include "common/runtime/terminal/terminal_provider_cli.h"
+#include "app/chat_search_service.h"
 
 using namespace uam_test;
 
@@ -42,6 +45,164 @@ namespace
 
 		uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
 	};
+}
+
+UAM_TEST(LegacyUnsentDiscardPreservesSubmittedTurnBranchesAndDurableQueue)
+{
+	HeldQueueFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.messages = {
+	    {.role = MessageRole::User, .content = "Old unsent input", .created_at = "2026-10-14T21:00:00Z", .interrupted = true, .acp_prompt_not_sent = true},
+	    {.role = MessageRole::User, .content = "Submitted current input", .created_at = "2026-10-14T21:01:00Z"},
+	    {.role = MessageRole::Assistant, .content = "Provider response", .created_at = "2026-10-14T21:02:00Z"}};
+	chat.native_session_id = "original-native";
+	chat.acp_queue_held = true;
+	(void)uam::RestoreRemoteAcpSessionsAfterRestart(fixture.app);
+	uam::AcpSessionState& session = fixture.Session();
+	session.session_id = chat.native_session_id;
+	session.session_ready = true;
+	session.running = true;
+	session.lifecycle_state = "error";
+	session.process_execution_host_id = chat.execution_host_id;
+	session.turn_user_message_index = 1;
+	session.current_assistant_message_index = 2;
+	session.turn_assistant_message_index = 2;
+	chat.remote_active_turn_id = "later-rejected-provider-turn";
+	chat.remote_turn_reconnect_pending = true;
+	chat.remote_turn_user_message_index = 1;
+	ChatSession child;
+	child.id = "dependent-branch";
+	child.parent_chat_id = chat.id;
+	child.branch_from_message_index = 1;
+	fixture.app.chats.push_back(child);
+	ChatSession& current = fixture.app.chats.front();
+	const ChatSession before = current;
+	const std::string digest = uam::StateSerializer::MessageDigest(current);
+	std::string error;
+	UAM_ASSERT(uam::DiscardUnsentAcpMessage(fixture.app, current.id, 0, digest, &error));
+	UAM_ASSERT_EQ(current.messages.size(), before.messages.size());
+	UAM_ASSERT(current.messages[0].acp_prompt_discarded && current.messages[0].acp_prompt_not_sent);
+	UAM_ASSERT_EQ(current.messages[0].content, before.messages[0].content);
+	UAM_ASSERT(current.messages[1] == before.messages[1] && current.messages[2] == before.messages[2]);
+	UAM_ASSERT(current.acp_queued_prompts == before.acp_queued_prompts);
+	UAM_ASSERT(session.queue_held && current.acp_queue_held && session.running && !session.processing);
+	UAM_ASSERT_EQ(session.turn_user_message_index, 1);
+	UAM_ASSERT_EQ(fixture.app.chats.back().branch_from_message_index, 1);
+	UAM_ASSERT_EQ(current.remote_active_turn_id, before.remote_active_turn_id);
+	UAM_ASSERT(current.remote_turn_reconnect_pending && current.remote_turn_user_message_index == 1);
+	UAM_ASSERT(uam::StateSerializer::MessageDigest(current) != digest);
+	UAM_ASSERT(uam::StateSerializer::SerializeMessagePage(current, 10, std::nullopt, false)["messages"][0].value("acpPromptDiscarded", false));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, current.id);
+	UAM_ASSERT(saved.has_value() && saved->messages[0].acp_prompt_discarded);
+	UAM_ASSERT(saved->messages[1] == before.messages[1] && saved->messages[2] == before.messages[2]);
+	std::string context;
+	UAM_ASSERT(uam::chat::BuildConversationHandoff(*saved, context));
+	UAM_ASSERT(context.find("Old unsent input") == std::string::npos);
+	UAM_ASSERT(uam::BuildProviderHandoffContext(*saved).find("Old unsent input") == std::string::npos);
+	UAM_ASSERT(uam::BuildTemporarySideChatContext(saved->messages).find("Old unsent input") == std::string::npos);
+	UAM_ASSERT(MemoryService::BuildWorkerPromptForTests(*saved, 0).find("Old unsent input") == std::string::npos);
+	const ChatSession memory = MemoryService::CaptureWorkerInput(*saved, 0);
+	UAM_ASSERT(memory.messages.size() == saved->messages.size() && memory.messages[0].content.empty() && memory.messages[0].acp_prompt_discarded);
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeMessagePage(*saved, 10, std::nullopt, false)["userMessageIndices"], nlohmann::json::array({1}));
+	UAM_ASSERT(!uam::DiscardUnsentAcpMessage(fixture.app, current.id, 1, uam::StateSerializer::MessageDigest(current), &error));
+	UAM_ASSERT(!uam::DiscardUnsentAcpMessage(fixture.app, current.id, 0, digest, &error));
+	// The fixture owns no real process despite its deliberately warm runtime flags.
+	session.running = false;
+}
+
+UAM_TEST(LegacyUnsentDiscardLatestDraftSurvivesColdSaveAndCannotRetry)
+{
+	HeldQueueFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.acp_queued_prompts.clear();
+	chat.branch_root_chat_id = chat.id;
+	chat.messages = {{.role = MessageRole::User, .content = "Never sent", .created_at = "2026-10-14T21:00:00Z", .interrupted = true, .acp_prompt_not_sent = true}};
+	std::string error;
+	UAM_ASSERT(uam::DiscardUnsentAcpMessage(fixture.app, chat.id, 0, uam::StateSerializer::MessageDigest(chat), &error));
+	UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(fixture.app, chat).empty());
+	UAM_ASSERT(!uam::RetryFailedAcpMessage(fixture.app, chat.id, 0, &error));
+	UAM_ASSERT(!uam::RetryLastAcpPrompt(fixture.app, chat.id, &error));
+	UAM_ASSERT(fixture.app.acp_sessions.empty());
+	std::optional<ChatSession> cold = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id, false);
+	UAM_ASSERT(cold.has_value() && !cold->messages_loaded);
+	cold->title = "Metadata save after removing input";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, *cold));
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(fixture.app.data_root, *cold));
+	UAM_ASSERT(cold->messages.size() == 1 && cold->messages[0].acp_prompt_discarded && cold->messages[0].acp_prompt_not_sent);
+	cold->imported_read_only = true;
+	UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(fixture.app, *cold), std::vector<int>({0}));
+	UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(fixture.app, *cold).empty());
+	cold->imported_read_only = false;
+	cold->provider_id = "opencode-cli";
+	cold->messages[0].provider = "codex-cli";
+	UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(fixture.app, *cold), std::vector<int>({0}));
+	ChatSession native;
+	native.messages = {{.role = MessageRole::Assistant, .content = "Native regrouping"}, cold->messages[0],
+	    {.role = MessageRole::Assistant, .content = "A different response"},
+	    {.role = MessageRole::User, .content = "Never sent", .created_at = "2026-10-14T21:05:00Z"}};
+	native.messages[1].acp_prompt_discarded = native.messages[1].acp_prompt_not_sent = false;
+	ChatHistorySyncService().OverlayPreparedLocalHistory(*cold, native);
+	UAM_ASSERT(native.messages[1].acp_prompt_discarded && native.messages[1].acp_prompt_not_sent);
+	UAM_ASSERT(!native.messages[3].acp_prompt_discarded && !native.messages[3].acp_prompt_not_sent);
+}
+
+UAM_TEST(LegacyUnsentDiscardExcludesLoadedAndSavedSearchWithoutMovingHits)
+{
+	HeldQueueFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.acp_queued_prompts.clear();
+	chat.messages = {{.role = MessageRole::User, .content = "discardedonly needle", .acp_prompt_not_sent = true, .acp_prompt_discarded = true},
+	    {.role = MessageRole::User, .content = "Retained needle"}, {.role = MessageRole::Assistant, .content = "Delivered needle response"}};
+	const std::string digest = uam::StateSerializer::MessageDigest(chat);
+	UAM_ASSERT(uam::SearchChatMessages({chat}, {"discardedonly"})["chatIds"].empty());
+	const nlohmann::json found = uam::SearchChatMessages({chat}, {"needle"});
+	UAM_ASSERT_EQ(found["hits"].size(), std::size_t{2});
+	UAM_ASSERT_EQ(found["hits"][0]["messageIndex"], 1);
+	UAM_ASSERT_EQ(found["hits"][1]["messageIndex"], 2);
+	UAM_ASSERT(!uam::ChatSearchTargetMatches(chat, digest, 0));
+	UAM_ASSERT(uam::ChatSearchTargetMatches(chat, digest, 1));
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	const std::optional<nlohmann::json> saved = uam::SearchSavedChatMessages(fixture.app.data_root, {"needle"}, []() { return false; });
+	UAM_ASSERT(saved.has_value() && saved->at("hits").size() == 2 && saved->at("hits")[0]["messageIndex"] == 1);
+}
+
+UAM_TEST(LegacyUnsentDiscardRejectsUncertainOrChangedInputAndRollsBackFailedSave)
+{
+	for (const int guard : {0, 1, 2, 3, 4, 5, 6, 7, 8})
+	{
+		HeldQueueFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		chat.acp_queued_prompts.clear();
+		chat.messages = {{.role = MessageRole::User, .content = "Retained draft", .created_at = "2026-10-14T21:00:00Z", .interrupted = true, .acp_prompt_not_sent = true}};
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const std::string digest = uam::StateSerializer::MessageDigest(chat);
+		if (guard == 0) chat.imported_read_only = true;
+		if (guard == 1) chat.remote_prompt_delivery_id = "uncertain-current-input";
+		if (guard == 2) chat.messages[0].content = "Changed after display";
+		if (guard == 3) chat.messages.push_back({.role = MessageRole::Assistant, .content = "Actual provider output"});
+		if (guard == 4) chat.acp_queued_prompts.push_back({.text = chat.messages[0].content, .existing_user_message_index = 0});
+		if (guard == 5) chat.acp_queued_prompts.push_back({.text = "Prepared wire input", .prepared_for_delivery = true});
+		if (guard == 6) fixture.app.pending_chat_save_at_by_chat_id[chat.id] = 1.0;
+		if (guard == 7)
+		{
+			fixture.app.data_root = fixture.temp.root / "blocked";
+			UAM_ASSERT(uam::io::WriteTextFile(fixture.app.data_root, "blocked"));
+		}
+		if (guard == 8)
+		{
+			fixture.app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+			fixture.Session().chat_id = chat.id;
+			fixture.Session().provider_id = "foreign-provider";
+		}
+		const ChatSession before = chat;
+		std::string error;
+		UAM_ASSERT(!uam::DiscardUnsentAcpMessage(fixture.app, chat.id, 0,
+		    guard == 2 ? digest : uam::StateSerializer::MessageDigest(chat), &error));
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(chat.messages == before.messages && chat.acp_queued_prompts == before.acp_queued_prompts);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.temp.root / "data", chat.id);
+		UAM_ASSERT(saved.has_value() && !saved->messages[0].acp_prompt_discarded);
+	}
 }
 
 UAM_TEST(RestartHoldsUndispatchedQueueDurablyAndFailedHoldSaveCannotLaunch)
@@ -318,4 +479,50 @@ UAM_TEST(HeldQueueResumeRequiresExactSnapshotAndDurableAdmissionBeforeReconnect)
 	UAM_ASSERT(saved.has_value() && !saved->acp_queue_held);
 	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().attachments.size(), std::size_t{1});
 	UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(fixture.app, "held-queue", expected, &error));
+}
+
+UAM_TEST(LegacyUnsentProjectionSerializesNativeIndicesAndRevokesRetryAuthority)
+{
+	HeldQueueFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.acp_queued_prompts.clear();
+	for (const std::string& text : {"earlier failed input", "latest failed input"})
+	{
+		Message row;
+		row.role = MessageRole::User;
+		row.content = text;
+		row.acp_prompt_not_sent = true;
+		row.interrupted = true;
+		chat.messages.push_back(row);
+	}
+	const auto snapshot = [&fixture]()
+	{
+		return uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+	};
+	UAM_ASSERT(snapshot()["unsentMessageIndices"] == nlohmann::json::array({0, 1}));
+	UAM_ASSERT(snapshot()["recoverableUnsentMessageIndices"] == nlohmann::json::array({1}));
+	chat.remote_process_exists = true;
+	UAM_ASSERT(snapshot()["recoverableUnsentMessageIndices"].empty());
+	chat.remote_process_exists = false;
+	chat.messages.back().acp_prompt_not_sent = false;
+	Message answer;
+	answer.role = MessageRole::Assistant;
+	answer.content = "Delivered response";
+	chat.messages.push_back(answer);
+	UAM_ASSERT(snapshot()["unsentMessageIndices"] == nlohmann::json::array({0}));
+	UAM_ASSERT(snapshot()["recoverableUnsentMessageIndices"].empty());
+	chat.imported_read_only = true;
+	UAM_ASSERT(snapshot()["unsentMessageIndices"].empty());
+	UAM_ASSERT(snapshot()["recoverableUnsentMessageIndices"].empty());
+}
+
+UAM_TEST(HeldQueueSerializesOnlyNonnegativeReferencedNativeIndices)
+{
+	HeldQueueFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.acp_queued_prompts.front().existing_user_message_index = 23;
+	chat.acp_queued_prompts.front().append_user_message = false;
+	const nlohmann::json summary = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+	UAM_ASSERT(summary["queuedPrompts"][0]["existingUserMessageIndex"] == 23);
+	UAM_ASSERT(!summary["queuedPrompts"][1].contains("existingUserMessageIndex"));
 }

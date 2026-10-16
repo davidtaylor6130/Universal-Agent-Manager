@@ -5,6 +5,7 @@
 #include "computer_use_terminal_runtime_fixture.h"
 #include "include/cef_app.h"
 #include "include/cef_task.h"
+#include <future>
 #include "common/runtime/acp/acp_session_internal.h"
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
@@ -42,6 +43,12 @@ struct ChatIconHandlerTestAccess
 	static void ImportAgent(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleImportProviderAgent(nullptr, payload, callback);
+	}
+
+	static bool InstructionInvoke(UamQueryHandler& handler, const char* action, const nlohmann::json& payload,
+	    CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		return handler.DispatchAction(action, nullptr, payload, callback);
 	}
 
 	static void Cancel(UamQueryHandler& handler, int browser, const std::string& frame, int64_t query)
@@ -218,6 +225,35 @@ namespace
 		void Execute() override { m_observed->fetch_or(m_bit); }
 	private:
 		IMPLEMENT_REFCOUNTING(CreationQueueWitness);
+	};
+
+	class InstructionQueueHold final : public CefTask
+	{
+		std::shared_future<void> m_release;
+		std::shared_ptr<std::atomic<int>> m_state;
+	public:
+		InstructionQueueHold(std::shared_future<void> release, std::shared_ptr<std::atomic<int>> state)
+		    : m_release(std::move(release)), m_state(std::move(state)) {}
+		void Execute() override
+		{
+			m_state->store(1);
+			(void)m_release.wait_for(std::chrono::seconds(30));
+			m_state->store(2);
+		}
+	private:
+		IMPLEMENT_REFCOUNTING(InstructionQueueHold);
+	};
+
+	class RecordingInstructionCallback final : public UamQueryHandler::Callback
+	{
+	public:
+		int successes = 0, failures = 0, status = 0;
+		std::string body;
+		void Success(const CefString& response) override { ++successes; body = response.ToString(); }
+		void Success(const void* data, size_t size) override { ++successes; body.assign(static_cast<const char*>(data), size); }
+		void Failure(int code, const CefString& message) override { ++failures; status = code; body = message.ToString(); }
+	private:
+		IMPLEMENT_REFCOUNTING(RecordingInstructionCallback);
 	};
 
 	class CreationCefRuntime
@@ -489,6 +525,55 @@ UAM_TEST(ChatRetryColdHistoryStillRejectsLaterAssistantOutput)
 }
 
 
+UAM_TEST(CentralInstructionHandlersIgnoreBlockedSharedFileQueue)
+{
+	TempDir temp("uam-instruction-dedicated-queue");
+	const fs::path path = temp.root / "AGENTS.md";
+	const std::string requested = uam::paths::Utf8PathString(path);
+	UAM_ASSERT(uam::io::WriteTextFile(path, "original"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.central_provider_configuration.instruction_files = {requested};
+	UamQueryHandler handler(app, "file:///private/index.html");
+	std::promise<void> release;
+	struct ReleaseQueue
+	{
+		std::promise<void>& promise;
+		~ReleaseQueue() { promise.set_value(); }
+	} release_queue{release};
+	const std::shared_ptr<std::atomic<int>> state = std::make_shared<std::atomic<int>>(0);
+	UAM_ASSERT(CefPostTask(TID_FILE_USER_BLOCKING, new InstructionQueueHold(release.get_future().share(), state)));
+	RunCreationLoopUntil([state]() { return state->load() == 1; }, std::chrono::seconds(3));
+	UAM_ASSERT_EQ(state->load(), 1);
+	const auto invoke = [&](const char* action, nlohmann::json payload)
+	{
+		CefRefPtr<RecordingInstructionCallback> callback = new RecordingInstructionCallback;
+		UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, action, payload, callback));
+		return callback;
+	};
+	const auto await = [](CefRefPtr<RecordingInstructionCallback> callback)
+	{
+		RunCreationLoopUntil([callback]() { return callback->successes + callback->failures > 0; }, std::chrono::seconds(3));
+		UAM_ASSERT_EQ(callback->successes, 1);
+		UAM_ASSERT_EQ(callback->failures, 0);
+	};
+	const CefRefPtr<RecordingInstructionCallback> read = invoke("readCentralInstructionFile", {{"path", requested}});
+	await(read);
+	UAM_ASSERT_EQ(nlohmann::json::parse(read->body).at("content").get<std::string>(), std::string("original"));
+	const CefRefPtr<RecordingInstructionCallback> save = invoke("saveCentralInstructionFile", {{"path", requested}, {"content", "changed"}, {"expectedContent", "original"}});
+	await(save);
+	UAM_ASSERT_EQ(ReadFile(path), std::string("changed"));
+	UAM_ASSERT_EQ(state->load(), 1);
+	std::vector<CefRefPtr<RecordingInstructionCallback>> pending;
+	for (int index = 0; index < 4; ++index) pending.push_back(invoke("readCentralInstructionFile", {{"path", requested}}));
+	const CefRefPtr<RecordingInstructionCallback> busy = invoke("readCentralInstructionFile", {{"path", requested}});
+	UAM_ASSERT_EQ(busy->failures, 1);
+	UAM_ASSERT_EQ(busy->status, 429);
+	for (const CefRefPtr<RecordingInstructionCallback>& callback : pending) await(callback);
+	await(invoke("readCentralInstructionFile", {{"path", requested}}));
+	UAM_ASSERT_EQ(state->load(), 1);
+}
+
 UAM_TEST(ComputerUseHandlerOffWriteFailureCannotRestoreConsent)
 {
 	TempDir temp("uam-cu-handler-revoke-write");
@@ -624,17 +709,18 @@ int main(int argc, char** argv)
 		const bool icon = test.name.rfind("ChatIcon", 0) == 0;
 		const bool creation = test.name.rfind("ChatCreate", 0) == 0;
 		const bool retry = test.name.rfind("ChatRetry", 0) == 0;
+		const bool instruction = test.name.rfind("CentralInstruction", 0) == 0;
 		if (icon) ++icon_selected;
 		if (creation) ++create_selected;
 		if (retry) ++retry_selected;
 		try
 		{
-			if ((creation || retry) && !initialization_attempted)
+			if ((creation || retry || instruction) && !initialization_attempted)
 			{
 				initialization_attempted = true;
 				cef = std::make_unique<CreationCefRuntime>(main_args);
 			}
-			if (creation || retry) UAM_ASSERT(cef != nullptr);
+			if (creation || retry || instruction) UAM_ASSERT(cef != nullptr);
 			test.fn(); ++passed;
 			if (creation) ++create_passed; else if (retry) ++retry_passed; else if (icon) ++icon_passed;
 			std::cout << "PASS " << test.name << '\n';
@@ -691,4 +777,57 @@ UAM_TEST(ChatAgentImportWorkspaceWithoutChatDoesNotPublish)
 	UAM_ASSERT_EQ(callback->failures, 1);
 	UAM_ASSERT_EQ(callback->successes, 0);
 	UAM_ASSERT(!fs::exists(app.data_root / "agents" / "agent.md"));
+}
+
+UAM_TEST(ProviderMcpOverrideHandlerUsesEffectiveHostScopedServerMembership)
+{
+	TempDir temp("uam-mcp-handler-scope");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ExecutionHost local;
+	ExecutionHost remote;
+	remote.id = "ssh-lab"; remote.transport = "ssh"; remote.ssh_alias = "private-lab";
+	app.settings.execution_hosts = {local, remote};
+	McpServerConfiguration global;
+	global.id = "global"; global.name = "Global"; global.transport = "http"; global.url = "https://example.test/global";
+	app.settings.mcp_servers = {global};
+	McpServerConfiguration scoped = global;
+	scoped.id = "remote"; scoped.name = "Remote"; scoped.execution_host_id = remote.id;
+	McpServerConfiguration foreign = scoped;
+	foreign.id = "foreign"; foreign.execution_host_id = "ssh-other";
+	app.settings.host_scoped_settings[remote.id].mcp_servers = std::vector<McpServerConfiguration>{scoped, foreign};
+	UamQueryHandler handler(app, "file:///private/index.html");
+	const auto invoke = [&](const std::string& host, const std::string& server)
+	{
+		CefRefPtr<RecordingInstructionCallback> callback = new RecordingInstructionCallback;
+		UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, "setProviderMcpConfiguration",
+		    {{"executionHostId", host}, {"providerId", "codex-cli"}, {"serverId", server}, {"enabled", false}}, callback));
+		return callback;
+	};
+	const CefRefPtr<RecordingInstructionCallback> accepted = invoke(remote.id, scoped.id);
+	UAM_ASSERT_EQ(accepted->successes, 1);
+	UAM_ASSERT_EQ(accepted->failures, 0);
+	const nlohmann::json status = nlohmann::json::parse(accepted->body);
+	UAM_ASSERT_EQ(status.at("executionHostId").get<std::string>(), remote.id);
+	const nlohmann::json::const_iterator row = std::ranges::find_if(status.at("providers"), [](const nlohmann::json& provider) { return provider.at("providerId") == "codex-cli"; });
+	UAM_ASSERT(row != status.at("providers").end());
+	UAM_ASSERT_EQ(row->at("mcpServers").size(), std::size_t(1));
+	UAM_ASSERT_EQ(row->at("mcpServers").front().at("id").get<std::string>(), scoped.id);
+	UAM_ASSERT(!row->at("mcpServers").front().at("enabled").get<bool>());
+	AppSettings persisted;
+	UAM_ASSERT(!SettingsStore::Load(AppPaths::SettingsFilePath(app.data_root), persisted).unrecovered_error);
+	UAM_ASSERT_EQ(persisted.central_provider_configuration.mcp_overrides.size(), std::size_t(1));
+	UAM_ASSERT_EQ(persisted.central_provider_configuration.mcp_overrides.front().execution_host_id, remote.id);
+	UAM_ASSERT_EQ(persisted.central_provider_configuration.mcp_overrides.front().server_id, scoped.id);
+	for (const std::pair<std::string, std::string>& invalid : std::vector<std::pair<std::string, std::string>>{{remote.id, global.id}, {remote.id, foreign.id}, {"local", scoped.id}})
+	{
+		const CefRefPtr<RecordingInstructionCallback> rejected = invoke(invalid.first, invalid.second);
+		UAM_ASSERT_EQ(rejected->successes, 0);
+		UAM_ASSERT_EQ(rejected->failures, 1);
+		UAM_ASSERT_EQ(rejected->status, 404);
+		UAM_ASSERT_EQ(app.settings.central_provider_configuration.mcp_overrides.size(), std::size_t(1));
+	}
+	const CefRefPtr<RecordingInstructionCallback> local_result = invoke("local", global.id);
+	UAM_ASSERT_EQ(local_result->successes, 1);
+	UAM_ASSERT_EQ(local_result->failures, 0);
 }

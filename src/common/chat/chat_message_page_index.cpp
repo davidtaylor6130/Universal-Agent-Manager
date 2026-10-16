@@ -91,6 +91,8 @@ namespace uam::chat_pages
 		FingerprintHashBool(hash, message.interrupted);
 		FingerprintHashString(hash, message.stop_reason);
 		FingerprintHashBool(hash, message.acp_prompt_not_sent);
+		// Keep existing page hashes stable until an explicit removal changes a row.
+		if (message.acp_prompt_discarded) FingerprintHashBool(hash, true);
 		FingerprintHashBool(hash, message.priority_steer);
 		FingerprintHashBool(hash, message.continues_turn);
 	}
@@ -242,7 +244,7 @@ namespace uam::chat_pages
 		m_records << Record(span, hash, m_count);
 		if (!m_records) return false;
 		AppendMessageDigest(m_hash, message);
-		if (m_users && message.role == MessageRole::User)
+		if (m_users && message.role == MessageRole::User && !message.acp_prompt_discarded)
 		{
 			if (m_users->size() == 32768) m_users.reset();
 			else m_users->push_back(m_count);

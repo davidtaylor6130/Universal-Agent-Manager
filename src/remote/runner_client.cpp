@@ -128,6 +128,14 @@ namespace uam::remote
 		        "ServerAliveCountMax=2", ssh_alias, std::move(command)};
 	}
 
+	bool CanAttemptRunnerConnection(const ExecutionHost& host)
+	{
+		return UAM_ENABLE_SSH && host.transport == "ssh" &&
+		       (host.runner_status == "ready" || host.runner_status == "error" || host.runner_status == "offline") &&
+		       !SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version,
+		                      host.runner_directory, host.runner_protocol_version).empty();
+	}
+
 	RunnerClient::RunnerClient(IPlatformProcessService& process_service,
 	                           std::vector<std::string> bridge_argv,
 	                           std::string expected_version,
@@ -192,6 +200,7 @@ namespace uam::remote
 			return false;
 		}
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
+		m_safePathInspection = m_expectedProtocolVersion >= 3 && response["capabilities"].value("safePathInspection", false);
 		m_contextRead = response["capabilities"].value("contextRead", false);
 		m_workspaceFileRead = response["capabilities"].value("workspaceFileRead", false);
 		m_usageAccounting = response["capabilities"].value("usageAccounting", false);
@@ -353,14 +362,22 @@ namespace uam::remote
 		if (!uam::provider_setup::ValidateManifest(manifest, error)) { if (error_out) *error_out = error; return false; }
 		nlohmann::json response;
 		if (!Request({{"type", "configuration.prepare"}, {"directory", uam::paths::Utf8PathString(target)}, {"manifest", manifest}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
-		const nlohmann::json missing = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json::array());
+		const nlohmann::json missing = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json());
 		if (!missing.is_array()) { if (error_out) *error_out = "SSH helper returned an invalid resource list."; return false; }
+		if (missing.empty()) return true;
 		for (const nlohmann::json& entry : missing)
 		{
 			if (!entry.is_string() || !manifest["files"].contains(entry.get<std::string>())) { if (error_out) *error_out = "SSH helper requested an unknown resource."; return false; }
 			const std::string name = entry.get<std::string>();
 			if (!uam::provider_setup::ReadFile(source / uam::paths::PathFromUtf8(name), bytes, error)) { if (error_out) *error_out = error; return false; }
 			if (!UploadFile("configuration-" + Nonce(), target / uam::paths::PathFromUtf8(name), bytes, error_out, stop_token)) return false;
+		}
+		if (!Request({{"type", "configuration.prepare"}, {"directory", uam::paths::Utf8PathString(target)}, {"manifest", manifest}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json verified = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json());
+		if (!verified.is_array() || !verified.empty())
+		{
+			if (error_out) *error_out = "SSH helper could not verify the installed resources.";
+			return false;
 		}
 		return true;
 	}
@@ -370,8 +387,9 @@ namespace uam::remote
 	    const std::vector<std::string>& argv,
 	    const std::vector<std::pair<std::string, std::string>>& environment,
 	    std::string* error_out, bool attach_if_exists, std::string control_token,
-	    bool retry_lost_reply, const std::string& configuration_provider, const std::filesystem::path& configuration_directory, const nlohmann::json& session_mcp_servers)
+	    bool retry_lost_reply, const std::string& configuration_provider, const std::filesystem::path& configuration_directory, const nlohmann::json& session_mcp_servers, bool* configuration_rejected_out)
 	{
+		if (configuration_rejected_out != nullptr) *configuration_rejected_out = false;
 		if (!Connect(error_out)) return false;
 		const bool transient_lease = control_token.empty();
 		if (transient_lease)
@@ -402,6 +420,25 @@ namespace uam::remote
 			request["attachIfExists"] = true;
 			started = Request(std::move(request), response, error_out);
 		}
+		// Configuration rejection alone cannot rule out a provider surviving a lost start reply.
+		if (!started && m_connected && configuration_rejected_out != nullptr &&
+		    !configuration_directory.empty() && response.contains("error") && response["error"].is_object())
+		{
+			const nlohmann::json::const_iterator code = response["error"].find("code");
+			if (code != response["error"].end() && code->is_string() &&
+			    (*code == "invalid_request" || *code == "configuration_failed"))
+			{
+				nlohmann::json existence;
+				std::string probe_error;
+				const bool exists = Request({{"type", "process.poll"}, {"sessionId", session_id},
+				    {"controlToken", control_token}, {"acknowledgedOutput", true}}, existence, &probe_error);
+				if (!exists && m_connected && existence.contains("error") && existence["error"].is_object())
+				{
+					const nlohmann::json::const_iterator missing = existence["error"].find("code");
+					*configuration_rejected_out = missing != existence["error"].end() && missing->is_string() && *missing == "session_not_found";
+				}
+			}
+		}
 		if (started)
 			m_processInputSequences[session_id] = response.value(
 			    "result", nlohmann::json::object()).value("inputSequence", std::uint64_t{0});
@@ -410,9 +447,12 @@ namespace uam::remote
 
 	ProcessExecutionResult RunnerClient::ExecuteCommand(const std::string& session_id,
 	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
-	    int timeout_ms, std::stop_token stop_token, std::string_view standard_input)
+	    int timeout_ms, std::stop_token stop_token, std::string_view standard_input,
+	    std::string retained_control_token, bool* start_request_attempted_out)
 	{
+		if (start_request_attempted_out) *start_request_attempted_out = false;
 		ProcessExecutionResult result;
+		const bool retained = !retained_control_token.empty();
 		const std::chrono::steady_clock::time_point deadline = timeout_ms < 0
 		    ? std::chrono::steady_clock::time_point::max()
 		    : std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -437,8 +477,9 @@ namespace uam::remote
 		if (interrupted()) return result;
 		ProcessPollResult poll;
 		bool have_poll = false;
+		if (start_request_attempted_out) *start_request_attempted_out = true;
 		bool started = StartProcess(session_id, working_directory, argv, {}, &result.error,
-		                            false, {}, false);
+		                            false, std::move(retained_control_token), false);
 		// An uncertain start is recovered only by observing its original ID and token.
 		if (!started && !m_connected && !interrupted() && Connect(&result.error))
 		{
@@ -488,11 +529,15 @@ namespace uam::remote
 		else if (result.timed_out) result.error = "Remote command timed out.";
 		else if (result.output_truncated)
 			result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
-		std::string cleanup_error;
-		if (!exited && !StopProcess(session_id, &cleanup_error))
-			result.error += " Remote process stop failed: " + cleanup_error;
-		if (!RemoveProcess(session_id, &cleanup_error))
-			result.error += " Remote process cleanup failed: " + cleanup_error;
+		// Retained mutation records outlive interruption and are removed only after the caller saves settlement.
+		if (!retained)
+		{
+			std::string cleanup_error;
+			if (!exited && !StopProcess(session_id, &cleanup_error))
+				result.error += " Remote process stop failed: " + cleanup_error;
+			if (!RemoveProcess(session_id, &cleanup_error))
+				result.error += " Remote process cleanup failed: " + cleanup_error;
+		}
 		result.ok = exited && result.exit_code == 0 && result.error.empty() &&
 		    !result.canceled && !result.timed_out && !result.output_truncated;
 		return result;
@@ -865,7 +910,7 @@ namespace uam::remote
 			return false;
 		}
 		nlohmann::json response;
-		if (!Request({{"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", budget}},
+		if (!Request({{"type", "context.memory"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"budget", budget}, {"detailReferences", true}},
 		    response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
 		if (!response.contains("result") || !response["result"].is_object() || !response["result"].contains("text") || !response["result"]["text"].is_string() || response["result"]["text"].get_ref<const std::string&>().size() > 65536)
 		{
@@ -1167,6 +1212,42 @@ namespace uam::remote
 		return true;
 	}
 
+	bool RunnerClient::InspectPath(const std::string& absolute_path, bool allow_missing_leaf,
+	    PathInspection& result, std::string* error_out, std::stop_token stop_token)
+	try
+	{
+		result = {};
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_safePathInspection)
+		{
+			if (error_out != nullptr) *error_out = "Update this SSH helper before creating remote worktrees; safe path inspection is unavailable.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "path.inspect"}, {"path", absolute_path}, {"allowMissingLeaf", allow_missing_leaf}},
+		    response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
+		const nlohmann::json& proof = response.at("result");
+		if (!proof.is_object() || !proof.contains("path") || !proof["path"].is_string() ||
+		    !proof.contains("exists") || !proof["exists"].is_boolean() ||
+		    !proof.contains("directory") || !proof["directory"].is_boolean() ||
+		    !proof.contains("regularFile") || !proof["regularFile"].is_boolean())
+			throw nlohmann::json::type_error::create(302, "Invalid path inspection fields.", &proof);
+		PathInspection parsed{proof["path"].get<std::string>(), proof["exists"].get<bool>(),
+		    proof["directory"].get<bool>(), proof["regularFile"].get<bool>()};
+		if (parsed.path.empty() || parsed.path.size() > 4096 ||
+		    std::ranges::any_of(parsed.path, [](unsigned char c) { return c < 32 || c == 127; }) ||
+		    (!execution_hosts::IsAbsoluteRemotePath("windows", parsed.path) && !execution_hosts::IsAbsoluteRemotePath("linux", parsed.path)) ||
+		    (parsed.exists ? parsed.directory == parsed.regular_file : parsed.directory || parsed.regular_file || !allow_missing_leaf))
+			throw nlohmann::json::type_error::create(302, "Invalid path inspection proof.", &proof);
+		result = std::move(parsed);
+		return true;
+	}
+	catch (const nlohmann::json::exception&)
+	{
+		if (error_out != nullptr) *error_out = "The SSH helper returned invalid safe path inspection data.";
+		return false;
+	}
+
 	bool RunnerClient::CloseProcessInput(const std::string& session_id, std::string* error_out)
 	{
 		nlohmann::json request = {{"type", "process.closeInput"}, {"sessionId", session_id}};
@@ -1182,8 +1263,9 @@ namespace uam::remote
 	                               std::string* error_out,
 	                               const std::function<bool()>& interrupt,
 	                               bool* interrupted_out,
-	                               const ProcessPollResult* resume_after)
+	                               const ProcessPollResult* resume_after, bool* missing_out)
 	{
+		if (missing_out != nullptr) *missing_out = false;
 		nlohmann::json request = {{"type", "process.poll"}, {"sessionId", session_id},
 		                          {"acknowledgedOutput", m_processOutputAcknowledgement}};
 		if (!AddProcessControlToken(request, session_id, error_out)) return false;
@@ -1195,7 +1277,15 @@ namespace uam::remote
 		nlohmann::json response;
 		if (!Request(std::move(request), response,
 		             error_out, interrupt, interrupted_out))
+		{
+			if (missing_out != nullptr && m_expectedProtocolVersion >= 3 && m_connected &&
+			    response.contains("error") && response["error"].is_object())
+			{
+				const nlohmann::json::const_iterator code = response["error"].find("code");
+				*missing_out = code != response["error"].end() && code->is_string() && *code == "session_not_found";
+			}
 			return false;
+		}
 		ProcessPollResult parsed;
 		const nlohmann::json& value = response["result"];
 		parsed.running = value.value("running", false);
@@ -1291,6 +1381,7 @@ namespace uam::remote
 		m_received.clear();
 		m_connected = false;
 		m_directoryBrowsing = false;
+		m_safePathInspection = false;
 		m_contextRead = false;
 		m_workspaceFileRead = false;
 		m_usageAccounting = false; m_usageAccountingStream = false;

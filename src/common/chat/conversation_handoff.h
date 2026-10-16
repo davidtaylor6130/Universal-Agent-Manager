@@ -7,19 +7,57 @@
 
 namespace uam::chat
 {
+	/// <summary>Uses native block order only when every saved content byte is represented.</summary>
+	inline bool HandoffUsesBlockOrder(const Message& message)
+	{
+		if (message.role != MessageRole::Assistant) return false;
+		std::size_t ordinary_offset = 0, complete_offset = 0;
+		bool ordinary_matches = true, complete_matches = true, has_compaction = false;
+		for (const MessageBlock& block : message.blocks)
+		{
+			const bool compaction = block.type == "context_compaction" || block.type == "context_compaction_interrupted";
+			if (block.type != "assistant_text" && !compaction) continue;
+			has_compaction = has_compaction || compaction;
+			if (complete_matches)
+			{
+				complete_matches = message.content.compare(complete_offset, block.text.size(), block.text) == 0;
+				if (complete_matches) complete_offset += block.text.size();
+			}
+			if (ordinary_matches && block.type == "assistant_text")
+			{
+				ordinary_matches = message.content.compare(ordinary_offset, block.text.size(), block.text) == 0;
+				if (ordinary_matches) ordinary_offset += block.text.size();
+			}
+		}
+		return has_compaction && ((ordinary_matches && ordinary_offset == message.content.size()) ||
+		    (complete_matches && complete_offset == message.content.size()));
+	}
+
 	/// <summary>Preserves conversation and compaction summaries without replayable tool arguments.</summary>
 	inline bool BuildConversationHandoff(const ChatSession& source, std::string& context, std::string* error = nullptr)
 	{
 		std::string snapshot;
 		for (const Message& message : source.messages)
 		{
-			for (const MessageBlock& block : message.blocks)
+			if (message.acp_prompt_discarded) continue;
+			if (HandoffUsesBlockOrder(message))
 			{
-				if (block.type == "context_compaction" && !strings::IsBlank(block.text))
-					snapshot += "Conversation summary: " + block.text + "\n\n";
+				for (const MessageBlock& block : message.blocks)
+				{
+					if ((block.type == "context_compaction" || block.type == "context_compaction_interrupted") && !strings::IsBlank(block.text))
+						snapshot += (block.type == "context_compaction_interrupted" ? "Interrupted conversation summary: " : "Conversation summary: ") + block.text + "\n\n";
+					else if (block.type == "assistant_text" && !strings::IsBlank(block.text))
+						snapshot += "Assistant: " + block.text + "\n\n";
+				}
 			}
-			if ((message.role == MessageRole::User || message.role == MessageRole::Assistant) && !strings::IsBlank(message.content))
-				snapshot += (message.role == MessageRole::User ? "User: " : "Assistant: ") + message.content + "\n\n";
+			else
+			{
+				for (const MessageBlock& block : message.blocks)
+					if ((block.type == "context_compaction" || block.type == "context_compaction_interrupted") && !strings::IsBlank(block.text))
+						snapshot += (block.type == "context_compaction_interrupted" ? "Interrupted conversation summary: " : "Conversation summary: ") + block.text + "\n\n";
+				if ((message.role == MessageRole::User || message.role == MessageRole::Assistant) && !strings::IsBlank(message.content))
+					snapshot += (message.role == MessageRole::User ? "User: " : "Assistant: ") + message.content + "\n\n";
+			}
 			if (snapshot.size() > 256 * 1024)
 			{
 				if (error != nullptr) *error = "The conversation is too large to move safely. Compact it before moving.";

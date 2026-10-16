@@ -99,6 +99,10 @@ namespace uam
 		/// <summary>Optional exact durable raw row reused by prepared agent input instead of appending it twice.</summary>
 		int existing_user_message_index = -1;
 		std::string existing_user_message_created_at;
+		/// <summary>Expand branch context at dispatch while persisted text still identifies the raw row.</summary>
+		bool include_prior_context = false;
+		/// <summary>Direct input awaiting admission, distinct from a follow-up queued behind active work.</summary>
+		bool direct_admission = false;
 		bool prepared_for_delivery = false;
 		std::string claude_quota_continuation_id;
 		int prepared_user_message_count = 0;
@@ -108,6 +112,7 @@ namespace uam
 		bool priority_steer = false;
 		std::string id;
 		int revision = 1;
+		bool operator==(const AcpQueuedUserPromptState&) const = default;
 	};
 
 	/// <summary>
@@ -168,6 +173,7 @@ struct Message
 	std::string model_id;
 	bool continues_turn = false;
 	bool acp_prompt_not_sent = false;
+	bool acp_prompt_discarded = false;
 	bool operator==(const Message&) const = default;
 };
 
@@ -717,6 +723,8 @@ struct AppSettings
 	bool show_worktree_path_in_sidebar = true;
 	bool git_enabled = true;
 	bool git_auto_worktree = true;
+	bool git_snapshot_svn = true;
+	bool git_snapshot_plain_folders = true;
 	bool git_pull_before_chat = false;
 	GitPortMethod git_port_method = GitPortMethod::Patch;
 	std::string git_default_base_branch;

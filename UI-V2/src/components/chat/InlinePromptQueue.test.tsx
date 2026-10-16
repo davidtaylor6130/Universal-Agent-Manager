@@ -27,6 +27,36 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove() })
 
 describe('inline queued prompts', () => {
+  it('removes a legacy unsent input once and keeps it visible after a rejected save', async () => {
+    let finish!: (ok: boolean) => void
+    props.prompts = []
+    props.unsentPrompts = [{ messageIndex: 0, text: 'Legacy unsent input', attachments: [], retryable: false }]
+    props.onRemoveUnsent = vi.fn(() => new Promise((resolve) => { finish = resolve }))
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    const remove = button('Remove unsent prompt')
+    expect(remove).toBeTruthy()
+    expect(remove.disabled).toBe(false)
+    act(() => { remove.click(); remove.click() })
+    expect(props.onRemoveUnsent).toHaveBeenCalledExactlyOnceWith(0)
+    expect(remove.disabled).toBe(true)
+    expect(host.textContent).toContain('Legacy unsent input')
+    await act(async () => finish(false))
+    expect(host.textContent).toContain('Legacy unsent input')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('could not be removed')
+    expect(remove.disabled).toBe(false)
+  })
+
+  it('blocks unsent removal alongside other readonly recovery actions', async () => {
+    props.prompts = []
+    props.unsentPrompts = [{ messageIndex: 0, text: 'Readonly unsent input', attachments: [], retryable: false }]
+    props.unsentActionsDisabled = true
+    props.onRemoveUnsent = vi.fn(async () => true)
+    act(() => root.render(<InlinePromptQueue {...props} />))
+    expect(button('Remove unsent prompt').disabled).toBe(true)
+    await click(button('Remove unsent prompt'))
+    expect(props.onRemoveUnsent).not.toHaveBeenCalled()
+  })
+
   it.each(['stable', 'legacy'] as const)('identifies files in an attachment-only %s row without changing the queue', (identity) => {
     const queued = { ...prompt('a', '', [{ id: 'image', name: 'photo.png', path: '/project/photo.png', type: 'image', size: 1 }]), markdownStoreFiles: ['C:\\skills\\review.md'] }
     props.prompts = [identity === 'legacy' ? { ...queued, id: undefined, revision: undefined } : queued]

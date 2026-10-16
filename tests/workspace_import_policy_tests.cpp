@@ -1,11 +1,77 @@
 #include "test_harness.h"
 #include "core/chat_import_utils.h"
 #include <memory>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 using namespace uam_test;
 
 namespace
 {
+#if !defined(_WIN32)
+	void AssertNonregularGitMetadataRejected(const std::string& metadata)
+	{
+		TempDir temp("uam-import-nonregular-git-" + metadata);
+		const fs::path main = temp.root / "main";
+		const fs::path linked = temp.root / "linked";
+		const fs::path nested = linked / "nested";
+		const fs::path workspace = nested / "child";
+		const fs::path registration = main / ".git" / "worktrees" / "nested";
+		const fs::path outer_registration = main / ".git" / "worktrees" / "outer";
+		fs::create_directories(workspace);
+		fs::create_directories(registration);
+		fs::create_directories(outer_registration);
+		UAM_ASSERT(uam::io::WriteTextFile(linked / ".git", "gitdir: " + outer_registration.string()));
+		UAM_ASSERT(uam::io::WriteTextFile(outer_registration / "commondir", "../.."));
+		UAM_ASSERT(uam::io::WriteTextFile(outer_registration / "gitdir", (linked / ".git").string()));
+		UAM_ASSERT(uam::io::WriteTextFile(nested / ".git", "gitdir: " + registration.string()));
+		UAM_ASSERT(uam::io::WriteTextFile(registration / "commondir", "../.."));
+		UAM_ASSERT(uam::io::WriteTextFile(registration / "gitdir", (nested / ".git").string()));
+		UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(workspace), main / "child"));
+		const fs::path marker = metadata == ".git" ? nested / metadata : registration / metadata;
+		const fs::path regular_target = temp.root / "regular-metadata";
+		fs::rename(marker, regular_target);
+		fs::create_symlink(regular_target, marker);
+		UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(workspace), main / "child"));
+		fs::remove(marker);
+		UAM_ASSERT_EQ(::mkfifo(marker.c_str(), 0600), 0);
+
+		// A private child bounds a regression that otherwise blocks forever opening a FIFO.
+		const pid_t child = ::fork();
+		UAM_ASSERT(child >= 0);
+		if (child == 0)
+		{
+			const std::vector<ChatFolder> folders{{"outer", "Outer", linked.string(), false, "local"}};
+			const bool rejected = FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(workspace), workspace) &&
+			    !uam::ImportedWorkspaceMatchesFolder(workspace, main) &&
+			    uam::FindImportedWorkspaceFolder(folders, workspace) == nullptr;
+			::_exit(rejected ? 0 : 1);
+		}
+		int status = 0;
+		bool finished = false;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			if (::waitpid(child, &status, WNOHANG) == child) { finished = true; break; }
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		if (!finished)
+		{
+			::kill(child, SIGKILL);
+			while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+		}
+		UAM_ASSERT(finished);
+		UAM_ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+		fs::remove(marker);
+		fs::create_directory(marker);
+		UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(workspace), workspace));
+		UAM_ASSERT(!uam::ImportedWorkspaceMatchesFolder(workspace, main));
+	}
+#endif
+
 	ChatSession ImportFixture(const fs::path& workspace, const std::string& id)
 	{
 		ChatSession chat;
@@ -31,6 +97,23 @@ namespace
 		return total;
 	}
 }
+
+#if !defined(_WIN32)
+UAM_TEST(ImportedWorkspaceRejectsNonregularGitMarker)
+{
+	AssertNonregularGitMetadataRejected(".git");
+}
+
+UAM_TEST(ImportedWorkspaceRejectsNonregularGitCommondir)
+{
+	AssertNonregularGitMetadataRejected("commondir");
+}
+
+UAM_TEST(ImportedWorkspaceRejectsNonregularGitBacklink)
+{
+	AssertNonregularGitMetadataRejected("gitdir");
+}
+#endif
 
 UAM_TEST(ImportedLinkedWorktreeUsesMainFolderAndKeepsNativeWorkspace)
 {
@@ -276,4 +359,33 @@ UAM_TEST(FailedSynchronousHistoryImportKeepsSuccessfulSiblingsAndPrunesOnlyNewEm
 	UAM_ASSERT_EQ(app.chats.front().folder_id, app.folders.front().id);
 	UAM_ASSERT_EQ(ChatFolderStore::Load(app.data_root).size(), std::size_t{1});
 	UAM_ASSERT(ChatRepository::LoadLocalChat(app.data_root, "successful-native").has_value());
+}
+
+UAM_TEST(RemoteIsolatedWorkspaceResolutionNeverUsesSourceDirectory)
+{
+	uam::AppState app;
+	ChatSession chat;
+	chat.execution_host_id = "ssh-host";
+	chat.workspace_directory = "/remote/source";
+	chat.workspace_source_directory = "/remote/source";
+	chat.workspace_isolation_kind = "gitWorktree";
+	for (const std::string worktree : {std::string("/remote/isolated"), std::string(R"(C:\Users\david\isolated)")})
+	{
+		chat.workspace_worktree_directory = worktree;
+		UAM_ASSERT_EQ(uam::paths::RemoteWorkspaceDirectory(chat), worktree);
+		UAM_ASSERT_EQ(uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), worktree);
+		UAM_ASSERT(uam::paths::ResolveControllerWorkspaceRootPath(app, chat).empty());
+	}
+	chat.workspace_worktree_directory.clear();
+	UAM_ASSERT(uam::paths::ResolveWorkspaceRootPath(app, chat).empty());
+	ExecutionHost host;
+	host.id = chat.execution_host_id; host.platform = "linux"; host.transport = "ssh";
+	app.settings.execution_hosts.push_back(host);
+	const uam::VcsCommitStatus unavailable = uam::VcsCommitService().Status(app, chat);
+	UAM_ASSERT(!unavailable.available);
+	UAM_ASSERT_EQ(unavailable.error, std::string("The remote workspace directory is unavailable."));
+	chat.workspace_isolation_kind.clear();
+	UAM_ASSERT_EQ(uam::paths::RemoteWorkspaceDirectory(chat), chat.workspace_directory);
+	chat.imported_read_only = true;
+	UAM_ASSERT(uam::paths::ResolveWorkspaceRootPath(app, chat).empty());
 }

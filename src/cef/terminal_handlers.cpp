@@ -206,6 +206,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		    directory = chat->workspace_directory, folder_id = chat->folder_id, imported = chat->imported_read_only,
 		    agent_run = chat->agent_run_id, goal_owner = chat->goal_owner_chat_id, side_parent = chat->temporary_parent_chat_id,
 		    git_enabled = m_app.settings.git_enabled, automatic = m_app.settings.git_auto_worktree, pull = m_app.settings.git_pull_before_chat,
+		    snapshot_svn = m_app.settings.git_snapshot_svn, snapshot_plain_folders = m_app.settings.git_snapshot_plain_folders,
 		    base_branch = m_app.settings.git_default_base_branch, base_override = chat->git_base_branch_override](std::string_view task_error) mutable
 		    {
 			ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
@@ -215,7 +216,8 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 			    current->native_session_id != native_id || current->workspace_directory != directory || current->folder_id != folder_id ||
 			    current->imported_read_only != imported || current->agent_run_id != agent_run || current->goal_owner_chat_id != goal_owner ||
 			    current->temporary_parent_chat_id != side_parent || current->git_base_branch_override != base_override || m_app.settings.git_enabled != git_enabled ||
-			    m_app.settings.git_auto_worktree != automatic || m_app.settings.git_default_base_branch != base_branch || m_app.settings.git_pull_before_chat != pull)
+			    m_app.settings.git_auto_worktree != automatic ||
+			    (uam::paths::IsControllerLocalWorkspace(*current) && (m_app.settings.git_snapshot_svn != snapshot_svn || m_app.settings.git_snapshot_plain_folders != snapshot_plain_folders)) || m_app.settings.git_default_base_branch != base_branch || m_app.settings.git_pull_before_chat != pull)
 			{
 				request->request_stop();
 				uam::CancelWorktreeLaunchPreparation(m_app, chat_id, request);

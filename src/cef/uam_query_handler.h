@@ -58,8 +58,10 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::shared_ptr<uam::usage::HistoryTransport> m_usageTransport;
 	CefRefPtr<CefThread> m_titleQueries;
 	CefRefPtr<CefThread> m_snoozeQueries;
+	CefRefPtr<CefThread> m_instructionQueries;
 	std::set<std::string> m_snoozeRequests;
 	std::size_t m_pendingFilePreviews = 0;
+	std::size_t m_pendingCentralInstructionFiles = 0;
 	std::shared_ptr<std::atomic<unsigned>> m_pendingWorkspaceVcsContexts = std::make_shared<std::atomic<unsigned>>(0);
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
 #if UAM_ENABLE_MOBILE_COMPANION
@@ -166,6 +168,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleGetProviderMcpStatus(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleReadCentralInstructionFile(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSaveCentralInstructionFile(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetCentralProviderConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetUamAgentPreferences(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

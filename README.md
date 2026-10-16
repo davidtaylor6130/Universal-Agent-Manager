@@ -205,6 +205,11 @@ Do not open `UI-V2/dist/index.html` directly. The frontend expects the native CE
 
 Disable remote-helper packaging when you only need a local development build:
 
+Keep this build folder between edits and rerun only `cmake --build`; native and frontend
+inputs are tracked automatically. Run `npm ci` again only when the lockfile changes.
+Make/Ninja builds use an installed `ccache` automatically. Agent verification commands,
+including focused cases and the parallel full native inventory, are in [AGENTS.md](AGENTS.md).
+
 ```bash
 npm --prefix UI-V2 ci
 cmake -S . -B Builds/dev \

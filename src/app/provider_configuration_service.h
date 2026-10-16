@@ -4,10 +4,14 @@
 
 #include "app/agent_definition_service.h"
 #include "app/markdown_store_service.h"
+#include "app/memory_service.h"
 #include "common/provider/provider_setup.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
+#include "common/state/app_state.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
+#include "common/utils/diagnostic_log.h"
 
 namespace uam
 {
@@ -18,10 +22,18 @@ namespace uam
 		std::filesystem::path local_directory;
 	};
 
+	inline std::string CheckedProviderConfigurationVersion(const AppState& app, std::string_view provider, const ExecutionHost& host)
+	{
+		const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider, host.id));
+		return version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.supported &&
+		       execution_hosts::SameConnection(version->second.execution_host, host) ? version->second.installed_version : std::string{};
+	}
+
 	/// <summary>Compile native launch resources; preserve the queued agent instructions when supplied. SSH receives bytes and unresolved secret references.</summary>
 	inline bool PrepareProviderConfiguration(const std::filesystem::path& data_root, const AppSettings& settings,
 	    const ChatSession& chat, const ExecutionHost& host, const std::filesystem::path& workspace,
-	    ProviderConfigurationBundle& bundle, std::string& error, const std::string* selected_agent_instructions = nullptr)
+	    ProviderConfigurationBundle& bundle, std::string& error, const std::string* selected_agent_instructions = nullptr,
+	    std::string_view checked_provider_version = {})
 	{
 		bundle = {};
 		// Source workspace settings follow isolated worktrees; the active workspace can override them.
@@ -41,8 +53,13 @@ namespace uam
 		    candidates, uam::paths::Utf8PathString(workspace), host.id);
 		CentralProviderConfiguration configuration = settings.central_provider_configuration;
 		configuration.enabled = central_configuration::McpEnabled(configuration, chat.provider_id, host.id, "shared-setup", configuration.enabled);
-		if (!configuration.enabled && selected_servers.empty()) return true;
+		// shortcut: only fixture-verified OpenCode versions; extend after discovery and permission checks pass.
+		const bool open_code_discovery = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli) &&
+		    (checked_provider_version == "1.17.20" || checked_provider_version == "1.18.35");
+		if (!configuration.enabled && selected_servers.empty() && !open_code_discovery) return true;
 		std::set<std::string> executable_files;
+		bool memory_resources_added = false;
+		std::size_t memory_instruction_size = 0;
 		if (configuration.enabled)
 		{
 			std::size_t resource_bytes = configuration.instructions.size();
@@ -162,6 +179,24 @@ namespace uam
 			if (instructions.size() > provider_setup::kMaxFileBytes)
 			{ error = "Combined provider instructions exceed 2 MiB."; return false; }
 			bundle.files["AGENTS.md"] = std::move(instructions);
+			if (host.id == execution_hosts::kLocalHostId)
+			{
+				std::string& agent_instructions = bundle.files["AGENTS.md"];
+				const std::string memory_reference = "\nMemory details: __UAM_RESOURCE_ROOT__/memory/index.md (paths are relative to the index).\n";
+				if (agent_instructions.size() <= provider_setup::kMaxFileBytes - memory_reference.size())
+				{
+					agent_instructions += memory_reference;
+					std::string memory_error;
+					if (!MemoryService::BuildRecallResources(data_root, settings, chat, workspace, bundle.files, memory_error) || !bundle.files.contains("memory/index.md"))
+						agent_instructions.resize(agent_instructions.size() - memory_reference.size());
+					else
+					{
+						memory_resources_added = true;
+						memory_instruction_size = agent_instructions.size() - memory_reference.size();
+					}
+					if (!memory_error.empty()) diagnostics::Write("[Memory] Detail resources unavailable; retaining bounded recall: " + memory_error);
+				}
+			}
 		}
 		std::vector<McpServerConfiguration> servers;
 		for (McpServerConfiguration server : selected_servers)
@@ -174,8 +209,25 @@ namespace uam
 		}
 		bundle.manifest = {{"format", 1}, {"mcpOnly", !configuration.enabled}, {"files", nlohmann::json::object()},
 		    {"hostInstructionFile", configuration.enabled && !host.instruction_text ? host.instruction_file : ""}, {"mcpServers", mcp_server_config::Serialize(servers)}};
+		// Format 1 helpers predating this optional hint retain their ordinary eager MCP discovery.
+		if (open_code_discovery) bundle.manifest["openCodeCodeMode"] = true;
 		for (const auto& [name, bytes] : bundle.files)
 			bundle.manifest["files"][name] = {{"size", bytes.size()}, {"digest", provider_setup::Digest(bytes)}, {"executable", executable_files.contains(name)}};
+		std::string memory_manifest_error;
+		if (memory_resources_added && !provider_setup::ValidateManifest(bundle.manifest, memory_manifest_error))
+		{
+			// Optional memory must not turn an otherwise valid launch into a manifest-limit failure.
+			for (std::map<std::string, std::string>::iterator file = bundle.files.begin(); file != bundle.files.end();)
+			{
+				if (!file->first.starts_with("memory/")) { ++file; continue; }
+				bundle.manifest["files"].erase(file->first);
+				file = bundle.files.erase(file);
+			}
+			std::string& agent_instructions = bundle.files["AGENTS.md"];
+			agent_instructions.resize(memory_instruction_size);
+			bundle.manifest["files"]["AGENTS.md"] = {{"size", agent_instructions.size()}, {"digest", provider_setup::Digest(agent_instructions)}, {"executable", false}};
+			diagnostics::Write("[Memory] Detail resources unavailable; retaining bounded recall: " + memory_manifest_error);
+		}
 		bundle.local_directory = data_root / "runtime" / "provider-setup" / provider_setup::Digest(bundle.manifest.dump());
 		std::vector<std::string> missing;
 		if (!provider_setup::Prepare(bundle.local_directory, bundle.manifest, missing, error)) return false;

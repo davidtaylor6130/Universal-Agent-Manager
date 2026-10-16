@@ -43,7 +43,7 @@ bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::
 	return true;
 }
 
-std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk)
+std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity)
 {
 	if (chunk.empty())
 	{
@@ -51,12 +51,15 @@ std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, co
 	}
 
 	std::string current_assistant_text;
-	if (const Message* current_message = CurrentAssistantMessage(chat, session))
+	if (identity.empty())
 	{
-		current_assistant_text = current_message->content;
+		if (const Message* current_message = CurrentAssistantMessage(chat, session))
+			current_assistant_text = current_message->content;
 	}
 
-	const std::string delta = AssistantDeltaForIncomingText(session, current_assistant_text, chunk);
+	// Identified native chunks are incremental; explicit load replay was consumed by the caller.
+	const std::string delta = identity.empty()
+	    ? AssistantDeltaForIncomingText(session, current_assistant_text, chunk) : chunk;
 	if (delta.empty())
 	{
 		return "";
@@ -76,9 +79,10 @@ std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, co
 	{
 		session.turn_assistant_message_index = session.current_assistant_message_index;
 	}
-	AppendAssistantTextTurnEvent(session, delta);
+	AppendAssistantTextTurnEvent(session, delta, identity);
 	(void)SyncCurrentAssistantMessageBlocksFromTurnEvents(chat, session);
-	return delta;
+	// Quarantined summary chunks are saved above, but must not enter the plain-text fast stream.
+	return !session.turn_events.empty() && session.turn_events.back().type == "context_compaction_summary" ? std::string{} : delta;
 }
 
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)

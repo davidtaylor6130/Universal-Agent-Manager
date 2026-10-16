@@ -8,6 +8,7 @@
 #include "app/local_chat_bundle_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/transcript_retention_service.h"
+#include "app/startup_native_import_service.h"
 #include "app/runtime_orchestration_internal.h"
 #include "app/uam_control_service.h"
 #include "cef/state_serializer.h"
@@ -2205,7 +2206,7 @@ UAM_TEST(ProviderMarkdownAgentImportIsProviderNeutralAndNeverSilentlyDropsSecuri
 
 	const std::vector<std::pair<std::string, std::string>> unsafe = {
 	    {uam::provider_ids::kOpenCodeCli,
-	     "---\ndescription: Restricted\nmode: subagent\npermission:\n  edit: deny\n---\nReview.\n"},
+	     "---\ndescription: Restricted\nmode: subagent\npermission:\n  edit:\n    '*': deny\n---\nReview.\n"},
 	    {uam::provider_ids::kCopilotCli,
 	     "---\nname: copilot-reviewer\ndescription: Restricted\ntools: [read]\n---\nReview.\n"},
 	    {uam::provider_ids::kGeminiCli,
@@ -5269,11 +5270,9 @@ UAM_TEST(RemoteHelperUpdateBlocksEveryRemoteCleanupState)
 {
 	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path();
 	const std::string source = ReadFile(source_root / "src/cef/remote_host_handlers.cpp");
-	const std::size_t guard = source.find("bool HostHasActiveRuntimeWork");
-	const std::size_t handler = source.find("void UamQueryHandler::HandlePreviewRemoteHost", guard);
-	UAM_ASSERT(guard != std::string::npos);
-	UAM_ASSERT(handler != std::string::npos);
-	const std::string body = source.substr(guard, handler - guard);
+	UAM_ASSERT(source.find("remote_host_install_guard.h") != std::string::npos);
+	const std::string body = ReadFile(source_root / "src/cef/remote_host_install_guard.h");
+	UAM_ASSERT(body.find("bool HostHasActiveRuntimeWork") != std::string::npos);
 	UAM_ASSERT(body.find("chat.remote_stop_cleanup_pending") != std::string::npos);
 	UAM_ASSERT(body.find("session->remote_stop_pending") != std::string::npos);
 	UAM_ASSERT(body.find("session->remote_stop_unconfirmed") != std::string::npos);
@@ -11012,7 +11011,8 @@ UAM_TEST(RemoteWorkspaceLocalWorktreeActionsFailClosedAndMissingHostBlocksVcs)
 	const uam::GitWorktreeService worktrees;
 	const uam::GitWorktreeStatus worktree_status = worktrees.Status(app, chat);
 	UAM_ASSERT(!worktree_status.is_git_repository);
-	UAM_ASSERT(worktree_status.warning.find("remote") != std::string::npos);
+	UAM_ASSERT(!worktree_status.error.empty());
+	UAM_ASSERT(!worktree_status.worktree_missing);
 	UAM_ASSERT(worktrees.CreateForChat(app, chat).message.find("remote") != std::string::npos);
 	UAM_ASSERT(worktrees.DiscardChatChanges(app, chat).message.find("remote") != std::string::npos);
 	UAM_ASSERT(worktrees.PortChatChanges(app, chat).message.find("remote") != std::string::npos);
@@ -11200,7 +11200,9 @@ UAM_TEST(GitWorktreeNamesUseAgentAndTitleWithSafeFallbacksAndCollisions)
 	ChatSession legacy;
 	legacy.id = "chat-legacy";
 	legacy.title = "Legacy compatibility";
+	legacy.folder_id = "legacy-workspace";
 	legacy.workspace_directory = repo.string();
+	app.folders.push_back(ChatFolder{legacy.folder_id, "Legacy workspace", repo.string(), false});
 	UAM_ASSERT(service.CreateForChat(app, legacy).ok);
 	const fs::path named_path = legacy.workspace_worktree_directory;
 	const fs::path legacy_path = named_path.parent_path().parent_path() / legacy.id;
@@ -11617,11 +11619,36 @@ UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone
 	UAM_ASSERT(legacy.workspace_worktree_directory.empty());
 	chat.workspace_directory = (temp.root / "missing").string();
 	app.chats.push_back(chat);
-	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Fix login", &error));
-	UAM_ASSERT(error.find("Could not create this chat's worktree") != std::string::npos);
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Fix login", &error));
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	const uam::AcpSessionState* failed_session = nullptr;
+	do
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		(void)uam::PollAllAcpSessions(app);
+		failed_session = uam::FindAcpSessionForChat(app, chat.id);
+		if (failed_session != nullptr && failed_session->queue_held && !failed_session->last_error.empty()) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	} while (std::chrono::steady_clock::now() < deadline);
+	UAM_ASSERT(failed_session != nullptr && failed_session->queue_held);
+	UAM_ASSERT_EQ(failed_session->last_error, std::string("Source workspace is not an available directory."));
+	UAM_ASSERT(!failed_session->running && !failed_session->processing && !failed_session->reconnect_pending);
 	UAM_ASSERT(app.chats.front().messages.empty());
-	const uam::AcpSessionState* failed_session = uam::FindAcpSessionForChat(app, chat.id);
-	UAM_ASSERT(failed_session == nullptr || !failed_session->running);
+	UAM_ASSERT_EQ(failed_session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(failed_session->queued_user_prompts.front().text, std::string("Fix login"));
+	while (app.pending_chat_save_at_by_chat_id.contains(chat.id) && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(held && held->acp_queue_held && held->messages.empty());
+	UAM_ASSERT_EQ(held->acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, std::string("Fix login"));
+	(void)uam::PollAllAcpSessions(app);
+	UAM_ASSERT(failed_session->queue_held && !failed_session->running && !failed_session->reconnect_pending);
+	UAM_ASSERT_EQ(failed_session->queued_user_prompts.size(), std::size_t{1});
 	app.chats.clear();
 	UAM_ASSERT(!service.PrepareForFirstLaunch(app, chat, &error));
 	UAM_ASSERT(error.find("Could not create this chat's worktree") != std::string::npos);
@@ -16239,9 +16266,89 @@ UAM_TEST(RemoteOpenCodeScansSkipOwnedPersistedAndLiveAttachments)
 #endif
 }
 
+#if !defined(_WIN32)
+namespace
+{
+	struct PrivateRemoteOpenCodeImport
+	{
+		TempDir temp{"uam-private-remote-opencode-import"};
+		std::unique_ptr<ScopedEnvVar> path;
+		fs::path response = temp.root / "poll.json";
+
+		PrivateRemoteOpenCodeImport()
+		{
+			ResponseRunner();
+			path = std::make_unique<ScopedEnvVar>("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+		}
+
+		void ResponseRunner()
+		{
+			const std::string executable = uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath());
+			const fs::path ssh = temp.root / "ssh";
+			UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec " + ShellQuoteForTest(executable) + " --uam-test-runner-result " + ShellQuoteForTest("@" + response.string()) + "\n"));
+			fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		}
+
+		void Stall()
+		{
+			const std::string executable = uam::paths::Utf8PathString(PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath());
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec " + ShellQuoteForTest(executable) + " --uam-test-runner-result '{}' " + ShellQuoteForTest((temp.root / "requests.txt").string()) + "\n"));
+			fs::permissions(temp.root / "ssh", fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		}
+
+		static nlohmann::json Export(const std::string& id, const std::string& directory, bool empty = false)
+		{
+			nlohmann::json value = {{"info", {{"id", id}, {"directory", directory}}}, {"messages", nlohmann::json::array()}};
+			if (!empty) value["messages"].push_back({{"info", {{"id", "msg-private"}, {"role", "user"}, {"time", {{"created", 1}}}}}, {"parts", {{{"type", "text"}, {"text", "Private imported question"}}}}});
+			return value;
+		}
+
+		void Poll(std::string output, int exit_code = 0)
+		{
+			ResponseRunner();
+			const nlohmann::json value = {{"privateChunkedOutput", true}, {"running", false}, {"exitCode", exit_code}, {"stdoutBase64", uam::base64::Encode(output)},
+			    {"stderrBase64", ""}, {"stdoutCursor", output.size()}, {"stderrCursor", std::uint64_t{0}}};
+			UAM_ASSERT(uam::io::WriteTextFile(response, value.dump()));
+		}
+
+		void Setup(uam::AppState& app, const std::string& suffix = "data")
+		{
+			app.data_root = temp.root / suffix;
+			app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+			ExecutionHost host;
+			host.id = "private-runner";
+			host.ssh_alias = "private-runner";
+			host.platform = "linux";
+			host.transport = "ssh";
+			host.runner_status = "ready";
+			host.runner_version = "test";
+			host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+			app.settings.execution_hosts.push_back(host);
+			app.folders.push_back({"remote", "Remote fixture", "/srv/private-workspace", false, host.id});
+		}
+
+		static ChatSession Candidate()
+		{
+			ChatSession chat;
+			chat.id = "ses_private";
+			chat.native_session_id = chat.id;
+			chat.provider_id = "opencode-cli";
+			chat.folder_id = "remote";
+			chat.execution_host_id = "private-runner";
+			chat.workspace_directory = "/srv/private-workspace";
+			chat.title = "Unknown metadata";
+			chat.messages_loaded = false;
+			return chat;
+		}
+	};
+}
+#endif
+
 UAM_TEST(RemoteOpenCodeSessionRefreshImportsOnceAndRespectsWorkspaceAndDeletion)
 {
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	PrivateRemoteOpenCodeImport fixture;
+	fixture.Poll(PrivateRemoteOpenCodeImport::Export("ses_remote_1", R"(C:\Users\david\project)").dump());
 	TempDir temp("uam-remote-opencode-history");
 	uam::AppState app;
 	app.data_root = temp.root;
@@ -16252,7 +16359,8 @@ UAM_TEST(RemoteOpenCodeSessionRefreshImportsOnceAndRespectsWorkspaceAndDeletion)
 	remote_host.ssh_alias = "uam-windows-ai";
 	remote_host.transport = "ssh";
 	remote_host.runner_status = "ready";
-	remote_host.runner_version = "4.8.0-alpha-2";
+	remote_host.runner_version = "test";
+	remote_host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
 	remote_host.platform = "windows";
 	remote_host.architecture = "x86_64";
 	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), remote_host};
@@ -22836,9 +22944,10 @@ UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(nested.string())));
 	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(nested), nested));
 	UAM_ASSERT(uam::FindImportedWorkspaceFolder(app.folders, fs::path{}) == nullptr);
-	// Broken metadata and missing main subfolders must retain the native location.
+	// Proven linked children group under the main checkout even when absent there.
 	fs::remove_all(repo / "subfolder");
-	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree / "subfolder"), worktree / "subfolder"));
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree / "subfolder"), repo / "subfolder"));
+	// Broken metadata retains the native location.
 	UAM_ASSERT(uam::io::WriteTextFile(worktree / ".git", "gitdir: missing\n"));
 	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree), worktree));
 }
@@ -24863,7 +24972,9 @@ std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv);
 std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv);
 std::optional<int> RunRemoteEmptyArgumentsFixture(int argc, char** argv);
 std::optional<int> RunRemoteOldStartupEchoFixture(int argc, char** argv);
+std::optional<int> RunRemoteWorktreeReceiptFixture(int argc, char** argv);
 std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv);
+std::optional<int> RunEmptyNativeImportFixture(int argc, char** argv);
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[]);
 
 #if defined(__APPLE__)
@@ -24874,13 +24985,22 @@ int main(int argc, char** argv)
 {
 	if (const std::optional<int> result = RunRemoteEmptyArgumentsFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOldStartupEchoFixture(argc, argv)) return *result;
+	if (const std::optional<int> result = RunRemoteWorktreeReceiptFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteCodexSetupFixture(argc, argv)) return *result;
+	if (const std::optional<int> result = RunEmptyNativeImportFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOpenCodeCreateFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunOpenCodeSessionCreateFixtureIfRequested(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteMcpLostAckFixture(argc, argv)) return *result;
 #if !defined(_WIN32)
-	if ((argc == 3 || argc == 4 || (argc == 5 && std::string_view(argv[4]) == "--without-central-config")) && std::string_view(argv[1]) == "--uam-test-runner-result")
+	if ((argc == 3 || argc == 4 || (argc == 5 && (std::string_view(argv[4]) == "--without-central-config" || std::string_view(argv[4]).starts_with("--reject-config-start=")))) && std::string_view(argv[1]) == "--uam-test-runner-result")
 	{
+		const std::string argument = argv[2];
+		const nlohmann::json fixture_result = nlohmann::json::parse(argument.starts_with('@') ? uam_test::ReadFile(uam::paths::PathFromUtf8(argument.substr(1))) : argument, nullptr, false);
+		if (fixture_result.is_discarded()) return 2;
+		const bool private_chunked = fixture_result.is_object() && fixture_result.value("privateChunkedOutput", false);
+		std::string chunked_output;
+		if (private_chunked && !uam::base64::Decode(fixture_result.value("stdoutBase64", ""), chunked_output)) return 2;
+		std::size_t chunked_offset = 0;
 		uam::remote::RunnerState state;
 		nlohmann::json request;
 		while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
@@ -24889,7 +25009,7 @@ int main(int argc, char** argv)
 			{
 				std::ofstream log(argv[3], std::ios::app);
 				log << request.value("type", "") << ' ' << request.value("sessionId", "") << std::endl;
-				if (request.value("type", "") == "process.poll")
+				if (request.value("type", "") == "process.poll" && !(argc == 5 && std::string_view(argv[4]).starts_with("--reject-config-start=")))
 				{
 					std::this_thread::sleep_for(std::chrono::seconds(5));
 					return 0;
@@ -24898,9 +25018,30 @@ int main(int argc, char** argv)
 			nlohmann::json response = request.value("type", "") == "hello"
 			    ? uam::remote::HandleRunnerRequest(request, "test", &state)
 			    : nlohmann::json{{"id", request["id"]}, {"ok", true},
-			                     {"result", nlohmann::json::parse(argv[2])}};
-			if (argc == 5 && request.value("type", "") == "hello")
+			                     {"result", fixture_result}};
+			if (private_chunked && request.value("type", "") != "hello")
+			{
+				response["result"] = nlohmann::json::object();
+				if (request.value("type", "") == "process.poll")
+				{
+					const std::string_view chunk = std::string_view(chunked_output).substr(chunked_offset, 65536);
+					chunked_offset += chunk.size();
+					response["result"] = {{"running", chunked_offset < chunked_output.size()}, {"exitCode", fixture_result.value("exitCode", 0)},
+					    {"stdoutBase64", uam::base64::Encode(chunk)}, {"stderrBase64", ""}, {"stdoutCursor", chunked_offset}, {"stderrCursor", std::uint64_t{0}}};
+				}
+			}
+			if (argc == 5 && std::string_view(argv[4]) == "--without-central-config" && request.value("type", "") == "hello")
 				response["capabilities"]["centralProviderConfiguration"] = false;
+			if (argc == 5 && std::string_view(argv[4]).starts_with("--reject-config-start=") && request.value("type", "") == "process.start")
+				response = {{"id", request["id"]}, {"ok", false}, {"error", {{"code", std::string(argv[4]).substr(std::string_view("--reject-config-start=").size())}, {"message", "Central resource folder does not belong to this workspace."}}}};
+			if (argc == 5 && std::string_view(argv[4]).starts_with("--reject-config-start=") && request.value("type", "") == "process.poll")
+			{
+				const std::string outcome = fixture_result.value("pollOutcome", "missing");
+				if (outcome == "disconnect") return 0;
+				response = outcome == "existing"
+				    ? nlohmann::json{{"id", request["id"]}, {"ok", true}, {"result", {{"running", true}}}}
+				    : nlohmann::json{{"id", request["id"]}, {"ok", false}, {"error", {{"code", outcome == "foreign" ? "unauthorized" : "session_not_found"}, {"message", "Fixture process ownership result."}}}};
+			}
 			if (!uam::remote::WriteFrame(std::cout, response)) return 1;
 			std::cout.flush();
 		}
@@ -24930,6 +25071,13 @@ int main(int argc, char** argv)
 	}
 #endif
 	int failures = 0;
+	if (argc == 2 && std::string_view(argv[1]) == "--list-tests")
+	{
+		for (const TestCase& test : Registry()) std::cout << test.name << '\n';
+		return 0;
+	}
+	int executed = 0;
+	const bool report_timing = uam::env::GetNonEmptyString("UAM_TEST_TIMINGS").has_value();
 	const std::string test_filter =
 	    uam::env::GetNonEmptyString("UAM_TEST_FILTER").value_or("");
 	for (const TestCase& test : Registry())
@@ -24941,6 +25089,8 @@ int main(int argc, char** argv)
 		{
 			continue;
 		}
+		++executed;
+		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 		try
 		{
 			test.fn();
@@ -24951,6 +25101,16 @@ int main(int argc, char** argv)
 			++failures;
 			std::cerr << "[FAIL] " << test.name << ": " << ex.what() << '\n';
 		}
+		if (report_timing)
+		{
+			const double milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+			std::cerr << "[TIME] " << test.name << ": " << milliseconds << " ms\n";
+		}
+	}
+	if (executed == 0)
+	{
+		std::cerr << "No tests matched the requested selection.\n";
+		return 2;
 	}
 
 	if (failures != 0)
@@ -26268,4 +26428,236 @@ UAM_TEST(AcpUsageUpdatesPreserveContextSeparatelyForEveryProvider)
 		const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
 		UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"]["providerUsage"]["contextUsage"]["windowTokens"].get<int>(), 200000);
 	}
+}
+
+UAM_TEST(RemoteOpenCodeVerifiedEmptyImportIsSkippedWithoutTombstoneAndRetriesWhenNonempty)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	PrivateRemoteOpenCodeImport fixture;
+	uam::AppState app;
+	fixture.Setup(app);
+	const ChatSession candidate = PrivateRemoteOpenCodeImport::Candidate();
+	const std::vector<ChatHistorySyncService::RemoteOpenCodeSession> sessions = {{candidate.native_session_id, candidate.title, candidate.workspace_directory, 1, 2}};
+	const ChatHistorySyncService service;
+	fixture.Poll(PrivateRemoteOpenCodeImport::Export(candidate.native_session_id, candidate.workspace_directory, true).dump());
+	const auto empty = service.ImportRemoteOpenCodeChatsForFolder(app, "remote", sessions);
+	UAM_ASSERT(empty.success && empty.imported_count == 0);
+	UAM_ASSERT(ChatRepository::LoadLocalChats(app.data_root).empty());
+	UAM_ASSERT(!fs::exists(app.data_root / "native-import-tombstones.json"));
+	fixture.Poll(PrivateRemoteOpenCodeImport::Export(candidate.native_session_id, candidate.workspace_directory).dump());
+	const auto nonempty = service.ImportRemoteOpenCodeChatsForFolder(app, "remote", sessions);
+	UAM_ASSERT(nonempty.success && nonempty.imported_count == 1);
+	const auto loaded = ChatRepository::LoadLocalChat(app.data_root, candidate.id, true);
+	UAM_ASSERT(loaded.has_value() && loaded->messages.size() == 1);
+	UAM_ASSERT_EQ(loaded->messages.front().content, std::string("Private imported question"));
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeUnverifiedImportsNeverPublishAndRemainRetryable)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	PrivateRemoteOpenCodeImport fixture;
+	const ChatSession candidate = PrivateRemoteOpenCodeImport::Candidate();
+	for (int mode = 0; mode < 7; ++mode)
+	{
+		uam::AppState app;
+		fixture.Setup(app, "rejected-" + std::to_string(mode));
+		const std::vector<ChatHistorySyncService::RemoteOpenCodeSession> sessions = {{candidate.native_session_id, candidate.title, candidate.workspace_directory, 1, 2}};
+		nlohmann::json exported = PrivateRemoteOpenCodeImport::Export(candidate.native_session_id, candidate.workspace_directory);
+		if (mode == 1) exported["info"]["id"] = "ses_other";
+		if (mode == 2) exported["info"]["directory"] = "/srv/other";
+		if (mode == 5) { exported["messages"] = nlohmann::json::array(); exported["nextCursor"] = "not-finished"; }
+		if (mode == 6) exported["messages"][0]["info"]["role"] = "unknown-provider-role";
+		std::string output = mode == 0 ? "{malformed" : exported.dump();
+		if (mode == 4) output = std::string(4 * 1024 * 1024 + 1, 'x');
+		fixture.Poll(std::move(output), mode == 3 ? 23 : 0);
+		const auto failed = ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(app, "remote", sessions);
+		UAM_ASSERT(!failed.success && failed.imported_count == 0);
+		if (mode == 4) UAM_ASSERT(uam::strings::Join(failed.errors, " ").find("4 MiB") != std::string::npos);
+		UAM_ASSERT(ChatRepository::LoadLocalChats(app.data_root).empty());
+		UAM_ASSERT(!fs::exists(app.data_root / "native-import-tombstones.json"));
+		fixture.Poll(PrivateRemoteOpenCodeImport::Export(candidate.native_session_id, candidate.workspace_directory).dump());
+		const auto retry = ChatHistorySyncService().ImportRemoteOpenCodeChatsForFolder(app, "remote", sessions);
+		UAM_ASSERT(retry.success && retry.imported_count == 1);
+	}
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeBatchVerifiesMetadataBeforePublishingAndReportsOnlyConfirmedEmpty)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	PrivateRemoteOpenCodeImport fixture;
+	for (int mode = 0; mode < 3; ++mode)
+	{
+		uam::AppState app;
+		fixture.Setup(app, "batch-" + std::to_string(mode));
+		const ChatSession candidate = PrivateRemoteOpenCodeImport::Candidate();
+		fixture.Poll(mode == 2 ? "invalid" : PrivateRemoteOpenCodeImport::Export(candidate.native_session_id, candidate.workspace_directory, mode == 1).dump());
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.chats.push_back(candidate);
+		discovery.expected_hosts.emplace(candidate.execution_host_id, app.settings.execution_hosts.back());
+		const ChatHistorySyncService service;
+		service.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
+		UAM_ASSERT(app.chats.empty() && ChatRepository::LoadLocalChats(app.data_root).empty());
+		UAM_ASSERT(discovery.preparation.valid());
+		discovery.preparation.wait();
+		const auto result = service.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
+		UAM_ASSERT_EQ(result.imported_count, mode == 0 ? 1 : 0);
+		UAM_ASSERT_EQ(result.success, mode != 2);
+		UAM_ASSERT_EQ(result.confirmed_empty_native_keys.empty(), mode != 1);
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, candidate.id, true);
+		UAM_ASSERT_EQ(saved.has_value(), mode == 0);
+		if (saved) UAM_ASSERT_EQ(saved->messages.front().content, std::string("Private imported question"));
+		UAM_ASSERT(!fs::exists(app.data_root / "native-import-tombstones.json"));
+		if (discovery.publication_sync.valid()) discovery.publication_sync.wait();
+	}
+#endif
+}
+
+UAM_TEST(RemoteOpenCodePreparedImportRejectsChangedHostFolderDataRootDeletionAndLiveOwner)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	PrivateRemoteOpenCodeImport fixture;
+	for (int mode = 0; mode < 5; ++mode)
+	{
+		uam::AppState app;
+		fixture.Setup(app, "changed-" + std::to_string(mode));
+		const fs::path original_root = app.data_root;
+		const ChatSession candidate = PrivateRemoteOpenCodeImport::Candidate();
+		fixture.Poll(PrivateRemoteOpenCodeImport::Export(candidate.native_session_id, candidate.workspace_directory).dump());
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.chats.push_back(candidate);
+		discovery.expected_hosts.emplace(candidate.execution_host_id, app.settings.execution_hosts.back());
+		const ChatHistorySyncService service;
+		service.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
+		UAM_ASSERT(discovery.preparation.valid());
+		discovery.preparation.wait();
+		if (mode == 0) app.settings.execution_hosts.back().ssh_alias = "replacement";
+		if (mode == 1) app.folders.back().directory = "/srv/replacement";
+		if (mode == 2) app.data_root = fixture.temp.root / "replacement-data-root";
+		if (mode == 3)
+		{
+			std::vector<std::string> keys;
+			UAM_ASSERT(service.AddNativeImportTombstones(app.data_root, {candidate}, keys));
+		}
+		if (mode == 4)
+		{
+			ChatSession owner = candidate;
+			owner.messages.push_back({MessageRole::User, "New live input survives"});
+			app.chats.push_back(std::move(owner));
+		}
+		const auto result = service.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
+		UAM_ASSERT_EQ(result.imported_count, 0);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(original_root, candidate.id, true).has_value());
+		if (mode == 4) UAM_ASSERT_EQ(app.chats.front().messages.front().content, std::string("New live input survives"));
+	}
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeCanceledPreparationStopsOwnedExportWithoutPublishingOrTombstoning)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	PrivateRemoteOpenCodeImport fixture;
+	fixture.Stall();
+	uam::AppState app;
+	fixture.Setup(app);
+	const ChatSession candidate = PrivateRemoteOpenCodeImport::Candidate();
+	ChatHistorySyncService::LocalHistoryDiscovery discovery;
+	discovery.chats.push_back(candidate);
+	discovery.expected_hosts.emplace(candidate.execution_host_id, app.settings.execution_hosts.back());
+	const ChatHistorySyncService service;
+	service.ImportDiscoveredProviderChatsBatch(app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
+	UAM_ASSERT(discovery.preparation.valid());
+	const auto pending = discovery.preparation;
+	const fs::path log = fixture.temp.root / "requests.txt";
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (ReadFile(log).find("process.poll ") == std::string::npos && std::chrono::steady_clock::now() < deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	UAM_ASSERT(ReadFile(log).find("process.poll ") != std::string::npos);
+	const auto started = std::chrono::steady_clock::now();
+	discovery.CancelPending();
+	pending.wait();
+	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(3));
+	UAM_ASSERT(!discovery.Pending());
+	UAM_ASSERT(app.chats.empty() && ChatRepository::LoadLocalChats(app.data_root).empty());
+	UAM_ASSERT(!fs::exists(app.data_root / "native-import-tombstones.json"));
+	UAM_ASSERT(ReadFile(log).find("process.stop ") != std::string::npos);
+	UAM_ASSERT(ReadFile(log).find("process.remove ") != std::string::npos);
+#endif
+}
+
+UAM_TEST(StartupRemoteOpenCodeEmptySelectionRetiresOnlyVerifiedEmptyAndKeepsFailuresRetryable)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	PrivateRemoteOpenCodeImport fixture;
+	for (int mode = 0; mode < 4; ++mode)
+	{
+		uam::AppState app;
+		fixture.Setup(app, "startup-" + std::to_string(mode));
+		const ChatSession candidate = PrivateRemoteOpenCodeImport::Candidate();
+		fixture.Stall();
+		uam::StartupNativeImportService service([candidate](const uam::StartupNativeImportScanRequest&, std::stop_token)
+		{
+			ChatHistorySyncService::LocalHistoryDiscovery discovery;
+			discovery.chats.push_back(candidate);
+			return discovery;
+		});
+		service.Initialize(app);
+		const auto wait = [&]()
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (service.Snapshot().phase == "scanning" || service.ImportPending())
+			{
+				UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+				service.Poll(app);
+				std::this_thread::yield();
+			}
+		};
+		wait();
+		const auto snapshot = service.Snapshot();
+		UAM_ASSERT_EQ(snapshot.total_count, std::size_t{1});
+		UAM_ASSERT(!fs::exists(fixture.temp.root / "requests.txt"));
+		fixture.Poll(mode == 1 ? "invalid" : PrivateRemoteOpenCodeImport::Export(candidate.native_session_id, candidate.workspace_directory, mode == 0).dump());
+		std::string error;
+		UAM_ASSERT(service.Decide(app, snapshot.generation, {snapshot.candidates.front().candidate_id}, {}, &error));
+		if (mode == 3) UAM_ASSERT(uam::io::WriteTextFile(app.data_root / "native-import-tombstones.json", "{invalid"));
+		wait();
+		UAM_ASSERT_EQ(service.Snapshot().total_count, mode == 1 || mode == 3 ? std::size_t{1} : std::size_t{0});
+		UAM_ASSERT_EQ(service.Snapshot().imported_count, mode == 2 ? 1 : 0);
+		UAM_ASSERT_EQ(app.chats.empty(), mode != 2);
+		UAM_ASSERT_EQ(service.Snapshot().errors.empty(), mode != 1 && mode != 3);
+		if (mode == 3)
+		{
+			UAM_ASSERT(fs::remove(app.data_root / "native-import-tombstones.json"));
+			const auto retry = service.Snapshot();
+			UAM_ASSERT(service.Decide(app, retry.generation, {retry.candidates.front().candidate_id}, {}, &error));
+			wait();
+			UAM_ASSERT_EQ(service.Snapshot().imported_count, 1);
+			UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{0});
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, candidate.id, true);
+			UAM_ASSERT(saved.has_value() && saved->messages.size() == 1);
+		}
+		UAM_ASSERT(!fs::exists(app.data_root / "native-import-tombstones.json"));
+	}
+#endif
+}
+
+UAM_TEST(RemoteOpenCodeSynchronousDiscoveredImportAlsoRejectsVerifiedEmptyMetadata)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && !defined(_WIN32)
+	PrivateRemoteOpenCodeImport fixture;
+	uam::AppState app;
+	fixture.Setup(app);
+	const ChatSession candidate = PrivateRemoteOpenCodeImport::Candidate();
+	for (const bool empty : {true, false})
+	{
+		fixture.Poll(PrivateRemoteOpenCodeImport::Export(candidate.native_session_id, candidate.workspace_directory, empty).dump());
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		discovery.chats.push_back(candidate);
+		const auto result = ChatHistorySyncService().ImportDiscoveredProviderChatsForFolder(app, app.folders.front(), std::move(discovery));
+		UAM_ASSERT(result.success);
+		UAM_ASSERT_EQ(result.imported_count, empty ? 0 : 1);
+		UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(app.data_root).empty(), empty);
+	}
+#endif
 }

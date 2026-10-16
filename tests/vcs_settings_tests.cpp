@@ -148,3 +148,24 @@ UAM_TEST(VcsSettingsDisabledGitKeepsOwnedPathsAndSkipsOnlyUncreatedDefaults)
 	const uam::GitWorktreeStatus status = service.Status(app, isolated);
 	UAM_ASSERT(status.isolated); UAM_ASSERT_EQ(status.branch_name, "owned-branch"); UAM_ASSERT(!status.worktree_missing);
 }
+
+UAM_TEST(ManagedSnapshotSettingsDefaultOnAndPersistIndependently)
+{
+	TempDir temp("uam-snapshot-settings");
+	AppSettings settings;
+	const nlohmann::json defaults = uam::settings_frontend_json::SerializeCommonSettingsFields(settings);
+	UAM_ASSERT(defaults.value("gitSnapshotSvn", false));
+	UAM_ASSERT(defaults.value("gitSnapshotPlainFolders", false));
+	for (const bool svn : {false, true})
+	{
+		const fs::path path = temp.root / "settings.txt";
+		UAM_ASSERT(uam::io::WriteTextFile(path, std::string("git_snapshot_svn=") + (svn ? "true" : "false") + "\ngit_snapshot_plain_folders=" + (svn ? "false" : "true") + "\n"));
+		UAM_ASSERT(SettingsStore::Load(path, settings).loaded);
+		UAM_ASSERT(SettingsStore::Save(path, settings));
+		AppSettings loaded;
+		UAM_ASSERT(SettingsStore::Load(path, loaded).loaded);
+		const nlohmann::json projected = uam::settings_frontend_json::SerializeCommonSettingsFields(loaded);
+		UAM_ASSERT_EQ(projected.value("gitSnapshotSvn", !svn), svn);
+		UAM_ASSERT_EQ(projected.value("gitSnapshotPlainFolders", svn), !svn);
+	}
+}

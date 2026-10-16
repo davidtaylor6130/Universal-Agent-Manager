@@ -454,7 +454,8 @@ function turnEventsEquivalent(existing: AcpTurnEvent[], next: AcpTurnEvent[]) {
   return existing.every((event, index) => {
     const other = next[index]
     if (event.type !== other.type) return false
-    if (event.type === 'context_compaction' && other.type === 'context_compaction' &&
+    if ((event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') &&
+      (other.type === 'context_compaction' || other.type === 'context_compaction_interrupted') &&
       (event.tokensBefore !== other.tokensBefore || event.tokensAfter !== other.tokensAfter)) return false
     if ('text' in event || 'text' in other) {
       if ((event as { text?: string }).text !== (other as { text?: string }).text) return false
@@ -567,7 +568,11 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.turnAssistantMessageIndex === next.turnAssistantMessageIndex &&
     existing.turnSerial === next.turnSerial &&
     (existing.queueHeld ?? false) === (next.queueHeld ?? false) &&
+    sameArrayEntries(existing.unsentMessageIndices ?? [], next.unsentMessageIndices ?? []) &&
+    sameArrayEntries(existing.recoverableUnsentMessageIndices ?? [], next.recoverableUnsentMessageIndices ?? []) &&
     queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
+    queuedPromptsEquivalent(existing.pendingDirectPrompts ?? [], next.pendingDirectPrompts ?? []) &&
+    queuedPromptsEquivalent(existing.unsentDirectPrompts ?? [], next.unsentDirectPrompts ?? []) &&
     existing.waitIsStale === next.waitIsStale &&
     existing.waitStaleReason === next.waitStaleReason &&
     existing.waitSeconds === next.waitSeconds &&
@@ -683,7 +688,11 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
     turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
     queueHeld: acp?.queueHeld ?? false,
+    unsentMessageIndices: acp?.unsentMessageIndices ?? [],
+    recoverableUnsentMessageIndices: acp?.recoverableUnsentMessageIndices ?? [],
     queuedPrompts: acp?.queuedPrompts ?? [],
+    pendingDirectPrompts: acp?.pendingDirectPrompts ?? [],
+    unsentDirectPrompts: acp?.unsentDirectPrompts ?? [],
     waitIsStale: Boolean(acp?.waitIsStale),
     waitStaleReason: typeof acp?.waitStaleReason === 'string' ? acp.waitStaleReason : '',
     waitSeconds: typeof acp?.waitSeconds === 'number' ? acp.waitSeconds : 0,
@@ -816,6 +825,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage, index: numbe
 		Boolean(existing.interrupted) === Boolean(next.interrupted) &&
     existing.stopReason === next.stopReason &&
 		Boolean(existing.acpPromptNotSent) === Boolean(next.acpPromptNotSent) &&
+		Boolean(existing.acpPromptDiscarded) === Boolean(next.acpPromptDiscarded) &&
 		Boolean(existing.prioritySteer) === Boolean(next.prioritySteer) &&
 		Boolean(existing.continuesTurn) === Boolean(next.continuesTurn) &&
     (existing.checkpointSha ?? '') === (next.checkpointSha ?? '') &&
@@ -850,12 +860,54 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
 		interrupted: Boolean(message.interrupted),
     stopReason: message.stopReason === 'timeout' || message.stopReason === 'provider-update' || message.stopReason === 'forced' || message.stopReason === 'failed' || message.stopReason === 'unknown' || message.stopReason === 'interrupt' ? message.stopReason : undefined,
 		acpPromptNotSent: Boolean(message.acpPromptNotSent),
+		acpPromptDiscarded: message.acpPromptDiscarded === true,
 		prioritySteer: Boolean(message.prioritySteer),
 		continuesTurn: Boolean(message.continuesTurn),
     checkpointSha: message.checkpointSha,
     checkpointParentSha: message.checkpointParentSha,
     createdAt: new Date(createdAtMillis),
   }
+}
+
+/** Authoritative count contraction retires only an exact recovered or explicitly removed native outbox suffix. */
+export function reconcileHeldOutboxHistory(chat: CppChat, existing: Message[] | undefined, startIndex = 0, previousBinding?: AcpBinding, previousSession?: Pick<Session, 'messageCount' | 'messagesDigest'>): Message[] | undefined {
+  if (!existing?.length || !Number.isSafeInteger(chat.messageCount) || chat.messageCount! < 0 || !chat.messagesDigest) return existing
+  const retained = chat.messageCount! - startIndex
+  if (retained >= existing.length) return existing
+  const incomingQueue = chat.acpSession?.queuedPrompts ?? []
+  const known = new Set(previousBinding?.unsentMessageIndices ?? [])
+  const removedReferences = previousBinding?.queueHeld && Array.isArray(chat.acpSession?.queuedPrompts) &&
+    previousSession?.messagesDigest && previousSession.messagesDigest !== chat.messagesDigest &&
+    Number.isSafeInteger(previousSession.messageCount) && chat.messageCount! < previousSession.messageCount!
+    ? (previousBinding.queuedPrompts ?? []).filter((prompt) => !prompt.prepared &&
+        Number.isSafeInteger(prompt.existingUserMessageIndex) && known.has(prompt.existingUserMessageIndex!) &&
+        !incomingQueue.some((incoming) => incoming.id === prompt.id)) : []
+  const queue = [...(chat.acpSession?.queueHeld ? incomingQueue : []), ...removedReferences]
+  if (!queue.length || queue.some((prompt) => !prompt.id || !Number.isSafeInteger(prompt.revision) || prompt.revision! < 1)) return existing
+  const unmatched = [...queue]
+  let matchedRemovedReference = false
+  let optimisticStart = existing.length
+  for (let index = Math.max(0, retained); index < existing.length; index += 1) {
+    const message = existing[index]
+    if (message.nativeMessageIndex === undefined && message.role === 'user' && matchedRemovedReference) {
+      optimisticStart = index
+      break
+    }
+    if (message.role === 'assistant' && !message.content.trim() && !message.thoughts?.trim() && !message.planSummary?.trim() &&
+        !message.planEntries?.length && !message.toolCalls?.length && !message.blocks?.length && !message.attachments?.length) continue
+    if (message.role !== 'user' || message.nativeMessageIndex !== startIndex + index) return existing
+    const queuedIndex = unmatched.findIndex((prompt) =>
+      (prompt.existingUserMessageIndex === undefined || prompt.existingUserMessageIndex === startIndex + index) &&
+      (!removedReferences.includes(prompt) || message.acpPromptNotSent) && prompt.text === message.content &&
+      attachmentsEquivalent(message.attachments ?? [], messageAttachments(prompt)))
+    if (queuedIndex < 0) return existing
+    matchedRemovedReference ||= removedReferences.includes(unmatched[queuedIndex])
+    unmatched.splice(queuedIndex, 1)
+  }
+  const optimistic = existing.slice(optimisticStart)
+  if (optimistic.some((message) => message.role !== 'user' || message.nativeMessageIndex !== undefined || message.isStreaming ||
+      message.thoughts?.trim() || message.planSummary?.trim() || message.planEntries?.length || message.toolCalls?.length || message.blocks?.length)) return existing
+  return retained <= 0 && chat.messageCount! > 0 && !optimistic.length ? undefined : [...existing.slice(0, Math.max(0, retained)), ...optimistic]
 }
 
 export function reconcileCppMessages(
@@ -940,7 +992,8 @@ export function messageBlocksEquivalent(existing: MessageBlock[], next: MessageB
   if (existing.length !== next.length) return false
   return existing.every((block, index) => {
     const other = next[index]
-    if (block.type === 'context_compaction' && other.type === 'context_compaction' &&
+    if ((block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') &&
+      (other.type === 'context_compaction' || other.type === 'context_compaction_interrupted') &&
       (block.tokensBefore !== other.tokensBefore || block.tokensAfter !== other.tokensAfter)) return false
     return (
       block.type === other.type &&
@@ -973,6 +1026,7 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
   return previous.every((prompt, index) => {
     const other = incoming[index]
     return prompt.id === other.id && prompt.revision === other.revision && Boolean(prompt.prepared) === Boolean(other.prepared) &&
+      prompt.existingUserMessageIndex === other.existingUserMessageIndex &&
       prompt.uamAgentId === other.uamAgentId && prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&

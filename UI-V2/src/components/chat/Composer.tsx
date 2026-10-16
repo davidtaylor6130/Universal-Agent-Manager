@@ -47,6 +47,8 @@ export function permissionModeForTier(tier: CommandSafetyTier): 'default' | 'acc
 export function acpRuntimeBlocksControlChanges(acp?: AcpBinding | null): boolean {
   return Boolean(
     acp?.processing ||
+    (acp?.pendingDirectPrompts?.length ?? 0) > 0 ||
+    (acp?.unsentDirectPrompts?.length ?? 0) > 0 ||
     acp?.lifecycleState === 'waitingPermission' ||
     acp?.lifecycleState === 'waitingUserInput'
   )

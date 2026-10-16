@@ -1,6 +1,7 @@
 #include "remote/runner_protocol.h"
 #include "remote/runner_proxy.h"
 #include "remote/runner_state.h"
+#include "uam_runner_build.h"
 
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
@@ -18,10 +19,6 @@
 
 #ifndef UAM_REMOTE_RUNNER_VERSION
 #define UAM_REMOTE_RUNNER_VERSION "development"
-#endif
-
-#ifndef UAM_RUNNER_SOURCE_FINGERPRINT
-#define UAM_RUNNER_SOURCE_FINGERPRINT "development"
 #endif
 
 int main(int argc, char** argv)

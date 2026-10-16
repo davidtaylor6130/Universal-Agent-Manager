@@ -138,3 +138,118 @@ UAM_TEST(GitWorktreeDefaultBasePreservesManagedAndSvnSnapshots)
 		if (svn) UAM_ASSERT(fs::is_directory(source / ".svn"));
 	}
 }
+
+UAM_TEST(ManagedSnapshotPolicySeparatesSvnAndPlainFoldersBeforeOwnedIntent)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	for (const bool svn : {false, true})
+	{
+		TempDir temp("uam-snapshot-policy-disabled");
+		const fs::path source = temp.root / "source";
+		fs::create_directories(svn ? source / ".svn" : source);
+		UAM_ASSERT(uam::io::WriteTextFile(source / "keep.txt", "original"));
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		const fs::path settings = temp.root / "settings.txt";
+		UAM_ASSERT(uam::io::WriteTextFile(settings, std::string("svn_enabled=false\ngit_snapshot_svn=") + (svn ? "false" : "true") + "\ngit_snapshot_plain_folders=" + (svn ? "true" : "false") + "\n"));
+		UAM_ASSERT(SettingsStore::Load(settings, app.settings).loaded);
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		chat.workspace_directory = source.string();
+		const ChatSession original = chat;
+		int intents = 0;
+		const uam::GitWorktreeIntentRecorder record = [&intents](const uam::GitWorktreeCreationIntent&, std::string&) { ++intents; return true; };
+		const uam::GitWorktreeOperationResult refused = uam::GitWorktreeService().PrepareForChat(app, chat, record, {}, true);
+		UAM_ASSERT(!refused.ok);
+		UAM_ASSERT(refused.message.find("snapshot") != std::string::npos);
+		UAM_ASSERT_EQ(intents, 0);
+		UAM_ASSERT(!fs::exists(app.data_root / "worktrees"));
+		UAM_ASSERT(uam::GitWorktreeService().PrepareForFirstLaunch(app, chat));
+		UAM_ASSERT(chat.workspace_isolation_kind.empty());
+		UAM_ASSERT(chat.workspace_worktree_directory.empty());
+		UAM_ASSERT_EQ(chat.workspace_directory, original.workspace_directory);
+		UAM_ASSERT_EQ(ReadFile(source / "keep.txt"), std::string("original"));
+		UAM_ASSERT(!fs::exists(source / ".git"));
+	}
+}
+
+UAM_TEST(ManagedSnapshotOptOutKeepsExistingOwnedWorktree)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-snapshot-policy-existing");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path source = temp.root / "source";
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / "keep.txt", "original"));
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	chat.workspace_directory = source.string();
+	UAM_ASSERT(uam::GitWorktreeService().CreateForChat(app, chat).ok);
+	const ChatSession owned = chat;
+	const fs::path settings = temp.root / "settings.txt";
+	UAM_ASSERT(uam::io::WriteTextFile(settings, "git_snapshot_svn=false\ngit_snapshot_plain_folders=false\n"));
+	UAM_ASSERT(SettingsStore::Load(settings, app.settings).loaded);
+	UAM_ASSERT(uam::GitWorktreeService().PrepareForFirstLaunch(app, chat));
+	UAM_ASSERT(uam::GitWorktreeService().CreateForChat(app, chat).ok);
+	UAM_ASSERT_EQ(chat.workspace_worktree_directory, owned.workspace_worktree_directory);
+	UAM_ASSERT_EQ(chat.workspace_branch_name, owned.workspace_branch_name);
+	UAM_ASSERT_EQ(ReadFile(fs::path(chat.workspace_worktree_directory) / "keep.txt"), std::string("original"));
+}
+
+UAM_TEST(ManagedSnapshotIndependentOptInAndRealGitRemainAvailable)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	for (const std::string_view kind : {"svn", "plain", "git"})
+	{
+		TempDir temp("uam-snapshot-policy-enabled");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.settings.git_snapshot_svn = kind == "svn";
+		app.settings.git_snapshot_plain_folders = kind == "plain";
+		app.settings.svn_enabled = false;
+		const fs::path source = temp.root / "source";
+		fs::create_directories(kind == "svn" ? source / ".svn" : source);
+		UAM_ASSERT(uam::io::WriteTextFile(source / "keep.txt", "original"));
+		if (kind == "git")
+		{
+			UAM_ASSERT(RunGitForTest(source, "init --template="));
+			UAM_ASSERT(RunGitForTest(source, "config user.email uam@example.test"));
+			UAM_ASSERT(RunGitForTest(source, "config user.name UAM"));
+			UAM_ASSERT(RunGitForTest(source, "add keep.txt"));
+			UAM_ASSERT(RunGitForTest(source, "commit -m baseline"));
+		}
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		chat.workspace_directory = source.string();
+		UAM_ASSERT(uam::GitWorktreeService().CreateForChat(app, chat).ok);
+		UAM_ASSERT(!chat.workspace_worktree_directory.empty());
+		UAM_ASSERT_EQ(ReadFile(fs::path(chat.workspace_worktree_directory) / "keep.txt"), std::string("original"));
+		UAM_ASSERT_EQ(fs::exists(source / ".git"), kind == "git");
+	}
+}
+
+UAM_TEST(ManagedSnapshotOptOutDoesNotBypassUnknownWorkspaceValidation)
+{
+	TempDir temp("uam-snapshot-policy-unknown");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.git_snapshot_svn = false;
+	app.settings.git_snapshot_plain_folders = false;
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	chat.workspace_directory = (temp.root / "missing").string();
+	UAM_ASSERT(uam::ManagedSnapshotDisabledReason(app, chat).empty());
+	std::string error;
+	UAM_ASSERT(!uam::GitWorktreeService().PrepareForFirstLaunch(app, chat, &error));
+	UAM_ASSERT(!error.empty());
+	const fs::path source = temp.root / "malformed";
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".git", "gitdir: missing\n"));
+	chat.workspace_directory = source.string();
+	UAM_ASSERT(uam::ManagedSnapshotDisabledReason(app, chat).empty());
+	int intents = 0;
+	const uam::GitWorktreeOperationResult refused = uam::GitWorktreeService().PrepareForChat(app, chat,
+	    [&intents](const uam::GitWorktreeCreationIntent&, std::string&) { ++intents; return true; }, {}, true);
+	UAM_ASSERT(!refused.ok);
+	UAM_ASSERT(!refused.message.empty());
+	UAM_ASSERT_EQ(intents, 0);
+	UAM_ASSERT(!fs::exists(app.data_root / "worktrees"));
+	UAM_ASSERT_EQ(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
+}

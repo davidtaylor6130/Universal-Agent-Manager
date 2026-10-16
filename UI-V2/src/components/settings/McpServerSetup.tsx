@@ -193,20 +193,23 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     } catch { if (generation === importGeneration.current) setMessage('Could not read OpenCode configuration. Try again.') }
     finally { if (generation === importGeneration.current) { setBusy(false); onBusyChange(false) } }
   }
+  let preparedServers = servers, preparedUam = uamEnabled
+  let validationError = ''
+  try {
+    if (view === 'json') ({ servers: preparedServers, uamEnabled: preparedUam } = fromJsonText(jsonText, servers))
+    if (scoped && preparedUam !== savedUam) throw Error('Could not save MCP servers.')
+    preparedServers = preparedServers.map(server => ({ ...server, name: server.name.trim(), command: server.command.trim(), url: server.url.trim(), workspaceDirectory: server.workspaceDirectory.trim() }))
+    const issue = preparedServers.map(problem).find(Boolean)
+    if (issue) throw Error(issue)
+    const keys = preparedServers.map(server => `${server.name.toLowerCase()}|${server.workspaceDirectory}|${server.executionHostId}`)
+    if (new Set(keys).size !== keys.length) throw Error('Two servers share the same name. Rename one.')
+  } catch (error) { validationError = (error as Error).message }
   const save = async () => {
     if (setup !== null) { setMessage('Finish or cancel setup before saving.'); return }
     const generation = importGeneration.current
     const ownsSave = () => generation === importGeneration.current
-    let next = servers, nextUam = uamEnabled
-    if (view === 'json') {
-      try { ({ servers: next, uamEnabled: nextUam } = fromJsonText(jsonText, servers)) } catch (error) { setMessage((error as Error).message); return }
-    }
-    if (scoped && nextUam !== savedUam) { setMessage('Could not save MCP servers.'); return }
-    next = next.map(server => ({ ...server, name: server.name.trim(), command: server.command.trim(), url: server.url.trim(), workspaceDirectory: server.workspaceDirectory.trim() }))
-    const issue = next.map(problem).find(Boolean)
-    if (issue) { setMessage(issue); return }
-    const keys = next.map(server => `${server.name.toLowerCase()}|${server.workspaceDirectory}|${server.executionHostId}`)
-    if (new Set(keys).size !== keys.length) { setMessage('Two servers share the same name. Rename one.'); return }
+    if (validationError) { setMessage(validationError); return }
+    const next = preparedServers, nextUam = preparedUam
     setBusy(true); onBusyChange(true); setMessage('')
     try {
       const store = useAppStore.getState()
@@ -282,7 +285,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       <SettingRow title="UAM MCP service" description="Agent questions, goals and UAM skills."
         status={uamEnabled ? undefined : 'Off in this draft until you save.'}
         control={uamEnabled
-          ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />Always on</span>
+          ? <span className="uam-prov-status" data-tone="success"><StatusDot tone="success" />On</span>
           : <Button size="sm" disabled={busy} onClick={() => { setUamEnabled(true); setMessage('') }}>Turn back on</Button>} />
       {COMPUTER_USE_ENABLED && typeof computerUseEnabled === 'boolean'
         ? <SettingRow title="UAM Computer Use"
@@ -315,10 +318,8 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           const refs = server.transport === 'stdio' ? server.environment : server.headers
           const setRefs = (values: Reference[]) => update(server.id, server.transport === 'stdio' ? { environment: values } : { headers: values })
           const serverName = server.name || 'server'
-          const launch = server.transport === 'stdio' ? [server.command, ...server.args].join(' ') || 'Program not set' : server.url || 'URL not set'
-          const scope = [server.workspaceDirectory || 'All workspaces', server.executionHostId ? (hosts.find(host => host.id === server.executionHostId)?.label ?? server.executionHostId) : 'All machines'].join(' · ')
+          const scope = [server.workspaceDirectory ? 'Selected workspace' : 'All workspaces', server.executionHostId ? (hosts.find(host => host.id === server.executionHostId)?.label ?? server.executionHostId) : 'All machines'].join(' · ')
           return <SettingRow key={server.id} icon={<Server size={15} aria-hidden />} title={server.name || 'New server'}
-            description={<span className="uam-prov-detail">{launch}</span>}
             status={scope}
             control={<>
               {toggle(`${serverName} enabled`, server.enabled, enabled => update(server.id, { enabled }))}
@@ -380,9 +381,9 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <div className="flex items-center justify-end gap-2 flex-wrap">
       <span className="uam-set-section__desc mr-auto">{setup !== null ? 'Finish or cancel setup before saving.' : 'Running chats keep their old setup until restarted.'}</span>
       {dirty && <Button size="sm" disabled={busy} onClick={() => { setServers(savedServers); setUamEnabled(savedUam); setJsonText(toJsonText(savedServers, savedUam)); setMessage('') }}>Undo changes</Button>}
-      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={!dirty || setup !== null} title={setup !== null ? 'Finish or cancel setup before saving.' : undefined} onClick={() => void save()}>Save</Button>
+      <Button size="sm" variant={dirty ? 'primary' : 'secondary'} loading={busy} disabled={busy || !dirty || setup !== null || Boolean(validationError)} title={setup !== null ? 'Finish or cancel setup before saving.' : validationError || undefined} onClick={() => void save()}>Save</Button>
     </div>
-    {setup === null && message && <p role="status" className="uam-prov-sub">{message}</p>}
+    {setup === null && (message || validationError) && <p role="status" className="uam-prov-sub">{message || validationError}</p>}
     {setup === null && warningNotice}
   </div>
 }

@@ -9,6 +9,10 @@
 
 namespace uam
 {
+	/// <summary>Reports disabled snapshots only for known ordinary local folders, preserving Git and unsafe-path validation.</summary>
+	std::string ManagedSnapshotDisabledReason(const AppState& app, const ChatSession& chat);
+	/// <summary>Refuses original-workspace fallback while prior snapshot ownership is unresolved.</summary>
+	std::string ManagedSnapshotBypassError(const AppState& app, const ChatSession& chat);
 	void CancelGitPortRequest(AppState& app, const std::string& chat_id);
 	void PollGitPortRequests(AppState& app);
 
@@ -97,8 +101,13 @@ namespace uam
 		std::string branch;
 		std::string base_sha;
 		bool managed_repository = false;
+		std::string operation_id;
+		std::string control_token;
+		std::string operation_state = "pending";
 	};
 	using GitWorktreeIntentRecorder = std::function<bool(const GitWorktreeCreationIntent&, std::string&)>;
+	std::string RemoteWorktreeHostIdentity(const ExecutionHost& host);
+	std::string RemoteWorktreeStableHostIdentity(const ExecutionHost& host);
 
 	/// <summary>Pending explicit-base creation never silently falls back to an unisolated launch.</summary>
 	bool ValidatePendingGitBaseOverrideScope(const AppState& app, const ChatSession& chat, std::string& error);
@@ -123,7 +132,8 @@ namespace uam
 		bool PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out = nullptr) const;
 		GitWorktreeOperationResult CreateForChat(AppState& app, ChatSession& chat) const;
 		/// Creates Git artifacts on an owned worker snapshot; records intent before mutation and never saves chat history.
-		GitWorktreeOperationResult PrepareForChat(AppState& snapshot, ChatSession& metadata, const GitWorktreeIntentRecorder& record, std::stop_token stop) const;
+		GitWorktreeOperationResult PrepareForChat(AppState& snapshot, ChatSession& metadata, const GitWorktreeIntentRecorder& record, std::stop_token stop, bool explicit_create = false) const;
+		bool ValidateRemotePreparedWorkspace(const ExecutionHost& host, const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}, bool* definite_failure_out = nullptr) const;
 		bool ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}) const;
 		GitWorktreeOperationResult CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const;
 		bool RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out = nullptr) const;

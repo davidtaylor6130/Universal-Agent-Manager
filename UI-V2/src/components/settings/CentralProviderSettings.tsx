@@ -11,6 +11,7 @@ const AGENT_NAME = /^[a-z0-9][a-z0-9_-]*$/
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
 type Agent = { id: string; description: string; mode: string; workspaceAccess: string; skills: string[]; delegates: string[]; instructions: string; builtIn: boolean }
+type InstructionEditor = { path: string; content: string; original: string; loading: boolean; readFailed: boolean; error: string }
 const blankAgent = (): Agent => ({ id: '', description: '', mode: 'primary', workspaceAccess: 'write', skills: [], delegates: [], instructions: '', builtIn: false })
 const field = 'uam-field w-full'
 type Option = { value: string; label: string; group?: string }
@@ -65,6 +66,21 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
   const [pendingExit, setPendingExit] = useState<{ next: () => void; scope: 'all' | 'agent' } | null>(null)
   const editingOriginal = useRef<Agent | null>(null)
+  const [instructionEditor, setInstructionEditor] = useState<InstructionEditor | null>(null)
+  const instructionRequest = useRef(0)
+  const instructionOperation = useRef(false)
+  const instructionTrigger = useRef<HTMLButtonElement | null>(null)
+  const instructionTextarea = useRef<HTMLTextAreaElement | null>(null)
+  const instructionRetry = useRef<HTMLButtonElement | null>(null)
+  const [instructionFocusRequest, setInstructionFocusRequest] = useState(0)
+  useEffect(() => () => { ++instructionRequest.current }, [])
+  useEffect(() => {
+    if (!instructionEditor) instructionTrigger.current?.focus()
+  }, [instructionEditor?.path])
+  useEffect(() => {
+    if (instructionFocusRequest && !pendingExit && !editing && !pendingDelete) (instructionTextarea.current || instructionRetry.current)?.focus()
+  }, [instructionFocusRequest])
+  const instructionDirty = Boolean(instructionEditor && instructionEditor.content !== instructionEditor.original)
 
   const loadAgents = useCallback(async () => {
     const response = await sendToCEF<{ agents: Agent[]; errors: string[] }>({ action: 'listAgentDefinitions', payload: {} })
@@ -111,9 +127,9 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     return store.setCentralProviderConfiguration({ ...store.centralProviderConfiguration, enabled: true, instructionFiles, defaultSkills, defaultAgents, defaultAgentId })
   }, 'Saved. New and restarted chats get this setup.')
   const undoDefaults = () => { setInstructionFiles(saved.instructionFiles); setDefaultSkills(saved.defaultSkills ?? []); setDefaultAgents(saved.defaultAgents ?? []); setDefaultAgentId(saved.defaultAgentId); setMessage(null) }
-  const dirty = defaultsDirty || agentDirty
+  const dirty = defaultsDirty || agentDirty || instructionDirty
   useImperativeHandle(ref, () => ({ requestLeave(next) {
-    if (busy) return
+    if (busy || instructionOperation.current) return
     if (dirty) setPendingExit({ next, scope: 'all' })
     else next()
   } }))
@@ -135,16 +151,62 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     const path = await useAppStore.getState().browseProviderAgentImport(instructionFiles[instructionFiles.length - 1] ?? '')
     if (path && !instructionFiles.includes(path)) setInstructionFiles([...instructionFiles, path])
   }
+  const openInstructionFile = async (path: string) => {
+    if (busy || instructionOperation.current || instructionDirty || !saved.instructionFiles.includes(path)) return
+    const request = ++instructionRequest.current
+    instructionOperation.current = true
+    setBusy(true)
+    setInstructionEditor({ path, content: '', original: '', loading: true, readFailed: false, error: '' })
+    try {
+      const response = await sendToCEF<{ path: string; content: string }>({ action: 'readCentralInstructionFile', payload: { path } })
+      if (request !== instructionRequest.current) return
+      if (!response.ok || response.data?.path !== path || typeof response.data.content !== 'string') {
+        setInstructionEditor({ path, content: '', original: '', loading: false, readFailed: true, error: response.error || 'Could not open this instruction file.' })
+      } else setInstructionEditor({ path, content: response.data.content, original: response.data.content, loading: false, readFailed: false, error: '' })
+    } catch {
+      if (request === instructionRequest.current) setInstructionEditor({ path, content: '', original: '', loading: false, readFailed: true, error: 'Could not open this instruction file.' })
+    } finally {
+      if (request === instructionRequest.current) { instructionOperation.current = false; setBusy(false); setInstructionFocusRequest(current => current + 1) }
+    }
+  }
+  const saveInstructionFile = async () => {
+    if (busy || instructionOperation.current || !instructionEditor || !instructionDirty) return false
+    const draft = instructionEditor
+    if (!useAppStore.getState().centralProviderConfiguration.instructionFiles.includes(draft.path)) {
+      setInstructionEditor({ ...draft, error: 'This file is no longer in Central Setup. Your changes are retained.' })
+      return false
+    }
+    const request = ++instructionRequest.current
+    instructionOperation.current = true
+    setBusy(true)
+    setInstructionEditor({ ...draft, error: '' })
+    try {
+      const response = await sendToCEF<{ path: string; content: string }>({ action: 'saveCentralInstructionFile', payload: { path: draft.path, content: draft.content, expectedContent: draft.original } })
+      if (request !== instructionRequest.current) return false
+      if (!response.ok || response.data?.path !== draft.path || response.data.content !== draft.content) {
+        setInstructionEditor({ ...draft, error: response.error || 'Could not confirm the save. Your changes are retained.' })
+        return false
+      }
+      setInstructionEditor({ ...draft, original: draft.content, error: '' })
+      return true
+    } catch {
+      if (request === instructionRequest.current) setInstructionEditor({ ...draft, error: 'Could not save this file. Your changes are retained.' })
+      return false
+    } finally {
+      if (request === instructionRequest.current) { instructionOperation.current = false; setBusy(false); setInstructionFocusRequest(current => current + 1) }
+    }
+  }
   const closeEditor = () => { if (busy) return; if (agentDirty) setPendingExit({ next: () => startEditing(null), scope: 'agent' }); else startEditing(null) }
 
   if (!agentsLoaded) return <SettingsLoading label="Loading agents" rows={3} />
 
   const leaveDialog = pendingExit && <UnsavedChangesDialog
     title={pendingExit.scope === 'agent' ? 'Save agent changes?' : 'Save central setup changes?'}
-    busy={busy} error={message?.tone === 'error' ? message.text : undefined}
+    busy={busy} error={pendingExit.scope === 'all' && instructionDirty && instructionEditor?.error ? instructionEditor.error : message?.tone === 'error' ? message.text : undefined}
     onStay={() => setPendingExit(null)}
-    onDiscard={() => { if (pendingExit.scope === 'all') undoDefaults(); startEditing(null); const next = pendingExit.next; setPendingExit(null); next() }}
+    onDiscard={() => { if (pendingExit.scope === 'all') { undoDefaults(); setInstructionEditor(null) }; startEditing(null); const next = pendingExit.next; setPendingExit(null); next() }}
     onSave={!nameError ? async () => {
+      if (pendingExit.scope === 'all' && instructionDirty && !await saveInstructionFile()) return
       if (pendingExit.scope === 'all' && defaultsDirty && !await saveDefaults()) return
       if (agentDirty && !await saveAgent()) return
       const next = pendingExit.next; setPendingExit(null); next()
@@ -158,7 +220,24 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       {instructionFiles.length === 0 && <SettingRow title="No instruction files" description="Choose an AGENTS.md file to share." />}
       {instructionFiles.map(path => <SettingRow key={path} icon={<FileText size={15} aria-hidden />} title={fileName(path)}
         description={<span className="uam-prov-detail">{path}</span>}
-        control={<IconButton size="sm" icon={<X size={14} />} label={`Remove ${fileName(path)}`} disabled={busy} onClick={() => setInstructionFiles(instructionFiles.filter(item => item !== path))} />} />)}
+        control={<>
+          <IconButton size="sm" icon={<Pencil size={14} />} label={`Edit ${fileName(path)}`} disabled={busy || instructionDirty || !saved.instructionFiles.includes(path)} onClick={event => { instructionTrigger.current = event.currentTarget; void openInstructionFile(path) }} />
+          <IconButton size="sm" icon={<X size={14} />} label={`Remove ${fileName(path)}`} disabled={busy || instructionEditor?.path === path} onClick={() => setInstructionFiles(instructionFiles.filter(item => item !== path))} />
+        </>}>
+        {instructionEditor?.path === path && <div className="uam-central-editor grid gap-3">
+          {instructionEditor.loading ? <SettingsLoading label="Opening instruction file" rows={3} /> : <>
+            {instructionEditor.error && <p role="alert" className="text-xs" style={{ color: 'var(--error)' }}>{instructionEditor.error}</p>}
+            {!instructionEditor.readFailed && <SettingsField label={fileName(path)}>
+              <textarea ref={instructionTextarea} aria-label="Instruction file contents" className={field} rows={12} spellCheck={false} disabled={busy} style={{ minHeight: 180, resize: 'vertical', fontFamily: 'var(--font-mono)' }} value={instructionEditor.content} onChange={event => setInstructionEditor({ ...instructionEditor, content: event.currentTarget.value })} />
+            </SettingsField>}
+            <div className="flex justify-end gap-2">
+              <Button size="sm" disabled={busy} onClick={() => setInstructionEditor(null)}>{instructionDirty ? 'Discard file changes' : 'Close file'}</Button>
+              {instructionEditor.readFailed && <Button ref={instructionRetry} size="sm" disabled={busy} onClick={() => void openInstructionFile(path)}>Retry</Button>}
+              <Button size="sm" variant="primary" aria-label="Save instruction file" disabled={busy || !instructionDirty} onClick={() => void saveInstructionFile()}>Save file</Button>
+            </div>
+          </>}
+        </div>}
+      </SettingRow>)}
       {saved.instructions && <SettingRow title="Older typed instructions" description="Still applied. Choosing files does not remove them." />}
     </SettingsSection>
 
@@ -179,7 +258,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
 
     <div className="flex items-center justify-end gap-3">
       {message && !editing && <span role="status" className="uam-set-section__desc mr-auto">{message.text}</span>}
-      <Button size="sm" variant="primary" loading={busy} onClick={() => void saveDefaults()}>Save</Button>
+      <Button size="sm" variant="primary" loading={busy} disabled={busy || (saved.enabled && !defaultsDirty)} onClick={() => void saveDefaults()}>Save</Button>
     </div>
 
     <SettingsSection title="Agent store" description="Installed for every provider. Built-in agents are read only."
@@ -245,7 +324,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
                 ? <Button size="sm" onClick={closeEditor}>Close</Button>
                 : <>
                   <Button size="sm" disabled={busy} onClick={closeEditor}>Cancel</Button>
-                  <Button size="sm" variant="primary" loading={busy} onClick={() => void saveAgent()}>Save agent</Button>
+                  <Button size="sm" variant="primary" loading={busy} disabled={busy || !agentDirty || Boolean(nameError)} onClick={() => void saveAgent()}>Save agent</Button>
                 </>}
             </footer>
           </div>

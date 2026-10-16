@@ -104,6 +104,7 @@ namespace uam
 		{
 		  public:
 			RemoteVcsContext(const AppState& app, const ChatSession& chat)
+			    : m_workspace(uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)))
 			{
 				m_host = uam::execution_hosts::Find(app.settings.execution_hosts,
 				                                      chat.execution_host_id);
@@ -112,7 +113,12 @@ namespace uam
 					m_error = "The remote execution host no longer exists.";
 					return;
 				}
-				if (m_host->runner_status != "ready")
+				if (!uam::execution_hosts::IsAbsoluteRemotePath(m_host->platform, m_workspace))
+				{
+					m_error = "The remote workspace directory is unavailable.";
+					return;
+				}
+				if (!uam::remote::CanAttemptRunnerConnection(*m_host))
 				{
 					m_error = "The selected remote runner is not ready. Recheck it in Settings.";
 					return;
@@ -125,6 +131,8 @@ namespace uam
 				                               m_host->runner_protocol_version),
 				    m_host->runner_version, m_host->runner_protocol_version);
 			}
+
+			const std::string& WorkspaceDirectory() const { return m_workspace; }
 
 			bool Ready(std::string* error_out = nullptr)
 			{
@@ -226,6 +234,7 @@ namespace uam
 			}
 
 		  private:
+			std::string m_workspace;
 			const ExecutionHost* m_host = nullptr;
 			std::unique_ptr<uam::remote::RunnerClient> m_client;
 			std::string m_error;
@@ -1305,7 +1314,7 @@ namespace uam
 		{
 			VcsCommitStatus status;
 			status.line_stats_ready = include_line_stats;
-			status.workspace_directory = uam::strings::Trim(chat.workspace_directory);
+			status.workspace_directory = context.WorkspaceDirectory();
 			if (!context.Ready(&status.error)) return status;
 
 			std::string git_root;
@@ -1793,7 +1802,7 @@ namespace uam
 		else
 		{
 			RemoteVcsContext context(app, chat);
-			result = context.Run(chat.workspace_directory, invocation.argv, {},
+			result = context.Run(context.WorkspaceDirectory(), invocation.argv, {},
 			                     invocation.standard_input);
 		}
 		if (!CommandSucceeded(result))

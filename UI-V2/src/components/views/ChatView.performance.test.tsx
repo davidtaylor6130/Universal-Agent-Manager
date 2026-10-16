@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatView } from './ChatView'
 import { useAppStore } from '../../store/useAppStore'
+import { acpBindingFromCppChat } from '../../store/cpp/reconcile'
 import { readChatComposerDraft, removeComposerDrafts } from '../../utils/composerDraftStorage'
 import { expectWithinBudget, INPUT_BUDGET_MS, HISTORY_PAGE_BUDGET_MS } from '../../test/interactionBudgets'
 import type { Message } from '../../types/message'
@@ -88,15 +89,31 @@ describe('chat interaction code-path performance', () => {
   })
 
   it.each([false, true])('handles each input event within 100ms with streaming updates=%s', (streaming) => {
-    useAppStore.setState({ messages: { [session.id]: messages(50) } })
+    const transcript = messages(50)
+    if (streaming) transcript[49].isStreaming = true
+    useAppStore.setState({ messages: { [session.id]: transcript }, acpBindingBySessionId: streaming ? {
+      [session.id]: acpBindingFromCppChat({ id: session.id, title: session.name, folderId: '', providerId: 'gemini-cli',
+        createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), acpSession: {
+          sessionId: 'performance-native', running: true, processing: true, lifecycleState: 'processing', protocolKind: 'gemini-acp',
+          turnUserMessageIndex: 48, turnAssistantMessageIndex: 49, turnSerial: 1,
+          turnEvents: [{ type: 'assistant_text', text: transcript[49].content }],
+        } }, undefined),
+    } : {} })
     act(() => root.render(<ChatView session={session} />))
     const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
     expect(input).not.toBeNull()
     for (let index = 0; index < 20; index += 1) {
       if (streaming) {
-        act(() => useAppStore.setState((state) => ({ messages: { ...state.messages, [session.id]:
-          state.messages[session.id].map((message, messageIndex) => messageIndex === 49
-            ? { ...message, content: `${message.content} streaming delta ${index}` } : message) } })))
+        expectWithinBudget(`streaming delta ${index} to committed text`, INPUT_BUDGET_MS, () => {
+          act(() => useAppStore.setState((state) => {
+            const content = `${state.messages[session.id][49].content} streaming delta ${index}`
+            return { messages: { ...state.messages, [session.id]: state.messages[session.id].map((message, messageIndex) =>
+              messageIndex === 49 ? { ...message, content } : message) }, acpBindingBySessionId: {
+              ...state.acpBindingBySessionId, [session.id]: { ...state.acpBindingBySessionId[session.id], turnEvents: [{ type: 'assistant_text', text: content }] },
+            } }
+          }))
+          expect(host.querySelector('.conversation-turn--assistant[data-streaming="true"]')?.textContent).toContain(`streaming delta ${index}`)
+        })
       }
       const text = `Draft ${'typed '.repeat(index + 1)}`
       expectWithinBudget(`input ${index} to committed draft`, INPUT_BUDGET_MS, () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CppChat, CppMessage } from './types'
-import { messageBlocksEquivalent, sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
+import { reconcileHeldOutboxHistory, messageBlocksEquivalent, sessionFromCppChat, acpBindingFromCppChat, cliBindingFromCppChat, reconcileCppMessages, normalizeCliLifecycleState, cliLifecycleIsProcessing } from './reconcile'
 import { sanitizeCppAppState, sanitizeCppChat, sanitizeCppAcpSession, sanitizeCppGoal, sanitizeCppMessage, sanitizeCppProvider, sanitizeCppSettings } from './sanitizers'
 
 describe('Computer Use settings sanitization', () => {
@@ -41,6 +41,15 @@ const message: CppMessage = {
 }
 
 describe('reconcileCppMessages attachments', () => {
+  it('adopts a persisted unsent discard without changing its native position or delivery flag', () => {
+    const original = sanitizeCppMessage({ ...message, acpPromptNotSent: true })!
+    const before = reconcileCppMessages('chat', undefined, [original], true, 7)
+    const discarded = sanitizeCppMessage({ ...original, acpPromptDiscarded: true })!
+    const after = reconcileCppMessages('chat', before, [discarded], true, 7)
+    expect(after[0]).not.toBe(before[0])
+    expect(after[0]).toMatchObject({ acpPromptDiscarded: true, acpPromptNotSent: true, nativeMessageIndex: 7, content: message.content })
+    expect(sanitizeCppMessage({ ...message, acpPromptDiscarded: 'true' })?.acpPromptDiscarded).toBe(false)
+  })
 	it('preserves persisted interruption and steering provenance', () => {
 		const sanitized = sanitizeCppMessage({ ...message, interrupted: true, prioritySteer: true, continuesTurn: true })
 		const reconciled = reconcileCppMessages('chat-1', undefined, [sanitized!])
@@ -148,6 +157,41 @@ describe('reconcileCppMessages deferred tool content', () => {
     expect(refreshed).not.toBe(reconciled)
     expect(refreshed[0].toolCalls?.[0].contentDigest).toBe('revised')
 
+  })
+})
+
+describe('unsent prompt native authority', () => {
+  it('keeps valid real queue references and invalidates binding reuse when their raw index changes', () => {
+    const queued = { id: 'held', revision: 1, text: 'Original', existingUserMessageIndex: 23 }
+    const session = sanitizeCppAcpSession({ queuedPrompts: [queued] })!
+    expect(session.queuedPrompts?.[0].existingUserMessageIndex).toBe(23)
+    for (const invalid of [-1, 1.5, '23', null, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(sanitizeCppAcpSession({ queuedPrompts: [{ ...queued, existingUserMessageIndex: invalid }] })?.queuedPrompts?.[0].existingUserMessageIndex).toBeUndefined()
+    }
+    expect(sanitizeCppAcpSession({ queuedPrompts: [{ ...queued, existingUserMessageIndex: 0 }] })?.queuedPrompts?.[0].existingUserMessageIndex).toBe(0)
+    const chat = { id: 'chat', providerId: 'codex-cli', acpSession: session } as CppChat
+    const first = acpBindingFromCppChat(chat, undefined)
+    expect(acpBindingFromCppChat(chat, first)).toBe(first)
+    const changed = acpBindingFromCppChat({ ...chat, acpSession: { ...session,
+      queuedPrompts: session.queuedPrompts?.map((prompt) => ({ ...prompt, existingUserMessageIndex: 24 })) } }, first)
+    expect(changed).not.toBe(first)
+    expect(changed.queuedPrompts?.[0].existingUserMessageIndex).toBe(24)
+  })
+
+  it('sanitizes absolute native indices and invalidates binding reuse when retry authority changes', () => {
+    const acp = sanitizeCppAcpSession({ unsentMessageIndices: [0, 7, -1, 1.5, '8', null], recoverableUnsentMessageIndices: [7, '7', -1] })!
+    expect(acp.unsentMessageIndices).toEqual([0, 7])
+    expect(acp.recoverableUnsentMessageIndices).toEqual([7])
+    const chat = { id: 'chat', providerId: 'opencode-cli', acpSession: acp } as CppChat
+    const first = acpBindingFromCppChat(chat, undefined)
+    expect(acpBindingFromCppChat(chat, first)).toBe(first)
+    const blocked = acpBindingFromCppChat({ ...chat, acpSession: { ...acp, recoverableUnsentMessageIndices: [] } }, first)
+    expect(blocked).not.toBe(first)
+    expect(blocked.unsentMessageIndices).toEqual([0, 7])
+    expect(blocked.recoverableUnsentMessageIndices).toEqual([])
+    const delivered = acpBindingFromCppChat({ ...chat, acpSession: { ...acp, unsentMessageIndices: [0] } }, first)
+    expect(delivered).not.toBe(first)
+    expect(delivered.unsentMessageIndices).toEqual([0])
   })
 })
 
@@ -496,5 +540,51 @@ describe('chat custom icon data', () => {
     const png = { type: 'png' as const, value: '12345678-1234-1234-1234-123456789abc.png', dataUrl: 'data:image/png;base64,YQ==' }
     const image = sessionFromCppChat({ ...chat, customIcon: png }, removed, [])
     expect(sessionFromCppChat({ ...chat, customIcon: { ...png, dataUrl: undefined } }, image, [])).not.toBe(image)
+  })
+})
+
+
+describe('held outbox history admission', () => {
+  const chat: CppChat = { id: 'held', title: 'Held', createdAt: '', updatedAt: '', messageCount: 0, messagesDigest: 'native-empty',
+    acpSession: { queueHeld: true, queuedPrompts: [{ id: 'actual-queue-id', revision: 1, text: 'Unsent' }] } }
+  const existing = reconcileCppMessages('held', undefined, [{ role: 'user', content: 'Unsent', createdAt: '', acpPromptNotSent: true }], true)
+  it('requires an explicit native count, digest and stable held identity before retiring history', () => {
+    expect(reconcileHeldOutboxHistory(chat, existing)).toEqual([])
+    for (const incomplete of [
+      { ...chat, messageCount: undefined }, { ...chat, messagesDigest: '' },
+      { ...chat, acpSession: { ...chat.acpSession, queueHeld: false } },
+      { ...chat, acpSession: { ...chat.acpSession, queuedPrompts: [{ id: 'actual-queue-id', revision: 0, text: 'Unsent' }] } },
+    ]) expect(reconcileHeldOutboxHistory(incomplete, existing)).toBe(existing)
+    expect(sanitizeCppChat({ id: 'no-count' })?.messageCount).toBeUndefined()
+    const skillChanged = { ...chat, acpSession: { ...chat.acpSession, queuedPrompts: [{ id: 'actual-queue-id', revision: 1, text: 'Unsent', markdownStoreFiles: ['/skills/different.md'] }] } }
+    expect(reconcileHeldOutboxHistory(skillChanged, existing)).toBe(existing)
+  })
+  it('requires prior native-known exact held references before retiring a disappeared queue tail', () => {
+    const prior = acpBindingFromCppChat({ ...chat, acpSession: { ...chat.acpSession, unsentMessageIndices: [0],
+      queuedPrompts: [{ ...chat.acpSession!.queuedPrompts![0], existingUserMessageIndex: 0 }] } }, undefined)
+    const oldSummary = { messageCount: 1, messagesDigest: 'before-remove' }
+    const removed = { ...chat, acpSession: { queueHeld: true, queuedPrompts: [] } }
+    expect(reconcileHeldOutboxHistory(removed, existing, 0, prior, oldSummary)).toEqual([])
+    for (const changed of [
+      { ...prior, unsentMessageIndices: [] }, { ...prior, queueHeld: false },
+      { ...prior, queuedPrompts: prior.queuedPrompts?.map((prompt) => ({ ...prompt, existingUserMessageIndex: 1 })) },
+      { ...prior, queuedPrompts: prior.queuedPrompts?.map((prompt) => ({ ...prompt, markdownStoreFiles: ['/different-skill.md'] })) },
+    ]) expect(reconcileHeldOutboxHistory(removed, existing, 0, changed, oldSummary)).toBe(existing)
+    const later = [...existing, { ...existing[0], nativeMessageIndex: undefined, content: 'Newer optimistic input' }]
+    expect(reconcileHeldOutboxHistory(removed, later, 0, prior, oldSummary)).toEqual([later[1]])
+    expect(reconcileHeldOutboxHistory(removed, later, 0, prior, oldSummary)?.[0]).toBe(later[1])
+    const actualLater = [...existing, { ...existing[0], nativeMessageIndex: 1, content: 'Later native input' }]
+    expect(reconcileHeldOutboxHistory(removed, actualLater, 0, prior, oldSummary)).toBe(actualLater)
+    expect(reconcileHeldOutboxHistory(removed, existing, 0, prior, { ...oldSummary, messagesDigest: removed.messagesDigest })).toBe(existing)
+    const delivered = existing.map((message) => ({ ...message, acpPromptNotSent: false }))
+    expect(reconcileHeldOutboxHistory(removed, delivered, 0, prior, oldSummary)).toBe(delivered)
+  })
+  it('preserves partial output, opaque optimistic attempts and changed attachment intent', () => {
+    for (const suffix of [
+      [{ ...existing[0], nativeMessageIndex: undefined }],
+      [{ ...existing[0], attachments: [{ id: 'different', name: 'x', path: '/x', size: 1, type: 'text/plain' }] }],
+      [...existing, { ...existing[0], role: 'assistant' as const, content: 'Actual output', nativeMessageIndex: 1 }],
+      [...existing, { ...existing[0], content: 'Newer attempt', nativeMessageIndex: 1 }],
+    ]) expect(reconcileHeldOutboxHistory(chat, suffix)).toBe(suffix)
   })
 })

@@ -42,7 +42,7 @@ namespace uam::remote
 	    std::uintmax_t delivered_stderr_cursor = 0,
 	    const std::string& context_provider_id = {},
 	    const std::string& context_directory = {},
-	    const std::string& configuration_provider = {}, const std::string& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array());
+	    const std::string& configuration_provider = {}, const std::string& configuration_directory = {}, const nlohmann::json& session_mcp_servers = nlohmann::json::array(), bool transient_process = false);
 	std::filesystem::path PackagedRunnerPath();
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
 	    const std::string& ssh_alias, const std::string& platform,

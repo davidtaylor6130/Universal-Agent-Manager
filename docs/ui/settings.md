@@ -17,7 +17,7 @@ Rules:
 5. Disclosure/collapsible blocks only when content is genuinely optional/advanced ("Advanced" at the bottom). Primary settings are always visible.
 6. Copy: plain language, describe the consequence, sentence case. Every row has a description unless trivially obvious.
    - Copy diet (2026-10-14): page header is title only; section labels are one short word or phrase with no description; row descriptions are one line (about 60 characters) and never repeat the title; no wrapper card that only adds a heading; sections with 1-2 rows merge into a neighbour.
-7. Lists (hosts, servers, agents, skills, editors): each item is a SettingRow (icon + name + mono detail in description + status) with icon-only actions in control; "Add …" is a section action button; add/edit flows that are multi-field open in a modal (Overlay + Presence, like the import dialog), not inline.
+7. Lists (hosts, servers, agents, skills, editors): each item is a SettingRow (icon + name + mono detail in description + status; MCP server summaries omit URLs, program paths, arguments and workspace directories, which remain in the editor) with icon-only actions in control; "Add …" is a section action button; add/edit flows that are multi-field open in a modal (Overlay + Presence, like the import dialog), not inline.
 8. Empty states: one muted sentence + the add action.
 9. Motion: sections fade/rise in (built into primitives); expand/collapse uses the existing presence/grid-rows pattern; no flashing of whole lists on refresh (keep previous data while refreshing; disable only the control being saved).
    - Settings nav: the active page shows its tinted selection background (`--accent-dim`) on the item, plus a single straight 3px vertical accent line at the item's left edge (no curved or rounded shape). The line glides between items with transform; the tint sits on the active item. Hover backgrounds use the same item box as the active tint, so their size matches exactly. Reduced motion disables the glide.
@@ -30,3 +30,15 @@ One line of text per item; no stacked headers.
 ## SVN new-chat updates
 
 The VCS settings page has a separate SVN “Update before new chat” row, selected from mock B by David on 2026-10-14. It defaults to off and cannot be edited while SVN is disabled. Changes remain in the draft until “Save VCS settings”; “Discard” restores saved values. Enabling this setting requests an SVN working-copy update before a new chat and does not authorize an SVN commit. Claude review and actual component visual/user acceptance remain pending.
+
+## Grouped settings and instruction editing
+
+David selected mock A on 2026-10-15: Shell Actions uses collapsible groups in sidebar order, Git and SVN have separate stacked sections with neutral switches, and shared instruction files open in an inline editor. Collapsing a group retains its drafts; choosing Go back from the unsaved-changes dialog reveals and focuses the invalid action. Boolean controls retain the existing explicit Save and Discard flow.
+
+Central Setup edits only instruction paths already saved in its configuration. File edits have a separate Save file action, disabled while unchanged, and participate in the existing unsaved-changes guard. Read and save failures retain the draft and show the error next to the editor. Saving an unchanged disabled setup still enables shared instructions; an enabled setup with no changes has a disabled Save action.
+
+Save actions use the existing dirty and validation state, including save-and-leave dialogs. Unchanged skill and theme drafts keep Save disabled; invalid Shell Actions, routing, MCP and memory drafts cannot be saved. Keep editing and Discard remain available. Validation appears alongside dismissible backend errors and notifications. MCP guided-setup navigation keeps its own step validation.
+
+## Local snapshot Git
+
+As clarified by David on 2026-10-15, SVN contains a Local snapshot Git switch, and a separate No VCS section contains Enable local Git files for plain folders. Both default on to preserve existing behavior. Turning either off makes future automatic chats of that workspace kind use the original folder; existing isolated workspaces remain intact. These controls use the existing draft Save and Discard flow and depend on Git being enabled, independently of SVN tracking. David explicitly requested the existing style without mock alternatives.

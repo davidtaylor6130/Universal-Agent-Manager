@@ -1,7 +1,7 @@
 import { SnoozeMenu } from './SnoozeMenu'
 import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { useState, useRef, useEffect, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
+import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
 import { ConfirmDialog, IconButton, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
@@ -163,8 +164,6 @@ interface SessionItemProps {
   activityFolderIcon?: CustomIconValue
   activityHostLabel?: string
   activityHostRemote?: boolean
-  /** Recent or running chat in the tree: its hover actions offer Done and Snooze. */
-  active?: boolean
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
 }
 
@@ -231,7 +230,7 @@ function CopyDetailItems({ items }: { items: CopyDetail[] }) {
   </>
 }
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, active = false, onSessionClick }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick }: SessionItemProps) {
   // Fine-grained selectors — each only re-renders when its specific value changes
   const sessionSummary = useAppStore(useShallow((s) => {
     if (session) {
@@ -300,11 +299,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     return starts.length > 0 ? Math.min(...starts) : null
   })
   const setChatSettled = useAppStore((s) => s.setChatSettled)
-  const markChatDone = (event: ReactMouseEvent) => {
-    event.stopPropagation()
-    if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
-    void setChatSettled(sessionId, true)
-  }
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const selectChat = () => {
     if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
@@ -316,7 +310,22 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       const activeFamilyChatId = state.activeSessionId !== sessionId && familySessionIds.includes(state.activeSessionId ?? '')
         ? state.activeSessionId
         : null
-      const preferredChatId = preferredFamilyChat(branchRootId, familySessionIds) ?? activeFamilyChatId
+      const rememberedChatId = preferredFamilyChat(branchRootId, familySessionIds)
+      let preferredChatId = rememberedChatId ?? activeFamilyChatId
+      if (activityLayout) {
+        const familyActivity = familySessionIds.map((id) => ({ id, status: displayedChatStatus(
+          [state.cliBindingBySessionId[id]], [state.acpBindingBySessionId[id]]
+        ) }))
+        const status = familyActivity.find((candidate) => candidate.status?.type === 'attention')?.status ??
+          familyActivity.find((candidate) => candidate.status?.type === 'processing')?.status
+        if (status) {
+          const matchingIds = familyActivity.filter((candidate) => candidate.status?.type === status.type &&
+            (status.type !== 'attention' || (candidate.status.type === 'attention' && candidate.status.kind === status.kind)) &&
+            sessions.some((chat) => chat.id === candidate.id)).map((candidate) => candidate.id)
+          // Open the branch supplying the family status without moving a conversation while it is being read.
+          preferredChatId = [state.activeSessionId, rememberedChatId, ...matchingIds].find((id) => id && matchingIds.includes(id)) ?? preferredChatId
+        }
+      }
       const preferredChat = preferredChatId ? sessions.find((candidate) => candidate.id === preferredChatId) : undefined
       let deepestChat: Session | undefined = preferredChat
       if (!deepestChat) {
@@ -377,12 +386,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const [snoozePos, setSnoozePos] = useState<{ x: number; y: number } | null>(null)
   const snoozeRef = useRef<HTMLDivElement>(null)
   const setChatSnoozedUntil = useAppStore((s) => s.setChatSnoozedUntil)
-  const openSnooze = (e: ReactMouseEvent<HTMLButtonElement>) => {
-    e.stopPropagation()
-    if (snoozePos) { setSnoozePos(null); return }
-    const r = e.currentTarget.getBoundingClientRect()
-    setSnoozePos({ x: r.right, y: r.bottom + 4 })
-  }
   const snoozedUntilMs = sessionSummary.snoozedUntilMs
   const isSnoozed = snoozedUntilMs > Date.now()
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -460,7 +463,17 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     }
   }, [editing])
 
-  useEffect(() => subscribeChatGridLayout(setGridLayout), [])
+  // Rows consume only pane count and family indexes; other layout changes need no render.
+  useLayoutEffect(() => {
+    const refresh = (layout: ReturnType<typeof readChatGridLayout>) => setGridLayout((previous) => {
+      const oldLeaves = chatGridLeaves(previous.root)
+      const nextLeaves = chatGridLeaves(layout.root)
+      const indexes = (leaves: typeof oldLeaves) => leaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
+      return oldLeaves.length === nextLeaves.length && shallow(indexes(oldLeaves), indexes(nextLeaves)) ? previous : layout
+    })
+    refresh(readChatGridLayout())
+    return subscribeChatGridLayout(refresh)
+  }, [familySessionIds])
 
   // Close context menu on outside click
   useEffect(() => {
@@ -591,11 +604,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       >
         {activityLayout && !editing ? (
           <div className="uam-sb-activity flex min-w-0 flex-1 flex-col gap-0.5">
-            <div className="flex min-w-0 items-center gap-2">
-              {/* Fixed slot: rows without an icon keep their titles aligned. */}
-              <span aria-hidden className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-                <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
-              </span>
+            <div className="flex min-w-0 items-center gap-2 [&>img]:h-4">
+              <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
               <span className="block min-w-0 flex-1 truncate text-[13px] leading-5" style={{ color: isActive ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
               {lifecycleStatus?.type === 'processing' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium tabular-nums" style={{ color: 'var(--info)' }}>
@@ -622,7 +632,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                         aria-label={`Mark ${sessionName} done`}
                         className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
                         style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4 }}
-                        onClick={markChatDone}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
+                          void setChatSettled(sessionId, true)
+                        }}
                         onDoubleClick={(e) => e.stopPropagation()}
                       >
                         <Check size={12} aria-hidden />
@@ -635,7 +649,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                         icon={<Clock size={12} aria-hidden />}
                         aria-haspopup="menu"
                         aria-expanded={snoozePos !== null}
-                        onClick={openSnooze}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (snoozePos) { setSnoozePos(null); return }
+                          const r = e.currentTarget.getBoundingClientRect()
+                          setSnoozePos({ x: r.right, y: r.bottom + 4 })
+                        }}
                         onDoubleClick={(e) => e.stopPropagation()}
                       />
                     </span>
@@ -784,31 +803,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
               }`}
             >
-              {active && (
-                <>
-                  <button
-                    type="button"
-                    aria-label={`Mark ${sessionName} done`}
-                    className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--accent)]"
-                    style={{ color: 'var(--text-2)', background: 'var(--sidebar-item-hover)', border: 'none', cursor: 'pointer', fontSize: 11, lineHeight: 1.4, height: 20 }}
-                    onClick={markChatDone}
-                    onDoubleClick={(e) => e.stopPropagation()}
-                  >
-                    <Check size={12} aria-hidden />
-                    Done
-                  </button>
-                  <IconButton
-                    size="sm"
-                    label={`Snooze ${sessionName}`}
-                    tooltip="Snooze"
-                    icon={<Clock size={12} aria-hidden />}
-                    aria-haspopup="menu"
-                    aria-expanded={snoozePos !== null}
-                    onClick={openSnooze}
-                    onDoubleClick={(e) => e.stopPropagation()}
-                  />
-                </>
-              )}
               {isSnoozed && (
                 <IconButton
                   size="sm"

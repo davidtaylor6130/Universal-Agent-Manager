@@ -1314,7 +1314,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     startNewTheme({ version: 1, id: 'custom:built-in', name: `${base === 'dark' ? 'Dark' : 'Light'}`, base, colors: { ...BUILT_IN_THEME_COLORS[base] } })
   }
   const saveThemeDraft = async () => {
-    if (!themeDraft || !themeDraftValid || themeSaveInFlightRef.current) return false
+    if (!themeDraft || !themeDirty || !themeDraftValid || themeSaveInFlightRef.current) return false
     themeSaveInFlightRef.current = true
     setThemeSaving(true)
     try {
@@ -1469,7 +1469,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>}
                   <div className="flex gap-2">
                     {themeStep > 0 && <Button size="sm" disabled={themeSaving} onClick={() => setThemeStep(themeStep - 1)}>Back</Button>}
-                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <Button size="sm" variant="primary" disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={() => void saveThemeDraft()}>Save theme</Button>}
+                    {themeStep < 2 ? <Button size="sm" variant="primary" disabled={themeStep === 0 ? !themeDraft.name.trim() : !themeDraftValid} onClick={() => setThemeStep(themeStep + 1)}>Next</Button> : <Button size="sm" variant="primary" disabled={!themeDirty || !themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={() => void saveThemeDraft()}>Save theme</Button>}
                     <Button size="sm" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}>Cancel</Button>
                   </div>
                 </div>
@@ -3228,7 +3228,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             <div className="flex justify-end gap-2 px-5 pb-5">
               <Button size="sm" disabled={themeSaving} onClick={() => { const next=themeExit; setThemeDraft(null); setThemeExit(null); next() }}>Discard</Button>
               <Button size="sm" autoFocus disabled={themeSaving} onClick={() => setThemeExit(null)}>Stay</Button>
-              <Button size="sm" variant="primary" disabled={!themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button>
+              <Button size="sm" variant="primary" disabled={!themeDirty || !themeDraftValid || themeSaving} aria-busy={themeSaving || undefined} onClick={async () => { if (await saveThemeDraft()) { const next=themeExit; setThemeExit(null); next() } }}>Save theme</Button>
             </div>
           </div>
         </Overlay>}

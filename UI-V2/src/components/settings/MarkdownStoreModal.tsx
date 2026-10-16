@@ -223,7 +223,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   }
 
   async function saveDraft(overwriteConfirmed = false) {
-    if (submittingRef.current || !draft.title.trim() || !draft.body.trim()) return
+    if (submittingRef.current || !draftDirty || !draft.title.trim() || !draft.body.trim()) return
     if (editing === 'existing' && !overwriteConfirmed) { setConfirmation('overwrite'); return }
     submittingRef.current = true
     setSubmitting(true)
@@ -410,9 +410,9 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
             {confirmation === 'overwrite' && <p className="text-xs mt-1">This replaces the saved entry.</p>}
             <div className="mt-3 flex flex-wrap justify-end gap-2">
               <Button size="sm" disabled={submitting} onClick={() => setConfirmation(null)}>Keep editing</Button>
-              {confirmation === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <Button variant="danger" size="sm" disabled={submitting} onClick={() => void saveDraft(true)}>{submitting ? 'Saving...' : 'Overwrite'}</Button>}
+              {confirmation === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <Button variant="danger" size="sm" disabled={submitting} onClick={() => void saveDraft(true)}>{submitting ? 'Saving...' : 'Overwrite'}</Button>}
             </div>
-          </div> : <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><Button variant="primary" size="sm" disabled={submitting || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>{submitting ? 'Saving...' : 'Save'}</Button></div>}
+          </div> : <div className="flex justify-end gap-2"><Button variant="secondary" size="sm" disabled={submitting} onClick={requestEditorClose}>Cancel</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>{submitting ? 'Saving...' : 'Save'}</Button></div>}
         </> : imports.length ? <>
           <strong className="text-sm shrink-0">Import preview</strong>
           {resultsView}

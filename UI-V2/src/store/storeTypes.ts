@@ -196,6 +196,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic', options?: CreateSessionOptions) => Promise<boolean>
   branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[]) => Promise<string | null>
   retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
+  discardUnsentMessage: (id: string, messageIndex: number, expectedMessageId: string) => Promise<boolean>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>

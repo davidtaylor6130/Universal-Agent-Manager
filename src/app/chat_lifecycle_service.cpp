@@ -1026,7 +1026,7 @@ namespace
 
 	std::string TemporarySideChatExcerpt(const Message& message)
 	{
-		if (message.content.empty()) return {};
+		if (message.acp_prompt_discarded || message.content.empty()) return {};
 		std::string_view content = message.content;
 		bool clipped = false;
 		if (content.size() > 8192)

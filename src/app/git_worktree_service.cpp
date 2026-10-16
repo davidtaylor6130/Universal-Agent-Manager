@@ -1,6 +1,7 @@
 #include <nlohmann/json.hpp>
 #include "app/git_worktree_service.h"
 #include "app/chat_domain_service.h"
+#include "app/worktree_launch_preparation_service.h"
 
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
@@ -12,10 +13,12 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/utils/hash_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "remote/runner_client.h"
 
 #include <fstream>
 #include <functional>
@@ -23,6 +26,7 @@
 #include <algorithm>
 #include <cctype>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 namespace uam
@@ -275,6 +279,36 @@ namespace uam
 				current = current.parent_path();
 			}
 			return false;
+		}
+
+		enum class LocalSnapshotSource { Unknown, Git, Svn, Plain };
+
+		LocalSnapshotSource ClassifyLocalSnapshotSource(const std::filesystem::path& source)
+		{
+			std::error_code source_error;
+			const std::filesystem::path physical = std::filesystem::canonical(source, source_error);
+			if (source_error || !paths::IsDirectoryNoThrow(physical)) return LocalSnapshotSource::Unknown;
+			bool svn = false;
+			for (std::filesystem::path directory = physical; !directory.empty(); directory = directory.parent_path())
+			{
+				bool markers[5]{};
+				const char* names[] = {".git", "HEAD", "objects", "refs", "config"};
+				for (std::size_t index = 0; index < 5; ++index)
+				{
+					std::error_code error;
+					const std::filesystem::file_status status = std::filesystem::symlink_status(directory / names[index], error);
+					if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
+					markers[index] = std::filesystem::exists(status);
+				}
+				// Broken Git markers and bare repositories must retain normal Git validation.
+				if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) return LocalSnapshotSource::Git;
+				std::error_code error;
+				const std::filesystem::file_status status = std::filesystem::symlink_status(directory / ".svn", error);
+				if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
+				svn = svn || std::filesystem::exists(status);
+				if (directory == directory.parent_path()) break;
+			}
+			return svn ? LocalSnapshotSource::Svn : LocalSnapshotSource::Plain;
 		}
 
 		std::filesystem::path WorktreeRootForChat(const AppState& app, const std::filesystem::path& source_root, const std::string& relative_name)
@@ -903,12 +937,398 @@ namespace uam
 		}
 	} // namespace
 
+	std::string RemoteWorktreeHostIdentity(const ExecutionHost& host)
+	{
+		return nlohmann::json::array({host.id, host.transport, host.ssh_alias, host.platform, host.architecture,
+		    host.runner_version, host.runner_protocol_version, host.runner_directory, host.instruction_file,
+		    host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)}).dump();
+	}
+
+	std::string RemoteWorktreeStableHostIdentity(const ExecutionHost& host)
+	{
+		return nlohmann::json::array({host.id, host.transport, host.ssh_alias, host.platform}).dump();
+	}
+
+	namespace
+	{
+		std::string RemoteOperationToken()
+		{
+			return PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		}
+
+		ExecutionHost CapturedRemoteWorktreeHost(const nlohmann::json& receipt)
+		{
+			const nlohmann::json identity = nlohmann::json::parse(receipt.at("remoteHost").get<std::string>());
+			if (!identity.is_array() || identity.size() != 10) throw std::runtime_error("Invalid captured SSH worktree host");
+			ExecutionHost host;
+			host.id = identity.at(0).get<std::string>();
+			host.transport = identity.at(1).get<std::string>();
+			host.ssh_alias = identity.at(2).get<std::string>();
+			host.platform = identity.at(3).get<std::string>();
+			host.architecture = identity.at(4).get<std::string>();
+			host.runner_version = identity.at(5).get<std::string>();
+			host.runner_protocol_version = identity.at(6).get<int>();
+			host.runner_directory = identity.at(7).get<std::string>();
+			host.instruction_file = identity.at(8).get<std::string>();
+			if (!identity.at(9).is_null()) host.instruction_text = identity.at(9).get<std::string>();
+			return host;
+		}
+
+		void RemoveSettledRemoteWorktreeProcess(remote::RunnerClient& client, const std::string& operation_id, const std::string& token)
+		{
+			for (int attempt = 0; attempt < 2; ++attempt)
+			{
+				client.SetProcessControlToken(operation_id, token);
+				std::string error;
+				if (client.RemoveProcess(operation_id, &error)) return;
+				client.SetProcessControlToken(operation_id, token);
+				remote::ProcessPollResult process;
+				bool missing = false;
+				if (client.Connect(&error) && !client.PollProcess(operation_id, process, &error, {}, nullptr, nullptr, &missing) && missing) return;
+			}
+			diagnostics::Write("[SSH worktree] Workspace receipt is settled, but its exited helper record could not be removed. The recorded ownership token was preserved.");
+		}
+
+		bool RemoteGit(remote::RunnerClient& client, const ExecutionHost& host, const std::string& directory,
+		    std::vector<std::string> arguments, std::string& output, std::string& error, std::stop_token stop,
+		    int expected_exit = 0, const std::string& operation_id = {}, int* observed_exit_out = nullptr, const std::string& retained_control_token = {}, bool* start_request_attempted_out = nullptr)
+		{
+			if (observed_exit_out) *observed_exit_out = -1;
+			std::vector<std::string> argv{"git", "--no-pager", "-c", "core.fsmonitor=false", "-c",
+			    host.platform == "windows" || host.platform == "Windows" ? "core.hooksPath=NUL" : "core.hooksPath=/dev/null"};
+			argv.insert(argv.end(), arguments.begin(), arguments.end());
+			const ProcessExecutionResult result = client.ExecuteCommand(
+			    operation_id.empty() ? "worktree-read-" + RemoteOperationToken() : operation_id,
+			    paths::PathFromUtf8(directory), argv, 120000, stop, {}, retained_control_token, start_request_attempted_out);
+			if (observed_exit_out && !result.canceled && !result.timed_out) *observed_exit_out = result.exit_code;
+			if (result.canceled || result.timed_out || result.output_truncated || !result.error.empty() || result.exit_code != expected_exit || result.output.size() > 256 * 1024)
+			{
+				error = strings::NonEmptyOrFallback(result.error, "Remote Git could not verify this workspace.");
+				return false;
+			}
+			output = strings::Trim(result.output);
+			return true;
+		}
+
+		bool InspectRemoteDirectory(remote::RunnerClient& client, const std::string& path, std::string& canonical,
+		    std::string& error, std::stop_token stop)
+		{
+			remote::PathInspection inspected;
+			if (!client.InspectPath(path, false, inspected, &error, stop)) return false;
+			if (!inspected.exists || !inspected.directory)
+			{ error = "The remote workspace is not a safe existing directory."; return false; }
+			canonical = inspected.path;
+			return true;
+		}
+
+		std::string RemoteParent(const ExecutionHost& host, std::string path)
+		{
+			if (host.platform == "windows" || host.platform == "Windows") std::ranges::replace(path, '\\', '/');
+			const std::size_t separator = path.find_last_of('/');
+			if (separator == std::string::npos) return {};
+			if (separator == 0 || (separator == 2 && path[1] == ':')) return path.substr(0, separator + 1);
+			return path.substr(0, separator);
+		}
+
+		bool RemoteWorkspaceHasGitMetadata(remote::RunnerClient& client, const ExecutionHost& host,
+		    const std::string& source, bool& found, std::string& error, std::stop_token stop)
+		{
+			found = false;
+			std::string directory = source;
+			for (int depth = 0; depth < 256 && !stop.stop_requested(); ++depth)
+			{
+				remote::PathInspection marker, head, objects;
+				if (!client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, ".git"), true, marker, &error, stop)) return false;
+				if (marker.exists) { found = true; return true; }
+				// Bare repositories also count as Git; broken metadata must never become a plain-folder fallback.
+				if (!client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, "HEAD"), true, head, &error, stop) ||
+				    !client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, "objects"), true, objects, &error, stop)) return false;
+				if (head.exists && objects.exists) { found = true; return true; }
+				if (head.exists || objects.exists)
+				{
+					remote::PathInspection refs, config;
+					if (!client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, "refs"), true, refs, &error, stop) ||
+					    !client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, "config"), true, config, &error, stop)) return false;
+					if (refs.exists && config.exists) { found = true; return true; }
+				}
+				const std::string normalized = execution_hosts::NormalizeRemotePath(host.platform, directory);
+				const std::string parent = RemoteParent(host, directory);
+				const std::size_t server_end = normalized.find('/', 2);
+				const bool share_root = normalized.starts_with("//") && server_end != std::string::npos && normalized.find('/', server_end + 1) == std::string::npos;
+				if (parent.empty() || execution_hosts::RemotePathsMatch(host.platform, parent, directory) || share_root) return true;
+				directory = parent;
+			}
+			error = "The remote workspace ancestry could not be safely inspected.";
+			return false;
+		}
+
+		bool RemoteGitIdentity(remote::RunnerClient& client, const ExecutionHost& host, const std::string& source,
+		    const std::string& common, const ChatSession& chat, std::string& error, std::stop_token stop)
+		{
+			std::string directory, output;
+			if (!IsCommitId(chat.workspace_base_ref) || chat.workspace_branch_name.empty() ||
+			    !InspectRemoteDirectory(client, source, directory, error, stop) || !execution_hosts::RemotePathsMatch(host.platform, directory, source) ||
+			    !InspectRemoteDirectory(client, common, directory, error, stop) || !execution_hosts::RemotePathsMatch(host.platform, directory, common) ||
+			    !InspectRemoteDirectory(client, chat.workspace_worktree_directory, directory, error, stop) ||
+			    !execution_hosts::RemotePathsMatch(host.platform, directory, chat.workspace_worktree_directory)) return false;
+			remote::PathInspection marker;
+			if (!client.InspectPath(execution_hosts::JoinRemotePath(host.platform, directory, ".git"), false, marker, &error, stop) || !marker.regular_file)
+			{ if (error.empty()) error = "The remote worktree Git marker is unavailable."; return false; }
+			if (!RemoteGit(client, host, directory, {"rev-parse", "--show-toplevel"}, output, error, stop) ||
+			    !execution_hosts::RemotePathsMatch(host.platform, output, directory) ||
+			    !RemoteGit(client, host, directory, {"rev-parse", "--path-format=absolute", "--git-common-dir"}, output, error, stop) ||
+			    !execution_hosts::RemotePathsMatch(host.platform, output, common) ||
+			    !RemoteGit(client, host, source, {"rev-parse", "--path-format=absolute", "--git-common-dir"}, output, error, stop) ||
+			    !execution_hosts::RemotePathsMatch(host.platform, output, common) ||
+			    !RemoteGit(client, host, directory, {"symbolic-ref", "--short", "HEAD"}, output, error, stop) || output != chat.workspace_branch_name) return false;
+			std::string head, reference, admin;
+			if (!RemoteGit(client, host, directory, {"rev-parse", "HEAD"}, head, error, stop) || !IsCommitId(head) ||
+			    !RemoteGit(client, host, source, {"rev-parse", "--verify", "--end-of-options", "refs/heads/" + chat.workspace_branch_name}, reference, error, stop) || reference != head ||
+			    !RemoteGit(client, host, directory, {"merge-base", "--is-ancestor", chat.workspace_base_ref, "HEAD"}, output, error, stop) ||
+			    !RemoteGit(client, host, directory, {"rev-parse", "--absolute-git-dir"}, admin, error, stop) ||
+			    !InspectRemoteDirectory(client, admin, output, error, stop) ||
+			    !execution_hosts::RemotePathsMatch(host.platform, RemoteParent(host, output), execution_hosts::JoinRemotePath(host.platform, common, "worktrees"))) return false;
+			remote::PathInspection backlink;
+			if (!client.InspectPath(execution_hosts::JoinRemotePath(host.platform, admin, "gitdir"), false, backlink, &error, stop) || !backlink.regular_file ||
+			    !client.ReadTextFile(paths::PathFromUtf8(backlink.path), output, &error, stop) ||
+			    !execution_hosts::RemotePathsMatch(host.platform, strings::Trim(output), marker.path)) return false;
+			if (!RemoteGit(client, host, source, {"worktree", "list", "--porcelain"}, output, error, stop)) return false;
+			std::istringstream lines(output);
+			std::string line;
+			int matches = 0;
+			bool target = false, branch_matches = false, head_matches = false, unavailable = false, unsafe_target = false;
+			const auto finish = [&]()
+			{
+				if (target && unavailable) unsafe_target = true;
+				if (target && branch_matches && head_matches && !unavailable) ++matches;
+				target = branch_matches = head_matches = unavailable = false;
+			};
+			while (std::getline(lines, line))
+			{
+				if (line.empty()) { finish(); continue; }
+				if (line.starts_with("worktree ")) target = execution_hosts::RemotePathsMatch(host.platform, line.substr(9), directory);
+				if (line.starts_with("HEAD ")) head_matches = line.substr(5) == head;
+				if (line.starts_with("branch ")) branch_matches = line.substr(7) == "refs/heads/" + chat.workspace_branch_name;
+				if (line == "locked" || line.starts_with("locked ") || line == "prunable" || line.starts_with("prunable ")) unavailable = true;
+			}
+			finish();
+			if (unsafe_target) { error = "The remote worktree is initializing, locked or prunable. Its files were preserved."; return false; }
+			if (matches != 1) { error = "The remote worktree registration changed."; return false; }
+			return true;
+		}
+
+		GitWorktreeOperationResult PrepareRemoteWorktree(AppState& snapshot, ChatSession& chat,
+		    const GitWorktreeIntentRecorder& record, std::stop_token stop, bool explicit_create)
+		{
+			GitWorktreeOperationResult result;
+			const ExecutionHost* host = execution_hosts::Find(snapshot.settings.execution_hosts, chat.execution_host_id);
+			if (!host || !remote::CanAttemptRunnerConnection(*host) || host->runner_protocol_version < 3)
+			{ result.message = "Remote worktrees require an available protocol-3 SSH helper."; return result; }
+			if (!record) { result.message = "Remote worktrees require owned asynchronous preparation."; return result; }
+			if (chat.svn_update_pending)
+			{ result.message = "SSH worktree creation supports existing Git repositories only; SVN preparation is unavailable."; return result; }
+			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+			    remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version), host->runner_version, host->runner_protocol_version);
+			std::string requested, source, common, output;
+			bool git_metadata = false;
+			if (!InspectRemoteDirectory(client, chat.workspace_directory, requested, result.message, stop) ||
+			    !RemoteWorkspaceHasGitMetadata(client, *host, requested, git_metadata, result.message, stop)) return result;
+			if (!git_metadata)
+			{
+				if (explicit_create || chat.git_base_branch_override || chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind ||
+				    !chat.workspace_source_directory.empty() || !chat.workspace_worktree_directory.empty() || !chat.workspace_branch_name.empty() || !chat.workspace_base_ref.empty())
+				{ result.message = "Creating an SSH Git worktree requires a Git repository."; return result; }
+				chat.workspace_isolation_kind.clear();
+				chat.updated_at = time::TimestampNow();
+				result.ok = true;
+				result.status.source_directory = requested;
+				result.message = "Git preparation skipped for an ordinary SSH workspace.";
+				return result;
+			}
+			if (!RemoteGit(client, *host, requested, {"rev-parse", "--show-toplevel"}, output, result.message, stop) ||
+			    !InspectRemoteDirectory(client, output, source, result.message, stop) ||
+			    !RemoteGit(client, *host, source, {"rev-parse", "--path-format=absolute", "--git-common-dir"}, output, result.message, stop) ||
+			    !InspectRemoteDirectory(client, output, common, result.message, stop)) return result;
+			remote::PathInspection marker;
+			if (!client.InspectPath(execution_hosts::JoinRemotePath(host->platform, source, ".git"), false, marker, &result.message, stop) ||
+			    (!marker.regular_file && !marker.directory)) return result;
+			const std::string base = strings::Trim(chat.git_base_branch_override.value_or(snapshot.settings.git_default_base_branch));
+			if ((!base.empty() && !RemoteGit(client, *host, source, {"check-ref-format", "--branch", base}, output, result.message, stop)) ||
+			    !RemoteGit(client, *host, source, {"rev-parse", "--verify", "--end-of-options", (base.empty() ? "HEAD" : "refs/heads/" + base) + "^{commit}"}, output, result.message, stop) || !IsCommitId(output)) return result;
+			GitWorktreeCreationIntent intent;
+			intent.source = paths::PathFromUtf8(source);
+			intent.repository = paths::PathFromUtf8(common);
+			intent.base_sha = output;
+			intent.operation_id = "worktree-create-" + RemoteOperationToken();
+			intent.control_token = RemoteOperationToken();
+			if (intent.operation_id == "worktree-create-" || intent.control_token.empty())
+			{ result.message = "Could not allocate remote worktree ownership."; return result; }
+			const std::string suffix = hashing::Hex64(hashing::Fnv1a64(chat.id + ":" + intent.operation_id));
+			intent.branch = "uam/" + suffix;
+			intent.worktree = paths::PathFromUtf8(execution_hosts::JoinRemotePath(host->platform, RemoteParent(*host, source), "uam-worktree-" + suffix));
+			remote::PathInspection target;
+			if (!client.InspectPath(paths::Utf8PathString(intent.worktree), true, target, &result.message, stop) || target.exists ||
+			    !RemoteGit(client, *host, source, {"show-ref", "--verify", "--quiet", "refs/heads/" + intent.branch}, output, result.message, stop, 1))
+			{ if (result.message.empty()) result.message = "The remote worktree destination or branch is occupied."; return result; }
+			if (stop.stop_requested() || !record(intent, result.message)) return result;
+			client.SetProcessControlToken(intent.operation_id, intent.control_token);
+			if (!client.InspectPath(paths::Utf8PathString(intent.worktree), true, target, &result.message, stop) || target.exists)
+			{
+				if (result.message.empty()) result.message = "The remote destination changed before Git started. Its files were preserved.";
+				intent.operation_state = "failed";
+				std::string receipt_error;
+				if (!record(intent, receipt_error)) result.message += " " + receipt_error;
+				return result;
+			}
+			int observed_exit = -1;
+			bool start_request_attempted = false;
+			if (!RemoteGit(client, *host, source, {"worktree", "add", "-b", intent.branch, "--", paths::Utf8PathString(intent.worktree), intent.base_sha}, output, result.message, stop, 0, intent.operation_id, &observed_exit, intent.control_token, &start_request_attempted))
+			{
+				std::string inspection_error;
+				if (!start_request_attempted || (observed_exit > 0 && client.InspectPath(paths::Utf8PathString(intent.worktree), true, target, &inspection_error, stop) && !target.exists))
+				{
+					intent.operation_state = "failed";
+					std::string receipt_error;
+					if (record(intent, receipt_error) && start_request_attempted)
+						RemoveSettledRemoteWorktreeProcess(client, intent.operation_id, intent.control_token);
+					if (!receipt_error.empty()) result.message += " " + receipt_error;
+				}
+				return result;
+			}
+			chat.workspace_isolation_kind = paths::kGitWorktreeIsolationKind;
+			chat.workspace_source_directory = source;
+			chat.workspace_worktree_directory = paths::Utf8PathString(intent.worktree);
+			chat.workspace_branch_name = intent.branch;
+			chat.workspace_base_ref = intent.base_sha;
+			chat.updated_at = time::TimestampNow();
+			if (!RemoteGitIdentity(client, *host, source, common, chat, result.message, stop)) return result;
+			intent.operation_state = "completed";
+			if (!record(intent, result.message)) return result;
+			RemoveSettledRemoteWorktreeProcess(client, intent.operation_id, intent.control_token);
+			result.ok = true;
+			result.message = "Created an isolated SSH Git worktree.";
+			result.status = {.is_git_repository = true, .isolated = true, .source_directory = source,
+			    .worktree_directory = chat.workspace_worktree_directory, .branch_name = chat.workspace_branch_name, .base_ref = chat.workspace_base_ref};
+			if (snapshot.settings.git_pull_before_chat)
+			{
+				result.status.warning = "Pull before chat was skipped because SSH pulling is unavailable; the current Git base was used.";
+				diagnostics::Write("[SSH worktree] " + result.status.warning);
+			}
+			return result;
+		}
+	}
+
+	bool GitWorktreeService::ValidateRemotePreparedWorkspace(const ExecutionHost& host, const std::filesystem::path& root,
+	    const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop, bool* definite_failure_out) const
+	{
+		if (definite_failure_out) *definite_failure_out = false;
+		try
+		{
+			if (host.runner_protocol_version < 3 || !remote::CanAttemptRunnerConnection(host) ||
+			    !paths::IsSameOrInsideRoot(root, receipt) || paths::IsLinkOrReparsePointNoThrow(receipt) || paths::IsLinkOrReparsePointNoThrow(receipt.parent_path())) return false;
+			if (metadata.workspace_isolation_kind.empty() && metadata.workspace_source_directory.empty() && metadata.workspace_worktree_directory.empty() &&
+			    metadata.workspace_branch_name.empty() && metadata.workspace_base_ref.empty() && !metadata.git_base_branch_override && !paths::PathExistsNoThrow(receipt))
+			{
+				remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+				    remote::SshBridgeArgv(host.ssh_alias, host.platform, host.runner_version, host.runner_directory, host.runner_protocol_version), host.runner_version, host.runner_protocol_version);
+				std::string source;
+				bool git_metadata = false;
+				return InspectRemoteDirectory(client, metadata.workspace_directory, source, error, stop) &&
+				    RemoteWorkspaceHasGitMetadata(client, host, source, git_metadata, error, stop) && !git_metadata;
+			}
+			std::string bytes;
+			if (!io::TryReadTextFile(receipt, bytes, 64 * 1024)) return false;
+			nlohmann::json saved = nlohmann::json::parse(bytes);
+			if (saved.at("stableHost") != RemoteWorktreeStableHostIdentity(host) || saved.at("chatId") != metadata.id ||
+			    saved.at("createdAt") != metadata.created_at || saved.at("source") != metadata.workspace_source_directory ||
+			    saved.at("worktree") != metadata.workspace_worktree_directory || saved.at("branch") != metadata.workspace_branch_name ||
+			    saved.at("baseSha") != metadata.workspace_base_ref || !paths::IsGitWorktreeIsolated(metadata)) return false;
+			const std::string operation_id = saved.at("operationId").get<std::string>();
+			const std::string token = saved.at("controlToken").get<std::string>();
+			const std::string state = saved.value("operationState", "pending");
+			if (state != "pending" && state != "completed")
+			{ error = "The SSH worktree operation has no verified completion."; return false; }
+			if (operation_id.empty() || operation_id.size() > 128 || token.empty() || token.size() > 128 ||
+			    std::ranges::any_of(operation_id + token, [](unsigned char c) { return !std::isalnum(c) && c != '-'; })) return false;
+			const std::string suffix = hashing::Hex64(hashing::Fnv1a64(metadata.id + ":" + operation_id));
+			const std::string expected = execution_hosts::JoinRemotePath(host.platform, RemoteParent(host, metadata.workspace_source_directory), "uam-worktree-" + suffix);
+			if (metadata.workspace_branch_name != "uam/" + suffix || !execution_hosts::RemotePathsMatch(host.platform, expected, metadata.workspace_worktree_directory)) return false;
+			const ExecutionHost captured = CapturedRemoteWorktreeHost(saved);
+			if (RemoteWorktreeStableHostIdentity(captured) != RemoteWorktreeStableHostIdentity(host)) return false;
+			const ExecutionHost& inspection_host = state == "completed" ? host : captured;
+			if (inspection_host.runner_protocol_version < 3 || !remote::CanAttemptRunnerConnection(inspection_host)) return false;
+			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+			    remote::SshBridgeArgv(inspection_host.ssh_alias, inspection_host.platform, inspection_host.runner_version, inspection_host.runner_directory, inspection_host.runner_protocol_version), inspection_host.runner_version, inspection_host.runner_protocol_version);
+			remote::ProcessPollResult process;
+			if (!client.Connect(&error, stop)) return false;
+			if (state == "pending")
+			{
+				client.SetProcessControlToken(operation_id, token);
+				const bool observed = client.PollProcess(operation_id, process, &error, [stop]() { return stop.stop_requested(); });
+				if (!observed || process.running || process.exit_code < 0)
+				{ error = "The original remote worktree operation is still running or its exit is unconfirmed. Its files were preserved."; return false; }
+				if (process.exit_code != 0)
+				{
+					remote::PathInspection target;
+					std::string inspection_error;
+					error = "The original remote Git operation exited unsuccessfully. Its files and branch were preserved.";
+					if (client.InspectPath(metadata.workspace_worktree_directory, true, target, &inspection_error, stop) && !target.exists)
+					{
+						saved["operationState"] = "failed";
+						if (!io::WriteTextFile(receipt, saved.dump()))
+						{ error += " Could not save its confirmed failure."; return false; }
+						if (definite_failure_out) *definite_failure_out = true;
+						RemoveSettledRemoteWorktreeProcess(client, operation_id, token);
+					}
+					return false;
+				}
+			}
+			error.clear();
+			if (!RemoteGitIdentity(client, inspection_host, metadata.workspace_source_directory, saved.at("repository").get<std::string>(), metadata, error, stop))
+			{ if (error.empty()) error = "The saved SSH worktree no longer matches its owned receipt."; return false; }
+			if (state == "pending")
+			{
+				saved["operationState"] = "completed";
+				if (!io::WriteTextFile(receipt, saved.dump()))
+				{ error = "Could not save verified SSH worktree completion. Its files were preserved."; return false; }
+				RemoveSettledRemoteWorktreeProcess(client, operation_id, token);
+			}
+			return true;
+		}
+		catch (const std::exception&) { error = "The SSH worktree ownership receipt could not be verified."; return false; }
+	}
+
 	GitWorktreeStatus GitWorktreeService::Status(const AppState& app, const ChatSession& chat) const
 	{
 		GitWorktreeStatus status;
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
-			status.warning = std::string(kRemoteWorkspaceUnsupported);
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			if (!host || host->runner_protocol_version < 3 || !remote::CanAttemptRunnerConnection(*host))
+			{ status.error = "SSH Git worktrees require an available protocol-3 helper."; return status; }
+			remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+			    remote::SshBridgeArgv(host->ssh_alias, host->platform, host->runner_version, host->runner_directory, host->runner_protocol_version), host->runner_version, host->runner_protocol_version);
+			const std::string requested = paths::HasGitWorktreeSource(chat) ? chat.workspace_source_directory : paths::Utf8PathString(paths::ResolveWorkspaceRootPath(app, chat));
+			std::string source, output;
+			if (!InspectRemoteDirectory(client, requested, source, status.error, {}) ||
+			    !RemoteGit(client, *host, source, {"rev-parse", "--show-toplevel"}, output, status.error, {}) ||
+			    !InspectRemoteDirectory(client, output, status.source_directory, status.error, {})) return status;
+			status.is_git_repository = true;
+			if (!RemoteGit(client, *host, status.source_directory, {"status", "--porcelain"}, output, status.error, {})) return status;
+			status.source_dirty = !output.empty();
+			status.isolated = paths::IsGitWorktreeIsolated(chat);
+			status.worktree_directory = chat.workspace_worktree_directory;
+			status.branch_name = chat.workspace_branch_name;
+			status.base_ref = chat.workspace_base_ref;
+			if (status.isolated)
+			{
+				remote::PathInspection worktree;
+				if (!client.InspectPath(status.worktree_directory, true, worktree, &status.error)) return status;
+				if (!worktree.exists) { status.worktree_missing = true; return status; }
+				if (!worktree.directory) { status.error = "The remote worktree is not a directory."; return status; }
+				if (!RemoteGit(client, *host, worktree.path, {"status", "--porcelain"}, output, status.error, {})) return status;
+				status.worktree_dirty = !output.empty();
+			}
 			return status;
 		}
 		status.isolated = uam::paths::IsGitWorktreeIsolated(chat);
@@ -994,7 +1414,7 @@ namespace uam
 	{
 		if (chat.acp_queue_held || !chat.acp_queued_prompts.empty())
 		{ error = "Finish or resolve queued input before switching branches."; return false; }
-		if (AcpStopInProgress(app, chat.id) || app.worktree_launch_preparations.contains(chat.id) || app.git_port_requests.contains(chat.id) ||
+		if (AcpStopInProgress(app, chat.id) || IsWorktreeLaunchPreparationPending(app, chat.id) || app.git_port_requests.contains(chat.id) ||
 		    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id))
 		{ error = "Wait for the chat runtime and history save to finish."; return false; }
 		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
@@ -1039,14 +1459,48 @@ namespace uam
 	bool ValidatePendingGitBaseOverrideScope(const AppState& app, const ChatSession& chat, std::string& error)
 	{
 		if (chat.workspace_isolation_kind != paths::kPendingGitWorktreeIsolationKind || !chat.git_base_branch_override) return true;
-		if (!app.settings.git_enabled || !app.settings.git_auto_worktree || !paths::IsControllerLocalWorkspace(chat) ||
+		if (!app.settings.git_enabled || !app.settings.git_auto_worktree ||
 		    chat.imported_read_only || !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() ||
 		    !chat.temporary_parent_chat_id.empty() || !chat.native_session_id.empty() || chat.routing_mode != "explicit")
 		{
-			error = "The selected Git base requires a new local chat with automatic worktree creation.";
+			error = "The selected Git base requires a new chat with automatic worktree creation.";
 			return false;
 		}
 		return true;
+	}
+
+	std::string ManagedSnapshotDisabledReason(const AppState& app, const ChatSession& chat)
+	{
+		if ((app.settings.git_snapshot_svn && app.settings.git_snapshot_plain_folders) ||
+		    !paths::IsControllerLocalWorkspace(chat) || paths::IsGitWorktreeIsolated(chat)) return {};
+		const LocalSnapshotSource source = ClassifyLocalSnapshotSource(EffectiveSourceWorkspace(app, chat));
+		if (source == LocalSnapshotSource::Svn && !app.settings.git_snapshot_svn)
+			return "Managed Git snapshots for SVN workspaces are disabled in VCS settings.";
+		if (source == LocalSnapshotSource::Plain && !app.settings.git_snapshot_plain_folders)
+			return "Managed Git snapshots for plain folders are disabled in VCS settings.";
+		return {};
+	}
+
+	std::string ManagedSnapshotBypassError(const AppState& app, const ChatSession& chat)
+	{
+		if (!chat.workspace_source_directory.empty() || !chat.workspace_worktree_directory.empty() ||
+		    !chat.workspace_branch_name.empty() || !chat.workspace_base_ref.empty())
+			return "Existing snapshot ownership must be resolved before using the original workspace. Its files were preserved.";
+		const std::filesystem::path directory = app.data_root / ".worktree-launch";
+		std::error_code error;
+		const std::filesystem::file_status status = std::filesystem::symlink_status(directory, error);
+		if (error == std::errc::no_such_file_or_directory || status.type() == std::filesystem::file_type::not_found) return {};
+		if (error || !std::filesystem::is_directory(status)) return "Snapshot ownership storage could not be verified. Its files were preserved.";
+		const std::string prefix = hashing::Hex64(hashing::Fnv1a64(chat.id)) + "-";
+		std::filesystem::directory_iterator iterator(directory, error), end;
+		while (!error && iterator != end)
+		{
+			const std::filesystem::path receipt = iterator->path();
+			if (receipt.filename().string().starts_with(prefix) && receipt.extension() == ".json")
+				return "Interrupted snapshot creation must be resolved before using the original workspace. Its files were preserved.";
+			iterator.increment(error);
+		}
+		return error ? "Snapshot ownership storage could not be verified. Its files were preserved." : std::string{};
 	}
 
 	bool GitWorktreeService::PrepareForFirstLaunch(AppState& app, ChatSession& chat, std::string* error_out) const
@@ -1058,8 +1512,14 @@ namespace uam
 		    !uam::paths::IsControllerLocalWorkspace(chat) || chat.imported_read_only ||
 		    !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() ||
 		    !chat.temporary_parent_chat_id.empty()) return true;
-		if (!app.settings.git_enabled || !app.settings.git_auto_worktree)
+		if (!app.settings.git_enabled || !app.settings.git_auto_worktree ||
+		    (!chat.git_base_branch_override && !ManagedSnapshotDisabledReason(app, chat).empty()))
 		{
+			if (!ManagedSnapshotDisabledReason(app, chat).empty())
+			{
+				const std::string ownership_error = ManagedSnapshotBypassError(app, chat);
+				if (!ownership_error.empty()) { if (error_out) *error_out = ownership_error; return false; }
+			}
 			// Only an uncreated default is cleared; existing isolated paths remain owned.
 			chat.workspace_isolation_kind.clear();
 			return true;
@@ -1077,9 +1537,17 @@ namespace uam
 		return CreateForChatCore(app, chat, true, {}, {});
 	}
 
-	GitWorktreeOperationResult GitWorktreeService::PrepareForChat(AppState& snapshot, ChatSession& metadata, const GitWorktreeIntentRecorder& record, std::stop_token stop) const
+	GitWorktreeOperationResult GitWorktreeService::PrepareForChat(AppState& snapshot, ChatSession& metadata, const GitWorktreeIntentRecorder& record, std::stop_token stop, bool explicit_create) const
 	{
 		if (!record) return {.message = "Workspace ownership recording is required."};
+		if (!paths::IsControllerLocalWorkspace(metadata)) return PrepareRemoteWorktree(snapshot, metadata, record, stop, explicit_create);
+		if (!explicit_create && !metadata.git_base_branch_override && !ManagedSnapshotDisabledReason(snapshot, metadata).empty())
+		{
+			const std::string ownership_error = ManagedSnapshotBypassError(snapshot, metadata);
+			if (!ownership_error.empty()) return {.message = ownership_error};
+			if (metadata.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind) metadata.workspace_isolation_kind.clear();
+			return {.ok = true};
+		}
 		return CreateForChatCore(snapshot, metadata, false, record, stop);
 	}
 
@@ -1154,6 +1622,17 @@ namespace uam
 		}
 		const std::filesystem::path source_root = result.status.is_git_repository ? uam::paths::PathFromUtf8(result.status.source_directory) : EffectiveSourceWorkspace(app, chat);
 		const bool managed_repository = !result.status.is_git_repository;
+		if (managed_repository)
+		{
+			const LocalSnapshotSource source_kind = ClassifyLocalSnapshotSource(source_root);
+			if (source_kind == LocalSnapshotSource::Git || source_kind == LocalSnapshotSource::Unknown)
+			{
+				result.message = source_kind == LocalSnapshotSource::Git ? "Source Git metadata could not be verified. No managed snapshot was created." : "Source workspace is not an available directory.";
+				return result;
+			}
+			result.message = ManagedSnapshotDisabledReason(app, chat);
+			if (!result.message.empty()) return result;
+		}
 		const std::filesystem::path repository = managed_repository ? ManagedRepositoryRoot(app, source_root, chat.id) : source_root;
 		const std::string selected_base = uam::strings::Trim(chat.git_base_branch_override.value_or(app.settings.git_default_base_branch));
 		std::string override_head;
@@ -1168,8 +1647,14 @@ namespace uam
 			const std::string reference = selected_base.empty() ? "HEAD" : "refs/heads/" + selected_base;
 			if (!GitOutput(repository, "rev-parse --verify --end-of-options " + uam::shell::EscapeArg(reference + "^{commit}"), &override_head, &result.message, stop)) return result;
 		}
-		if (record && !managed_repository && app.settings.git_pull_before_chat &&
-		    !PullCheckedOutBase(repository, selected_base, result.message, stop)) return result;
+		if (record && !managed_repository && app.settings.git_pull_before_chat)
+		{
+			std::string common_directory;
+			if (!GitOutput(repository, "rev-parse --path-format=absolute --git-common-dir", &common_directory, &result.message, stop)) return result;
+			// A directly selected UAM snapshot is still owned storage, even in a new chat.
+			const bool owned_baseline = !app.data_root.empty() && PathIsWithin(paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(common_directory)), paths::NormalizeExistingOrAbsolutePath(app.data_root / "worktrees"));
+			if (!owned_baseline && !PullCheckedOutBase(repository, selected_base, result.message, stop)) return result;
+		}
 		if (chat.git_base_branch_override && record && app.settings.git_pull_before_chat)
 		{
 			const std::string reference = selected_base.empty() ? "HEAD" : "refs/heads/" + selected_base;

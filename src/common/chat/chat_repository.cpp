@@ -350,6 +350,10 @@ namespace
 			uam::json::SetNumber(obj, "existing_user_message_index", prompt.existing_user_message_index);
 			uam::json::SetString(obj, "existing_user_message_created_at", prompt.existing_user_message_created_at);
 		}
+		if (prompt.include_prior_context)
+			uam::json::SetBool(obj, "include_prior_context", true);
+		if (prompt.direct_admission)
+			uam::json::SetBool(obj, "direct_admission", true);
 		if (prompt.prepared_for_delivery)
 			uam::json::SetBool(obj, "prepared_for_delivery", true);
 		if (!prompt.claude_quota_continuation_id.empty())
@@ -484,6 +488,17 @@ namespace
 			prompt.existing_user_message_created_at = existing_created->string_value;
 		}
 		prompt.prepared_for_delivery = JsonBoolOrDefault(obj.Find("prepared_for_delivery"), false);
+		if (const JsonValue* direct_admission = obj.Find("direct_admission"); direct_admission != nullptr)
+		{
+			if (direct_admission->type != JsonValue::Type::Bool) return std::nullopt;
+			prompt.direct_admission = direct_admission->bool_value;
+		}
+		if (const JsonValue* prior_context = obj.Find("include_prior_context"); prior_context != nullptr)
+		{
+			if (prior_context->type != JsonValue::Type::Bool) return std::nullopt;
+			prompt.include_prior_context = prior_context->bool_value;
+			if (prompt.include_prior_context && (prompt.append_user_message || prompt.existing_user_message_index < 0 || prompt.prepared_for_delivery)) return std::nullopt;
+		}
 		prompt.claude_quota_continuation_id = JsonStringOrEmpty(obj.Find("claude_quota_continuation_id"));
 		prompt.prepared_user_message_count = std::min(NonNegativeIntFieldOrZero(
 		    obj.Find("prepared_user_message_count")), 64);
@@ -514,6 +529,7 @@ namespace
 			uam::json::SetBool(obj, kMessageInterruptedField, true);
 		}
 		if (msg.acp_prompt_not_sent) uam::json::SetBool(obj, "acp_prompt_not_sent", true);
+		if (msg.acp_prompt_discarded) uam::json::SetBool(obj, "acp_prompt_discarded", true);
 		if (msg.continues_turn) uam::json::SetBool(obj, kMessageContinuesTurnField, true);
 		if (msg.priority_steer)
 		{
@@ -641,6 +657,7 @@ namespace
 		msg.priority_steer = JsonBoolOrDefault(obj.Find(kMessagePrioritySteerField), false);
 		msg.continues_turn = JsonBoolOrDefault(obj.Find(kMessageContinuesTurnField), false);
 		msg.acp_prompt_not_sent = JsonBoolOrDefault(obj.Find("acp_prompt_not_sent"), false);
+		msg.acp_prompt_discarded = JsonBoolOrDefault(obj.Find("acp_prompt_discarded"), false);
 		msg.checkpoint_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointShaField));
 		msg.checkpoint_parent_sha = JsonStringOrEmpty(obj.Find(kMessageCheckpointParentShaField));
 		msg.thoughts = JsonStringOrEmpty(obj.Find(kMessageThoughtsField));
@@ -872,7 +889,7 @@ namespace
 
 	bool MessageTimingFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
 	{
-		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.stop_reason == rhs.stop_reason && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha && lhs.acp_prompt_not_sent == rhs.acp_prompt_not_sent;
+		return lhs.time_to_first_token_ms == rhs.time_to_first_token_ms && lhs.processing_time_ms == rhs.processing_time_ms && lhs.interrupted == rhs.interrupted && lhs.stop_reason == rhs.stop_reason && lhs.priority_steer == rhs.priority_steer && lhs.continues_turn == rhs.continues_turn && lhs.checkpoint_sha == rhs.checkpoint_sha && lhs.checkpoint_parent_sha == rhs.checkpoint_parent_sha && lhs.acp_prompt_not_sent == rhs.acp_prompt_not_sent && lhs.acp_prompt_discarded == rhs.acp_prompt_discarded;
 	}
 
 	bool MessageNarrativeFieldsEquivalentForRecovery(const Message& lhs, const Message& rhs)
@@ -936,6 +953,10 @@ namespace
 		       lhs.markdown_store_prompt_blocks == rhs.markdown_store_prompt_blocks &&
 		       MessageAttachmentsEquivalentForRecovery(lhs.attachments, rhs.attachments) &&
 		       lhs.append_user_message == rhs.append_user_message &&
+		       lhs.existing_user_message_index == rhs.existing_user_message_index &&
+		       lhs.existing_user_message_created_at == rhs.existing_user_message_created_at &&
+		       lhs.include_prior_context == rhs.include_prior_context &&
+		       lhs.direct_admission == rhs.direct_admission &&
 		       lhs.prepared_for_delivery == rhs.prepared_for_delivery &&
 		       lhs.claude_quota_continuation_id == rhs.claude_quota_continuation_id &&
 		       lhs.prepared_user_message_count == rhs.prepared_user_message_count &&
@@ -1864,7 +1885,8 @@ namespace
 			uam::json::SetNumber(root, kChatPersistedMessageCountField, static_cast<double>(chat.persisted_message_count));
 			uam::json::SetString(root, kChatPersistedMessagesDigestField, chat.persisted_messages_digest);
 			uam::json::SetNumber(root, kChatSummarySourceSizeField, static_cast<double>(file_text.size()));
-			(void)uam::io::WriteTextFile(SummaryCachePathForChatFile(path), SerializeJson(root));
+			// This cache is rebuilt from the primary; metadata-only summary saves remain durable.
+			(void)uam::io::WriteCacheFile(SummaryCachePathForChatFile(path), SerializeJson(root));
 		}
 
 		ApplyQueueJournal(path, root, chat);
@@ -3365,13 +3387,13 @@ namespace
 		hydrated.small_model_mode = summary.small_model_mode;
 	}
 
-	void ApplySummaryOpenedAtToFullChat(const fs::path& chat_path, ChatSession& chat)
+	void ApplySummaryOpenedAtToFullChat(const fs::path& chat_path, ChatSession& chat, std::size_t max_read_bytes = 0)
 	{
 		const fs::path summary_path = SummaryCachePathForChatFile(chat_path);
 		std::error_code error;
 		const std::uintmax_t source_size = fs::file_size(chat_path, error);
 		if (error || !SummaryCacheIsCurrent(chat_path, summary_path)) return;
-		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size);
+		const LoadChatResult summary = ParseLocalChatFile(summary_path, false, source_size, false, max_read_bytes);
 		if (summary.chat && summary.chat->id == chat.id)
 		{
 			if (summary.chat->last_opened_at > chat.last_opened_at) chat.last_opened_at = summary.chat->last_opened_at;
@@ -3619,6 +3641,16 @@ std::optional<ChatSession> ChatRepository::LoadLocalChat(const std::filesystem::
 	{
 		SetWarning(warning_out, loaded.error);
 	}
+	return std::move(loaded.chat);
+}
+
+std::optional<ChatSession> ChatRepository::LoadLocalChatBounded(const fs::path& data_root,
+    std::string_view chat_id, std::size_t max_bytes)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id) || max_bytes == 0) return std::nullopt;
+	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
+	LoadChatResult loaded = ParseLocalChatFile(primary, true, 0, false, max_bytes);
+	if (loaded.chat) ApplySummaryOpenedAtToFullChat(primary, *loaded.chat, max_bytes);
 	return std::move(loaded.chat);
 }
 

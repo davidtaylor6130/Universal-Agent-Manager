@@ -619,6 +619,9 @@ UAM_TEST(ComputerUseModelMustNameItsTargetBeforeSelection)
 {
 	TempDir temp("uam-computer-use-request");
 	ScopedEnvVar data_root("UAM_DATA_DIR", temp.root.string());
+	AppSettings settings;
+	settings.computer_use_globally_enabled = true;
+	UAM_ASSERT(SettingsStore::Save(AppPaths::SettingsFilePath(temp.root), settings));
 	const fs::path directory = temp.root / "computer-use" / "request-chat";
 	UAM_ASSERT(fs::create_directories(directory));
 	UAM_ASSERT(uam::io::WriteTextFile(directory / "control.json", R"({"state":"armed"})" "\n"));

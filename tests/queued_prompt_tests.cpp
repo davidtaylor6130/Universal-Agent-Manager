@@ -188,6 +188,47 @@ UAM_TEST(QueuedPromptLegacyIdsAreUniqueAndStableAcrossHydration)
 	UAM_ASSERT(repaired->acp_queued_prompts.front().id != repaired->acp_queued_prompts.back().id);
 }
 
+UAM_TEST(QueuedPromptDirectAdmissionPersistsAndChangesQueueOwnershipFingerprint)
+{
+	QueuedPromptFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	const std::string queued_fingerprint = ChatRepository::QueueAdmissionFingerprint(chat);
+	const uam::AcpQueuedUserPromptState queued = chat.acp_queued_prompts.front();
+	chat.acp_queued_prompts.front().direct_admission = true;
+	UAM_ASSERT(!(queued == chat.acp_queued_prompts.front()));
+	UAM_ASSERT(queued_fingerprint != ChatRepository::QueueAdmissionFingerprint(chat));
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, chat));
+	const nlohmann::json saved = nlohmann::json::parse(ReadFile(AppPaths::UamChatFilePath(fixture.temp.root, chat.id)));
+	UAM_ASSERT(saved["acp_queued_prompts"][0]["direct_admission"].get<bool>());
+	UAM_ASSERT(!saved["acp_queued_prompts"][1].contains("direct_admission"));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(fixture.temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts, chat.acp_queued_prompts);
+	UAM_ASSERT(loaded->acp_queued_prompts.front().direct_admission);
+	UAM_ASSERT(!loaded->acp_queued_prompts.back().direct_admission);
+	UAM_ASSERT_EQ(ChatRepository::QueueAdmissionFingerprint(*loaded), ChatRepository::QueueAdmissionFingerprint(chat));
+}
+
+UAM_TEST(QueuedPromptDirectAdmissionRejectsNonBooleanAndKeepsLegacyQueued)
+{
+	QueuedPromptFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.temp.root, chat));
+	const fs::path path = AppPaths::UamChatFilePath(fixture.temp.root, chat.id);
+	const nlohmann::json original = nlohmann::json::parse(ReadFile(path));
+	for (const nlohmann::json& value : {nlohmann::json("true"), nlohmann::json(1), nlohmann::json(nullptr)})
+	{
+		nlohmann::json malformed = original;
+		malformed["acp_queued_prompts"][0]["direct_admission"] = value;
+		UAM_ASSERT(uam::io::WriteTextFile(path, malformed.dump()));
+		const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(fixture.temp.root, chat.id);
+		UAM_ASSERT(loaded.has_value());
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts.front().id, std::string("two"));
+		UAM_ASSERT(!loaded->acp_queued_prompts.front().direct_admission);
+	}
+}
+
 UAM_TEST(QueuedPromptRemoveAndSteerRejectStaleIdentityAndPreparedDelivery)
 {
 	for (const bool steer : {false, true})

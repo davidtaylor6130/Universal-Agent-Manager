@@ -17,6 +17,12 @@ Keep workspace ownership explicit when loading or saving chats. Do not move app 
 
 No measured whole-app persistence latency budget is recorded here. Keep writes bounded and preserve failure handling; use the focused tests before changing file formats or save ownership.
 
+Cold summary regeneration atomically publishes caches derived from primary chat files without disk
+durability syncs. Missing, corrupt or stale caches fall back to the primary file. Normal chat saves,
+prepared saves and metadata-only summary updates remain durable; those summaries can hold recency,
+attention and snooze values absent from the primary. The cold 1,000-chat catalogue has a one-second
+service budget in `tests/interaction_performance_tests.cpp`, separate from whole-app startup.
+
 ## Computer-scoped defaults
 
 `host_scoped_settings` persists optional provider defaults, the default new-chat provider and MCP server lists for configured SSH computers. Missing overrides inherit global values; an explicitly empty MCP list disables inherited servers for that computer. `scopeExecutionHostId` selects a configured SSH host, while an omitted, empty or `*` scope selects global settings. Invalid or removed hosts cannot become save targets, and loading settings removes obsolete host overrides.

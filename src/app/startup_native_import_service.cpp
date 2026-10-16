@@ -30,30 +30,52 @@ namespace uam
 			result.execution_host_id = chat.execution_host_id;
 			result.workspace_directory = chat.workspace_directory;
 			result.workspace_worktree_directory = chat.workspace_worktree_directory;
+			result.messages_loaded = false;
 			return result;
 		}
 	}
 
-	StartupNativeImportService::StartupNativeImportService(Scanner scanner) : m_scanner(std::move(scanner))
+	StartupNativeImportService::StartupNativeImportService(Scanner scanner, RemoteScanner remote_scanner) : m_scanner(std::move(scanner))
 	{
-		if (!m_scanner)
+		m_scoped_scanner = !m_scanner || static_cast<bool>(remote_scanner);
+		if (!m_scoped_scanner) return;
+		const Scanner local = m_scanner ? std::move(m_scanner) : Scanner([](const StartupNativeImportScanRequest& request, std::stop_token stop)
 		{
-			m_scanner = [](const StartupNativeImportScanRequest& request, std::stop_token stop)
+			return ChatHistorySyncService().DiscoverProviderChatsForFolder({}, request.open_code_profile ? &*request.open_code_profile : nullptr,
+			    stop, request.open_code_offset, request.open_code_only, request.open_code_remaining, request.open_code_list_fingerprint);
+		});
+		if (!remote_scanner) remote_scanner = [](const StartupNativeImportRemoteScope& scope, const ProviderProfile* profile, std::stop_token stop)
+		{
+			return ChatHistorySyncService().DiscoverRemoteProviderChatsForFolder(scope.folder, scope.host, profile, stop);
+		};
+		m_scanner = [local, remote = std::move(remote_scanner)](const StartupNativeImportScanRequest& request, std::stop_token stop)
+		{
+			ChatHistorySyncService::LocalHistoryDiscovery discovery = request.remote_only ? ChatHistorySyncService::LocalHistoryDiscovery{} : local(request, stop);
+			for (const StartupNativeImportRemoteScope& scope : request.remote_scopes)
 			{
-				const ChatHistorySyncService history;
-				ChatHistorySyncService::LocalHistoryDiscovery discovery = history.DiscoverProviderChatsForFolder({},
-				    request.open_code_profile ? &*request.open_code_profile : nullptr, stop, request.open_code_offset, request.open_code_only, request.open_code_remaining, request.open_code_list_fingerprint);
-				for (const StartupNativeImportRemoteScope& scope : request.remote_scopes)
+				if (stop.stop_requested()) break;
 				{
-					if (stop.stop_requested()) break;
-					ChatHistorySyncService::LocalHistoryDiscovery remote = history.DiscoverRemoteProviderChatsForFolder(scope.folder, scope.host,
-					    request.open_code_profile ? &*request.open_code_profile : nullptr, stop);
-					discovery.result.Merge(remote.result);
-					for (ChatSession& chat : remote.chats) discovery.chats.push_back(std::move(chat));
+					std::lock_guard lock(scope.gate->mutex);
+					if (scope.gate->pauses != 0 || scope.admission_generation != scope.gate->generation || scope.complete->load()) continue;
+					++scope.gate->active;
 				}
-				return discovery;
-			};
-		}
+				struct Completion
+				{
+					const StartupNativeImportRemoteScope& scope;
+					~Completion()
+					{
+						std::lock_guard lock(scope.gate->mutex);
+						scope.complete->store(true);
+						--scope.gate->active;
+					}
+				};
+				const Completion completion{scope};
+				ChatHistorySyncService::LocalHistoryDiscovery result = remote(scope, request.open_code_profile ? &*request.open_code_profile : nullptr, stop);
+				discovery.result.Merge(result.result);
+				for (ChatSession& chat : result.chats) discovery.chats.push_back(std::move(chat));
+			}
+			return discovery;
+		};
 	}
 
 	StartupNativeImportService::~StartupNativeImportService()
@@ -83,8 +105,12 @@ namespace uam
 			}
 			m_remote_hosts[host->id] = *host;
 			m_remote_folders[folder.id] = folder;
-			request.remote_scopes.push_back({folder, *host});
+			const auto existing = std::ranges::find_if(request.remote_scopes, [&](const StartupNativeImportRemoteScope& scope) { return scope.host.id == host->id; });
+			const std::shared_ptr<StartupNativeImportRemoteScanGate> gate = existing == request.remote_scopes.end()
+			    ? std::make_shared<StartupNativeImportRemoteScanGate>() : existing->gate;
+			request.remote_scopes.push_back({folder, *host, gate, std::make_shared<std::atomic<bool>>(false)});
 		}
+		m_remote_scopes = request.remote_scopes;
 		m_scan_request = request;
 		try
 		{
@@ -108,11 +134,118 @@ namespace uam
 		if (m_errors.size() < 20) m_errors.push_back(message);
 	}
 
+	bool StartupNativeImportService::BackgroundScanPendingOnHost(const std::string& host_id) const
+	{
+		if (!m_scoped_scanner)
+			return m_phase == "scanning" && m_scan.valid() && m_scan.wait_for(std::chrono::seconds(0)) != std::future_status::ready &&
+			    std::ranges::any_of(m_scan_request.remote_scopes, [&](const StartupNativeImportRemoteScope& scope) { return scope.host.id == host_id; });
+		const auto scope = std::ranges::find_if(m_remote_scopes, [&](const StartupNativeImportRemoteScope& value) { return value.host.id == host_id; });
+		if (scope == m_remote_scopes.end()) return false;
+		std::lock_guard lock(scope->gate->mutex);
+		return scope->gate->active != 0;
+	}
+
+	std::shared_ptr<void> StartupNativeImportService::PauseBackgroundScanOnHost(const std::string& host_id)
+	{
+		const auto scope = std::ranges::find_if(m_remote_scopes, [&](const StartupNativeImportRemoteScope& value) { return value.host.id == host_id; });
+		if (scope == m_remote_scopes.end()) return {};
+		struct Pause
+		{
+			explicit Pause(std::shared_ptr<StartupNativeImportRemoteScanGate> value) : gate(std::move(value))
+			{
+				std::lock_guard lock(gate->mutex);
+				++gate->pauses;
+				++gate->generation;
+			}
+			~Pause()
+			{
+				std::lock_guard lock(gate->mutex);
+				--gate->pauses;
+			}
+			std::shared_ptr<StartupNativeImportRemoteScanGate> gate;
+		};
+		return std::make_shared<Pause>(scope->gate);
+	}
+
+	std::vector<StartupNativeImportRemoteScope> StartupNativeImportService::PendingRemoteScopes(const AppState& app)
+	{
+		std::vector<StartupNativeImportRemoteScope> pending;
+		for (StartupNativeImportRemoteScope& scope : m_remote_scopes)
+		{
+			if (scope.complete->load()) continue;
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, scope.host.id);
+			const ChatFolder* folder = ChatDomainService().FindFolderById(app, scope.folder.id);
+			if (host == nullptr || folder == nullptr || folder->execution_host_id != scope.folder.execution_host_id || folder->directory != scope.folder.directory ||
+			    host->transport != scope.host.transport || host->platform != scope.host.platform ||
+			    host->ssh_alias != scope.host.ssh_alias || host->runner_directory != scope.host.runner_directory)
+			{
+				scope.complete->store(true);
+				AddError("Remote history was not scanned because its workspace host changed: " + scope.folder.title);
+				continue;
+			}
+			std::lock_guard lock(scope.gate->mutex);
+			if (scope.gate->pauses != 0 || host->runner_status == "installing") continue;
+			if (host->runner_status != "ready")
+			{
+				scope.complete->store(true);
+				AddError("Remote history was not scanned because its workspace host was unavailable: " + scope.folder.title);
+				continue;
+			}
+			scope.host = *host;
+			scope.admission_generation = scope.gate->generation;
+			m_remote_hosts[host->id] = *host;
+			pending.push_back(scope);
+		}
+		return pending;
+	}
+
+	bool StartupNativeImportService::StartPendingRemoteScans(const AppState& app)
+	{
+		StartupNativeImportScanRequest request;
+		request.open_code_profile = m_scan_request.open_code_profile;
+		request.remote_only = true;
+		request.remote_scopes = PendingRemoteScopes(app);
+		if (request.remote_scopes.empty()) return false;
+		m_scan_request = request;
+		try
+		{
+			m_scan = std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token()]()
+			{
+				return scanner(request, stop);
+			});
+		}
+		catch (const std::exception& error)
+		{
+			for (const StartupNativeImportRemoteScope& scope : m_scan_request.remote_scopes) scope.complete->store(true);
+			AddError(std::string("Remote history discovery could not start: ") + error.what());
+		}
+		return true;
+	}
+
+	bool StartupNativeImportService::SelectedImportPendingOnHost(const std::string& host_id) const
+	{
+		return m_phase == "importing" && std::ranges::any_of(m_selected,
+		    [&](const Candidate& candidate) { return candidate.summary.execution_host_id == host_id; });
+	}
+
 	bool StartupNativeImportService::Poll(AppState& app)
 	{
 		if (m_phase == "scanning")
 		{
-			if (!m_scan.valid() || m_scan.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+			if (!m_scan.valid())
+			{
+				if (m_scoped_scanner && StartPendingRemoteScans(app)) return true;
+				if (m_scoped_scanner && std::ranges::any_of(m_remote_scopes, [](const StartupNativeImportRemoteScope& scope) { return !scope.complete->load(); })) return false;
+				m_phase = m_candidates.empty() ? "complete" : "ready";
+				return true;
+			}
+			if (m_scan.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+			// Keep completed scan results until the ready-only ownership filter can validate them.
+			if (std::ranges::any_of(m_scan_request.remote_scopes, [&](const StartupNativeImportRemoteScope& scope)
+			{
+				const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, scope.host.id);
+				return host != nullptr && host->runner_status == "installing";
+			})) return false;
 			ChatHistorySyncService::LocalHistoryDiscovery discovery;
 			try { discovery = m_scan.get(); }
 			catch (const std::exception& error) { AddError(std::string("History discovery failed: ") + error.what()); }
@@ -125,7 +258,8 @@ namespace uam
 			{
 				AddError("OpenCode session list changed during discovery; retry the scan.");
 				discovery.CancelPending();
-				m_phase = m_candidates.empty() ? "complete" : "ready";
+				m_phase = m_scoped_scanner && std::ranges::any_of(m_remote_scopes, [](const StartupNativeImportRemoteScope& scope) { return !scope.complete->load(); })
+				    ? "scanning" : m_candidates.empty() ? "complete" : "ready";
 				return true;
 			}
 			const std::size_t remaining = m_scan_request.open_code_remaining.value_or(discovery.open_code_session_count);
@@ -181,7 +315,7 @@ namespace uam
 			else if (continue_scan)
 			{
 				m_scan_request.open_code_only = true;
-				m_scan_request.remote_scopes.clear();
+				m_scan_request.remote_scopes = m_scoped_scanner ? PendingRemoteScopes(app) : std::vector<StartupNativeImportRemoteScope>{};
 				m_scan_request.open_code_offset = *discovery.open_code_next_offset;
 				m_scan_request.open_code_remaining = remaining - discovery.open_code_scanned_count;
 				m_scan_request.open_code_list_fingerprint = discovery.open_code_list_fingerprint;
@@ -200,6 +334,11 @@ namespace uam
 			}
 			if (remaining > 0 && discovery.open_code_scanned_count == 0 && !discovery.open_code_list_fingerprint.empty())
 				AddError("OpenCode history scan made no progress; retry the scan.");
+			if (m_scoped_scanner && std::ranges::any_of(m_remote_scopes, [](const StartupNativeImportRemoteScope& scope) { return !scope.complete->load(); }))
+			{
+				(void)StartPendingRemoteScans(app);
+				return true;
+			}
 			m_phase = m_candidates.empty() ? "complete" : "ready";
 			return true;
 		}
@@ -207,6 +346,10 @@ namespace uam
 		const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(
 		    app, {}, m_import, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
 		m_imported_count += result.imported_count;
+		std::erase_if(m_selected, [&](const Candidate& candidate)
+		{
+			return std::ranges::find(result.confirmed_empty_native_keys, chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)) != result.confirmed_empty_native_keys.end();
+		});
 		for (const std::string& error : result.errors) AddError(error);
 		if (!m_import.Pending()) FinishImport(app);
 		return result.imported_count > 0 || !result.errors.empty() || m_phase != "importing";
@@ -244,9 +387,10 @@ namespace uam
 		{
 			const ChatFolder* owner = ChatDomainService().FindFolderById(app, candidate.owner.id);
 			const ExecutionHost* host = candidate.host ? execution_hosts::Find(app.settings.execution_hosts, candidate.host->id) : nullptr;
-			return (candidate.host && (host == nullptr || host->runner_status != "ready" || !execution_hosts::SameConnection(*candidate.host, *host))) ||
+			const bool installing = host != nullptr && host->runner_status == "installing";
+			return (candidate.host && (host == nullptr || (host->runner_status != "ready" && !installing) || !execution_hosts::SameConnection(*candidate.host, *host))) ||
 			    owner == nullptr || owner->directory != candidate.owner.directory || owner->execution_host_id != candidate.owner.execution_host_id ||
-			    !eligible.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat));
+			    (!installing && !eligible.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)));
 		});
 		return true;
 	}
@@ -272,6 +416,13 @@ namespace uam
 			for (const std::string& id : *group)
 				if (id.empty() || !requested.insert(id).second) return reject("Each history candidate must have one decision.");
 		if (requested.empty()) return reject("Select chats to import or decline.");
+		for (const Candidate& candidate : m_candidates)
+		{
+			if (!requested.contains(candidate.summary.candidate_id) || !candidate.host) continue;
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, candidate.host->id);
+			if (host != nullptr && host->runner_status == "installing")
+				return reject("Wait for this host's helper installation to finish before changing its history selections.");
+		}
 		std::string filter_error;
 		if (!Revalidate(app, &filter_error)) return reject(filter_error);
 		std::unordered_map<std::string, const Candidate*> candidates_by_id;
@@ -292,6 +443,7 @@ namespace uam
 		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, declined_chats, added_keys))
 			return reject("Declined history could not be saved. No decisions were applied.");
 		const std::unordered_set<std::string> selected(selected_candidates.begin(), selected_candidates.end());
+		m_import.preparation_stop = std::stop_source{};
 		for (Candidate& candidate : m_candidates)
 		{
 			if (!selected.contains(candidate.summary.candidate_id)) continue;

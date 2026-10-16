@@ -176,6 +176,22 @@ describe('MarkdownStoreModal', () => {
     expect(useAppStore.getState().setMarkdownStoreFavorite).toHaveBeenCalledWith(expect.objectContaining({ id: 'review' }), true)
   })
 
+  it('disables Save for clean and reverted existing skill drafts', () => {
+    const { host } = mountSkills()
+    click('Edit Review code in app')
+    expect(button('Save').disabled).toBe(true)
+    click('Save')
+    expect(host.querySelector('[aria-label="Overwrite skill"]')).toBeNull()
+    expect(useAppStore.getState().updateMarkdownStoreEntry).not.toHaveBeenCalled()
+    changeField('Entry title', 'Review changed')
+    expect(button('Save').disabled).toBe(false)
+    changeField('Entry title', 'Review code')
+    expect(button('Save').disabled).toBe(true)
+    click('Cancel')
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeNull()
+    expect(host.querySelector('[aria-label="Edit skill"]')).toBeNull()
+  })
+
   it('edits with preview, saves atomically through the store, and keeps failed edits open', async () => {
     const update = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
     useAppStore.setState({ updateMarkdownStoreEntry: update })
@@ -218,9 +234,11 @@ describe('MarkdownStoreModal', () => {
     const editor = host.querySelector('[role="dialog"][aria-label="Edit skill"]') as HTMLElement
     expect(editor).toBeTruthy()
     expect(editor.contains(document.activeElement)).toBe(true)
+    changeField('Entry title', 'Changed review')
     await confirmSave()
     expect(editor.querySelector('[role="alert"]')?.textContent).toContain('Disk is read only.')
 
+    changeField('Entry title', 'Review code')
     act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
     expect(useAppStore.getState().closeMarkdownStore).not.toHaveBeenCalled()
     expect(host.querySelector('[role="dialog"][aria-label="Edit skill"]')).toBeNull()
@@ -376,6 +394,7 @@ describe('MarkdownStoreModal', () => {
     useAppStore.setState({ updateMarkdownStoreEntry: update })
     const { host } = mountSkills()
     act(() => (host.querySelector('button[aria-label="Edit Review code in app"]') as HTMLButtonElement).click())
+    changeField('Entry title', 'Changed review')
     click('Save')
     expect(update).not.toHaveBeenCalled()
     const save = button('Overwrite')
@@ -510,6 +529,7 @@ describe('MarkdownStoreModal', () => {
     expect(button('Save').disabled).toBe(true)
     changeField('Entry title', 'New skill')
     changeField('Entry Markdown body', 'New body')
+    expect(button('Save').disabled).toBe(false)
     await act(async () => { button('Save').click(); await Promise.resolve() })
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('Disk full')
     expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('New body')

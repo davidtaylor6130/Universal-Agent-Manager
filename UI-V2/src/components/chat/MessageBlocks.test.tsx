@@ -7,6 +7,7 @@ import { ConversationWork } from './ConversationWork'
 import { useAppStore } from '../../store/useAppStore'
 import { buildMessageFromCpp } from '../../store/cpp/reconcile'
 import type { CppMessage } from '../../store/cpp/types'
+import type { MessageBlock } from '../../types/message'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -889,6 +890,71 @@ describe('working transcript', () => {
 
 
 describe('persisted context compaction', () => {
+  it.each(['saved', 'retained'] as const)('hides streaming compaction text in %s messages through completion without hiding ordinary output', async (source) => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const partial = 'Private native summary'
+    const ordinary = 'Continuing the requested work.'
+    const render = async (blocks: MessageBlock[], active = true) => {
+      const message = buildMessageFromCpp('chat', {
+        role: 'assistant', content: partial, createdAt: '2026-10-15T22:55:48Z', blocks,
+      } as CppMessage, 0)
+      expect(message.blocks).toEqual(blocks)
+      await act(async () => root.render(source === 'saved'
+        ? <PersistedMessageContent message={message} onSelectTool={vi.fn()} />
+        : <TurnTimelineContent events={message.blocks!} active={active} tools={[]} pendingPermission={null} pendingUserInput={null}
+            onSelectTool={vi.fn()} onResolvePermission={async () => true} onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} />))
+    }
+    try {
+      for (const text of [partial, `${partial} continues`, `${partial} complete`]) {
+        await render([{ type: 'context_compaction_summary', text, requestId: 'opencode-message:summary' }])
+        expect(host.textContent).not.toContain(partial)
+        expect(host.querySelector('.context-compaction')).toBeNull()
+      }
+      const hidden = { type: 'context_compaction_summary' as const, text: `${partial} complete`, requestId: 'opencode-message:summary' }
+      await render([hidden, { type: 'assistant_text', text: ordinary, requestId: 'opencode-message:ordinary' }], false)
+      expect(host.textContent).not.toContain(partial)
+      expect(host.textContent).toContain(ordinary)
+      await render([{ ...hidden, type: 'context_compaction', requestId: 'acp-compaction:summary' },
+        { type: 'assistant_text', text: ordinary, requestId: 'opencode-message:ordinary' }], false)
+      const details = host.querySelector<HTMLDetailsElement>('details.context-compaction')
+      expect(details?.open).toBe(false)
+      expect(details?.querySelector('summary')?.textContent).toBe('Context compacted')
+      expect(details?.textContent).toContain(partial)
+      expect(host.querySelector('.conversation-trace__text')?.textContent).toBe(ordinary)
+    } finally { await act(async () => root.unmount()); host.remove() }
+  })
+
+  it.each(['saved', 'retained'] as const)('collapses a proven interrupted compaction in %s history without claiming success', async (source) => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const partial = 'The provider received only this part of its compaction summary.'
+    const block = { type: 'context_compaction_interrupted' as const, text: partial, requestId: 'acp-compaction:interrupted-native', tokensBefore: 5000, tokensAfter: 1000 }
+    try {
+      if (source === 'saved') {
+        const message = buildMessageFromCpp('chat', {
+          role: 'assistant', content: partial, createdAt: '2026-10-15T18:08:28Z',
+          blocks: [block], interrupted: true,
+        } as CppMessage, 0)
+        expect(message.blocks?.[0]).toMatchObject(block)
+        await act(async () => root.render(<PersistedMessageContent message={message} workingMode="compact" onSelectTool={vi.fn()} />))
+      } else {
+        await act(async () => root.render(<TurnTimelineContent events={[block]} tools={[]} pendingPermission={null} pendingUserInput={null} onSelectTool={vi.fn()} onResolvePermission={async () => true} onCancelTurn={vi.fn()} onStopRuntime={vi.fn()} workingMode="compact" />))
+      }
+      const details = host.querySelector<HTMLDetailsElement>('details.context-compaction')
+      expect(details).not.toBeNull()
+      expect(details!.open).toBe(false)
+      expect(details!.querySelector('summary')?.textContent).toBe('Context compaction interrupted')
+      expect(details!.textContent).toContain(partial)
+      expect(details!.textContent).not.toContain('reduced')
+      expect(host.querySelector('.conversation-trace__text')).toBeNull()
+    } finally {
+      await act(async () => root.unmount())
+      host.remove()
+    }
+  })
+
   it('hydrates and renders a native compaction marker without summary text', async () => {
     // Native history omits the text field when a compaction has no summary.
     const message = buildMessageFromCpp('chat', {
