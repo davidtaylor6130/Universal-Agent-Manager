@@ -8,6 +8,6 @@ Chat lifecycle notices belong in the transcript; app-wide failures, warnings, co
 - One notifications panel (the bell rail) holds every app-wide message: failures, warnings, completed system actions and available updates.
 - One shared transient alert (`TransientAlertSurface` in `AppShell`, bottom-left, `aria-live="polite"`) briefly shows each new message. It auto-dismisses and the message stays in the panel.
 - No feature-specific popups or toasts. Features report failures through `reportAppFailure` (`utils/appFailure.ts`).
-- No undo offers or undo shortcuts. A change either saves or is reported as failed.
+- Organisation operations offer no undo toast or organisation-undo shortcut; ordinary text-editor undo remains available. Failed changes are reported through the shared path.
 
 The no-undo agreement concerns organization operations; it does not remove ordinary text-editor undo. [Sending](../chat/sending.md) and [compaction](../providers/compaction.md) own their behaviour; the notes here specify presentation. Do not describe the target notification system as universally shipped until the pending work is resolved.

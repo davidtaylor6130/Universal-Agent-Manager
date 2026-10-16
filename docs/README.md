@@ -4,7 +4,7 @@ These docs describe what UAM’s features mean and how they are expected to beha
 
 ## System overview
 
-[Architecture](architecture.md) · [Build flags](build-flags.md) · [Building UAM](building.md) · [Security and managed deployment](security-enterprise.md) · [Recorded decisions](architecture/decisions.md)
+[Architecture](architecture/architecture.md) · [Build flags](build-flags.md) · [Building UAM](building.md) · [Security and managed deployment](security-enterprise.md) · [Recorded decisions](architecture/decisions.md)
 
 ## Features
 
@@ -21,11 +21,17 @@ These docs describe what UAM’s features mean and how they are expected to beha
 | Computer use | [Shared controller and native-provider routing](computer-use.md) |
 | Phone access | [Browser interface published by the main device](phone-access.md) |
 | Usage | [Tokens, context, account allowances and history](usage/usage.md) |
+| Changes and diffs | [Workspace review, recorded edits and commits](changes/changes.md) |
+| File inspection | [Current file content and host identity](files/inspection.md) |
+| Updates | [Application, provider and helper updates](updates/updates.md) |
+| Navigation | [Main surfaces, keyboard and focus](navigation/navigation.md) |
 | UI | [Visual language, primitives, accessibility and interaction](ui/design-language.md) |
 
 ## Implementation and maintenance
 
-- [Documentation review](documentation-review.md): corrected contradictions, unresolved decisions and known implementation gaps.
+[Architecture and data authority](architecture/architecture.md) · [Engineering rules](engineering/engineering.md) · [Section coverage](coverage.md)
+
+- [Documentation review](documentation-review.md): corrected contradictions, confirmed decisions, unresolved scope and known implementation gaps.
 - [Engineering reference](reference/README.md): useful technical detail and source navigation, outside the short feature agreements.
 - [V5 change log](<../V5 Improvement Change log.md>): work ownership, verification, review and David’s specific acceptance.
 - [Repository instructions](../AGENTS.md): required workflow, builds and documentation maintenance.

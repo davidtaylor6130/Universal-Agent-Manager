@@ -10,3 +10,7 @@ A chat is UAM’s durable conversation with its own provider selection, model, a
 - [Imports and exports](imports.md)
 - [Pane layout](panes.md)
 - [Sidebar](../sidebar/sidebar.md)
+
+[New chat](new-chat.md) · [Native import chooser](native-imports.md) · [Questions](questions.md) · [Changes and diffs](../changes/changes.md).
+
+[Architect + worker](architect-worker.md) · [Runtime controls](../providers/runtime-lifecycle.md).

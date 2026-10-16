@@ -9,7 +9,7 @@ UAM brings AI CLI runtimes into one desktop application on macOS and Windows, wi
 
 - [Feature guide](docs/README.md): what features mean and how they should behave.
 - [Provider requirements and checklists](docs/providers/providers.md): shared expectations, UAM equivalents and explicit gaps.
-- [Architecture](docs/architecture.md): high-level system connections.
+- [Architecture](docs/architecture/architecture.md): high-level system connections.
 - [Building UAM](docs/building.md): development, packaging and test commands.
 - [Build flags](docs/build-flags.md): deliberate exclusion of providers and policy-sensitive capabilities.
 
@@ -37,7 +37,7 @@ UAM stores its own history and settings locally. Provider CLIs and configured tr
 
 Read [AGENTS.md](AGENTS.md) and [the documentation rules](docs/documentation-rules.md) before changing behaviour. Find the owning feature page and applicable UI rules; keep affected agreements, provider checklist rows and the [V5 change log](<V5 Improvement Change log.md>) aligned in the same commit. This applies even when the human has not explicitly requested documentation. Preserve implementation gaps and pending acceptance rather than changing expectations to match a defect.
 
-Run `python3 scripts/check_docs.py` before committing documentation or provider-capability changes. Use the existing application checks appropriate to an implementation change; documentation checks do not establish runtime correctness. [Engineering reference](docs/reference/README.md) retains useful source details, while [Documentation review](docs/documentation-review.md) records resolved contradictions and decisions still needed.
+Run `python3 scripts/check_docs.py` before committing documentation or provider-capability changes. Use the existing application checks appropriate to an implementation change; documentation checks do not establish runtime correctness. [Engineering reference](docs/reference/README.md) retains useful source details, while [Documentation review](docs/documentation-review.md) records resolved contradictions and remaining scope decisions. [Section coverage](docs/coverage.md) maps the user-facing surfaces, and [engineering rules](docs/engineering/engineering.md) define testing and logging.
 
 The supported desktop platforms are macOS and Windows; packaged SSH helper targets are Linux x86-64, Linux ARM64 and Windows x86-64. RAG engines, local model engines, templates, Dear ImGui, dedicated VCS panels and checked-in frontend build output remain outside this release slice.
 

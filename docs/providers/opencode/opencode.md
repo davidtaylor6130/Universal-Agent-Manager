@@ -29,6 +29,6 @@ OpenCode CLI uses ACP. Common behaviour is defined once in the [provider agreeme
 | `usage` | Both | Partial | Token/history routes exist; no independent account-quota reader is integrated, and local request counts do not establish a provider allowance. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
-| `remote-execution` | Both | Partial | SSH helper route exists; live platform/CLI combinations and helper acceptance remain open. |
+| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
 
 **Source:** [provider runtime](../../../src/common/provider/opencode/cli/opencode_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.

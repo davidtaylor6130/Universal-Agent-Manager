@@ -7,3 +7,5 @@ The composer is the place to prepare and send input for the current chat, with i
 - [Workspace actions](workspace-actions.md)
 - [Sending and queues](../sending.md)
 - [Models](../../providers/models.md) and [permissions](../../providers/permissions/permissions.md)
+
+[Commands and completions](commands.md) · [Architect + worker](../architect-worker.md).

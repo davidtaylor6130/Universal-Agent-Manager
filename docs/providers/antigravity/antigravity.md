@@ -29,6 +29,8 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 | `usage` | Both | Partial | Token/history and independent local account quota-summary reads exist; existing account eligibility, custom commands, remote acquisition and platform acceptance remain limits. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
-| `remote-execution` | Both | Partial | SSH helper route exists; live platform/CLI combinations and helper acceptance remain open. |
+| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
+
+**Known UI gap:** provider availability settings still label Antigravity “Terminal sessions only.” The label conflicts with the confirmed scope; structured adapter presence does not establish that all selectors and settings expose it correctly.
 
 **Source:** [provider runtime](../../../src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.

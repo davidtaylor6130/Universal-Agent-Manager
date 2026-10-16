@@ -6,7 +6,7 @@ UAM keeps chat and settings data locally and projects a snapshot into React. `Ap
 
 ## Flow and invariants
 
-At startup, paths resolve through `UAM_DATA_DIR`, the working directory, the OS app-data path, then a temporary fallback. The coordinator loads settings, folders and chats; `StateSerializer` emits frontend state. Mutations go through domain services and repositories, then persist to the data root. Chat files have `.bak` companions. The backend is the authority for persisted values; frontend state is a working view reconciled from native replies and pushes.
+At startup, paths retain the confirmed existing order: `UAM_DATA_DIR`, OS app-data, temporary storage, then relative `data` only if no temporary directory can be resolved. The coordinator loads settings, folders and chats; `StateSerializer` emits frontend state. Mutations go through domain services and repositories, then persist to the data root. Chat files have `.bak` companions. The backend is the authority for persisted values; frontend state is a working view reconciled from native replies and pushes.
 
 Keep workspace ownership explicit when loading or saving chats. Do not move app data into the UI bundle or treat `UI-V2/dist` as source. A new persisted field needs model normalization, settings serialization, frontend state/action mapping and focused round-trip coverage.
 

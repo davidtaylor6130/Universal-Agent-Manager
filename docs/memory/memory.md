@@ -6,3 +6,5 @@ Memory is UAM’s durable store of useful preferences, decisions, facts and less
 - [Memory settings](../settings/memory.md)
 - [Skills](../settings/central-setup/skills.md) and [Agents](../settings/central-setup/agents.md)
 - [Memory architecture](../architecture/durable-memory.md)
+
+[Manual scans](scanning.md) · [Policy choices](../settings/memory-policies.md).

@@ -11,3 +11,5 @@ Settings configure the shared UAM product and its provider defaults through cons
 - [Appearance](appearance.md), [Storage](storage.md), [Remote Hosts](remote-hosts.md)
 
 Presentation follows [UI settings rules](../ui/settings.md).
+
+[Provider Overview](provider-overview.md) · [Goal Loops](goal-loops.md) · [Chat Data](chat-data.md) · [About](about.md). The [coverage map](../coverage.md#settings-pages) maps every settings navigation entry to its owning page.

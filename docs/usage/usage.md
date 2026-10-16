@@ -5,3 +5,5 @@ Usage views explain tokens, context, estimated spend and provider account allowa
 [Account allowances](allowances.md) · [Costs](costs.md) · [Provider figures](../providers/usage.md) · [Usage architecture](../architecture/usage-history.md) · [Visual presentation](../ui/visual-style.md).
 
 **Implementation: Partial.** History and independent local allowance readers are present; account eligibility, remote acquisition and platform acceptance remain explicit limits in the [provider checklists](../providers/providers.md#provider-checklists).
+
+[History controls](history.md) · [Model-price overrides](model-prices.md).

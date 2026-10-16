@@ -5,3 +5,5 @@ UAM persists chat history and lightweight catalogue metadata separately from tra
 [Chat](../chat/chat.md) · [Storage](../settings/storage.md).
 
 [Engineering reference](../reference/architecture/app-state-persistence.md).
+
+[Source-of-truth records](source-of-truth.md) distinguish canonical transcripts, durable metadata overlays, delivery journals and derived indexes; not every file named a cache is disposable.

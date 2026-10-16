@@ -25,3 +25,5 @@ UX rules (enforce):
 8. Don't invent features or data the code does not provide.
 
 The sidebar and composer patterns above link to their owning [sidebar](../sidebar/sidebar.md), [composer](../chat/composer/composer.md) and [message](../chat/messages.md) agreements. [Settings](settings.md) is authoritative over older general settings examples.
+
+[Diffs and change review](../changes/changes.md), [file inspection](../files/inspection.md) and [navigation](../navigation/navigation.md) own the behaviour of those surfaces; the patterns above govern presentation.

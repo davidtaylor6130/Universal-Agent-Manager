@@ -7,3 +7,5 @@ The sidebar organises conversations by attention, pinning and workspace, indepen
 - [Pinned Chats](pinned/pinned.md)
 - [All Chats](all-chats/all-chats.md)
 - [Workspace folders](all-chats/workspace-folders.md)
+
+[Search](search.md) · [Collections](collections.md).
