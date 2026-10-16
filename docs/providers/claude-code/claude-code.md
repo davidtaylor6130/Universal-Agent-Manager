@@ -26,7 +26,7 @@ Claude Code CLI uses stream JSON. Common behaviour is defined once in the [provi
 | `reasoning` | Both | Needs verification | Display emitted reasoning; verify supported effort choices against the selected model. |
 | `fast-mode` | Unverified | Needs verification | No speed-tier guarantee inferred from model selection; verify an actual provider/UAM equivalent. |
 | `permissions` | Both | Partial | Native auto-review is mapped; print-mode interactive callback limitations prevent a blanket UAM-mediation claim. |
-| `usage` | Both | Partial | Token/history routes exist; full account allowance figures are not established. |
+| `usage` | Both | Partial | Token/history, declared allowance events and independent local OAuth usage reads exist; custom commands, remote acquisition and platform acceptance remain limited. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
 | `remote-execution` | Both | Partial | SSH helper route exists; live platform/CLI combinations and helper acceptance remain open. |

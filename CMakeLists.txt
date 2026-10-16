@@ -573,6 +573,11 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/usage/usage_store.cpp
   src/common/usage/usage_collector.cpp
   src/common/usage/multi_host_history.cpp
+    src/common/usage/account_allowance_fetcher.cpp
+    src/common/usage/account_allowance_service.cpp
+    src/common/usage/account_credentials_macos.cpp
+    src/common/usage/google_account_allowance.cpp
+    src/common/usage/claude_account_allowance.cpp
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
   src/core/chat_import_utils.cpp
@@ -1259,6 +1264,7 @@ if(UAM_BUILD_TESTS)
     tests/claude_model_metadata_tests.cpp
     tests/svn_commit_scheduling_tests.cpp
     tests/native_import_failure_tests.cpp
+    tests/empty_native_import_tests.cpp
     tests/opencode_import_stream_tests.cpp
     tests/local_chat_bundle_tests.cpp
     tests/antigravity_tests.cpp
@@ -1306,6 +1312,10 @@ if(UAM_BUILD_TESTS)
     tests/usage_store_tests.cpp
     tests/usage_collector_tests.cpp
     tests/multi_host_history_tests.cpp
+    tests/account_allowance_fetcher_tests.cpp
+    tests/account_allowance_service_tests.cpp
+    tests/google_account_allowance_tests.cpp
+    tests/claude_account_allowance_tests.cpp
     tests/chat_title_tests.cpp
     tests/vcs_settings_tests.cpp
     tests/chat_snooze_tests.cpp
@@ -1433,6 +1443,11 @@ if(UAM_BUILD_TESTS)
     src/common/usage/usage_store.cpp
     src/common/usage/usage_collector.cpp
     src/common/usage/multi_host_history.cpp
+    src/common/usage/account_allowance_fetcher.cpp
+    src/common/usage/account_allowance_service.cpp
+    src/common/usage/account_credentials_macos.cpp
+    src/common/usage/google_account_allowance.cpp
+    src/common/usage/claude_account_allowance.cpp
     src/common/usage/usage_pricing.cpp
     src/common/usage/usage_pricing_cache.cpp
     src/common/provider/provider_profile.cpp

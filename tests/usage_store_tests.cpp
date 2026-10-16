@@ -404,3 +404,37 @@ UAM_TEST(UsageStreamedReceiptsRejectDuplicateIdentitiesAndMalformedCoverage)
 	UAM_ASSERT(uam::io::WriteTextFile(duplicate, header.dump() + "\n" + bytes.substr(first + 1))); UAM_ASSERT(!uam::usage::ReadReceiptSnapshot(duplicate, error));
 	UAM_ASSERT(original->Visit([](const uam::usage::AccountingRecord&) { return true; }, error));
 }
+
+UAM_TEST(UsageStoreStreamedFactsIdentityIgnoresHeadersAndTracksMutableUsage)
+{
+	TempDir temp("uam-usage-facts-identity");
+	uam::usage::Store store(temp.root);
+	std::string error;
+	uam::usage::Record record = StoreEvent("mutable");
+	UAM_ASSERT(store.Import({{&record, "fixture", 0}}, error));
+	nlohmann::json metadata = uam::usage::EmptyHistoryMetadata();
+	const auto first = store.WriteReceiptSnapshot(kStoreAsOf, metadata, error);
+	UAM_ASSERT(first);
+	UAM_ASSERT(!first->facts_fingerprint.empty());
+	UAM_ASSERT(first->facts_bytes > 0);
+	metadata["complete"] = true;
+	const auto second = store.WriteReceiptSnapshot(kStoreAsOf + 1000, metadata, error);
+	UAM_ASSERT(second);
+	UAM_ASSERT(first->fingerprint != second->fingerprint);
+	UAM_ASSERT_EQ(first->facts_fingerprint, second->facts_fingerprint);
+	UAM_ASSERT_EQ(first->facts_bytes, second->facts_bytes);
+	const auto restored = uam::usage::ReadReceiptSnapshot(second->path, error);
+	UAM_ASSERT(restored);
+	UAM_ASSERT_EQ(restored->facts_fingerprint, second->facts_fingerprint);
+	UAM_ASSERT_EQ(restored->facts_bytes, second->facts_bytes);
+	record.tokens.input += 7;
+	UAM_ASSERT(store.Import({{&record, "fixture", 0}}, error));
+	const auto tokens = store.WriteReceiptSnapshot(kStoreAsOf + 1000, metadata, error);
+	UAM_ASSERT(tokens);
+	UAM_ASSERT(tokens->facts_fingerprint != second->facts_fingerprint);
+	record.reported_cost_usd = 0.75;
+	UAM_ASSERT(store.Import({{&record, "fixture", 0}}, error));
+	const auto cost = store.WriteReceiptSnapshot(kStoreAsOf + 1000, metadata, error);
+	UAM_ASSERT(cost);
+	UAM_ASSERT(cost->facts_fingerprint != tokens->facts_fingerprint);
+}

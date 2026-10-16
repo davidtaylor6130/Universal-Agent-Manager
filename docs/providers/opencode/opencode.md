@@ -26,7 +26,7 @@ OpenCode CLI uses ACP. Common behaviour is defined once in the [provider agreeme
 | `reasoning` | Both | Needs verification | Display emitted reasoning; verify supported effort choices against the selected model. |
 | `fast-mode` | Unverified | Needs verification | No speed-tier guarantee inferred from model selection; verify an actual provider/UAM equivalent. |
 | `permissions` | Both | Partial | ACP mediation exists; child permission handling has a recorded launch restriction. |
-| `usage` | Both | Partial | Token/history routes exist; full account allowance figures are not established. |
+| `usage` | Both | Partial | Token/history routes exist; no independent account-quota reader is integrated, and local request counts do not establish a provider allowance. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
 | `remote-execution` | Both | Partial | SSH helper route exists; live platform/CLI combinations and helper acceptance remain open. |

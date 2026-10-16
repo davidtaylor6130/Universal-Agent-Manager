@@ -15,4 +15,6 @@ Spacing: 4px rhythm var(--sp-1..8). Radius var(--r-sm 5) --r-md 8 --r-lg 12. Ele
 
 Quantities such as allowances, token usage, spend, progress and counts versus capacity use bars, meters, sparklines or segmented bars where useful, with exact numbers as secondary text. Use semantic thresholds where the value has a real limit (for example, over 80% warning and over 95% error); do not invent capacity for unknown values.
 
+Usage charts include reported charges and estimates; incomplete pricing must disclose excluded unpriced tokens and label the total Known cost. [Allowances](../usage/allowances.md) retain unknown values and provider-reported periods rather than inventing a limit.
+
 [Primitives](primitives.md) · [Accessibility](accessibility.md).

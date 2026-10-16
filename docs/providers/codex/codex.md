@@ -26,7 +26,7 @@ Codex CLI uses app-server over stdio. Common behaviour is defined once in the [p
 | `reasoning` | Both | Implemented | Advertised reasoning levels and saved effort reach Codex request configuration. |
 | `fast-mode` | Both | Implemented | Supported service tiers are parsed and persisted; selection reaches Codex request configuration. |
 | `permissions` | Both | Implemented | Native requests, explicit decisions and confirmed native auto-review mapping coexist with UAM policy. |
-| `usage` | Both | Partial | Token/history routes exist; full account allowance figures are not established. |
+| `usage` | Both | Partial | Token/history and independent local account/rateLimits/read routes exist; custom commands, remote acquisition and platform acceptance remain limited. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
 | `remote-execution` | Both | Partial | SSH helper route exists; live platform/CLI combinations and helper acceptance remain open. |

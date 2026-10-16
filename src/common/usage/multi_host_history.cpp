@@ -48,6 +48,7 @@ namespace uam::usage
 		struct Data
 		{
 			std::vector<AccountingRecord> records;
+			std::string source_scope = "local";
 			std::shared_ptr<const ReceiptSnapshot> receipts;
 			nlohmann::json metadata;
 			std::int64_t as_of = 0;
@@ -100,7 +101,7 @@ namespace uam::usage
 				if (error) { error.clear(); std::filesystem::copy_file(snapshot->path, path, std::filesystem::copy_options::none, error); }
 				if (error) return std::nullopt;
 				std::shared_ptr<ReceiptSnapshot> pinned = std::make_shared<ReceiptSnapshot>();
-				pinned->path = path; pinned->metadata = snapshot->metadata; pinned->as_of = snapshot->as_of; pinned->bytes = snapshot->bytes; pinned->fingerprint = snapshot->fingerprint; pinned->lifetime = snapshot->lifetime; pinned->owned = true;
+				pinned->path = path; pinned->metadata = snapshot->metadata; pinned->as_of = snapshot->as_of; pinned->bytes = snapshot->bytes; pinned->fingerprint = snapshot->fingerprint; pinned->facts_fingerprint = snapshot->facts_fingerprint; pinned->facts_bytes = snapshot->facts_bytes; pinned->lifetime = snapshot->lifetime; pinned->owned = true;
 				snapshot = std::move(pinned);
 			}
 			std::optional<Data> data = Decode({{"version", snapshot->lifetime ? 2 : 1}, {"asOfMs", snapshot->as_of}, {"metadata", snapshot->metadata}, {"facts", nlohmann::json::array()}, {"range", snapshot->lifetime ? "all-recorded" : ""}});
@@ -112,37 +113,88 @@ namespace uam::usage
 			if (data) { data->receipts = snapshot; data->bytes = 0; }
 			return data;
 		}
-		std::shared_ptr<const Ledger> MakeLedger(const std::vector<const Data*>& inputs, const std::filesystem::path& data_root, std::string& error, const std::function<bool()>& cancelled)
+		struct LedgerCache
 		{
-			static std::atomic<std::uint64_t> next{0};
-			const std::filesystem::path scratch = data_root / "usage" / ("combined-" + std::to_string(Now()) + "-" + std::to_string(++next));
-			struct Cleanup
-			{
-				std::filesystem::path path;
-				~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
-			} cleanup{scratch};
-			if (paths::IsLinkOrReparsePointNoThrow(data_root / "usage") || paths::IsLinkOrReparsePointNoThrow(scratch)) { error = "Usage scratch storage is invalid."; return {}; }
-			Store store(scratch);
+			std::filesystem::path path;
+			std::vector<std::string> keys;
+			std::vector<std::string> sources;
+			std::vector<std::shared_ptr<const ReceiptSnapshot>> receipts;
+			std::shared_ptr<const Ledger> ledger;
+			~LedgerCache() { std::error_code ignored; std::filesystem::remove_all(path, ignored); }
+		};
+
+		std::shared_ptr<const Ledger> MakeLedger(const std::vector<const Data*>& inputs, const std::filesystem::path& data_root, std::unique_ptr<LedgerCache>& cached, std::atomic<std::uint64_t>& imported_records, std::atomic<std::uint64_t>& ledger_builds, std::string& error, const std::function<bool()>& cancelled)
+		{
+			if (cancelled && cancelled()) return {};
+			std::vector<std::string> keys;
 			bool lifetime = true;
-			for (std::size_t index = 0; index < inputs.size(); ++index)
+			for (const Data* data : inputs)
 			{
-				const Data& data = *inputs[index]; lifetime = lifetime && data.lifetime;
-				std::vector<AccountingRecord> batch;
-				const std::string scope = "source-" + std::to_string(index);
-				const std::function<bool(const AccountingRecord&)> append = [&](const AccountingRecord& entry)
+				lifetime = lifetime && data->lifetime;
+				nlohmann::json identity = nlohmann::json::array({data->source_scope, data->lifetime});
+				if (data->receipts) identity.push_back(nlohmann::json::array({"receipts", data->receipts->facts_fingerprint.empty() ? data->receipts->fingerprint : data->receipts->facts_fingerprint, data->receipts->facts_fingerprint.empty() ? data->receipts->bytes : data->receipts->facts_bytes}));
+				else
 				{
-					if (cancelled && cancelled()) return false;
-					batch.push_back(entry);
-					if (batch.size() < 2048) return true;
-					if (!store.ImportAccounting(batch, scope, error, cancelled)) return false;
-					batch.clear(); return true;
-				};
-				if (data.receipts)
-				{ if (!data.receipts->Visit(append, error, cancelled)) return {}; }
-				else for (const AccountingRecord& entry : data.records) if (!append(entry)) return {};
-				if (!batch.empty() && !store.ImportAccounting(batch, scope, error, cancelled)) return {};
+					nlohmann::json facts = nlohmann::json::array();
+					for (const AccountingRecord& entry : data->records) facts.push_back(EncodeAccountingRecord(entry));
+					identity.push_back(std::move(facts));
+				}
+				keys.push_back(identity.dump());
 			}
-			std::optional<Ledger> ledger = store.ReadLifetimeLedger(Now(), error, cancelled);
+			bool same_inputs = cached && cached->keys == keys && cached->receipts.size() == inputs.size();
+			for (std::size_t index = 0; same_inputs && index < inputs.size(); ++index)
+			{
+				const auto& previous = cached->receipts[index];
+				const auto& current = inputs[index]->receipts;
+				if (previous && current)
+				{
+					// Unchanged facts inherit validation only when their new header cannot narrow its scope.
+					const auto cutoff = [](std::int64_t as_of) { return std::max<std::int64_t>(0, as_of / 86400000 * 86400000 - 89LL * 86400000); };
+					if (current->as_of < previous->as_of || (!current->lifetime && cutoff(current->as_of) != cutoff(previous->as_of))) same_inputs = false;
+				}
+			}
+			const std::int64_t now = Now();
+			if (same_inputs && cached->ledger && now >= cached->ledger->GeneratedMs() && now / 30000 == cached->ledger->GeneratedMs() / 30000) return cached->ledger;
+			std::unique_ptr<LedgerCache> replacement;
+			if (!same_inputs)
+			{
+				static std::atomic<std::uint64_t> next{0};
+				replacement = std::make_unique<LedgerCache>();
+				replacement->path = data_root / "usage" / ("combined-" + std::to_string(now) + "-" + std::to_string(++next));
+				replacement->keys = std::move(keys);
+				for (const Data* data : inputs) replacement->sources.push_back(data->source_scope);
+				if (paths::IsLinkOrReparsePointNoThrow(data_root / "usage") || paths::IsLinkOrReparsePointNoThrow(replacement->path)) { error = "Usage scratch storage is invalid."; return {}; }
+				Store store(replacement->path);
+				for (std::size_t index = 0; index < inputs.size(); ++index)
+				{
+					const Data& data = *inputs[index];
+					std::vector<AccountingRecord> batch;
+					const std::string scope = "source-" + std::to_string(index);
+					const std::function<bool()> flush = [&]()
+					{
+						if (batch.empty()) return true;
+						if (!store.ImportAccounting(batch, scope, error, cancelled)) return false;
+						imported_records.fetch_add(batch.size());
+						batch.clear(); return true;
+					};
+					const std::function<bool(const AccountingRecord&)> append = [&](const AccountingRecord& entry)
+					{
+						if (cancelled && cancelled()) return false;
+						batch.push_back(entry);
+						return batch.size() < 2048 || flush();
+					};
+					if (data.receipts)
+					{
+						if (!data.receipts->Visit(append, error, cancelled)) return {};
+					}
+					else for (const AccountingRecord& entry : data.records) if (!append(entry)) return {};
+					if (!flush()) return {};
+					replacement->receipts.push_back(data.receipts);
+				}
+			}
+			LedgerCache& selected = replacement ? *replacement : *cached;
+			// Clock ticks reread immutable accounting so rolling boundaries and future witnesses advance.
+			std::optional<Ledger> ledger = Store(selected.path).ReadLifetimeLedger(now, error, cancelled);
 			if (ledger && !lifetime)
 			{
 				// Legacy peers provide rolling coverage only; never advertise complete lifetime from them.
@@ -153,7 +205,11 @@ namespace uam::usage
 				encoded["rows"] = std::move(rows);
 				ledger = Ledger::Decode(encoded);
 			}
-			return ledger ? std::make_shared<const Ledger>(std::move(*ledger)) : nullptr;
+			if (!ledger || (cancelled && cancelled())) return {};
+			selected.ledger = std::make_shared<const Ledger>(std::move(*ledger));
+			ledger_builds.fetch_add(1);
+			if (replacement) cached = std::move(replacement);
+			return cached->ledger;
 		}
 
 		nlohmann::json Coverage(const ExecutionHost& host, const Data* data, std::string_view error, bool cached, bool loading)
@@ -228,6 +284,9 @@ namespace uam::usage
 			std::chrono::steady_clock::time_point due{};
 		};
 		std::map<std::string, Peer> peers;
+		std::map<std::string, std::unique_ptr<LedgerCache>> peer_ledgers;
+		std::unique_ptr<LedgerCache> combined_ledger;
+		std::vector<std::string> cache_scopes;
 		std::shared_ptr<const ReceiptSnapshot> local_bytes;
 		std::optional<Data> local;
 		bool changed = true;
@@ -257,6 +316,14 @@ namespace uam::usage
 				if (generation != published_generation)
 					for (std::pair<const std::string, Peer>& peer : peers) peer.second.due = {};
 				std::erase_if(peers, [&hosts](const std::pair<const std::string, Peer>& peer) { return !std::ranges::any_of(hosts, [&peer](const ExecutionHost& host) { return host.id == peer.first; }); });
+				std::vector<std::string> scopes;
+				for (const ExecutionHost& host : hosts) scopes.push_back(Scope(host));
+				if (scopes != cache_scopes) { combined_ledger.reset(); cache_scopes = scopes; }
+				std::erase_if(peer_ledgers, [&hosts](const auto& entry)
+				{
+					const auto host = std::ranges::find_if(hosts, [&entry](const ExecutionHost& item) { return item.id == entry.first; });
+					return host == hosts.end() || (entry.second && !entry.second->sources.empty() && entry.second->sources.front() != Scope(*host));
+				});
 				std::size_t cache_bytes = local ? local->bytes : 0;
 				for (const std::pair<const std::string, Peer>& peer : peers) if (peer.second.data) cache_bytes += peer.second.data->bytes;
 				if (hosts.size() > 32)
@@ -336,14 +403,16 @@ namespace uam::usage
 					coverage.push_back(Coverage(execution_hosts::LocalHost(), local ? &*local : nullptr, local_error, false, local_collecting));
 					for (const ExecutionHost& host : hosts)
 					{
-						const Peer& peer = peers[host.id];
+						Peer& peer = peers[host.id];
+						if (peer.data) peer.data->source_scope = peer.scope;
 						const Data* data = peer.data ? &*peer.data : nullptr;
 						nlohmann::json row = Coverage(host, data, peer.error, peer.cached, peer.loading);
 						coverage.push_back(row);
 						View view;
 						view.metadata = data ? data->metadata : EmptyHistoryMetadata(host.id); view.metadata["version"] = 3; view.metadata["executionHostId"] = host.id;
+						view.metadata["complete"] = view.metadata.value("complete", false) && !peer.cached && peer.error.empty() && !peer.loading;
 						view.metadata["collecting"] = peer.loading; view.metadata["collectionError"] = strings::SafeLine(peer.error, 1024); view.coverage = nlohmann::json::array({row});
-						if (data) { std::string ledger_error; view.ledger = MakeLedger({data}, m_dataRoot, ledger_error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); }); if (!view.ledger) view.metadata["collectionError"] = ledger_error; append(*data); }
+						if (data) { std::string ledger_error; view.ledger = MakeLedger({data}, m_dataRoot, peer_ledgers[host.id], m_importedRecords, m_ledgerBuilds, ledger_error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); }); if (!view.ledger) view.metadata["collectionError"] = ledger_error; append(*data); }
 						else metadata["complete"] = false;
 						if (peer.cached || !peer.error.empty()) metadata["complete"] = false;
 						metadata["collecting"] = metadata["collecting"].get<bool>() || peer.loading;
@@ -351,7 +420,7 @@ namespace uam::usage
 					}
 					View total;
 					std::string ledger_error;
-					if (valid_totals && !combined.empty()) total.ledger = MakeLedger(combined, m_dataRoot, ledger_error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); });
+					if (valid_totals && !combined.empty()) total.ledger = MakeLedger(combined, m_dataRoot, combined_ledger, m_importedRecords, m_ledgerBuilds, ledger_error, [&]() { return stop.stop_requested() || scope_stop->stop_requested(); });
 					if (!total.ledger && !combined.empty()) metadata["collectionError"] = ledger_error.empty() ? "Could not combine usage accounting." : ledger_error;
 
 					total.metadata = std::move(metadata); total.coverage = std::move(coverage); views.emplace(std::string(kAllMachinesHostId), std::move(total));

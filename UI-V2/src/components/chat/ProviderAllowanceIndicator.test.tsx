@@ -25,6 +25,15 @@ function render(props: Parameters<typeof ProviderAllowanceIndicator>[0]) {
 describe('ProviderAllowanceIndicator', () => {
   beforeAll(() => vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }))
   afterAll(() => vi.unstubAllGlobals())
+  it('formats provider credit balances without dropping the exact source value', async () => {
+    const raw = '41049.6267850000'
+    const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: { ...limits, credits: { hasCredits: true, unlimited: false, balance: raw } }, running: true, nowMs: now })
+    try {
+      await act(async () => view.host.querySelector('button')!.focus())
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Credits: 41,049.63')
+      expect(document.querySelector(`[title="${raw}"]`)?.textContent).toBe('Credits: 41,049.63')
+    } finally { view.close() }
+  })
   it('shows the limiting native window and source/reset details on keyboard focus', async () => {
     const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: limits, running: true, nowMs: now })
     try {
@@ -35,7 +44,8 @@ describe('ProviderAllowanceIndicator', () => {
       expect(tooltip).toContain('Updated 1 min ago')
       expect(tooltip).toContain('Primary: 75% remaining')
       expect(tooltip).toContain(new Date((now / 1000 + 3600) * 1000).toLocaleString())
-      expect(tooltip).toContain('Credits: 4.50')
+      expect(tooltip).toContain('Credits: 4.5')
+      expect(document.querySelector('[title="4.50"]')?.textContent).toBe('Credits: 4.5')
     } finally { view.close() }
   })
 
@@ -99,6 +109,28 @@ describe('ProviderAllowanceIndicator', () => {
       expect(view.host.textContent).not.toContain('%')
       act(() => view.root.render(<ProviderAllowanceIndicator providerId="codex-cli" sourceProviderId="codex-cli" rateLimits={{ ...limits, primary: { ...limits.primary!, usedPercent: Number.NaN }, secondary: null, credits: null }} running nowMs={now} />))
       expect(view.host.querySelector('button')?.getAttribute('aria-label')).toBe('Account allowance: Unavailable')
+    } finally { view.close() }
+  })
+
+  it('marks a passed individual spend reset as cached even without token windows', async () => {
+    const view = render({ providerId: 'codex-cli', sourceProviderId: 'codex-cli', rateLimits: {
+      ...limits, primary: null, secondary: null, credits: null,
+      individualLimit: { used: 75, limit: 100, remainingPercent: 25, resetsAt: now / 1000 - 1 },
+    }, running: true, nowMs: now })
+    try {
+      expect(view.host.textContent).toContain('Cached 25% remaining')
+      await act(async () => view.host.querySelector('button')!.focus())
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Reset time passed; awaiting a new snapshot')
+    } finally { view.close() }
+  })
+
+  it('shows matching Claude allowance snapshots without relabelling them Codex', async () => {
+    const view = render({ providerId: 'claude-cli', sourceProviderId: 'claude-cli', rateLimits: limits, running: true, nowMs: now })
+    try {
+      expect(view.host.textContent).toContain('20% remaining')
+      await act(async () => view.host.querySelector('button')!.focus())
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('Claude session-reported account allowance')
+      expect(document.querySelector('[role="tooltip"]')?.textContent).not.toContain('Codex session-reported')
     } finally { view.close() }
   })
 })

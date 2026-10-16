@@ -24,3 +24,5 @@ These are repository entry points inspected for the documentation trial, not an 
 | Build exclusions | [CMake](../../CMakeLists.txt), [feature macros](../../src/common/config/build_features.h) | [Configurator checks](../../tools/build-configurator/test_configurator.py) |
 
 The provider checklist labels **Implemented** only identify an existing source route. Partial and Needs verification rows deliberately retain limits from the base evidence; a full audit must exercise the relevant native CLI, platform and remote combinations.
+
+Independent account allowances use `src/common/usage/account_allowance_service.*`, `account_allowance_fetcher.*`, `claude_account_allowance.*`, `google_account_allowance.*` and `account_credentials_macos.*`; the bridge is `src/cef/usage_handlers.cpp` and the frontend uses `UI-V2/src/services/providerAllowances.ts` with `useProviderAllowances.ts`. Native import content eligibility is in `src/core/native_import_content.h` with focused coverage in `tests/empty_native_import_tests.cpp`.

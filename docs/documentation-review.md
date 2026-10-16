@@ -1,6 +1,6 @@
 # Documentation review and decisions
 
-This page records the outcome of the isolated documentation trial based on `3a7c8477`. Expected behaviour comes from David’s instructions in this conversation and recorded repository decisions. Source inspection identifies implementation routes; no application was built, installed or exercised, and no provider was prompted. The [V5 log](<../V5 Improvement Change log.md>) remains the acceptance and ownership register.
+This page records the outcome of the isolated documentation trial based on `3a7c8477` and updated through `uam/v5-improvements` at `e28ba717`. Expected behaviour comes from David’s instructions in this conversation and recorded repository decisions. Source inspection identifies implementation routes; no application was built, installed or exercised, and no provider was prompted. The [V5 log](<../V5 Improvement Change log.md>) remains the acceptance and ownership register.
 
 ## Resolved documentation conflicts
 
@@ -44,7 +44,7 @@ This page records the outcome of the isolated documentation trial based on `3a7c
 | Sending | Direct input/queue separation and reported Unsent flash retain outstanding acceptance | [Sending](chat/sending.md), V5 Send Flashes Unsent |
 | Sidebar | Active Chats restoration was user-confirmed; other sidebar controls and wake-time overlap remain separately pending | [Active Chats](sidebar/active/active.md), V5 Restore Active Chats Section and Snoozed Wake Time Overlap |
 | Notifications and undo | Agreed shared notification system and organization-undo removal remain pending in the base decision record | [Recorded decisions](architecture/decisions.md) |
-| Account usage | Full account allowance coverage is not established by token-history support | [Usage](usage/usage.md), V5 Provider account usage requirements |
+| Account usage | Independent local reads exist for four providers; Gemini eligibility, OpenCode acquisition, custom commands, remote feeds and platform acceptance remain limited | [Allowances](usage/allowances.md), V5 Independent Account Allowance Snapshots |
 | Cross-platform/SSH | Source routes and fixture receipts do not prove every real CLI, OS or SSH combination | [Provider checklists](providers/providers.md#provider-checklists) |
 
 Do not reassign the owners of these existing V5 tasks or mark them fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
@@ -56,3 +56,7 @@ The local checker validates navigation, heading targets, reachability and one ex
 ## Decision status
 
 Both questions raised by the trial are resolved above. Review and David’s real-development trial remain outstanding; implementation gaps are still tracked separately and are not closed by these documentation decisions.
+
+## V5 synchronization
+
+The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-chat rejection and independent account allowances. Incoming application sources are retained without merge edits. New import, allowance, cost and accessibility rules are reflected in the short agreements and provider rows; detailed acquisition, cache and isolated-test-bundle guidance is retained in engineering reference. Upstream review receipts and unresolved native failures remain in the V5 log; this synchronization does not establish new runtime or user acceptance.

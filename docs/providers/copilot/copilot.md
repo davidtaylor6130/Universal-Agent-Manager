@@ -26,7 +26,7 @@ GitHub Copilot CLI uses ACP. Common behaviour is defined once in the [provider a
 | `reasoning` | Both | Implemented | Advertised reasoning options and effort configuration have a native route; unsupported choices stay unavailable. |
 | `fast-mode` | Unverified | Needs verification | No speed-tier guarantee inferred from model selection; verify an actual provider/UAM equivalent. |
 | `permissions` | Both | Implemented | ACP requests map to UAM policy; native-terminal internals remain provider-owned. |
-| `usage` | Both | Partial | Token/history routes exist; full account allowance figures are not established. |
+| `usage` | Both | Partial | Token/history and independent local SDK account.getQuota routes exist; custom commands, remote acquisition and platform acceptance remain limited. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
 | `remote-execution` | Both | Partial | SSH helper route exists; live platform/CLI combinations and helper acceptance remain open. |

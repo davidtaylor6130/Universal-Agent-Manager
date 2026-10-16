@@ -5,8 +5,190 @@
 #include "common/runtime/acp/acp_polling.h"
 
 #include <tuple>
+#include <limits>
+#include <cmath>
 
 using namespace uam_test;
+
+namespace
+{
+	struct ClaudeAllowanceFixture
+	{
+		uam::AppState app;
+		ChatSession chat;
+		uam::AcpSessionState session;
+		ClaudeAllowanceFixture()
+		{
+			chat.id = "allowance-chat"; chat.provider_id = "claude-cli"; chat.native_session_id = "allowance-native";
+			session.chat_id = chat.id; session.provider_id = chat.provider_id; session.session_id = chat.native_session_id;
+			session.protocol_kind = "claude-code-stream-json";
+		}
+		void Send(const nlohmann::json& info, const nlohmann::json& identity = "allowance-native")
+		{
+			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("claude-cli");
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat,
+			    {{"type", "rate_limit_event"}, {"session_id", identity}, {"rate_limit_info", info}}, nullptr));
+		}
+	};
+}
+
+UAM_TEST(ClaudeAllowanceProjectsDeclaredFractionalWindowsWithoutMixingWeeklyModels)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeAllowanceFixture fixture;
+	const int64_t reset = uam::time::TimestampNowSec() + 3600;
+	fixture.Send({{"status", "allowed_warning"}, {"rateLimitType", "five_hour"}, {"utilization", 0.29}, {"resetsAt", reset}});
+	const uam::AcpRateLimitsState& limits = fixture.session.provider_usage.rate_limits;
+	UAM_ASSERT(limits.available); UAM_ASSERT(limits.primary.available); UAM_ASSERT(!limits.secondary.available);
+	UAM_ASSERT_EQ(limits.primary.used_percent, 29); UAM_ASSERT_EQ(limits.primary.resets_at, reset);
+	UAM_ASSERT_EQ(limits.primary.window_duration_minutes, int64_t{300}); UAM_ASSERT(limits.updated_at_ms > 0);
+	fixture.Send({{"status", "allowed"}, {"rateLimitType", "seven_day"}, {"utilization", 0.57}, {"resetsAt", reset + 86400}});
+	UAM_ASSERT(limits.secondary.available); UAM_ASSERT_EQ(limits.secondary.used_percent, 57);
+	UAM_ASSERT_EQ(limits.secondary.window_duration_minutes, int64_t{10080}); UAM_ASSERT_EQ(limits.secondary.resets_at, reset + 86400);
+	for (const char* type : {"seven_day_opus", "seven_day_sonnet", "seven_day_overage_included", "overage", "unknown"})
+	{
+		fixture.Send({{"status", "rejected"}, {"rateLimitType", type}, {"utilization", 1.0}, {"resetsAt", reset + 172800}});
+		UAM_ASSERT_EQ(limits.primary.used_percent, 29); UAM_ASSERT_EQ(limits.secondary.used_percent, 57);
+		UAM_ASSERT_EQ(limits.secondary.resets_at, reset + 86400);
+	}
+	fixture.Send({{"status", "allowed"}, {"rateLimitType", "five_hour"}, {"utilization", 0.0}});
+	UAM_ASSERT_EQ(limits.primary.used_percent, 0);
+	fixture.Send({{"status", "rejected"}, {"rateLimitType", "five_hour"}, {"utilization", 1.0}});
+	UAM_ASSERT_EQ(limits.primary.used_percent, 100);
+#endif
+}
+
+UAM_TEST(ClaudeAllowanceDoesNotInventPercentagesFromStatusOrMalformedUtilization)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const char* status : {"allowed", "allowed_warning", "rejected"})
+	{
+		ClaudeAllowanceFixture fixture;
+		fixture.Send({{"status", status}, {"rateLimitType", "five_hour"}, {"resetsAt", uam::time::TimestampNowSec() + 3600}});
+		UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+	}
+	for (const nlohmann::json& invalid : std::vector<nlohmann::json>{nullptr, "0.5", true, -0.01, 1.01, 50, 101,
+	         std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()})
+	{
+		ClaudeAllowanceFixture fixture;
+		fixture.Send({{"status", "allowed"}, {"rateLimitType", "five_hour"}, {"utilization", invalid}});
+		UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+		fixture.Send({{"status", "allowed"}, {"rateLimitType", "five_hour"}, {"utilization", 0.42}});
+		UAM_ASSERT_EQ(fixture.session.provider_usage.rate_limits.primary.used_percent, 42);
+		fixture.session.provider_usage.rate_limits.updated_at_ms = 1;
+		fixture.Send({{"status", "rejected"}, {"rateLimitType", "five_hour"}, {"utilization", invalid}});
+		UAM_ASSERT_EQ(fixture.session.provider_usage.rate_limits.primary.used_percent, 42);
+		UAM_ASSERT_EQ(fixture.session.provider_usage.rate_limits.updated_at_ms, int64_t{1});
+	}
+	ClaudeAllowanceFixture fixture;
+	fixture.Send({{"status", "allowed"}, {"rateLimitType", "five_hour"}, {"utilization", 0.42}});
+	fixture.session.provider_usage.rate_limits.updated_at_ms = 1;
+	fixture.Send({{"status", "allowed"}, {"rateLimitType", "five_hour"}, {"resetsAt", uam::time::TimestampNowSec() + 3600}});
+	UAM_ASSERT_EQ(fixture.session.provider_usage.rate_limits.primary.used_percent, 42);
+	UAM_ASSERT_EQ(fixture.session.provider_usage.rate_limits.updated_at_ms, int64_t{1});
+#endif
+}
+
+UAM_TEST(ClaudeAllowanceRejectsForeignAndMissingNativeSessionIdentity)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	const nlohmann::json info{{"status", "allowed"}, {"rateLimitType", "five_hour"}, {"utilization", 0.5}};
+	for (const nlohmann::json& identity : std::vector<nlohmann::json>{"foreign", "", nullptr, 17})
+	{
+		ClaudeAllowanceFixture fixture; fixture.Send(info, identity);
+		UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+	}
+	ClaudeAllowanceFixture fixture; fixture.chat.native_session_id = "other-chat"; fixture.Send(info);
+	UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+	fixture.chat.native_session_id = fixture.session.session_id; fixture.session.provider_id = "codex-cli"; fixture.Send(info);
+	UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+	fixture.session.provider_id = "claude-cli"; fixture.session.goal_internal_session = true; fixture.Send(info);
+	UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+	fixture.session.goal_internal_session = false; fixture.session.model_discovery_only = true; fixture.Send(info);
+	UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+	fixture.session.model_discovery_only = false; fixture.session.chat_id = "another-chat"; fixture.Send(info);
+	UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+	fixture.session.chat_id = fixture.chat.id;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("claude-cli");
+	UAM_ASSERT(runtime.OnAcpHandleMessage(fixture.app, fixture.session, fixture.chat,
+	    {{"type", "rate_limit_event"}, {"rate_limit_info", info}}, nullptr));
+	UAM_ASSERT(!fixture.session.provider_usage.rate_limits.primary.available);
+#endif
+}
+
+UAM_TEST(ClaudeAllowanceProjectionPreservesRejectedQuotaContinuationEvidence)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeAllowanceFixture fixture; fixture.session.processing = true; fixture.session.turn_serial = 1;
+	const int64_t reset = uam::time::TimestampNowSec() + 3600;
+	fixture.Send({{"status", "rejected"}, {"rateLimitType", "five_hour"}, {"utilization", 1.0}, {"resetsAt", reset}});
+	UAM_ASSERT_EQ(fixture.session.claude_quota_reset_epoch_s, reset);
+	UAM_ASSERT_EQ(fixture.session.claude_quota_evidence_turn_serial, fixture.session.turn_serial);
+	UAM_ASSERT_EQ(fixture.session.provider_usage.rate_limits.primary.used_percent, 100);
+	fixture.Send({{"status", "allowed"}, {"rateLimitType", "five_hour"}});
+	UAM_ASSERT_EQ(fixture.session.claude_quota_reset_epoch_s, int64_t{0});
+	UAM_ASSERT_EQ(fixture.session.claude_quota_evidence_turn_serial, int64_t{0});
+	UAM_ASSERT_EQ(fixture.session.provider_usage.rate_limits.primary.used_percent, 100);
+#endif
+}
+
+UAM_TEST(ClaudeAllowanceClearsChangedNativeSessionAndPreservesSameSessionResume)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-claude-allowance-reset");
+	ClaudeAllowanceFixture fixture; fixture.app.data_root = temp.root;
+	uam::AcpRateLimitsState& limits = fixture.session.provider_usage.rate_limits;
+	limits.available = true; limits.updated_at_ms = 123;
+	limits.primary.available = true; limits.primary.used_percent = 87; limits.primary.window_duration_minutes = 300;
+	limits.primary.resets_at = uam::time::TimestampNowSec() + 3600;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("claude-cli");
+	UAM_ASSERT(runtime.OnAcpHandleMessage(fixture.app, fixture.session, fixture.chat,
+	    {{"type", "system"}, {"subtype", "init"}, {"session_id", fixture.session.session_id}}, nullptr));
+	UAM_ASSERT(limits.available); UAM_ASSERT(limits.primary.available);
+	UAM_ASSERT_EQ(limits.primary.used_percent, 87); UAM_ASSERT_EQ(limits.updated_at_ms, int64_t{123});
+	UAM_ASSERT(runtime.OnAcpHandleMessage(fixture.app, fixture.session, fixture.chat,
+	    {{"type", "system"}, {"subtype", "init"}, {"session_id", ""}}, nullptr));
+	UAM_ASSERT(limits.available); UAM_ASSERT_EQ(limits.primary.used_percent, 87);
+	UAM_ASSERT(runtime.OnAcpHandleMessage(fixture.app, fixture.session, fixture.chat,
+	    {{"type", "system"}, {"subtype", "init"}, {"session_id", "new-allowance-native"}}, nullptr));
+	UAM_ASSERT_EQ(fixture.session.session_id, std::string("new-allowance-native"));
+	UAM_ASSERT(!limits.available); UAM_ASSERT(!limits.primary.available); UAM_ASSERT(!limits.secondary.available);
+	UAM_ASSERT_EQ(limits.updated_at_ms, int64_t{0});
+#endif
+}
+
+UAM_TEST(ClaudeAllowanceFloorsFractionalUsageWithoutBinaryWholePercentUndercounts)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeAllowanceFixture fixture;
+	for (const std::pair<double, int>& sample : std::vector<std::pair<double, int>>{
+	         {0.0, 0}, {0.29, 29}, {0.57, 57}, {0.58, 58}, {0.296, 29}, {0.996, 99},
+	         {std::nextafter(1.0, 0.0), 99}, {1.0, 100}})
+	{
+		fixture.Send({{"status", "allowed"}, {"rateLimitType", "five_hour"}, {"utilization", sample.first}});
+		UAM_ASSERT(fixture.session.provider_usage.rate_limits.primary.available);
+		UAM_ASSERT_EQ(fixture.session.provider_usage.rate_limits.primary.used_percent, sample.second);
+	}
+#endif
+}
+
+UAM_TEST(ClaudeAllowanceKeepsStaleWindowAgeUntilThatWindowRefreshes)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeAllowanceFixture fixture;
+	uam::AcpRateLimitsState& limits = fixture.session.provider_usage.rate_limits;
+	limits.available = true; limits.updated_at_ms = 1;
+	limits.primary.available = true; limits.primary.used_percent = 87; limits.primary.window_duration_minutes = 300;
+	const int64_t reset = uam::time::TimestampNowSec() + 3600;
+	limits.primary.resets_at = reset;
+	fixture.Send({{"status", "allowed"}, {"rateLimitType", "seven_day"}, {"utilization", 0.25}, {"resetsAt", reset + 86400}});
+	UAM_ASSERT(limits.secondary.available); UAM_ASSERT_EQ(limits.secondary.used_percent, 25);
+	UAM_ASSERT_EQ(limits.primary.used_percent, 87); UAM_ASSERT_EQ(limits.updated_at_ms, int64_t{1});
+	fixture.Send({{"status", "allowed"}, {"rateLimitType", "five_hour"}, {"utilization", 0.5}, {"resetsAt", reset}});
+	UAM_ASSERT_EQ(limits.primary.used_percent, 50); UAM_ASSERT_EQ(limits.secondary.used_percent, 25);
+	UAM_ASSERT(limits.updated_at_ms > 1);
+#endif
+}
 
 UAM_TEST(ClaudeNativePermissionTranslationHonorsPlanCeiling)
 {
