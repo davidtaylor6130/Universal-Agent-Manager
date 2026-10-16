@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check UAM's documentation navigation, settings coverage and provider checklists.
+"""Check UAM's local documentation navigation and explicit provider coverage.
 
 This validates documentation structure, not feature implementation or acceptance.
 Run from any directory: python3 /path/to/repo/scripts/check_docs.py
@@ -20,99 +20,6 @@ IMAGE = re.compile(r'!\[[^\]\n]*\]\((<[^>\n]+>|[^\s)]+)\)')
 HEADING = re.compile(r'^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$', re.MULTILINE)
 EXPLICIT_ID = re.compile(r'\bid=["\']([^"\']+)["\']')
 CAPABILITY = re.compile(r'^\| `([^`]+)` \|', re.MULTILINE)
-
-
-def check_coverage(root: Path) -> tuple[list[str], dict[str, int]]:
-    """Compare documented settings IDs with the UI's declared navigation inventory."""
-    errors: list[str] = []
-    path = root / 'docs/coverage.md'
-    source = root / 'UI-V2/src/components/settings/SettingsModal.tsx'
-    if not path.is_file() or not source.is_file():
-        return ['Coverage map or settings navigation source is missing.'], {}
-    settings_source = source.read_text(encoding='utf-8')
-    declaration = re.search(r'const SETTINGS_SECTIONS\s*:[^=]+=(.*?)(?=// Retired|const SETTINGS_SECTION_ALIASES|const SETTINGS_GROUPS)',
-                            settings_source, flags=re.DOTALL)
-    if declaration is None:
-        return ['Cannot locate SETTINGS_SECTIONS; update the coverage parser for the navigation format.'], {}
-    expected = {'settings:' + value for value in re.findall(r"\bid:\s*'([^']+)'", declaration.group(1))}
-    if 'SUPPORTED_CLI_PROVIDER_IDS.map' in declaration.group(1):
-        expected.add('settings:provider:*')
-    if not expected:
-        errors.append('Settings navigation inventory is empty; coverage cannot be verified.')
-    rows: list[str] = []
-    for line in path.read_text(encoding='utf-8').splitlines():
-        if not re.match(r'^\| `(?:settings|surface):', line):
-            continue
-        fields = [value.strip() for value in line.strip('|').split('|')]
-        row_id = fields[0].strip('`')
-        rows.append(row_id)
-        if len(fields) < 3 or not fields[1] or not LINK.search(fields[2]):
-            errors.append(f'{row_id}: coverage requires a section name and linked owning agreement.')
-        elif not any(match.group(1).strip('<>').split('#')[0].endswith('.md')
-                     for match in LINK.finditer(fields[2])):
-            errors.append(f'{row_id}: the owning agreement must link to a Markdown file.')
-        if row_id.startswith('surface:') and (len(fields) != 4 or not LINK.search(fields[3])):
-            errors.append(f'{row_id}: major-surface coverage requires a source entry point.')
-    counts = Counter(rows)
-    for row_id, count in counts.items():
-        if count > 1:
-            errors.append(f'Duplicate coverage row: {row_id}')
-    documented = {row_id for row_id in rows if row_id.startswith('settings:')}
-    for row_id in sorted(expected - documented):
-        errors.append(f'Missing settings coverage: {row_id}')
-    for row_id in sorted(documented - expected):
-        errors.append(f'Unknown or retired settings coverage: {row_id}')
-    surfaces = sum(row_id.startswith('surface:') for row_id in counts)
-    if not surfaces:
-        errors.append('Major-surface coverage inventory is empty.')
-    return errors, {'settings_entries': len(expected), 'surfaces': surfaces}
-
-
-def check_elements(root: Path) -> tuple[list[str], dict[str, int]]:
-    """Require an explicit document owner for every production rendering source."""
-    errors: list[str] = []
-    source_root = root / 'UI-V2/src'
-    component_map = root / 'docs/coverage/components.md'
-    element_map = root / 'docs/coverage/elements.md'
-    if not source_root.is_dir() or not component_map.is_file() or not element_map.is_file():
-        return ['Detailed component/element coverage or UI source tree is missing.'], {}
-    expected = {'component:' + path.relative_to(root).as_posix()
-                for path in source_root.rglob('*.tsx')
-                if '.test.' not in path.name and '.spec.' not in path.name
-                and not {'__tests__', 'tests'}.intersection(path.relative_to(source_root).parts)}
-    inventories: dict[str, set[str]] = {}
-    for prefix, path in (('component:', component_map), ('element:', element_map)):
-        rows: list[str] = []
-        for line in path.read_text(encoding='utf-8').splitlines():
-            if not line.startswith('| `' + prefix):
-                continue
-            fields = [field.strip() for field in line.strip('|').split('|')]
-            row_id = fields[0].strip('`')
-            rows.append(row_id)
-            if len(fields) < 3 or not LINK.search(fields[2]):
-                errors.append(f'{row_id}: a linked owning agreement is required.')
-            elif not any(match.group(1).strip('<>').split('#')[0].endswith('.md')
-                         for match in LINK.finditer(fields[2])):
-                errors.append(f'{row_id}: the owning agreement must be a Markdown file.')
-            source_field = fields[1] if prefix == 'component:' else fields[3] if len(fields) == 4 else ''
-            if not LINK.search(source_field):
-                errors.append(f'{row_id}: a linked source entry point is required.')
-            elif prefix == 'component:':
-                target = (path.parent / unquote(LINK.search(source_field).group(1).strip('<>'))).resolve()
-                if target != (root / row_id.removeprefix(prefix)).resolve():
-                    errors.append(f'{row_id}: source link does not match the mapped rendering file.')
-        counts = Counter(rows)
-        for row_id, count in counts.items():
-            if count > 1:
-                errors.append(f'Duplicate detailed coverage row: {row_id}')
-        inventories[prefix] = set(counts)
-        if not counts:
-            errors.append(f'Empty detailed coverage inventory: {path.relative_to(root)}')
-    for row_id in sorted(expected - inventories['component:']):
-        errors.append(f'Missing rendering-source owner: {row_id}')
-    for row_id in sorted(inventories['component:'] - expected):
-        errors.append(f'Unknown or retired rendering-source owner: {row_id}')
-    return errors, {'renderers': len(expected), 'element_groups': len(inventories['element:'])}
 
 
 def prose(text: str) -> str:
@@ -216,11 +123,7 @@ def check(root: Path) -> tuple[list[str], dict[str, int]]:
     for path in sorted(docs.rglob('*.md')):
         if path.resolve() not in seen:
             errors.append(f'Unreachable from docs/README.md: {path.relative_to(root)}')
-    coverage_errors, coverage_stats = check_coverage(root)
-    errors.extend(coverage_errors)
-    element_errors, element_stats = check_elements(root)
-    errors.extend(element_errors)
-    return errors, {**coverage_stats, **element_stats, 'pages': len(files), 'local_links': checked_links,
+    return errors, {'pages': len(files), 'local_links': checked_links,
                     'providers': len(PROVIDERS), 'capabilities_each': len(required)}
 
 
@@ -237,8 +140,6 @@ def main() -> int:
         return 1
     print(f"Documentation check passed: {stats['pages']} pages, {stats['local_links']} local links, "
           f"{stats['providers']} providers × {stats['capabilities_each']} explicit capabilities.")
-    print(f"Coverage: {stats['settings_entries']} settings entries/families and {stats['surfaces']} major surfaces.")
-    print(f"Detailed mapping: {stats['element_groups']} feature/control groups and {stats['renderers']} production rendering sources.")
     print('This checks documentation integrity; runtime verification and acceptance are separate.')
     return 0
 

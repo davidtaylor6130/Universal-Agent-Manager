@@ -61,29 +61,7 @@ Both questions raised by the trial are resolved above. Review and David’s real
 
 The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-chat rejection and independent account allowances. Incoming application sources are retained without merge edits. New import, allowance, cost and accessibility rules are reflected in the short agreements and provider rows; detailed acquisition, cache and isolated-test-bundle guidance is retained in engineering reference. Upstream review receipts and unresolved native failures remain in the V5 log; this synchronization does not establish new runtime or user acceptance.
 
-## Coverage expansion
-
-At David's request, the guide now maps every current settings navigation entry and major user-facing surface to an owning file in [Coverage](coverage.md). New agreements cover diffs, recorded edits, file inspection, commits, usage history/model prices, updates, Goal Loops, Chat Data, About, appearance subtopics, all memory policies, scans, search, collections, keyboard navigation, native imports, questions, architect/worker work, runtime controls and checkpoints. [Architecture](architecture/architecture.md) owns data authority and module boundaries; [Engineering](engineering/engineering.md) owns testing, logging and change evidence. These are concise expected behaviours with current limits, not new application implementations or acceptance.
-
-The source-of-truth review preserves a critical distinction: summary files include durable attention/snooze/recency overlays, while message indexes are rebuildable projections. The retained persistence reference now agrees with the confirmed data-root order. Checklist uncertainty is distinguished from identified missing implementation, and the no-undo wording is explicitly limited to organisation operations.
-
 ## Remaining scope and source mismatches
 
 - [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): older release exclusions conflict with the accessible Git/SVN commit panel. Its documentation preserves the existing surface without authorizing removal or expansion; David's scope disposition is pending.
 - Antigravity availability copy in `SettingsModal.tsx` still says “Terminal sessions only.” The agreed scope is structured Chat and CLI View; this is a current implementation-copy mismatch, not a reason to change the agreement. Its [checklist](providers/antigravity/antigravity.md) and V5 log retain the follow-up.
-
-The coverage gate compares settings IDs with source, validates owning links and rejects duplicate rows. Major-surface completeness still needs deliberate source/user-flow comparison when navigation changes; the inventory is not an automatic proof that every control or runtime path has been audited.
-
-## Expansion validation
-
-Documentation integrity passes for 176 pages, 931 local links and six 24-capability provider checklists. The source-linked coverage inventory contains 23 settings entries/families (22 fixed pages plus the six-provider family) and 47 major surfaces. Seven isolated negative scenarios verify missing ownership, newly added UI sections, duplicate surfaces, unlinked agreements, retired IDs, empty surface inventory and changed navigation declaration format; the current source inventory passes as a control. No production native/frontend/build sources changed and no application build, live provider run or platform acceptance is inferred.
-
-## Element-level re-review
-
-The second source comparison maps 100 feature/control groups and all 89 production TSX rendering files in the [detailed inventory](coverage.md#detailed-mapping), in addition to the 47 major surfaces and complete settings/provider coverage. Composite files have specific element owners, while generic components inherit shared UI rules; dynamically named model/host/chat entries inherit their control-group agreement.
-
-A substantive correction separates the actual OS Permissions settings page from chat approval/reviewer defaults, which live under Chat Defaults/provider choices. Additional owners cover memory workers, skill-library import collisions, sidebar actions/custom icons, workspace-folder rebuilding, UAM MCP connection warnings, phone-browser sections, message/tool content and interface recovery. The source review also fills specific Git, host/routing, MCP, editor and shell-action settings details. This closes the identified documentation omissions at the reviewed source revision; it does not establish runtime acceptance or resolve the existing VCS-panel scope and Antigravity-copy findings.
-
-## Re-review validation
-
-The current map passes for 188 pages, 1,382 local links, 23 settings entries/families, 47 major surfaces, 100 specific feature/control groups and all 89 production TSX sources. Seven new negative scenarios verify new/unmapped and renamed rendering files, duplicate element rows, missing owner links, mismatched source links, missing element sources and empty inventories; valid-map and test-source-exclusion controls pass. The previous settings coverage negatives remain recorded separately. No remaining unmapped feature/control group or rendering source was found in this source comparison. Newly introduced controls inside existing files, dynamic provider offerings and runtime behaviour still require maintenance/review; this is not an assertion that all implementations have passed acceptance.

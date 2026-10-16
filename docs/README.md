@@ -29,7 +29,7 @@ These docs describe what UAM’s features mean and how they are expected to beha
 
 ## Implementation and maintenance
 
-[Architecture and data authority](architecture/architecture.md) · [Engineering rules](engineering/engineering.md) · [Section coverage](coverage.md)
+[Architecture and data authority](architecture/architecture.md) · [Engineering rules](engineering/engineering.md)
 
 - [Documentation review](documentation-review.md): corrected contradictions, confirmed decisions, unresolved scope and known implementation gaps.
 - [Engineering reference](reference/README.md): useful technical detail and source navigation, outside the short feature agreements.
