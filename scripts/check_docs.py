@@ -68,6 +68,53 @@ def check_coverage(root: Path) -> tuple[list[str], dict[str, int]]:
     return errors, {'settings_entries': len(expected), 'surfaces': surfaces}
 
 
+def check_elements(root: Path) -> tuple[list[str], dict[str, int]]:
+    """Require an explicit document owner for every production rendering source."""
+    errors: list[str] = []
+    source_root = root / 'UI-V2/src'
+    component_map = root / 'docs/coverage/components.md'
+    element_map = root / 'docs/coverage/elements.md'
+    if not source_root.is_dir() or not component_map.is_file() or not element_map.is_file():
+        return ['Detailed component/element coverage or UI source tree is missing.'], {}
+    expected = {'component:' + path.relative_to(root).as_posix()
+                for path in source_root.rglob('*.tsx')
+                if '.test.' not in path.name and '.spec.' not in path.name
+                and not {'__tests__', 'tests'}.intersection(path.relative_to(source_root).parts)}
+    inventories: dict[str, set[str]] = {}
+    for prefix, path in (('component:', component_map), ('element:', element_map)):
+        rows: list[str] = []
+        for line in path.read_text(encoding='utf-8').splitlines():
+            if not line.startswith('| `' + prefix):
+                continue
+            fields = [field.strip() for field in line.strip('|').split('|')]
+            row_id = fields[0].strip('`')
+            rows.append(row_id)
+            if len(fields) < 3 or not LINK.search(fields[2]):
+                errors.append(f'{row_id}: a linked owning agreement is required.')
+            elif not any(match.group(1).strip('<>').split('#')[0].endswith('.md')
+                         for match in LINK.finditer(fields[2])):
+                errors.append(f'{row_id}: the owning agreement must be a Markdown file.')
+            source_field = fields[1] if prefix == 'component:' else fields[3] if len(fields) == 4 else ''
+            if not LINK.search(source_field):
+                errors.append(f'{row_id}: a linked source entry point is required.')
+            elif prefix == 'component:':
+                target = (path.parent / unquote(LINK.search(source_field).group(1).strip('<>'))).resolve()
+                if target != (root / row_id.removeprefix(prefix)).resolve():
+                    errors.append(f'{row_id}: source link does not match the mapped rendering file.')
+        counts = Counter(rows)
+        for row_id, count in counts.items():
+            if count > 1:
+                errors.append(f'Duplicate detailed coverage row: {row_id}')
+        inventories[prefix] = set(counts)
+        if not counts:
+            errors.append(f'Empty detailed coverage inventory: {path.relative_to(root)}')
+    for row_id in sorted(expected - inventories['component:']):
+        errors.append(f'Missing rendering-source owner: {row_id}')
+    for row_id in sorted(inventories['component:'] - expected):
+        errors.append(f'Unknown or retired rendering-source owner: {row_id}')
+    return errors, {'renderers': len(expected), 'element_groups': len(inventories['element:'])}
+
+
 def prose(text: str) -> str:
     """Remove fenced examples; they can intentionally contain placeholder links."""
     return re.sub(r'^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?^ {0,3}\1\s*$', '', text, flags=re.MULTILINE | re.DOTALL)
@@ -171,7 +218,9 @@ def check(root: Path) -> tuple[list[str], dict[str, int]]:
             errors.append(f'Unreachable from docs/README.md: {path.relative_to(root)}')
     coverage_errors, coverage_stats = check_coverage(root)
     errors.extend(coverage_errors)
-    return errors, {**coverage_stats, 'pages': len(files), 'local_links': checked_links,
+    element_errors, element_stats = check_elements(root)
+    errors.extend(element_errors)
+    return errors, {**coverage_stats, **element_stats, 'pages': len(files), 'local_links': checked_links,
                     'providers': len(PROVIDERS), 'capabilities_each': len(required)}
 
 
@@ -189,6 +238,7 @@ def main() -> int:
     print(f"Documentation check passed: {stats['pages']} pages, {stats['local_links']} local links, "
           f"{stats['providers']} providers × {stats['capabilities_each']} explicit capabilities.")
     print(f"Coverage: {stats['settings_entries']} settings entries/families and {stats['surfaces']} major surfaces.")
+    print(f"Detailed mapping: {stats['element_groups']} feature/control groups and {stats['renderers']} production rendering sources.")
     print('This checks documentation integrity; runtime verification and acceptance are separate.')
     return 0
 

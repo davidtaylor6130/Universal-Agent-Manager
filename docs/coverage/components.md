@@ -1,0 +1,97 @@
+# UI source-to-document map
+
+Every current production TSX source is mapped below to its primary behaviour or shared UI agreement. A component can implement several features: the [element map](elements.md) gives the more specific owners for SettingsModal, ChatView, AppShell and other composite surfaces. This table makes omitted rendering files visible; it does not create one product concept per component or prove runtime correctness. Shared primitives and rendering helpers deliberately use shared rules. Sources may be dormant, build-conditional or currently unused and remain documented rather than silently excluded.
+
+| Source ID | Rendering source | Primary agreement |
+|---|---|---|
+| `component:UI-V2/src/App.tsx` | [App](../../UI-V2/src/App.tsx) | [Agreement](../architecture/react-cef-transport.md) |
+| `component:UI-V2/src/components/chat/ChangedFilesTree.tsx` | [ChangedFilesTree](../../UI-V2/src/components/chat/ChangedFilesTree.tsx) | [Agreement](../changes/changes.md) |
+| `component:UI-V2/src/components/chat/ChatBranchPicker.tsx` | [ChatBranchPicker](../../UI-V2/src/components/chat/ChatBranchPicker.tsx) | [Agreement](../providers/branching.md) |
+| `component:UI-V2/src/components/chat/Composer.tsx` | [Composer](../../UI-V2/src/components/chat/Composer.tsx) | [Agreement](../chat/composer/composer.md) |
+| `component:UI-V2/src/components/chat/ComputerUseModal.tsx` | [ComputerUseModal](../../UI-V2/src/components/chat/ComputerUseModal.tsx) | [Agreement](../computer-use.md) |
+| `component:UI-V2/src/components/chat/ContextChip.tsx` | [ContextChip](../../UI-V2/src/components/chat/ContextChip.tsx) | [Agreement](../chat/composer/attachments.md) |
+| `component:UI-V2/src/components/chat/ConversationTurn.tsx` | [ConversationTurn](../../UI-V2/src/components/chat/ConversationTurn.tsx) | [Agreement](../chat/messages.md) |
+| `component:UI-V2/src/components/chat/ConversationWork.tsx` | [ConversationWork](../../UI-V2/src/components/chat/ConversationWork.tsx) | [Agreement](../chat/tools-and-content.md) |
+| `component:UI-V2/src/components/chat/ImageAttachmentPreview.tsx` | [ImageAttachmentPreview](../../UI-V2/src/components/chat/ImageAttachmentPreview.tsx) | [Agreement](../chat/composer/attachments.md) |
+| `component:UI-V2/src/components/chat/InlinePromptQueue.tsx` | [InlinePromptQueue](../../UI-V2/src/components/chat/InlinePromptQueue.tsx) | [Agreement](../chat/sending.md) |
+| `component:UI-V2/src/components/chat/MessageBlocks.tsx` | [MessageBlocks](../../UI-V2/src/components/chat/MessageBlocks.tsx) | [Agreement](../chat/tools-and-content.md) |
+| `component:UI-V2/src/components/chat/MessageNavigationRail.tsx` | [MessageNavigationRail](../../UI-V2/src/components/chat/MessageNavigationRail.tsx) | [Agreement](../chat/tools-and-content.md) |
+| `component:UI-V2/src/components/chat/ModelPickerContent.tsx` | [ModelPickerContent](../../UI-V2/src/components/chat/ModelPickerContent.tsx) | [Agreement](../providers/models.md) |
+| `component:UI-V2/src/components/chat/ProviderAllowanceIndicator.tsx` | [ProviderAllowanceIndicator](../../UI-V2/src/components/chat/ProviderAllowanceIndicator.tsx) | [Agreement](../providers/usage.md) |
+| `component:UI-V2/src/components/chat/QuestionInput.tsx` | [QuestionInput](../../UI-V2/src/components/chat/QuestionInput.tsx) | [Agreement](../chat/questions.md) |
+| `component:UI-V2/src/components/chat/StatusHelpers.tsx` | [StatusHelpers](../../UI-V2/src/components/chat/StatusHelpers.tsx) | [Agreement](../chat/tools-and-content.md) |
+| `component:UI-V2/src/components/chat/StatusScenes.tsx` | [StatusScenes](../../UI-V2/src/components/chat/StatusScenes.tsx) | [Agreement](../ui/notifications.md) |
+| `component:UI-V2/src/components/chat/SubagentWaitStatus.tsx` | [SubagentWaitStatus](../../UI-V2/src/components/chat/SubagentWaitStatus.tsx) | [Agreement](../providers/agent-history.md) |
+| `component:UI-V2/src/components/chat/ToolCallViews.tsx` | [ToolCallViews](../../UI-V2/src/components/chat/ToolCallViews.tsx) | [Agreement](../chat/tools-and-content.md) |
+| `component:UI-V2/src/components/companion/CompanionShell.tsx` | [CompanionShell](../../UI-V2/src/components/companion/CompanionShell.tsx) | [Agreement](../phone-browser.md) |
+| `component:UI-V2/src/components/layout/AppShell.tsx` | [AppShell](../../UI-V2/src/components/layout/AppShell.tsx) | [Agreement](../navigation/navigation.md) |
+| `component:UI-V2/src/components/layout/MainPanel.tsx` | [MainPanel](../../UI-V2/src/components/layout/MainPanel.tsx) | [Agreement](../chat/panes.md) |
+| `component:UI-V2/src/components/layout/RecordedChatEdits.tsx` | [RecordedChatEdits](../../UI-V2/src/components/layout/RecordedChatEdits.tsx) | [Agreement](../changes/recorded-edits.md) |
+| `component:UI-V2/src/components/layout/Sidebar.tsx` | [Sidebar](../../UI-V2/src/components/layout/Sidebar.tsx) | [Agreement](../sidebar/sidebar.md) |
+| `component:UI-V2/src/components/layout/UpdatesPanel.tsx` | [UpdatesPanel](../../UI-V2/src/components/layout/UpdatesPanel.tsx) | [Agreement](../updates/updates.md) |
+| `component:UI-V2/src/components/layout/VcsCommitPanel.tsx` | [VcsCommitPanel](../../UI-V2/src/components/layout/VcsCommitPanel.tsx) | [Agreement](../changes/commits.md) |
+| `component:UI-V2/src/components/markdown/Markdown.tsx` | [Markdown](../../UI-V2/src/components/markdown/Markdown.tsx) | [Agreement](../chat/tools-and-content.md) |
+| `component:UI-V2/src/components/modals/ExecutionRoutingDialog.tsx` | [ExecutionRoutingDialog](../../UI-V2/src/components/modals/ExecutionRoutingDialog.tsx) | [Agreement](../remote-environments/routing.md) |
+| `component:UI-V2/src/components/modals/StartupNativeImportChooser.tsx` | [StartupNativeImportChooser](../../UI-V2/src/components/modals/StartupNativeImportChooser.tsx) | [Agreement](../chat/native-imports.md) |
+| `component:UI-V2/src/components/settings/AppearanceDisplaySettings.tsx` | [AppearanceDisplaySettings](../../UI-V2/src/components/settings/AppearanceDisplaySettings.tsx) | [Agreement](../settings/appearance/display.md) |
+| `component:UI-V2/src/components/settings/CentralProviderSettings.tsx` | [CentralProviderSettings](../../UI-V2/src/components/settings/CentralProviderSettings.tsx) | [Agreement](../settings/central-setup/central-setup.md) |
+| `component:UI-V2/src/components/settings/ExecutionRoutingSettings.tsx` | [ExecutionRoutingSettings](../../UI-V2/src/components/settings/ExecutionRoutingSettings.tsx) | [Agreement](../remote-environments/routing.md) |
+| `component:UI-V2/src/components/settings/MarkdownStoreModal.tsx` | [MarkdownStoreModal](../../UI-V2/src/components/settings/MarkdownStoreModal.tsx) | [Agreement](../settings/central-setup/skill-library.md) |
+| `component:UI-V2/src/components/settings/McpServerSetup.tsx` | [McpServerSetup](../../UI-V2/src/components/settings/McpServerSetup.tsx) | [Agreement](../settings/mcp-servers.md) |
+| `component:UI-V2/src/components/settings/MemoryLibraryModal.tsx` | [MemoryLibraryModal](../../UI-V2/src/components/settings/MemoryLibraryModal.tsx) | [Agreement](../memory/store.md) |
+| `component:UI-V2/src/components/settings/MemoryScanModal.tsx` | [MemoryScanModal](../../UI-V2/src/components/settings/MemoryScanModal.tsx) | [Agreement](../memory/scanning.md) |
+| `component:UI-V2/src/components/settings/NumberField.tsx` | [NumberField](../../UI-V2/src/components/settings/NumberField.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/settings/PermissionsSettings.tsx` | [PermissionsSettings](../../UI-V2/src/components/settings/PermissionsSettings.tsx) | [Agreement](../settings/permissions.md) |
+| `component:UI-V2/src/components/settings/ProviderConnections.tsx` | [ProviderConnections](../../UI-V2/src/components/settings/ProviderConnections.tsx) | [Agreement](../settings/provider-overview.md) |
+| `component:UI-V2/src/components/settings/SettingsModal.tsx` | [SettingsModal](../../UI-V2/src/components/settings/SettingsModal.tsx) | [Agreement](../settings/settings.md) |
+| `component:UI-V2/src/components/settings/SettingsPrimitives.tsx` | [SettingsPrimitives](../../UI-V2/src/components/settings/SettingsPrimitives.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/settings/SettingsScopeBar.tsx` | [SettingsScopeBar](../../UI-V2/src/components/settings/SettingsScopeBar.tsx) | [Agreement](../settings/environment-scope.md) |
+| `component:UI-V2/src/components/settings/ShellActionsSettings.tsx` | [ShellActionsSettings](../../UI-V2/src/components/settings/ShellActionsSettings.tsx) | [Agreement](../settings/shell-actions.md) |
+| `component:UI-V2/src/components/settings/StorageCleanupSettingsSection.tsx` | [StorageCleanupSettingsSection](../../UI-V2/src/components/settings/StorageCleanupSettingsSection.tsx) | [Agreement](../settings/storage.md) |
+| `component:UI-V2/src/components/settings/TypographySettings.tsx` | [TypographySettings](../../UI-V2/src/components/settings/TypographySettings.tsx) | [Agreement](../settings/appearance/typography.md) |
+| `component:UI-V2/src/components/settings/UnsavedChangesDialog.tsx` | [UnsavedChangesDialog](../../UI-V2/src/components/settings/UnsavedChangesDialog.tsx) | [Agreement](../ui/settings.md) |
+| `component:UI-V2/src/components/settings/VcsSettings.tsx` | [VcsSettings](../../UI-V2/src/components/settings/VcsSettings.tsx) | [Agreement](../settings/version-control/version-control.md) |
+| `component:UI-V2/src/components/settings/VcsSettingsSection.tsx` | [VcsSettingsSection](../../UI-V2/src/components/settings/VcsSettingsSection.tsx) | [Agreement](../settings/version-control/version-control.md) |
+| `component:UI-V2/src/components/shared/CustomIcon.tsx` | [CustomIcon](../../UI-V2/src/components/shared/CustomIcon.tsx) | [Agreement](../sidebar/custom-icons.md) |
+| `component:UI-V2/src/components/shared/FileInspectionProvider.tsx` | [FileInspectionProvider](../../UI-V2/src/components/shared/FileInspectionProvider.tsx) | [Agreement](../files/inspection.md) |
+| `component:UI-V2/src/components/shared/FilePreviewDialog.tsx` | [FilePreviewDialog](../../UI-V2/src/components/shared/FilePreviewDialog.tsx) | [Agreement](../files/inspection.md) |
+| `component:UI-V2/src/components/shared/GoalBanner.tsx` | [GoalBanner](../../UI-V2/src/components/shared/GoalBanner.tsx) | [Agreement](../chat/goals.md) |
+| `component:UI-V2/src/components/shared/InterfaceErrorBoundary.tsx` | [InterfaceErrorBoundary](../../UI-V2/src/components/shared/InterfaceErrorBoundary.tsx) | [Agreement](../ui/interface-recovery.md) |
+| `component:UI-V2/src/components/shared/Logo.tsx` | [Logo](../../UI-V2/src/components/shared/Logo.tsx) | [Agreement](../ui/visual-style.md) |
+| `component:UI-V2/src/components/shared/LucideIcons.tsx` | [LucideIcons](../../UI-V2/src/components/shared/LucideIcons.tsx) | [Agreement](../sidebar/custom-icons.md) |
+| `component:UI-V2/src/components/shared/ProviderLogo.tsx` | [ProviderLogo](../../UI-V2/src/components/shared/ProviderLogo.tsx) | [Agreement](../ui/visual-style.md) |
+| `component:UI-V2/src/components/shared/ProviderMcpWarning.tsx` | [ProviderMcpWarning](../../UI-V2/src/components/shared/ProviderMcpWarning.tsx) | [Agreement](../providers/uam-tools.md) |
+| `component:UI-V2/src/components/shared/RepositoryDiffDialog.tsx` | [RepositoryDiffDialog](../../UI-V2/src/components/shared/RepositoryDiffDialog.tsx) | [Agreement](../changes/diffs.md) |
+| `component:UI-V2/src/components/shared/RuntimeTimeout.tsx` | [RuntimeTimeout](../../UI-V2/src/components/shared/RuntimeTimeout.tsx) | [Agreement](../providers/runtime-lifecycle.md) |
+| `component:UI-V2/src/components/shared/SelectionGrid.tsx` | [SelectionGrid](../../UI-V2/src/components/shared/SelectionGrid.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/shared/StatusIndicator.tsx` | [StatusIndicator](../../UI-V2/src/components/shared/StatusIndicator.tsx) | [Agreement](../sidebar/active/activity-status.md) |
+| `component:UI-V2/src/components/shared/ThemeToggle.tsx` | [ThemeToggle](../../UI-V2/src/components/shared/ThemeToggle.tsx) | [Agreement](../settings/appearance/themes.md) |
+| `component:UI-V2/src/components/shared/UnifiedDiff.tsx` | [UnifiedDiff](../../UI-V2/src/components/shared/UnifiedDiff.tsx) | [Agreement](../changes/diffs.md) |
+| `component:UI-V2/src/components/sidebar/ChatSearchBar.tsx` | [ChatSearchBar](../../UI-V2/src/components/sidebar/ChatSearchBar.tsx) | [Agreement](../sidebar/search.md) |
+| `component:UI-V2/src/components/sidebar/CollectionMenuItems.tsx` | [CollectionMenuItems](../../UI-V2/src/components/sidebar/CollectionMenuItems.tsx) | [Agreement](../sidebar/collections.md) |
+| `component:UI-V2/src/components/sidebar/FolderTree.tsx` | [FolderTree](../../UI-V2/src/components/sidebar/FolderTree.tsx) | [Agreement](../sidebar/management.md) |
+| `component:UI-V2/src/components/sidebar/NewChatModal.tsx` | [NewChatModal](../../UI-V2/src/components/sidebar/NewChatModal.tsx) | [Agreement](../chat/new-chat.md) |
+| `component:UI-V2/src/components/sidebar/RemoteDirectoryBrowser.tsx` | [RemoteDirectoryBrowser](../../UI-V2/src/components/sidebar/RemoteDirectoryBrowser.tsx) | [Agreement](../workspaces/workspaces.md) |
+| `component:UI-V2/src/components/sidebar/RowSubmenu.tsx` | [RowSubmenu](../../UI-V2/src/components/sidebar/RowSubmenu.tsx) | [Agreement](../ui/interaction.md) |
+| `component:UI-V2/src/components/sidebar/SessionItem.tsx` | [SessionItem](../../UI-V2/src/components/sidebar/SessionItem.tsx) | [Agreement](../sidebar/management.md) |
+| `component:UI-V2/src/components/sidebar/SnoozeMenu.tsx` | [SnoozeMenu](../../UI-V2/src/components/sidebar/SnoozeMenu.tsx) | [Agreement](../sidebar/snoozed/snoozed.md) |
+| `component:UI-V2/src/components/sidebar/WorkspacePicker.tsx` | [WorkspacePicker](../../UI-V2/src/components/sidebar/WorkspacePicker.tsx) | [Agreement](../chat/new-chat.md) |
+| `component:UI-V2/src/components/ui/Button.tsx` | [Button](../../UI-V2/src/components/ui/Button.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/Card.tsx` | [Card](../../UI-V2/src/components/ui/Card.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/ConfirmDialog.tsx` | [ConfirmDialog](../../UI-V2/src/components/ui/ConfirmDialog.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/IconButton.tsx` | [IconButton](../../UI-V2/src/components/ui/IconButton.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/MenuSelect.tsx` | [MenuSelect](../../UI-V2/src/components/ui/MenuSelect.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/Notice.tsx` | [Notice](../../UI-V2/src/components/ui/Notice.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/Overlay.tsx` | [Overlay](../../UI-V2/src/components/ui/Overlay.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/SectionHeader.tsx` | [SectionHeader](../../UI-V2/src/components/ui/SectionHeader.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/StatusDot.tsx` | [StatusDot](../../UI-V2/src/components/ui/StatusDot.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/Switch.tsx` | [Switch](../../UI-V2/src/components/ui/Switch.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/Tooltip.tsx` | [Tooltip](../../UI-V2/src/components/ui/Tooltip.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/ui/ViewportMenu.tsx` | [ViewportMenu](../../UI-V2/src/components/ui/ViewportMenu.tsx) | [Agreement](../ui/primitives.md) |
+| `component:UI-V2/src/components/usage/UsageLimits.tsx` | [UsageLimits](../../UI-V2/src/components/usage/UsageLimits.tsx) | [Agreement](../usage/allowances.md) |
+| `component:UI-V2/src/components/usage/UsagePage.tsx` | [UsagePage](../../UI-V2/src/components/usage/UsagePage.tsx) | [Agreement](../usage/history.md) |
+| `component:UI-V2/src/components/views/CLIView.tsx` | [CLIView](../../UI-V2/src/components/views/CLIView.tsx) | [Agreement](../providers/terminal-view/terminal-view.md) |
+| `component:UI-V2/src/components/views/ChatView.tsx` | [ChatView](../../UI-V2/src/components/views/ChatView.tsx) | [Agreement](../chat/chat.md) |
+| `component:UI-V2/src/main.tsx` | [main](../../UI-V2/src/main.tsx) | [Agreement](../architecture/react-cef-transport.md) |
+
+The checker compares this table with all production `.tsx` files under `UI-V2/src`, excluding test/spec sources. A new rendering file needs an explicit owner, and removed/renamed sources must update their mapping. Non-JSX actions, native features and dynamically advertised provider choices are covered by the [element map](elements.md), [provider requirements](../providers/providers.md) and [architecture](../architecture/architecture.md).

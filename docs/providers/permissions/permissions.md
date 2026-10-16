@@ -7,4 +7,4 @@ UAM exposes four consistent permission choices: Default asks before commands and
 - [AI Review](ai-review.md)
 - [YOLO](yolo.md)
 
-[Permission settings](../../settings/permissions.md) define configuration. [Permission architecture](../../architecture/permissions-notifications.md) and the [provider checklists](../providers.md#provider-checklists) record implementation routes and limitations.
+[Permission settings](../../settings/permission-defaults.md) define configuration. [Permission architecture](../../architecture/permissions-notifications.md) and the [provider checklists](../providers.md#provider-checklists) record implementation routes and limitations.

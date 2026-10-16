@@ -5,3 +5,5 @@ Phone access is a browser interface published by the main UAM device, not a sepa
 [Phone settings](settings/phone-access.md) · [Network boundaries](security-enterprise.md) · [Build flags](build-flags.md).
 
 **Implementation: Needs verification** for full browser/device acceptance; the companion server and frontend exist. This documentation pass did not expose a server or change saved settings.
+
+[Phone browser sections and connection state](phone-browser.md).

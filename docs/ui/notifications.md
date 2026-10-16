@@ -11,3 +11,5 @@ Chat lifecycle notices belong in the transcript; app-wide failures, warnings, co
 - Organisation operations offer no undo toast or organisation-undo shortcut; ordinary text-editor undo remains available. Failed changes are reported through the shared path.
 
 The no-undo agreement concerns organization operations; it does not remove ordinary text-editor undo. [Sending](../chat/sending.md) and [compaction](../providers/compaction.md) own their behaviour; the notes here specify presentation. Do not describe the target notification system as universally shipped until the pending work is resolved.
+
+The panel exposes unread state/counts, mark-all-read and individual dismissal; these change notification state without stopping the underlying task, deleting chat history or declaring a failed operation fixed. Actionable entries retain their relevant details and current confirmation rules.

@@ -28,7 +28,7 @@ This page records the outcome of the isolated documentation trial based on `3a7c
 
 ## Environment scope
 
-**Partial implementation.** The desired agreement includes every settings page whose values can differ by provider/environment, including permissions and computer-use policy where applicable. The inspected `SettingsModal.tsx` shows the scope bar on provider pages, Chat Defaults and MCP Servers. Computer use is local-only. [Environment scope](settings/environment-scope.md) records the target and current boundary; no backend or settings UI change is made here.
+**Partial implementation.** The desired agreement includes every settings page whose values can differ by provider/environment, including chat approval defaults and computer-use policy where applicable; local OS permission status is a different scope. The inspected `SettingsModal.tsx` shows the scope bar on provider pages, Chat Defaults and MCP Servers. Computer use is local-only. [Environment scope](settings/environment-scope.md) records the target and current boundary; no backend or settings UI change is made here.
 
 ## Build exclusion
 
@@ -77,3 +77,13 @@ The coverage gate compares settings IDs with source, validates owning links and 
 ## Expansion validation
 
 Documentation integrity passes for 176 pages, 931 local links and six 24-capability provider checklists. The source-linked coverage inventory contains 23 settings entries/families (22 fixed pages plus the six-provider family) and 47 major surfaces. Seven isolated negative scenarios verify missing ownership, newly added UI sections, duplicate surfaces, unlinked agreements, retired IDs, empty surface inventory and changed navigation declaration format; the current source inventory passes as a control. No production native/frontend/build sources changed and no application build, live provider run or platform acceptance is inferred.
+
+## Element-level re-review
+
+The second source comparison maps 100 feature/control groups and all 89 production TSX rendering files in the [detailed inventory](coverage.md#detailed-mapping), in addition to the 47 major surfaces and complete settings/provider coverage. Composite files have specific element owners, while generic components inherit shared UI rules; dynamically named model/host/chat entries inherit their control-group agreement.
+
+A substantive correction separates the actual OS Permissions settings page from chat approval/reviewer defaults, which live under Chat Defaults/provider choices. Additional owners cover memory workers, skill-library import collisions, sidebar actions/custom icons, workspace-folder rebuilding, UAM MCP connection warnings, phone-browser sections, message/tool content and interface recovery. The source review also fills specific Git, host/routing, MCP, editor and shell-action settings details. This closes the identified documentation omissions at the reviewed source revision; it does not establish runtime acceptance or resolve the existing VCS-panel scope and Antigravity-copy findings.
+
+## Re-review validation
+
+The current map passes for 188 pages, 1,382 local links, 23 settings entries/families, 47 major surfaces, 100 specific feature/control groups and all 89 production TSX sources. Seven new negative scenarios verify new/unmapped and renamed rendering files, duplicate element rows, missing owner links, mismatched source links, missing element sources and empty inventories; valid-map and test-source-exclusion controls pass. The previous settings coverage negatives remain recorded separately. No remaining unmapped feature/control group or rendering source was found in this source comparison. Newly introduced controls inside existing files, dynamic provider offerings and runtime behaviour still require maintenance/review; this is not an assertion that all implementations have passed acceptance.

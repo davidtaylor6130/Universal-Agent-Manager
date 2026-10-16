@@ -1,5 +1,5 @@
-# Permission settings
+# App Permissions settings
 
-Permission settings configure the default safety choice and any UAM reviewer used by [the four permission modes](../providers/permissions/permissions.md). Provider-native automatic review may replace the UAM review route only through an established mapping; failures and uncertainty remain visible user decisions. Configuration must distinguish the intended mode from the provider’s effective capabilities, keep Plan/read-only restrictions intact and eventually support the applicable provider/environment overrides.
+The Permissions page reports operating-system access used by UAM: microphone, speech recognition, local network, screen recording and accessibility where the build/platform supports them. Refresh observes current status; Request invokes supported OS consent, and System settings opens the relevant OS controls. Requested, allowed, denied, restricted, system-managed, unsupported and failed checks are different outcomes; opening a prompt does not establish that access was granted. These permissions belong to the local application or helper, not a provider/environment override. Build-excluded features leave no corresponding permission controls.
 
-**Implementation: Partial.** Native Claude auto and confirmed Codex auto-review routes coexist with UAM reviewer handling; broader environment scoping is outstanding. See [current architecture](../architecture/permissions-notifications.md) and [scope](environment-scope.md).
+Chat approval modes and reviewer defaults are configured separately under [permission defaults](permission-defaults.md). [Voice](voice-input.md) · [Computer Use](computer-use.md) · [Phone](phone-access.md) · [Source](../../UI-V2/src/components/settings/PermissionsSettings.tsx).

@@ -2,6 +2,13 @@
 
 This is the source-linked inventory of settings pages and major user-facing sections at the documentation trial's merged V5 revision. Every listed section has an owning file; subcontrols can share that owner and link to meaningful subtopics. Coverage means an agreement exists, not that every behaviour is implemented, tested or accepted. Build-hidden pages still need documentation for builds that include them. A new section requires a row and owner in the same commit; an intentional omission needs an explicit scope disposition.
 
+## Detailed mapping
+
+- [Every feature/control group](coverage/elements.md): 100 reviewed groups of settings, menus, dialogs, chat actions and browser controls, each linked to its behaviour document and source.
+- [Every production rendering source](coverage/components.md): all 89 current TSX files mapped to their primary agreement, including shared primitives and error/loading surfaces.
+
+The section map below remains the shorter starting point. New rendering files require a mapping; changes inside existing files require reviewing their specific element rows too.
+
 ## Settings pages
 
 The checker compares these IDs with `SETTINGS_SECTIONS` in the [settings shell](../UI-V2/src/components/settings/SettingsModal.tsx). The `provider:*` family shares configuration rules; each of its six providers also has its own [capability checklist](providers/providers.md#provider-checklists). The retired Typography navigation ID redirects to Appearance, whose typography subpage remains covered.
@@ -92,4 +99,8 @@ This inventory is maintained by comparing navigation and user flows, not by crea
 
 ## Scope and limits
 
-The existing VCS panel conflicts with older release exclusions and is [explicitly recorded](architecture/decisions.md#existing-vcs-panel), not silently omitted. RAG engines, templates, Dear ImGui, local model engines and generated frontend output are not new documented product surfaces in this release slice. The checker detects unmapped settings IDs, duplicate coverage rows and broken links; the major-surface inventory still requires human/agent comparison when navigation changes. Runtime implementation and live/platform acceptance remain separate.
+The existing VCS panel conflicts with older release exclusions and is [explicitly recorded](architecture/decisions.md#existing-vcs-panel), not silently omitted. RAG engines, templates, Dear ImGui, local model engines and generated frontend output are not new documented product surfaces in this release slice. The checker detects unmapped settings IDs, unmapped production TSX sources, duplicate coverage/element rows and broken links; the major-surface inventory still requires human/agent comparison when navigation changes. Runtime implementation and live/platform acceptance remain separate.
+
+## Six provider pages
+
+Shared [provider configuration](settings/providers.md) applies to all six pages; each provider also has its own explicit feature checklist: [Gemini](providers/gemini/gemini.md), [Codex](providers/codex/codex.md), [Claude Code](providers/claude-code/claude-code.md), [OpenCode](providers/opencode/opencode.md), [Copilot](providers/copilot/copilot.md) and [Antigravity](providers/antigravity/antigravity.md). Conditional builds do not erase the owning agreements.

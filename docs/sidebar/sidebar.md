@@ -9,3 +9,5 @@ The sidebar organises conversations by attention, pinning and workspace, indepen
 - [Workspace folders](all-chats/workspace-folders.md)
 
 [Search](search.md) · [Collections](collections.md).
+
+[Chat/workspace actions](management.md) · [Custom icons](custom-icons.md) · [Folder recovery](../workspaces/folder-recovery.md).

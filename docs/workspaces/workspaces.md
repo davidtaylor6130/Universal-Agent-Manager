@@ -5,3 +5,5 @@ A workspace identifies the files a chat works on, on the local computer or a sel
 [Sidebar grouping](../sidebar/all-chats/workspace-folders.md) · [Version Control](../settings/version-control/version-control.md) · [Workspace actions](../chat/composer/workspace-actions.md) · [Engineering reference](../reference/architecture/chats-imports-workspaces.md).
 
 [Checkpoints, rollback and workspace recovery](checkpoints.md).
+
+[Rebuild workspace folders](folder-recovery.md) restores catalogue grouping independently of Git rollback.

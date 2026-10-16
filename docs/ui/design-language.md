@@ -12,3 +12,5 @@ UAM is a dense, calm, dark-first professional desktop tool: content leads, chrom
 - [Review](review.md): verification and scope of UI work.
 
 Update the owning UI rule in the same commit as an authorized deliberate design change. A documented target does not establish current implementation; [recorded decisions](../architecture/decisions.md) retain pending notification and undo work. Feature-specific behaviour lives under [Chat](../chat/chat.md), [Sidebar](../sidebar/sidebar.md) and [Settings](../settings/settings.md).
+
+[Interface recovery](interface-recovery.md) owns failed-panel and reload behaviour.
