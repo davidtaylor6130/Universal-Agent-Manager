@@ -1259,6 +1259,7 @@ if(UAM_BUILD_TESTS)
     tests/claude_model_metadata_tests.cpp
     tests/svn_commit_scheduling_tests.cpp
     tests/native_import_failure_tests.cpp
+    tests/empty_native_import_tests.cpp
     tests/opencode_import_stream_tests.cpp
     tests/local_chat_bundle_tests.cpp
     tests/antigravity_tests.cpp

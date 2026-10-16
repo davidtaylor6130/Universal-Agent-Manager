@@ -16337,6 +16337,7 @@ namespace
 			chat.execution_host_id = "private-runner";
 			chat.workspace_directory = "/srv/private-workspace";
 			chat.title = "Unknown metadata";
+			chat.messages_loaded = false;
 			return chat;
 		}
 	};
@@ -24973,6 +24974,7 @@ std::optional<int> RunRemoteEmptyArgumentsFixture(int argc, char** argv);
 std::optional<int> RunRemoteOldStartupEchoFixture(int argc, char** argv);
 std::optional<int> RunRemoteWorktreeReceiptFixture(int argc, char** argv);
 std::optional<int> RunRemoteCodexSetupFixture(int argc, char** argv);
+std::optional<int> RunEmptyNativeImportFixture(int argc, char** argv);
 std::optional<int> RunOpenCodeSessionCreateFixtureIfRequested(int argc, char* argv[]);
 
 #if defined(__APPLE__)
@@ -24985,6 +24987,7 @@ int main(int argc, char** argv)
 	if (const std::optional<int> result = RunRemoteOldStartupEchoFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteWorktreeReceiptFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteCodexSetupFixture(argc, argv)) return *result;
+	if (const std::optional<int> result = RunEmptyNativeImportFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteOpenCodeCreateFixture(argc, argv)) return *result;
 	if (const std::optional<int> result = RunOpenCodeSessionCreateFixtureIfRequested(argc, argv)) return *result;
 	if (const std::optional<int> result = RunRemoteMcpLostAckFixture(argc, argv)) return *result;
