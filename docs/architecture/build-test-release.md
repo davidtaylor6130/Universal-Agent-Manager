@@ -26,3 +26,11 @@ Commands and build-directory restriction are listed in [AGENTS.md](../../AGENTS.
 ## Local macOS signing
 
 Set `-DUAM_MACOS_SIGNING_IDENTITY=<40-character identity SHA-1>` to sign the app and its owned helpers with an available certificate from `security find-identity -v -p codesigning`. CMake rejects a missing identity and stops on signing failures. The default `-` keeps ad-hoc signing available for machines without a certificate. A stable certificate requirement lets macOS retain privacy grants across rebuilds after the signed app receives its initial grant; changing from ad-hoc signing can require consent again. Existing entitlements are preserved and a valid vendor-signed CEF framework is verified without being resigned.
+
+## Separate manual test bundles on macOS
+
+A separately named copy must also have a distinct bundle identifier and a distinct `UAM_DATA_DIR` when it needs to run alongside the normal application. The existing data-root lock remains enforced: a second process targeting the regular application's live database exits before creating a window. A renamed bundle alone does not isolate that database.
+
+For private manual-test packaging, set a test-only `CFBundleIdentifier` and `CFBundleDisplayName`, and put the absolute test data-root path in the bundle's `LSEnvironment` dictionary. [Apple documents this environment setting for Launch Services launches](https://developer.apple.com/documentation/bundleresources/information-property-list/lsenvironment); direct command-line runs need the environment set explicitly. Re-sign the outer test bundle while preserving entitlements and verify its nested signatures. Keep the production build and normal application bundle unchanged.
+
+An import-test profile can start with copies of `settings.txt`, `folders.txt` and `providers.txt`; keep its chat database separate and do not clone active queue journals, agent-run state or runtime ownership. Verify a real Launch Services launch, the actual private data-root log entry, a visible app window and the connected backend before calling the test bundle ready. Static signature and resource checks alone do not establish launch acceptance. Re-signing with the test bundle identity changes the executable signature bytes; compare unsigned scratch copies to establish unchanged executable code.
