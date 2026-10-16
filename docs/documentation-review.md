@@ -55,7 +55,7 @@ The local checker validates navigation, heading targets, reachability and one ex
 
 ## Decision status
 
-Both questions raised by the trial are resolved above. Review and David’s real-development trial remain outstanding; implementation gaps are still tracked separately and are not closed by these documentation decisions.
+Both questions raised by the trial are resolved above. David approved retaining the guide and requested its merge into `uam/v5-improvements` on 2026-10-17; see the [adoption record](<../V5 Improvement Change log.md#documentation-adoption-2026-10-17>). Independent documentation review remains pending; implementation gaps and runtime acceptance remain tracked separately.
 
 ## V5 synchronization
 

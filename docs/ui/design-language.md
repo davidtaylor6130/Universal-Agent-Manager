@@ -1,6 +1,6 @@
 # UAM design language
 
-UAM is a dense, calm, dark-first professional desktop tool: content leads, chrome stays quiet, and interaction is fast, keyboard-accessible and progressively disclosed. Shared UI rules apply across features rather than following the source tree. Preserve the approved V5 visual and interaction language; new behaviour follows its owning feature agreement. The rules below were approved during the V5 UI sweep, while this reorganisation is still awaiting review and user testing.
+UAM is a dense, calm, dark-first professional desktop tool: content leads, chrome stays quiet, and interaction is fast, keyboard-accessible and progressively disclosed. Shared UI rules apply across features rather than following the source tree. Preserve the approved V5 visual and interaction language; new behaviour follows its owning feature agreement. The rules below were approved during the V5 UI sweep; David approved retaining this documentation structure on 2026-10-17, with independent documentation review still pending.
 
 - [Visual style](visual-style.md): colour, typography, spacing and quantitative displays.
 - [Primitives](primitives.md): shared components and settings building blocks.
