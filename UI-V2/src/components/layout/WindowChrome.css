@@ -1,0 +1,85 @@
+/* Native window controls share the app strip, never an individual chat header. */
+.uam-app[data-window-platform] {
+  --uam-window-strip-height: 44px;
+  --uam-window-left-clearance: 44px;
+  --uam-window-right-clearance: 44px;
+  --uam-layout-left: 44px;
+  --uam-layout-right: 44px;
+  position: relative;
+  box-sizing: border-box;
+  padding-top: var(--uam-window-strip-height);
+}
+
+.uam-app[data-window-platform='macos']:not([data-window-fullscreen='true']) {
+  --uam-window-left-clearance: 80px;
+}
+
+.uam-app[data-window-platform='windows']:not([data-window-fullscreen='true']) {
+  --uam-window-right-clearance: 138px;
+}
+
+.uam-window-chrome {
+  position: absolute;
+  inset: 0 0 auto;
+  height: var(--uam-window-strip-height);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+
+.uam-window-captions {
+  position: fixed;
+  z-index: 1000;
+  top: 0;
+  right: 0;
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+
+.uam-window-captions .uam-window-caption {
+  width: 46px;
+  height: 44px;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.uam-window-captions .uam-window-caption:hover:not(:disabled) {
+  background: var(--surface-high);
+  color: var(--text);
+}
+
+.uam-window-captions .uam-window-caption--close:hover:not(:disabled) {
+  background: var(--error);
+  color: var(--bg);
+}
+
+.uam-app[data-window-platform] .uam-layout-toolbar {
+  position: fixed;
+  top: 0;
+  left: max(var(--uam-layout-left), var(--uam-window-left-clearance));
+  right: max(var(--uam-layout-right), var(--uam-window-right-clearance));
+  height: var(--uam-window-strip-height);
+  z-index: 3;
+  -webkit-app-region: drag;
+}
+
+.uam-app[data-window-platform] .uam-layout-toolbar > * {
+  -webkit-app-region: no-drag;
+}
+
+.uam-app.uam-window-recovery { display: block; }
+
+/* CEF drag regions are geometric; an overlay must disable the underlying strip. */
+body:has(.uam-overlay, [aria-modal='true']) .uam-window-chrome,
+body:has(.uam-overlay, [aria-modal='true']) .uam-app[data-window-platform] .uam-layout-toolbar {
+  -webkit-app-region: no-drag;
+}
+
+@media (max-width: 1000px) {
+  .uam-app[data-window-platform] .uam-shell-panel {
+    inset-block-start: var(--uam-window-strip-height);
+    height: calc(100% - var(--uam-window-strip-height));
+  }
+}

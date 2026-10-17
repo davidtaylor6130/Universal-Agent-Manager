@@ -18,6 +18,8 @@ function storage() {
   vi.spyOn(window, 'localStorage', 'get').mockReturnValue({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) }, removeItem: key => { values.delete(key) }, clear: () => values.clear(), length: 0, key: () => null })
 }
 
+const fact = (host: HTMLElement, label: string) => [...host.querySelectorAll('.uam-limits-facts dt')].find(dt => dt.textContent === label)?.nextElementSibling?.textContent
+
 describe('UsagePage', () => {
   it.each([0, 0.05])('discloses unpriced tokens beside a partial reported cost of %s', async reportedCostUsd => {
     storage()
@@ -246,11 +248,12 @@ describe('UsageLimits', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       act(() => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.textContent).toContain('Tokens observed while attached to Resumed chat: 125')
-      expect(host.textContent).toContain('Input 100 · Output 25')
-      expect(host.textContent).toContain('Of input: cache read 70 · cache write 0')
-      expect(host.textContent).toContain('Of output: reasoning 5')
-      expect(host.textContent).toContain('Last turn: 125 tokens')
+      expect(host.textContent).toContain('Observed in Resumed chat')
+      expect(fact(host, 'Input')).toBe('100')
+      expect(fact(host, 'Output')).toBe('25')
+      expect(fact(host, 'Cache read')).toBe('70')
+      expect(fact(host, 'Reasoning')).toBe('5')
+      expect(fact(host, 'Last turn')).toBe('125')
       expect(host.textContent).not.toContain('Tokens consumed in Resumed chat')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
@@ -265,11 +268,11 @@ describe('UsageLimits', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       act(() => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.textContent).toContain('Tokens consumed in Zero usage: 0')
-      expect(host.textContent).toContain('Last turn: 0 tokens')
+      expect(host.textContent).toContain('Used in Zero usage')
+      expect(fact(host, 'Last turn')).toBe('0')
       expect(host.textContent).toContain('Update time unavailable')
       expect(host.textContent).toContain('Cached snapshot')
-      expect(host.textContent).toContain('Consumed tokens unavailable.')
+      expect(host.querySelectorAll('.uam-limits-facts')).toHaveLength(1)
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
 
@@ -288,11 +291,13 @@ describe('UsageLimits', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       act(() => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.textContent).toContain('Tokens consumed in Current Claude: 161')
-      expect(host.textContent).toContain('Input 120 · Output 41')
-      expect(host.textContent).toContain('Of input: cache read 20 · cache write 5')
-      expect(host.textContent).toContain('Of output: reasoning 3')
-      expect(host.textContent).toContain('Last turn: Unavailable')
+      expect(host.textContent).toContain('Used in Current Claude')
+      expect(fact(host, 'Input')).toBe('120')
+      expect(fact(host, 'Output')).toBe('41')
+      expect(fact(host, 'Cache read')).toBe('20')
+      expect(fact(host, 'Cache write')).toBe('5')
+      expect(fact(host, 'Reasoning')).toBe('3')
+      expect(fact(host, 'Last turn')).toBe('Unavailable')
       expect(host.textContent).toContain('Cached snapshot')
       expect(host.textContent).not.toContain('Tokens consumed in Old chat')
       expect(host.textContent).not.toContain('Remote chat')
@@ -318,11 +323,11 @@ describe('UsageLimits', () => {
     try {
       await act(async () => root.render(<UsageLimits executionHostId="*" />))
       expect(requestedHosts).toEqual(['local', 'peer'])
-      expect(host.querySelector('[aria-label="Mac limits"]')?.textContent).toContain('75% remaining')
+      expect(host.querySelector('[aria-label="Mac limits"]')?.textContent).toContain('25% used')
       const remote = host.querySelector('[aria-label="Windows limits"]')!
-      expect(remote.textContent).toContain('Account allowances are not available for remote computers.')
+      expect(remote.textContent).toContain('Not available for remote computers.')
       expect(remote.textContent).toContain('Account allowance reads are unavailable on remote hosts.')
-      expect(remote.textContent).not.toContain('75% remaining')
+      expect(remote.textContent).not.toContain('25% used')
       expect(remote.querySelector('button')).toBeNull()
       expect(host.querySelector('[aria-label="Mac limits"]')?.querySelector('button')?.textContent).toBe('Refresh allowances')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
@@ -337,8 +342,8 @@ describe('UsageLimits', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.textContent).toContain('75% remaining')
-      expect(host.textContent).toContain('Context in Latest chat: 1,234 of 200,000 tokens')
+      expect(host.textContent).toContain('25% used')
+      expect(host.textContent).toContain('Context: 1,234 of 200,000 tokens')
       expect(host.textContent).not.toContain('90% remaining')
       expect(host.textContent).not.toContain('95% remaining')
       expect(host.textContent).not.toContain('80% used')

@@ -32,6 +32,7 @@ function SvnLogo({ size = 17 }: { size?: number }) {
 import { InterfaceErrorBoundary } from '../shared/InterfaceErrorBoundary'
 import { Sidebar } from './Sidebar'
 import { MainPanel } from './MainPanel'
+import { WindowChrome, useWindowChrome } from './WindowChrome'
 import { UpdatesPanel } from './UpdatesPanel'
 import type { SettingsHandle } from '../settings/SettingsModal'
 import { useAppStore } from '../../store/useAppStore'
@@ -525,6 +526,7 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
 }
 
 export function AppShell() {
+  const windowChrome = useWindowChrome()
   const settingsRef = useRef<SettingsHandle>(null)
   const setSettingsOpen = useAppStore((s) => s.setSettingsOpen)
   const refreshCustomThemes = useAppStore((state) => state.refreshCustomThemes)
@@ -796,8 +798,11 @@ export function AppShell() {
     <div
       className="h-screen w-screen overflow-hidden flex uam-app"
       data-right-panel-open={commitPanelOpen || alertsOpen || updatesOpen ? 'true' : 'false'}
+      data-window-platform={windowChrome.state?.platform}
+      data-window-fullscreen={windowChrome.state?.fullscreen ? 'true' : undefined}
       style={{ color: 'var(--text)' }}
     >
+      {windowChrome.state && <WindowChrome state={windowChrome.state} command={windowChrome.command} />}
       <LeftActivityRail
         settingsOpen={isSettingsOpen && !usageOpen}
         usageOpen={usageOpen}

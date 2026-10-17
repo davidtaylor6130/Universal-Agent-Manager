@@ -588,7 +588,7 @@ export function MainPanel() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div
-        className="flex h-9 flex-shrink-0 items-center justify-between px-2"
+        className="uam-layout-toolbar flex h-9 flex-shrink-0 items-center justify-between px-2"
         style={{ borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}
       >
         <div className="flex items-center gap-1" aria-label={`Chat pane layout, ${leaves.length} of ${MAX_CHAT_PANES} panes`}>

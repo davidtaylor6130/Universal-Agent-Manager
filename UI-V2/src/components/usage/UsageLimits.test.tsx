@@ -108,7 +108,7 @@ describe('UsageLimits independent account allowances', () => {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       expect(requests).toContainEqual(expect.objectContaining({ action: 'getProviderAllowances', payload: expect.objectContaining({ executionHostId: 'local' }) }))
       expect(host.querySelector('[aria-label="Codex limits"]')?.textContent).toContain('25% used')
-      expect(host.querySelectorAll('.uam-limits-card')).toHaveLength(6)
+      expect(host.querySelectorAll('.uam-pace-prov')).toHaveLength(6)
       expect(host.textContent).not.toContain('Latest provider snapshots from chats')
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
   })
@@ -180,7 +180,7 @@ describe('UsageLimits independent account allowances', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       await act(async () => root.render(<UsageLimits executionHostId="remote" />))
-      expect(host.textContent).toContain('Account allowances are not available for remote computers.')
+      expect(host.textContent).toContain('Not available for remote computers.')
       expect(host.textContent).not.toContain('Account allowances on this computer.')
       expect(host.querySelector('button')).toBeNull()
     } finally { act(() => root.unmount()); useAppStore.setState(previous, true) }
@@ -195,7 +195,6 @@ describe('UsageLimits independent account allowances', () => {
       await act(async () => root.render(<UsageLimits executionHostId="local" />))
       const copilot = host.querySelector('[aria-label="Copilot limits"]')!
       expect(copilot.textContent).toContain('0.4% used')
-      expect(copilot.textContent).toContain('99.6% remaining')
       expect(copilot.querySelector('[role="meter"]')?.getAttribute('aria-valuenow')).toBe('0.4')
     } finally { act(() => root.unmount()) }
   })
@@ -298,5 +297,14 @@ describe('UsageLimits independent account allowances', () => {
       await act(async () => button.click())
       expect(requests[2].refresh).toBe(true)
     } finally { act(() => root.unmount()) }
+  })
+
+  it('shows the 5-hour period as unlimited when a Pro plan reports no secondary window', async () => {
+    const view = await renderLimits({ updatedAt: now, limitId: '', limitName: '', planType: 'prolite', primary: { usedPercent: 100, resetsAt: now / 1000 + 6 * 86400, windowDurationMinutes: 10080 }, secondary: null, credits: null, individualLimit: null, spendControlReached: null, rateLimitReachedType: '' })
+    try {
+      expect(view.host.textContent).toContain('5-hour')
+      expect(view.host.textContent).toContain('Unlimited')
+      expect(view.host.textContent).not.toContain('Not reported by provider')
+    } finally { view.close() }
   })
 })

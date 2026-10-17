@@ -2,8 +2,12 @@
 #include "cef/uam_query_handler.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/uam_cef_security.h"
+#include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
 
+#include "include/cef_task.h"
+#include "include/views/cef_browser_view.h"
+#include "include/views/cef_window.h"
 #include "include/wrapper/cef_helpers.h"
 
 #include <nlohmann/json.hpp>
@@ -27,6 +31,54 @@ namespace
 		std::shared_ptr<uam::WorkspaceLeaseGate::Lease> m_lease;
 		IMPLEMENT_REFCOUNTING(WorkspaceMutationCallback);
 	};
+
+	/// Closing runs after the bridge acknowledgement, through the window's normal CanClose path.
+	class CloseWindowTask final : public CefTask
+	{
+	  public:
+		explicit CloseWindowTask(CefRefPtr<CefWindow> window) : m_window(std::move(window)) {}
+		void Execute() override { if (m_window->IsValid()) m_window->Close(); }
+
+	  private:
+		CefRefPtr<CefWindow> m_window;
+		IMPLEMENT_REFCOUNTING(CloseWindowTask);
+	};
+
+	/// Privileged window chrome bridge. Deliberately outside DispatchAction so the companion cannot reach it.
+	void HandleWindowChrome(CefRefPtr<CefBrowser> browser, const std::string& action, const nlohmann::json& payload, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback)
+	{
+		const CefRefPtr<CefBrowserView> view = browser && !browser->IsPopup() ? CefBrowserView::GetForBrowser(browser) : nullptr;
+		const CefRefPtr<CefWindow> window = view ? view->GetWindow() : nullptr;
+		if (!window)
+		{
+			callback->Failure(503, "The native window is unavailable.");
+			return;
+		}
+		std::string command;
+		if (action == "windowCommand")
+		{
+			const nlohmann::json::const_iterator value = payload.find("command");
+			if (!uam::cef::kCustomWindowChrome)
+			{
+				callback->Failure(400, "Window controls are native on this platform.");
+				return;
+			}
+			if (value == payload.end() || !value->is_string() || ((command = value->get<std::string>()) != "minimize" && command != "toggleMaximize" && command != "close"))
+			{
+				callback->Failure(400, "Unknown window command.");
+				return;
+			}
+			if (command == "minimize") window->Minimize();
+			else if (command == "toggleMaximize") window->IsMaximized() ? window->Restore() : window->Maximize();
+		}
+		const nlohmann::json state = {
+		    {"platform", uam::cef::kWindowChromePlatform},
+		    {"maximized", window->IsMaximized()},
+		    {"fullscreen", window->IsFullscreen()},
+		};
+		callback->Success(state.dump());
+		if (command == "close") CefPostTask(TID_UI, new CloseWindowTask(window));
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +386,12 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 
 	const std::string& action = parsed.request.action;
 	const nlohmann::json& payload = parsed.request.payload;
+
+	if (action == "getWindowChrome" || action == "windowCommand")
+	{
+		HandleWindowChrome(browser, action, payload, callback);
+		return true;
+	}
 
 	const std::string port_chat_id = action == "portChatWorktreeChanges" && payload.contains("chatId") && payload["chatId"].is_string() ? payload["chatId"].get<std::string>() : std::string();
 	const std::unordered_map<std::string, std::shared_ptr<uam::AppState::GitPortRequest>>::const_iterator previous_port = m_app.git_port_requests.find(port_chat_id);

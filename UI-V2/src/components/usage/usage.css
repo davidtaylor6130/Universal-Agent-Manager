@@ -308,7 +308,8 @@
   .uam-usage-col-stack,
   .uam-usage-stack > span,
   .uam-usage-skeleton,
-  .uam-limits-card,
+  .uam-pace-prov,
+  .uam-pace-fill,
   .uam-limits-tokens[open] > :not(summary) {
     animation: none;
   }
@@ -336,18 +337,41 @@
   animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both;
 }
 
-/* Limits: one card per provider, always the same structure; unreadable windows stay as empty tracks. */
-.uam-limits-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--sp-3); }
-.uam-limits-card { display: grid; gap: var(--sp-4); align-content: start; padding: var(--sp-4); border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--elev-1); animation: uam-usage-fade var(--dur-enter) var(--ease-out-soft) both; }
-.uam-limits-card__head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+/* Limits: provider sections in one column; each window is a pace row (used track with elapsed-time tick). */
+.uam-pace-list { display: grid; max-width: 720px; }
+.uam-pace-prov { display: grid; gap: var(--sp-3); align-content: start; padding: var(--sp-5) 0; border-top: 1px solid var(--border); animation: uam-usage-fade var(--dur-enter) var(--ease-out-soft) both; }
+.uam-pace-prov:first-child { border-top: none; padding-top: 0; }
+.uam-pace-prov__head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.uam-pace-prov__title { display: flex; align-items: center; gap: var(--sp-2); margin: 0; font-size: var(--fs-md); font-weight: 600; }
+.uam-pace-rows { display: grid; gap: var(--sp-1); }
+.uam-pace-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 92px; align-items: center; gap: var(--sp-4); padding: var(--sp-2) 0; }
+.uam-pace-row__label { display: grid; min-width: 0; }
+.uam-pace-row__label > span { font-size: var(--fs-sm); color: var(--text-2); }
+.uam-pace-row__label > small { font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.uam-pace-row__value { text-align: right; font-size: var(--fs-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
+.uam-pace-track { position: relative; display: block; height: 6px; border-radius: var(--r-full); background: var(--surface-up); }
+.uam-pace-track--open { background: none; border: 1px dashed var(--border-bright); }
+.uam-pace-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; transform-origin: 0 50%; animation: uam-usage-grow-x var(--dur-base) var(--ease-out-soft) both; }
+.uam-pace-tick { position: absolute; top: -5px; bottom: -5px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text-2); }
+.uam-pace-key { display: flex; gap: var(--sp-4); font-size: var(--fs-xs); color: var(--text-3); }
+.uam-pace-key > span { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.uam-pace-key i { display: inline-block; width: 2px; height: 10px; background: var(--text-2); }
+.uam-pace-key b { display: inline-block; width: 10px; height: 6px; border-radius: var(--r-full); background: var(--text-3); }
+.uam-limits-host-title { margin: 0; font-size: var(--fs-md); font-weight: 600; }
+.uam-limits-group { margin: 0; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
+.uam-limits-lede { margin: 0; font-size: var(--fs-md); line-height: 1.5; color: var(--text-2); }
+.uam-limits-lede b { font-weight: 600; color: var(--text); }
+.uam-limits-notice { margin: 0; font-size: var(--fs-sm); color: var(--warning); }
 .uam-limits-chip { font-size: var(--fs-xs); padding: 1px 7px; border-radius: var(--r-full); background: var(--surface-high); color: var(--text-2); text-transform: capitalize; }
 .uam-limits-updated { margin-left: auto; font-size: var(--fs-xs); color: var(--text-3); }
 .uam-limits-label { font-size: var(--fs-sm); color: var(--text-2); }
-.uam-limits-pct { font-weight: 600; }
 .uam-limits-tokens { border-top: 1px solid var(--border); padding-top: var(--sp-3); }
-.uam-limits-tokens > summary { display: flex; justify-content: space-between; cursor: pointer; list-style: none; border-radius: var(--r-sm); }
+.uam-limits-tokens > summary { display: flex; justify-content: space-between; cursor: pointer; list-style: none; border-radius: var(--r-sm); font-size: var(--fs-sm); color: var(--text-2); }
 .uam-limits-tokens > summary::-webkit-details-marker { display: none; }
 .uam-limits-tokens > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .uam-limits-tokens[open] > summary { margin-bottom: var(--sp-3); }
 .uam-limits-tokens[open] > :not(summary) { animation: uam-usage-fade var(--dur-base) var(--ease-out-soft) both; }
 .uam-limits-tokens > div + div { margin-top: var(--sp-2); }
+.uam-limits-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--sp-4); margin: 0; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.uam-limits-facts dt { color: var(--text-3); }
+.uam-limits-facts dd { margin: 0; color: var(--text-2); }

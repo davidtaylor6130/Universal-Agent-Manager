@@ -710,17 +710,18 @@ int main(int argc, char** argv)
 		const bool creation = test.name.rfind("ChatCreate", 0) == 0;
 		const bool retry = test.name.rfind("ChatRetry", 0) == 0;
 		const bool instruction = test.name.rfind("CentralInstruction", 0) == 0;
+		const bool window_chrome = test.name.rfind("WindowChrome", 0) == 0;
 		if (icon) ++icon_selected;
 		if (creation) ++create_selected;
 		if (retry) ++retry_selected;
 		try
 		{
-			if ((creation || retry || instruction) && !initialization_attempted)
+			if ((creation || retry || instruction || window_chrome) && !initialization_attempted)
 			{
 				initialization_attempted = true;
 				cef = std::make_unique<CreationCefRuntime>(main_args);
 			}
-			if (creation || retry || instruction) UAM_ASSERT(cef != nullptr);
+			if (creation || retry || instruction || window_chrome) UAM_ASSERT(cef != nullptr);
 			test.fn(); ++passed;
 			if (creation) ++create_passed; else if (retry) ++retry_passed; else if (icon) ++icon_passed;
 			std::cout << "PASS " << test.name << '\n';
@@ -830,4 +831,23 @@ UAM_TEST(ProviderMcpOverrideHandlerUsesEffectiveHostScopedServerMembership)
 	const CefRefPtr<RecordingInstructionCallback> local_result = invoke("local", global.id);
 	UAM_ASSERT_EQ(local_result->successes, 1);
 	UAM_ASSERT_EQ(local_result->failures, 0);
+}
+
+UAM_TEST(WindowChromeRejectsUntrustedFramesAndCompanionDispatch)
+{
+	TempDir temp("uam-window-chrome-boundary");
+	uam::AppState app;
+	app.data_root = temp.root;
+	UamQueryHandler handler(app, "uam://app/index.html");
+	for (const std::string& action : {std::string("getWindowChrome"), std::string("windowCommand")})
+	{
+		CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+		const nlohmann::json payload = {{"command", "close"}};
+		UAM_ASSERT(!ChatIconHandlerTestAccess::InstructionInvoke(handler, action.c_str(), payload, callback));
+		UAM_ASSERT_EQ(callback->successes + callback->failures, 0);
+		UAM_ASSERT(handler.OnQuery(nullptr, nullptr, 1, nlohmann::json({{"action", action}, {"payload", payload}}).dump(), false, callback));
+		UAM_ASSERT_EQ(callback->successes, 0);
+		UAM_ASSERT_EQ(callback->failures, 1);
+		UAM_ASSERT_EQ(callback->last_failure, 403);
+	}
 }

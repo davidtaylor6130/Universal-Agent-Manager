@@ -3,6 +3,7 @@
 Interactions preserve the user’s context and make the next action clear: one primary action per area, readable state, keyboard access and progressive disclosure of technical details. Loading, empty, success and failure paths are part of the feature. Technical identifiers are secondary, and an async refresh must not erase usable content or unrelated drafts.
 
 Patterns:
+- Desktop window controls share an app-level strip with split-layout actions, while chat search stays in the sidebar and every split pane retains its own header. Empty strip space drags the window; interactive controls and modal overlays exclude dragging. macOS uses native traffic lights, and Windows caption buttons invoke native window actions.
 - Settings pages follow [settings.md](settings.md): page title only, short section labels, one concise consequence per row, actions right-aligned and no nested decorative cards.
 - Lists/rows: identity line (text), detail line (mono, --text-3, for ids/paths), status line (StatusDot + semantic colour); icon-only actions on the right with Tooltip + aria-label.
 - Notices: tinted, calm, plain-language consequence; collapsible/dismissible where long.
