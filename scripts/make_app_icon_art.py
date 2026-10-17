@@ -1,10 +1,9 @@
-"""Draws the UAM app icon artwork: a white rounded-square robot outline with blue and pink eyes on the
-blue-to-magenta brand gradient. Output is flat square artwork; scripts/compose_macos_icon.swift clips it to the
-macOS icon grid. Usage: python3 scripts/make_app_icon_art.py [assets/app_icon.png] [robot scale, default 1.32]"""
+"""Draws the UAM app icon artwork (chosen by David 2026-10-16): the original robot, simplified to flat shapes,
+in a browser window whose outline is an inset copy of the icon tile, on a blue-to-orange gradient rim.
+Output is flat square artwork; scripts/compose_macos_icon.swift clips it to the macOS icon grid.
+Usage: python3 scripts/make_app_icon_art.py [assets/app_icon.png]"""
 import math, sys
 from PIL import Image, ImageDraw, ImageFilter
-OUT = sys.argv[1] if len(sys.argv) > 1 else 'assets/app_icon.png'
-SCALE = float(sys.argv[2]) if len(sys.argv) > 2 else 1.32
 S, BODY, OFF, K = 1024, 824, 100, 4
 B = BODY * K
 def squircle(size):
@@ -26,40 +25,38 @@ def finish(layer, name):
     canvas = Image.alpha_composite(canvas, sh.filter(ImageFilter.GaussianBlur(14)))
     clipped = Image.new('RGBA', (BODY, BODY), (0, 0, 0, 0)); clipped.paste(body, (0, 0), mask)
     canvas.paste(clipped, (OFF, OFF), clipped); canvas.save(f'{OUT}/{name}.png')
-WHITE, BLUE, PINK = (250, 250, 255), (90, 185, 255), (250, 120, 205)
-BRAND = ((44, 86, 228), (204, 52, 132))
+NAVY, BAR, WHITE, SHADE, VISOR = (29, 27, 51), (220, 221, 232), (248, 248, 252), (206, 208, 224), (23, 21, 39)
+RED, TEAL, GREEN, BLUE, PINK, GLINT = (255, 95, 87), (38, 166, 154), (40, 200, 90), (56, 189, 248), (236, 72, 153), (90, 88, 118)
+def hgrad(cols):
+    im = Image.new('RGB', (len(cols), 1))
+    for i, c in enumerate(cols): im.putpixel((i, 0), c)
+    return im.resize((B, B), Image.BILINEAR).convert('RGBA')
+def icon(scale, prompt, cy):
+    l = hgrad([(37, 99, 235), (70, 60, 170), (214, 51, 108), (234, 120, 60)]); d = ImageDraw.Draw(l)
+    INSET, BARH = 36, 92
+    WX0, WY0, WX1, WY1 = INSET, INSET, 824 - INSET, 824 - INSET
+    win = squircle(B - 2 * P(INSET))          # same superellipse as the tile, so the curves stay concentric
+    full = Image.new('L', (B, B), 0); full.paste(win, (P(INSET), P(INSET)))
+    l.paste(Image.new('RGBA', (B, B), NAVY + (255,)), (0, 0), full)
+    bar = Image.new('L', (B, B), 0); ImageDraw.Draw(bar).rectangle((0, 0, B, P(WY0 + BARH)), fill=255)
+    from PIL import ImageChops
+    l.paste(Image.new('RGBA', (B, B), BAR + (255,)), (0, 0), ImageChops.multiply(full, bar))
+    for x, c in ((150, RED), (210, TEAL), (270, GREEN)): d.ellipse((P(x - 21), P(WY0 + 50 - 21), P(x + 21), P(WY0 + 50 + 21)), fill=c)
+    if prompt:
+        d.line((P(108), P(WY0 + BARH + 50), P(152), P(WY0 + BARH + 80), P(108), P(WY0 + BARH + 110)), fill=GREEN, width=P(22), joint='curve')
+    # head drawn around its own centre (412, 417) then scaled and placed at (412, cy)
+    def T(x0, y0, x1, y1):
+        return (P(412 + (x0 - 412) * scale), P(cy + (y0 - 417) * scale), P(412 + (x1 - 412) * scale), P(cy + (y1 - 417) * scale))
+    for x0 in (188, 576): d.rounded_rectangle(T(x0, 352, x0 + 60, 486), radius=P(30 * scale), fill=SHADE)
+    d.ellipse(T(218, 222, 606, 612), fill=WHITE)
+    d.rounded_rectangle(T(256, 342, 568, 514), radius=P(86 * scale), fill=VISOR)
+    d.rounded_rectangle(T(468, 360, 530, 374), radius=P(7 * scale), fill=GLINT)
+    d.ellipse(T(314, 388, 378, 476), fill=BLUE)
+    d.ellipse(T(446, 388, 510, 476), fill=PINK)
+    return l
+CONTENT_CY = (36 + 92 + 788) / 2 + 6   # centre of the dark area under the title bar
 
-def robot(d, dy=0, w=34, shoulders=False, eye_fill=(WHITE, WHITE), antenna=True, visor=True):
-    def r(x0, y0, x1, y1, rad, fill=None, outline=WHITE, width=w):
-        d.rounded_rectangle((P(x0), P(y0 + dy), P(x1), P(y1 + dy)), radius=P(rad), fill=fill, outline=outline if fill is None else None, width=P(width) if fill is None else 0)
-    if antenna:
-        d.line((P(412), P(206 + dy), P(412), P(150 + dy)), fill=WHITE, width=P(w))
-        d.ellipse((P(412 - 30), P(104 + dy), P(412 + 30), P(164 + dy)), outline=WHITE, width=P(w * 0.85))
-    r(140, 326, 200, 476, 30)                     # left ear pod
-    r(624, 326, 684, 476, 30)                     # right ear pod
-    r(196, 206, 628, 604, 140)                    # helmet (rounded square)
-    if visor: r(250, 314, 574, 494, 90, width=w * 0.85)
-    r(318, 362, 372, 446, 27, fill=eye_fill[0])   # eyes: tall pills
-    r(452, 362, 506, 446, 27, fill=eye_fill[1])
-    if shoulders:
-        r(352, 604, 472, 660, 18, width=w * 0.85)     # neck
-        r(172, 656, 652, 900, 120)                    # shoulders, clipped by the tile edge
-
-
-def T(x, y, s=SCALE, cy0=375):
-    return 412 + (x - 412) * s, 412 + (y - cy0) * s
-def big_robot(d, w=38):
-    def r(x0, y0, x1, y1, rad, fill=None, width=w):
-        (a, b), (c, e) = T(x0, y0), T(x1, y1)
-        if fill is None: d.rounded_rectangle((P(a), P(b), P(c), P(e)), radius=P(rad * SCALE), outline=WHITE, width=P(width * SCALE))
-        else: d.rounded_rectangle((P(a), P(b), P(c), P(e)), radius=P(rad * SCALE), fill=fill)
-    (ax, ay0), (_, ay1) = T(412, 206), T(412, 150)
-    d.line((P(ax), P(ay0), P(ax), P(ay1)), fill=WHITE, width=P(w * SCALE))
-    (bx0, by0), (bx1, by1) = T(382, 104), T(442, 164)
-    d.ellipse((P(bx0), P(by0), P(bx1), P(by1)), outline=WHITE, width=P(w * 0.85 * SCALE))
-    r(140, 326, 200, 476, 30); r(624, 326, 684, 476, 30)
-    r(196, 206, 628, 604, 140)
-    r(318, 362, 372, 446, 27, fill=BLUE); r(452, 362, 506, 446, 27, fill=PINK)
-l = grad(*BRAND); big_robot(ImageDraw.Draw(l))
-l.resize((1024, 1024), Image.LANCZOS).save(OUT)
-print(f'Wrote {OUT}; run scripts/compose_macos_icon.swift on it to build the macOS icons.')
+if __name__ == '__main__':
+    out = sys.argv[1] if len(sys.argv) > 1 else 'assets/app_icon.png'
+    icon(scale=1.32, prompt=True, cy=CONTENT_CY).resize((1024, 1024), Image.LANCZOS).save(out)
+    print(f'Wrote {out}; run scripts/compose_macos_icon.swift on it to build the macOS icons.')
