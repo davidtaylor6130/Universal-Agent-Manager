@@ -161,13 +161,15 @@ UAM_TEST(GeminiAccountAllowanceRefreshesExpiredGrantInMemoryAndStopsAtUnsupporte
 	GoogleAccountProcessFixture fixture;
 	fixture.responses = {{{{"access_token", "synthetic-fresh"}, {"expires_in", 3600}}, 200},
 	    {{{"ineligibleTiers", {{{"reasonCode", "UNSUPPORTED_CLIENT"}, {"reasonMessage", "raw-secret-do-not-leak"}}}}}, 200}};
-	const auto result = uam::usage::FetchGeminiAccountAllowanceWithProcessService(fixture, {}, {{"refresh_token", "synthetic-refresh"}, {"expiry_date", 1}});
+	const auto result = uam::usage::FetchGeminiAccountAllowanceWithProcessService(fixture, {}, {{"refresh_token", "synthetic-refresh"}, {"expiry_date", 1}, {"client_id", "test-client"}, {"client_secret", "test-secret"}});
 	UAM_ASSERT(result.account_unavailable); UAM_ASSERT(!result.error.empty()); UAM_ASSERT(result.limits.is_null());
 	UAM_ASSERT(result.error.find("unsupported") != std::string::npos);
 	UAM_ASSERT(result.error.find("raw-secret") == std::string::npos);
 	UAM_ASSERT_EQ(fixture.arguments.size(), std::size_t(2)); UAM_ASSERT_EQ(fixture.stops, 2);
 	UAM_ASSERT_EQ(fixture.arguments[0].back(), "https://oauth2.googleapis.com/token");
 	UAM_ASSERT(fixture.inputs[0].find("synthetic-refresh") != std::string::npos);
+	UAM_ASSERT(fixture.inputs[0].find("client_id=test-client&client_secret=test-secret") != std::string::npos);
+	UAM_ASSERT(nlohmann::json(fixture.arguments).dump().find("test-secret") == std::string::npos);
 	UAM_ASSERT(nlohmann::json(fixture.arguments).dump().find("synthetic-refresh") == std::string::npos);
 }
 
@@ -217,4 +219,38 @@ UAM_TEST(GoogleAccountAllowanceTransportClearsUnauthorizedAccountWithoutExposing
 	UAM_ASSERT(result.error.find("synthetic-access") == std::string::npos);
 	UAM_ASSERT(result.error.find("raw-token") == std::string::npos);
 	UAM_ASSERT_EQ(fixture.stops, 1);
+}
+
+UAM_TEST(GoogleAccountAllowanceExpiredLoginRequiresExistingRegistrationBeforeNetwork)
+{
+	for (bool antigravity : {false, true})
+	{
+		for (bool malformed : {false, true})
+		{
+			GoogleAccountProcessFixture fixture;
+			nlohmann::json token{{"access_token", "synthetic-expired"}, {"refresh_token", "synthetic-refresh"}, {"expiry_date", 1}, {"expiry", "2000-01-01T00:00:00Z"}};
+			if (malformed) { token["client_id"] = "test-client"; token["client_secret"] = "bad\nregistration"; }
+			const nlohmann::json credential = antigravity ? nlohmann::json{{"auth_method", "consumer"}, {"token", token}} : token;
+			const auto result = antigravity ? uam::usage::FetchAntigravityAccountAllowanceWithProcessService(fixture, {}, credential)
+			    : uam::usage::FetchGeminiAccountAllowanceWithProcessService(fixture, {}, credential);
+			UAM_ASSERT(result.account_unavailable); UAM_ASSERT(result.limits.is_null());
+			UAM_ASSERT(result.error.find("provider CLI") != std::string::npos);
+			UAM_ASSERT(fixture.arguments.empty()); UAM_ASSERT(fixture.inputs.empty());
+		}
+	}
+}
+
+UAM_TEST(AntigravityAccountAllowanceRefreshUsesOnlyExistingProfileRegistration)
+{
+	GoogleAccountProcessFixture fixture;
+	fixture.responses = {{{{"access_token", "synthetic-fresh"}}, 200},
+	    {{{"cloudaicompanionProject", "synthetic-project"}}, 200},
+	    {{{"buckets", {{{"bucketId", "weekly"}, {"remainingFraction", 0.5}}}}}, 200}};
+	const nlohmann::json profile{{"auth_method", "consumer"}, {"client_id", "test-client"}, {"client_secret", "test-secret"},
+	    {"token", {{"refresh_token", "synthetic-refresh"}, {"expiry", "2000-01-01T00:00:00Z"}}}};
+	const auto result = uam::usage::FetchAntigravityAccountAllowanceWithProcessService(fixture, {}, profile);
+	UAM_ASSERT(result.error.empty()); UAM_ASSERT_EQ(result.windows.size(), std::size_t(1));
+	UAM_ASSERT_EQ(fixture.arguments.size(), std::size_t(3));
+	UAM_ASSERT(fixture.inputs[0].find("client_id=test-client&client_secret=test-secret") != std::string::npos);
+	UAM_ASSERT(nlohmann::json(fixture.arguments).dump().find("test-secret") == std::string::npos);
 }

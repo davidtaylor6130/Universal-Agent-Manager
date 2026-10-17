@@ -18,13 +18,6 @@ namespace uam::usage
 	namespace
 	{
 		using Json = nlohmann::json;
-		// These are public installed-application OAuth registrations distributed by
-		// the respective Google CLIs, not user credentials. Refreshes reuse an
-		// existing grant in memory and never enroll accounts or write token files.
-		constexpr std::string_view kGeminiClientId = "";
-		constexpr std::string_view kGeminiClientSecret = "";
-		constexpr std::string_view kAntigravityClientId = "";
-		constexpr std::string_view kAntigravityClientSecret = "";
 		constexpr std::size_t kOutputLimit = 1024 * 1024;
 		AccountAllowanceFetchResult Failure(std::string message, bool unavailable = false)
 		{
@@ -72,7 +65,7 @@ namespace uam::usage
 		void WipeSecrets(Json& object)
 		{
 			if (!object.is_object()) return;
-			for (const char* key : {"access_token", "refresh_token", "id_token"})
+			for (const char* key : {"access_token", "refresh_token", "id_token", "client_secret"})
 				if (auto found = object.find(key); found != object.end() && found->is_string()) Wipe(found->get_ref<std::string&>());
 			if (auto found = object.find("token"); found != object.end())
 			{
@@ -192,8 +185,13 @@ namespace uam::usage
 			if (token.empty() || expired)
 			{
 				if (refresh.empty()) return Failure("The existing Google account login has expired; refresh it in the provider CLI.", true);
-				const auto client_id = antigravity ? kAntigravityClientId : kGeminiClientId;
-				const auto secret = antigravity ? kAntigravityClientSecret : kGeminiClientSecret;
+				// Reuse only registration fields supplied by this existing credential profile.
+				// Provider CLI registrations are never embedded or inferred by UAM.
+				const Json& registration = Field(token_fields, "client_id") ? token_fields : credentials;
+				std::string client_id = String(registration, "client_id"), secret = String(registration, "client_secret");
+				struct RegistrationGuard { std::string& secret; ~RegistrationGuard() { Wipe(secret); } } registration_cleanup{secret};
+				if (!ValidCredential(client_id) || !ValidCredential(secret))
+					return Failure("The existing Google account login has expired; refresh it in the provider CLI.", true);
 				std::string body = "grant_type=refresh_token&client_id=" + FormEncode(client_id) + "&client_secret=" + FormEncode(secret) + "&refresh_token=" + FormEncode(refresh);
 				HttpResult fresh = context.Post("https://oauth2.googleapis.com/token", std::move(body));
 				CredentialGuard fresh_guard{fresh.body};

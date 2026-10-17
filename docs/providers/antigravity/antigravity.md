@@ -26,7 +26,7 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 | `reasoning` | Provider | Needs verification | Any native effort control and its UAM selection/persistence mapping need verification. |
 | `fast-mode` | Unverified | Needs verification | An actual native speed tier or UAM equivalent is not established. |
 | `permissions` | Both | Partial | Native Plan/Accept Edits and denial reporting exist; interactive callbacks and complete four-mode UAM equivalence remain gaps. |
-| `usage` | Both | Partial | Token/history and independent local account quota-summary reads exist; existing account eligibility, custom commands, remote acquisition and platform acceptance remain limits. |
+| `usage` | Both | Partial | Token/history and independent local account quota-summary reads exist; existing account eligibility, custom commands, remote acquisition and platform acceptance remain limits. Expired grants without registration fields require refresh in the provider CLI. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
 | `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |

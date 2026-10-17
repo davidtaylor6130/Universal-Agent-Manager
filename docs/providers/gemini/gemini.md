@@ -26,7 +26,7 @@ Gemini CLI uses ACP. Common behaviour is defined once in the [provider agreement
 | `reasoning` | Both | Needs verification | Display emitted reasoning; verify supported effort choices against the selected model. |
 | `fast-mode` | Unverified | Needs verification | No speed-tier guarantee inferred from model selection; verify an actual provider/UAM equivalent. |
 | `permissions` | Both | Implemented | ACP permission requests map to UAM policy; opaque terminal approvals remain native. |
-| `usage` | Both | Partial | Token/history and an independent local quota reader exist; current account eligibility can deny acquisition, and custom commands, remote feeds and platform acceptance remain limited. |
+| `usage` | Both | Partial | Token/history and an independent local quota reader exist; current account eligibility can deny acquisition, and custom commands, remote feeds and platform acceptance remain limited. Expired grants without registration fields require refresh in the provider CLI. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
 | `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
