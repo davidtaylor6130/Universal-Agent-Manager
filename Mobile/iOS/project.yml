@@ -1,0 +1,54 @@
+name: UAM
+options:
+  bundleIdPrefix: com.universalagentmanager
+  deploymentTarget:
+    iOS: '26.0'
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: '26.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    MARKETING_VERSION: '0.1.0'
+    CURRENT_PROJECT_VERSION: '1'
+    CODE_SIGN_STYLE: Automatic
+packages:
+  UAMKit:
+    path: UAMKit
+targets:
+  UAM:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - package: UAMKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.universalagentmanager.ios
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_FILE: App/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+    scheme:
+      testTargets: [UAMTests, UAMUITests]
+  UAMTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [AppTests]
+    dependencies:
+      - target: UAM
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.universalagentmanager.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+  UAMUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: UAM
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.universalagentmanager.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES

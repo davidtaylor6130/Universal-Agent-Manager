@@ -15,6 +15,12 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	std::string InteractiveConfigurationError(const ProviderProfile& profile, const AppSettings& settings) const override;
 	bool PrepareInteractiveSession(uam::AppState& app, ChatSession& chat, const ProviderProfile& profile, const std::string& resume_id, const ExecutionHost& host, std::string* error_out) const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
+	bool PrepareInteractiveLaunch(uam::AppState&, uam::CliTerminalState&, const ChatSession&, const ExecutionHost&,
+	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string*) const override;
+	ProviderTerminalActivity PollInteractiveActivity(uam::CliTerminalState&, std::string_view, const std::filesystem::path&, bool) const override;
+	bool InteractiveObservationMatchesHost(const uam::CliTerminalState&, const ExecutionHost&) const override;
+	void CheckpointInteractiveSubmission(uam::CliTerminalState&) const override;
+	bool RecentOutputIndicatesInputPrompt(std::string_view) const override { return false; }
 	std::vector<std::string> BuildNativeDiscoveryArgv(const ProviderProfile& profile) const override;
 	std::vector<std::string> BuildNativeExportArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
@@ -36,7 +42,13 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	const char* AcpProtocolKind() const override { return "opencode-acp"; }
 	const char* GetAcpDisplayName() const override { return "OpenCode ACP"; }
 	bool IsGenericAcpSession() const override { return true; }
+	bool SupportsSavedImageRetry(const uam::AcpSessionState&) const override;
+	SavedImageRetryPreflight PrepareSavedImageRetry(uam::AcpSessionState&, const ChatSession&, const std::vector<MessageAttachment>&, std::string&) const override;
+	nlohmann::json SavedImageRetryMetadata(const uam::AcpSessionState&, const ChatSession&) const override;
+	bool EncodePreparedSavedImageRetry(nlohmann::json&, const nlohmann::json&, std::string&, const std::vector<MessageAttachment>& = {}, const nlohmann::json& = nullptr) const override;
 	bool AcpPermissionRequiresUserDecision(const uam::AcpPendingPermissionState& pending) const override;
+	bool AcpPermissionIsNonActionQuestion(const uam::AcpPendingPermissionState& pending) const override;
+	std::optional<bool> TryWriteAcpOutOfBandMessage(uam::AcpSessionState& session, const nlohmann::json& message, std::string* error) const override;
 	ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState& session) const override;
 	std::string OnAcpMapApprovalModeId(const std::string& mode_id) const override;
 };

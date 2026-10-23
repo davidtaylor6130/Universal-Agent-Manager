@@ -61,3 +61,24 @@ compile_commands.json
 /.playwright-mcp/
 *.log
 __pycache__/
+
+# Generated Vite dependency cache
+.vite/
+
+# Private agent handoffs, notes and scratchpads (retain locally)
+/CODEX_HANDOFF.md
+/*_HANDOFF.md
+/.codex/
+/.claude/
+/.ai-scratch/
+/AINotes/
+/ai-notes/
+/notes/
+/scratchpad/
+/scratchpads/
+/AI_SCRATCHPAD*.md
+/SCRATCHPAD*.md
+/docs/reference/consolidation-*.md
+/docs/reference/consolidation/
+/docs/reference/v5-*-20??????.md
+/docs/reference/v5-*-20??????.json

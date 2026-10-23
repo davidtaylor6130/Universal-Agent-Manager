@@ -3,15 +3,35 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/utils/uuid.h"
+
+// Inert authored-input provenance. Never delivery, replay, cancellation or ownership authority.
+namespace uam::input_provenance
+{
+	inline bool ValidNativeInputId(std::string_view value)
+	{
+		return uam::uuid::IsCanonicalUuid(value);
+	}
+
+	inline bool ValidOriginRequestId(std::string_view value)
+	{
+		if (value.empty() || value.size() > 128) return false;
+		for (const unsigned char byte : value)
+			if (byte < 0x20 || byte > 0x7e) return false;
+		return true;
+	}
+}
 
 /// <summary>
 /// Message role marker persisted with each chat message entry.
@@ -21,6 +41,18 @@ enum class MessageRole
 	User,
 	Assistant,
 	System
+};
+
+/// <summary>One addressable native child with provider-reported metadata.</summary>
+struct SubAgentChild
+{
+	std::string id;
+	std::string title;
+	std::string status;
+	std::optional<std::int64_t> started_at_epoch_ms;
+	std::optional<std::int64_t> finished_at_epoch_ms;
+	std::optional<std::int64_t> duration_ms;
+	bool operator==(const SubAgentChild&) const = default;
 };
 
 /// <summary>
@@ -40,6 +72,9 @@ struct ToolCall
 	std::string approval_status;
 	std::string task_id;
 	std::string child_activity;
+	std::vector<SubAgentChild> sub_agent_children;
+	// Native receiver metadata was normalized, including an empty or rejected list.
+	bool sub_agent_children_authoritative = false;
 	bool operator==(const ToolCall&) const = default;
 };
 
@@ -62,6 +97,20 @@ struct MessageBlock
 	bool operator==(const MessageBlock&) const = default;
 };
 
+namespace uam::native_assets
+{
+	class InlinePayload;
+}
+
+// Source metadata never grants file, provider or preview authority.
+enum class AttachmentSource
+{
+	LegacyPath,
+	NativeInlinePending,
+	OwnedNativeAsset,
+	ProviderUri
+};
+
 struct MessageAttachment
 {
 	std::string id;
@@ -73,11 +122,152 @@ struct MessageAttachment
 	bool copied = false;
 	std::string preview_key;
 	std::string preview_origin_path;
-	bool operator==(const MessageAttachment&) const = default;
+	AttachmentSource source = AttachmentSource::LegacyPath;
+	std::string source_uri;
+	std::string origin_execution_host_id;
+	std::string native_part_key;
+	std::string native_tool_call_id;
+	std::string native_source_field;
+	std::string native_asset_key;
+	std::string content_digest;
+	// Runtime-only shared immutable original; repository preparation must consume it.
+	std::shared_ptr<const uam::native_assets::InlinePayload> native_inline_payload;
+	bool operator==(const MessageAttachment& other) const
+	{
+		// A validated digest represents original bytes. Allocation/pointer identity
+		// and encoded bytes are deliberately absent from semantic comparisons.
+		return std::tie(id, name, kind, mime_type, path, size_bytes, copied, preview_key, preview_origin_path, source, source_uri,
+		           origin_execution_host_id, native_part_key, native_tool_call_id, native_source_field, native_asset_key, content_digest) ==
+		    std::tie(other.id, other.name, other.kind, other.mime_type, other.path, other.size_bytes, other.copied, other.preview_key,
+		        other.preview_origin_path, other.source, other.source_uri, other.origin_execution_host_id, other.native_part_key,
+		        other.native_tool_call_id, other.native_source_field, other.native_asset_key, other.content_digest);
+	}
 };
 
 namespace uam
 {
+	enum class ManagedRunTurnStatus
+	{
+		Queued, Running, Completed, Failed, Cancelled, Interrupted
+	};
+
+	enum class ManagedRunPrincipalKind
+	{
+		UserRoot, AgentRoot, AgentRun
+	};
+
+	enum class ManagedRunContinuity
+	{
+		Native
+	};
+
+	enum class ManagedRunRecoveryDecision
+	{
+		None, ContinueWithoutReplay
+	};
+
+	struct ManagedRunPrincipal
+	{
+		ManagedRunPrincipalKind kind = ManagedRunPrincipalKind::UserRoot;
+		std::string root_chat_id;
+		std::string root_birth_id;
+		// Both empty for UserRoot/AgentRoot; both required for AgentRun.
+		std::string parent_run_id;
+		std::string parent_transcript_birth_id;
+		bool operator==(const ManagedRunPrincipal&) const = default;
+	};
+
+	struct ManagedRunOwnerBinding
+	{
+		std::string root_birth_id;
+		std::string transcript_birth_id;
+		// Null for user-created delegation; only original agent_delegate may create it.
+		std::optional<ManagedRunPrincipal> delegation_grant;
+		bool operator==(const ManagedRunOwnerBinding&) const = default;
+	};
+
+	struct ManagedRunExecutionBinding
+	{
+		// Canonical exact JSON projections, not hashes or renderer-supplied values.
+		std::string connection_configuration_json;
+		std::string provider_configuration_json;
+		std::string execution_host_id;
+		std::string workspace_directory;
+		std::string workspace_worktree_directory;
+		std::string workspace_source_directory;
+		std::string routing_mode;
+		std::string routing_source_folder_id;
+		std::string routing_source_directory;
+		std::string effective_model_id;
+		// Empty until adapter-owned evidence exists; exact-requested or advertised-resolution.
+		std::string model_identity_source;
+		std::string reasoning_effort;
+		std::string service_tier;
+		bool service_tier_explicit = false;
+		std::string approval_mode;
+		std::string command_safety_tier;
+		std::string native_session_id;
+		bool operator==(const ManagedRunExecutionBinding&) const = default;
+	};
+
+	struct ManagedRunTurnReceipt
+	{
+		// Initial entry: turn_id == run.id, number == 1, request/predecessor/text empty.
+		std::string turn_id;
+		std::uint32_t turn_number = 0;
+		std::string client_request_id;
+		std::string after_turn_id;
+		ManagedRunPrincipal principal;
+		std::string text;
+		ManagedRunContinuity continuity = ManagedRunContinuity::Native;
+		ManagedRunRecoveryDecision recovery_decision = ManagedRunRecoveryDecision::None;
+		std::string retry_of_turn_id;
+		ManagedRunTurnStatus status = ManagedRunTurnStatus::Queued;
+		std::string delivery_id;
+		bool dispatch_attempted = false;
+		int expected_turn_serial = 0;
+		int first_user_message_index = -1;
+		std::string user_message_created_at;
+		int64_t started_at_epoch_ms = 0;
+		int64_t finished_at_epoch_ms = 0;
+		bool result_required = false;
+		bool result_delivered = false;
+		int result_delivery_attempts = 0;
+		bool audit_pending = false;
+		std::string diagnostic_code;
+		bool operator==(const ManagedRunTurnReceipt&) const = default;
+	};
+
+	struct ManagedRunContinuation
+	{
+		ManagedRunOwnerBinding owner;
+		// May be absent during an initial turn; absence never enables follow-up.
+		std::optional<ManagedRunExecutionBinding> execution;
+		std::string current_turn_id;
+		std::uint32_t current_turn_number = 0;
+		std::uint64_t state_revision = 0;
+		// Initial entry plus at most 32 follow-ups, in turn-number order.
+		std::vector<ManagedRunTurnReceipt> turns;
+		bool operator==(const ManagedRunContinuation&) const = default;
+	};
+
+	struct ManagedRunPromptIdentity
+	{
+		std::string run_id;
+		std::string turn_id;
+		std::uint32_t turn_number = 0;
+		std::string expected_native_session_id;
+		ManagedRunContinuity continuity = ManagedRunContinuity::Native;
+		bool operator==(const ManagedRunPromptIdentity&) const = default;
+	};
+
+	/// Runtime-only immutable metadata for a passive transcript; never dispatched as queued input.
+	struct PassiveQueuedPromptArchive
+	{
+		std::string owner_chat_id;
+		std::string canonical_prompts_json;
+	};
+
 	/// <summary>
 	/// A bounded follow-up prompt persisted until the ACP runtime accepts it for delivery.
 	/// </summary>
@@ -112,7 +302,33 @@ namespace uam
 		bool priority_steer = false;
 		std::string id;
 		int revision = 1;
+		std::optional<ManagedRunPromptIdentity> managed_turn;
+		/// Optional per-input provenance, independent of queue id/revision; batches may omit it.
+		std::optional<std::string> native_input_id;
+		std::optional<std::string> origin_request_id;
 		bool operator==(const AcpQueuedUserPromptState&) const = default;
+	};
+
+	/// Inert policy associated with one definitely unsent authored row; never dispatch authority.
+	struct AcpUnsentPromptRecovery
+	{
+		int version = 1;
+		std::string chat_id;
+		std::string provider_id;
+		int user_message_index = -1;
+		std::string user_message_created_at;
+		std::string row_witness;
+		std::string admission_id;
+		int admission_revision = 1;
+		std::string uam_agent_id;
+		std::string uam_agent_definition_hash;
+		std::string uam_agent_definition_snapshot;
+		std::string uam_agent_instructions;
+		std::vector<std::string> uam_agent_skills;
+		std::vector<std::string> uam_agent_delegates;
+		std::string uam_agent_workspace_access;
+		std::string uam_agent_execution_capability;
+		bool operator==(const AcpUnsentPromptRecovery&) const = default;
 	};
 
 	/// <summary>
@@ -174,6 +390,15 @@ struct Message
 	bool continues_turn = false;
 	bool acp_prompt_not_sent = false;
 	bool acp_prompt_discarded = false;
+	/// Native event receipts are saved with their projected message before remote output is acknowledged.
+	std::vector<std::string> provider_event_ids;
+	/// Output-only authored-row correlation; never execution or control authority.
+	std::optional<std::string> managed_origin_run_id;
+	/// Inert provenance only; copies retain history, never current action authority.
+	std::optional<std::string> native_input_id;
+	/// Exact original local stdio entry completed at the OS sink; not provider processing or input authority.
+	bool input_write_completed = false;
+	std::optional<std::string> origin_request_id;
 	bool operator==(const Message&) const = default;
 };
 
@@ -272,6 +497,8 @@ struct UamControlAuditRecord
 
 struct AgentRun
 {
+	/// Inert v2 persistence; startup excludes these records until execution integration exists.
+	std::optional<uam::ManagedRunContinuation> managed_continuation;
 	std::string id;
 	std::string root_chat_id;
 	std::string parent_run_id;
@@ -293,6 +520,8 @@ struct AgentRun
 	int depth = 1;
 	int expected_turn_serial = 0;
 	int64_t started_at_epoch_ms = 0;
+	/// Zero on older ledgers; otherwise captured at the terminal write, never parsed from local time.
+	int64_t finished_at_epoch_ms = 0;
 	int64_t deadline_at_epoch_ms = 0;
 	std::string created_at;
 	std::string started_at;
@@ -346,10 +575,62 @@ struct CustomIcon
 	bool operator==(const CustomIcon&) const = default;
 };
 
+/// Process-local evidence for an already-owned terminal transcript's normal retirement.
+/// It permits result reads only; persistence/catalogue loaders never mint this witness.
+struct ManagedTerminalRetirementWitness
+{
+	struct RunIdentity
+	{
+		std::string id, root_id, parent_id, transcript_id, provider_id, model_id, definition_hash, created_at;
+		std::string agent_id, execution_capability, resumed_from_id, result_delivery_id, workspace_access, definition_snapshot;
+		static RunIdentity Capture(const AgentRun& run)
+		{
+			return {run.id, run.root_chat_id, run.parent_run_id, run.transcript_chat_id, run.provider_id,
+			    run.model_id, run.definition_hash, run.created_at, run.agent_id, run.execution_capability,
+			    run.resumed_from_run_id, run.result_delivery_id, run.effective_workspace_access, run.definition_snapshot};
+		}
+		bool operator==(const RunIdentity&) const = default;
+	};
+	std::shared_ptr<const std::uint8_t> original_birth;
+	std::filesystem::path data_root;
+	RunIdentity run;
+	std::string provider_id, host_id, workspace, worktree, native_session_id, created_at;
+};
+
+/// Durable DATA only. Loading this record never reconstructs continuation authority.
+struct ManagedParentResultRecord
+{
+	int version = 1;
+	std::string id, stage = "collecting", reason;
+	std::string root_id, provider_id, host_id, workspace, native_thread, policy_digest;
+	std::string origin_turn, origin_user_digest, payload;
+	std::vector<std::string> run_ids, delivered_ids, batch_ids;
+	std::string native_request_id, accepted_turn_id;
+	bool operator==(const ManagedParentResultRecord&) const = default;
+};
+
+/// Append-only canonical parent DATA for one actual internal input; never a runtime execution lease.
+struct ManagedParentInputReceipt
+{
+	int version = 1;
+	std::string id, origin_id, root_id, provider_id, host_id, workspace, native_thread;
+	std::string origin_turn, payload, native_request_id, accepted_turn_id;
+	std::vector<std::string> run_ids;
+	bool operator==(const ManagedParentInputReceipt&) const = default;
+};
+
 struct ChatSession
 {
 	/// <summary>Runtime identity retained by copies; a recreated chat receives a fresh tag.</summary>
 	std::shared_ptr<const std::uint8_t> metadata_incarnation = std::make_shared<const std::uint8_t>(0);
+	/// Runtime-only immutable terminal-retirement proof, distinct from inspection metadata birth.
+	std::shared_ptr<const ManagedTerminalRetirementWitness> managed_terminal_retirement_witness;
+	/// Ephemeral UI refresh signal only; never persisted or used as execution authority.
+	std::uint64_t managed_subagent_revision = 0;
+	/// Durable birth witness; empty on legacy/unwitnessed data and never minted by a codec.
+	std::string managed_followup_incarnation;
+	/// Runtime-only fail-closed marker; preserve raw managed input until its consumer exists.
+	bool managed_followup_input_unavailable = false;
 	std::string id;
 	std::string execution_host_id = "local";
 	std::string routing_mode = "explicit";
@@ -361,6 +642,10 @@ struct ChatSession
 	std::vector<std::string> routing_inherited_default_fields;
 	std::string provider_id;
 	std::string native_session_id;
+	std::optional<ManagedParentResultRecord> managed_parent_result;
+	std::vector<ManagedParentInputReceipt> managed_parent_input_receipts;
+	/// Codec presence only; an absent legacy key is distinct from a present empty/invalid collection.
+	bool managed_parent_input_receipts_present = false;
 	ClaudeQuotaContinuation claude_quota_continuation;
 	bool native_session_reset_pending = false;
 	// New Claude chats may assign an owned CLI ID on first local or remote launch.
@@ -372,6 +657,12 @@ struct ChatSession
 	// Conservatively remains true from remote proxy launch until helper process
 	// removal is confirmed. This is independent of whether a turn is active.
 	bool remote_process_exists = false;
+	bool remote_prompt_image_supported = false;
+	std::string remote_structured_protocol;
+	int remote_opencode_native_port = 0;
+	std::string remote_opencode_native_token;
+	bool remote_manual_compaction_pending = false;
+	std::string remote_manual_compaction_boundary_json;
 	// Persisted until a previously requested idle remote stop is confirmed.
 	bool remote_stop_cleanup_pending = false;
 	// Persisted from a stop-then-restart request until the replacement prompt is
@@ -402,6 +693,10 @@ struct ChatSession
 	int remote_turn_serial = 0;
 	int remote_turn_user_message_index = -1;
 	std::vector<uam::AcpQueuedUserPromptState> acp_queued_prompts;
+	/// Absent is legacy unknown; a version-zero record means malformed-present.
+	std::vector<uam::AcpUnsentPromptRecovery> acp_unsent_prompt_recoveries;
+	// Null is unknown, distinct from a validated empty archive; shared copies stay immutable.
+	std::shared_ptr<const uam::PassiveQueuedPromptArchive> passive_queued_prompt_archive;
 	std::string acp_queue_storage_revision;
 	// Successful persistence refreshes this stamp; copied snapshots keep their earlier stamp.
 	mutable std::string acp_queue_full_save_revision;
@@ -416,6 +711,10 @@ struct ChatSession
 	std::shared_ptr<std::atomic<bool>> side_cleanup_stop_finished;
 	std::string parent_chat_id;
 	std::string branch_root_chat_id;
+	/// Display-only native-child navigation; never branch, resume, permission or execution authority.
+	std::string subagent_parent_chat_id;
+	/// Exact creation timestamp of the originating UAM parent, preventing ID-reuse attachment.
+	std::string subagent_parent_created_at;
 	int branch_from_message_index = -1;
 	bool branch_message_edited = false;
 	std::string branch_operation_id;

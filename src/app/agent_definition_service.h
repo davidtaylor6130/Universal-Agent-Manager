@@ -97,6 +97,9 @@ namespace uam
 		static bool DeleteGlobalAgent(const std::filesystem::path& data_root, const std::string& id, std::string* error_out = nullptr);
 		static std::string ExecutionCapabilityForProvider(const std::string& provider_id);
 		/// <summary>Read a validated provider-bound policy from the immutable canonical snapshot.</summary>
+		/// Decode an immutable primary snapshot without reading the current definition.
+		static bool DecodeCapturedPrimary(const std::string& agent_id, const std::string& snapshot,
+		    AgentDefinition& definition, std::string* error_out = nullptr);
 		static bool CapturedOpenCodePermission(const std::string& agent_id, const std::string& snapshot,
 		                                      std::string& permission_json, std::string* error_out = nullptr);
 		static bool ValidateCapturedRuntimePolicy(const std::string& agent_id, const std::string& snapshot,

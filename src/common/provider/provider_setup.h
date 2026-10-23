@@ -2,13 +2,18 @@
 
 #include "common/config/mcp_server_config.h"
 #include "common/provider/provider_ids.h"
+#include "common/provider/gemini_options.h"
 #include "common/provider/provider_native_context.h"
 #include "common/paths/path_utils.h"
+#include "common/platform/native_user_home.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
 #include <algorithm>
+#include <array>
 #include <fstream>
+#include <cctype>
 #include <map>
+#include <optional>
 #include <set>
 
 namespace uam::provider_setup
@@ -56,8 +61,15 @@ namespace uam::provider_setup
 		if (!NoSymlinks(path) || !std::filesystem::is_regular_file(path, ec) || ec || std::filesystem::file_size(path, ec) > kMaxFileBytes || ec)
 		{ error = "A central resource is missing, too large or a symbolic link: " + uam::paths::Utf8PathString(path); return false; }
 		std::ifstream input(path, std::ios::binary);
-		bytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-		if (!input || bytes.size() > kMaxFileBytes) { error = "Could not read central resource: " + uam::paths::Utf8PathString(path); return false; }
+		// Bound the read itself as well as the initial stat, including files growing during launch.
+		bytes.clear();
+		std::array<char, 16384> chunk;
+		while (input && bytes.size() <= kMaxFileBytes)
+		{
+			input.read(chunk.data(), static_cast<std::streamsize>(std::min(chunk.size(), kMaxFileBytes + 1 - bytes.size())));
+			bytes.append(chunk.data(), static_cast<std::size_t>(input.gcount()));
+		}
+		if (input.bad() || !input.eof() || bytes.size() > kMaxFileBytes) { error = "Could not read central resource: " + uam::paths::Utf8PathString(path); return false; }
 		return true;
 	}
 
@@ -100,6 +112,16 @@ namespace uam::provider_setup
 		{ error = "Central resource manifest is invalid."; return false; }
 		if (manifest.contains("mcpOnly") && !manifest["mcpOnly"].is_boolean()) { error = "MCP-only metadata must be boolean."; return false; }
 		if (manifest.contains("openCodeCodeMode") && !manifest["openCodeCodeMode"].is_boolean()) { error = "OpenCode discovery metadata must be boolean."; return false; }
+		if (manifest.contains("openCodeUamControlDeadline") && !manifest["openCodeUamControlDeadline"].is_boolean()) { error = "OpenCode UAM control deadline metadata must be boolean."; return false; }
+		if (manifest.contains("claudeTerminalFastMode") && !manifest["claudeTerminalFastMode"].is_boolean()) { error = "Claude terminal fast-mode metadata must be boolean."; return false; }
+		if (manifest.contains("geminiThinking"))
+		{
+			const auto& thinking = manifest["geminiThinking"];
+			if (!thinking.is_object() || thinking.size() != 3 || !thinking.contains("model") || !thinking["model"].is_string() ||
+			    !thinking.contains("effort") || !thinking["effort"].is_string() || !thinking.contains("cliVersion") || !thinking["cliVersion"].is_string() ||
+			    !uam::gemini::SupportsReasoningEffort(thinking["model"].get<std::string>(), thinking["effort"].get<std::string>(), thinking["cliVersion"].get<std::string>()))
+			{ error = "Gemini thinking metadata requires a verified concrete model, CLI version and supported named level."; return false; }
+		}
 		if (manifest.dump().size() > 512 * 1024) { error = "Central resource manifest exceeds 512 KiB."; return false; }
 		std::size_t total = 0;
 		for (const auto& [name, entry] : manifest["files"].items())
@@ -188,6 +210,222 @@ namespace uam::provider_setup
 			position += root.size();
 		}
 		return text;
+	}
+
+	/// <summary>Resolve native-owned configuration paths, bounding bytes while permitting ordinary dotfile/mount links.</summary>
+	inline bool ReadNativeSettingsFile(const std::filesystem::path& path, std::string& bytes, std::string& error, bool workspace_file = false)
+	{
+		std::error_code ec;
+		if (workspace_file && (std::filesystem::is_symlink(std::filesystem::symlink_status(path, ec)) || uam::paths::IsLinkOrReparsePointNoThrow(path)))
+		{ error = "Workspace settings file cannot be a symbolic link or reparse point."; return false; }
+		ec.clear();
+		const auto resolved = std::filesystem::canonical(path, ec);
+		if (ec) { error = "Native settings file is missing or unreadable."; return false; }
+		return ReadFile(resolved, bytes, error);
+	}
+
+	inline bool ReadOptionalGeminiSettings(const std::filesystem::path& path, nlohmann::json& settings, std::string& error, bool workspace_file = false)
+	{
+		settings = nlohmann::json::object();
+		std::error_code ec;
+		if (workspace_file && !path.empty() && (std::filesystem::is_symlink(std::filesystem::symlink_status(path, ec)) || uam::paths::IsLinkOrReparsePointNoThrow(path)))
+		{ error = "Workspace settings file cannot be a symbolic link or reparse point."; return false; }
+		ec.clear();
+		if (path.empty() || !std::filesystem::exists(path, ec))
+		{
+			if (ec) { error = "Could not inspect Gemini settings."; return false; }
+			return true;
+		}
+		std::string bytes;
+		if (!ReadNativeSettingsFile(path, bytes, error, workspace_file)) return false;
+		settings = nlohmann::json::parse(bytes, nullptr, false, true);
+		if (!settings.is_object()) { error = "Existing Gemini settings must contain a JSON object."; return false; }
+		return true;
+	}
+
+	inline bool SameNativeDirectory(const std::filesystem::path& first, const std::filesystem::path& second)
+	{
+		if (first.empty() || second.empty()) return false;
+		std::error_code ec;
+		return first == second || std::filesystem::equivalent(first, second, ec);
+	}
+
+	/// <summary>Preserve native customOverrides array precedence without promoting untrusted workspace settings.</summary>
+	inline bool ApplyGeminiThinking(nlohmann::json& system, const nlohmann::json& thinking,
+	    const std::filesystem::path& system_path, const std::filesystem::path& workspace, Environment& environment, std::string& error)
+	{
+		std::string defaults_path = EnvironmentValue(environment, "GEMINI_CLI_SYSTEM_DEFAULTS_PATH");
+		if (defaults_path.empty()) defaults_path = uam::paths::Utf8PathString(system_path.parent_path() / "system-defaults.json");
+		if (uam::paths::PathFromUtf8(defaults_path).is_relative()) defaults_path = uam::paths::Utf8PathString(workspace / uam::paths::PathFromUtf8(defaults_path));
+		const std::string custom_home = EnvironmentValue(environment, "GEMINI_CLI_HOME");
+		auto home = custom_home.empty()
+		    ? uam::platform::ResolveNativeUserHomePath(EnvironmentValue(environment, "HOME"), EnvironmentValue(environment, "USERPROFILE")).value_or(std::filesystem::path{})
+		    : uam::paths::PathFromUtf8(custom_home);
+		if (!home.empty() && home.is_relative()) home = workspace / home;
+		nlohmann::json defaults, user, project;
+		if (!ReadOptionalGeminiSettings(uam::paths::PathFromUtf8(defaults_path), defaults, error) ||
+		    !ReadOptionalGeminiSettings(home.empty() ? std::filesystem::path{} : home / ".gemini/settings.json", user, error) ||
+		    !ReadOptionalGeminiSettings(SameNativeDirectory(workspace, home) ? std::filesystem::path{} : workspace / ".gemini/settings.json", project, error, true)) return false;
+		bool trust_enabled = true;
+		for (const auto* source : {&defaults, &user, &system})
+		{
+			if (source->contains("security") && (*source)["security"].is_object() && (*source)["security"].contains("folderTrust") &&
+			    (*source)["security"]["folderTrust"].is_object() && (*source)["security"]["folderTrust"].contains("enabled"))
+			{
+				const auto& enabled = (*source)["security"]["folderTrust"]["enabled"];
+				if (!enabled.is_boolean()) { error = "Gemini folder trust configuration is invalid."; return false; }
+				trust_enabled = enabled.get<bool>();
+			}
+		}
+		const bool forced_untrusted = thinking.value("cliVersion", "") == "0.64.0" &&
+		    (EnvironmentValue(environment, "GEMINI_RESTRICTED_MODE") == "true" || EnvironmentValue(environment, "GEMINI_CLI_TRUST_WORKSPACE") == "false");
+		bool trusted = !forced_untrusted && (!trust_enabled || EnvironmentValue(environment, "GEMINI_CLI_TRUST_WORKSPACE") == "true");
+		bool trust_known = trusted || forced_untrusted;
+		const bool project_overrides = project.contains("modelConfigs") && project["modelConfigs"].is_object() && project["modelConfigs"].contains("customOverrides");
+		const bool system_overrides = system.contains("modelConfigs") && system["modelConfigs"].is_object() && system["modelConfigs"].contains("customOverrides");
+		if (!trust_known && !EnvironmentValue(environment, "GEMINI_CLI_IDE_WORKSPACE_PATH").empty() &&
+		    project.contains("modelConfigs") && project["modelConfigs"].is_object() && project["modelConfigs"].contains("customOverrides") &&
+		    !(system.contains("modelConfigs") && system["modelConfigs"].is_object() && system["modelConfigs"].contains("customOverrides")))
+		{ error = "Gemini IDE-owned workspace trust is unavailable for a thinking snapshot; use Default or native host settings."; return false; }
+		if (!trust_known)
+		{
+			nlohmann::json folders;
+			std::filesystem::path trust_path = uam::paths::PathFromUtf8(EnvironmentValue(environment, "GEMINI_CLI_TRUSTED_FOLDERS_PATH"));
+			if (trust_path.empty())
+			{
+				if (home.empty()) { error = "The executing host's native home is unavailable for Gemini trust."; return false; }
+				trust_path = thinking.value("cliVersion", "") == "0.64.0" && EnvironmentValue(environment, "SANDBOX") == "sandbox-exec"
+				    ? home / ".cache/.gemini/trustedFolders.json" : home / ".gemini/trustedFolders.json";
+			}
+			if (trust_path.is_relative()) trust_path = workspace / trust_path;
+			if (!ReadOptionalGeminiSettings(trust_path, folders, error)) return false;
+			std::size_t longest = 0;
+			std::map<std::string, std::string> normalized_rules;
+			std::error_code ec;
+			auto location = std::filesystem::weakly_canonical(workspace, ec);
+			if (ec) { error = "Could not resolve Gemini workspace trust."; return false; }
+			for (const auto& [name, level] : folders.items())
+			{
+				if (!level.is_string() || (level != "TRUST_FOLDER" && level != "TRUST_PARENT" && level != "DO_NOT_TRUST"))
+				{ error = "Gemini trusted-folder configuration contains an invalid trust level."; return false; }
+				auto rule = uam::paths::PathFromUtf8(name);
+				if (rule.is_relative()) rule = workspace / rule;
+				rule = rule.lexically_normal();
+				if (rule.filename().empty() && rule.has_relative_path()) rule = rule.parent_path();
+				std::string rule_key = uam::paths::Utf8PathString(rule);
+#if defined(_WIN32) || defined(__APPLE__)
+				// Node folds Unicode too. Do not guess case-dependent trust when that cannot be reproduced.
+				const auto non_ascii = [](const std::string& value) { return std::any_of(value.begin(), value.end(), [](unsigned char ch) { return ch >= 128; }); };
+				if ((non_ascii(rule_key) || non_ascii(uam::paths::Utf8PathString(location))) && project_overrides && !system_overrides)
+				{ error = "Gemini workspace override trust needs explicit native trust when Unicode path case cannot be verified."; return false; }
+				rule_key = uam::strings::ToLowerAscii(rule_key);
+				rule = uam::paths::PathFromUtf8(rule_key);
+#endif
+				const std::string trust_level = level.get<std::string>();
+				if (const auto prior = normalized_rules.find(rule_key); prior != normalized_rules.end() && prior->second != trust_level)
+				{ error = "Gemini trusted-folder aliases have conflicting rules; resolve them before snapshotting workspace overrides."; return false; }
+				normalized_rules[rule_key] = trust_level;
+				auto effective = std::filesystem::weakly_canonical(level == "TRUST_PARENT" ? rule.parent_path() : rule, ec);
+				if (ec) { error = "Could not resolve Gemini trusted-folder path."; return false; }
+#if defined(_WIN32) || defined(__APPLE__)
+				location = uam::paths::PathFromUtf8(uam::strings::ToLowerAscii(uam::paths::Utf8PathString(location)));
+				effective = uam::paths::PathFromUtf8(uam::strings::ToLowerAscii(uam::paths::Utf8PathString(effective)));
+#endif
+				const std::string relative = uam::paths::Utf8PathString(location.lexically_relative(effective));
+				if (relative.empty() || relative == ".." || relative.starts_with("../") || relative.starts_with("..\\") || (trust_known && rule_key.size() <= longest)) continue;
+				longest = rule_key.size();
+				trust_known = true;
+				trusted = level == "TRUST_FOLDER" || level == "TRUST_PARENT";
+			}
+		}
+		if (!trust_known && project_overrides && !system_overrides)
+		{ error = "Gemini workspace trust is undecided; choose native trust before selecting a thinking level, or select Default."; return false; }
+
+		nlohmann::json overrides = nlohmann::json::array();
+		for (const auto* source : {&defaults, &user, trusted ? &project : nullptr, &system})
+		{
+			if (source == nullptr) continue;
+			if (!source->contains("modelConfigs")) continue;
+			const auto& models = (*source)["modelConfigs"];
+			if (!models.is_object()) { error = "Gemini modelConfigs must be an object."; return false; }
+			if (models.contains("modelIdResolutions") && !models["modelIdResolutions"].is_object())
+			{ error = "Gemini modelIdResolutions must be an object."; return false; }
+			if (!models.contains("customOverrides")) continue;
+			if (!models["customOverrides"].is_array()) { error = "Gemini custom model overrides must be an array."; return false; }
+			overrides = models["customOverrides"];
+		}
+		// Only the selected concrete chat model is affected; helper models and fallback routes retain native settings.
+		std::string level = thinking["effort"].get<std::string>();
+		std::transform(level.begin(), level.end(), level.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+		overrides.push_back({{"match", {{"model", thinking["model"]}, {"isChatModel", true}, {"overrideScope", "core"}}},
+		    {"modelConfig", {{"model", thinking["model"]}, {"generateContentConfig", {{"thinkingConfig", {{"thinkingLevel", level}}}}}}}});
+		// Conditional retry overrides cannot silently restore an expert-file thinking level.
+		for (const bool retry : {false, true})
+		{
+			auto conditional = overrides.back();
+			conditional["match"]["isRetry"] = retry;
+			overrides.push_back(std::move(conditional));
+		}
+		system["modelConfigs"]["customOverrides"] = std::move(overrides);
+		// Concrete choices retain their identity instead of native preview/GA alias substitution.
+		system["modelConfigs"]["modelIdResolutions"][thinking["model"].get<std::string>()] = {{"default", thinking["model"]}, {"contexts", nlohmann::json::array()}};
+		// Changing the system-settings path must not relocate native system defaults.
+		SetEnvironment(environment, "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", defaults_path);
+		return true;
+	}
+
+	/// <summary>Resolve expert settings only on the executing host and preserve every key except the explicit speed override.</summary>
+	inline bool ApplyClaudeTerminalFastMode(const std::filesystem::path& runtime, const std::filesystem::path& workspace,
+	    std::vector<std::string>& argv, bool fast, std::string& error)
+	{
+		std::optional<std::size_t> last;
+		std::size_t count = 0;
+		for (std::size_t index = 1; index < argv.size() && argv[index] != "--"; ++index)
+		{
+			// Structured Chat applies its negotiated, acknowledged native setting instead.
+			if (argv[index] == "--input-format" || argv[index].starts_with("--input-format=")) return true;
+			if (argv[index] == "--settings")
+			{
+				if (index + 1 == argv.size() || argv[index + 1] == "--" || argv[index + 1].starts_with("--"))
+				{ error = "Claude --settings requires a JSON object or an executing-host filepath."; return false; }
+				last = index; count = 2; ++index;
+			}
+			else if (argv[index].starts_with("--settings=")) { last = index; count = 1; }
+		}
+		nlohmann::json settings = nlohmann::json::object();
+		if (last)
+		{
+			const std::string source = count == 2 ? argv[*last + 1] : argv[*last].substr(std::string_view("--settings=").size());
+			if (source.empty()) { error = "Claude --settings cannot be empty."; return false; }
+			std::string bytes = source;
+			const std::size_t first = source.find_first_not_of(" \t\r\n");
+			if (first == std::string::npos || source[first] != '{')
+			{
+				std::filesystem::path path = uam::paths::PathFromUtf8(source);
+				if (path.is_relative()) path = workspace / path;
+				if (!ReadNativeSettingsFile(path, bytes, error)) { error = "Claude --settings file is unreadable or larger than 2 MiB. " + error; return false; }
+			}
+			if (bytes.size() > kMaxFileBytes) { error = "Claude --settings exceeds 2 MiB."; return false; }
+			settings = nlohmann::json::parse(bytes, nullptr, false);
+			if (!settings.is_object()) { error = "Claude --settings must contain a valid JSON object."; return false; }
+		}
+		settings["fastMode"] = fast;
+		const std::string snapshot = settings.dump();
+		if (snapshot.size() > kMaxFileBytes) { error = "Merged Claude --settings exceeds 2 MiB."; return false; }
+		const std::filesystem::path target = runtime / ("claude-settings-" + Digest(snapshot) + ".json");
+		if (!WriteRuntimeFile(target, snapshot, error, false)) return false;
+		const std::string path = uam::paths::Utf8PathString(target);
+		if (last)
+		{
+			if (count == 2) argv[*last + 1] = path;
+			else argv[*last] = "--settings=" + path;
+		}
+		else
+		{
+			const auto positional = std::find(argv.begin() + std::min(std::size_t{1}, argv.size()), argv.end(), "--");
+			argv.insert(positional, {"--settings", path});
+		}
+		return true;
 	}
 
 	/// <summary>Apply session-only settings on the executing host; secrets never travel from controller to SSH.</summary>
@@ -291,6 +529,8 @@ namespace uam::provider_setup
 		}
 		else if (provider == uam::provider_ids::kClaudeCli)
 		{
+			if (manifest.contains("claudeTerminalFastMode") &&
+			    !ApplyClaudeTerminalFastMode(runtime, workspace, argv, manifest["claudeTerminalFastMode"].get<bool>(), error)) return false;
 			for (std::size_t index = 1; index + 1 < argv.size();)
 			{
 				if (mcp_only || (argv[index] != "--append-system-prompt-file" && argv[index] != "--append-system-prompt")) { ++index; continue; }
@@ -401,6 +641,10 @@ namespace uam::provider_setup
 			if (!config["instructions"].is_array()) { error = "OpenCode instructions must be a list."; return false; }
 			if (!mcp_only) config["instructions"].push_back(instruction_file);
 			if (config.contains("mcp") && !config["mcp"].is_object()) { error = "OpenCode MCP settings must be an object."; return false; }
+			const bool uam_control_deadline = manifest.value("openCodeUamControlDeadline", false);
+			const bool inline_uam_control = config.contains("mcp") && config["mcp"].contains("uam-control");
+			if (uam_control_deadline && inline_uam_control && native_servers.contains("uam-control"))
+			{ error = "Existing OpenCode inline UAM control settings conflict with this launch's owned server."; return false; }
 			for (const auto& [name, server] : native_servers.items())
 			{
 				nlohmann::json native;
@@ -413,6 +657,14 @@ namespace uam::provider_setup
 				}
 				else native = {{"type", "remote"}, {"url", server["url"]}, {"headers", server["headers"]}, {"enabled", true}};
 				config["mcp"][name] = std::move(native);
+			}
+			if (uam_control_deadline && !inline_uam_control)
+			{
+				// ACP supplies its real server later. Checked OpenCode 1.19.3 skips disabled static
+				// entries, then uses their per-server timeout for the dynamically registered server.
+				if (!native_servers.contains("uam-control"))
+					config["mcp"]["uam-control"] = {{"type", "local"}, {"command", nlohmann::json::array()}, {"enabled", false}};
+				config["mcp"]["uam-control"]["timeout"] = 120000;
 			}
 			SetEnvironment(environment, "OPENCODE_CONFIG_CONTENT", config.dump());
 		}
@@ -429,15 +681,15 @@ namespace uam::provider_setup
 #else
 				existing = "/etc/gemini-cli/settings.json";
 #endif
-				std::error_code source_error;
-				if (!std::filesystem::exists(uam::paths::PathFromUtf8(existing), source_error)) existing.clear();
 			}
-			if (!existing.empty())
+			if (uam::paths::PathFromUtf8(existing).is_relative()) existing = uam::paths::Utf8PathString(workspace / uam::paths::PathFromUtf8(existing));
+			if (!ReadOptionalGeminiSettings(uam::paths::PathFromUtf8(existing), config, error)) return false;
+			if (manifest.contains("geminiThinking"))
 			{
-				std::string bytes;
-				if (!ReadFile(uam::paths::PathFromUtf8(existing), bytes, error)) return false;
-				config = nlohmann::json::parse(bytes, nullptr, false, true);
-				if (!config.is_object()) { error = "Existing Gemini system settings are invalid."; return false; }
+				const std::string executable = uam::strings::ToLowerAscii(uam::paths::Utf8PathString(uam::paths::PathFromUtf8(argv.front()).filename()));
+				if (executable != "gemini" && executable != "gemini.cmd" && executable != "gemini.exe" && executable != "gemini.ps1")
+				{ error = "Gemini thinking requires the direct native Gemini CLI command; a shell or custom wrapper can change host trust after snapshot preparation."; return false; }
+				if (!ApplyGeminiThinking(config, manifest["geminiThinking"], uam::paths::PathFromUtf8(existing), workspace, environment, error)) return false;
 			}
 			if ((config.contains("context") && !config["context"].is_object()) || (config.contains("mcpServers") && !config["mcpServers"].is_object()))
 			{ error = "Gemini context and MCP settings must be objects."; return false; }
@@ -447,15 +699,19 @@ namespace uam::provider_setup
 				// Add AGENTS.md without replacing the user's configured memory filenames.
 				nlohmann::json names = config.value("context", nlohmann::json::object()).value("fileName", nlohmann::json("GEMINI.md"));
 				std::vector<std::filesystem::path> memory_sources;
-				const std::string home = EnvironmentValue(environment, "GEMINI_CLI_HOME").empty() ? EnvironmentValue(environment, "HOME") : EnvironmentValue(environment, "GEMINI_CLI_HOME");
-				if (!home.empty()) memory_sources.push_back(uam::paths::PathFromUtf8(home) / ".gemini/settings.json");
-				memory_sources.push_back(workspace / ".gemini/settings.json");
+				const std::string custom_home = EnvironmentValue(environment, "GEMINI_CLI_HOME");
+				auto home = custom_home.empty()
+				    ? uam::platform::ResolveNativeUserHomePath(EnvironmentValue(environment, "HOME"), EnvironmentValue(environment, "USERPROFILE")).value_or(std::filesystem::path{})
+				    : uam::paths::PathFromUtf8(custom_home);
+				if (!home.empty() && home.is_relative()) home = workspace / home;
+				if (!home.empty()) memory_sources.push_back(home / ".gemini/settings.json");
+				if (!SameNativeDirectory(workspace, home)) memory_sources.push_back(workspace / ".gemini/settings.json");
 				for (const std::filesystem::path& source : memory_sources)
 				{
 					std::error_code source_error;
 					if (!std::filesystem::exists(source, source_error)) continue;
 					std::string bytes;
-					if (!ReadFile(source, bytes, error)) return false;
+					if (!ReadNativeSettingsFile(source, bytes, error, source == workspace / ".gemini/settings.json")) return false;
 					const nlohmann::json source_settings = nlohmann::json::parse(bytes, nullptr, false, true);
 					if (!source_settings.is_object()) { error = "Existing Gemini memory settings are invalid."; return false; }
 					if (source_settings.contains("context") && source_settings["context"].is_object() && source_settings["context"].contains("fileName")) names = source_settings["context"]["fileName"];
@@ -472,8 +728,10 @@ namespace uam::provider_setup
 				if (native.contains("type")) { native.erase("type"); if (server["type"] == "http") { native["httpUrl"] = native["url"]; native.erase("url"); } }
 				config["mcpServers"][name] = std::move(native);
 			}
-			const std::filesystem::path settings = runtime / "settings.json";
-			if (!WriteRuntimeFile(settings, config.dump(), error)) { error = "Could not install Gemini configuration."; return false; }
+			const std::string snapshot = config.dump();
+			if (snapshot.size() > kMaxFileBytes) { error = "Merged Gemini settings exceed 2 MiB."; return false; }
+			const std::filesystem::path settings = runtime / ("gemini-settings-" + Digest(snapshot) + ".json");
+			if (!WriteRuntimeFile(settings, snapshot, error, false)) { error = "Could not install immutable Gemini configuration. " + error; return false; }
 			SetEnvironment(environment, "GEMINI_CLI_SYSTEM_SETTINGS_PATH", uam::paths::Utf8PathString(settings));
 			if (!mcp_only) argv.insert(argv.end(), {"--include-directories", uam::paths::Utf8PathString(runtime)});
 		}

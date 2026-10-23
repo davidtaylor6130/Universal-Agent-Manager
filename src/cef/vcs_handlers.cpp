@@ -651,6 +651,40 @@ void UamQueryHandler::HandleRollbackChatTurn(CefRefPtr<CefBrowser> browser, cons
 		});
 }
 
+void UamQueryHandler::HandleCaptureChatRepositoryBaseline(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	if (ChatRuntimeBusy(m_app, chat->id) || m_app.worktree_operation_chat_ids.contains(chat->id))
+	{
+		cb->Failure(409, "Stop the chat runtime before saving its repository baseline.");
+		return;
+	}
+	const ChatSession chat_snapshot = *chat;
+	ReadOnlyAppSnapshotInputs inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const std::string chat_id = chat->id;
+	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+	m_app.worktree_operation_chat_ids.insert(chat_id);
+	uam::AppState* live_app = &m_app;
+	if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [inputs = std::move(inputs), chat = chat_snapshot]() mutable
+	    {
+		    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(inputs));
+		    std::string error;
+		    if (!uam::VcsCommitService().CaptureChatBaseline(snapshot, chat, &error)) return AsyncFailure(409, FailureDetailOrFallback(error, "Failed to save the chat repository baseline."));
+		    return AsyncSuccess({{"saved", true}});
+	    },
+	    [live_app, chat_id, workspace](AsyncCefResult& result)
+	    {
+		    live_app->worktree_operation_chat_ids.erase(chat_id);
+		    const ChatSession* current = ChatDomainService().FindChatById(*live_app, chat_id);
+		    if (current == nullptr || uam::paths::ResolveWorkspaceRootPath(*live_app, *current) != workspace) result = AsyncFailure(409, "The chat workspace changed while its repository baseline was being saved.");
+	    }))
+	{
+		live_app->worktree_operation_chat_ids.erase(chat_id);
+	}
+}
+
 void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);

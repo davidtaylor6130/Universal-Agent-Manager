@@ -769,9 +769,9 @@ UAM_TEST(GoalServiceBuildContinuationPromptIncludesObjectiveAndBudget)
 	UAM_ASSERT(!prompt.empty());
 	UAM_ASSERT(prompt.find(goal.objective) != std::string::npos);
 	UAM_ASSERT(prompt.find("Continue working toward the active thread goal.") != std::string::npos);
-	UAM_ASSERT(prompt.find("Tokens used: 1500") != std::string::npos);
-	UAM_ASSERT(prompt.find("Token budget: 8000") != std::string::npos);
-	UAM_ASSERT(prompt.find("Tokens remaining: 6500") != std::string::npos);
+	UAM_ASSERT(prompt.find("used=1500") != std::string::npos);
+	UAM_ASSERT(prompt.find("budget=8000") != std::string::npos);
+	UAM_ASSERT(prompt.find("remaining=6500") != std::string::npos);
 }
 
 UAM_TEST(GoalServiceBuildContinuationPromptReturnsEmptyForBlankObjective)
@@ -1916,7 +1916,7 @@ UAM_TEST(AcpGoalIterationsUsePrivateContextsInOwnerChat)
 	UAM_ASSERT_EQ(app.chats.front().messages.front().role, MessageRole::Assistant);
 	UAM_ASSERT(session->goal_review_turn);
 	UAM_ASSERT(session->goal_internal_session);
-	UAM_ASSERT(session->queued_prompt.find("goal architect and read-only reviewer") != std::string::npos);
+	UAM_ASSERT(session->queued_prompt.find("Read-only goal review:") != std::string::npos);
 
 	session->session_ready = true;
 	session->processing = true;
@@ -2539,7 +2539,7 @@ UAM_TEST(AcpGoalWorkerTurnSchedulesOneReview)
 	UAM_ASSERT(raw_session->goal_review_turn);
 	UAM_ASSERT(raw_session->goal_review_scheduled);
 	UAM_ASSERT(raw_session->goal_internal_session);
-	UAM_ASSERT(raw_session->queued_prompt.find("goal architect and read-only reviewer") != std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.find("Read-only goal review:") != std::string::npos);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT(app.chats.front().goals.front().tokens_used > 0);
@@ -3573,4 +3573,42 @@ UAM_TEST(CodexNativeGoalPendingReceiptsRejectChangedDeliveryConfiguration)
 			UAM_ASSERT_EQ(app.chats.front().goals.front().native_binding->initial_delivery->state,
 				accepted ? NativeGoalInitialDelivery::State::Accepted : NativeGoalInitialDelivery::State::Pending);
 		}
+}
+
+
+UAM_TEST(GoalPromptCompactionPreservesDistinctTasksAndVerificationRules)
+{
+	Goal goal;
+	goal.objective = "Verify the database migration.";
+	const std::string continuation = uam::GoalService::BuildContinuationPrompt(goal, 12, 100);
+	UAM_ASSERT(continuation.size() < 400);
+	const std::string no_duplicate = uam::GoalService::BuildContinuationPrompt(goal, 12, 100, false, "", false);
+	UAM_ASSERT(no_duplicate.find(goal.objective) == std::string::npos);
+	UAM_ASSERT(no_duplicate.find("verifying every requirement against current state") != std::string::npos);
+	UAM_ASSERT(continuation.find("verifying every requirement against current state") != std::string::npos);
+	UAM_ASSERT(continuation.find("used=12 budget=100 remaining=88") != std::string::npos);
+	const std::string review = uam::GoalService::BuildReviewPrompt(goal, "  " + goal.objective + "\n", "Tests passed.", 0);
+	UAM_ASSERT(review.find("recentUserPrompt") == std::string::npos);
+	UAM_ASSERT(review.find(goal.objective) != std::string::npos);
+	UAM_ASSERT(review.find("Tests passed.") != std::string::npos);
+	UAM_ASSERT(review.find("Do not output") == std::string::npos);
+	UAM_ASSERT(review.find("do not edit files or run mutating commands") != std::string::npos);
+	const std::string distinct = uam::GoalService::BuildReviewPrompt(goal, "Check rollback safety too.", "Tests passed.", 3);
+	UAM_ASSERT(distinct.find("<recentUserPrompt>\nCheck rollback safety too.") != std::string::npos);
+	UAM_ASSERT(distinct.find("<loopDetection>") != std::string::npos);
+	for (int index = 0; index < 15; ++index)
+	{
+		goal.completed_items.push_back("Verified step " + std::to_string(index));
+		goal.remaining_items.push_back("Pending step " + std::to_string(index));
+	}
+	const std::string full_ledger = uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Checked one step.", 0, true);
+	UAM_ASSERT(full_ledger.find("Verified step 0\n") != std::string::npos);
+	UAM_ASSERT(full_ledger.find("Pending step 14\n") != std::string::npos);
+	goal.completed_items.clear();
+	goal.remaining_items.clear();
+	goal.status = GoalStatus::Complete;
+	const std::string terminal = uam::GoalService::BuildReadOnlyTerminalPrompt(goal);
+	UAM_ASSERT(terminal.find("lastBlocker") == std::string::npos);
+	UAM_ASSERT(terminal.find("remainingItems") == std::string::npos);
+	UAM_ASSERT(terminal.find("Do not reactivate") != std::string::npos);
 }

@@ -15,7 +15,7 @@ namespace
 	{
 		uam::usage::Record record;
 		record.provider_id = uam::provider_ids::kOpenCodeCli;
-		record.model_id = "inferdeck/normal";
+		record.model_id = "example-provider/normal";
 		record.session_id = "session";
 		record.dedupe_key = identity;
 		record.timestamp_ms = kAsOf - age_days * kDayMs - 1;
@@ -60,7 +60,7 @@ UAM_TEST(UsageLedgerCompactsDailyCohortsWithExactRecentAndPricingSessionParity)
 	UAM_ASSERT(ledger->Rows() < references.size() / 2);
 	const std::optional<uam::usage::Ledger> restored = uam::usage::Ledger::Decode(ledger->Encode());
 	UAM_ASSERT(restored);
-	const uam::usage::ModelKey model{uam::provider_ids::kOpenCodeCli, "inferdeck/normal", "standard"};
+	const uam::usage::ModelKey model{uam::provider_ids::kOpenCodeCli, "example-provider/normal", "standard"};
 	for (const std::map<uam::usage::ModelKey, uam::usage::ModelPrices> prices : {
 	    std::map<uam::usage::ModelKey, uam::usage::ModelPrices>{}, {{model, {1, 0.1, 2, 4}}}, {{model, {1, std::nullopt, 2, 4}}}})
 		for (const int days : {1, 7, 30, 90})

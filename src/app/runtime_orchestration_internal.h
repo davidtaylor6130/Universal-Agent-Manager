@@ -3,6 +3,7 @@
 // Shared helpers for native history imports and chat-list replacement.
 
 #include "app/chat_domain_service.h"
+#include "app/agent_run_scheduler.h"
 #include "app/native_session_link_service.h"
 #include "common/chat/chat_branching.h"
 #include "common/models/app_models.h"
@@ -19,10 +20,7 @@ namespace uam::runtime_orch_impl
 {
 	inline bool ChatNeedsTranscriptPreserved(const uam::AppState& app, const ChatSession& chat)
 	{
-		return app.worktree_operation_chat_ids.contains(chat.id) ||
-		       app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
-		       std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<uam::AcpSessionState>& session)
-		       { return session != nullptr && session->chat_id == chat.id && (uam::AcpSessionHasActiveTurn(*session) || session->turn_checkpoint_commit_pending); });
+		return uam::AgentRunScheduler::HasPendingInitialMention(app, chat.id) || app.worktree_operation_chat_ids.contains(chat.id) || app.pending_chat_save_at_by_chat_id.contains(chat.id) || std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<uam::AcpSessionState>& session) { return session != nullptr && session->chat_id == chat.id && (uam::AcpSessionHasActiveTurn(*session) || session->turn_checkpoint_commit_pending); });
 	}
 
 	// Rebuild the list without replacing live turns or unsaved chats with disk snapshots.

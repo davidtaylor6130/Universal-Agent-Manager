@@ -7,6 +7,7 @@ A chat is UAM’s durable conversation with its own provider selection, model, a
 - [Messages](messages.md)
 - [Composer](composer/composer.md)
 - [Goals](goals.md)
+- [Subagents](subagents.md)
 - [Imports and exports](imports.md)
 - [Pane layout](panes.md)
 - [Sidebar](../sidebar/sidebar.md)

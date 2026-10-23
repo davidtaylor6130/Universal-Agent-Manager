@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -24,6 +25,7 @@ namespace uam
 {
 struct AcpSessionState;
 struct AcpPendingPermissionState;
+struct AcpPermissionOptionState;
 struct AcpToolCallState;
 struct AppState;
 struct CliTerminalState;
@@ -71,6 +73,29 @@ enum class ProviderAcpSettingChangeAction
 	SendRequestAndAwaitConfigOptions,
 };
 
+enum class SavedImageRetryPreflight
+{
+	Ready,
+	Pending,
+	Rejected,
+};
+
+/// Provider-owned observations can hold a request without allocating its wire identity.
+enum class AcpRequestPreflight
+{
+	Ready,
+	Pending,
+	Rejected,
+};
+
+/// <summary>Authority granted by an offered native permission choice.</summary>
+enum class ProviderPermissionChoice
+{
+	Denied,
+	AllowedOnce,
+	Other,
+};
+
 enum class ProviderCliVersionPolicy
 {
 	MinimumSemver,
@@ -111,6 +136,17 @@ class IProviderRuntime
 {
   public:
 	virtual ~IProviderRuntime() = default;
+	/// Converts native setup payloads immediately before wire encoding; must be idempotent.
+	virtual void PrepareStructuredMessage(nlohmann::json&) const {}
+	/// Native side channels may accept a provider-owned response without writing it to ACP stdio.
+	virtual std::optional<bool> TryWriteAcpOutOfBandMessage(uam::AcpSessionState&, const nlohmann::json&, std::string*) const { return std::nullopt; }
+	/// Prepare a native decision before the shared caller durably admits any policy change.
+	virtual bool PrepareAcpUserInputResponse(uam::AppState&, uam::AcpSessionState&, ChatSession&,
+	    const std::map<std::string, std::vector<std::string>>&, nlohmann::json&, std::string*) const { return true; }
+	/// Register an admitted user decision after persistence and before transport delivery.
+	virtual void NoteAcpUserInputResponse(uam::AcpSessionState&, const nlohmann::json&) const {}
+	/// Register permission reply ownership only after its bytes enter the transport.
+	virtual void NoteAcpPermissionResponse(uam::AcpSessionState&, const nlohmann::json&) const {}
 
 	/// <summary>Canonical provider runtime id (for example `gemini-cli`).</summary>
 	virtual const char* RuntimeId() const = 0;
@@ -136,11 +172,16 @@ class IProviderRuntime
 	virtual std::string InteractiveConfigurationError(const ProviderProfile& profile, const AppSettings& settings) const;
 	/// <summary>Returns environment overrides for a local interactive provider process.</summary>
 	virtual std::vector<std::pair<std::string, std::string>> BuildInteractiveEnvironment(const ProviderProfile& profile) const;
+	/// Capture optional per-terminal native observation before private launch arguments and environment are staged.
+	virtual bool PrepareInteractiveLaunch(uam::AppState&, uam::CliTerminalState&, const ChatSession&, const ExecutionHost&,
+	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string*) const { return true; }
 	/// <summary>Recognizes the provider's idle prompt in recent native terminal output.</summary>
 	virtual bool RecentOutputIndicatesInputPrompt(std::string_view recent_output) const;
 	/// <summary>Reads bounded native lifecycle changes for a verified local terminal binding.</summary>
 	virtual ProviderTerminalActivity PollInteractiveActivity(uam::CliTerminalState&, std::string_view,
 	    const std::filesystem::path&, bool) const { return ProviderTerminalActivity::Unavailable; }
+	/// Whether this terminal owns a native observer for the captured execution host.
+	virtual bool InteractiveObservationMatchesHost(const uam::CliTerminalState&, const ExecutionHost&) const { return false; }
 	/// <summary>Checkpoints native history before deliberate terminal submission.</summary>
 	virtual void CheckpointInteractiveSubmission(uam::CliTerminalState&) const {}
 	/// <summary>Whether terminal output can confirm completion after a submitted turn.</summary>
@@ -214,6 +255,10 @@ class IProviderRuntime
 		(void)workspace_path;
 		return true;
 	}
+
+	/// Actual local passive-reader originals may use the sealed media transaction.
+	/// This grants no provider input/resume authority and is opt-in per adapter.
+	virtual bool SupportsLocalPassiveNativeMedia(const ProviderProfile&) const { return false; }
 
 	/// <summary>Returns true when provider uses Gemini JSON history files.</summary>
 	virtual bool SupportsGeminiJsonHistory(const ProviderProfile& profile) const
@@ -314,6 +359,12 @@ class IProviderRuntime
 	/// <summary>Projects provider-owned child activity; managed UAM child runs are counted separately.</summary>
 	virtual std::size_t AcpBackgroundTaskCount(const uam::AcpSessionState& session) const;
 
+	/// <summary>Optional captured-process guard before shared decoded-frame projection.
+	/// A null frame reports decode failure before ordinary transport invalidation; it carries no raw payload.
+	/// True consumes a decoded frame, never grants input/readiness. Ordinary adapters default to false.</summary>
+	virtual bool OnAcpPreDispatch(uam::AppState&, uam::AcpSessionState&, const ChatSession&,
+	    const nlohmann::json*) const noexcept { return false; }
+
 	/// <summary>Consumes provider-specific stream messages; false delegates to shared ACP dispatch.</summary>
 	virtual bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState&, ChatSession&,
 	    const nlohmann::json&, const CefRefPtr<CefBrowser>&) const { return false; }
@@ -328,6 +379,19 @@ class IProviderRuntime
 	virtual nlohmann::json OnAcpBuildSetupRequest(int request_id, const ChatSession& chat,
 	    const std::string& cwd, bool can_load, std::string& out_method) const;
 
+	/// Runs before setup allocation or configuration; Pending must not be represented by an empty setup packet.
+	virtual AcpRequestPreflight OnAcpPrepareSetup(uam::AppState&, uam::AcpSessionState&,
+	    const ChatSession&, const std::string&, std::string&) const { return AcpRequestPreflight::Ready; }
+
+	/// Session-aware adapters bind setup restrictions to their exact live observation generation.
+	/// An empty packet with a nonempty method rejects setup; an empty method permits a no-wire setup.
+	virtual nlohmann::json OnAcpBuildSessionSetupRequest(uam::AcpSessionState&, int request_id,
+	    const ChatSession& chat, const std::string& cwd, bool can_load, std::string& out_method) const;
+
+	/// Called under managed input ownership before preparation and again at final delivery.
+	virtual AcpRequestPreflight OnAcpPrepareInput(uam::AppState&, uam::AcpSessionState&,
+	    const ChatSession&, bool, std::string&) const { return AcpRequestPreflight::Ready; }
+
 	/// <summary>Validates a resume ID for this provider. Returns valid id or empty.</summary>
 	virtual std::string OnAcpValidateResumeId(const ChatSession& chat) const;
 
@@ -337,14 +401,46 @@ class IProviderRuntime
 
 	/// <summary>Builds native manual compaction; null means the provider has no direct request.</summary>
 	virtual nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState&, int, std::string&) const { return nullptr; }
+	virtual bool SupportsSameLiveParentResultContinuation() const { return false; }
 	virtual bool SupportsAcpCompaction() const { return false; }
 
 	/// <summary>True when input can be appended to an active turn without interrupting it.</summary>
-	virtual bool SupportsAcpSteering() const { return false; }
+	virtual bool SupportsAcpSteering() const
+	{
+		return false;
+	}
+	/// Explicit saved-row original-byte input, through the bounded inline-image worker only.
+	virtual bool SupportsSavedImageRetry(const uam::AcpSessionState&) const
+	{
+		return false;
+	}
+	/// Adapter opt-in for owned-image Retry on an already bound remote process;
+	/// the capability grants no host, path, native-session or delivery authority.
+	virtual bool SupportsRemoteOwnedImageRetry(const uam::AcpSessionState&) const { return false; }
+	/// Read-only native evidence, before any original-image worker; existing routes need none.
+	virtual SavedImageRetryPreflight PrepareSavedImageRetry(uam::AcpSessionState&, const ChatSession&,
+	    const std::vector<MessageAttachment>&, std::string&) const
+	{
+		return SavedImageRetryPreflight::Ready;
+	}
+	/// Pure native settings witness before image preparation; never allocates an ID or writes.
+	virtual nlohmann::json SavedImageRetryMetadata(const uam::AcpSessionState&, const ChatSession&) const
+	{
+		return nullptr;
+	}
+	/// Adapter-owned conversion of validated worker images; ordinary input never calls this hook.
+	virtual bool EncodePreparedSavedImageRetry(nlohmann::json&, const nlohmann::json&, std::string& error,
+	    const std::vector<MessageAttachment>& = {}, const nlohmann::json& = nullptr) const
+	{
+		error = "This provider has no prepared saved-image input route.";
+		return false;
+	}
 
 	/// <summary>Builds native steering and records provider turn identity for its acknowledgment.</summary>
-	virtual nlohmann::json OnAcpBuildSteer(uam::AcpSessionState&, int,
-	    const std::string&, std::string&) const { return nullptr; }
+	virtual nlohmann::json OnAcpBuildSteer(uam::AcpSessionState&, int, const std::string&, std::string&) const
+	{
+		return nullptr;
+	}
 
 	/// <summary>True when prompt can be sent without session_id (Claude stream-json).</summary>
 	virtual bool OnAcpCanSendPromptWithoutSessionId() const { return false; }
@@ -362,13 +458,43 @@ class IProviderRuntime
 	/// <summary>Chooses model-change transport and whether refreshed config options are required.</summary>
 	virtual ProviderAcpSettingChangeAction AcpModelChangeAction() const { return ProviderAcpSettingChangeAction::SendRequest; }
 
+	/// <summary>Named model efforts proven for one checked executing-host CLI version; empty means unavailable.</summary>
+	virtual std::vector<std::string> ModelReasoningEfforts(std::string_view, std::string_view) const { return {}; }
+	/// <summary>Launch-only model options require an idle process restart before taking effect.</summary>
+	virtual bool ModelOptionsRequireRestart() const { return false; }
+	/// <summary>Compare the actual launch request, never a provider-reported alias, for launch-only option changes.</summary>
+	bool AcpLaunchOptionsNeedModelRestart(const uam::AcpSessionState& session, std::string_view model) const;
+
 	/// <summary>Updates provider model metadata from native config options; returns whether it changed.</summary>
 	virtual bool OnAcpConfigOptionsUpdated(uam::AcpSessionState&, const nlohmann::json&) const { return false; }
 	/// <summary>Reconciles saved model options with the active provider session; returns whether it changed.</summary>
 	virtual bool OnAcpReconcileModelOptions(uam::AppState&, uam::AcpSessionState&, ChatSession&) const { return false; }
 
+
+	/// <summary>Expires adapter-owned native option requests during Poll; returns projection changes without dispatching or controlling a process.</summary>
+	virtual bool OnAcpPollNativeModelOptions(uam::AppState&, uam::AcpSessionState&, ChatSession&) const { return false; }
+
+	/// <summary>Refreshes native model options on an existing owned session; never launches or sends a user turn.</summary>
+	virtual bool OnAcpRefreshNativeModelOptions(uam::AppState&, uam::AcpSessionState&, ChatSession&, std::string* error_out) const
+	{
+		if (error_out != nullptr) *error_out = "This provider does not expose native model options.";
+		return false;
+	}
+	/// <summary>Admits a native option request under projected ownership; true means written, never committed.</summary>
+	virtual bool OnAcpRequestNativeModelOption(uam::AppState&, uam::AcpSessionState&, ChatSession&, std::string_view,
+	    const nlohmann::json&, const nlohmann::json&, std::string* error_out) const
+	{
+		if (error_out != nullptr) *error_out = "This provider does not expose native model options.";
+		return false;
+	}
+	/// <summary>Allowlisted native option observations; excludes private request records and lifetime nonce.</summary>
+	virtual nlohmann::json OnAcpNativeModelOptionsForFrontend(const uam::AcpSessionState&) const { return nlohmann::json::object(); }
+
 	/// <summary>Build permission response.</summary>
 	virtual nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
+	    const uam::AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled) const;
+	/// <summary>Encodes the current pending request through the explicit immutable request contract.</summary>
+	nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
 	    const std::string& option_id, bool cancelled) const;
 
 	/// <summary>Builds the provider's response to an active question, including cancellation.</summary>
@@ -376,6 +502,12 @@ class IProviderRuntime
 
 	/// <summary>Preserves provider recovery decisions that must not be automatically approved.</summary>
 	virtual bool AcpPermissionRequiresUserDecision(const uam::AcpPendingPermissionState&) const { return false; }
+
+	/// <summary>Identifies a native continuation question that grants no tool or filesystem action.</summary>
+	virtual bool AcpPermissionIsNonActionQuestion(const uam::AcpPendingPermissionState&) const { return false; }
+
+	/// <summary>Classifies native option authority without trusting its display label.</summary>
+	virtual ProviderPermissionChoice AcpPermissionChoice(const uam::AcpPendingPermissionState&, const uam::AcpPermissionOptionState&) const;
 
 	/// <summary>Try to auto-approve pending permission. Return true if approved.</summary>
 	virtual bool OnAcpTryAutoApprove(uam::AcpSessionState& session, const ChatSession& chat,

@@ -262,6 +262,7 @@ set(UAM_PROVIDER_SOURCES)
 if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/gemini/cli/gemini_cli_provider_runtime.cpp
+    src/common/provider/gemini/cli/gemini_native_agent_history.cpp
     src/common/provider/gemini/base/gemini_history_loader.cpp
   )
 endif()
@@ -273,6 +274,7 @@ endif()
 if(UAM_ENABLE_RUNTIME_CLAUDE_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/claude/cli/claude_cli_provider_runtime.cpp
+    src/common/provider/claude/cli/claude_native_agent_history.cpp
   )
 endif()
 if(UAM_ENABLE_RUNTIME_OPENCODE_CLI)
@@ -283,6 +285,8 @@ endif()
 if(UAM_ENABLE_RUNTIME_COPILOT_CLI)
   list(APPEND UAM_PROVIDER_SOURCES
     src/common/provider/copilot/cli/copilot_cli_provider_runtime.cpp
+    src/common/provider/copilot/cli/copilot_native_protocol.cpp
+    src/common/provider/copilot/cli/copilot_managed_read_policy.cpp
   )
 endif()
 
@@ -301,7 +305,9 @@ elseif(WIN32)
   set(UAM_ATTACHMENT_PREVIEW_PLATFORM src/app/attachment_preview_platform_windows.cpp)
 endif()
 
-set(UAM_PLATFORM_IMPL_SOURCES)
+set(UAM_PLATFORM_IMPL_SOURCES
+  src/common/platform/platform_native_attachment_assets.cpp
+  src/common/platform/platform_incremental_sha256.cpp)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 if(WIN32)
   list(APPEND UAM_PLATFORM_SOURCES src/uam.rc)
@@ -312,6 +318,7 @@ if(WIN32)
     src/common/platform/platform_dialogs_windows.cpp
     src/common/platform/platform_paths_windows.cpp
     src/common/platform/platform_dictation_windows.cpp
+    src/common/platform/platform_speech_output_windows.cpp
   )
   list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
     src/computer_use/computer_use_platform_windows.cpp
@@ -326,6 +333,7 @@ elseif(APPLE)
     src/common/platform/platform_dialogs_macos.cpp
     src/common/platform/platform_paths_macos.cpp
     src/common/platform/platform_dictation_macos.mm
+    src/common/platform/platform_speech_output_macos.mm
   )
   list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
     src/computer_use/computer_use_platform_macos.mm
@@ -334,6 +342,7 @@ elseif(APPLE)
   )
   set_source_files_properties(
     src/common/platform/platform_dictation_macos.mm
+    src/common/platform/platform_speech_output_macos.mm
     src/computer_use/computer_use_platform_macos.mm
     PROPERTIES COMPILE_OPTIONS "-fobjc-arc"
   )
@@ -361,6 +370,7 @@ add_executable(uam_runner
   src/common/usage/usage_collector.cpp
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
+  src/common/provider/opencode/cli/opencode_native_http.cpp
   src/remote/runner_main.cpp
   src/remote/runner_client.cpp
   src/remote/runner_protocol.cpp
@@ -414,7 +424,7 @@ elseif(WIN32)
     src/common/platform/platform_process_windows.cpp
     src/remote/runner_service_windows.cpp
   )
-  target_link_libraries(uam_runner PRIVATE advapi32 shell32 user32)
+  target_link_libraries(uam_runner PRIVATE advapi32 shell32 user32 ws2_32)
 elseif(UNIX)
   find_package(Threads REQUIRED)
   target_sources(uam_runner PRIVATE
@@ -477,11 +487,15 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/main.cpp
   src/common/platform/app_crash_supervisor.cpp
+  src/common/platform/companion_network_platform.cpp
 	  src/computer_use/computer_use_mcp_config.cpp
 	  $<$<BOOL:${UAM_ENABLE_COMPUTER_USE}>:src/computer_use/computer_use_mcp_server.cpp>
 	  src/app/agent_definition_service.cpp
 	  src/app/agent_run_ledger.cpp
 	  src/app/agent_run_scheduler.cpp
+	  src/app/managed_parent_continuation_service.cpp
+	    src/app/managed_subagent_control_service.cpp
+	    src/app/managed_subagent_followup_service.cpp
 	  src/app/uam_control_service.cpp
   src/app/application.cpp
   src/common/utils/diagnostic_log.cpp
@@ -513,6 +527,10 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
     src/app/chat_title_service.cpp
   src/app/provider_profile_migration_service.cpp
   src/app/provider_model_catalog_service.cpp
+  src/app/copilot_agent_history_service.cpp
+  src/app/native_agent_history_service.cpp
+  src/app/opencode_native_activity_service.cpp
+  src/common/provider/opencode/cli/opencode_terminal_activity.cpp
   src/app/runtime_orchestration_services.cpp
   src/app/startup_native_import_service.cpp
   src/app/opencode_compaction_sync_service.cpp
@@ -521,6 +539,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/app/shell_action_service.cpp
   src/app/theme_service.cpp
   src/app/vcs_commit_service.cpp
+  src/common/discovery/management_discovery.cpp
   src/app/workspace_vcs_context_service.cpp
   src/cef/uam_cef_app.cpp
   src/cef/uam_cef_command_line_config.cpp
@@ -536,6 +555,7 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/cef/chat_receipt_handlers.cpp
   src/cef/startup_native_import_handlers.cpp
   src/cef/chat_config_handlers.cpp
+  src/cef/managed_subagent_handlers.cpp
   src/cef/settings_handlers.cpp
   src/cef/remote_host_handlers.cpp
   src/cef/local_chat_bundle_handlers.cpp
@@ -559,6 +579,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/paths/app_paths.cpp
   src/common/chat/chat_folder_store.cpp
   src/common/chat/chat_repository.cpp
+  src/common/chat/native_media_chat_save.cpp
+  src/common/chat/branch_native_assets.cpp
   src/common/chat/chat_message_page_index.cpp
   src/common/chat/chat_branching.cpp
   src/common/chat/native_chat_identity.cpp
@@ -589,6 +611,8 @@ add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
   src/common/provider/runtime/provider_runtime_facade.cpp
   src/common/provider/runtime/provider_runtime_registry.cpp
   src/common/provider/runtime/provider_acp_strategy.cpp
+  src/common/provider/structured_attachments.cpp
+  src/common/provider/opencode/cli/opencode_native_http.cpp
   src/common/provider/claude/cli/claude_acp_message_handlers.cpp
   src/common/provider/codex/cli/codex_acp_message_handlers.cpp
   src/common/runtime/acp/acp_content_text.cpp
@@ -697,6 +721,7 @@ elseif(WIN32)
     advapi32
     shell32
     windowsapp
+    dnsapi
     gdi32
     ole32
     uuid
@@ -704,6 +729,7 @@ elseif(WIN32)
     user32
     uiautomationcore
     windowscodecs
+    ws2_32
   )
 endif()
 
@@ -904,10 +930,12 @@ if(NOT EXISTS \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.fra
        \"\${_computer_use_dir}/Frameworks/Chromium Embedded Framework.framework\"
        SYMBOLIC)
 endif()
+sign_owned_code(\"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_computer_use_name}.app\" \"${_computer_use_entitlements}\")
 ")
 
     endif()
 
+    # All nested apps must be signed before codesign inspects the containing app.
     # Sign the main executable binary with the JIT entitlement.
     # We sign only the binary (not the whole bundle) to avoid the sealed-resources
     # error caused by non-code assets (e.g. .woff fonts) inside the bundle.
@@ -920,10 +948,6 @@ sign_owned_code(\"\${UAM_MAIN_EXE}\" \"${_jit_entitlements}\")
 
     # Write the script to the build dir.
     set(_helper_cmake_script "${_cef_plists_dir}/create_helpers.cmake")
-    if(UAM_ENABLE_COMPUTER_USE)
-      string(APPEND _helper_script_content "sign_owned_code(\"\${UAM_BUNDLE_CONTENTS}/Frameworks/${_computer_use_name}.app\" \"${_computer_use_entitlements}\")
-")
-    endif()
 
     file(WRITE "${_helper_cmake_script}" "${_helper_script_content}")
 
@@ -1225,6 +1249,32 @@ endforeach()
 
 if(UAM_BUILD_TESTS)
   enable_testing()
+  add_executable(uam_companion_protocol_tests
+    tests/companion_protocol_tests.cpp src/cef/uam_bridge_request.cpp)
+  target_include_directories(uam_companion_protocol_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_companion_protocol_tests PRIVATE nlohmann_json::nlohmann_json)
+  target_compile_definitions(uam_companion_protocol_tests PRIVATE
+    UAM_ENABLE_RUNTIME_GEMINI_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_GEMINI_CLI}>
+    UAM_ENABLE_RUNTIME_CODEX_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CODEX_CLI}>
+    UAM_ENABLE_RUNTIME_CLAUDE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_CLAUDE_CLI}>
+    UAM_ENABLE_RUNTIME_OPENCODE_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_OPENCODE_CLI}>
+    UAM_ENABLE_RUNTIME_COPILOT_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_COPILOT_CLI}>
+    UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=$<BOOL:${UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI}>)
+  set_target_properties(uam_companion_protocol_tests PROPERTIES FOLDER "Tests")
+  foreach(companion_case IN ITEMS
+      TransferRoundTripCommitOnce TransferMalformedOffsets TransferStrictBase64AndBounds
+      InFlightRequestAdmissionSurvivesAsyncOwnership ResponseTransferAggregateBoundsAndFinalRelease ResponseTransferTimerExpiryAndIdentity
+      TransferOversizeCapacityAndRelease TransferAbsoluteExpiry TransferIdCollision TransferEnvelopeFieldValidation
+      PolicyCapabilitiesAndRestrictions PolicyScopeSelectionAndReadOnly PolicySettingsRedaction
+      PolicyProviderActionsCapabilitiesAndReadOnly PolicyProviderActionsRejectMalformedOrPrivilegedFields
+      PolicyProviderTransferredActionsUseFinalPolicy
+      PolicyByteAttachmentStaging AttachmentDescriptorOwnership TransferredEnvelopeFinalAllowlist
+      PolicyQueueStableIdentityAndHeldState PolicyQueueAdmissionTransitionAndStaleIdentity
+      PolicyQueueRequiresBoundedIdentity PolicyQueueExistingEditAndReorderOwnership
+      SettingsProviderDefaultsPartialAndScoped SettingsMemoryAndWorkerPartialUpdates SettingsMemoryFenceAndOutcomeProjection SettingsPreferencesStorageAndAvailability
+      SettingsRejectPrivilegedAndMalformedUpdates SettingsMcpAndNestedProjectionRedaction SettingsTransferredEnvelopeUsesFinalPolicy)
+    add_test(NAME uam_companion_${companion_case} COMMAND uam_companion_protocol_tests ${companion_case})
+  endforeach()
   add_executable(uam_ui_asset_snapshot_tests tests/ui_asset_snapshot_tests.cpp)
   target_include_directories(uam_ui_asset_snapshot_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(uam_ui_asset_snapshot_tests PRIVATE nlohmann_json::nlohmann_json)
@@ -1233,7 +1283,7 @@ if(UAM_BUILD_TESTS)
     tests/app_crash_supervisor_tests.cpp
     src/common/platform/app_crash_supervisor.cpp)
   target_include_directories(uam_crash_supervisor_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
-  foreach(crash_case normal once loop term nonzero bypass)
+  foreach(crash_case normal once loop term nonzero bypass restart restart_many)
     add_test(NAME uam_crash_supervisor_${crash_case} COMMAND uam_crash_supervisor_tests ${crash_case})
   endforeach()
 
@@ -1245,15 +1295,32 @@ if(UAM_BUILD_TESTS)
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/build-configurator/test_local_build_version.py")
   add_test(NAME uam_ui_build_incremental
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ui_build_incremental_test.py")
+  if(APPLE)
+    add_test(NAME uam_macos_helper_signing
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/macos_helper_signing_test.py"
+        --cmake "${CMAKE_COMMAND}" --compiler "${CMAKE_C_COMPILER}")
+    set_tests_properties(uam_macos_helper_signing PROPERTIES TIMEOUT 120)
+  endif()
   add_test(NAME uam_native_test_runner
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/native_test_runner_test.py")
   foreach(parent_stop terminate kill)
     add_test(NAME uam_crash_supervisor_parent_${parent_stop}
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_crash_supervisor_parent_test.py" "$<TARGET_FILE:uam_crash_supervisor_tests>" "${parent_stop}")
   endforeach()
+  add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp)
+  target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
+  target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
+  add_test(NAME uam_companion_connection_lifecycle COMMAND uam_companion_connection_tests)
   add_executable(uam_core_tests
     tests/core_tests.cpp
+    tests/input_provenance_native_refresh_tests.cpp
+    tests/acp_input_admission_identity_tests.cpp
+    tests/async_byte_writer_receipt_tests.cpp
+    tests/platform_observed_input_write_tests.cpp
+    tests/input_provenance_codec_tests.cpp
+    tests/acp_input_admission_bridge_tests.cpp
     tests/chat_branch_selection_tests.cpp
+    tests/companion_lifecycle_tests.cpp
     tests/host_scoped_settings_tests.cpp
     tests/repository_route_match_tests.cpp
     tests/deletion_progress_tests.cpp
@@ -1268,6 +1335,34 @@ if(UAM_BUILD_TESTS)
     tests/opencode_import_stream_tests.cpp
     tests/local_chat_bundle_tests.cpp
     tests/antigravity_tests.cpp
+    tests/structured_framing_tests.cpp
+    tests/structured_attachment_tests.cpp
+    tests/remote_attachment_tests.cpp
+    tests/claude_native_compaction_tests.cpp
+    tests/native_history_refresh_tests.cpp
+    tests/managed_subagent_control_tests.cpp
+    tests/managed_subagent_followup_tests.cpp
+    tests/agent_result_delivery_regression_tests.cpp
+    tests/local_input_write_observation_tests.cpp
+    tests/input_write_carrier_mutation_tests.cpp
+    tests/gemini_history_journal_tests.cpp
+    tests/native_child_lineage_tests.cpp
+    tests/gemini_native_assets_tests.cpp
+    tests/native_attachment_assets_tests.cpp
+    tests/native_media_chat_save_tests.cpp
+    tests/branch_native_assets_tests.cpp
+    tests/chat_birth_preservation_tests.cpp
+    tests/gemini_discovered_media_import_tests.cpp
+    tests/native_refresh_lifetime_tests.cpp
+    tests/codex_native_history_projection_tests.cpp
+    tests/codex_native_children_tests.cpp
+    tests/native_agent_reference_tests.cpp
+    tests/native_provider_agent_history_tests.cpp
+    tests/native_remote_history_refresh_tests.cpp
+    tests/copilot_native_protocol_tests.cpp
+    tests/opencode_native_http_tests.cpp
+    tests/opencode_native_activity_tests.cpp
+    tests/opencode_terminal_activity_tests.cpp
     tests/antigravity_mcp_tests.cpp
     tests/startup_native_import_tests.cpp
     tests/queued_prompt_tests.cpp
@@ -1298,6 +1393,7 @@ if(UAM_BUILD_TESTS)
     tests/chat_search_tests.cpp
     tests/interaction_performance_tests.cpp
     tests/chat_message_page_tests.cpp
+    tests/chat_publication_tests.cpp
     tests/provider_configuration_tests.cpp
     tests/transcript_usage_tests.cpp
     tests/antigravity_accounting_tests.cpp
@@ -1348,8 +1444,18 @@ if(UAM_BUILD_TESTS)
     tests/runner_retirement_tests.cpp
     tests/memory_tests.cpp
     tests/memory_policy_tests.cpp
+    tests/memory_write_receipt_tests.cpp
+    tests/settings_memory_publication_tests.cpp
     tests/remote_memory_publication_tests.cpp
     tests/acp_session_tests.cpp
+    tests/acp_permission_ceiling_tests.cpp
+    tests/acp_permission_provider_boundary_tests.cpp
+    tests/codex_captured_permission_tests.cpp
+    tests/acp_permission_projection_tests.cpp
+    tests/acp_permission_replay_boundary_tests.cpp
+    tests/acp_permission_command_provenance_tests.cpp
+    tests/copilot_captured_question_replay_tests.cpp
+    tests/read_only_command_tests.cpp
     tests/compaction_runtime_sync_tests.cpp
     tests/installer_quiesce_tests.cpp
     tests/durable_retry_worktree_tests.cpp
@@ -1381,6 +1487,9 @@ if(UAM_BUILD_TESTS)
 	    src/app/agent_definition_service.cpp
 	    src/app/agent_run_ledger.cpp
 	    src/app/agent_run_scheduler.cpp
+	  src/app/managed_parent_continuation_service.cpp
+	    src/app/managed_subagent_control_service.cpp
+	    src/app/managed_subagent_followup_service.cpp
 	    src/app/uam_control_service.cpp
     src/app/chat_domain_service.cpp
     src/app/chat_lifecycle_service.cpp
@@ -1410,6 +1519,10 @@ if(UAM_BUILD_TESTS)
     src/app/chat_title_service.cpp
     src/app/provider_profile_migration_service.cpp
     src/app/provider_model_catalog_service.cpp
+  src/app/copilot_agent_history_service.cpp
+  src/app/native_agent_history_service.cpp
+  src/app/opencode_native_activity_service.cpp
+  src/common/provider/opencode/cli/opencode_terminal_activity.cpp
     src/app/runtime_orchestration_services.cpp
     src/app/startup_native_import_service.cpp
     src/app/opencode_compaction_sync_service.cpp
@@ -1429,6 +1542,8 @@ if(UAM_BUILD_TESTS)
     src/common/config/frontend_actions.cpp
     src/common/utils/command_line_words.cpp
     src/common/chat/chat_repository.cpp
+  src/common/chat/native_media_chat_save.cpp
+  src/common/chat/branch_native_assets.cpp
     src/common/chat/chat_message_page_index.cpp
     src/common/chat/chat_branching.cpp
     src/common/chat/native_chat_identity.cpp
@@ -1454,6 +1569,8 @@ if(UAM_BUILD_TESTS)
     src/common/provider/runtime/provider_runtime_facade.cpp
     src/common/provider/runtime/provider_runtime_registry.cpp
     src/common/provider/runtime/provider_acp_strategy.cpp
+  src/common/provider/structured_attachments.cpp
+  src/common/provider/opencode/cli/opencode_native_http.cpp
     src/common/provider/claude/cli/claude_acp_message_handlers.cpp
     src/common/provider/codex/cli/codex_acp_message_handlers.cpp
     src/common/runtime/acp/acp_content_text.cpp
@@ -1547,6 +1664,7 @@ if(UAM_BUILD_TESTS)
       user32
       uiautomationcore
       windowscodecs
+      ws2_32
     )
     add_custom_command(TARGET uam_core_tests POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -1595,7 +1713,7 @@ if(UAM_BUILD_TESTS)
   list(REMOVE_ITEM UAM_CONNECTED_HANDLER_TEST_SOURCES
     src/common/platform/platform_pty_macos.cpp src/common/platform/platform_pty_windows.cpp)
   add_executable(uam_chat_icon_handler_tests EXCLUDE_FROM_ALL
-    tests/chat_icon_handler_tests.cpp tests/computer_use_terminal_runtime_fixture.cpp ${UAM_CONNECTED_HANDLER_TEST_SOURCES})
+    tests/chat_icon_handler_tests.cpp tests/companion_connection_handler_tests.cpp tests/memory_settings_handler_tests.cpp tests/computer_use_terminal_runtime_fixture.cpp ${UAM_CONNECTED_HANDLER_TEST_SOURCES})
   set_target_properties(uam_chat_icon_handler_tests PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
   foreach(UAM_ICON_TEST_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)
@@ -1650,6 +1768,29 @@ endif()
   endif()
   # Keep this opt-in executable outside the standard CTest inventory until built.
 
+  add_executable(uam_managed_subagent_handler_tests EXCLUDE_FROM_ALL
+    tests/managed_subagent_handler_tests.cpp tests/native_media_refresh_handler_tests.cpp tests/native_model_options_handler_tests.cpp ${UAM_ICON_HANDLER_TEST_SOURCES})
+  set_target_properties(uam_managed_subagent_handler_tests PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "Tests")
+  foreach(UAM_MANAGED_TEST_PROPERTY IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY)
+    get_target_property(UAM_MANAGED_TEST_VALUE universal_agent_manager ${UAM_MANAGED_TEST_PROPERTY})
+    if(NOT UAM_MANAGED_TEST_VALUE STREQUAL "UAM_MANAGED_TEST_VALUE-NOTFOUND")
+      set_property(TARGET uam_managed_subagent_handler_tests PROPERTY ${UAM_MANAGED_TEST_PROPERTY} "${UAM_MANAGED_TEST_VALUE}")
+    endif()
+  endforeach()
+  target_include_directories(uam_managed_subagent_handler_tests PRIVATE tests)
+  if(APPLE)
+    add_custom_command(TARGET uam_managed_subagent_handler_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/icon-handler-test-framework-$<CONFIG>.cmake")
+  elseif(WIN32)
+    add_custom_command(TARGET uam_managed_subagent_handler_tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/libcef.dll" "$<TARGET_FILE_DIR:uam_managed_subagent_handler_tests>/libcef.dll"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${cef_binary_SOURCE_DIR}/Release/chrome_elf.dll" "$<TARGET_FILE_DIR:uam_managed_subagent_handler_tests>/chrome_elf.dll")
+  endif()
+  # Keep this opt-in executable outside the standard CTest inventory until built.
+
   if(APPLE)
     # macOS Unix sockets have a 104-byte path limit; the default TMPDIR can exceed it.
     set_tests_properties(uam_core_tests PROPERTIES ENVIRONMENT "TMPDIR=/tmp")
@@ -1691,4 +1832,16 @@ endif()
     NAME uam_computer_use_permission_contract
     COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/check_computer_use_permission_contract.cmake
   )
+endif()
+
+if(UAM_BUILD_TESTS)
+  add_executable(uam_management_discovery_tests
+    tests/management_discovery_tests.cpp
+    src/common/discovery/management_discovery.cpp)
+  target_include_directories(uam_management_discovery_tests PRIVATE src)
+  target_compile_features(uam_management_discovery_tests PRIVATE cxx_std_20)
+  if(WIN32)
+    target_link_libraries(uam_management_discovery_tests PRIVATE dnsapi)
+  endif()
+  add_test(NAME uam_management_discovery_validation COMMAND uam_management_discovery_tests)
 endif()

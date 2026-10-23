@@ -1,12 +1,15 @@
+#include "common/discovery/management_discovery.h"
 #pragma once
 
 #include "cef/cef_includes.h"
+#include "include/cef_thread.h"
 #include "common/platform/platform_services.h"
 #include "common/state/app_state.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/startup_native_import_service.h"
 #include "app/model_discovery_service.h"
 #include "app/opencode_compaction_sync_service.h"
+#include "app/opencode_native_activity_service.h"
 #include "app/computer_use_service.h"
 #include "app/worktree_retention_service.h"
 
@@ -18,6 +21,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+class UamQueryHandler;
 
 /// <summary>
 /// Top-level application lifetime manager for the CEF build.
@@ -35,7 +40,7 @@ class Application
 
 	/// <summary>
 	/// Called from main() once CEF has been initialized.
-	/// Runs CefRunMessageLoop() until the window is closed.
+	/// Runs CefRunMessageLoop() until the window closes or management mode receives a stop signal.
 	/// </summary>
 	int Run(CefMainArgs main_args, std::vector<std::string> launch_arguments = {});
 
@@ -47,6 +52,9 @@ class Application
 	void ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory);
 
   private:
+	std::unique_ptr<UamQueryHandler> m_managementHandler;
+	std::unique_ptr<uam::discovery::ManagementAnnouncement> m_managementAnnouncement;
+	bool m_managementNode = false;
 	uam::AppState m_app;
 	uam::StartupModelDiscoveryService m_startupModelDiscovery;
 	std::shared_ptr<uam::OpenCodeCompactionSyncService> m_openCodeCompactionSync;
@@ -56,6 +64,7 @@ class Application
 	std::shared_ptr<uam::platform::DataRootLock> m_dataRootLock;
 	std::shared_ptr<std::atomic_bool> m_lifetimeToken = std::make_shared<std::atomic_bool>(true);
 	CefRefPtr<CefBrowser> m_browser;
+	CefRefPtr<CefThread> m_markdownSeedWorker;
 	bool m_done = false;
 	bool m_settingsLoaded = false;
 	bool m_cefInitialized = false;
@@ -80,5 +89,6 @@ class Application
 	void ScheduleNextUpdate(int delay_ms = 1000);
 
 	// ---- CEF ready callback -----------------------------------------------
-	void OnBrowserReady(CefRefPtr<CefBrowser> browser);
+	void OnRuntimeReady(CefRefPtr<CefBrowser> browser);
+	void OnManagementReady();
 };

@@ -21,6 +21,8 @@ namespace uam::attachment_preview
 	static DeliveryImage ProcessImage(std::string_view source, std::size_t max_bytes, bool delivery, std::stop_token cancel)
 	{
 		if (cancel.stop_requested() || source.empty() || source.size() > kMaxSourceBytes || max_bytes == 0 || max_bytes > kMaxSourceBytes) return {};
+		const std::string mime = ImageMime(source);
+		if (mime.empty()) return {};
 		CFDataRef data = CFDataCreateWithBytesNoCopy(nullptr, reinterpret_cast<const UInt8*>(source.data()),
 		    static_cast<CFIndex>(source.size()), kCFAllocatorNull);
 		if (!data) return {};
@@ -33,7 +35,6 @@ namespace uam::attachment_preview
 		CFRelease(options);
 		if (!decoder) return {};
 		const CFStringRef type = CGImageSourceGetType(decoder);
-		const std::string mime = ImageMime(source);
 		const bool supported = type && !mime.empty() && (delivery || CFEqual(type, CFSTR("public.png")) || CFEqual(type, CFSTR("public.jpeg")));
 		CFDictionaryRef properties = supported ? CGImageSourceCopyPropertiesAtIndex(decoder, 0, nullptr) : nullptr;
 		std::int64_t width = 0, height = 0;

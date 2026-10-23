@@ -1,3 +1,4 @@
+import { hasNativeSubagentLineage, nativeSubagentChildren } from '../../utils/subagentNavigation'
 import type { Folder, Session } from '../../types/session'
 import type { AcpAttentionKind } from '../../store/useAppStore'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
@@ -53,7 +54,11 @@ export interface ChatSearchModel {
   activeSessionIds: string[]
   folderRows: ChatSearchFolderRow[]
   unfolderedSessionIds: string[]
+  /** Native recovery paths, kept separate from ordinary catalogue and Active rows. */
+  orphanSessionIds: string[]
   hasMatches: boolean
+  /** Native subagent sessions that themselves match the search; their parents open to show them. */
+  matchedSubagentChildIds: Set<string>
 }
 
 export interface ChatSearchSessionGroups {
@@ -63,6 +68,9 @@ export interface ChatSearchSessionGroups {
   snoozedSessionIds: string[]
   activeSessionIds: string[]
   unfolderedSessionIds: string[]
+  /** Native recovery paths, kept separate from ordinary catalogue and Active rows. */
+  orphanSessionIds: string[]
+  matchedSubagentChildIds: Set<string>
 }
 
 // ponytail: fixed window; promote to a setting if people want longer inboxes.
@@ -218,28 +226,44 @@ export function buildChatSearchSessionGroups(
   const isTextSearching = searchTokens.length > 0
   const isFiltering = hasActiveChatSearchFilters(filters)
   const isSearching = isTextSearching || isFiltering
+  const nativeParentIds = new Map(sessions.flatMap(session => nativeSubagentChildren(session.id, sessions).map(child => [child.id, session.id] as const)))
+  const nativeChildIds = new Set(sessions.filter(hasNativeSubagentLineage).map(session => session.id))
+  // Follow validated native links to the reachable owner. Ordinary catalogue and
+  // orphan recovery emit it separately; recursive disclosure keeps every immediate parent.
+  const catalogueAncestor = (id: string) => {
+    const seen = new Set<string>()
+    let parentId = nativeParentIds.get(id)
+    while (parentId && !seen.has(parentId)) {
+      seen.add(id)
+      id = parentId
+      parentId = nativeParentIds.get(id)
+    }
+    return id
+  }
   const branchRootId = (session: Session) => session.branchRootChatId || session.parentChatId || session.id
   const familyActivity = new Map<string, number>()
   for (const session of sessions) {
     const rootId = branchRootId(session)
     familyActivity.set(rootId, Math.max(familyActivity.get(rootId) ?? 0, sessionRecentTime(session)))
   }
-  const sortedSessions = sessions.filter((session) => !session.temporaryParentChatId).sort((a, b) =>
+  const visibleSessions = sessions.filter((session) => !session.temporaryParentChatId)
+  const sortedSessions = visibleSessions.filter(session => !nativeChildIds.has(session.id)).sort((a, b) =>
     (familyActivity.get(branchRootId(b)) ?? 0) - (familyActivity.get(branchRootId(a)) ?? 0) || compareSessionsByRecent(a, b)
   )
-  const matchingSessionIds = new Set(
-    sortedSessions
-      .filter((session) => {
-        const searchMatch = isTextSearching
-          ? deepSearchSessionIds
-            ? deepSearchSessionIds.has(session.id)
-            : sessionMatchesChatSearch(searchIndex[session.id], searchTokens)
-          : true
-        const filterMatch = sessionMatchesChatSearchFilters(session, filters, filterContext)
-        return searchMatch && filterMatch
-      })
-      .map((session) => session.id)
-  )
+  const matchedSessions = visibleSessions.filter((session) => {
+    const searchMatch = isTextSearching
+      ? deepSearchSessionIds
+        ? deepSearchSessionIds.has(session.id)
+        : sessionMatchesChatSearch(searchIndex[session.id], searchTokens)
+      : true
+    const filterMatch = sessionMatchesChatSearchFilters(session, filters, filterContext)
+    return searchMatch && filterMatch
+  })
+  const matchingSessionIds = new Set(matchedSessions.map((session) => catalogueAncestor(session.id)))
+  const matchedSubagentChildIds = new Set(isSearching ? matchedSessions.filter(session => nativeChildIds.has(session.id)).map(session => session.id) : [])
+
+  const orphanSessionIds = visibleSessions.filter(session => nativeChildIds.has(session.id) && !nativeParentIds.has(session.id) &&
+    (!isSearching || matchingSessionIds.has(session.id))).map(session => session.id)
 
   const sessionIdsByFolderId = new Map<string, string[]>()
   const pinnedSessionIds: string[] = []
@@ -304,6 +328,8 @@ export function buildChatSearchSessionGroups(
     snoozedSessionIds,
     activeSessionIds,
     unfolderedSessionIds,
+    orphanSessionIds,
+    matchedSubagentChildIds,
   }
 }
 
@@ -331,7 +357,9 @@ export function buildChatSearchModelFromGroups(
     })
     .filter((row) => !groups.isSearching || row.sessionIds.length > 0)
 
+  const orphanSessionIds = groups.orphanSessionIds
   const hasMatches =
+    orphanSessionIds.length > 0 ||
     groups.pinnedSessionIds.length > 0 ||
     groups.activeSessionIds.length > 0 ||
     groups.snoozedSessionIds.length > 0 ||
@@ -345,7 +373,9 @@ export function buildChatSearchModelFromGroups(
     activeSessionIds: groups.activeSessionIds,
     folderRows,
     unfolderedSessionIds,
+    orphanSessionIds,
     hasMatches,
+    matchedSubagentChildIds: groups.matchedSubagentChildIds,
   }
 }
 

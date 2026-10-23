@@ -331,6 +331,16 @@ namespace
 		}
 
 		ApplyChatPatchDiff(data, BuildChatPatchDiff(app, fingerprint_state, selected_chat_id));
+		if (nlohmann::json::iterator chats = data.find("chats"); chats != data.end())
+		{
+			for (nlohmann::json& chat : *chats)
+			{
+				const nlohmann::json::const_iterator acp = chat.find("acpSession");
+				if (acp == chat.end() || !acp->contains("catalogDigest")) continue;
+				if (const ChatSession* source = ChatDomainService().FindChatById(app, chat.value("id", "")); source != nullptr)
+					chat = uam::StateSerializer::SerializeChatSummary(app, *source);
+			}
+		}
 		AddChangedJsonField(data, "chatOrder", ChatOrderForPatch(app), g_last_pushed_chat_order_fingerprint);
 		if (has_payload != nullptr)
 		{
@@ -393,8 +403,8 @@ namespace uam
 
 	std::string StatePatchForTests(const AppState& before, const AppState& after)
 	{
-		ResetPatchBaselines(before, StateSerializer::SerializeFingerprint(before));
-		nlohmann::json fingerprint_state = StateSerializer::SerializeFingerprint(after);
+		ResetPatchBaselines(before, StateSerializer::SerializeFingerprint(before, true));
+		nlohmann::json fingerprint_state = StateSerializer::SerializeFingerprint(after, true);
 		StripVolatileAcpWaitTelemetry(fingerprint_state);
 		return BuildStatePatchMessage(after, fingerprint_state);
 	}
@@ -407,7 +417,7 @@ namespace uam
 	bool PushStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app)
 	{
 		const auto fingerprint_started = std::chrono::steady_clock::now();
-		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app);
+		nlohmann::json fingerprint_state = uam::StateSerializer::SerializeFingerprint(app, true);
 		const auto fingerprint_finished = std::chrono::steady_clock::now();
 		static auto last_slow_fingerprint_report = std::chrono::steady_clock::time_point::min();
 		const auto fingerprint_ms = std::chrono::duration_cast<std::chrono::milliseconds>(fingerprint_finished - fingerprint_started);

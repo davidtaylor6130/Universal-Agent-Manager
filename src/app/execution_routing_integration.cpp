@@ -1,3 +1,4 @@
+#include "app/agent_run_scheduler.h"
 #include "execution_routing_integration.h"
 #include "app/repository_route_match_service.h"
 #include "common/config/provider_availability.h"
@@ -29,9 +30,8 @@ namespace uam
 {
 	namespace
 	{
-		std::string ConfigurationIdentity(const nlohmann::json& value)
+		std::string ConfigurationIdentity(const std::string& serialized)
 		{
-			const std::string serialized = value.dump();
 			std::uint64_t digest = hashing::kFnv1a64OffsetBasis;
 			hashing::UpdateFnv1a64(digest, reinterpret_cast<const unsigned char*>(serialized.data()), serialized.size());
 			std::ostringstream output;
@@ -77,25 +77,30 @@ namespace uam
 		}
 	}
 
+	std::string ExecutionRoutingConnectionConfiguration(const ExecutionHost& host)
+	{
+		return nlohmann::json::array({host.id, host.transport, host.ssh_alias, host.platform, host.architecture, host.runner_version, host.runner_protocol_version, host.runner_directory, host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)}).dump();
+	}
+
+	std::string ExecutionRoutingProviderConfiguration(const AppState& app, const ProviderProfile& provider, std::string_view host_id)
+	{
+		return nlohmann::json::array({provider.id, provider.execution_mode, provider.output_mode, provider.interactive_command, provider.structured_protocol, provider.runtime_flags, provider.resume_argument, provider.supports_cli, provider.supports_structured, provider.supports_interactive, provider.supports_resume, provider.history_adapter, provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.provider_extra_flags, central_configuration::Serialize(app.settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(app.settings, host_id)), settings_frontend_json::SerializeProviderChatDefaults({{provider.id, provider_chat_defaults::ForProvider(app.settings, provider.id, host_id)}})}).dump();
+	}
+
 	std::string ExecutionRoutingConnectionIdentity(const ExecutionHost& host)
 	{
-		return ConfigurationIdentity(nlohmann::json::array({host.id, host.transport, host.ssh_alias,
-		    host.platform, host.architecture, host.runner_version, host.runner_protocol_version,
-		    host.runner_directory, host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr)}));
+		return ConfigurationIdentity(ExecutionRoutingConnectionConfiguration(host));
 	}
 
 	std::string ExecutionRoutingProviderIdentity(const AppState& app, const ProviderProfile& provider, std::string_view host_id)
 	{
-		return ConfigurationIdentity(nlohmann::json::array({provider.id, provider.execution_mode, provider.output_mode,
-		    provider.interactive_command, provider.structured_protocol, provider.runtime_flags, provider.resume_argument,
-		    provider.supports_cli, provider.supports_structured, provider.supports_interactive, provider.supports_resume, provider.history_adapter,
-		    provider.prompt_bootstrap, provider.prompt_bootstrap_path, app.settings.provider_extra_flags,
-		    central_configuration::Serialize(app.settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(app.settings, host_id)),
-		    settings_frontend_json::SerializeProviderChatDefaults({{provider.id, provider_chat_defaults::ForProvider(app.settings, provider.id, host_id)}})}));
+		return ConfigurationIdentity(ExecutionRoutingProviderConfiguration(app, provider, host_id));
 	}
 
 	bool ExecutionRoutingOwnsWork(const AppState& app, const ChatSession& chat)
 	{
+		if (AgentRunScheduler::OwnsInitialRoutingPreparation(app, chat))
+			return true;
 		if (chat.remote_turn_reconnect_pending || !chat.remote_prompt_delivery_id.empty() ||
 		    !chat.remote_pending_requests.empty() || !chat.remote_interaction_responses.empty() ||
 		    !chat.remote_active_turn_id.empty() || chat.remote_stop_cleanup_pending || chat.remote_restart_pending)

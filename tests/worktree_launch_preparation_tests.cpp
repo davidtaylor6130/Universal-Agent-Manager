@@ -287,7 +287,17 @@ UAM_TEST(WorktreeLaunchPreparationFailedSaveRetryRevalidatesArtifacts)
 		(void)uam::PollWorktreeLaunchPreparations(fixture.app);
 		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Failed);
 		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
-		UAM_ASSERT(fixture.app.worktree_retention_gate.TryAcquireCleanup());
+		// A ready packaged-task future exposes its result before the detached
+		// callable has necessarily destroyed its captured mutation lease. Observe
+		// the actual cleanup resource; never treat result readiness as retirement.
+		std::shared_ptr<uam::WorkspaceLeaseGate::Lease> cleanup;
+		const auto cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		while (!cleanup && std::chrono::steady_clock::now() < cleanup_deadline)
+		{
+			cleanup = fixture.app.worktree_retention_gate.TryAcquireCleanup();
+			if (!cleanup) std::this_thread::yield();
+		}
+		UAM_ASSERT(cleanup); // Retain the genuinely acquired exclusive guard through the original survivor checks.
 		if (remove_binding) UAM_ASSERT_EQ(uam::io::ReadTextFile(artifact / "foreign.txt"), "foreign survivor");
 		fixture.AssertForeignSurvivors();
 	}
@@ -890,4 +900,435 @@ UAM_TEST(ManagedSnapshotOptOutRejectsPartialOwnershipMetadata)
 		UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(app, app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
 		UAM_ASSERT(!fs::exists(app.data_root / "worktrees"));
 	}
+}
+
+
+namespace
+{
+	std::string FirstSendGitOutput(const fs::path& source, const std::string& arguments)
+	{
+		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+		    "git -C " + ShellQuoteForTest(source.string()) + " " + arguments, 10000);
+		UAM_ASSERT(result.ok && result.exit_code == 0);
+		return result.output;
+	}
+
+	fs::path SetFirstSendUnbornSource(LaunchFixture& fixture)
+	{
+		const fs::path source = fixture.temporary.root / "unborn-source";
+		fs::create_directories(source);
+		UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(source.string())));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "unborn.txt", "uncommitted first-send survivor\n"));
+		ChatSession& chat = fixture.app.chats.front();
+		chat.workspace_directory = fs::canonical(source).string();
+		fixture.app.settings.git_enabled = true;
+		fixture.app.settings.git_auto_worktree = true;
+		fixture.app.settings.git_pull_before_chat = false;
+		fixture.app.settings.git_default_base_branch.clear();
+		fixture.app.settings.git_snapshot_plain_folders = true;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		UAM_ASSERT(FirstSendGitOutput(source, "for-each-ref").empty());
+		return fs::canonical(source);
+	}
+
+	void AssertFirstSendUnbornSourcePreserved(LaunchFixture& fixture, const fs::path& source,
+	    const std::string& original_head)
+	{
+		UAM_ASSERT_EQ(ReadFile(source / ".git/HEAD"), original_head);
+		UAM_ASSERT(FirstSendGitOutput(source, "for-each-ref").empty());
+		const ProcessExecutionResult head = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+		    "git -C " + ShellQuoteForTest(source.string()) + " rev-parse --verify HEAD", 10000);
+		UAM_ASSERT(!head.timed_out && !head.canceled && head.exit_code > 0);
+		UAM_ASSERT_EQ(ReadFile(source / "unborn.txt"), std::string("uncommitted first-send survivor\n"));
+		fixture.AssertForeignSurvivors();
+	}
+
+	uam::GitWorktreeCreationIntent CaptureFirstSendRejectedIntent(LaunchFixture& fixture)
+	{
+		ChatSession snapshot = fixture.app.chats.front();
+		uam::GitWorktreeCreationIntent captured;
+		int intents = 0;
+		const auto result = uam::GitWorktreeService().PrepareForChat(fixture.app, snapshot,
+		    [&captured, &intents](const uam::GitWorktreeCreationIntent& intent, std::string& error)
+		    {
+			    ++intents;
+			    captured = intent;
+			    error = "fixture rejects the pre-mutation creation intent";
+			    return false;
+		    }, {});
+		UAM_ASSERT(!result.ok);
+		UAM_ASSERT_EQ(intents, 1);
+		UAM_ASSERT(result.message.find("fixture rejects") != std::string::npos);
+		UAM_ASSERT(!captured.worktree.empty());
+		UAM_ASSERT(!fs::exists(captured.worktree));
+		UAM_ASSERT(!fs::is_symlink(captured.worktree));
+		UAM_ASSERT(uam::paths::IsSameOrInsideRoot(fixture.app.data_root, captured.worktree));
+		return captured;
+	}
+
+	fs::path SeedFirstSendLegacyEarlyReceipt(LaunchFixture& fixture,
+	    const uam::GitWorktreeCreationIntent& captured)
+	{
+		const ChatSession& chat = fixture.app.chats.front();
+		const AppSettings& settings = fixture.app.settings;
+		// Historical on-disk early intent, not fabricated completed creation authority.
+		// The owned target itself came from a rejecting public recorder above.
+		const nlohmann::json policy = {{"version", 1}, {"requestedSource", chat.workspace_directory},
+		    {"baseBranch", settings.git_default_base_branch}, {"pullBeforeChat", settings.git_pull_before_chat},
+		    {"gitEnabled", settings.git_enabled}, {"automaticWorktree", settings.git_auto_worktree},
+		    {"snapshotSvn", settings.git_snapshot_svn}, {"snapshotPlainFolders", settings.git_snapshot_plain_folders},
+		    {"baseOverride", chat.git_base_branch_override ? nlohmann::json(*chat.git_base_branch_override) : nlohmann::json(nullptr)}};
+		const nlohmann::json receipt = {{"chatId", chat.id}, {"createdAt", chat.created_at},
+		    {"source", chat.workspace_directory}, {"repository", chat.workspace_directory},
+		    {"worktree", uam::paths::Utf8PathString(captured.worktree)}, {"branch", ""}, {"baseSha", ""},
+		    {"managedRepository", false}, {"launchPolicy", policy}};
+		const fs::path path = fixture.app.data_root / ".worktree-launch" /
+		    (uam::hashing::Hex64(uam::hashing::Fnv1a64(chat.id)) + "-legacy-first-send.json");
+		UAM_ASSERT(uam::io::WriteTextFile(path, receipt.dump()));
+		return path;
+	}
+
+	void AssertFirstSendOwnedBaseline(LaunchFixture& fixture, const fs::path& source)
+	{
+		const ChatSession& chat = fixture.app.chats.front();
+		const fs::path worktree = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
+		UAM_ASSERT(!worktree.empty() && worktree != source);
+		UAM_ASSERT(uam::paths::IsSameOrInsideRoot(fixture.app.data_root / "worktrees", worktree));
+		UAM_ASSERT(!chat.workspace_branch_name.empty() && !chat.workspace_base_ref.empty());
+		UAM_ASSERT_EQ(ReadFile(worktree / "unborn.txt"), std::string("uncommitted first-send survivor\n"));
+		UAM_ASSERT(uam::GitWorktreeService().Status(fixture.app, chat).managed_repository);
+		const fs::path common = uam::paths::PathFromUtf8(uam::strings::Trim(
+		    FirstSendGitOutput(worktree, "rev-parse --path-format=absolute --git-common-dir")));
+		UAM_ASSERT(uam::paths::IsSameOrInsideRoot(fixture.app.data_root / "worktrees", common));
+		UAM_ASSERT(common != source / ".git");
+	}
+}
+
+UAM_TEST(WorktreeLaunchEarlyMissingBaseReceiptRetriesAfterLocalRefRepair)
+{
+	LaunchFixture fixture;
+	ChatSession& chat = fixture.app.chats.front();
+	fixture.app.settings.git_default_base_branch = "first-send-missing-base";
+	fixture.app.settings.git_pull_before_chat = false;
+	uam::AcpQueuedUserPromptState queued;
+	queued.id = "first-send-authored-queue";
+	queued.text = "Preserve my unsent authored request.";
+	chat.acp_queued_prompts.push_back(queued);
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto failed = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(failed);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	const auto refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
+	UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
+	UAM_ASSERT(!refusal.error.empty());
+	const fs::path original_receipt = failed->receipt_file;
+	const std::string receipt = ReadFile(original_receipt);
+	const auto early = nlohmann::json::parse(receipt);
+	UAM_ASSERT(early.at("branch").get<std::string>().empty() && early.at("baseSha").get<std::string>().empty());
+	const fs::path absent_target = uam::paths::PathFromUtf8(early.at("worktree").get<std::string>());
+	UAM_ASSERT(!fs::exists(absent_target) && !fs::is_symlink(absent_target));
+	UAM_ASSERT(chat.workspace_worktree_directory.empty());
+	UAM_ASSERT(RunGitForTest(fixture.repository, "branch first-send-missing-base"));
+	UAM_ASSERT_EQ(ReadFile(original_receipt), receipt);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto retry = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(retry);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(retry->merged);
+	UAM_ASSERT_EQ(retry->receipt_file, original_receipt);
+	const auto advanced = nlohmann::json::parse(ReadFile(original_receipt));
+	UAM_ASSERT_EQ(advanced.at("branch").get<std::string>(), chat.workspace_branch_name);
+	UAM_ASSERT_EQ(advanced.at("baseSha").get<std::string>(), chat.workspace_base_ref);
+	UAM_ASSERT(!chat.workspace_branch_name.empty() && !chat.workspace_base_ref.empty());
+	UAM_ASSERT(!advanced.at("managedRepository").get<bool>());
+	std::string validation_error;
+	UAM_ASSERT(uam::GitWorktreeService().ValidatePreparedWorkspace(
+	    fixture.app.data_root, original_receipt, chat, validation_error));
+	UAM_ASSERT(validation_error.empty());
+	fixture.WaitForSave(retry);
+	UAM_ASSERT(*retry->saved);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+	UAM_ASSERT_EQ(chat.messages.front().content, std::string("saved before preparation"));
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.front().id, queued.id);
+	UAM_ASSERT_EQ(chat.acp_queued_prompts.front().text, queued.text);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->workspace_worktree_directory == chat.workspace_worktree_directory);
+	UAM_ASSERT_EQ(saved->messages.front().content, std::string("saved before preparation"));
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(saved->acp_queued_prompts.front().text, queued.text);
+	fixture.AssertForeignSurvivors();
+}
+
+UAM_TEST(WorktreeLaunchLegacyEarlyUnbornReceiptRecoversPrivateBaseline)
+{
+	LaunchFixture fixture;
+	const fs::path source = SetFirstSendUnbornSource(fixture);
+	const std::string original_head = ReadFile(source / ".git/HEAD");
+	const auto intent = CaptureFirstSendRejectedIntent(fixture);
+	const fs::path path = SeedFirstSendLegacyEarlyReceipt(fixture, intent);
+	UAM_ASSERT(nlohmann::json::parse(ReadFile(path)).at("branch").get<std::string>().empty());
+	ChatSession& chat = fixture.app.chats.front();
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto task = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(task);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(task->merged);
+	UAM_ASSERT_EQ(task->receipt_file, path);
+	const auto advanced = nlohmann::json::parse(ReadFile(path));
+	UAM_ASSERT(advanced.at("managedRepository").get<bool>());
+	UAM_ASSERT_EQ(advanced.at("branch").get<std::string>(), chat.workspace_branch_name);
+	UAM_ASSERT_EQ(advanced.at("baseSha").get<std::string>(), chat.workspace_base_ref);
+	UAM_ASSERT(!chat.workspace_branch_name.empty() && !chat.workspace_base_ref.empty());
+	std::string validation_error;
+	UAM_ASSERT(uam::GitWorktreeService().ValidatePreparedWorkspace(
+	    fixture.app.data_root, path, chat, validation_error));
+	UAM_ASSERT(validation_error.empty());
+	fixture.WaitForSave(task);
+	UAM_ASSERT(*task->saved);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+	AssertFirstSendOwnedBaseline(fixture, source);
+	AssertFirstSendUnbornSourcePreserved(fixture, source, original_head);
+}
+
+UAM_TEST(WorktreeLaunchLegacyEarlyUnbornReceiptPreservesOccupiedTarget)
+{
+	LaunchFixture fixture;
+	const fs::path source = SetFirstSendUnbornSource(fixture);
+	const std::string original_head = ReadFile(source / ".git/HEAD");
+	const auto intent = CaptureFirstSendRejectedIntent(fixture);
+	const fs::path path = SeedFirstSendLegacyEarlyReceipt(fixture, intent);
+	const std::string receipt = ReadFile(path);
+	UAM_ASSERT(uam::io::WriteTextFile(intent.worktree / "foreign.txt", "foreign target survivor\n"));
+	ChatSession& chat = fixture.app.chats.front();
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto task = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(task);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	const auto refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
+	UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
+	UAM_ASSERT(!refusal.error.empty() && !task->merged);
+	UAM_ASSERT(chat.workspace_worktree_directory.empty());
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+	UAM_ASSERT_EQ(ReadFile(path), receipt);
+	UAM_ASSERT_EQ(ReadFile(intent.worktree / "foreign.txt"), std::string("foreign target survivor\n"));
+	AssertFirstSendUnbornSourcePreserved(fixture, source, original_head);
+}
+
+UAM_TEST(WorktreeLaunchFreshUnbornAutoIsolationPreservesExplicitPolicyBoundaries)
+{
+	for (const std::string_view control : {"automatic", "explicit-base", "snapshot-opt-out"})
+	{
+		LaunchFixture fixture;
+		const fs::path source = SetFirstSendUnbornSource(fixture);
+		const std::string original_head = ReadFile(source / ".git/HEAD");
+		ChatSession& chat = fixture.app.chats.front();
+		if (control == "explicit-base") chat.git_base_branch_override = "missing-explicit-base";
+		if (control == "snapshot-opt-out") fixture.app.settings.git_snapshot_plain_folders = false;
+		const auto initial = uam::PrepareWorktreeForLaunch(fixture.app, chat);
+		if (control == "automatic")
+		{
+			UAM_ASSERT_EQ(initial.state, uam::WorktreeLaunchPreparationState::Pending);
+			const auto task = fixture.app.worktree_launch_preparations.at(chat.id);
+			fixture.WaitForWorker(task);
+			(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+			UAM_ASSERT(task->merged);
+			fixture.WaitForSave(task);
+			UAM_ASSERT(*task->saved);
+			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+			AssertFirstSendOwnedBaseline(fixture, source);
+		}
+		else
+		{
+			if (initial.state == uam::WorktreeLaunchPreparationState::Pending)
+			{
+				const auto task = fixture.app.worktree_launch_preparations.at(chat.id);
+				fixture.WaitForWorker(task);
+				(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+				UAM_ASSERT(!task->merged);
+			}
+			const auto refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
+			UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
+			UAM_ASSERT(!refusal.error.empty());
+			UAM_ASSERT(chat.workspace_worktree_directory.empty());
+			UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+		}
+		AssertFirstSendUnbornSourcePreserved(fixture, source, original_head);
+	}
+}
+
+
+namespace
+{
+	struct UnbornGlobalBaseSourceWitness
+	{
+		struct File { fs::path path; bool existed; std::string bytes; };
+		std::vector<File> files;
+		std::string original_refs;
+		explicit UnbornGlobalBaseSourceWitness(const fs::path& source)
+		{
+			original_refs = FirstSendGitOutput(source, "for-each-ref " + ShellQuoteForTest("--format=%(refname) %(objectname)"));
+			for (const std::string_view relative : {".git/HEAD", ".git/index", ".git/config", ".git/FETCH_HEAD", "unborn.txt"})
+			{
+				const fs::path path = source / relative;
+				const bool exists = fs::exists(path);
+				files.push_back({path, exists, exists ? ReadFile(path) : std::string{}});
+			}
+		}
+		void AssertPreserved(const fs::path& source) const
+		{
+			for (const File& file : files)
+			{
+				UAM_ASSERT_EQ(fs::exists(file.path), file.existed);
+				if (file.existed) UAM_ASSERT_EQ(ReadFile(file.path), file.bytes);
+			}
+			const auto head = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
+			    "git -C " + ShellQuoteForTest(source.string()) + " rev-parse --verify HEAD", 10000);
+			UAM_ASSERT(!head.timed_out && !head.canceled && !head.output_truncated && head.exit_code > 0);
+		}
+	};
+
+	uam::AcpQueuedUserPromptState SeedUnbornGlobalBaseAuthoredQueue(LaunchFixture& fixture)
+	{
+		uam::AcpQueuedUserPromptState queued;
+		queued.id = "unborn-global-base-authored-queue";
+		queued.text = "Keep this authored request through global base selection.";
+		fixture.app.chats.front().acp_queued_prompts.push_back(queued);
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.front()));
+		return queued;
+	}
+
+	void AssertUnbornGlobalBaseAuthoredQueue(const ChatSession& chat, const uam::AcpQueuedUserPromptState& queued)
+	{
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+		UAM_ASSERT_EQ(chat.messages.front().content, std::string("saved before preparation"));
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.front().id, queued.id);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.front().text, queued.text);
+	}
+}
+
+UAM_TEST(WorktreeLaunchUnbornHeadHonorsExistingGlobalCommittedBase)
+{
+	LaunchFixture fixture;
+	const fs::path source = SetFirstSendUnbornSource(fixture);
+	// Import only a committed ref from another fixture-owned local repository. HEAD stays unborn.
+	UAM_ASSERT(RunGitForTest(source, "fetch " + ShellQuoteForTest(fixture.repository.string()) + " HEAD:refs/heads/chosen-global-base"));
+	UAM_ASSERT(RunGitForTest(source, "add unborn.txt"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "unborn.txt", "unrelated staged plus dirty unborn source bytes\n"));
+	fixture.app.settings.git_default_base_branch = "chosen-global-base";
+	const std::string selected = uam::strings::Trim(FirstSendGitOutput(source, "rev-parse --verify refs/heads/chosen-global-base"));
+	const auto queued = SeedUnbornGlobalBaseAuthoredQueue(fixture);
+	const UnbornGlobalBaseSourceWitness witness(source);
+	ChatSession& chat = fixture.app.chats.front();
+	UAM_ASSERT(!chat.git_base_branch_override.has_value());
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto task = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(task);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(task->prepared && task->prepared->operation.ok && task->merged);
+	// A snapshot of current unborn files is a wrong base even if it creates a valid owned worktree.
+	UAM_ASSERT_EQ(chat.workspace_base_ref, selected);
+	UAM_ASSERT(!task->prepared->operation.status.managed_repository);
+	const fs::path worktree = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
+	UAM_ASSERT(uam::paths::IsGitWorktreeIsolated(chat) && fs::is_directory(worktree) && worktree != source);
+	UAM_ASSERT_EQ(ReadFile(worktree / "source.txt"), std::string("source survivor\n"));
+	UAM_ASSERT(!fs::exists(worktree / "unborn.txt"));
+	std::string error;
+	UAM_ASSERT(uam::GitWorktreeService().ValidatePreparedWorkspace(fixture.app.data_root, task->receipt_file, chat, error));
+	UAM_ASSERT(error.empty());
+	fixture.WaitForSave(task);
+	UAM_ASSERT(*task->saved);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+	witness.AssertPreserved(source);
+	// Normal Git worktree creation adds only its own branch; pre-existing refs remain byte-identical values.
+	const std::string own_ref = "refs/heads/" + chat.workspace_branch_name;
+	UAM_ASSERT_EQ(uam::strings::Trim(FirstSendGitOutput(source, "rev-parse --verify " + ShellQuoteForTest(own_ref))), selected);
+	std::string remaining_refs;
+	const std::string all_refs = FirstSendGitOutput(source, "for-each-ref " + ShellQuoteForTest("--format=%(refname) %(objectname)"));
+	const std::string own_line = own_ref + " " + selected + "\n";
+	const std::size_t own_position = all_refs.find(own_line);
+	UAM_ASSERT(own_position != std::string::npos && (own_position == 0 || all_refs[own_position - 1] == '\n'));
+	remaining_refs = all_refs;
+	remaining_refs.erase(own_position, own_line.size());
+	UAM_ASSERT_EQ(remaining_refs, witness.original_refs);
+	AssertUnbornGlobalBaseAuthoredQueue(chat, queued);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->workspace_base_ref == selected);
+	AssertUnbornGlobalBaseAuthoredQueue(*saved, queued);
+	fixture.AssertForeignSurvivors();
+	UAM_ASSERT(fixture.app.acp_sessions.empty() && fixture.app.cli_terminals.empty());
+}
+
+UAM_TEST(WorktreeLaunchUnbornHeadRefusesMissingGlobalBaseWithoutSnapshot)
+{
+	LaunchFixture fixture;
+	const fs::path source = SetFirstSendUnbornSource(fixture);
+	UAM_ASSERT(RunGitForTest(source, "add unborn.txt"));
+	fixture.app.settings.git_default_base_branch = "missing-global-base";
+	const auto queued = SeedUnbornGlobalBaseAuthoredQueue(fixture);
+	const UnbornGlobalBaseSourceWitness witness(source);
+	ChatSession& chat = fixture.app.chats.front();
+	UAM_ASSERT(!chat.git_base_branch_override.has_value());
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto task = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(task);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(task->prepared && !task->prepared->operation.ok && !task->merged);
+	const auto refused = uam::PrepareWorktreeForLaunch(fixture.app, chat);
+	UAM_ASSERT_EQ(refused.state, uam::WorktreeLaunchPreparationState::Failed);
+	UAM_ASSERT(refused.error.find("missing-global-base") != std::string::npos);
+	UAM_ASSERT(chat.workspace_worktree_directory.empty() && chat.workspace_branch_name.empty() && chat.workspace_base_ref.empty());
+	UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+	UAM_ASSERT(!task->saved.has_value());
+	const fs::path artifact_root = fixture.app.data_root / "worktrees";
+	if (fs::exists(artifact_root))
+	{
+		for (const auto& entry : fs::recursive_directory_iterator(artifact_root))
+		{
+			UAM_ASSERT(entry.path().filename().string().find("managed-repository-") != 0);
+			UAM_ASSERT(entry.is_directory() && !entry.is_symlink());
+		}
+	}
+	witness.AssertPreserved(source);
+	UAM_ASSERT_EQ(FirstSendGitOutput(source, "for-each-ref " + ShellQuoteForTest("--format=%(refname) %(objectname)")), witness.original_refs);
+	AssertUnbornGlobalBaseAuthoredQueue(chat, queued);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->workspace_worktree_directory.empty());
+	AssertUnbornGlobalBaseAuthoredQueue(*saved, queued);
+	fixture.AssertForeignSurvivors();
+	UAM_ASSERT(fixture.app.acp_sessions.empty() && fixture.app.cli_terminals.empty());
+}
+
+
+UAM_TEST(WorktreeLaunchUnbornIgnoredDependenciesPreserveQueuedInput)
+{
+	LaunchFixture fixture;
+	const fs::path source = SetFirstSendUnbornSource(fixture);
+	const fs::path plugin = source / ".build/checkouts/swift-argument-parser/Plugins";
+	fs::create_directories(plugin);
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".gitignore", ".build/\n"));
+	fs::create_directory_symlink(fixture.foreign, plugin / "GenerateCommon");
+	const std::string original_head = ReadFile(source / ".git/HEAD");
+	ChatSession& chat = fixture.app.chats.front();
+	uam::AcpQueuedUserPromptState queued; queued.id = "one-authored-workspace-input";
+	queued.text = "Prepare this workspace once; do not send from this fixture.";
+	chat.acp_queued_prompts = {queued}; chat.acp_queue_held = true;
+	const auto messages = chat.messages;
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Pending);
+	const auto task = fixture.app.worktree_launch_preparations.at(chat.id);
+	fixture.WaitForWorker(task); (void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(task->merged);
+	fixture.WaitForSave(task); UAM_ASSERT(*task->saved);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, chat).state, uam::WorktreeLaunchPreparationState::Ready);
+	UAM_ASSERT_EQ(ReadFile(fs::path(chat.workspace_worktree_directory) / "unborn.txt"), std::string("uncommitted first-send survivor\n"));
+	UAM_ASSERT(!fs::exists(fs::path(chat.workspace_worktree_directory) / ".build"));
+	UAM_ASSERT_EQ(chat.messages, messages);
+	UAM_ASSERT_EQ(chat.acp_queued_prompts, (std::vector<uam::AcpQueuedUserPromptState>{queued}));
+	UAM_ASSERT(chat.acp_queue_held && chat.acp_dispatched_queued_prompt_count == 0);
+	UAM_ASSERT(fixture.app.acp_sessions.empty());
+	AssertFirstSendUnbornSourcePreserved(fixture, source, original_head);
 }

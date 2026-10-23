@@ -16,7 +16,7 @@ export function ProviderMcpWarning() {
   const [notice, setNotice] = useState<{ key: string; connection: Connection } | null>(null)
   const [dismissed, setDismissed] = useState<Map<string, { chatId: string; runtimeId: string }>>(() => new Map())
   const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ key: string; text: string } | null>(null)
+  const [result, setResult] = useState<{ key: string; text: string; success?: boolean } | null>(null)
   const [refresh, setRefresh] = useState(0)
   const scopeKey = session ? JSON.stringify([session.id, session.providerId, session.executionHostId ?? 'local', session.workspaceDirectory ?? '']) : ''
   const runtimeId = runtime?.sessionId ?? ''
@@ -38,7 +38,11 @@ export function ProviderMcpWarning() {
 
   useEffect(() => {
     let canceled = false
-    if (!session?.providerId || session.viewMode === 'cli' || isDismissed) return
+    if (session?.viewMode === 'cli') {
+      setNotice(null)
+      return
+    }
+    if (!session?.providerId || isDismissed) return
     void sendToCEF<{ executionHostId: string; providers: Connection[] }>({ action: 'getProviderMcpStatus', payload: { chatId: session.id, executionHostId: session.executionHostId ?? 'local', workspaceDirectory: session.workspaceDirectory ?? '' } })
       .then(response => {
         if (canceled) return
@@ -57,12 +61,12 @@ export function ProviderMcpWarning() {
     return () => window.clearInterval(timer)
   }, [notice, key, session?.viewMode, runtime?.running, isDismissed])
 
-  if (!notice || notice.key !== key || isDismissed) return null
+  if (session?.viewMode === 'cli' || !notice || notice.key !== key || isDismissed) return null
   return <div role="alert" className="uam-prov-warning shrink-0 px-4 py-3 text-sm">
     <strong className="uam-prov-warning__title">UAM tools are unavailable in this chat</strong>
-    <p className="mt-1 uam-prov-sub">{result?.key === key ? result.text : notice.connection.detail}</p>
+    <p className="mt-1 uam-prov-sub">{result?.key === key && !(result.success && notice.connection.status === 'failed') ? result.text : notice.connection.detail}</p>
     <div className="mt-2 flex flex-wrap gap-2">
-      <Button size="sm" variant="primary" disabled={busy} onClick={() => {
+      <Button size="sm" variant="primary" loading={busy} onClick={() => {
         if (!session) return
         const selected = session; const submittedKey = key
         setBusy(true)
@@ -74,11 +78,11 @@ export function ProviderMcpWarning() {
             const current = useAppStore.getState().sessions.find(item => item.id === selected.id)
             if (!current || current.providerId !== selected.providerId || current.executionHostId !== selected.executionHostId || current.workspaceDirectory !== selected.workspaceDirectory) throw Error('This chat changed while saving. Check its current provider settings.')
             if (!await store.setSessionUamControlEnabled(selected.id, true, true)) throw Error('Could not enable UAM tools for this chat. Open provider settings for details.')
-            setResult({ key: submittedKey, text: 'UAM MCP setup enabled. It applies when this provider session next starts; current work keeps running.' })
+            setResult({ key: submittedKey, success: true, text: 'UAM MCP setup enabled. It applies when this provider session next starts; current work keeps running.' })
           } catch (error) { setResult({ key: submittedKey, text: error instanceof Error ? error.message : 'Could not enable UAM MCP setup.' }) }
           finally { setBusy(false) }
         })()
-      }}>Enable UAM connection</Button>
+      }}>{busy ? 'Enabling…' : 'Enable UAM connection'}</Button>
       <Button size="sm" onClick={() => useAppStore.getState().setSettingsOpen(true)}>View settings</Button>
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => { if (session) setDismissed(previous => new Map(previous).set(scopeKey, { chatId: session.id, runtimeId })) }}>Continue without it</Button>
     </div>

@@ -5,11 +5,14 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace uam::io { enum class AtomicWriteStage; }
 
 namespace uam
 {
@@ -32,6 +35,9 @@ namespace uam
 		static void RevokeForChat(AppState& app, std::string_view chat_id);
 		static void RevokeForSession(AppState& app, AcpSessionState& session);
 		static bool ProcessPendingRequests(AppState& app);
+		/// Per-call actual response-writer stage seam for deterministic focused IO failures; no global hooks.
+		static bool ProcessPendingRequests(AppState& app,
+		    const std::function<bool(io::AtomicWriteStage)>& response_write_hook);
 		static std::optional<AcpPendingUserInputState> PendingApprovalForChat(const AppState& app,
 		                                                                 std::string_view chat_id);
 		static bool ResolveApproval(AppState& app, std::string_view chat_id,

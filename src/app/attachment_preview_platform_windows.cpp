@@ -87,6 +87,8 @@ namespace uam::attachment_preview
 	static DeliveryImage ProcessImage(std::string_view source, std::size_t max_bytes, bool delivery, std::stop_token cancel)
 	{
 		if (cancel.stop_requested() || source.empty() || source.size() > kMaxSourceBytes || max_bytes == 0 || max_bytes > kMaxSourceBytes) return {};
+		const std::string mime = ImageMime(source);
+		if (mime.empty()) return {};
 		const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 		if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) return {};
 		struct Apartment { bool owns; ~Apartment() { if (owns) CoUninitialize(); } } apartment{SUCCEEDED(initialized)};
@@ -100,8 +102,6 @@ namespace uam::attachment_preview
 		IWICBitmapDecoder* raw_decoder = nullptr;
 		if (FAILED(factory->CreateDecoderFromStream(stream.get(), nullptr, WICDecodeMetadataCacheOnDemand, &raw_decoder))) return {};
 		ComPtr<IWICBitmapDecoder> decoder(raw_decoder);
-		const std::string mime = ImageMime(source);
-		if (mime.empty()) return {};
 		GUID container{};
 		if (FAILED(decoder->GetContainerFormat(&container)) || (!delivery && container != GUID_ContainerFormatPng && container != GUID_ContainerFormatJpeg)) return {};
 		IWICBitmapFrameDecode* raw_frame = nullptr;

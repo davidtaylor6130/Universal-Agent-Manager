@@ -1,7 +1,11 @@
+import { InlineSubagentGroup } from './InlineSubagentGroup'
+import { groupInlineSubagents, isInlineSubagentLaunch, managedLaunchRunId } from './inlineSubagents'
 // Message block renderers: thinking blocks, plan blocks, goal review,
 // persisted message content, attachment list, and turn timeline.
 // Extracted from ChatView.tsx (MO-3).
 
+import { SubagentGroup, subagentState } from './SubagentGroup'
+import { isManagedSubagentTool } from './managedSubagents'
 import { ImageAttachmentPreview } from './ImageAttachmentPreview'
 import { ContextChip, type ContextChipKind } from './ContextChip'
 import { MarkdownContent } from '../markdown/Markdown'
@@ -26,12 +30,45 @@ import {
 import { ContextMeter } from './StatusHelpers'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, providerShortName } from '../../utils/providerMetadata'
 
+function isCompactNativeSubagentTool(tool: AcpToolCall) {
+  return tool.isSubAgent && tool.kind === 'collabAgentToolCall' &&
+    !isManagedSubagentTool(tool) && !managedLaunchRunId(tool)
+}
+
+/** Native collaboration stays a tool call; its recorded children remain explicitly reachable. */
+function NativeSubagentTools({ tools, sourceChatId, active = false, onSelectTool }: {
+  tools: AcpToolCall[]; sourceChatId?: string; active?: boolean; onSelectTool: (id: string) => void
+}) {
+  const renderHistory = sourceChatId ? (child: AcpToolCall) => <SubAgentHistory sourceChatId={sourceChatId} tool={child} /> : undefined
+  if (!tools.some(isCompactNativeSubagentTool)) return tools.every(tool => tool.isSubAgent)
+    ? <SubagentGroup active={active} tools={tools} sourceChatId={sourceChatId} onSelectTool={onSelectTool} renderHistory={renderHistory} />
+    : <ToolCallInlineRows tools={tools} onSelectTool={onSelectTool} />
+  return <>{tools.map(tool => isCompactNativeSubagentTool(tool)
+    ? <div key={tool.id} className="space-y-1">
+        <ConversationWorkRow tool={tool} onSelectTool={onSelectTool} />
+        <SubagentGroup compactNative active={active} tools={[tool]} sourceChatId={sourceChatId} onSelectTool={onSelectTool} renderHistory={renderHistory} />
+      </div>
+    : <NativeSubagentTools key={tool.id} tools={[tool]} sourceChatId={sourceChatId} active={active} onSelectTool={onSelectTool} />)}</>
+}
+
+function isExternalAttachmentReference(attachment: Attachment) {
+  return attachment.source === 'provider_uri' ||
+    Boolean((attachment.source === undefined || attachment.source === 'legacy_path') && attachment.sourceUri)
+}
+
 export function attachmentLabel(attachment: Attachment) {
+  if (isExternalAttachmentReference(attachment)) return attachment.sourceUri || attachment.name
+  if (attachment.source && attachment.source !== 'legacy_path') return attachment.name
   const path = attachment.path?.trim()
   return path || attachment.name
 }
 
-function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: AcpToolCall }) {
+function SubAgentHistory(props: { sourceChatId: string; tool: AcpToolCall }) {
+  if (isManagedSubagentTool(props.tool)) return <p className="text-xs text-muted">Open this managed run from the parent’s child catalogue to inspect the stored conversation.</p>
+  return <NativeSubAgentHistory {...props} />
+}
+
+function NativeSubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: AcpToolCall }) {
   const [chatId, setChatId] = useState('')
   const [error, setError] = useState('')
   const [refreshAttempt, setRefreshAttempt] = useState(0)
@@ -49,7 +86,7 @@ function SubAgentHistory({ sourceChatId, tool }: { sourceChatId: string; tool: A
   const historyStartIndex = useAppStore((state) => state.historyStartIndexBySessionId[chatId] ?? 0)
   const selectedTool = messages.find((message) => message.id === selectedToolRef?.messageId)
     ?.toolCalls?.find((candidate) => candidate.id === selectedToolRef?.toolId)
-  const isActive = tool.status === 'running' || tool.status === 'in_progress' || tool.status === 'pending'
+  const isActive = subagentState(tool.status).active
   const finalRefreshPending = useRef(isActive)
   const providerName = providerShortName(
     providers.find((candidate) => candidate.id === providerId) ?? fallbackProviderForId(providerId),
@@ -546,11 +583,11 @@ export function CompactionSeparator({ summary, tokensBefore, tokensAfter, interr
 }
 
 /** Parse contiguous provider text together, retaining raw spacing and nontext boundaries. */
-function coalesceAssistantText<T extends { type: string; text?: string }>(entries: readonly T[]): T[] {
+function coalesceAssistantText<T extends { type: string; text?: string }>(entries: readonly T[], preserveEmpty = false): T[] {
   const result: T[] = []
   let run: T | undefined
   const flush = () => {
-    if (run?.text?.trim()) result.push(run)
+    if (run && (preserveEmpty || run.text?.trim())) result.push(run)
     run = undefined
   }
   for (const entry of entries) {
@@ -574,6 +611,7 @@ export function PersistedMessageBlocksContent({
   sourceChatId,
   workingMode = 'verbose',
   workedSeconds,
+  launchesOnly = false,
 }: {
   disclosureState?: WorkTraceDisclosureState
   message: Message
@@ -582,6 +620,7 @@ export function PersistedMessageBlocksContent({
   sourceChatId?: string
   workingMode?: WorkingDisplayMode
   workedSeconds?: number
+  launchesOnly?: boolean
   planActions?: {
     show: boolean
     disabled: boolean
@@ -592,14 +631,16 @@ export function PersistedMessageBlocksContent({
 }) {
   const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
   const toolById = new Map((message.toolCalls ?? []).map((tool) => [tool.id, tool]))
-  const renderedBlocks = coalesceAssistantText(blocks)
+  // Group recorded launches independently of read/control scope; empty text still separates groups.
+  const renderedBlocks = coalesceAssistantText(blocks, true)
+  const orderedBlocks = groupInlineSubagents(renderedBlocks, toolById)
   let thoughtIndex = 0
   const lastAssistantBlockIndex = renderedBlocks.reduce((latest, block, index) => block.type === 'assistant_text' && block.text.trim() ? index : latest, -1)
   const lastPlanBlockIndex = renderedBlocks.reduce((latest, block, index) => block.type === 'plan' ? index : latest, -1)
 
   return (
     <div className="space-y-2">
-      {(
+      {!launchesOnly && (
         <CompactWorkingSummary
           headerOnly
           expanded={expanded}
@@ -614,10 +655,17 @@ export function PersistedMessageBlocksContent({
         />
       )}
       <div className={workingMode === 'compact' && expanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
-      {renderedBlocks.map((block, index) => {
+      {orderedBlocks.map(entry => {
+        const index = entry.index
+        if (entry.kind === 'subagents') return <InlineSubagentGroup key={`launches-${entry.tools[0].id}`} tools={entry.tools} sourceChatId={sourceChatId}
+          onSelectTool={id => onSelectTool(message.id, id)} renderNative={tools => <NativeSubagentTools tools={tools} sourceChatId={sourceChatId}
+            onSelectTool={id => onSelectTool(message.id, id)} />} />
+        if (launchesOnly) return null
+        const block = entry.entry
         if (block.type === 'context_compaction_summary') return null
         if (block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
         if (block.type === 'assistant_text') {
+          if (!block.text.trim()) return null
           if (!expanded && index !== lastAssistantBlockIndex) return null
           const review = parseGoalReviewDecision(block.text)
           if (review) return <div className="conversation-trace__text" key={`block-goal-review-${index}`}><GoalReviewBlock review={review} /></div>
@@ -634,14 +682,17 @@ export function PersistedMessageBlocksContent({
         }
 
         if (block.type === 'tool_call') {
+          const tool = toolById.get(block.toolCallId)
+          if (!tool) return <div key={`missing-tool-${block.toolCallId}-${index}`} role="status" className="conversation-trace__internal text-xs text-muted">
+            Tool activity is unavailable in this stored transcript.
+          </div>
+          // Unclassified child activity stays at its original tool slot; it is not a new launch group.
+          if (isCompactNativeSubagentTool(tool)) return <NativeSubagentTools key={`native-tool-${block.toolCallId}-${index}`}
+            tools={[tool]} sourceChatId={sourceChatId} onSelectTool={id => onSelectTool(message.id, id)} />
+          if (tool.isSubAgent) return <SubagentGroup key={`child-activity-${block.toolCallId}-${index}`}
+            tools={[tool]} sourceChatId={sourceChatId} onSelectTool={id => onSelectTool(message.id, id)}
+            renderHistory={sourceChatId ? child => <SubAgentHistory sourceChatId={sourceChatId} tool={child} /> : undefined} />
           if (!expanded) return null
-          const tool = toolById.get(block.toolCallId) ?? {
-            id: block.toolCallId,
-            title: block.toolCallId,
-            kind: 'tool',
-            status: 'pending',
-            content: '',
-          }
           if (workingMode === 'compact') return <div className="conversation-trace__internal" key={`block-tool-${block.toolCallId}-${index}`}><ConversationWorkRow
             tool={tool}
             onSelectTool={(toolId) => onSelectTool(message.id, toolId)}
@@ -654,6 +705,13 @@ export function PersistedMessageBlocksContent({
               renderSubAgentHistory={sourceChatId ? (tool) => <SubAgentHistory sourceChatId={sourceChatId} tool={tool} /> : undefined}
             />
           )
+        }
+
+        if (block.type === 'permission_request' || block.type === 'user_input_request') {
+          return <div key={`recorded-request-${block.requestId}-${index}`} role="note" className="conversation-trace__text">
+            <strong>{block.type === 'permission_request' ? 'Recorded permission request' : 'Recorded question'}</strong>
+            <MarkdownContent content={block.text || 'Details are unavailable in this stored history.'} />
+          </div>
         }
 
         if (block.type === 'plan') {
@@ -683,15 +741,20 @@ export function PersistedMessageContent({
   disclosureState,
   onSelectTool,
   planActions,
-  sourceChatId,
+  sourceChatId: requestedSourceChatId,
   workingMode = 'verbose',
   omitImages = false,
+  launchesOnly = false,
+  passive = false,
 }: {
   disclosureState?: WorkTraceDisclosureState
   message: Message
   onSelectTool: (messageId: string, toolId: string) => void
   sourceChatId?: string
+  /** Read-only child history: no subagent history reads, runtime refresh or attachment preview IPC, whatever chat IDs exist. */
+  passive?: boolean
   omitImages?: boolean
+  launchesOnly?: boolean
   workingMode?: WorkingDisplayMode
   planActions?: {
     show: boolean
@@ -702,31 +765,57 @@ export function PersistedMessageContent({
   }
 }) {
   const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
+  const sourceChatId = passive ? undefined : requestedSourceChatId
+  const attachmentChatId = passive ? undefined : sourceChatId ?? message.sessionId
   const thoughts = message.role === 'assistant' ? message.thoughts?.trim() ?? '' : ''
   const toolCalls = message.role === 'assistant' ? message.toolCalls ?? [] : []
   const planSummary = message.role === 'assistant' ? message.planSummary ?? '' : ''
   const planEntries = message.role === 'assistant' ? message.planEntries ?? [] : []
   const blocks = message.role === 'assistant' ? message.blocks ?? [] : []
+  // A partial event inventory must not erase separately retained answer, reasoning or tool records.
+  // Existing assistant text blocks own their ordered prose; avoid duplicating the aggregate content alongside them.
+  const hasCompactionEnvelope = blocks.some(block => block.type === 'context_compaction_summary' ||
+    block.type === 'context_compaction' || block.type === 'context_compaction_interrupted')
+  const orderedBlocks: MessageBlock[] = blocks.length ? [
+    ...(!hasCompactionEnvelope && message.content && !blocks.some(block => (block.type === 'assistant_text' && block.text.trim()) ||
+      ('text' in block && block.text === message.content)) ? [{ type: 'assistant_text' as const, text: message.content }] : []),
+    ...(!hasCompactionEnvelope && thoughts && !blocks.some(block => block.type === 'thought') ? [{ type: 'thought' as const, text: thoughts }] : []),
+    ...blocks,
+    ...toolCalls.filter(tool => !blocks.some(block => block.type === 'tool_call' && block.toolCallId === tool.id))
+      .map(tool => ({ type: 'tool_call' as const, toolCallId: tool.id })),
+    ...(planSummary || planEntries.length ? blocks.some(block => block.type === 'plan') ? [] : [{ type: 'plan' as const }] : []),
+  ] : toolCalls.some(tool => tool.isSubAgent || isInlineSubagentLaunch(tool)) ? [
+    ...(thoughts ? [{ type: 'thought' as const, text: thoughts }] : []),
+    ...toolCalls.map(tool => ({ type: 'tool_call' as const, toolCallId: tool.id })),
+    ...(message.content ? [{ type: 'assistant_text' as const, text: message.content }] : []),
+    ...(planSummary || planEntries.length ? [{ type: 'plan' as const }] : []),
+  ] : blocks
   const imageAttachments = omitImages ? [] : (message.attachments ?? []).filter(isImageAttachment)
   const attachments = (message.attachments ?? []).filter((attachment) => !isImageAttachment(attachment))
   const goalReview = goalReviewForMessage(message)
   const workedSeconds = (message.processingTimeMs ?? 0) / 1000
 
-  if (blocks.length > 0) {
+  // Group the original event stream before filtering; collapsed traces keep launch boundaries.
+  if (launchesOnly) return orderedBlocks.length > 0 ? <PersistedMessageBlocksContent
+    message={message} disclosureState={traceDisclosure} blocks={orderedBlocks} onSelectTool={onSelectTool}
+    sourceChatId={sourceChatId} workingMode={workingMode} workedSeconds={workedSeconds} launchesOnly
+  /> : null
+
+  if (orderedBlocks.length > 0) {
     return (
       <div className="space-y-2">
-        <AttachmentList attachments={imageAttachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
+        <AttachmentList attachments={imageAttachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
         <PersistedMessageBlocksContent
           message={message}
           disclosureState={traceDisclosure}
-          blocks={blocks}
+          blocks={orderedBlocks}
           onSelectTool={onSelectTool}
           planActions={planActions}
           sourceChatId={sourceChatId}
           workingMode={workingMode}
           workedSeconds={workedSeconds}
         />
-        <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
+        <AttachmentList attachments={attachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
       </div>
     )
   }
@@ -734,16 +823,16 @@ export function PersistedMessageContent({
   if (!thoughts && toolCalls.length === 0 && !planSummary.trim() && planEntries.length === 0) {
     return (
       <div className="space-y-2">
-        <AttachmentList attachments={imageAttachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
+        <AttachmentList attachments={imageAttachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
         {goalReview ? <GoalReviewBlock review={goalReview} /> : <MarkdownContent content={message.content} chips={message.role === 'assistant'} />}
-        <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
+        <AttachmentList attachments={attachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
       </div>
     )
   }
 
   return (
     <div className="space-y-2">
-      <AttachmentList attachments={imageAttachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
+      <AttachmentList attachments={imageAttachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
       {(thoughts || toolCalls.length > 0) ? (
         <CompactWorkingSummary
           headerOnly={workingMode !== 'compact'}
@@ -781,7 +870,7 @@ export function PersistedMessageContent({
         onApprove={planActions?.onApprove}
         onDeny={planActions?.onDeny}
       />
-      <AttachmentList attachments={attachments} chatId={sourceChatId ?? message.sessionId} nativeMessageIndex={message.nativeMessageIndex} />
+      <AttachmentList attachments={attachments} chatId={attachmentChatId} nativeMessageIndex={message.nativeMessageIndex} previews={!passive} />
     </div>
   )
 }
@@ -796,7 +885,8 @@ export function attachmentChipKind(attachment: Attachment): ContextChipKind {
   return isImageAttachment(attachment) ? 'image' : 'file'
 }
 
-export function AttachmentList({ attachments, chatId, nativeMessageIndex }: { attachments: Attachment[]; chatId?: string; nativeMessageIndex?: number }) {
+/** `previews={false}` renders the same chips with an explicit unavailable note and never requests preview bytes. */
+export function AttachmentList({ attachments, chatId, nativeMessageIndex, previews = true }: { attachments: Attachment[]; chatId?: string; nativeMessageIndex?: number; previews?: boolean }) {
   if (attachments.length === 0) return null
 
   const markdownStoreAttachments = attachments.filter((attachment) => attachment.type === 'markdown-store')
@@ -813,11 +903,19 @@ export function AttachmentList({ attachments, chatId, nativeMessageIndex }: { at
       )}
       {fileAttachments.length > 0 && (
         <div className="flex flex-wrap gap-2" aria-label="File attachments">
-          {fileAttachments.map((attachment) => (
-            <ImageAttachmentPreview key={attachment.id} chatId={chatId} messageIndex={nativeMessageIndex} attachment={attachment} fallback={
-              <ContextChip kind={attachmentChipKind(attachment)} name={attachment.name} detail={attachmentLabel(attachment)} path={attachment.path} />
-            } />
-          ))}
+          {fileAttachments.map((attachment) => {
+            const external = isExternalAttachmentReference(attachment)
+            const native = external || Boolean(attachment.source && attachment.source !== 'legacy_path')
+            const chip = <ContextChip kind={attachmentChipKind(attachment)} name={attachment.name} detail={attachmentLabel(attachment)}
+              path={native ? undefined : attachment.path} meta={native ? external ? 'External reference' : 'Recorded file' : undefined} />
+            const unavailable = native ? <span className="inline-flex max-w-full flex-wrap items-center gap-2">{chip}<span className="text-xs text-muted">
+              {external || attachment.source === 'native_inline_pending' ? 'Bytes unavailable' : 'Preview unavailable'}
+            </span></span> : chip
+            if (!previews) return <span key={attachment.id} className="inline-flex max-w-full flex-wrap items-center gap-2">{chip}
+              {isImageAttachment(attachment) && <span className="text-xs text-muted">Preview unavailable in this read-only view</span>}</span>
+            return <ImageAttachmentPreview key={attachment.id} chatId={chatId} messageIndex={nativeMessageIndex} attachment={attachment}
+              fallback={chip} unavailableFallback={unavailable} />
+          })}
         </div>
       )}
     </div>
@@ -886,13 +984,15 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
   workedSeconds?: number
 }) {
   const { expanded, toggle, state: traceDisclosure } = useWorkTraceDisclosure(disclosureState)
-  const renderedEvents = coalesceAssistantText(events)
+  const renderedEvents = coalesceAssistantText(events, Boolean(sourceChatId))
   const traceExpanded = active ? true : expanded
   const lastAssistantEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'assistant_text' && event.text.trim() ? index : latest, -1)
   let thoughtIndex = 0
   const activeEventIndex = active && !pendingPermission && !pendingUserInput ? renderedEvents.reduce((latest, event, index) =>
     event.type === 'context_compaction_summary' || (event.type === 'assistant_text' || event.type === 'thought') && !event.text.trim() ? latest : index, -1) : -1
   const toolById = new Map(tools.map((tool) => [tool.id, tool]))
+  const launchTools = new Map([...toolById].filter(([id]) => id !== pendingPermission?.toolCallId))
+  const orderedEvents = sourceChatId ? groupInlineSubagents(renderedEvents, launchTools) : renderedEvents.map((entry, index) => ({ kind: 'entry' as const, entry, index }))
   const hasPlanEvent = renderedEvents.some((event) => event.type === 'plan')
   const lastPlanEventIndex = renderedEvents.reduce((latest, event, index) => event.type === 'plan' ? index : latest, -1)
   const hasPendingPermissionEvent = Boolean(
@@ -922,7 +1022,12 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
         />
       )}
       <div className={workingMode === 'compact' && traceExpanded ? 'conversation-events conversation-trace' : 'conversation-events'}>
-      {renderedEvents.map((event, index) => {
+      {orderedEvents.map(entry => {
+        const index = entry.index
+        if (entry.kind === 'subagents') return <InlineSubagentGroup key={`launches-${entry.tools[0].id}`} tools={entry.tools} sourceChatId={sourceChatId!}
+          onSelectTool={onSelectTool} renderNative={tools => <NativeSubagentTools active={active} tools={tools} sourceChatId={sourceChatId}
+            onSelectTool={onSelectTool} />} />
+        const event = entry.entry
         if (event.type === 'context_compaction_summary') return null
         if (event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} interrupted={event.type === 'context_compaction_interrupted'} />
         if (event.type === 'assistant_text') {
@@ -968,9 +1073,17 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
             pendingPermission.toolCallId === event.toolCallId
 
 
+          // A native kind/receiver can describe wait or result activity too. Preserve its
+          // individual tool-slot preview without reclassifying it as a consecutive launch.
+          const childActivity = sourceChatId && tool.isSubAgent && pendingPermission?.toolCallId !== event.toolCallId
+            ? isCompactNativeSubagentTool(tool)
+              ? <NativeSubagentTools active={active} tools={[tool]} sourceChatId={sourceChatId} onSelectTool={onSelectTool} />
+              : <SubagentGroup active={active} tools={[tool]} sourceChatId={sourceChatId} onSelectTool={onSelectTool}
+                  renderHistory={child => <SubAgentHistory sourceChatId={sourceChatId} tool={child} />} /> : null
           return (
             <div key={`tool-${event.toolCallId}-${index}`} className="space-y-2">
-              {traceExpanded && <div className="conversation-trace__internal" data-processing-step={index === activeEventIndex && ['pending', 'in_progress', 'running'].includes(tool.status) || undefined}>
+              {childActivity}
+              {traceExpanded && !childActivity && <div className="conversation-trace__internal" data-processing-step={index === activeEventIndex && ['pending', 'in_progress', 'running'].includes(tool.status) || undefined}>
                 {workingMode === 'compact' ? <ConversationWorkRow tool={tool} onSelectTool={onSelectTool}
                   renderSubAgentHistory={sourceChatId ? (subAgentTool) => <SubAgentHistory sourceChatId={sourceChatId} tool={subAgentTool} /> : undefined} /> : <ToolCallInlineRows
                   tools={[tool]}

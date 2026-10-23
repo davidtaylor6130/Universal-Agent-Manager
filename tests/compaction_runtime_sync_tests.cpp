@@ -73,7 +73,7 @@ UAM_TEST(AcpLateOwnedCompactionCompletesOnlyItsSettledMessage)
 	fixture.Send({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Authored answer"}}}});
 	fixture.Status("started");
 	uam::acp_detail::CompletePromptTurn(fixture.session, "ready");
-	fixture.session.queued_user_prompts.push_back({.id = "future", .text = "Future prompt"});
+	fixture.session.queued_user_prompts.push_back({.text = "Future prompt", .id = "future"});
 	const std::size_t message_count = fixture.app.chats.front().messages.size();
 	fixture.Send({{"sessionUpdate", "compaction_update"}, {"compactionId", "owned"}, {"status", "completed"},
 	    {"summary", {{"type", "text"}, {"text", "Retain workspace facts"}}}});

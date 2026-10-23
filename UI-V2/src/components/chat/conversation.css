@@ -162,7 +162,7 @@
 .conversation-meter[data-level="error"] > span { background: var(--error); }
 
 /* Message rail hover preview, beside the hovered mark. */
-.conversation-rail-preview { position: absolute; left: 62px; width: 220px; padding: var(--sp-1) var(--sp-2); border: 1px solid var(--border-bright); border-radius: var(--r-md); background: var(--surface-up); box-shadow: var(--elev-2); color: var(--text-2); font-size: var(--fs-xs); line-height: 1.4; pointer-events: none; white-space: normal; text-align: left; animation: conversation-rail-in var(--dur-fast) var(--ease-out-soft) backwards; }
+.conversation-rail-preview { position: absolute; transform: translateY(-50%); left: 62px; width: 220px; padding: var(--sp-1) var(--sp-2); border: 1px solid var(--border-bright); border-radius: var(--r-md); background: var(--surface-up); box-shadow: var(--elev-2); color: var(--text-2); font-size: var(--fs-xs); line-height: 1.4; pointer-events: none; white-space: normal; text-align: left; animation: conversation-rail-in var(--dur-fast) var(--ease-out-soft) backwards; }
 .conversation-rail-preview__label { display: block; margin-bottom: 2px; color: var(--text-3); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .conversation-rail-preview__title { color: var(--text); font-weight: 600; }
 .conversation-rail-preview__hint { margin-top: 2px; color: var(--text-3); }
@@ -270,3 +270,28 @@
   .status-scene__box--3 { transform: translateX(36px) scaleY(.45); }
   .status-bed__z--1, .status-agent--asleep .status-agent__z { opacity: .8; }
 }
+
+/* Undelivered direct input keeps its transcript slot: dotted grey until native delivery state changes. */
+.conversation-turn[data-delivery] > .conversation-turn__body {
+  border: 1px dotted var(--text-3);
+  background: transparent;
+  color: var(--text-2);
+}
+.conversation-turn__delivery {
+  border-radius: var(--r-sm);
+  padding-inline: 2px;
+  color: var(--text-3);
+  cursor: default;
+  outline: none;
+}
+.conversation-turn__delivery:focus-visible { box-shadow: var(--focus-ring); }
+.conversation-turn__delivery-error { flex-basis: 100%; text-align: right; color: var(--red); }
+
+/* Message navigation gutter: the rail's widest expanded footprint is 54px from left 0, so a present rail reserves 64px
+   of the local pane. Previews size against this pane (container units), never the window. */
+.uam-chat-viewport { --message-navigation-gutter: 0px; container-type: inline-size; }
+.uam-chat-viewport[data-message-navigation] { --message-navigation-gutter: 64px; }
+.uam-chat-pane .uam-chat-viewport[data-message-navigation] .uam-chat-transcript .uam-chat-content {
+  padding-left: max(24px, var(--message-navigation-gutter));
+}
+.uam-chat-viewport[data-message-navigation] .conversation-rail-preview { max-width: calc(100cqi - 70px); }

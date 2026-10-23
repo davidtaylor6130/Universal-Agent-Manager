@@ -35,8 +35,8 @@ it('round-trips OpenCode-style JSON with the built-in UAM service and env refere
   const text = toJsonText([server], false)
   expect(JSON.parse(text).mcp).toEqual({ 'uam-mcp': { type: 'builtin', enabled: false }, playwright: { uamId: server.id, type: 'local', command: ['/usr/local/bin/npx', '-y', '@playwright/mcp@latest'], environment: { TOKEN: '{env:PW_TOKEN}' }, enabled: true } })
   expect(fromJsonText(text, [server])).toEqual({ servers: [server], uamEnabled: false })
-  const literal = fromJsonText('{"mcp":{"x":{"type":"remote","url":"http://main.homelab.com:9001/mcp?userToken=abc","headers":{"Authorization":"Bearer t"}}}}', [])
-  expect(literal.servers[0]).toMatchObject({ transport: 'http', url: 'http://main.homelab.com:9001/mcp?userToken=abc', headers: [{ name: 'Authorization', environmentVariable: '', value: 'Bearer t' }] })
+  const literal = fromJsonText('{"mcp":{"x":{"type":"remote","url":"http://mcp.example.com:9001/mcp?userToken=abc","headers":{"Authorization":"Bearer t"}}}}', [])
+  expect(literal.servers[0]).toMatchObject({ transport: 'http', url: 'http://mcp.example.com:9001/mcp?userToken=abc', headers: [{ name: 'Authorization', environmentVariable: '', value: 'Bearer t' }] })
   expect(JSON.parse(toJsonText(literal.servers, true)).mcp.x.headers).toEqual({ Authorization: 'Bearer t' })
 })
 

@@ -1,3 +1,4 @@
+#include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -11,6 +12,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/runtime/acp/acp_statuses.h"
+#include "common/runtime/structured_framing.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 #include "remote/runner_proxy.h"
@@ -36,6 +38,21 @@ namespace uam::acp_detail
 		constexpr std::uint64_t kBytesPerMiB = 1024ull * 1024;
 		constexpr double kFatalTransportReconnectDelaySeconds = 0.25;
 		constexpr std::string_view kRemoteAttachedMethod = "uam/remoteAttached";
+
+		void SettleRemoteMaintenance(AppState& app, AcpSessionState& session, ChatSession& chat)
+		{
+			if (!chat.remote_manual_compaction_pending || session.manual_compaction_pending || session.pending_compaction || session.recovering_remote_process)
+				return;
+			chat.remote_manual_compaction_pending = false;
+			chat.remote_manual_compaction_boundary_json.clear();
+			if (!session.processing)
+			{
+				session.recovering_remote_turn = false;
+				chat.remote_turn_reconnect_pending = false;
+			}
+			// The same later output-cursor save must succeed before the runner is acknowledged.
+			(void)SaveChatQuietly(app, chat);
+		}
 
 		void ReactivateConfirmedRemoteGoal(AppState& app, const ChatSession& chat)
 		{
@@ -70,6 +87,17 @@ namespace uam::acp_detail
 		    std::string message,
 		    bool recover_remote_disconnect = false)
 		{
+			// One rejected failure owns this transport until explicit Stop or owned replacement.
+			if (!session.transport_ownership_error.empty())
+				return;
+			std::string ownership_error;
+			if (session.running && !ValidateAcpRestartOwnership(app, session, chat, &ownership_error))
+			{
+				session.transport_ownership_error = std::move(ownership_error);
+				session.last_error = std::move(message);
+				session.lifecycle_state = kAcpLifecycleError;
+				return;
+			}
 			const bool remote_helper_owned =
 			    chat.execution_host_id != uam::execution_hosts::kLocalHostId &&
 			    (chat.remote_process_exists || chat.remote_turn_reconnect_pending);
@@ -156,6 +184,8 @@ namespace uam::acp_detail
 		    const std::string& reason,
 		    const std::string& message)
 		{
+			if (!session.transport_ownership_error.empty())
+				return false;
 			AppendAcpDiagnostic(session, "read", reason, "", "", false, 0, message);
 			InvalidateAcpTransportImpl(app, session, chat, message);
 			return true;
@@ -275,8 +305,28 @@ namespace uam::acp_detail
 		{
 			BufferedStdoutResult result;
 			std::size_t consumed = 0;
-			while (result.lines < max_lines && PollClock::now() < deadline)
+			while (session.transport_ownership_error.empty() && result.lines < max_lines && PollClock::now() < deadline)
 			{
+				if (session.protocol_kind == uam::provider_profile_constants::kProtocolCopilotSdk && consumed < session.stdout_buffer.size() && session.stdout_buffer[consumed] != '\x1e')
+				{
+					const std::string_view buffered(session.stdout_buffer.data() + consumed, session.stdout_buffer.size() - consumed);
+					const auto frame = uam::structured_framing::Read(buffered, kMaxAcpStdoutLineBytes - 8196);
+					if (frame.status == uam::structured_framing::Status::Incomplete)
+						break;
+					if (frame.status == uam::structured_framing::Status::Invalid)
+					{
+						session.stdout_buffer.clear();
+						result.changed = StopForAcpOutputSafety(app, session, chat, "invalid_native_frame", "Copilot returned an invalid or oversized native protocol frame.");
+						return result;
+					}
+					const std::string body(buffered.substr(frame.body_offset, frame.body_bytes));
+					consumed += frame.consumed_bytes;
+					++result.lines;
+					result.changed = ProcessAcpLine(app, session, chat, body, browser) || result.changed;
+					if (!session.running)
+						break;
+					continue;
+				}
 				const std::size_t newline_pos = session.stdout_buffer.find('\n', consumed);
 				if (newline_pos == std::string::npos)
 				{
@@ -433,11 +483,19 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 	}
 	catch (const std::exception& ex)
 	{
-		const std::string error_message = std::string("Invalid JSON from ") + RuntimeDisplayName(session) + ": " + ex.what();
-		AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message, CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
+		const IProviderRuntime* const guard = session.native_pre_dispatch_runtime;
+		const bool observed_decode_failure = guard && guard->OnAcpPreDispatch(app, session, chat, nullptr);
+		const std::string error_message = observed_decode_failure ? "Invalid structured data during native process observation." :
+		    std::string("Invalid JSON from ") + RuntimeDisplayName(session) + ": " + ex.what();
+		AppendAcpDiagnostic(session, "parse", "invalid_json", "", "", false, 0, error_message,
+		    observed_decode_failure ? std::string{} : CapDiagnosticString(trimmed, kMaxAcpDiagnosticDetailBytes));
 		InvalidateAcpTransport(app, session, chat, error_message);
 		return true;
 	}
+	// The guard belongs to the captured process adapter, not mutable chat/provider
+	// metadata. It must precede reconnect, usage and every other shared projection.
+	if (const IProviderRuntime* guard = session.native_pre_dispatch_runtime;
+	    guard && guard->OnAcpPreDispatch(app, session, chat, &message)) return true;
 	if (JsonDiagnosticStringValue(message, "method") == kRemoteAttachedMethod)
 	{
 		if (!session.recovering_remote_turn && !session.recovering_remote_process) return true;
@@ -496,6 +554,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		const IProviderRuntime& poll_runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 		if (poll_runtime.OnAcpHandleMessage(app, session, chat, message, browser))
 		{
+			SettleRemoteMaintenance(app, session, chat);
 			RetireRemoteAcpRequests(app, session, chat);
 			return true;
 		}
@@ -531,6 +590,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 			try
 			{
 				HandleAcpResponse(app, session, chat, message);
+				SettleRemoteMaintenance(app, session, chat);
 				RetireRemoteAcpRequests(app, session, chat);
 				MarkAcpRuntimeActivity(session);
 			}
@@ -551,6 +611,8 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 
 bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser)
 {
+	if (!session.transport_ownership_error.empty())
+		return false;
 	if (!session.running)
 	{
 		return false;
@@ -590,6 +652,8 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		    app, session, chat, browser, kAcpStdoutLinesPerPoll - lines_processed, deadline);
 		changed = buffered.changed || changed;
 		lines_processed += buffered.lines;
+		if (!session.transport_ownership_error.empty())
+			return changed;
 		if (!session.running)
 		{
 			return true;
@@ -631,6 +695,8 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		AppendAcpDiagnostic(session, "read", "stdout_read_failed", "", "", false, 0, message);
 		RecoverDisconnectedRemoteAcpTransport(app, session, chat, message);
 		changed = true;
+		if (!session.transport_ownership_error.empty())
+			return changed;
 		break;
 	}
 	if (bytes_read >= kAcpStdoutBytesPerPoll || lines_processed >= kAcpStdoutLinesPerPoll || PollClock::now() >= deadline)
@@ -657,7 +723,14 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		    { return request.response_consumed; });
 		chat.remote_delivered_stdout_cursor = session.pending_remote_stdout_cursor;
 		chat.remote_delivered_stderr_cursor = session.pending_remote_stderr_cursor;
-		chat.remote_interaction_responses.clear();
+		std::erase_if(chat.remote_interaction_responses,
+			          [](const AcpRemoteInteractionResponseState& response)
+			          {
+				          // Native HTTP decisions are retired only by their own confirmed HTTP
+				          // receipt; an unrelated ACP stdout acknowledgment does not deliver them.
+				          const auto id = nlohmann::json::parse(response.request_id_json, nullptr, false);
+				          return !id.is_string() || !id.get_ref<const std::string&>().starts_with("opencode-native:");
+			          });
 		if (!SaveChatQuietly(app, chat))
 		{
 			chat.remote_delivered_stdout_cursor = old_stdout_cursor;
@@ -711,6 +784,8 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 
 bool DrainStderr(AppState& app, AcpSessionState& session, ChatSession& chat)
 {
+	if (!session.transport_ownership_error.empty())
+		return false;
 	bool changed = false;
 	session.stderr_poll_pending = false;
 	std::size_t bytes_read = 0;
@@ -788,6 +863,8 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 		session.last_exit_code = exit_code;
 	}
 	const bool active_turn = uam::AcpSessionHasActiveTurn(session);
+	if (active_turn && !preserve_active_turn)
+		AgentRunScheduler::InitialTurnSettled(session, "failed", session.last_error);
 	std::ostringstream detail;
 	bool has_detail = false;
 	if (has_exit_code)

@@ -356,6 +356,7 @@ void RemoveMissingChatIds(const AppState& app, std::unordered_set<std::string>& 
 bool FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_before, std::string_view preferred_chat_id, bool preserve_selection)
 {
 	const std::string selected_before_id = NormalizeChatSyncTargetId(selected_before);
+	const std::string previous_composer_text = app.composer_text;
 	const std::string preferred_id = NormalizeChatSyncTargetId(preferred_chat_id);
 	const std::string previous_selected = uam::strings::NonEmptyOrFallback(selected_before_id, preferred_id);
 
@@ -390,6 +391,12 @@ bool FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_bef
 	{
 		app.composer_text.clear();
 	}
+	else
+	{
+		// A catalogue reorder can change the row at the old selection index.
+		// Selecting the same stable chat must not discard its draft as a side effect.
+		app.composer_text = previous_composer_text;
+	}
 
 	std::string warning;
 	ChatSession* selected_chat = ChatDomainService().SelectedChat(app);
@@ -402,59 +409,59 @@ bool FinalizeChatSyncSelection(uam::AppState& app, std::string_view selected_bef
 	return true;
 }
 
-bool SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession> native_chats, std::string_view preferred_chat_id, bool preserve_selection)
+namespace
+{
+bool SyncLoadedNativeImpl(AppState& app, std::vector<ChatSession>& native_chats, bool consume_input, std::string_view preferred_chat_id, bool preserve_selection,
+    const std::shared_ptr<platform::AsyncNativeChatLoadTask::State>& owner, std::string_view digest, const std::shared_ptr<CliTerminalHistoryGeneration>& producer)
 {
 	const std::string selected_before = ChatDomainService().SelectedChatId(app);
 	const std::string preferred_id = NormalizeChatSyncTargetId(preferred_chat_id);
-	std::string deletion_error;
-	if (!ChatHistorySyncService().FilterDeletedNativeHistory(app.data_root, native_chats, &deletion_error))
+	const ChatHistorySyncService service;
+	auto media = service.QueueLoadedTerminalNativeMedia(app, native_chats, consume_input, preferred_id, preserve_selection, owner, digest, producer);
+	const ChatHistorySyncService::ImportResult result = media ? std::move(*media) :
+	    service.ImportLoadedNativeChatsToLocal(app, consume_input ? std::move(native_chats) : native_chats, preferred_id);
+	if (!result.success)
 	{
-		UpdateNativeChatRefreshError(app, preferred_id, deletion_error);
+		// Live-work deferral is retryable without inventing an error or acknowledging its digest.
+		if (!result.errors.empty())
+		{
+			UpdateNativeChatRefreshError(app, preferred_id, result.errors.front());
+			LogCliDiagnosticEvent(app, "sync_native_history", "import_failed", nullptr, app.status_line);
+		}
 		return false;
 	}
-	(void)ChatHistorySyncService().OverlayLocalHistory(app, native_chats, true);
-
-	// Only save the specifically requested chat (e.g. the one just discovered)
-	for (ChatSession& chat : native_chats)
-	{
-		if (NativeChatMatchesPreferredSyncId(chat, preferred_id))
-		{
-			if (!ChatRepository::SaveChat(app.data_root, chat))
-			{
-				UpdateNativeChatRefreshError(app, preferred_id, "could not save chat history.");
-				LogCliDiagnosticEvent(app, "sync_native_history", "chat_save_failed", nullptr, app.status_line);
-				return false;
-			}
-			break;
-		}
-	}
-
-	std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(app.data_root);
-	for (ChatSession& chat : chats)
-	{
-		if (!NativeChatMatchesPreferredSyncId(chat, preferred_id)) continue;
-		std::string warning;
-		if (!ChatRepository::HydrateChatMessages(app.data_root, chat, &warning))
-		{
-			UpdateNativeChatRefreshError(app, preferred_id, "could not load chat history. " + warning);
-			LogCliDiagnosticEvent(app, "sync_native_history", "chat_load_failed", nullptr, app.status_line);
-			return false;
-		}
-	}
-	uam::runtime_orch_impl::ReplaceAppChatsWithNormalized(app, std::move(chats));
+	service.MergeSidebarChatsPreservingCurrent(app, result.published_chat_ids);
 	if (!FinalizeChatSyncSelection(app, selected_before, preferred_id, preserve_selection)) return false;
 	UpdateNativeChatRefreshError(app, preferred_id, {});
 	return true;
 }
 
-bool SyncChatsFromNative(AppState& app, std::string_view preferred_chat_id, bool preserve_selection)
+} // namespace
+
+bool SyncChatsFromLoadedNative(AppState& app, const std::vector<ChatSession>& chats, std::string_view target, bool preserve)
+{
+	// The implementation never mutates borrowed input. After bounded admission,
+	// compatibility callers copy it on this thread as the former by-value API did;
+	// original preparation/IO and retirement of that admitted copy remain worker-owned.
+	return SyncLoadedNativeImpl(app, const_cast<std::vector<ChatSession>&>(chats), false, target, preserve, {}, {}, {});
+}
+
+bool SyncChatsFromLoadedNative(AppState& app, std::vector<ChatSession>&& chats, std::string_view target, bool preserve,
+    std::shared_ptr<platform::AsyncNativeChatLoadTask::State> owner, std::string_view digest, std::shared_ptr<CliTerminalHistoryGeneration> producer)
+{
+	return SyncLoadedNativeImpl(app, chats, true, target, preserve, owner, digest, producer);
+}
+
+namespace
+{
+bool SyncChatsFromNativeImpl(AppState& app, std::string_view preferred_chat_id, bool preserve_selection, const CliTerminalState* final_terminal)
 {
 	const std::string selected_before = ChatDomainService().SelectedChatId(app);
 	const std::string preferred_id = NormalizeChatSyncTargetId(preferred_chat_id);
 
 	// Import from native to local before reloading the sidebar.
 	// We only import the target chat to avoid re-importing chats the user manually deleted.
-	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsToLocal(app, false, preferred_id);
+	const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportAllNativeChatsToLocal(app, false, preferred_id, final_terminal);
 	if (!result.success)
 	{
 		UpdateNativeChatRefreshError(app, preferred_id, result.errors.empty() ? "could not import chat history." : result.errors.front());
@@ -462,10 +469,31 @@ bool SyncChatsFromNative(AppState& app, std::string_view preferred_chat_id, bool
 		return false;
 	}
 
-	ChatHistorySyncService().LoadSidebarChats(app);
+	// Imports save primaries without adopting live rows. Only saved IDs may replace
+	// current rows; deferred targets and unrelated live work survive this reload.
+	ChatHistorySyncService().MergeSidebarChatsPreservingCurrent(app, result.published_chat_ids);
 	if (!FinalizeChatSyncSelection(app, selected_before, preferred_id, preserve_selection)) return false;
 	UpdateNativeChatRefreshError(app, preferred_id, {});
 	return true;
+}
+}
+
+bool SyncChatsFromNative(AppState& app, std::string_view preferred_chat_id, bool preserve_selection)
+{
+	return SyncChatsFromNativeImpl(app, preferred_chat_id, preserve_selection, nullptr);
+}
+
+bool SyncChatsFromFinalCliTerminal(AppState& app, const CliTerminalState& terminal, bool wait_for_stop)
+{
+	const ChatSession* chat = ChatDomainService().FindChatById(app, CliTerminalAttachedChatId(terminal));
+	if (chat == nullptr || !uam::paths::IsControllerLocalWorkspace(*chat) ||
+	    !ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *chat)) return false;
+	if (auto media = ChatHistorySyncService().QueueFinalTerminalNativeMedia(app, terminal, wait_for_stop))
+	{
+		if (!media->errors.empty()) UpdateNativeChatRefreshError(app, CliTerminalAttachedSessionId(terminal), media->errors.front());
+		return media->success; // A queued final lease remains false; safe no-op deferral is finished.
+	}
+	return SyncChatsFromNativeImpl(app, CliTerminalAttachedSessionId(terminal), true, &terminal);
 }
 
 } // namespace uam

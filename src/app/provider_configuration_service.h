@@ -6,6 +6,7 @@
 #include "app/markdown_store_service.h"
 #include "app/memory_service.h"
 #include "common/provider/provider_setup.h"
+#include "common/provider/gemini_options.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/execution_host_config.h"
 #include "common/models/app_models.h"
@@ -33,7 +34,7 @@ namespace uam
 	inline bool PrepareProviderConfiguration(const std::filesystem::path& data_root, const AppSettings& settings,
 	    const ChatSession& chat, const ExecutionHost& host, const std::filesystem::path& workspace,
 	    ProviderConfigurationBundle& bundle, std::string& error, const std::string* selected_agent_instructions = nullptr,
-	    std::string_view checked_provider_version = {})
+	    std::string_view checked_provider_version = {}, bool require_session_mcp_configuration = false)
 	{
 		bundle = {};
 		// Source workspace settings follow isolated worktrees; the active workspace can override them.
@@ -56,7 +57,16 @@ namespace uam
 		// shortcut: only fixture-verified OpenCode versions; extend after discovery and permission checks pass.
 		const bool open_code_discovery = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli) &&
 		    (checked_provider_version == "1.17.20" || checked_provider_version == "1.18.35");
-		if (!configuration.enabled && selected_servers.empty() && !open_code_discovery) return true;
+		// The disabled per-server deadline metadata shape is source-checked only for this native version.
+		const bool open_code_uam_control_deadline = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli) &&
+		    checked_provider_version == "1.19.3" && !chat.uam_control_explicitly_disabled &&
+		    central_configuration::McpEnabled(configuration, chat.provider_id, host.id, "uam-mcp", chat.uam_control_enabled);
+		const bool claude_fast_override = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kClaudeCli) &&
+		    (chat.service_tier == "fast" || chat.service_tier_explicit);
+		const bool gemini_thinking_override = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kGeminiCli) && !chat.reasoning_effort.empty();
+		if (gemini_thinking_override && !gemini::SupportsReasoningEffort(chat.model_id, chat.reasoning_effort, checked_provider_version))
+		{ error = "The selected Gemini model and checked executing-host CLI version do not support that thinking level; select Default or refresh the host CLI version."; return false; }
+		if (!configuration.enabled && selected_servers.empty() && !open_code_discovery && !open_code_uam_control_deadline && !claude_fast_override && !gemini_thinking_override && !require_session_mcp_configuration) return true;
 		std::set<std::string> executable_files;
 		bool memory_resources_added = false;
 		std::size_t memory_instruction_size = 0;
@@ -211,6 +221,10 @@ namespace uam
 		    {"hostInstructionFile", configuration.enabled && !host.instruction_text ? host.instruction_file : ""}, {"mcpServers", mcp_server_config::Serialize(servers)}};
 		// Format 1 helpers predating this optional hint retain their ordinary eager MCP discovery.
 		if (open_code_discovery) bundle.manifest["openCodeCodeMode"] = true;
+		if (open_code_uam_control_deadline) bundle.manifest["openCodeUamControlDeadline"] = true;
+		// The host resolves expert --settings paths; only the requested override crosses SSH.
+		if (claude_fast_override) bundle.manifest["claudeTerminalFastMode"] = chat.service_tier == "fast";
+		if (gemini_thinking_override) bundle.manifest["geminiThinking"] = {{"model", chat.model_id}, {"effort", chat.reasoning_effort}, {"cliVersion", checked_provider_version}};
 		for (const auto& [name, bytes] : bundle.files)
 			bundle.manifest["files"][name] = {{"size", bytes.size()}, {"digest", provider_setup::Digest(bytes)}, {"executable", executable_files.contains(name)}};
 		std::string memory_manifest_error;

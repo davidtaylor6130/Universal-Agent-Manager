@@ -11,6 +11,8 @@ import { ProviderLogo } from '../shared/ProviderLogo'
 import { Button, IconButton, Presence } from '../ui'
 import { RuntimeTimeout } from '../shared/RuntimeTimeout'
 import { useRuntimeActivity } from '../../hooks/useRuntimeActivity'
+import { CompanionPreferences } from './CompanionPreferences'
+import { useCompanionAlerts } from './useCompanionAlerts'
 import './companion.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
@@ -66,6 +68,8 @@ export function CompanionShell() {
   const acpBindings = useAppStore((s) => s.acpBindingBySessionId)
   const cliBindings = useAppStore((s) => s.cliBindingBySessionId)
   const session = sessions.find((candidate) => candidate.id === activeSessionId)
+  const alerts = useCompanionAlerts(Boolean(token) && ready)
+  const openConversation = () => { setConversationOpen(true); setPinError('') }
   const currentStatus = session ? displayedChatStatus(
     cliBindings[session.id] ? [cliBindings[session.id]] : [],
     acpBindings[session.id] ? [acpBindings[session.id]] : [],
@@ -206,6 +210,7 @@ export function CompanionShell() {
         }
         phoneState.loadFromCef({
           ...state,
+          ...(state.settings && phoneState.theme ? { settings: { ...state.settings, theme: phoneState.theme } } : {}),
           selectedChatId: selectedId,
           selectedChatIndex: -1,
           folders: state.folders.map((folder) => {
@@ -273,6 +278,24 @@ export function CompanionShell() {
     }
   }, [token])
 
+  useEffect(() => {
+    if (!ready) return
+    const openChat = (id: unknown) => {
+      if (typeof id !== 'string' || !useAppStore.getState().sessions.some((chat) => chat.id === id)) return
+      useAppStore.getState().setActiveSession(id)
+      setTab('activity')
+      setConversationOpen(true)
+    }
+    const requested = new URLSearchParams(window.location.search).get('chat')
+    if (requested) {
+      openChat(requested)
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+    const receive = (event: MessageEvent) => { if (event.data?.type === 'openChat') openChat(event.data.chatId) }
+    navigator.serviceWorker?.addEventListener('message', receive)
+    return () => navigator.serviceWorker?.removeEventListener('message', receive)
+  }, [ready])
+
   const disconnect = () => {
     window.localStorage.removeItem(TOKEN_KEY)
     sessionStorage.removeItem(TOKEN_KEY)
@@ -323,6 +346,7 @@ export function CompanionShell() {
       <h1>Settings</h1>
       <p role="status">{error ? 'Disconnected' : ready ? 'Connected' : 'Connecting…'}</p>
       <Button variant="secondary" disabled={refreshing} aria-busy={refreshing || undefined} onClick={() => void refreshManually()} leadingIcon={<RefreshCw size={16} />}>{refreshing ? 'Refreshing…' : 'Refresh chats and activity'}</Button>
+      <CompanionPreferences alerts={alerts} />
       <Button variant="ghost" onClick={disconnect}>Logout</Button>
     </main> : ready ? <>
       <main className="uam-companion-main">
@@ -360,7 +384,7 @@ export function CompanionShell() {
                 <h1 className="!p-0">Chats</h1>
               </div>
               <input className="uam-companion-search" type="search" aria-label="Search chats" placeholder="Search chats" value={search} onChange={(event) => setSearch(event.target.value)} />
-              {tab === 'chats' && <FolderTree searchQuery={search} />}
+              {tab === 'chats' && <FolderTree searchQuery={search} onSessionOpen={openConversation} />}
             </section>
           </div>
         </div>}

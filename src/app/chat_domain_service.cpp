@@ -1,3 +1,4 @@
+#include "app/agent_run_scheduler.h"
 #include "chat_domain_service.h"
 
 #include "core/chat_import_utils.h"
@@ -7,6 +8,7 @@
 #include "app/persistence_coordinator.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_branching.h"
+#include "common/chat/branch_native_assets.h"
 #include "common/chat/chat_ids.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/native_chat_identity.h"
@@ -18,6 +20,7 @@
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/history_timestamp_order.h"
 
 #include <algorithm>
 #include <iterator>
@@ -41,6 +44,47 @@ namespace
 	constexpr double kTokensPerMillion = 1000000.0;
 	constexpr double kCostPerMillionInputTokens = 0.075;
 	constexpr double kCostPerMillionOutputTokens = 0.30;
+
+	bool SelectBranchSkills(const Message& source, const std::optional<std::vector<std::string>>& retained, std::vector<std::string>& files, std::vector<std::string>& blocks)
+	{
+		if (!retained)
+		{
+			files = source.markdown_store_files;
+			blocks = source.markdown_store_prompt_blocks;
+			return true;
+		}
+		if (retained->empty())
+			return true;
+		if (retained->size() > 128 || source.markdown_store_files.size() != source.markdown_store_prompt_blocks.size())
+			return false;
+		std::set<std::string> selected;
+		for (const auto& file : *retained)
+			if (file.empty() || file.size() > 16384 || !selected.insert(file).second || std::ranges::count(source.markdown_store_files, file) != 1)
+				return false;
+		for (std::size_t index = 0; index < source.markdown_store_files.size(); ++index)
+			if (selected.contains(source.markdown_store_files[index]))
+			{
+				if (source.markdown_store_prompt_blocks[index].empty())
+					return false;
+				files.push_back(source.markdown_store_files[index]);
+				blocks.push_back(source.markdown_store_prompt_blocks[index]);
+			}
+		return true;
+	}
+
+	bool BranchSkillPrefixMatches(const std::vector<Message>& source, const std::vector<Message>& branch, int message_index, const std::vector<std::string>& selected_files, const std::vector<std::string>& selected_blocks)
+	{
+		if (message_index < 0 || static_cast<std::size_t>(message_index) >= source.size() || static_cast<std::size_t>(message_index) >= branch.size())
+			return false;
+		for (int row = 0; row <= message_index; ++row)
+		{
+			const auto& expected_files = row == message_index ? selected_files : source[static_cast<std::size_t>(row)].markdown_store_files;
+			const auto& expected_blocks = row == message_index ? selected_blocks : source[static_cast<std::size_t>(row)].markdown_store_prompt_blocks;
+			if (branch[static_cast<std::size_t>(row)].markdown_store_files != expected_files || branch[static_cast<std::size_t>(row)].markdown_store_prompt_blocks != expected_blocks)
+				return false;
+		}
+		return true;
+	}
 
 	bool ShouldAutoReplaceTitleFromFirstUserMessage(const ChatSession& chat, const MessageRole role)
 	{
@@ -483,12 +527,20 @@ bool ChatDomainService::ShouldReplaceChatForDuplicateId(const ChatSession& candi
 
 	if (candidate.updated_at != existing.updated_at)
 	{
-		return candidate.updated_at > existing.updated_at;
+		const auto updated_order = uam::time::CompareHistoryTimestamps(candidate.updated_at, existing.updated_at).order;
+		if (updated_order != uam::time::HistoryTimestampOrder::Equal)
+		{
+			return updated_order == uam::time::HistoryTimestampOrder::After;
+		}
 	}
 
 	if (candidate.created_at != existing.created_at)
 	{
-		return candidate.created_at > existing.created_at;
+		const auto created_order = uam::time::CompareHistoryTimestamps(candidate.created_at, existing.created_at).order;
+		if (created_order != uam::time::HistoryTimestampOrder::Equal)
+		{
+			return created_order == uam::time::HistoryTimestampOrder::After;
+		}
 	}
 
 	if (candidate.linked_files.size() != existing.linked_files.size())
@@ -697,6 +749,8 @@ std::optional<ChatSession> ChatDomainService::LoadBranchHistoryDetached(const st
 
 std::shared_ptr<uam::BranchPreparationOwnership> ChatDomainService::BeginBranchPreparation(uam::AppState& app, const std::string& source_id, const std::string& existing_branch_id) const
 {
+	if (uam::AgentRunScheduler::HasPendingInitialMention(app, source_id) || uam::AgentRunScheduler::HasPendingInitialMention(app, existing_branch_id))
+		return nullptr;
 	if (FindChatById(app, source_id) == nullptr || !app.branch_preparations[source_id].expired()) return nullptr;
 	const std::shared_ptr<uam::BranchPreparationOwnership> ownership = std::make_shared<uam::BranchPreparationOwnership>();
 	ownership->existing_branch_id = existing_branch_id;
@@ -726,6 +780,8 @@ void ChatDomainService::CancelBranchPreparations(uam::AppState& app, const std::
 std::shared_ptr<ChatDomainService::ColdHistoryPreparation> ChatDomainService::BeginColdHistoryPreparation(uam::AppState& app, const std::string& chat_id) const
 {
 	const ChatSession* chat = FindChatById(app, chat_id);
+	if (uam::AgentRunScheduler::HasPendingInitialMention(app, chat_id))
+		return nullptr;
 	if (chat == nullptr || chat->messages_loaded || app.worktree_operation_chat_ids.contains(chat_id) ||
 	    app.pending_chat_save_at_by_chat_id.contains(chat_id)) return nullptr;
 	const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(app.data_root, chat_id);
@@ -774,9 +830,20 @@ bool ChatDomainService::MatchesPreparedBranchHistory(const ChatSession& current,
 	                       (!current.messages_loaded || current.messages == loaded->messages)));
 }
 
-bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, const std::optional<std::string>& operation_id, bool* reused_existing_branch, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch) const
+bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, const std::optional<std::string>& operation_id, bool* reused_existing_branch, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch, bool select_chat, std::string* branch_id_out) const
 {
+	return CreateBranchFromMessage(app, source_chat_id, message_index, replacement_content, operation_id, reused_existing_branch, retained_attachment_ids, prepared_source, prepared_existing_branch, nullptr, std::nullopt, select_chat, branch_id_out);
+}
+
+bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, const std::optional<std::string>& operation_id, bool* reused_existing_branch, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch, uam::PreparedBranchOriginals* prepared_originals, const std::optional<std::vector<std::string>>& retained_markdown_store_files, bool select_chat, std::string* branch_id_out) const
+{
+	if (branch_id_out != nullptr) branch_id_out->clear();
 	if (reused_existing_branch != nullptr) *reused_existing_branch = false;
+	if (uam::AgentRunScheduler::HasPendingInitialMention(app, source_chat_id))
+	{
+		app.status_line = "Wait for the delegated request to finish saving before branching.";
+		return false;
+	}
 	const std::string normalized_operation_id = operation_id.has_value() ? uam::strings::Trim(*operation_id) : std::string();
 	if (normalized_operation_id.size() > kMaxBranchOperationIdLength)
 	{
@@ -827,7 +894,19 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		return false;
 	}
 
-	std::vector<MessageAttachment> selected_attachments = (*source_messages)[message_index].attachments;
+	const auto& selected_message = (*source_messages)[message_index];
+	std::vector<std::string> selected_skill_files, selected_skill_blocks;
+	if (!SelectBranchSkills(selected_message, retained_markdown_store_files, selected_skill_files, selected_skill_blocks))
+	{
+		app.status_line = "Skill selection must contain unique files with captured prompt snapshots from the source message.";
+		return false;
+	}
+	if (retained_markdown_store_files && prepared_source != nullptr && source.messages_loaded && (prepared_source->id != source.id || !prepared_source->messages_loaded || !BranchSkillPrefixMatches(*source_messages, prepared_source->messages, message_index, selected_message.markdown_store_files, selected_message.markdown_store_prompt_blocks)))
+	{
+		app.status_line = "Branch source skill snapshots changed while preparing. Retry the branch.";
+		return false;
+	}
+	std::vector<MessageAttachment> selected_attachments = selected_message.attachments;
 	if (retained_attachment_ids.has_value())
 	{
 		std::set<std::string> retained;
@@ -873,20 +952,14 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 					}
 					existing_history = &hydrated_existing;
 				}
-				const bool same_request = existing->parent_chat_id == source_chat_id &&
-					existing->branch_from_message_index == message_index &&
-					existing->branch_message_edited == replacement_content.has_value() &&
-					(!replacement_content.has_value() ||
-					 (message_index < static_cast<int>(existing_history->messages.size()) &&
-					  existing_history->messages[message_index].content == *replacement_content)) &&
-					message_index < static_cast<int>(existing_history->messages.size()) &&
-					existing_history->messages[message_index].attachments == selected_attachments;
+				const bool same_request = existing->parent_chat_id == source_chat_id && existing->branch_from_message_index == message_index && existing->branch_message_edited == replacement_content.has_value() && (!replacement_content.has_value() || (message_index < static_cast<int>(existing_history->messages.size()) && existing_history->messages[message_index].content == *replacement_content)) && message_index < static_cast<int>(existing_history->messages.size()) && uam::BranchRequestAttachmentsEquivalent(selected_attachments, existing_history->messages[message_index].attachments, source.id, existing->id) && BranchSkillPrefixMatches(*source_messages, existing_history->messages, message_index, selected_skill_files, selected_skill_blocks);
 				if (!same_request)
 				{
 					app.status_line = "Branch operation ID was already used for a different branch request.";
 					return false;
 				}
-				SelectChatById(app, existing->id);
+				if (select_chat) SelectChatById(app, existing->id);
+				if (branch_id_out != nullptr) *branch_id_out = existing->id;
 				if (reused_existing_branch != nullptr) *reused_existing_branch = true;
 				return true;
 			}
@@ -903,13 +976,20 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		return false;
 	}
 
-	if (replacement_content.has_value() && uam::strings::IsBlank(*replacement_content) && selected_attachments.empty())
+	if (replacement_content.has_value() && uam::strings::IsBlank(*replacement_content) && selected_attachments.empty() && (!retained_markdown_store_files || selected_skill_files.empty()))
 	{
 		app.status_line = "Edited message content is required.";
 		return false;
 	}
 
+	if (prepared_originals && (!prepared_originals->MatchesRequest(app.data_root, source.id, message_index, retained_attachment_ids, retained_markdown_store_files) || FindChatById(app, prepared_originals->FinalBranchId()) != nullptr || ChatRepository::ChatStorageRevision(app.data_root, prepared_originals->FinalBranchId()) != std::optional<std::string>("missing")))
+	{
+		app.status_line = "The prepared branch owner changed. Retry the branch.";
+		return false;
+	}
 	ChatSession branch = CreateNewChat(source.folder_id, source.provider_id);
+	if (prepared_originals)
+		branch.id = prepared_originals->FinalBranchId();
 	branch.native_session_id.clear();
 	branch.parent_chat_id = source.id;
 	branch.branch_root_chat_id = uam::strings::NonEmptyOrFallback(source.branch_root_chat_id, source.id);
@@ -968,12 +1048,39 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	const bool branch_from_git_worktree = uam::paths::IsGitWorktreeIsolated(source);
 	if (!branch_from_git_worktree) branch.workspace_isolation_kind = source.workspace_isolation_kind;
 	branch.workspace_directory = branch_from_git_worktree ? source.workspace_source_directory : uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, source));
+	branch.acp_unsent_prompt_recoveries.clear();
 	branch.messages.assign(source_messages->begin(), source_messages->begin() + message_index + 1);
 	branch.messages.back().attachments = std::move(selected_attachments);
+	branch.messages.back().markdown_store_files = std::move(selected_skill_files);
+	branch.messages.back().markdown_store_prompt_blocks = std::move(selected_skill_blocks);
 	if (replacement_content.has_value())
 	{
 		branch.messages.back().content = *replacement_content;
 	}
+	const Message& original_input = (*source_messages)[static_cast<std::size_t>(message_index)];
+	Message& branch_input = branch.messages.back();
+	if (branch_input.content != original_input.content || branch_input.attachments != original_input.attachments ||
+	    branch_input.markdown_store_files != original_input.markdown_store_files || branch_input.markdown_store_prompt_blocks != original_input.markdown_store_prompt_blocks)
+		branch_input.input_write_completed = false;
+	// Asset-bearing default calls are worker/test-only. The only production CEF
+	// caller supplies a bounded-worker prepared token, including for cold history.
+	std::unique_ptr<uam::PreparedBranchOriginals> synchronous_originals;
+	const ChatSession& asset_source = source.messages_loaded ? source : *prepared_source;
+	if (!prepared_originals && uam::BranchPrefixHasOwnedOriginals(asset_source, message_index))
+	{
+		synchronous_originals = uam::PreparedBranchOriginals::Prepare(app.data_root, asset_source, branch.id, message_index, retained_attachment_ids, app.status_line, {}, retained_markdown_store_files);
+		if (!synchronous_originals)
+			return false;
+		prepared_originals = synchronous_originals.get();
+	}
+	if (prepared_originals && !prepared_originals->MatchesSource(asset_source))
+	{
+		app.status_line = "Branch source originals or skill snapshots changed while preparing. Retry the branch.";
+		return false;
+	}
+	if (prepared_originals && !prepared_originals->ApplyTo(branch, app.status_line))
+		return false;
+	std::string original_ack_warning;
 	branch.updated_at = uam::time::TimestampNow();
 	branch.interaction_at = uam::time::InteractionTimestampNow();
 	branch.last_opened_at = branch.updated_at;
@@ -1011,11 +1118,20 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		return false;
 	}
 
+	if (prepared_originals)
+	{
+		prepared_originals->NotePrimaryAcknowledged();
+		if (synchronous_originals && !synchronous_originals->AcknowledgeOriginals(original_ack_warning))
+			original_ack_warning = " Attached originals were kept, but their save could not be fully confirmed.";
+	}
 	const std::string previous_selected_chat_id = SelectedChatId(app);
 	app.chats.push_back(branch);
 	ChatBranching::Normalize(app.chats);
 	SortChatsByRecent(app.chats);
-	SelectChatById(app, branch.id);
+	// Reindex the existing selection before comparing IDs after the sort.
+	app.selected_chat_index = FindChatIndexById(app, previous_selected_chat_id);
+	if (select_chat) SelectChatById(app, branch.id);
+	else RefreshRememberedSelection(app);
 	if (!PersistenceCoordinator().SaveSettings(app))
 	{
 		std::string cleanup_error;
@@ -1025,19 +1141,26 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 			return false;
 		}
 		std::erase_if(app.chats, [&branch](const ChatSession& chat) { return chat.id == branch.id; });
-		SelectChatById(app, previous_selected_chat_id);
+		if (select_chat) SelectChatById(app, previous_selected_chat_id);
+		else
+		{
+			app.selected_chat_index = FindChatIndexById(app, previous_selected_chat_id);
+			RefreshRememberedSelection(app);
+		}
 		(void)ChatRepository::DeleteChatStorageFiles(app.data_root, branch.id);
 		app.status_line = "Failed to persist branch selection.";
 		return false;
 	}
 
 	const ChatSession* selected_branch = SelectedChat(app);
-	if (selected_branch != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected_branch))
+	if (select_chat && selected_branch != nullptr && ProviderResolutionService().ChatUsesCliOutput(app, *selected_branch))
 	{
 		uam::MarkSelectedCliTerminalForLaunch(app);
 	}
 
+	if (branch_id_out != nullptr) *branch_id_out = branch.id;
 	app.status_line = replacement_content.has_value() ? "Edited message opened in a new branch." : "Chat reverted in a new branch.";
+	app.status_line += original_ack_warning;
 	return true;
 }
 

@@ -8,24 +8,27 @@ import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/
 import type { Provider } from '../../types/provider'
 import {
   COPILOT_CLI_PROVIDER_ID,
+  DEFAULT_PROVIDER_ID,
+  normalizeCliProviderIdAlias,
+  CODEX_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
   providerCapabilities,
   providerShortName,
 } from '../../utils/providerMetadata'
 import {
-  buildCodexReasoningOptions,
+  buildProviderReasoningOptions,
   buildCodexSpeedOptions,
   CODEX_SPEED_INHERIT_ID,
   buildModelOptions,
   modelOptionFor,
   reasoningEffortForModel,
-  selectedRuntimeModel,
 } from './modelOptions'
 import { MenuSelect, ViewportMenu } from '../ui'
 import { ProviderAllowanceIndicator } from './ProviderAllowanceIndicator'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { ModelPickerContent } from './ModelPickerContent'
+import { CopilotAutoRoutingControl } from './CopilotAutoRoutingControl'
 import './composer.css'
 
 export type ComposerIconName = 'editor' | 'folder' | 'git-tree' | 'markdown' | 'plus' | 'send' | 'terminal'
@@ -179,6 +182,7 @@ export function ComposerToolbar({
   modelMenuRef,
   onToggleModel,
   onSelectProviderModel,
+  onRefreshModels,
   workspaceDirectory,
   executionHostId,
   onSelectModel,
@@ -241,6 +245,7 @@ export function ComposerToolbar({
   modelMenuRef: RefObject<HTMLDivElement>
   onToggleModel: () => void
   onSelectProviderModel: (providerId: string, modelId: string) => void
+  onRefreshModels?: () => Promise<boolean>
   workspaceDirectory: string
   executionHostId: string
   onSelectModel: (modelId: string) => void
@@ -275,21 +280,15 @@ export function ComposerToolbar({
   const currentModel = modelOptionFor(modelOptions, modelId)
   const reviewerModelOptions = buildModelOptions(acp, reviewerModelId ?? modelId ?? '', provider, providerId, includeDefaultModel, modelVisibility)
   const currentReviewerModel = modelOptionFor(reviewerModelOptions, reviewerModelId || modelId)
-  const runtimeSupportsReasoning = (selectedRuntimeModel(acp, currentModel.id)?.supportedReasoningEfforts?.length ?? 0) > 0
-  const reasoningOptions = caps.hasReasoningEffort || runtimeSupportsReasoning
-    ? buildCodexReasoningOptions(
-        acp,
-        currentModel.id,
-        reasoningEffort ?? '',
-        providerId === COPILOT_CLI_PROVIDER_ID ? caps.reasoningOptions.map((option) => option.id) : undefined
-      )
-    : []
+  const canonicalProviderId = normalizeCliProviderIdAlias(providerId)
+  const reasoningOptions = buildProviderReasoningOptions(providerId, acp,
+    canonicalProviderId === DEFAULT_PROVIDER_ID ? modelId ?? '' : currentModel.id, reasoningEffort ?? '')
   const hasReasoningEffort = reasoningOptions.length > 0
   const speedExplicit = serviceTierExplicit ?? (serviceTier ?? '') !== ''
-  const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '') : []
+  const speedOptions = caps.hasServiceTier ? buildCodexSpeedOptions(acp, currentModel.id, serviceTier ?? '', providerId === CODEX_CLI_PROVIDER_ID) : []
   const currentReasoning = modelOptionFor(
     reasoningOptions,
-    reasoningEffortForModel(acp, currentModel.id, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)
+    canonicalProviderId === DEFAULT_PROVIDER_ID ? reasoningEffort : reasoningEffortForModel(acp, currentModel.id, reasoningEffort, canonicalProviderId === COPILOT_CLI_PROVIDER_ID)
   )
   const currentSpeed = modelOptionFor(speedOptions, speedExplicit ? serviceTier : CODEX_SPEED_INHERIT_ID)
   const variantOptions = providerConfigVariantOptions(acp, providerId)
@@ -481,7 +480,7 @@ export function ComposerToolbar({
                 <MenuSelect
                   label="Worker model"
                   value={currentModel.id}
-                  options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))}
+                  options={modelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
                   onChange={onSelectModel}
                   disabled={modelDisabled}
                 />
@@ -491,7 +490,7 @@ export function ComposerToolbar({
                 <MenuSelect
                   label="Reviewer model"
                   value={currentReviewerModel.id}
-                  options={reviewerModelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))}
+                  options={reviewerModelOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
                   onChange={onSelectReviewerModel}
                   disabled={modelDisabled}
                 />
@@ -505,13 +504,13 @@ export function ComposerToolbar({
                 <MenuSelect
                   label="Reasoning"
                   value={currentReasoning.id}
-                  options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))}
+                  options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))}
                   onChange={onSelectReasoning}
                   disabled={modelDisabled}
                 />
               </div>
             )}
-            {caps.hasServiceTier && (
+            {caps.hasServiceTier && speedOptions.length > 0 && (
               <div className="uam-cmenu__setting">
                 <span>Speed</span>
                 <MenuSelect
@@ -523,6 +522,7 @@ export function ComposerToolbar({
                 />
               </div>
             )}
+            {canonicalProviderId === COPILOT_CLI_PROVIDER_ID && acp && <CopilotAutoRoutingControl acp={acp} disabled={modelDisabled} />}
             {variantOptions.map((option) => (
               <div key={option.id} className="uam-cmenu__setting">
                 <span className="truncate">{option.name || option.id}</span>
@@ -649,7 +649,7 @@ export function ComposerToolbar({
         </button>
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label="Architect + worker" compactLabel="Architect" icon={<Cpu size={12} aria-hidden style={{ color: 'var(--accent)' }} />} onClear={modelDisabled ? undefined : onToggleSmallModelMode} />}
         {featurePreference === 'uam' && smallModelMode && <ActiveModeChip label={`Reviewer: ${currentReviewerModel.label}`} compactLabel={`Review: ${currentReviewerModel.shortLabel}`} icon={<Sparkles size={12} aria-hidden style={{ color: 'var(--purple)' }} />} />}
-        {hasReasoningEffort && <ComposerChoice label="Reasoning" chipLabel={`Reasoning: ${currentReasoning.label}`} value={currentReasoning.id} icon={<Cpu size={12} aria-hidden />} options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))} onChange={onSelectReasoning} disabled={modelDisabled} />}
+        {hasReasoningEffort && <ComposerChoice label="Reasoning" chipLabel={`Reasoning: ${currentReasoning.label}`} value={currentReasoning.id} icon={<Cpu size={12} aria-hidden />} options={reasoningOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail, disabled: option.disabled }))} onChange={onSelectReasoning} disabled={modelDisabled} />}
         {variantOptions.map((option) => <ComposerChoice key={option.id} label={option.name || option.id} value={option.currentValue} icon={<Cpu size={12} aria-hidden />} options={option.options.map((choice) => ({ value: choice.value, label: choice.name || choice.value, description: choice.description }))} onChange={(value) => onSelectConfigOption(option.id, value)} disabled={modelDisabled} />)}
         {speedExplicit && <ComposerChoice label="Speed" chipLabel={`Speed: ${currentSpeed.label}`} value={currentSpeed.id} icon={<Sparkles size={12} aria-hidden />} options={speedOptions.map((option) => ({ value: option.id, label: option.label, description: option.detail }))} onChange={onSelectSpeed} disabled={modelDisabled} />}
 
@@ -704,6 +704,7 @@ export function ComposerToolbar({
               <ModelPickerContent
                 providers={providers.some((candidate) => candidate.id === providerId) ? providers : [...providers, provider]} providerId={providerId} currentModelId={currentModel.id}
                 activeOptions={modelOptions} activeLoading={acp?.modelsLoading} activeError={acp?.modelRefreshError}
+                onRefreshActive={onRefreshModels}
                 modelDisabled={modelDisabled} canChangeProvider={canChangeProvider}
                 workspaceDirectory={workspaceDirectory} executionHostId={executionHostId}
                 onClose={() => { onToggleModel(); modelTriggerRef.current?.focus() }}
@@ -721,7 +722,7 @@ export function ComposerToolbar({
             </ViewportMenu>
           )}
         </div>
-        {!isCompanionContext() && <button type="button" title={dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0" style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}>
+        {<button type="button" title={dictationLabel} aria-label={dictationLabel} aria-pressed="false" data-dictation-state="idle" onClick={onToggleDictation} disabled={!dictationAvailable} className="uam-composer-action uam-composer-secondary-control uam-dictation-button h-[26px] w-[26px] text-xs font-semibold inline-flex items-center justify-center p-0" style={{ borderRadius: 6, opacity: dictationAvailable ? 1 : 0.55 }}>
           <Mic size={15} aria-hidden />
         </button>}
       </div>

@@ -6,31 +6,31 @@ Antigravity CLI is fully in scope for structured Chat and native CLI View, subje
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
-| `structured-chat` | Both | Implemented | Native stream JSON launches, normalises text/tools and retains conversation identity; live platform acceptance remains separate. |
+| `structured-chat` | Both | Partial | Native stream JSON launches, normalises text/tools and retains conversation identity; live platform acceptance remains separate. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native agy CLI has a launch path; interactive approvals stay with the provider. |
-| `terminal-sync` | Both | Partial | Saved IDs support native resume, but provider-native history import for terminal-to-Chat refresh is unavailable. |
+| `terminal-sync` | Both | Partial | Saved IDs support native resume, but provider-native history import for terminal-to-Chat refresh is unavailable. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
 | `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
 | `branching` | UAM | Partial | Shared branching is in scope; exact context replay and empty-chat behaviour retain the shared implementation gaps. |
-| `editing-messages` | UAM | Partial | Shared edit/branch recovery is in scope; Antigravity continuation and recovery cases still need verification. |
+| `editing-messages` | UAM | Partial | Local edits and delivered branches retain selected file and skill context; [continuation limits and acceptance](../editing-messages.md) remain outstanding. |
 | `mcp-connections` | Both | Partial | Private additional-directory setup exists; discovery does not establish permission to invoke tools. |
-| `skills` | UAM | Partial | Shared resource/index delivery exists; attached-skill discovery and live model compliance remain open. |
-| `attachments` | Both | Needs verification | Verify structured file/image consumption and remote delivery rather than assuming native terminal support is enough. |
-| `compaction` | Unverified | Needs verification | Native /compact is unavailable; a UAM equivalent satisfying the shared compaction agreement is not established. |
-| `computer-use` | Both | Needs verification | UAM-managed setup exists; verify the local controller and policy route for structured Antigravity work. |
+| `skills` | UAM | Implemented | Complete resources and indexes are delivered locally or over SSH; attached requests use captured instructions and immutable references, subject to native permissions and model compliance. |
+| `attachments` | Both | Partial | Ordinary files remain provider-host references; structured native image input is explicitly unavailable rather than silently discarded. |
+| `compaction` | Both | Partial | Recent native TUI versions expose compact while structured stream input has no safe manual compaction control or implemented UAM equivalent. |
+| `computer-use` | UAM | Implemented | Structured launches receive the gated local UAM controller through native MCP setup, including disabled central setup, with approval bound to the original user task; native CLI View invocation and live platform acceptance remain unverified, and SSH desktop control is outside scope. |
 | `side-chats` | UAM | Implemented | Shared related conversations; no automatic worktree request. |
-| `models` | Both | Partial | Configured model selection reaches both launch paths; a complete runtime discovery catalogue is not established. |
-| `agent-selection` | Both | Needs verification | Shared UAM agent delivery is in scope; native constraint mapping and structured execution require verification. |
-| `agent-history` | Unverified | Needs verification | Complete addressable child history and a UAM equivalent are not established. |
+| `models` | Both | Implemented | Asynchronous native models discovery publishes only complete scoped local/SSH catalogues while retaining previous choices after failure. |
+| `agent-selection` | Both | Needs verification | Shared UAM agent delivery is in scope; native constraint mapping and structured execution require verification. Shared [built-in delegation](../../settings/central-setup/agents.md#built-in-delegation) retains parent ceilings. |
+| `agent-history` | Both | Partial | Native child identities can open an already-owned local conversation without losing its independent branch ancestry; complete native history export remains unexposed. Shared inline presentation remains pending integration and acceptance. |
+| `subagents` | Both | Partial | Already-owned writable local children use exact native resume through a child-only pane with parent draft/scroll retained; absent and foreign-host children refuse, native journal export and original child-process controls remain unavailable; [same-child follow-up, lineage and acceptance remain partial](../../chat/subagents.md). Shared [active-turn wait](../../chat/subagents.md#active-turn-result-wait) is source-integrated with focused private fixtures; canonical verification, this provider's long-call deadline and live local/SSH invocation remain unverified. |
+| `goals` | Both | Partial | Shared UAM goal controls exist and native CLI Goal mode is documented; exact native status/control bridging without a competing UAM loop remains unimplemented. |
 | `resume` | Both | Implemented | Structured conversation IDs are captured and passed with --conversation for saved-session resume; live Windows/SSH acceptance remains separate. |
-| `reasoning` | Provider | Needs verification | Any native effort control and its UAM selection/persistence mapping need verification. |
+| `reasoning` | Both | Implemented | Read-only native commands supply exact model-specific effort choices and saved selections reach native execution; older executables retain explicit metadata limits. |
 | `fast-mode` | Unverified | Needs verification | An actual native speed tier or UAM equivalent is not established. |
-| `permissions` | Both | Partial | Native Plan/Accept Edits and denial reporting exist; interactive callbacks and complete four-mode UAM equivalence remain gaps. |
-| `usage` | Both | Partial | Token/history and independent local account quota-summary reads exist; existing account eligibility, custom commands, remote acquisition and platform acceptance remain limits. Expired grants without registration fields require refresh in the provider CLI. |
+| `permissions` | Both | Partial | Native Plan, canonical Accept Edits mapping and denial reporting exist; interactive callbacks and complete four-mode UAM equivalence remain gaps, and the [implemented shared captured-read boundary](../permissions/permissions.md#captured-read-restrictions) does not supply an unexposed native approval route. |
+| `usage` | Both | Partial | Validated native step tokens reach live figures as consumption observed while attached; missing or malformed counts remain unknown, native history/context coverage remains limited, and independent local account quota-summary reads retain existing eligibility, custom-command, remote and platform limits. Expired grants without registration fields require refresh in the provider CLI. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
 | `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
-
-**Known UI gap:** provider availability settings still label Antigravity “Terminal sessions only.” The label conflicts with the confirmed scope; structured adapter presence does not establish that all selectors and settings expose it correctly.
 
 **Source:** [provider runtime](../../../src/common/provider/antigravity/cli/antigravity_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.

@@ -248,7 +248,7 @@ describe('UsageLimits', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       act(() => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.textContent).toContain('Observed in Resumed chat')
+      expect(host.textContent).toContain('Tokens observed while attached to Resumed chat: 125')
       expect(fact(host, 'Input')).toBe('100')
       expect(fact(host, 'Output')).toBe('25')
       expect(fact(host, 'Cache read')).toBe('70')
@@ -268,7 +268,7 @@ describe('UsageLimits', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       act(() => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.textContent).toContain('Used in Zero usage')
+      expect(host.textContent).toContain('Tokens consumed in Zero usage: 0')
       expect(fact(host, 'Last turn')).toBe('0')
       expect(host.textContent).toContain('Update time unavailable')
       expect(host.textContent).toContain('Cached snapshot')
@@ -291,7 +291,7 @@ describe('UsageLimits', () => {
     const host = document.createElement('div'), root = createRoot(host)
     try {
       act(() => root.render(<UsageLimits executionHostId="local" />))
-      expect(host.textContent).toContain('Used in Current Claude')
+      expect(host.textContent).toContain('Tokens consumed in Current Claude: 161')
       expect(fact(host, 'Input')).toBe('120')
       expect(fact(host, 'Output')).toBe('41')
       expect(fact(host, 'Cache read')).toBe('20')

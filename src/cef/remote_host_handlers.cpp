@@ -180,9 +180,11 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 		std::shared_ptr<void> pause = m_app.startup_native_import_service->PauseBackgroundScanOnHost(host.id);
 		if (pause) cb = new RemoteInstallScanPauseCallback(cb, std::move(pause));
 	}
-	if (HostHasActiveRuntimeWork(m_app, host.id, true))
+	uam::remote_install::HostRuntimeBlockReason block_reason = uam::remote_install::HostRuntimeBlockReason::None;
+	if (HostHasActiveRuntimeWork(m_app, host.id, true, &block_reason))
 	{
-		cb->Failure(409, "Stop or finish work running on this host before updating its helper.");
+		cb->Failure(409, std::string("Stop or finish work running on this host before updating its helper. Reason: ") +
+		    uam::remote_install::HostRuntimeBlockReasonCode(block_reason) + ".");
 		return;
 	}
 	std::optional<ExecutionHost> previous_host;
@@ -255,8 +257,12 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 				}
 				if (expired)
 				{
+					// Observe only: a terminal wait can also follow a repost failure or exception.
+					uam::remote_install::HostRuntimeBlockReason wait_block_reason = uam::remote_install::HostRuntimeBlockReason::None;
+					(void)HostHasActiveRuntimeWork(m_app, reserved.id, false, &wait_block_reason);
 					(void)restore();
-					cb->Failure(409, "Remote work has not finished stopping. Retry the helper installation after it exits.");
+					cb->Failure(409, std::string("Remote work has not finished stopping. Retry the helper installation after it exits. Current observed runtime blocker: ") +
+					    uam::remote_install::HostRuntimeBlockReasonCode(wait_block_reason) + ".");
 					return true;
 				}
 				if (HostHasActiveRuntimeWork(m_app, reserved.id)) return false;

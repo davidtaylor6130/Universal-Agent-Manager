@@ -6,8 +6,12 @@
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include <stdexcept>
+#include <limits>
+#include "common/paths/app_paths.h"
 #include "common/config/central_provider_configuration.h"
 #include "cef/uam_query_handler.h"
+#include "common/companion/connection_lifecycle.h"
+#include "common/companion/pairing_certificate.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 
@@ -175,39 +179,183 @@ namespace
 	}
 } // namespace
 
+namespace
+{
+	SettingsMemoryCanonicalValues CaptureMemorySettings(const AppSettings& value)
+	{
+		return {value.memory_enabled_default, value.memory_level_default, value.memory_idle_delay_seconds,
+		    value.memory_recall_budget_bytes, value.goal_max_loop_iterations, value.acp_setup_inactivity_timeout_seconds,
+		    value.acp_turn_output_limit_mib, value.memory_worker_bindings,
+		    value.permission_reviewer_provider_id, value.permission_reviewer_model_id};
+	}
+
+	void ApplyMemorySettings(AppSettings& target, SettingsMemoryCanonicalValues value) noexcept
+	{
+		target.memory_enabled_default = value.memory_enabled_default;
+		target.memory_level_default.swap(value.memory_level_default);
+		target.memory_idle_delay_seconds = value.memory_idle_delay_seconds;
+		target.memory_recall_budget_bytes = value.memory_recall_budget_bytes;
+		target.goal_max_loop_iterations = value.goal_max_loop_iterations;
+		target.acp_setup_inactivity_timeout_seconds = value.acp_setup_inactivity_timeout_seconds;
+		target.acp_turn_output_limit_mib = value.acp_turn_output_limit_mib;
+		target.memory_worker_bindings.swap(value.memory_worker_bindings);
+		target.permission_reviewer_provider_id.swap(value.permission_reviewer_provider_id);
+		target.permission_reviewer_model_id.swap(value.permission_reviewer_model_id);
+	}
+
+	nlohmann::json MemorySettingsValues(const AppSettings& value)
+	{
+		nlohmann::json bindings = nlohmann::json::object();
+		for (const auto& [id, binding] : value.memory_worker_bindings)
+			bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
+		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
+		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
+		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
+		    {"acpTurnOutputLimitMiB", value.acp_turn_output_limit_mib}, {"memoryWorkerBindings", std::move(bindings)},
+		    {"permissionReviewerProviderId", value.permission_reviewer_provider_id}, {"permissionReviewerModelId", value.permission_reviewer_model_id}};
+	}
+
+	nlohmann::json MemorySettingsPrimarySnapshot(const uam::AppState& app)
+	{
+		nlohmann::json result = {{"scope", app.settings_publication_scope}, {"revision", app.settings_publication_revision}, {"primaryValidated", false}};
+		try
+		{
+			AppSettings primary;
+			const auto loaded = SettingsStore::LoadPrimary(AppPaths::SettingsFilePath(app.data_root), primary);
+			if (loaded.loaded && !loaded.recovered_from_backup && !loaded.unrecovered_error)
+			{
+				result["values"] = MemorySettingsValues(primary);
+				result["primaryValidated"] = true;
+			}
+		}
+		catch (...) {} // No backup/default values become a primary observation.
+		return result;
+	}
+
+	bool MemoryRequestText(const nlohmann::json& value)
+	{
+		if (!value.is_string()) return false;
+		const auto& text = value.get_ref<const std::string&>();
+		return !text.empty() && text.size() <= 128 && std::all_of(text.begin(), text.end(), [](unsigned char c) { return c >= 0x20 && c <= 0x7e; });
+	}
+
+	bool ValidMemorySettingsPayload(const nlohmann::json& payload)
+	{
+		if (!payload.is_object()) return false;
+		if (payload.contains("enabledDefault") && !payload["enabledDefault"].is_boolean()) return false;
+		for (const auto* key : {"levelDefault", "permissionReviewerProviderId", "permissionReviewerModelId"})
+			if (payload.contains(key) && !payload[key].is_string()) return false;
+		for (const auto* key : {"idleDelaySeconds", "recallBudgetBytes", "goalMaxLoopIterations", "acpTurnOutputLimitMiB", "acpSetupInactivityTimeoutSeconds"})
+		{
+			if (!payload.contains(key)) continue;
+			const auto& value = payload[key];
+			if (!value.is_number_integer()) return false;
+			if (value.is_number_unsigned()) { if (value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) return false; }
+			else if (value.get<std::int64_t>() < std::numeric_limits<int>::min() || value.get<std::int64_t>() > std::numeric_limits<int>::max()) return false;
+		}
+		if (payload.contains("workerBindings"))
+		{
+			if (!payload["workerBindings"].is_object()) return false;
+			for (const auto& [id, binding] : payload["workerBindings"].items())
+			{
+				if (!binding.is_object()) return false;
+				for (const auto* key : {"workerProviderId", "workerModelId"})
+					if (binding.contains(key) && !binding[key].is_string()) return false;
+			}
+		}
+		return true;
+	}
+}
+
+void UamQueryHandler::HandleGetMemorySettings(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	// This read fences older stamped writes; the snapshot never falls back to backup/defaults.
+	if (!PersistenceCoordinator().AdvanceSettingsPublication(m_app))
+	{
+		cb->Failure(503, "Settings publication fence is unavailable.");
+		return;
+	}
+	cb->Success(MemorySettingsPrimarySnapshot(m_app).dump());
+}
+
 void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const AppSettings previous = m_app.settings;
+	std::string request_id;
+	if (payload.contains("memoryRequestId"))
+	{
+		if (!MemoryRequestText(payload["memoryRequestId"])) { cb->Failure(400, "Invalid memory request identity."); return; }
+		request_id = payload["memoryRequestId"].get<std::string>();
+	}
+	if (!ValidMemorySettingsPayload(payload)) { cb->Failure(400, "Invalid memory settings payload."); return; }
+	const bool scope_supplied = payload.contains("expectedSettingsScope");
+	const bool revision_supplied = payload.contains("expectedSettingsRevision");
+	const bool request_supplied = payload.contains("memoryRequestId");
+	if ((scope_supplied || revision_supplied || request_supplied) && !(scope_supplied && revision_supplied && request_supplied))
+	{
+		cb->Failure(400, "Supply the complete settings publication fence and request identity.");
+		return;
+	}
+	if (scope_supplied != revision_supplied || (scope_supplied && (!MemoryRequestText(payload["expectedSettingsScope"]) ||
+	    !payload["expectedSettingsRevision"].is_number_integer() ||
+	    (payload["expectedSettingsRevision"].is_number_unsigned() ? payload["expectedSettingsRevision"].get<std::uint64_t>() > PersistenceCoordinator::kMaxSettingsPublicationRevision :
+	        payload["expectedSettingsRevision"].get<std::int64_t>() < 0 || static_cast<std::uint64_t>(payload["expectedSettingsRevision"].get<std::int64_t>()) > PersistenceCoordinator::kMaxSettingsPublicationRevision))))
+	{
+		cb->Failure(400, "Invalid settings publication fence.");
+		return;
+	}
+	if (!PersistenceCoordinator().EnsureSettingsPublicationScope(m_app)) { cb->Failure(503, "Settings publication scope is unavailable."); return; }
+	// Only complete stamped clients understand noncommitted typed Success bodies.
+	const bool typed_outcomes = scope_supplied && !request_id.empty();
+	const auto reject = [&]()
+	{
+		if (!typed_outcomes) { cb->Failure(409, "Settings were not confirmed saved. Refresh current values before retrying."); return; }
+		auto response = MemorySettingsPrimarySnapshot(m_app);
+		response["memoryRequestId"] = request_id;
+		response["outcome"] = "rejected";
+		cb->Success(response.dump());
+	};
+	if (scope_supplied && (payload["expectedSettingsScope"] != m_app.settings_publication_scope ||
+	    payload["expectedSettingsRevision"].get<std::uint64_t>() != m_app.settings_publication_revision)) { reject(); return; }
+	if (!PersistenceCoordinator().ResolveMemorySettingsUncertainty(m_app))
+	{
+		if (!typed_outcomes) { cb->Failure(500, "Settings were not confirmed saved. Refresh current values before retrying."); return; }
+		auto response = nlohmann::json{{"memoryRequestId", request_id}, {"outcome", "unknown"},
+		    {"scope", m_app.settings_publication_scope}, {"revision", m_app.settings_publication_revision}, {"primaryValidated", false}};
+		cb->Success(response.dump());
+		return;
+	}
+	// All supplied field types have been validated before this private candidate is built.
+	AppSettings candidate = m_app.settings;
 	if (const std::optional<bool> enabled_default = uam::nlohmann_json::BoolFieldStrict(payload, "enabledDefault"))
 	{
-		m_app.settings.memory_enabled_default = *enabled_default;
+		candidate.memory_enabled_default = *enabled_default;
 	}
-	m_app.settings.memory_level_default = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(payload, "levelDefault", m_app.settings.memory_level_default), m_app.settings.memory_enabled_default);
-	m_app.settings.memory_enabled_default = uam::memory_levels::IsEnabled(m_app.settings.memory_level_default);
+	candidate.memory_level_default = uam::memory_levels::Normalize(uam::nlohmann_json::TrimmedStringValueOr(payload, "levelDefault", candidate.memory_level_default), candidate.memory_enabled_default);
+	candidate.memory_enabled_default = uam::memory_levels::IsEnabled(candidate.memory_level_default);
 	if (const std::optional<int> idle_delay_seconds = uam::nlohmann_json::IntFieldStrict(payload, "idleDelaySeconds"))
 	{
-		m_app.settings.memory_idle_delay_seconds = *idle_delay_seconds;
+		candidate.memory_idle_delay_seconds = *idle_delay_seconds;
 	}
 	if (const std::optional<int> recall_budget_bytes = uam::nlohmann_json::IntFieldStrict(payload, "recallBudgetBytes"))
 	{
-		m_app.settings.memory_recall_budget_bytes = *recall_budget_bytes;
+		candidate.memory_recall_budget_bytes = *recall_budget_bytes;
 	}
 	if (const std::optional<int> max_loop_iterations = uam::nlohmann_json::IntFieldStrict(payload, "goalMaxLoopIterations"))
 	{
-		m_app.settings.goal_max_loop_iterations = *max_loop_iterations;
+		candidate.goal_max_loop_iterations = *max_loop_iterations;
 	}
 	if (const std::optional<int> output_limit_mib = uam::nlohmann_json::IntFieldStrict(payload, "acpTurnOutputLimitMiB"))
 	{
-		m_app.settings.acp_turn_output_limit_mib = *output_limit_mib;
+		candidate.acp_turn_output_limit_mib = *output_limit_mib;
 	}
 	if (const std::optional<int> setup_timeout_seconds = uam::nlohmann_json::IntFieldStrict(payload, "acpSetupInactivityTimeoutSeconds"))
 	{
-		m_app.settings.acp_setup_inactivity_timeout_seconds = *setup_timeout_seconds;
+		candidate.acp_setup_inactivity_timeout_seconds = *setup_timeout_seconds;
 	}
-	uam::settings::ClampMemorySettings(m_app.settings);
-	uam::settings::ClampGoalSettings(m_app.settings);
-	uam::settings::ClampAcpOutputSettings(m_app.settings);
-	uam::settings::ClampRuntimeTimeoutSettings(m_app.settings);
+	uam::settings::ClampMemorySettings(candidate);
+	uam::settings::ClampGoalSettings(candidate);
+	uam::settings::ClampAcpOutputSettings(candidate);
+	uam::settings::ClampRuntimeTimeoutSettings(candidate);
 	if (const nlohmann::json* worker_bindings = uam::nlohmann_json::FindObjectField(payload, "workerBindings"); worker_bindings != nullptr)
 	{
 		for (auto it = worker_bindings->begin(); it != worker_bindings->end(); ++it)
@@ -223,28 +371,68 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 			{
 				continue;
 			}
-			m_app.settings.memory_worker_bindings[chat_provider_id] = MemoryWorkerBinding{worker_provider_id, worker_model_id};
+			candidate.memory_worker_bindings[chat_provider_id] = MemoryWorkerBinding{worker_provider_id, worker_model_id};
 		}
 	}
 	if (payload.contains("permissionReviewerProviderId"))
 	{
 		const std::string provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(payload.value("permissionReviewerProviderId", ""));
-		m_app.settings.permission_reviewer_provider_id = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr ? "" : provider_id;
+		candidate.permission_reviewer_provider_id = ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr ? "" : provider_id;
 	}
 	if (payload.contains("permissionReviewerModelId"))
 	{
-		m_app.settings.permission_reviewer_model_id = uam::strings::Trim(payload.value("permissionReviewerModelId", ""));
+		candidate.permission_reviewer_model_id = uam::strings::Trim(payload.value("permissionReviewerModelId", ""));
 	}
 
-	if (!PersistenceCoordinator().SaveSettings(m_app))
+	SettingsMemoryCanonicalValues previous = CaptureMemorySettings(m_app.settings);
+	ApplyMemorySettings(m_app.settings, CaptureMemorySettings(candidate));
+	SettingsMemoryWriteReceipt receipt;
+	try
 	{
-		m_app.settings = previous;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist memory settings."));
-		return;
+		(void)PersistenceCoordinator().SaveSettings(m_app, &receipt, m_memorySettingsStageGateForTests);
 	}
+	catch (...)
+	{
+		// A receipt-less unexpected failure cannot prove non-commit.
+		receipt.outcome = SettingsMemoryWriteOutcome::UnknownAfterReplacePermission;
+	}
+	const bool committed = receipt.outcome == SettingsMemoryWriteOutcome::Committed && receipt.canonical_values_ready;
+	if (committed)
+	{
+		ApplyMemorySettings(m_app.settings, std::move(receipt.canonical));
+		m_app.memory_settings_uncertain = false;
+	}
+	else if (receipt.outcome == SettingsMemoryWriteOutcome::RejectedBeforeReplace)
+		ApplyMemorySettings(m_app.settings, std::move(previous));
+	else m_app.memory_settings_uncertain = true;
 
-	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success("{}");
+	// Freeze action-local facts before any notification callback can run.
+	nlohmann::json response;
+	if (committed)
+	{
+		response = {{"memoryRequestId", request_id}, {"outcome", "committed"},
+		    {"scope", m_app.settings_publication_scope}, {"revision", m_app.settings_publication_revision},
+		    {"primaryValidated", true}, {"values", MemorySettingsValues(m_app.settings)}};
+	}
+	else if (receipt.outcome == SettingsMemoryWriteOutcome::RejectedBeforeReplace)
+	{
+		response = MemorySettingsPrimarySnapshot(m_app);
+		response["memoryRequestId"] = request_id;
+		response["outcome"] = "rejected";
+	}
+	else response = {{"memoryRequestId", request_id}, {"outcome", "unknown"},
+	    {"scope", m_app.settings_publication_scope}, {"revision", m_app.settings_publication_revision}, {"primaryValidated", false}};
+	const std::string terminal_response = response.dump();
+	try { if (m_memorySettingsAfterSaveForTests) m_memorySettingsAfterSaveForTests(); } catch (...) {}
+	if (committed) { try { uam::PushStateUpdateIfChanged(browser, m_app); } catch (...) {} }
+	// One terminal callback attempt. Delivery failure cannot turn a captured commit into rejection.
+	try
+	{
+		if (committed || typed_outcomes) cb->Success(terminal_response);
+		else cb->Failure(500, "Settings were not confirmed saved. Refresh current values before retrying.");
+	}
+	catch (...) {}
+
 }
 
 void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -590,27 +778,54 @@ void UamQueryHandler::HandleSetTheme(CefRefPtr<CefBrowser> browser, const nlohma
 	cb->Success("{}");
 }
 
-void UamQueryHandler::HandleGetCompanionSettings(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+nlohmann::json UamQueryHandler::CompanionConnectionStatus(const nlohmann::json& config) const
 {
-	nlohmann::json config;
-	if (!ReadCompanionConfig(m_app, config))
-	{
-		cb->Success(nlohmann::json{{"configured", false}, {"enabled", false}, {"url", ""}, {"restartRequired", true}}.dump());
-		return;
-	}
-	nlohmann::json response = CompanionSettingsResponse(config);
+#if UAM_ENABLE_MOBILE_COMPANION
+	if (m_companion) return m_companion->Status();
+	return UamCompanionService::ConfigurationStatus(m_app.data_root);
+#endif
+	const auto saved = CompanionSettingsResponse(config);
+	const bool enabled = saved["enabled"].get<bool>();
+	const bool configured = saved["configured"].get<bool>();
+	auto response = uam::companion::ConnectionStatus(
+	    {configured, enabled, configured ? saved["url"].get<std::string>() : std::string{}, 0}, enabled ? "failed" : "disabled", enabled ? "configurationInvalid" : "disabled");
 #if defined(__APPLE__)
 	response["localAddresses"] = uam::platform::MacLocalIpv4Addresses();
 #endif
-#if UAM_ENABLE_MOBILE_COMPANION
-	response["proxyRunning"] = m_companion && m_companion->IsProxyRunning();
-#else
-	response["proxyRunning"] = false;
-#endif
-	cb->Success(response.dump());
+	return response;
 }
 
-void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::ApplyCompanionConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& config)
+{
+#if UAM_ENABLE_MOBILE_COMPANION
+	if (!m_companion) StartCompanion(browser);
+	const auto saved = CompanionSettingsResponse(config);
+	if (m_companion) m_companion->Reload(saved["enabled"].get<bool>());
+#else
+	(void)browser;
+	(void)config;
+#endif
+}
+
+void UamQueryHandler::HandleRestartCompanion(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	if (!payload.is_object() || !payload.empty())
+	{ cb->Failure(400, "Restart phone access does not accept configuration changes."); return; }
+	nlohmann::json config;
+	if (!ReadCompanionConfig(m_app, config) || !config.contains("token_file") || !config["token_file"].is_string())
+	{ cb->Failure(409, "Phone access is not configured in Universal Agent Manager."); return; }
+	ApplyCompanionConfiguration(browser, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
+}
+
+void UamQueryHandler::HandleGetCompanionSettings(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+{
+	nlohmann::json config = nlohmann::json::object();
+	(void)ReadCompanionConfig(m_app, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
+}
+
+void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "enabled");
 	if (!enabled)
@@ -636,7 +851,8 @@ void UamQueryHandler::HandleSetCompanionEnabled(CefRefPtr<CefBrowser>, const nlo
 	    !config["origin"].get_ref<const std::string&>().empty())
 		uam::platform::RequestMacLocalNetworkAccess();
 #endif
-	cb->Success(CompanionSettingsResponse(config).dump());
+	ApplyCompanionConfiguration(browser, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
 }
 
 void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
@@ -659,7 +875,17 @@ void UamQueryHandler::HandleGetCompanionToken(CefRefPtr<CefBrowser>, const nlohm
 		cb->Failure(404, "Phone access token is invalid or unavailable.");
 		return;
 	}
-	cb->Success(nlohmann::json{{"token", token}, {"url", CompanionUrl(config)}}.dump());
+	const auto status = CompanionConnectionStatus(config);
+	nlohmann::json response{{"token", token}, {"url", status.value("state", std::string{}) == "ready" ? status.value("effectiveUrl", std::string{}) : std::string{}},
+	    {"state", status["state"]}, {"reasonCode", status["reasonCode"]}, {"reason", status["reason"]}};
+	// The public CA is optional and is never a reason to expose an unready saved URL.
+	try
+	{
+		const std::string certificate = uam::companion::ReadCompanionPairingCertificate(config);
+		if (!certificate.empty()) response["certificate"] = certificate;
+	}
+	catch (...) {}
+	cb->Success(response.dump());
 }
 
 void UamQueryHandler::HandleApplyCliProviderVersions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -744,7 +970,7 @@ void UamQueryHandler::HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser>, con
 #endif
 }
 
-void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 #if defined(__APPLE__)
 	const std::string address = uam::nlohmann_json::TrimmedStringValue(payload, {"address"});
@@ -769,7 +995,8 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser>, con
 		cb->Failure(500, "Cannot save phone URL. The proxy configuration was restored."); return;
 	}
 	uam::platform::RequestMacLocalNetworkAccess();
-	cb->Success(CompanionSettingsResponse(config).dump());
+	ApplyCompanionConfiguration(browser, config);
+	cb->Success(CompanionConnectionStatus(config).dump());
 #else
 	(void)payload;
 	cb->Failure(409, "Automatic LAN repair is currently available on macOS.");
@@ -1059,13 +1286,17 @@ void UamQueryHandler::HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, co
 {
 	const std::optional<int> logs = uam::nlohmann_json::IntFieldStrict(payload, "backupLogRetentionDays");
 	const std::optional<int> cache = uam::nlohmann_json::IntFieldStrict(payload, "httpCacheClearIntervalDays");
-	if (!logs || !cache || *logs < 0 || *logs > 3650 || *cache < 0 || *cache > 3650)
+	if ((!payload.contains("backupLogRetentionDays") && !payload.contains("httpCacheClearIntervalDays")) ||
+	    (payload.contains("backupLogRetentionDays") && (!logs || *logs < 0 || *logs > 3650)) ||
+	    (payload.contains("httpCacheClearIntervalDays") && (!cache || *cache < 0 || *cache > 3650)))
 	{ cb->Failure(400, "Storage policy requires integer day values from 0 to 3650; zero disables cleanup."); return; }
 	if (!m_app.storage_retention_service)
 	{ cb->Failure(409, "Storage policy is still loading."); return; }
+	// Adopt a just-published policy before resolving omitted fields from current values.
 	m_app.storage_retention_service->Poll(m_app);
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
-	if (!m_app.storage_retention_service->RequestPolicy(m_app.data_root, {*logs, *cache}, lifetime,
+	if (!m_app.storage_retention_service->RequestPolicy(m_app.data_root,
+	    {logs.value_or(m_app.settings.backup_log_retention_days), cache.value_or(m_app.settings.http_cache_clear_interval_days)}, lifetime,
 	    [this, browser, cb, lifetime](bool saved, const std::string& error)
 	    {
 		    if (lifetime.expired()) return;

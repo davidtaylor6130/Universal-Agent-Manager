@@ -367,3 +367,297 @@ UAM_TEST(LargeImportedMetadataSavePreservesPast256MiB)
 	UAM_ASSERT_EQ(persisted_summary["summary_source_size"].get<std::uintmax_t>(), fs::file_size(primary));
 	UAM_ASSERT_EQ(persisted_summary["persisted_messages_digest"].get<std::string>(), summary->persisted_messages_digest);
 }
+
+
+UAM_TEST(ManagedOriginMessageJsonPageDigestAndMalformedInput)
+{
+	TempDir temp("uam-managed-origin-message");
+	ChatSession chat = PageMetadata();
+	Message original = PageMessage(0);
+	const std::string id = "5ad39bc5-8084-4e5e-8bbf-d3974ecca5c7";
+	Message annotated = original;
+	annotated.managed_origin_run_id = id;
+	UAM_ASSERT(original != annotated);
+	std::uint64_t old_hash = 14695981039346656037ULL, new_hash = old_hash;
+	uam::chat_pages::AppendMessageDigest(old_hash, original);
+	uam::chat_pages::AppendMessageDigest(new_hash, annotated);
+	UAM_ASSERT(old_hash != new_hash);
+	chat.messages = {annotated};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const auto saved = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(saved && saved->messages == chat.messages);
+	const auto metadata = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(metadata && !metadata->messages_loaded);
+	const auto page = ChatRepository::ReadMessagePage(temp.root, *metadata, 1);
+	UAM_ASSERT(page && page->chat.messages == chat.messages);
+	const auto primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const auto document = nlohmann::json::parse(ReadFile(primary));
+	UAM_ASSERT_EQ(document.at("messages").at(0).at("managed_origin_run_id").get<std::string>(), id);
+	{
+		auto unknown = document;
+		unknown["messages"][0].erase("managed_origin_run_id");
+		unknown["messages"][0]["unknown_managed_origin"] = id;
+		UAM_ASSERT(uam::io::WriteTextFile(primary, unknown.dump()));
+		const auto loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true, nullptr, false);
+		UAM_ASSERT(loaded && loaded->messages[0] == original);
+	}
+	for (const auto& malformed : std::vector<nlohmann::json>{nullptr, 1, nlohmann::json::object(), "", "not-a-run", " " + id, id + " ", std::string(10000, 'x')})
+	{
+		auto candidate = document;
+		candidate["messages"][0]["managed_origin_run_id"] = malformed;
+		candidate["messages"][0]["unknown_managed_origin"] = id;
+		UAM_ASSERT(uam::io::WriteTextFile(primary, candidate.dump()));
+		const auto loaded = ChatRepository::LoadLocalChat(temp.root, chat.id, true, nullptr, false);
+		UAM_ASSERT(loaded && !loaded->messages[0].managed_origin_run_id);
+		UAM_ASSERT_EQ(loaded->messages[0], original);
+	}
+}
+
+
+// Shape derives from the sealed alpha135 saved delegate receipt. All task/result values
+// below are synthetic; this is not a copy of user data or a live-provider acceptance test.
+UAM_TEST(DeferredManagedLaunchReceiptSurvivesSavedPageWithoutToolContent)
+{
+	TempDir temp("uam-deferred-managed-launch");
+	ChatSession chat = PageMetadata();
+	const std::string run_id = "8509f0ba-ea06-4068-a6ed-3e1bab09bc53";
+	const nlohmann::json arguments{{"agentId", "plan"}, {"providerId", "copilot-cli"}, {"task", "Synthetic saved launch fixture"}};
+	const nlohmann::json accepted{{"runId", run_id}, {"status", "queued"}};
+	const nlohmann::json wrapper{
+	    {"type", "mcpToolCall"}, {"id", "exec-synthetic-saved-delegate"},
+	    {"server", "uam-control"}, {"tool", "agent_delegate"}, {"status", "completed"},
+	    {"arguments", arguments}, {"durationMs", 537}, {"error", nullptr},
+	    {"appContext", nullptr}, {"mcpAppUi", nullptr}, {"pluginId", nullptr}, {"readOnlyHint", nullptr},
+	    {"result", {{"_meta", nullptr}, {"structuredContent", nullptr},
+	        {"content", nlohmann::json::array({{{"type", "text"}, {"text", accepted.dump()}}})}}}};
+	ToolCall delegate;
+	delegate.id = "exec-synthetic-saved-delegate";
+	delegate.name = "agent_delegate";
+	delegate.kind = "mcpToolCall";
+	delegate.status = "completed";
+	delegate.args_json = arguments.dump();
+	delegate.result_text = wrapper.dump(2);
+	Message message;
+	message.role = MessageRole::Assistant;
+	message.created_at = "2026-10-20T19:00:00.000Z";
+	message.provider = "codex-cli";
+	message.tool_calls = {delegate};
+	MessageBlock block;
+	block.type = "tool_call";
+	block.tool_call_id = delegate.id;
+	message.blocks = {block};
+	chat.messages = {message};
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const auto saved = ChatRepository::LoadLocalChat(temp.root, chat.id, true);
+	UAM_ASSERT(saved && saved->messages == chat.messages);
+	const auto metadata = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(metadata && !metadata->messages_loaded && metadata->messages.empty());
+	const auto page = ChatRepository::ReadMessagePage(temp.root, *metadata, 50);
+	UAM_ASSERT(page && page->chat.messages == chat.messages);
+	const auto deferred = uam::StateSerializer::SerializeDetachedMessagePage(*page, true);
+	const auto inline_page = uam::StateSerializer::SerializeDetachedMessagePage(*page, false);
+	const auto& tool = deferred.at("messages").at(0).at("toolCalls").at(0);
+	UAM_ASSERT_EQ(tool.at("title").get<std::string>(), delegate.name);
+	UAM_ASSERT_EQ(tool.at("kind").get<std::string>(), delegate.kind);
+	UAM_ASSERT_EQ(tool.at("status").get<std::string>(), delegate.status);
+	UAM_ASSERT(tool.at("contentDeferred").get<bool>());
+	UAM_ASSERT(!tool.contains("content"));
+	UAM_ASSERT(!tool.at("contentDigest").get<std::string>().empty());
+	const std::string full_content = uam::StateSerializer::ToolCallContentForFrontend(delegate);
+	UAM_ASSERT_EQ(inline_page.at("messages").at(0).at("toolCalls").at(0).at("content").get<std::string>(), full_content);
+	const auto details = uam::StateSerializer::ToolCallContentPageForFrontend(page->chat.messages.at(0).tool_calls.at(0), 0);
+	UAM_ASSERT_EQ(details.at("content").get<std::string>(), full_content);
+	UAM_ASSERT(!details.at("hasMore").get<bool>());
+	UAM_ASSERT(metadata->messages.empty());
+	// This synthetic, actual serializer output is emitted before the expected baseline
+	// failure so a later authorized run can pin it for the real TS sanitizer/classifier.
+	std::cout << "[UAM_DEFERRED_LAUNCH_PAGE] " << deferred.dump() << '\n';
+	// Presentation correlation only: the scoped native run feed still owns card/actions.
+	UAM_ASSERT_EQ(tool.value("managedLaunchRunId", std::string{}), run_id);
+}
+
+UAM_TEST(DeferredManagedLaunchProjectionRejectsUnacceptedOrForeignReceipts)
+{
+	const std::string run_id = "8509f0ba-ea06-4068-a6ed-3e1bab09bc53";
+	const nlohmann::json accepted{{"runId", run_id}, {"status", "queued"}};
+	const nlohmann::json wrapper{{"type", "mcpToolCall"}, {"server", "uam-control"},
+	    {"tool", "agent_delegate"}, {"status", "completed"}, {"error", nullptr},
+	    {"result", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", accepted.dump()}}})}}}};
+	for (int variant = 0; variant < 13; ++variant)
+	{
+		ToolCall tool;
+		tool.id = "rejected-launch-" + std::to_string(variant);
+		tool.name = "agent_delegate";
+		tool.kind = "mcpToolCall";
+		tool.status = "completed";
+		tool.args_json = R"({"agentId":"plan","task":"Synthetic negative fixture"})";
+		auto result = wrapper;
+		if (variant == 0) result["server"] = "foreign-server";
+		if (variant == 1) result["tool"] = "agent_status";
+		if (variant == 2) result["status"] = "failed";
+		if (variant == 3) result["error"] = "refused";
+		if (variant == 4) result["result"]["isError"] = true;
+		if (variant == 5) result["result"]["content"][0]["text"] = nlohmann::json{{"runId", run_id}, {"status", "running"}}.dump();
+		if (variant == 6) result["result"]["content"][0]["text"] = nlohmann::json{{"runId", "not-a-run"}, {"status", "queued"}}.dump();
+		if (variant == 7) result["result"]["content"].push_back({{"type", "text"}, {"text", accepted.dump()}});
+		if (variant == 8) result["result"]["content"][0]["text"] = std::string(8193, 'x');
+		if (variant == 9) tool.name = "agent_wait";
+		if (variant == 10) tool.kind = "read";
+		if (variant == 11) tool.status = "failed";
+		tool.result_text = variant == 12 ? "Arbitrary prose mentioning " + run_id : result.dump();
+		ChatSession chat = PageMetadata();
+		Message message;
+		message.role = MessageRole::Assistant;
+		message.tool_calls = {tool};
+		chat.messages = {message};
+		const auto page = uam::StateSerializer::SerializeMessagePage(chat, 50, {}, true);
+		const auto& projected = page.at("messages").at(0).at("toolCalls").at(0);
+		UAM_ASSERT(projected.at("contentDeferred").get<bool>());
+		UAM_ASSERT(!projected.contains("content"));
+		UAM_ASSERT(!projected.contains("managedLaunchRunId"));
+	}
+}
+
+
+UAM_TEST(DeferredManagedLaunchCorrelationRequiresProvenServerAcrossKnownNames)
+{
+	const std::string id = "8509f0ba-ea06-4068-a6ed-3e1bab09bc53";
+	const nlohmann::json accepted{{"runId", id}, {"status", "queued"}};
+	const std::array<std::string, 3> qualified_names{"uam-control.agent_delegate", "mcp__uam_control__agent_delegate", "mcp__uam-control__agent_delegate"};
+	for (const auto& name : qualified_names)
+	{
+		for (bool foreign : {false, true})
+		{
+			ToolCall tool;
+			tool.id = "qualified-delegate";
+			tool.name = name;
+			tool.kind = name;
+			tool.status = "completed";
+			tool.result_text = foreign ? nlohmann::json{{"server", "foreign"}, {"tool", "agent_delegate"}, {"status", "completed"}, {"result", accepted}}.dump() : accepted.dump();
+			ChatSession chat = PageMetadata();
+			Message message;
+			message.role = MessageRole::Assistant;
+			message.tool_calls = {tool};
+			chat.messages = {message};
+			const auto view = uam::StateSerializer::SerializeMessagePage(chat, 50, {}, true);
+			const auto& projected = view.at("messages").at(0).at("toolCalls").at(0);
+			UAM_ASSERT(!projected.contains("content"));
+			if (foreign) UAM_ASSERT(!projected.contains("managedLaunchRunId"));
+			else UAM_ASSERT_EQ(projected.value("managedLaunchRunId", std::string{}), id);
+		}
+	}
+	// Some adapters flatten a server-less MCP reply to bare name/kind. Existing
+	// content classification is unchanged, but deferral cannot invent provenance.
+	for (const std::string kind : {"mcpToolCall", "other"})
+	{
+		ToolCall tool;
+		tool.id = "bare-delegate";
+		tool.name = "agent_delegate";
+		tool.kind = kind;
+		tool.status = "completed";
+		tool.result_text = accepted.dump();
+		ChatSession chat = PageMetadata();
+		Message message;
+		message.role = MessageRole::Assistant;
+		message.tool_calls = {tool};
+		chat.messages = {message};
+		const auto view = uam::StateSerializer::SerializeMessagePage(chat, 50, {}, true);
+		UAM_ASSERT(!view.at("messages").at(0).at("toolCalls").at(0).contains("managedLaunchRunId"));
+	}
+}
+
+
+UAM_TEST(ApprovalBearingManagedLaunchKeepsDeferredCorrelationAndDetailContent)
+{
+	const std::string id = "8509f0ba-ea06-4068-a6ed-3e1bab09bc53";
+	ToolCall tool;
+	tool.id = "synthetic-approved-qualified-launch";
+	tool.name = "mcp__uam-control__agent_delegate";
+	tool.kind = tool.name;
+	tool.status = "completed";
+	tool.approval_status = "auto_approved";
+	tool.args_json = R"({"agentId":"plan","task":"Synthetic approval fixture"})";
+	tool.result_text = nlohmann::json{{"runId", id}, {"status", "queued"}}.dump();
+	ChatSession chat = PageMetadata();
+	Message message;
+	message.role = MessageRole::Assistant;
+	message.tool_calls = {tool};
+	chat.messages = {message};
+	const auto inline_page = uam::StateSerializer::SerializeMessagePage(chat, 50, {}, false);
+	const auto deferred_page = uam::StateSerializer::SerializeMessagePage(chat, 50, {}, true);
+	const auto& inline_tool = inline_page.at("messages").at(0).at("toolCalls").at(0);
+	const auto& deferred_tool = deferred_page.at("messages").at(0).at("toolCalls").at(0);
+	const std::string expected_content = "Approval: auto_approved\n\nArguments:\n" + tool.args_json + "\n\nResult:\n" + tool.result_text;
+	UAM_ASSERT_EQ(inline_tool.at("content").get<std::string>(), expected_content);
+	UAM_ASSERT_EQ(inline_tool.at("approvalStatus").get<std::string>(), tool.approval_status);
+	UAM_ASSERT_EQ(uam::StateSerializer::ToolCallContentPageForFrontend(tool, 0).at("content").get<std::string>(), expected_content);
+	UAM_ASSERT(deferred_tool.at("contentDeferred").get<bool>());
+	UAM_ASSERT(!deferred_tool.contains("content"));
+	UAM_ASSERT_EQ(deferred_tool.at("approvalStatus").get<std::string>(), tool.approval_status);
+	std::cout << "[UAM_APPROVED_LAUNCH_INLINE_PAGE] " << inline_page.dump() << '\n';
+	std::cout << "[UAM_APPROVED_LAUNCH_DEFERRED_PAGE] " << deferred_page.dump() << '\n';
+	UAM_ASSERT_EQ(deferred_tool.value("managedLaunchRunId", std::string{}), id);
+}
+
+UAM_TEST(DeferredManagedLaunchBoundariesRetainExactReceiptFences)
+{
+	const std::string id = "8509f0ba-ea06-4068-a6ed-3e1bab09bc53";
+	const std::string name = "mcp__uam-control__agent_delegate";
+	const nlohmann::json accepted{{"runId", id}, {"status", "queued"}};
+	struct Boundary
+	{
+		std::string label;
+		std::string result;
+		std::string kind;
+		bool accepted;
+	};
+	std::vector<Boundary> boundaries;
+	for (std::size_t size : {std::size_t{8192}, std::size_t{8193}})
+	{
+		std::string text = accepted.dump();
+		text.append(size - text.size(), ' ');
+		const auto envelope = nlohmann::json{{"content", nlohmann::json::array({{{"type", "text"}, {"text", text}}})}};
+		boundaries.push_back({"inner-" + std::to_string(size), envelope.dump(), name, size == 8192});
+	}
+	for (std::size_t size : {std::size_t{65536}, std::size_t{65537}})
+	{
+		std::string text = accepted.dump();
+		text.append(size - text.size(), ' ');
+		boundaries.push_back({"total-" + std::to_string(size), std::move(text), name, size == 65536});
+	}
+	for (int wrappers : {4, 5})
+	{
+		auto value = accepted;
+		for (int depth = 0; depth < wrappers; ++depth) value = nlohmann::json{{"result", value}};
+		boundaries.push_back({"result-wrappers-" + std::to_string(wrappers), value.dump(), name, wrappers == 4});
+	}
+	boundaries.push_back({"kind-equals-qualified-name", accepted.dump(), name, true});
+	boundaries.push_back({"kind-mismatches-qualified-name", accepted.dump(), "agent_delegate", false});
+	const std::vector<nlohmann::json> errors{nullptr, false, "", 0, 0.0, true, "refused", 1, nlohmann::json::object(), nlohmann::json::array()};
+	for (std::size_t index = 0; index < errors.size(); ++index)
+	{
+		auto value = accepted;
+		value["error"] = errors[index];
+		boundaries.push_back({"error-truthiness-" + std::to_string(index), value.dump(), name, index < 5});
+	}
+	for (const auto& boundary : boundaries)
+	{
+		ToolCall tool;
+		tool.id = boundary.label;
+		tool.name = name;
+		tool.kind = boundary.kind;
+		tool.status = "completed";
+		tool.result_text = boundary.result;
+		ChatSession chat = PageMetadata();
+		Message message;
+		message.role = MessageRole::Assistant;
+		message.tool_calls = {tool};
+		chat.messages = {message};
+		const auto page = uam::StateSerializer::SerializeMessagePage(chat, 50, {}, true);
+		const auto& projected = page.at("messages").at(0).at("toolCalls").at(0);
+		UAM_ASSERT(projected.at("contentDeferred").get<bool>());
+		UAM_ASSERT(!projected.contains("content"));
+		if (boundary.accepted) UAM_ASSERT_EQ(projected.value("managedLaunchRunId", std::string{}), id);
+		else UAM_ASSERT(!projected.contains("managedLaunchRunId"));
+	}
+}

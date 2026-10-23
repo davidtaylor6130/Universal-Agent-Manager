@@ -153,7 +153,7 @@ function QuestionPanel({ input, drafts, step, onDraft, onStep, onSubmit, busy, c
                         {question.options.map((option, index) => <label className="qr-option" key={`${index}-${option.label}`}>
                             <input type={question.isMultiple ? "checkbox" : "radio"} name={`${id}-${question.id}`} checked={question.isMultiple ? draft.selections?.includes(index) ?? false : draft.choice === index} onChange={() => choose(index)} />
                             <span className="qr-number" aria-hidden>{index + 1}</span>
-                            <span className="qr-option-copy"><span>{option.label}</span>{option.description && <small className="qr-sr-only">{option.description}</small>}</span>
+                            <span className="qr-option-copy"><span>{option.label}</span>{option.description && <small className="qr-option-description">{option.description}</small>}</span>
                             <Check className="qr-selected" size={16} aria-hidden />
                         </label>)}
                         {question.isOther && <label className="qr-option qr-other">

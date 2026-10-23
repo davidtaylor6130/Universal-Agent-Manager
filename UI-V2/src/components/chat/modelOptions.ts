@@ -5,6 +5,10 @@ import type { AcpBinding, AcpModel } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
   providerCapabilities,
+  normalizeCliProviderIdAlias,
+  DEFAULT_PROVIDER_ID,
+  CODEX_CLI_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
   providerRuntimeKindLabel,
   providerShortName,
   GEMINI_DEFAULT_MODEL_LABELS,
@@ -21,7 +25,7 @@ export interface ModelOption {
   disabled?: boolean
 }
 
-type ModelCatalogSource = Pick<AcpBinding, 'availableModels'> & Partial<Pick<AcpBinding, 'protocolKind' | 'configOptions'>>
+type ModelCatalogSource = Pick<AcpBinding, 'availableModels'> & Partial<Pick<AcpBinding, 'protocolKind' | 'configOptions' | 'currentModelId'>>
 
 export const FRIENDLY_MODEL_LABELS = GEMINI_DEFAULT_MODEL_LABELS
 export const CODEX_SPEED_INHERIT_ID = '__uam_inherit__'
@@ -69,7 +73,14 @@ function modelOptionFromRuntime(model: AcpModel, useFriendlyLabels: boolean): Mo
 export function selectedRuntimeModel(acp: ModelCatalogSource | undefined, modelId: string): AcpModel | undefined {
   const models = acp?.availableModels ?? []
   if (modelId) return models.find((model) => model.id === modelId)
-  return models.find((model) => Boolean(model.defaultReasoningEffort)) ?? models[0]
+  const current = models.find((model) => model.id === acp?.currentModelId)
+  if (current) return current
+  return models[0]
+}
+
+/** Keep a live chat's selected model out of provider-wide defaults. */
+export function modelCatalogForDefaults<T extends ModelCatalogSource>(source: T | undefined): T | undefined {
+  return source ? { ...source, currentModelId: undefined } : undefined
 }
 
 export function buildModelOptions(
@@ -166,17 +177,38 @@ export function buildCodexReasoningOptions(
   acp: ModelCatalogSource | undefined,
   modelId: string,
   selectedReasoningEffort = '',
-  fallbackEfforts?: string[]
+  fallbackEfforts?: string[],
+  requireExplicitModel = false
 ): ModelOption[] {
+	if (requireExplicitModel && !modelId) return []
 	const runtimeModel = selectedRuntimeModel(acp, modelId)
 	const runtimeEfforts = runtimeModel?.supportedReasoningEfforts ?? []
 	if (runtimeModel && runtimeEfforts.length === 0 && fallbackEfforts === undefined) return []
 	const base = runtimeEfforts.length > 0
 	  ? runtimeEfforts
 	  : fallbackEfforts ?? CODEX_REASONING_OPTIONS.map((option) => option.id)
-	const ids = runtimeModel ? [...base] : ['', ...base]
+	if (base.length === 0) return []
+	const hasAdvertisedDefault = Boolean(runtimeModel?.defaultReasoningEffort && base.includes(runtimeModel.defaultReasoningEffort))
+	const ids = runtimeModel && hasAdvertisedDefault ? [...base] : ['', ...base]
 	if (!runtimeModel && selectedReasoningEffort && !ids.includes(selectedReasoningEffort)) ids.push(selectedReasoningEffort)
 	return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_REASONING_LABELS))
+}
+
+/** Runtime-driven choices plus a real escape to Default for a persisted unavailable Gemini override. */
+export function buildProviderReasoningOptions(providerId: string, acp: ModelCatalogSource | undefined, modelId: string, savedEffort = ''): ModelOption[] {
+  const id = normalizeCliProviderIdAlias(providerId)
+  const caps = providerCapabilities(id)
+  if (id === DEFAULT_PROVIDER_ID) {
+    const options = buildCodexReasoningOptions(acp, modelId, savedEffort, [], true)
+    if (!savedEffort || options.some(option => option.id === savedEffort)) return options
+    const saved = labeledOption(savedEffort, CODEX_REASONING_LABELS)
+    const unavailable = { ...saved, label: `${saved.label} (unavailable)`, shortLabel: `${saved.shortLabel} (unavailable)`, detail: 'This saved thinking level is unavailable for the selected model or checked CLI version. Select Default to clear it.', disabled: true }
+    return [unavailable, ...(options.length ? options : [labeledOption('', CODEX_REASONING_LABELS)])]
+  }
+  const hasRuntimeEfforts = (selectedRuntimeModel(acp, modelId)?.supportedReasoningEfforts?.length ?? 0) > 0
+  if (!caps.hasReasoningEffort && !hasRuntimeEfforts) return []
+  return buildCodexReasoningOptions(acp, modelId, savedEffort,
+    id === COPILOT_CLI_PROVIDER_ID ? caps.reasoningOptions.map(option => option.id) : id === CODEX_CLI_PROVIDER_ID ? undefined : [])
 }
 
 export function reasoningEffortForModel(
@@ -191,7 +223,7 @@ export function reasoningEffortForModel(
 	if (supported.length === 0) return preserveWhenRuntimeOmitsEfforts ? currentEffort : ''
 	if (supported.includes(currentEffort)) return currentEffort
 	const defaultEffort = model.defaultReasoningEffort ?? ''
-	return supported.includes(defaultEffort) ? defaultEffort : supported[0]
+	return supported.includes(defaultEffort) ? defaultEffort : ''
 }
 
 export function serviceTierForModel(acp: ModelCatalogSource | undefined, modelId: string, currentTier = '') {
@@ -200,11 +232,17 @@ export function serviceTierForModel(acp: ModelCatalogSource | undefined, modelId
 	return (model.additionalSpeedTiers ?? []).includes(currentTier) ? currentTier : ''
 }
 
-export function buildCodexSpeedOptions(acp: ModelCatalogSource | undefined, modelId: string, selectedServiceTier = ''): ModelOption[] {
+export function buildCodexSpeedOptions(acp: ModelCatalogSource | undefined, modelId: string, selectedServiceTier = '', allowOfflineTiers = true): ModelOption[] {
 	const runtimeModel = selectedRuntimeModel(acp, modelId)
+  if (!runtimeModel && !allowOfflineTiers) return []
   const ids = [CODEX_SPEED_INHERIT_ID, '', ...new Set(runtimeModel ? runtimeModel.additionalSpeedTiers ?? [] : ['fast', 'flex'])]
-  if (!runtimeModel && selectedServiceTier && !ids.includes(selectedServiceTier)) ids.push(selectedServiceTier)
-  return Array.from(new Set(ids)).map((id) => labeledOption(id, CODEX_SPEED_LABELS))
+  if (!runtimeModel && allowOfflineTiers && selectedServiceTier && !ids.includes(selectedServiceTier)) ids.push(selectedServiceTier)
+  return Array.from(new Set(ids)).map((id) => {
+    const option = labeledOption(id, CODEX_SPEED_LABELS)
+    return id === 'fast' && !allowOfflineTiers
+      ? { ...option, detail: 'Lower latency at higher usage rates; extra charges may apply' }
+      : option
+  })
 }
 
 /** Match all search terms against the model name, identifier and description. */

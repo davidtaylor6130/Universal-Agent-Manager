@@ -47,7 +47,7 @@ namespace uam
 	{
 	  public:
 		static constexpr std::string_view kSchema = "uam.local-chat-bundle";
-		static constexpr int kVersion = 1;
+		static constexpr int kVersion = 2;
 
 		static LocalChatBundleExportResult Export(
 		    const std::filesystem::path& data_root,

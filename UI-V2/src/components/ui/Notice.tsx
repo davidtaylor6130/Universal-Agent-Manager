@@ -9,6 +9,7 @@ export function Notice({
   tone = 'info',
   title,
   dismissLabel,
+  dismissible = true,
   onDismiss,
   actions,
   children,
@@ -16,6 +17,7 @@ export function Notice({
   tone?: NoticeTone
   title?: string
   dismissLabel: string
+  dismissible?: boolean
   onDismiss?: () => void
   actions?: ReactNode
   children: ReactNode
@@ -45,7 +47,7 @@ export function Notice({
           <ChevronRight size={13} className="shrink-0 transition-transform duration-150" style={{ transform: expanded ? 'rotate(90deg)' : 'none', color: `var(--${color})` }} aria-hidden />
           <span className="truncate">{heading}</span>
         </button>
-        <IconButton
+        {dismissible && <IconButton
           icon={<X size={13} />}
           label={dismissLabel}
           size="sm"
@@ -53,7 +55,7 @@ export function Notice({
             setVisible(false)
             onDismiss?.()
           }}
-        />
+        />}
       </div>
       {expanded && (
         <div className="grid gap-2 px-3 py-2" style={{ overflowWrap: 'anywhere' }}>

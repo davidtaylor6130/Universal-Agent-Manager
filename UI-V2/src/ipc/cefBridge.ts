@@ -1,3 +1,5 @@
+import { companionPlatformAction } from './companionPlatform'
+
 /**
  * Routes requests through the C++ CefMessageRouter when hosted in CEF.
  * Standalone browser previews receive mock responses.
@@ -61,6 +63,8 @@ export async function sendToCEF<T = unknown>(
   if (isCompanionContext()) {
     // Selection belongs to this client; never move the desktop's current chat.
     if (['selectSession', 'toggleFolder', 'toggleResourceCollection'].includes(request.action)) return { ok: true, data: {} as T, requestId }
+    const local = await companionPlatformAction(request.action, request.payload)
+    if (local) return { ...local, data: local.data as T, requestId }
     const token = window.localStorage.getItem('uam-companion-token')
     if (!token) return { ok: false, error: 'Connect to UAM first.', requestId }
     let transferFailure = ''
@@ -193,4 +197,45 @@ export async function sendWhenRemoteStopSettles<T = unknown>(request: CEFRequest
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
   return reportFailure({ ...response, error: 'The remote stop timed out.' })
+}
+
+export interface SpeechVoice {
+  id: string
+  name: string
+  language: string
+}
+
+export interface SpeechOutputOptions {
+  speechId: string
+  text: string
+  voiceId?: string
+  language?: string
+  /** Native playback speed, between 0.5 and 2. */
+  rate?: number
+  /** Native playback volume, between 0 and 1. */
+  volume?: number
+}
+
+export interface SpeechOutputState {
+  speechId: string
+  speaking: boolean
+  error: string
+}
+
+/** Enumerates installed native voices without activating input or playback. */
+export function listSpeechVoices(): Promise<CEFResponse<{ voices: SpeechVoice[] }>> {
+  return sendToCEF({ action: 'listSpeechVoices' })
+}
+
+/** Input must be stopped first; retain speechId for cancellation and state ownership. */
+export function startSpeechOutput(options: SpeechOutputOptions): Promise<CEFResponse<{ started: boolean; speechId: string }>> {
+  return sendToCEF({ action: 'startSpeechOutput', payload: options })
+}
+
+export function stopSpeechOutput(speechId: string): Promise<CEFResponse<{ stopped: boolean }>> {
+  return sendToCEF({ action: 'stopSpeechOutput', payload: { speechId } })
+}
+
+export function getSpeechOutputState(): Promise<CEFResponse<SpeechOutputState>> {
+  return sendToCEF({ action: 'getSpeechOutputState' })
 }

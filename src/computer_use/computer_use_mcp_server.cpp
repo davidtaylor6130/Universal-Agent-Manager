@@ -516,8 +516,7 @@ namespace uam::computer_use
 					return {};
 				std::vector<Target> visible;
 				for (const Target& target : targets)
-					if (target.kind == "window" && !ValidateTargetPolicy(target, settings) &&
-					    !ValidateApplicationScope(ApplicationIdentityForTarget(target.kind, target.id, target.process_id)))
+					if (target.kind == "window" && !ValidateTargetPolicy(target, settings))
 						visible.push_back(target);
 				return visible;
 			}

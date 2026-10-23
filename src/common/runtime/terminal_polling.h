@@ -19,7 +19,11 @@ namespace uam
 	std::string NativeHistorySnapshotDigest(const std::vector<ChatSession>& chats);
 	uam::platform::AsyncNativeChatLoadTask& AsyncNativeChatLoadTaskFor(uam::AppState& app, const std::string& provider_id, const std::filesystem::path& chats_dir);
 	bool StartAsyncNativeChatLoadForTerminal(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir);
-	bool TryConsumeAsyncNativeChatLoadForTerminal(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir, std::vector<ChatSession>& chats_out, std::string& digest_out, std::string& error_out);
+	/// Parser cohort only: never cancels a valid captured final-media receipt.
+	void InvalidateTerminalNativeChatLoads(uam::AppState& app);
+	void SweepTerminalNativeChatLoads(uam::AppState& app);
+	bool TerminalNativeChatLoadOwnerCurrent(const uam::AppState& app, const platform::AsyncNativeChatLoadTask::State& state);
+	bool TryConsumeAsyncNativeChatLoadForTerminal(uam::AppState& app, const ProviderProfile& provider, const std::filesystem::path& chats_dir, std::vector<ChatSession>& chats_out, std::string& digest_out, std::string& error_out, std::shared_ptr<platform::AsyncNativeChatLoadTask::State>* owner_out = nullptr);
 	bool TryMarkCliTurnCompleteFromSyncedHistory(uam::AppState& app, uam::CliTerminalState& terminal, int previous_message_count, const std::string& selected_chat_id);
 	std::unordered_set<std::string> BlockedNativeSessionIdsForTerminal(const uam::AppState& app, const uam::CliTerminalState& terminal);
 	bool TryAttachNativeSessionFromHistory(uam::AppState& app, uam::CliTerminalState& terminal, const std::vector<ChatSession>& native_chats);

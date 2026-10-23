@@ -1,11 +1,119 @@
 #include "test_harness.h"
+#include "app/uam_control_service.h"
 #include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "app/provider_model_catalog_service.h"
+#include "common/config/execution_host_config.h"
+#include "common/utils/shell_escape.h"
+#include <chrono>
+#include <thread>
 #include <limits>
 
 using namespace uam_test;
 
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+UAM_TEST(AntigravityNativeModelListRejectsMalformedOrDuplicateCatalogues)
+{
+	const auto parsed = uam::ProviderModelCatalogService::ParseAntigravityModels("gemini-id\tGemini Name\r\nclaude-id\tClaude Name\n");
+	UAM_ASSERT(parsed.has_value());
+	UAM_ASSERT_EQ(parsed->size(), std::size_t{2});
+	UAM_ASSERT_EQ((*parsed)[0]["id"], nlohmann::json("gemini-id"));
+	UAM_ASSERT_EQ((*parsed)[1]["name"], nlohmann::json("Claude Name"));
+	UAM_ASSERT(!(*parsed)[0].contains("supportedReasoningEfforts"));
+	for (const std::string output : {"", "warning\nmodel\tName\n", "model\tName\nmodel\tOther\n", "-flag\tName\n", "model\t\n", "model\tName\textra\n", "model\tName\x1b[0m\n"})
+		UAM_ASSERT(!uam::ProviderModelCatalogService::ParseAntigravityModels(output).has_value());
+	UAM_ASSERT(!uam::ProviderModelCatalogService::ParseAntigravityModels(std::string(256 * 1024 + 1, 'x')).has_value());
+	UAM_ASSERT(!uam::ProviderModelCatalogService::ParseAntigravityModels(std::string("model\tInvalid ") + char(0xff)).has_value());
+}
+
+UAM_TEST(AntigravitySavedEffortReachesNativeLaunchWithoutInventedOptions)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	const ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	for (const std::string effort : {"low", "medium", "high", "xhigh", "max"})
+	{
+		ChatSession chat;
+		chat.reasoning_effort = effort;
+		for (const auto& argv : {runtime.BuildInteractiveArgv(profile, chat, {}), runtime.BuildStructuredLaunchArgv(profile, chat)})
+		{
+			const auto flag = std::ranges::find(argv, "--effort");
+			UAM_ASSERT(flag != argv.end() && std::next(flag) != argv.end());
+			UAM_ASSERT_EQ(*std::next(flag), effort);
+		}
+	}
+	for (const std::string effort : {"none", "ultra", "--dangerously-skip-permissions", ""})
+	{
+		ChatSession chat;
+		chat.reasoning_effort = effort;
+		const auto argv = runtime.BuildStructuredLaunchArgv(profile, chat);
+		UAM_ASSERT(std::ranges::find(argv, "--effort") == argv.end());
+	}
+	ChatSession chat;
+	chat.reasoning_effort = "high";
+	AppSettings settings;
+	settings.provider_extra_flags = "--effort low -- literal --effort max";
+	UAM_ASSERT_EQ(runtime.BuildInteractiveArgv(profile, chat, settings),
+	    (std::vector<std::string>{"agy", "--effort", "high", "--", "literal", "--effort", "max"}));
+}
+
+UAM_TEST(AntigravityResumeIdentityNormalizesWhitespaceAndRejectsPassiveReferences)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	ChatSession chat;
+	chat.native_session_id = " \t11111111-2222-4333-8444-555555555555\r\n";
+	UAM_ASSERT_EQ(runtime.OnAcpValidateResumeId(chat), std::string("11111111-2222-4333-8444-555555555555"));
+	for (const std::string invalid : {"antigravity-agent-11111111-2222-4333-8444-555555555555", "gemini-agent-aa-bb-cc", "not-a-conversation", "11111111-2222-4333-8444-555555555555 extra"})
+	{
+		chat.native_session_id = invalid;
+		UAM_ASSERT(runtime.OnAcpValidateResumeId(chat).empty());
+	}
+}
+
+#if !defined(_WIN32)
+UAM_TEST(AntigravityNativeDiscoveryPublishesOnlySuccessfulCurrentScope)
+{
+	TempDir temp("uam-agy-models");
+	ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	const fs::path script = temp.root / "models.sh";
+	UAM_ASSERT(uam::io::WriteTextFile(script, "test \"$1\" = models || exit 9\nprintf 'real-model\\tReal Model\\n'\n"));
+	profile.interactive_command = "/bin/sh " + uam::shell::EscapeArg(script.string());
+	uam::ProviderModelCatalogService catalog;
+	catalog.Initialize(temp.root / "data", {profile});
+	const ExecutionHost local = uam::execution_hosts::LocalHost();
+	catalog.SetExecutionHostContext({local});
+	UAM_ASSERT(catalog.BeginDiscovery(profile.id, temp.root.string()));
+	std::string error;
+	UAM_ASSERT(catalog.StartAntigravityModelDiscovery(profile, local, temp.root.string(), &error));
+	UAM_ASSERT(catalog.StartAntigravityModelDiscovery(profile, local, temp.root.string(), &error));
+	UAM_ASSERT_EQ(catalog.ActiveNativeModelDiscoveries(), std::size_t{1});
+	const auto settle = [&]()
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (catalog.ActiveNativeModelDiscoveries() > 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)catalog.Poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT_EQ(catalog.ActiveNativeModelDiscoveries(), std::size_t{0});
+	};
+	settle();
+	UAM_ASSERT_EQ(catalog.GetCachedProviderModels(profile.id, temp.root.string())[0]["id"], nlohmann::json("real-model"));
+	UAM_ASSERT(uam::io::WriteTextFile(script, "printf 'partial\\tPartial\\n'; exit 7\n"));
+	UAM_ASSERT(catalog.BeginDiscovery(profile.id, temp.root.string()));
+	UAM_ASSERT(catalog.StartAntigravityModelDiscovery(profile, local, temp.root.string(), &error));
+	settle();
+	UAM_ASSERT_EQ(catalog.GetCachedProviderModels(profile.id, temp.root.string())[0]["id"], nlohmann::json("real-model"));
+	UAM_ASSERT(!catalog.GetProviderRefreshError(profile.id, temp.root.string()).empty());
+	UAM_ASSERT(uam::io::WriteTextFile(script, "sleep 0.1\nprintf 'old-scope\\tOld Scope\\n'\n"));
+	UAM_ASSERT(catalog.BeginDiscovery(profile.id, temp.root.string()));
+	UAM_ASSERT(catalog.StartAntigravityModelDiscovery(profile, local, temp.root.string(), &error));
+	profile.interactive_command += " changed-configuration";
+	catalog.Initialize(temp.root / "data", {profile});
+	settle();
+	UAM_ASSERT(catalog.GetCachedProviderModels(profile.id, temp.root.string()).empty());
+}
+#endif
+
 UAM_TEST(AntigravityStructuredLaunchUsesNativeStreamAndSavedConversation)
 {
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
@@ -165,6 +273,204 @@ UAM_TEST(AntigravityCumulativeUsageDuplicateResultsAndNewProcessReset)
 	UAM_ASSERT_EQ(chat.messages.back().tokens_output, 3);
 }
 
+UAM_TEST(AntigravityObservedStepUsageReachesLiveSerializedSnapshot)
+{
+	TempDir temp("uam-agy-live-usage");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "agy-live-usage";
+	chat.provider_id = "antigravity-cli";
+	chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+	app.chats.push_back(chat);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	auto& session = *owned;
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.session_id = chat.native_session_id;
+	session.running = true;
+	session.session_ready = true;
+	app.acp_sessions.push_back(std::move(owned));
+	const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+	runtime.OnAcpBuildInitialize(session, 1);
+	const auto snapshot = [&]()
+	{
+		return uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"];
+	};
+	UAM_ASSERT(snapshot().is_null()); // No observed counter is unknown, not a reported zero.
+	const auto step = [&](int index, int input, int output)
+	{
+		const nlohmann::json event{{"event", "step_update"}, {"step_update", {{"conversation_id", chat.native_session_id}, {"step_type", "agent_response"}, {"step_index", index}, {"state", "DONE"}, {"usage", {{"input_tokens", input}, {"output_tokens", output}}}}}};
+		runtime.OnAcpHandleMessage(app, session, app.chats.front(), event, nullptr);
+	};
+	const auto finish = [&](int turn)
+	{
+		const nlohmann::json event{{"event", "result"}, {"result", {{"conversation_id", chat.native_session_id}, {"status", "SUCCESS"}, {"response", "observed answer"}, {"num_turns", turn}, {"usage", {{"input_tokens", 1000000}, {"output_tokens", 100000}}}}}};
+		runtime.OnAcpHandleMessage(app, session, app.chats.front(), event, nullptr);
+	};
+	std::string method;
+	runtime.OnAcpBuildPrompt(session, 1, "first", app.chats.front(), method);
+	session.processing = true;
+	step(1, 100, 10);
+	step(1, 100, 10); // The same native DONE event must not count twice.
+	finish(1);
+	const auto first = snapshot();
+	UAM_ASSERT(first.is_object()); // Intended public projection RED: saved message counts alone are insufficient.
+	UAM_ASSERT_EQ(first["tokenUsage"]["total"]["inputTokens"], nlohmann::json(100));
+	UAM_ASSERT_EQ(first["tokenUsage"]["total"]["outputTokens"], nlohmann::json(10));
+	UAM_ASSERT_EQ(first["tokenUsage"]["total"]["totalTokens"], nlohmann::json(110));
+	UAM_ASSERT_EQ(first["tokenUsage"]["last"]["totalTokens"], nlohmann::json(110));
+	UAM_ASSERT(first["contextUsage"].is_null()); // Consumption does not establish context-window occupancy.
+	uam::acp_detail::ResetAcpTurnStreamState(session);
+	session.current_assistant_message_index = -1;
+	runtime.OnAcpBuildPrompt(session, 2, "second", app.chats.front(), method);
+	session.processing = true;
+	finish(1); // A duplicate old result neither ends this turn nor adds its cumulative usage.
+	UAM_ASSERT(session.processing);
+	step(2, 25, 4);
+	step(2, 25, 4);
+	finish(2);
+	const auto second = snapshot();
+	UAM_ASSERT_EQ(second["tokenUsage"]["total"]["totalTokens"], nlohmann::json(139));
+	UAM_ASSERT_EQ(second["tokenUsage"]["last"]["inputTokens"], nlohmann::json(25));
+	UAM_ASSERT_EQ(second["tokenUsage"]["last"]["outputTokens"], nlohmann::json(4));
+	UAM_ASSERT_EQ(second["tokenUsage"]["last"]["totalTokens"], nlohmann::json(29));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().tokens_input, 25);
+	UAM_ASSERT_EQ(app.chats.front().messages.back().tokens_output, 4);
+}
+
+UAM_TEST(AntigravityLiveUsageDistinguishesMissingMalformedAndReportedZero)
+{
+	for (const nlohmann::json input : std::vector<nlohmann::json>{nullptr, -1, "1", 1.5, false, std::numeric_limits<uint64_t>::max(), 0})
+	{
+		TempDir temp("uam-agy-usage-certainty");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "agy-usage-certainty";
+		chat.provider_id = "antigravity-cli";
+		chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		auto& session = *owned;
+		session.chat_id = chat.id; session.provider_id = chat.provider_id;
+		session.session_id = chat.native_session_id; session.running = true; session.session_ready = true;
+		app.acp_sessions.push_back(std::move(owned));
+		const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+		runtime.OnAcpBuildInitialize(session, 1);
+		std::string method;
+		runtime.OnAcpBuildPrompt(session, 1, "observe exact counters", app.chats.front(), method);
+		session.processing = true;
+		nlohmann::json usage{{"output_tokens", 0}};
+		if (!input.is_null()) usage["input_tokens"] = input;
+		runtime.OnAcpHandleMessage(app, session, app.chats.front(), {{"event", "step_update"}, {"step_update", {{"conversation_id", chat.native_session_id}, {"step_type", "agent_response"}, {"step_index", 0}, {"state", "DONE"}, {"usage", usage}}}}, nullptr);
+		runtime.OnAcpHandleMessage(app, session, app.chats.front(), {{"event", "result"}, {"result", {{"conversation_id", chat.native_session_id}, {"status", "SUCCESS"}, {"response", "answer"}, {"num_turns", 1}}}}, nullptr);
+		const auto snapshot = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"];
+		if (input.is_number_integer() && input == 0)
+		{
+			UAM_ASSERT(snapshot.is_object());
+			UAM_ASSERT_EQ(snapshot["tokenUsage"]["total"]["totalTokens"], nlohmann::json(0));
+			UAM_ASSERT_EQ(snapshot["tokenUsage"]["last"]["totalTokens"], nlohmann::json(0));
+		}
+		else UAM_ASSERT(snapshot.is_null());
+	}
+}
+
+UAM_TEST(AntigravityLiveUsagePreservesObservedScopeThroughPartialAndResumedTurns)
+{
+	TempDir temp("uam-agy-usage-observed-scope");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "agy-usage-observed-scope"; chat.provider_id = "antigravity-cli";
+	chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+	app.chats.push_back(chat);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	auto& session = *owned;
+	session.chat_id = chat.id; session.provider_id = chat.provider_id;
+	session.session_id = chat.native_session_id; session.running = true; session.session_ready = true;
+	app.acp_sessions.push_back(std::move(owned));
+	const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+	const auto emit = [&](const nlohmann::json& event) { runtime.OnAcpHandleMessage(app, session, app.chats.front(), event, nullptr); };
+	const auto step = [&](int index, const nlohmann::json& usage, const std::string& native)
+	{
+		emit({{"event", "step_update"}, {"step_update", {{"conversation_id", native}, {"step_type", "agent_response"}, {"step_index", index}, {"state", "DONE"}, {"usage", usage}}}});
+	};
+	const auto finish = [&](int turn)
+	{
+		emit({{"event", "result"}, {"result", {{"conversation_id", chat.native_session_id}, {"status", "SUCCESS"}, {"response", "answer"}, {"num_turns", turn}, {"usage", {{"input_tokens", 1000000}, {"output_tokens", 100000}}}}}});
+	};
+	const auto snapshot = [&]() { return uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"]; };
+	std::string method;
+	runtime.OnAcpBuildInitialize(session, 1);
+	runtime.OnAcpBuildPrompt(session, 1, "partially observed", app.chats.front(), method);
+	session.processing = true;
+	step(1, {{"input_tokens", 25}, {"output_tokens", 4}}, chat.native_session_id);
+	step(2, nlohmann::json::object(), chat.native_session_id); // Missing values cannot complete a known last-turn total.
+	step(3, {{"input_tokens", 9007199254740991LL}, {"output_tokens", 1}}, chat.native_session_id); // Individually exact buckets cannot overflow the wire's exact total.
+	finish(1);
+	UAM_ASSERT_EQ(snapshot()["tokenUsage"]["total"]["totalTokens"], nlohmann::json(29));
+	UAM_ASSERT(snapshot()["tokenUsage"]["last"].is_null());
+	runtime.OnAcpBuildInitialize(session, 2); // Same native conversation, fresh native step numbering.
+	uam::acp_detail::ResetAcpTurnStreamState(session); session.current_assistant_message_index = -1;
+	runtime.OnAcpBuildPrompt(session, 2, "resumed observed counts", app.chats.front(), method);
+	session.processing = true;
+	step(1, {{"input_tokens", 30}, {"output_tokens", 3}}, chat.native_session_id);
+	step(1, {{"input_tokens", 30}, {"output_tokens", 3}}, chat.native_session_id);
+	finish(2);
+	UAM_ASSERT_EQ(snapshot()["tokenUsage"]["total"]["totalTokens"], nlohmann::json(62));
+	UAM_ASSERT_EQ(snapshot()["tokenUsage"]["last"]["totalTokens"], nlohmann::json(33));
+	uam::acp_detail::ResetAcpTurnStreamState(session); session.current_assistant_message_index = -1;
+	runtime.OnAcpBuildPrompt(session, 3, "exact aggregate limit", app.chats.front(), method);
+	session.processing = true;
+	step(2, {{"input_tokens", 9007199254740991LL}, {"output_tokens", 0}}, chat.native_session_id);
+	finish(3);
+	UAM_ASSERT_EQ(snapshot()["tokenUsage"]["total"]["totalTokens"], nlohmann::json(62));
+	UAM_ASSERT(snapshot()["tokenUsage"]["last"].is_null());
+	const auto before = snapshot();
+	session.processing = true;
+	step(3, {{"input_tokens", 900}, {"output_tokens", 90}}, "99999999-2222-4333-8444-555555555555");
+	UAM_ASSERT_EQ(snapshot(), before);
+	UAM_ASSERT_EQ(session.session_id, chat.native_session_id);
+	UAM_ASSERT(!session.processing && session.last_error.find("identity") != std::string::npos);
+}
+
+UAM_TEST(AntigravityMalformedStepIdentityCannotHideValidZeroIndexedUsage)
+{
+	for (const nlohmann::json invalid_index : std::vector<nlohmann::json>{nullptr, -1, "0", false})
+	{
+		TempDir temp("uam-agy-usage-step-identity");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = "agy-usage-step-identity"; chat.provider_id = "antigravity-cli";
+		chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		auto& session = *owned;
+		session.chat_id = chat.id; session.provider_id = chat.provider_id;
+		session.session_id = chat.native_session_id; session.running = true; session.session_ready = true;
+		app.acp_sessions.push_back(std::move(owned));
+		const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+		runtime.OnAcpBuildInitialize(session, 1);
+		std::string method;
+		runtime.OnAcpBuildPrompt(session, 1, "validate observed step identity", app.chats.front(), method);
+		session.processing = true;
+		nlohmann::json malformed{{"conversation_id", chat.native_session_id}, {"step_type", "agent_response"}, {"state", "DONE"}, {"usage", {{"input_tokens", 99}, {"output_tokens", 9}}}};
+		if (!invalid_index.is_null()) malformed["step_index"] = invalid_index;
+		runtime.OnAcpHandleMessage(app, session, app.chats.front(), {{"event", "step_update"}, {"step_update", malformed}}, nullptr);
+		const nlohmann::json valid{{"event", "step_update"}, {"step_update", {{"conversation_id", chat.native_session_id}, {"step_type", "agent_response"}, {"step_index", 0}, {"state", "DONE"}, {"usage", {{"input_tokens", 10}, {"output_tokens", 1}}}}}};
+		runtime.OnAcpHandleMessage(app, session, app.chats.front(), valid, nullptr);
+		runtime.OnAcpHandleMessage(app, session, app.chats.front(), valid, nullptr);
+		runtime.OnAcpHandleMessage(app, session, app.chats.front(), {{"event", "result"}, {"result", {{"conversation_id", chat.native_session_id}, {"status", "SUCCESS"}, {"response", "known observed answer"}, {"num_turns", 1}}}}, nullptr);
+		UAM_ASSERT_EQ(app.chats.front().messages.back().tokens_input, 10); // Existing public saved counter proves malformed-index poisoning independently of the new DTO.
+		UAM_ASSERT_EQ(app.chats.front().messages.back().tokens_output, 1);
+		const auto usage = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"]["tokenUsage"];
+		UAM_ASSERT_EQ(usage["total"]["totalTokens"], nlohmann::json(11));
+		UAM_ASSERT(usage["last"].is_null()); // The unidentified event leaves the complete turn unknown.
+	}
+}
+
 UAM_TEST(AntigravityRejectsChangedIdentityAndKeepsNativePermissionPolicy)
 {
 	TempDir temp("uam-agy-identity");
@@ -317,4 +623,516 @@ UAM_TEST(AntigravityCapturedPermissionDenialPreservesOtherSuccessAndReportsAmbig
 	}
 }
 
+UAM_TEST(AntigravityNativeSubagentsPreserveValidatedChildIdentityWithoutFetchingUris)
+{
+	TempDir temp("uam-agy-native-children");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "agy-children"; chat.provider_id = "antigravity-cli";
+	uam::AcpSessionState session;
+	session.provider_id = chat.provider_id; session.chat_id = chat.id; session.running = true; session.processing = true;
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+	const std::string parent = "11111111-2222-4333-8444-555555555555";
+	const std::string child = "22222222-2222-4222-8222-222222222222";
+	nlohmann::json update{{"event", "step_update"}, {"step_update", {{"conversation_id", parent}, {"step_index", 4}, {"state", "ACTIVE"}, {"step_type", "subagent"},
+	    {"subagent_info", {{"subagents", nlohmann::json::array({{{"type_name", "reviewer"}, {"role", "Inspect source"}, {"conversation_id", child},
+	        {"log_uri", "https://logs.invalid/private/path?access_token=secret#fragment"}, {"workspace_uris", nlohmann::json::array({"file:///remote/workspace"})}},
+	        {{"type_name", "invalid identity"}, {"conversation_id", "../escape"}}, {{"type_name", "parent alias"}, {"conversation_id", parent}}})}}}}}};
+	UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, update, nullptr));
+	UAM_ASSERT_EQ(session.tool_calls.size(), std::size_t{3});
+	const auto& tool = session.tool_calls.front();
+	UAM_ASSERT(tool.is_sub_agent);
+	UAM_ASSERT_EQ(tool.sub_agent_id, child);
+	UAM_ASSERT_EQ(tool.sub_agent_title, std::string("reviewer"));
+	const auto metadata = nlohmann::json::parse(tool.args_json);
+	UAM_ASSERT_EQ(metadata["role"], nlohmann::json("Inspect source"));
+	UAM_ASSERT_EQ(metadata["log_uri"], nlohmann::json("https://logs.invalid/private/path"));
+	UAM_ASSERT_EQ(metadata["workspace_uris"][0], nlohmann::json("file:///remote/workspace"));
+	UAM_ASSERT(session.tool_calls[1].sub_agent_id.empty());
+	UAM_ASSERT(session.tool_calls[2].sub_agent_id.empty());
+	UAM_ASSERT_EQ(chat.messages.back().tool_calls.front().sub_agent_id, child);
+	update["step_update"]["state"] = "DONE";
+	UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, update, nullptr));
+	UAM_ASSERT_EQ(session.tool_calls.size(), std::size_t{3});
+	UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("completed"));
+	UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, update, nullptr));
+	UAM_ASSERT_EQ(session.tool_calls.size(), std::size_t{3});
+	ChatSession resume;
+	resume.native_session_id = child;
+	UAM_ASSERT_EQ(runtime.OnAcpValidateResumeId(resume), child);
+	resume.native_session_id = "../escape";
+	UAM_ASSERT(runtime.OnAcpValidateResumeId(resume).empty());
+}
+
+UAM_TEST(AntigravityReadOnlyEffortMetadataRejectsModelTurnsAndInventedChoices)
+{
+	const nlohmann::json valid{{"conversation_id", ""}, {"status", "SUCCESS"}, {"num_turns", 0},
+	    {"command", {{"name", "effort"}, {"data", {{"adjustable", true}, {"current", "high"}, {"available", nlohmann::json::array({"low", "high"})}}}}}};
+	const auto parsed = uam::ProviderModelCatalogService::ParseAntigravityEffort(valid.dump(), "actual-native-model");
+	UAM_ASSERT(parsed.has_value());
+	UAM_ASSERT_EQ((*parsed)["supportedReasoningEfforts"], nlohmann::json::array({"low", "high"}));
+	UAM_ASSERT_EQ((*parsed)["defaultReasoningEffort"], nlohmann::json("high"));
+	UAM_ASSERT(!uam::ProviderModelCatalogService::ParseAntigravityEffort(valid.dump(), ""));
+	for (const std::string field : {"conversation_id", "num_turns", "status", "command"})
+	{
+		auto invalid = valid;
+		invalid.erase(field);
+		UAM_ASSERT(!uam::ProviderModelCatalogService::ParseAntigravityEffort(invalid.dump(), "actual-native-model"));
+	}
+	for (const auto invalid_levels : {nlohmann::json::array({"low", "ultra"}), nlohmann::json::array({"high", "high"}), nlohmann::json::array(), nlohmann::json::array({42})})
+	{
+		auto invalid = valid; invalid["command"]["data"]["available"] = invalid_levels;
+		UAM_ASSERT(!uam::ProviderModelCatalogService::ParseAntigravityEffort(invalid.dump(), "actual-native-model"));
+	}
+	auto invalid = valid; invalid["conversation_id"] = "11111111-2222-4333-8444-555555555555";
+	UAM_ASSERT(!uam::ProviderModelCatalogService::ParseAntigravityEffort(invalid.dump(), "actual-native-model"));
+	invalid = valid; invalid["num_turns"] = 1;
+	UAM_ASSERT(!uam::ProviderModelCatalogService::ParseAntigravityEffort(invalid.dump(), "actual-native-model"));
+	auto fixed = valid; fixed["command"]["data"]["adjustable"] = false;
+	const auto fixed_parsed = uam::ProviderModelCatalogService::ParseAntigravityEffort(fixed.dump(), "fixed-native-model");
+	UAM_ASSERT(fixed_parsed.has_value());
+	UAM_ASSERT((*fixed_parsed)["supportedReasoningEfforts"].empty());
+	UAM_ASSERT_EQ((*fixed_parsed)["defaultReasoningEffort"], nlohmann::json(""));
+}
+
+#if !defined(_WIN32)
+UAM_TEST(AntigravityEffortDiscoveryQueriesOnlyActualDefaultAndSelectedModels)
+{
+	TempDir temp("uam-agy-effort-discovery");
+	ScopedEnvVar log("UAM_ANTIGRAVITY_EFFORT_LOG", (temp.root / "calls").string());
+	const fs::path script = temp.root / "native.sh";
+	const std::string source = R"SCRIPT(printf '%s\n' "$*" >> "$UAM_ANTIGRAVITY_EFFORT_LOG"
+if test "$1" = --version; then printf '1.4.0'; exit 0; fi
+if test "$1" = models; then printf 'adjustable-model\tAdjustable Model\nfixed-model\tFixed Model\n'; exit 0; fi
+if test "$2" = /model; then printf '%s' '{"conversation_id":"","status":"SUCCESS","num_turns":0,"command":{"name":"model","data":{"id":"fixed-model"}}}'; exit 0; fi
+if test "$2" = /effort; then
+if test "$6" = fixed-model; then printf '%s' '{"conversation_id":"","status":"SUCCESS","num_turns":0,"command":{"name":"effort","data":{"adjustable":false,"current":"high","available":[]}}}'; else
+printf '%s' '{"conversation_id":"","status":"SUCCESS","num_turns":0,"command":{"name":"effort","data":{"adjustable":true,"current":"high","available":["low","high"]}}}'; fi
+exit 0; fi
+exit 9
+)SCRIPT";
+	UAM_ASSERT(uam::io::WriteTextFile(script, source));
+	ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	profile.interactive_command = "/bin/sh " + uam::shell::EscapeArg(script.string());
+	uam::ProviderModelCatalogService catalog;
+	catalog.Initialize(temp.root / "data", {profile});
+	const ExecutionHost host = uam::execution_hosts::LocalHost();
+	catalog.SetExecutionHostContext({host});
+	const auto settle = [&]()
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (catalog.ActiveNativeModelDiscoveries() > 0 && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)catalog.Poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT_EQ(catalog.ActiveNativeModelDiscoveries(), std::size_t{0});
+	};
+	std::string error;
+	UAM_ASSERT(catalog.StartAntigravityModelDiscovery(profile, host, temp.root.string(), &error));
+	settle();
+	auto models = catalog.GetCachedProviderModels(profile.id, temp.root.string());
+	UAM_ASSERT_EQ(models[0]["id"], nlohmann::json("fixed-model"));
+	UAM_ASSERT(models[0].value("isDefault", false));
+	UAM_ASSERT(models[0]["supportedReasoningEfforts"].empty());
+	UAM_ASSERT(!models[1].contains("supportedReasoningEfforts"));
+	UAM_ASSERT(catalog.StartAntigravityEffortDiscovery(profile, host, temp.root.string(), "adjustable-model", &error));
+	UAM_ASSERT(catalog.StartAntigravityEffortDiscovery(profile, host, temp.root.string(), "adjustable-model", &error));
+	settle();
+	models = catalog.GetCachedProviderModels(profile.id, temp.root.string());
+	UAM_ASSERT_EQ(models[1]["supportedReasoningEfforts"], nlohmann::json::array({"low", "high"}));
+	const std::string calls = uam::io::ReadTextFile(temp.root / "calls");
+	UAM_ASSERT_EQ(std::ranges::count(calls, '\n'), 6);
+	UAM_ASSERT(catalog.StartAntigravityEffortDiscovery(profile, host, temp.root.string(), "adjustable-model", &error));
+	UAM_ASSERT_EQ(catalog.ActiveNativeModelDiscoveries(), std::size_t{0});
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(temp.root / "calls"), calls);
+	UAM_ASSERT(!catalog.StartAntigravityEffortDiscovery(profile, host, temp.root.string(), "unadvertised", &error));
+	models[1]["effortMetadataAtSec"] = 0;
+	UAM_ASSERT(catalog.RememberSuccessfulModels(profile.id, models, temp.root.string()));
+	UAM_ASSERT(uam::io::WriteTextFile(script, "printf '%s' 'unsupported old CLI'\n"));
+	UAM_ASSERT(catalog.StartAntigravityEffortDiscovery(profile, host, temp.root.string(), "adjustable-model", &error));
+	settle();
+	UAM_ASSERT_EQ(catalog.GetCachedProviderModels(profile.id, temp.root.string())[1]["supportedReasoningEfforts"], nlohmann::json::array({"low", "high"}));
+	UAM_ASSERT(!catalog.GetProviderRefreshError(profile.id, temp.root.string()).empty());
+	UAM_ASSERT(catalog.StartAntigravityEffortDiscovery(profile, host, temp.root.string(), "adjustable-model", &error));
+	UAM_ASSERT_EQ(catalog.ActiveNativeModelDiscoveries(), std::size_t{0});
+}
+UAM_TEST(AntigravityLegacyDiscoveryNeverSubmitsUnknownSlashCommands)
+{
+	TempDir temp("uam-agy-legacy-no-inference");
+	ScopedEnvVar marker("UAM_AGY_UNEXPECTED_PROMPT", (temp.root / "unexpected-prompt").string());
+	const fs::path script = temp.root / "legacy.sh";
+	UAM_ASSERT(uam::io::WriteTextFile(script, R"SCRIPT(if test "$1" = models; then printf 'legacy-model\tLegacy Model\n'; exit 0; fi
+if test "$1" = --version; then printf '1.0.0'; exit 0; fi
+printf 'unexpected model prompt' > "$UAM_AGY_UNEXPECTED_PROMPT"
+exit 9
+)SCRIPT"));
+	ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	profile.interactive_command = "/bin/sh " + uam::shell::EscapeArg(script.string());
+	uam::ProviderModelCatalogService catalog;
+	catalog.Initialize(temp.root / "data", {profile});
+	const auto host = uam::execution_hosts::LocalHost();
+	catalog.SetExecutionHostContext({host});
+	const auto settle = [&]()
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (catalog.ActiveNativeModelDiscoveries() && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)catalog.Poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		UAM_ASSERT_EQ(catalog.ActiveNativeModelDiscoveries(), std::size_t{0});
+	};
+	std::string error;
+	UAM_ASSERT(catalog.StartAntigravityModelDiscovery(profile, host, temp.root.string(), &error));
+	settle();
+	UAM_ASSERT_EQ(catalog.GetCachedProviderModels(profile.id, temp.root.string())[0]["id"], nlohmann::json("legacy-model"));
+	UAM_ASSERT(!catalog.GetProviderRefreshError(profile.id, temp.root.string()).empty());
+	UAM_ASSERT(catalog.StartAntigravityEffortDiscovery(profile, host, temp.root.string(), "legacy-model", &error));
+	settle();
+	UAM_ASSERT(!fs::exists(temp.root / "unexpected-prompt"));
+}
+#endif
+
+#endif
+
+
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI && !defined(_WIN32)
+UAM_TEST(AntigravityNativeLaunchIncludesComputerServerWithCentralSetupOnAndOff)
+{
+	for (const bool central : {false, true})
+		for (const bool control : {false, true})
+			for (const bool global_computer : {false, true})
+			{
+				TempDir temp("uam-antigravity-computer-launch");
+				ScopedEnvVar home("HOME", temp.root.string());
+				ScopedEnvVar config("XDG_CONFIG_HOME", (temp.root / "config").string());
+				const fs::path script = temp.root / "fake-agy.sh";
+				UAM_ASSERT(uam::io::WriteTextFile(script, "cat >/dev/null\n"));
+				uam::AppState app;
+				app.data_root = temp.root / "data";
+				ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+				profile.interactive_command = "/bin/sh " + uam::shell::EscapeArg(script.string());
+				app.provider_profiles = {profile};
+				app.settings.git_auto_worktree = false;
+				app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+				app.settings.central_provider_configuration.enabled = central;
+				app.settings.central_provider_configuration.uam_control_enabled = control;
+				if (!central) app.settings.central_provider_configuration.mcp_overrides.push_back({profile.id, "local", "shared-setup", false});
+				app.settings.computer_use_globally_enabled = global_computer;
+				ChatSession chat;
+				chat.id = "antigravity-computer-launch";
+				chat.provider_id = profile.id;
+				chat.workspace_directory = temp.root.string();
+				chat.uam_control_enabled = control;
+				chat.computer_use_enabled = false; // The server must also permit requesting approval from ordinary chat.
+				app.chats.push_back(chat);
+				app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+				auto& session = *app.acp_sessions.front();
+				session.chat_id = chat.id;
+				session.provider_id = profile.id;
+				std::string error;
+				UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+				while (!session.running && std::chrono::steady_clock::now() < deadline)
+				{
+					UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				}
+				UAM_ASSERT(session.running);
+				std::size_t configs = 0;
+				if (!session.provider_configuration_directory.empty())
+					for (const auto& entry : fs::recursive_directory_iterator(session.provider_configuration_directory))
+						if (entry.path().filename() == "mcp_config.json")
+						{
+							const auto native = nlohmann::json::parse(ReadFile(entry.path()));
+							const auto& servers = native.at("mcpServers");
+							UAM_ASSERT_EQ(servers.contains("uam-computer"), global_computer);
+							UAM_ASSERT_EQ(servers.contains("uam-control"), control);
+							if (global_computer)
+							{
+								UAM_ASSERT_EQ(servers["uam-computer"].value("command", ""), uam::computer_use::McpExecutablePath());
+								UAM_ASSERT_EQ(servers["uam-computer"]["args"], nlohmann::json(uam::computer_use::McpServerArguments(chat)));
+							}
+							++configs;
+						}
+				UAM_ASSERT_EQ(configs, central || control || global_computer ? std::size_t{1} : std::size_t{0});
+				if (!session.provider_configuration_directory.empty())
+				{
+					const auto manifest = nlohmann::json::parse(ReadFile(session.provider_configuration_directory / "owner.json"));
+					UAM_ASSERT_EQ(manifest.value("mcpOnly", false), !central);
+				}
+				PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+				PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+				uam::UamControlService::Shutdown(app);
+			}
+}
+#endif
+
+UAM_TEST(AntigravityComputerLaunchPreparationPreservesGlobalAndSshGates)
+{
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	TempDir temp("uam-antigravity-computer-gates");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+	app.provider_profiles = {ProviderProfileStore::DefaultAntigravityProfile()};
+	app.settings.central_provider_configuration.enabled = false;
+	app.settings.central_provider_configuration.uam_control_enabled = false;
+	ChatSession chat;
+	chat.id = "antigravity-local-gates";
+	chat.provider_id = "antigravity-cli";
+	uam::AcpSessionState session;
+	app.settings.computer_use_globally_enabled = true;
+	UAM_ASSERT(uam::acp_detail::ShouldDeferLocalAcpConfiguration(app, session, chat));
+	app.settings.computer_use_globally_enabled = false;
+	UAM_ASSERT(!uam::acp_detail::ShouldDeferLocalAcpConfiguration(app, session, chat));
+	app.settings.computer_use_globally_enabled = true;
+	chat.execution_host_id = "remote";
+	ExecutionHost host;
+	host.id = "remote";
+	host.transport = "ssh";
+	app.settings.execution_hosts.push_back(host);
+	UAM_ASSERT(!uam::acp_detail::ShouldDeferLocalAcpConfiguration(app, session, chat));
+	UAM_ASSERT(uam::computer_use::AcpMcpServers(chat).empty());
+#endif
+}
+
+UAM_TEST(AntigravityManagedLaunchRejectsForeignNativePermissionPolicy)
+{
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	const std::string snapshot = "---\nversion: 1\nname: reviewer\ndescription: Inspect code\nmode: primary\nworkspaceAccess: read\nskills: []\ndelegates: []\nopenCodePermission: {\"edit\":\"deny\",\"bash\":\"ask\"}\n---\nInspect code.\n";
+	for (const bool central : {false, true})
+	{
+		uam::AppState app;
+		app.settings.central_provider_configuration.enabled = central;
+		ChatSession chat;
+		chat.provider_id = "antigravity-cli";
+		std::string error;
+		UAM_ASSERT(!uam::acp_detail::ValidateCapturedAcpAgentPolicy(app, chat, "reviewer", snapshot, "uam-prompt-injected", &error));
+		UAM_ASSERT(error.find("imported permission policy") != std::string::npos);
+	}
+#endif
+}
+
+
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+UAM_TEST(AntigravityMalformedStepIndexCannotReplaceZeroIndexedToolEvidence)
+{
+	const std::vector<nlohmann::json> invalid_indices = {nullptr, -1, "0", false, 0.0, std::numeric_limits<uint64_t>::max()};
+	for (const bool native_child : {false, true})
+		for (const auto& invalid_index : invalid_indices)
+		{
+			TempDir temp("uam-agy-step-evidence");
+			uam::AppState app; app.data_root = temp.root;
+			ChatSession chat; chat.id = "agy-step-evidence"; chat.provider_id = "antigravity-cli";
+			chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+			uam::AcpSessionState session;
+			session.provider_id = chat.provider_id; session.chat_id = chat.id;
+			session.session_id = chat.native_session_id; session.running = true; session.processing = true;
+			const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+			const auto update = [&](const nlohmann::json& index, const std::string& evidence, bool later_child = false)
+			{
+				nlohmann::json payload{{"conversation_id", chat.native_session_id}, {"state", "DONE"},
+				    {"step_type", native_child ? "subagent" : "tool"}, {"usage", {{"input_tokens", 1}, {"output_tokens", 1}}}};
+				if (!index.is_null()) payload["step_index"] = index; // Null represents the actual missing field.
+				if (native_child)
+				{
+					const std::string child = later_child ? "33333333-3333-4333-8333-333333333333" : "22222222-2222-4222-8222-222222222222";
+					payload["subagent_info"] = {{"subagents", nlohmann::json::array({{{"conversation_id", child}, {"type_name", evidence}, {"role", evidence}}})}};
+				}
+				else
+				{
+					payload["tool_name"] = "run_command";
+					payload["tool_info"] = {{"parameters", {{"CommandLine", evidence}}}, {"output", evidence}};
+				}
+				return nlohmann::json{{"event", "step_update"}, {"step_update", std::move(payload)}};
+			};
+			const auto valid_zero = update(0, "valid-zero-evidence");
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, valid_zero, nullptr));
+			UAM_ASSERT_EQ(session.tool_calls.size(), std::size_t{1});
+			UAM_ASSERT_EQ(chat.messages.back().tool_calls.size(), std::size_t{1});
+			const ToolCall expected = chat.messages.back().tool_calls.front();
+			UAM_ASSERT_EQ(expected.status, std::string("completed"));
+			UAM_ASSERT_EQ(expected.is_sub_agent, native_child);
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, update(invalid_index, "malformed-replacement"), nullptr));
+			UAM_ASSERT_EQ(chat.messages.back().tool_calls, std::vector<ToolCall>{expected});
+			UAM_ASSERT_EQ(session.tool_calls.size(), std::size_t{1});
+			// A genuine zero replay remains idempotent; malformed identity cannot poison its saved row.
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, valid_zero, nullptr));
+			UAM_ASSERT_EQ(chat.messages.back().tool_calls, std::vector<ToolCall>{expected});
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, update(1, "valid-later-evidence", true), nullptr));
+			UAM_ASSERT_EQ(session.tool_calls.size(), std::size_t{2});
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat, {{"event", "result"}, {"result", {
+			    {"conversation_id", chat.native_session_id}, {"status", "SUCCESS"}, {"num_turns", 1}, {"response", "fixture answer"}}}}, nullptr));
+			UAM_ASSERT(!session.processing);
+			const auto saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+			UAM_ASSERT(saved);
+			std::vector<ToolCall> saved_calls;
+			for (const auto& message : saved->messages)
+				saved_calls.insert(saved_calls.end(), message.tool_calls.begin(), message.tool_calls.end());
+			UAM_ASSERT_EQ(saved_calls.size(), std::size_t{2});
+			UAM_ASSERT_EQ(saved_calls.front(), expected);
+			UAM_ASSERT_EQ(saved_calls.back().status, std::string("completed"));
+			if (native_child) UAM_ASSERT_EQ(saved_calls.back().sub_agent_id, std::string("33333333-3333-4333-8333-333333333333"));
+			else UAM_ASSERT_EQ(saved_calls.back().result_text, std::string("valid-later-evidence"));
+		}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+UAM_TEST(AntigravityCanonicalAcceptEditsTierReachesBothLaunchAdapters)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	const ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+	ChatSession chat;
+	chat.provider_id = "antigravity-cli";
+	chat.approval_mode = "default";
+	chat.command_safety_tier = "acceptEdits";
+	chat.extra_flags = "--unknown-uam-owner-flag=opaque";
+	const ChatSession before = chat;
+	const auto terminal = runtime.BuildInteractiveArgv(profile, chat, {});
+	const auto structured = runtime.BuildStructuredLaunchArgv(profile, chat);
+	UAM_ASSERT_EQ(terminal, (std::vector<std::string>{"agy", "--mode", "accept-edits"}));
+	UAM_ASSERT_EQ(structured,
+	    (std::vector<std::string>{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--mode", "accept-edits"}));
+	UAM_ASSERT_EQ(chat.provider_id, before.provider_id);
+	UAM_ASSERT_EQ(chat.approval_mode, before.approval_mode);
+	UAM_ASSERT_EQ(chat.command_safety_tier, before.command_safety_tier);
+	UAM_ASSERT_EQ(chat.extra_flags, before.extra_flags);
+}
+
+UAM_TEST(AntigravityPlanLaunchRetainsCeilingAcrossCanonicalPermissionTiers)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	for (const std::string tier : {"off", "acceptEdits", "aiReview", "yolo"})
+	{
+		for (const std::string flags : {
+		         "--mode accept-edits --dangerously-skip-permissions --effort high",
+		         "--mode=accept-edits --dangerously-skip-permissions=true --effort high",
+		         "-mode accept-edits -dangerously-skip-permissions --effort high",
+		         "--mode --effort high",
+		         "-mode -dangerously-skip-permissions --effort high"})
+		{
+			ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+			ChatSession chat;
+			chat.provider_id = "antigravity-cli";
+			chat.approval_mode = "plan";
+			chat.command_safety_tier = tier;
+			AppSettings settings;
+			settings.provider_extra_flags = flags + " -- literal --mode accept-edits --dangerously-skip-permissions";
+			UAM_ASSERT_EQ(runtime.BuildInteractiveArgv(profile, chat, settings),
+			    (std::vector<std::string>{"agy", "--effort", "high", "--mode", "plan", "--", "literal", "--mode", "accept-edits", "--dangerously-skip-permissions"}));
+			profile.interactive_command = "agy " + flags;
+			UAM_ASSERT_EQ(runtime.BuildStructuredLaunchArgv(profile, chat),
+			    (std::vector<std::string>{"agy", "--effort", "high", "--input-format", "stream-json", "--output-format", "stream-json", "--mode", "plan"}));
+			UAM_ASSERT_EQ(chat.approval_mode, std::string("plan"));
+			UAM_ASSERT_EQ(chat.command_safety_tier, tier);
+			UAM_ASSERT_EQ(settings.provider_extra_flags,
+			    flags + " -- literal --mode accept-edits --dangerously-skip-permissions");
+			UAM_ASSERT_EQ(profile.interactive_command, "agy " + flags);
+		}
+	}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI && defined(__APPLE__)
+namespace
+{
+	// Exercise actual launch projection, then require the macOS missing-file refusal
+	// that precedes process creation. No executable, shell, runner or provider is run.
+	void AssertAntigravityLaunchProjectionBeforeProcessCreation(
+	    bool review, const std::string& tier, const std::string& expected_mode)
+	{
+		TempDir temp("uam-agy-review-projection");
+		ScopedEnvVar home("HOME", temp.root.string());
+		ScopedEnvVar config("XDG_CONFIG_HOME", (temp.root / "config").string());
+		const fs::path missing_executable = temp.root / "never-created" / "agy";
+		UAM_ASSERT(missing_executable.is_absolute());
+		UAM_ASSERT(!fs::exists(missing_executable.parent_path()));
+		ProviderProfile profile = ProviderProfileStore::DefaultAntigravityProfile();
+		profile.interactive_command = uam::shell::EscapeArg(missing_executable.string());
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = {profile};
+		app.settings.git_enabled = false;
+		app.settings.git_auto_worktree = false;
+		app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+		app.settings.central_provider_configuration.enabled = false;
+		app.settings.central_provider_configuration.uam_control_enabled = false;
+		app.settings.central_provider_configuration.mcp_overrides.push_back({profile.id, "local", "shared-setup", false});
+		app.settings.computer_use_globally_enabled = false;
+		ChatSession chat;
+		chat.id = "agv-goal-review-projection";
+		chat.provider_id = profile.id;
+		chat.execution_host_id = "local";
+		chat.workspace_directory = temp.root.string();
+		chat.approval_mode = "default";
+		chat.command_safety_tier = tier;
+		chat.uam_control_enabled = false;
+		chat.computer_use_enabled = false;
+		app.chats.push_back(chat);
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		auto& session = *app.acp_sessions.front();
+		session.chat_id = chat.id;
+		session.provider_id = profile.id;
+		// QueueGoalInternalPrompt preserves these fields across its launch reset.
+		session.processing = true;
+		session.queued_prompt = "Private projection diagnostic; this cannot be delivered.";
+		session.prompt_request_id = 0;
+		session.goal_internal_session = review;
+		session.goal_review_turn = review;
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(profile.id);
+		const auto original_argv = runtime.BuildStructuredLaunchArgv(profile, app.chats.front());
+		UAM_ASSERT(!original_argv.empty());
+		UAM_ASSERT_EQ(original_argv.front(), missing_executable.string());
+		ChatSession expected_chat = app.chats.front();
+		expected_chat.approval_mode = expected_mode;
+		const std::string expected_argv = uam::acp_detail::JoinAcpArgvForDiagnostics(
+		    runtime.BuildStructuredLaunchArgv(profile, expected_chat));
+		std::string error;
+		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+		UAM_ASSERT_EQ(error, missing_executable.string() + " not found on PATH in app environment");
+		UAM_ASSERT(!session.running);
+		UAM_ASSERT_EQ(session.goal_review_turn, review);
+		UAM_ASSERT_EQ(session.goal_internal_session, review);
+		UAM_ASSERT(!session.pending_local_launch);
+		UAM_ASSERT(!fs::exists(missing_executable.parent_path()));
+		UAM_ASSERT_EQ(app.chats.front().approval_mode, std::string("default"));
+		UAM_ASSERT_EQ(app.chats.front().command_safety_tier, tier);
+		const auto starts = std::ranges::count_if(session.diagnostics, [](const auto& entry)
+		{
+			return entry.event == "process_launch" && entry.reason == "starting";
+		});
+		const auto failures = std::ranges::count_if(session.diagnostics, [](const auto& entry)
+		{
+			return entry.event == "process_launch" && entry.reason == "start_failed";
+		});
+		UAM_ASSERT_EQ(starts, 1);
+		UAM_ASSERT_EQ(failures, 1);
+		for (const auto& entry : session.diagnostics)
+		{
+			UAM_ASSERT(entry.event != "process_launch" || entry.reason != "started");
+			if (entry.event == "process_launch" && (entry.reason == "starting" || entry.reason == "start_failed"))
+				UAM_ASSERT(entry.detail.find(", argv=" + expected_argv + ", nativeSessionId=") != std::string::npos);
+		}
+	}
+}
+
+UAM_TEST(AntigravityGoalReviewDefaultLaunchRequiresPlanBeforeProcessCreation)
+{
+	AssertAntigravityLaunchProjectionBeforeProcessCreation(true, "off", "plan");
+}
+
+UAM_TEST(AntigravityGoalReviewEditLaunchRequiresPlanBeforeProcessCreation)
+{
+	AssertAntigravityLaunchProjectionBeforeProcessCreation(true, "acceptEdits", "plan");
+}
+
+UAM_TEST(AntigravityOrdinaryLaunchKeepsPermissionBeforeProcessCreation)
+{
+	AssertAntigravityLaunchProjectionBeforeProcessCreation(false, "off", "default");
+	AssertAntigravityLaunchProjectionBeforeProcessCreation(false, "acceptEdits", "default");
+}
 #endif

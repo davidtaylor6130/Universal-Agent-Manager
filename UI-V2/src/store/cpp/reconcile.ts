@@ -10,11 +10,18 @@ import type { Provider } from '../../types/provider'
 import { readChatViewMode } from '../../utils/chatGridStorage'
 import {
   DEFAULT_PROVIDER_ID as GEMINI_CLI_PROVIDER_ID,
+  COPILOT_CLI_PROVIDER_ID,
   normalizeCliProviderIdAlias,
 } from '../../utils/providerMetadata'
 import {
+  sanitizeManagedOriginRunId,
+  sanitizeNativeInputId,
+  sanitizeOriginRequestId,
   messageAttachments,
+  sanitizeNativeModelOptions,
+  sanitizeManualCompaction,
   sanitizeTurnEvent,
+  sanitizeToolCall,
   normalizeAcpApprovalMode,
   normalizeCommandSafetyTier,
   normalizeAcpModelId,
@@ -197,6 +204,10 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.workspaceWorktreeDirectory ?? '') === (next.workspaceWorktreeDirectory ?? '') &&
     (previous.importedReadOnly ?? false) === (next.importedReadOnly ?? false) &&
     (previous.messageCount ?? 0) === (next.messageCount ?? 0) &&
+    (previous.subagentParentChatId ?? '') === (next.subagentParentChatId ?? '') &&
+    (previous.subagentParentCreatedAt ?? '') === (next.subagentParentCreatedAt ?? '') &&
+    (previous.managedSubagentCount ?? 0) === (next.managedSubagentCount ?? 0) &&
+    (previous.managedSubagentRevision ?? 0) === (next.managedSubagentRevision ?? 0) &&
     (previous.messagesDigest ?? '') === (next.messagesDigest ?? '') &&
     previous.viewMode === next.viewMode &&
     previous.createdAt.getTime() === next.createdAt.getTime() &&
@@ -278,6 +289,10 @@ export function sessionFromCppChat(
     workspaceWorktreeDirectory: chat.workspaceWorktreeDirectory ?? '',
     importedReadOnly: chat.importedReadOnly ?? false,
     messageCount: chat.messageCount ?? 0,
+    subagentParentChatId: chat.subagentParentChatId ?? '',
+    subagentParentCreatedAt: chat.subagentParentCreatedAt ?? '',
+    managedSubagentCount: chat.managedSubagentCount ?? 0,
+    managedSubagentRevision: chat.managedSubagentRevision ?? 0,
     messagesDigest: chat.messagesDigest ?? '',
     createdAt,
     updatedAt,
@@ -540,6 +555,10 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
     existing.processing === next.processing &&
     existing.compacting === next.compacting &&
+    existing.manualCompaction?.available === next.manualCompaction?.available &&
+    existing.manualCompaction?.providerId === next.manualCompaction?.providerId &&
+    existing.manualCompaction?.modelId === next.manualCompaction?.modelId &&
+    existing.manualCompaction?.nativeSessionId === next.manualCompaction?.nativeSessionId &&
     existing.backgroundTaskCount === next.backgroundTaskCount &&
     existing.idleShutdownAtMs === next.idleShutdownAtMs &&
     existing.idleShutdownTimeoutSeconds === next.idleShutdownTimeoutSeconds &&
@@ -560,6 +579,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.currentModeId === next.currentModeId &&
     modelsEquivalent(existing.availableModels, next.availableModels) &&
     configOptionsEquivalent(existing.configOptions ?? [], next.configOptions ?? []) &&
+    (existing.nativeModelOptions === next.nativeModelOptions || JSON.stringify(existing.nativeModelOptions) === JSON.stringify(next.nativeModelOptions)) &&
     existing.modelsLoading === next.modelsLoading &&
     existing.modelRefreshError === next.modelRefreshError &&
     existing.currentModelId === next.currentModelId &&
@@ -646,6 +666,19 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
         lifecycleState === 'processing' ||
         lifecycleState === 'waitingPermission' ||
         lifecycleState === 'waitingUserInput'
+  // Only the owning visible Copilot chat may receive this native action target.
+  let nativeModelOptions = sanitizeNativeModelOptions(acp?.nativeModelOptions)
+  const owner = nativeModelOptions?.autoRouting?.ownership
+  if (nativeModelOptions && (chat.importedReadOnly || normalizeCliProviderIdAlias(chat.providerId ?? '') !== COPILOT_CLI_PROVIDER_ID
+    || normalizeCliProviderIdAlias(acp?.providerId ?? '') !== COPILOT_CLI_PROVIDER_ID || acp?.protocolKind !== 'copilot-sdk'
+    || (owner && (owner.chatId !== chat.id || owner.nativeSessionId !== acp.sessionId || owner.executionHostId !== (chat.executionHostId || 'local'))))) {
+    nativeModelOptions = undefined
+  }
+  let manualCompaction = sanitizeManualCompaction(acp?.manualCompaction)
+  if (manualCompaction && (manualCompaction.providerId !== (chat.providerId ?? '')
+    || manualCompaction.providerId !== (acp?.providerId ?? chat.providerId ?? '')
+    || manualCompaction.modelId !== (chat.modelId ?? '')
+    || manualCompaction.nativeSessionId !== (acp?.sessionId ?? ''))) manualCompaction = undefined
   const next: AcpBinding = {
     sessionId: acp?.sessionId ?? '',
     providerId: acp?.providerId ?? chat.providerId ?? GEMINI_CLI_PROVIDER_ID,
@@ -655,6 +688,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     lifecycleState,
     processing: effectiveProcessing,
     compacting: running && effectiveProcessing && acp?.compacting === true,
+    manualCompaction,
     backgroundTaskCount: acp?.backgroundTaskCount ?? 0,
     idleCountdownStartsAtMs: acp?.idleCountdownStartsAtMs,
     idleShutdownAtMs: acp?.idleShutdownAtMs,
@@ -680,6 +714,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     currentModeId: normalizeAcpApprovalMode(acp?.currentModeId ?? chat.approvalMode),
     availableModels: Array.isArray(acp?.availableModels) ? acp!.availableModels : [],
     configOptions: Array.isArray(acp?.configOptions) ? acp!.configOptions : [],
+    nativeModelOptions,
     modelsLoading: Boolean(acp?.modelsLoading),
     modelRefreshError: acp?.modelRefreshError ?? '',
     currentModelId: normalizeAcpModelId(acp?.currentModelId ?? chat.modelId),
@@ -811,6 +846,10 @@ function cppMessageCreatedAtMillis(message: CppMessage) {
 function cppMessagesEquivalent(existing: Message, next: CppMessage, index: number) {
   return (
     existing.nativeMessageIndex === index &&
+    existing.managedOriginRunId === sanitizeManagedOriginRunId(next.managedOriginRunId) &&
+    existing.nativeInputId === sanitizeNativeInputId(next.nativeInputId) &&
+    existing.originRequestId === sanitizeOriginRequestId(next.originRequestId) &&
+    existing.inputWriteCompleted === (next.role === 'user' && sanitizeNativeInputId(next.nativeInputId) && next.inputWriteCompleted === true ? true : undefined) &&
     existing.role === next.role &&
     existing.content === next.content &&
     (existing.providerId ?? '') === (next.providerId ?? '') &&
@@ -846,6 +885,10 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     id: `cef-m-${chatId}-${createdAtMillis}-${index}-${message.role}`,
     sessionId: chatId,
     nativeMessageIndex: Number.isSafeInteger(index) && index >= 0 ? index : undefined,
+    managedOriginRunId: sanitizeManagedOriginRunId(message.managedOriginRunId),
+    nativeInputId: sanitizeNativeInputId(message.nativeInputId),
+    originRequestId: sanitizeOriginRequestId(message.originRequestId),
+    inputWriteCompleted: message.role === 'user' && sanitizeNativeInputId(message.nativeInputId) && message.inputWriteCompleted === true ? true : undefined,
     role: message.role,
     content: message.content,
     providerId: message.providerId,
@@ -853,7 +896,10 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     thoughts: message.thoughts ?? '',
     planSummary: message.planSummary ?? '',
     planEntries: message.planEntries?.length ? message.planEntries : undefined,
-    toolCalls: message.toolCalls?.length ? message.toolCalls : undefined,
+    toolCalls: message.toolCalls?.length ? message.toolCalls.flatMap(value => {
+      const tool = sanitizeToolCall(value)
+      return tool ? [tool] : []
+    }) : undefined,
     blocks: blocks?.length ? blocks : undefined,
     attachments: attachments.length ? attachments : undefined,
     processingTimeMs: message.processingTimeMs ?? 0,
@@ -977,12 +1023,20 @@ export function toolCallsEquivalent(existing: AcpToolCall[], next: AcpToolCall[]
       tool.kind === other.kind &&
       tool.status === other.status &&
       (tool.approvalStatus ?? '') === (other.approvalStatus ?? '') &&
-      tool.content === other.content &&
+      (tool.content ?? '') === (other.content ?? '') &&
       Boolean(tool.contentDeferred) === Boolean(other.contentDeferred) &&
       (tool.contentDigest ?? '') === (other.contentDigest ?? '') &&
+      tool.managedLaunchRunId === other.managedLaunchRunId &&
       Boolean(tool.isSubAgent) === Boolean(other.isSubAgent) &&
       (tool.subAgentId ?? '') === (other.subAgentId ?? '') &&
       (tool.subAgentTitle ?? '') === (other.subAgentTitle ?? '') &&
+      (tool.subAgentResultContent ?? '') === (other.subAgentResultContent ?? '') &&
+      (tool.subAgentChildren?.length ?? 0) === (other.subAgentChildren?.length ?? 0) &&
+      (tool.subAgentChildren ?? []).every((child, childIndex) => {
+        const otherChild = other.subAgentChildren![childIndex]
+        return child.id === otherChild.id && (child.title ?? '') === (otherChild.title ?? '') && (child.status ?? '') === (otherChild.status ?? '') &&
+          child.startedAtEpochMs === otherChild.startedAtEpochMs && child.finishedAtEpochMs === otherChild.finishedAtEpochMs && child.durationMs === otherChild.durationMs
+      }) &&
       (tool.currentActivity ?? '') === (other.currentActivity ?? '')
     )
   })
@@ -1015,7 +1069,15 @@ export function attachmentsEquivalent(existing: Attachment[], next: Attachment[]
       (attachment.path ?? '') === (other.path ?? '') &&
       (attachment.mimeType ?? '') === (other.mimeType ?? '') &&
       (attachment.previewKey ?? '') === (other.previewKey ?? '') &&
-      (attachment.previewOriginPath ?? '') === (other.previewOriginPath ?? '')
+      (attachment.previewOriginPath ?? '') === (other.previewOriginPath ?? '') &&
+      (attachment.source ?? 'legacy_path') === (other.source ?? 'legacy_path') &&
+      (attachment.sourceUri ?? '') === (other.sourceUri ?? '') &&
+      (attachment.originExecutionHostId ?? '') === (other.originExecutionHostId ?? '') &&
+      (attachment.nativePartKey ?? '') === (other.nativePartKey ?? '') &&
+      (attachment.nativeToolCallId ?? '') === (other.nativeToolCallId ?? '') &&
+      (attachment.nativeSourceField ?? '') === (other.nativeSourceField ?? '') &&
+      (attachment.nativeAssetKey ?? '') === (other.nativeAssetKey ?? '') &&
+      (attachment.contentDigest ?? '') === (other.contentDigest ?? '')
   })
 }
 
@@ -1026,7 +1088,11 @@ export function queuedPromptsEquivalent(existing: AcpBinding['queuedPrompts'], n
   return previous.every((prompt, index) => {
     const other = incoming[index]
     return prompt.id === other.id && prompt.revision === other.revision && Boolean(prompt.prepared) === Boolean(other.prepared) &&
+      sanitizeNativeInputId(prompt.nativeInputId) === sanitizeNativeInputId(other.nativeInputId) &&
+      sanitizeOriginRequestId(prompt.originRequestId) === sanitizeOriginRequestId(other.originRequestId) &&
       prompt.existingUserMessageIndex === other.existingUserMessageIndex &&
+      prompt.referencedMessageCreatedAt === other.referencedMessageCreatedAt &&
+      prompt.retryAllowed === other.retryAllowed &&
       prompt.uamAgentId === other.uamAgentId && prompt.text === other.text &&
       prompt.goalMode === other.goalMode &&
       prompt.goalId === other.goalId &&

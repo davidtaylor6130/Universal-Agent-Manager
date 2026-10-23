@@ -186,6 +186,34 @@ class WindowsProcessService final : public IPlatformProcessService
 		return false;
 	}
 
+	uam::platform::StandardInputReadResult ReadStandardInput(char* buffer, std::size_t capacity) const override
+	{
+		using uam::platform::StandardInputReadStatus;
+		const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+		if (buffer == nullptr || capacity == 0 || input == nullptr || input == INVALID_HANDLE_VALUE ||
+		    GetFileType(input) != FILE_TYPE_PIPE) return {}; // Console/other handles unsupported.
+		DWORD available = 0;
+		if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr))
+		{
+			const DWORD error = GetLastError();
+			if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED || error == ERROR_NO_DATA)
+				return {StandardInputReadStatus::EndOfStream, 0};
+			return {};
+		}
+		if (available == 0) return {StandardInputReadStatus::Pending, 0};
+		const DWORD wanted = static_cast<DWORD>(std::min<std::size_t>(capacity, available));
+		DWORD count = 0;
+		if (!ReadFile(input, buffer, wanted, &count, nullptr))
+		{
+			const DWORD error = GetLastError();
+			if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED || error == ERROR_NO_DATA)
+				return {StandardInputReadStatus::EndOfStream, 0};
+			return {};
+		}
+		return {count == 0 ? StandardInputReadStatus::EndOfStream : StandardInputReadStatus::Data,
+		        static_cast<std::size_t>(count)};
+	}
+
 	bool SupportsDetachedProcesses() const override
 	{
 		return true;
@@ -640,6 +668,28 @@ class WindowsProcessService final : public IPlatformProcessService
 			process.stdin_writer = CreateAsyncHandleWriter(process.stdin_write, error_out);
 		}
 		return process.stdin_writer != nullptr && process.stdin_writer->Enqueue(bytes, len, error_out);
+	}
+
+	bool WriteToStdioProcessObserved(uam::platform::StdioProcessPlatformFields& process,
+	    const char* bytes, std::size_t len,
+	    std::shared_ptr<const uam::platform::AsyncByteWriter::EnqueueReceipt>& receipt_out,
+	    std::string* error_out = nullptr) const override
+	{
+		receipt_out.reset();
+		if (bytes == nullptr || len == 0)
+		{
+			if (error_out) *error_out = "An observed input write requires nonempty bytes.";
+			return false;
+		}
+		if (process.stdin_write == INVALID_HANDLE_VALUE)
+		{
+			if (error_out) *error_out = "stdin pipe handle is closed.";
+			return false;
+		}
+		if (process.stdin_writer == nullptr)
+			process.stdin_writer = CreateAsyncHandleWriter(process.stdin_write, error_out);
+		const std::shared_ptr<uam::platform::AsyncByteWriter> writer = process.stdin_writer;
+		return writer != nullptr && writer->EnqueueObserved(bytes, len, receipt_out, error_out);
 	}
 
 	void CloseStdioProcessInput(uam::platform::StdioProcessPlatformFields& process) const override

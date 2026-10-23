@@ -3,3 +3,19 @@
 Native import discovers conversations from an included provider and lets the user import eligible history into the correct workspace and execution environment. Discovery is not execution or permission to resume work. Preserve supported text, tools, attachments and native identity, prevent duplicates/deleted-session resurrection and reject confirmed empty content. Authored text, attachments, reasoning, plans and tools qualify; setup-only text, whitespace and compaction/interruption markers alone do not. Unknown, failed or incomplete histories stay retryable, and confirmed-empty sessions can become eligible after receiving real conversation content. Ownership and deletion state must be rechecked before publication, including background startup choices.
 
 [Imports and exports](imports.md) · [Portable bundles](../settings/chat-data.md) · [Source of truth](../architecture/source-of-truth.md).
+
+## History recency
+
+Untargeted reconciliation compares validated instants rather than timestamp spelling when choosing between differing histories of equal length. Explicit offsets retain their full supported fractional precision; malformed or unknown timestamps cannot authorize replacing saved text. Legacy local display timestamps use the controller’s current timezone as a compatibility assumption, with invalid civil times and exposed daylight-saving ambiguity treated as unknown. These old records contain no original timezone, so this assumption cannot reconstruct changed-zone or foreign-backup history, or certify every political offset fold. Existing count precedence, identity, revision, deletion and live-work checks remain required; time alone grants no ownership. Duplicate snapshots of one native conversation retain UAM-owner and count precedence; differing update and creation timestamps follow this known-instant ordering before the existing metadata tie rules. Exactly equal timestamp values retain those established tie rules. This policy does not change explicit-refresh authority or establish correctness of every remaining sorting and recency consumer.
+
+## Refresh metadata recency
+
+Explicit refresh may adopt the scoped native messages under its existing count, ownership and save rules while retaining a later saved UAM metadata timestamp. Compare known instants when advancing that metadata; equal or unknown ordering retains the saved value and spelling. An empty saved value may be initialized from a valid incoming timestamp. This metadata rule does not veto message adoption or authorize another session, workspace or execution host. Remaining recency consumers require their own verification.
+
+## Saved history read failures
+
+A saved summary does not establish that its messages were read successfully. When reconciliation needs saved messages and that read fails, refuse the affected import or open operation, retain the saved conversation and active draft, and report a retryable failure. Never present an unread summary as a successfully loaded empty conversation. Restoring access allows a fresh guarded retry; previously completed native-link saves retain their established ownership.
+
+## Internal result input
+
+Import and explicit refresh classify UAM-internal Codex result input as machine data only from the parent's retained, exactly scoped native turn and complete original input receipt. Unknown or ambiguous provenance and human copies on another turn remain user history. Preserve cumulative receipt DATA through refresh, save and reload without recreating execution authority. A changed primary or receipt snapshot invalidates an in-flight refresh rather than publishing stale classification.

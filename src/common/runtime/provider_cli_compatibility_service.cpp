@@ -887,6 +887,8 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	// Homebrew upgrades its current package; it does not install the requested pin.
 	const std::string_view install_version = InstallManager(provider_state.install_method) == "homebrew"
 	    ? std::string_view(kLatestVersion) : trimmed_version;
+	const std::string requested_minimum = install_version == kLatestVersion && trimmed_version != kLatestVersion
+	    ? std::string(trimmed_version) : std::string{};
 	const std::string command = BuildInstallCommand(*resolved.policy, install_version, provider_state.install_method);
 	if (command.empty())
 	{
@@ -901,10 +903,11 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	{
 		if (!stop_sessions) return FailProviderCliInstall(error_out, "Provider sessions are running. Stop the affected sessions and retry the update.");
 		app.pending_cli_updates[CliProviderVersionStateKey(resolved.provider_id, host->id)] =
-		    {resolved.provider_id, std::string(install_version), *host, std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + 30.0};
+		    {resolved.provider_id, std::string(trimmed_version), *host, std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + 30.0};
 		provider_state.provider_id = resolved.provider_id;
 		provider_state.execution_host = *host;
 		provider_state.selected_version.assign(install_version);
+		provider_state.requested_minimum_version.assign(requested_minimum);
 		provider_state.last_install_status = "running";
 		provider_state.message = "Stopping provider sessions before installing the update.";
 		provider_state.install_output = allow_interactive_elevation ? std::string(kInteractiveConsentMarker) : "";
@@ -923,6 +926,7 @@ bool ProviderCliCompatibilityService::StartInstallProviderVersion(uam::AppState&
 	provider_state.provider_id = resolved.provider_id;
 	provider_state.execution_host = *host;
 	provider_state.selected_version.assign(install_version);
+	provider_state.requested_minimum_version.assign(requested_minimum);
 	provider_state.install_command = command;
 	provider_state.install_output.clear();
 	provider_state.last_install_status = "running";
@@ -1086,6 +1090,10 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			const bool command_failed = OutputIndicatesCommandFailure(output);
 
 			const std::optional<std::string> parsed = command_failed ? std::nullopt : ExtractSemverVersion(output);
+			const bool requested_minimum_unmet = parsed && !provider_state.requested_minimum_version.empty() &&
+			    !SemverAtLeast(*parsed, provider_state.requested_minimum_version);
+			const std::string minimum_version_error = requested_minimum_unmet
+			    ? "The installer finished, but the requested minimum version " + provider_state.requested_minimum_version + " was not installed." : "";
 
 			if (command_failed)
 			{
@@ -1094,6 +1102,13 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 			else if (parsed)
 			{
 				provider_state.installed_version = *parsed;
+				const bool minimum_verification_failed = !interactive_verification && provider_state.selected_version == "latest" &&
+				    !provider_state.install_output.empty() && provider_state.last_install_status == "succeeded" && requested_minimum_unmet;
+				if (minimum_verification_failed)
+				{
+					provider_state.last_install_status = "failed";
+					provider_state.install_output += "\n" + minimum_version_error;
+				}
 				if (!interactive_verification && provider_state.selected_version != "latest" && !provider_state.install_output.empty())
 				{
 					if (provider_state.installed_version == provider_state.selected_version) provider_state.last_install_status = "succeeded";
@@ -1127,6 +1142,7 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 				{
 					provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version is known to be incompatible with this UAM build.");
 				}
+				if (minimum_verification_failed) provider_state.message = minimum_version_error;
 			}
 			else
 			{
@@ -1152,12 +1168,19 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 					provider_state.last_install_status = "failed";
 					provider_state.message = "The terminal update failed. Review its output in the terminal.";
 				}
-				else if (receipt_status == 0 && parsed &&
+				else if (receipt_status == 0 && parsed && !requested_minimum_unmet &&
 				    ValidateRemoteInstallProbe(previous_probe, probe_output, check_host.platform, &identity_error) &&
 				    (provider_state.selected_version == "latest" || *parsed == provider_state.selected_version))
 				{
 					provider_state.last_install_status = "succeeded";
 					provider_state.message = "Update verified on this host.";
+				}
+				else if (receipt_status == 0 && parsed && requested_minimum_unmet &&
+				    ValidateRemoteInstallProbe(previous_probe, probe_output, check_host.platform, &identity_error))
+				{
+					provider_state.last_install_status = "failed";
+					provider_state.message = minimum_version_error;
+					provider_state.install_output += "\n" + minimum_version_error;
 				}
 				else
 				{

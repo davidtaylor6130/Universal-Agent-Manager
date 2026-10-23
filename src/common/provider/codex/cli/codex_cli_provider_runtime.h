@@ -19,6 +19,7 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
 	void ApplyNativeToolMetadata(ToolCall& tool, const nlohmann::json& native_item) const override;
+	void ApplyAcpToolMetadata(uam::AcpToolCallState& tool, const nlohmann::json& native_item) const override;
 	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;
 	void NormalizeLoadedNativeSessionId(ChatSession& chat) const override;
 	bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const override;
@@ -43,20 +44,34 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	nlohmann::json OnAcpBuildSetupRequest(int request_id, const ChatSession& chat,
 	    const std::string& cwd, bool can_load, std::string& out_method) const override;
 	std::string OnAcpValidateResumeId(const ChatSession& chat) const override;
-	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
-	    const std::string& prompt, const ChatSession& chat, std::string& out_method) const override;
-	bool SupportsAcpCompaction() const override { return true; }
-	bool SupportsAcpSteering() const override { return true; }
-	nlohmann::json OnAcpBuildSteer(uam::AcpSessionState& session, int request_id,
-	    const std::string& prompt, std::string& out_method) const override;
-	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState& session,
-	    int request_id, std::string& out_method) const override;
-	ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState&) const override { return ProviderAcpSettingChangeAction::ApplyLocally; }
-	ProviderAcpSettingChangeAction AcpModelChangeAction() const override { return ProviderAcpSettingChangeAction::ApplyLocally; }
-	nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
-	    const std::string& option_id, bool cancelled) const override;
-	bool OnAcpTryAutoApprove(uam::AcpSessionState& session, const ChatSession& chat,
-	    std::string* error_out) const override;
+	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id, const std::string& prompt, const ChatSession& chat, std::string& out_method) const override;
+	bool SupportsSameLiveParentResultContinuation() const override { return true; }
+	bool SupportsAcpCompaction() const override
+	{
+		return true;
+	}
+	bool SupportsAcpSteering() const override
+	{
+		return true;
+	}
+	bool SupportsSavedImageRetry(const uam::AcpSessionState& session) const override;
+	bool SupportsRemoteOwnedImageRetry(const uam::AcpSessionState& session) const override;
+	nlohmann::json SavedImageRetryMetadata(const uam::AcpSessionState& session, const ChatSession& chat) const override;
+	bool EncodePreparedSavedImageRetry(nlohmann::json& request, const nlohmann::json& prepared, std::string& error, const std::vector<MessageAttachment>& = {}, const nlohmann::json& = nullptr) const override;
+	nlohmann::json OnAcpBuildSteer(uam::AcpSessionState& session, int request_id, const std::string& prompt, std::string& out_method) const override;
+	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState& session, int request_id, std::string& out_method) const override;
+	ProviderAcpSettingChangeAction AcpModeChangeAction(const uam::AcpSessionState&) const override
+	{
+		return ProviderAcpSettingChangeAction::ApplyLocally;
+	}
+	ProviderAcpSettingChangeAction AcpModelChangeAction() const override
+	{
+		return ProviderAcpSettingChangeAction::ApplyLocally;
+	}
+	ProviderPermissionChoice AcpPermissionChoice(const uam::AcpPendingPermissionState&, const uam::AcpPermissionOptionState&) const override;
+	using IProviderRuntime::OnAcpBuildPermissionResponse;
+	nlohmann::json OnAcpBuildPermissionResponse(const uam::AcpSessionState& session, const uam::AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled) const override;
+	bool OnAcpTryAutoApprove(uam::AcpSessionState& session, const ChatSession& chat, std::string* error_out) const override;
 	std::string OnAcpMapApprovalModeId(const std::string& mode_id) const override;
 };
 

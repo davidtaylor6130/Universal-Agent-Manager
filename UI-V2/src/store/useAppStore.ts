@@ -819,7 +819,7 @@ export const useAppStore = create<AppState>((set, get) => {
             shellActionNotification: current.shellActionNotification,
             statusLine: current.statusLine,
           })
-          set(deserialized)
+          set(current.reconcileMemorySettingsProjection(deserialized, sanitized.settings))
           // Sync theme to DOM
           if (deserialized.theme) {
             persistTheme(deserialized.theme, get().customThemes)
@@ -902,7 +902,7 @@ export const useAppStore = create<AppState>((set, get) => {
             const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
             const next = applyStatePatch(msg.data, current)
             if (next) {
-              set(next)
+              set(current.reconcileMemorySettingsProjection(next, msg.data.settings))
               if (next.theme) {
                 persistTheme(next.theme, get().customThemes)
               }
@@ -1156,7 +1156,7 @@ export const useAppStore = create<AppState>((set, get) => {
         shellActionNotification: current.shellActionNotification,
         statusLine: current.statusLine,
       })
-      set(deserialized)
+      set(current.reconcileMemorySettingsProjection(deserialized, sanitized.settings))
       if (deserialized.theme) {
         persistTheme(deserialized.theme, get().customThemes)
       }

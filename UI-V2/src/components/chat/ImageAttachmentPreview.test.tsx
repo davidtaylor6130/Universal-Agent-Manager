@@ -3,7 +3,8 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { ImageAttachmentPreview } from './ImageAttachmentPreview'
 import { PersistedMessageContent } from './MessageBlocks'
-import { sanitizeAttachment } from '../../store/cpp/sanitizers'
+import { sanitizeAttachment, sanitizeCppMessage } from '../../store/cpp/sanitizers'
+import { FileInspectionContext } from '../shared/fileInspectionContext'
 import { buildMessageFromCpp, attachmentsEquivalent, reconcileCppMessages } from '../../store/cpp/reconcile'
 import type { Attachment, Message } from '../../types/message'
 import type { CppMessage } from '../../store/cpp/types'
@@ -199,4 +200,194 @@ it.each(previewMetadataChanges)('reconciles a native attachment when only %s cha
   const next = reconcileCppMessages('chat', [old], [{ ...raw, attachments: [{ ...attachment, [field]: replacement }] }], true)
   expect(next[0]).not.toBe(old)
   expect(next[0].attachments?.[0][field]).toBe(replacement)
+})
+
+const nativeMetadata = {
+  source: 'owned_native_asset' as const, originExecutionHostId: 'ssh-origin',
+  nativePartKey: 'native-message/content/0', nativeToolCallId: 'native-tool', nativeSourceField: 'content',
+  nativeAssetKey: 'private-owner/generation/original', contentDigest: 'a'.repeat(64),
+}
+
+it.each(['owned_native_asset', 'provider_uri', 'native_inline_pending'] as const)('retains pathless %s metadata through saved attachment ingress without projecting payload', source => {
+  const raw = { id: 'native', name: 'Recorded original', kind: 'file', mimeType: 'application/pdf', sizeBytes: 0,
+    ...nativeMetadata, source, sourceUri: 'file:///opaque%20reference.pdf', path: '/must-not-become-authority',
+    previewOriginPath: '/must-not-open', dataBase64: 'PRIVATE-BYTES', nativeInlinePayload: { encoded: 'PRIVATE-BYTES' } }
+  const sanitized = sanitizeAttachment(raw)!
+  expect(sanitized).toMatchObject({ ...nativeMetadata, source, sourceUri: raw.sourceUri })
+  expect(sanitized.path).toBeUndefined()
+  expect(sanitized.previewOriginPath).toBeUndefined()
+  expect(JSON.stringify(sanitized)).not.toContain('PRIVATE-BYTES')
+  const message = sanitizeCppMessage({ role: 'user', content: '', createdAt: '2026-01-01', attachments: [raw] })!
+  const built = buildMessageFromCpp('native-chat', message, 13)
+  expect(built.attachments).toHaveLength(1)
+  expect(built.attachments?.[0]).toMatchObject({ ...nativeMetadata, source, sourceUri: raw.sourceUri })
+})
+
+const nativeMetadataChanges = [
+  ['source', 'owned_native_asset', 'provider_uri'],
+  ['sourceUri', 'gs://bucket/original', 'https://opaque.invalid/replacement'],
+  ['originExecutionHostId', 'ssh-one', 'ssh-two'],
+  ['nativePartKey', 'part-one', 'part-two'],
+  ['nativeToolCallId', 'tool-one', 'tool-two'],
+  ['nativeSourceField', 'content', 'displayContent'],
+  ['nativeAssetKey', 'asset-one', 'asset-two'],
+  ['contentDigest', 'a'.repeat(64), 'b'.repeat(64)],
+] as const
+
+it.each(nativeMetadataChanges)('adopts metadata-only native history updates to %s', (field, initial, replacement) => {
+  const value = { ...attachment, ...nativeMetadata, path: undefined, [field]: initial }
+  const raw: CppMessage = { role: 'user', content: '', createdAt: '2026-01-01', attachments: [value] }
+  const before = buildMessageFromCpp('chat', raw, 0)
+  const changed = { ...value, [field]: replacement }
+  expect(attachmentsEquivalent(before.attachments ?? [], [changed])).toBe(false)
+  const after = reconcileCppMessages('chat', [before], [{ ...raw, attachments: [changed] }], true)
+  expect(after[0]).not.toBe(before)
+  expect(after[0].attachments?.[0]).toMatchObject({ [field]: replacement })
+  expect(reconcileCppMessages('chat', after, [{ ...raw, attachments: [changed] }], true)).toBe(after)
+})
+
+it.each(['file:///private/picture.png', 'https://opaque.invalid/picture.png', 'gs://bucket/picture', 'data:image/png;base64,opaque'])('keeps provider URI %s plain and unavailable even with an image MIME and misleading path', async sourceUri => {
+  vi.stubGlobal('IntersectionObserver', undefined)
+  const inspect = vi.fn()
+  const value = { ...attachment, ...nativeMetadata, source: 'provider_uri' as const, sourceUri, size: 0 }
+  const message: Message = { id: 'uri-only', sessionId: 'chat', role: 'user', content: '', nativeMessageIndex: 8, createdAt: new Date(0), attachments: [value] }
+  await act(async () => root.render(<FileInspectionContext.Provider value={inspect}>
+    <PersistedMessageContent message={message} sourceChatId="source-chat" onSelectTool={() => undefined} />
+  </FileInspectionContext.Provider>))
+  expect(host.textContent).toContain('External reference')
+  expect(host.textContent).toContain('Bytes unavailable')
+  expect(host.textContent).not.toMatch(/0\s*(bytes|B)\b/)
+  expect(host.querySelector('[data-detail]')?.getAttribute('data-detail')).toContain(sourceUri)
+  expect(host.querySelector('a, img, button.uam-context-chip__body')).toBeNull()
+  const chip = host.querySelector<HTMLElement>('.uam-context-chip__body')!
+  act(() => chip.click())
+  expect(inspect).not.toHaveBeenCalled()
+  expect(request).not.toHaveBeenCalled()
+  expect(URL.createObjectURL).not.toHaveBeenCalled()
+})
+
+it.each(['application/pdf', 'audio/mpeg', 'video/mp4'])('shows recorded %s originals without claiming preview or playback', async mimeType => {
+  const message: Message = { id: 'media-only', sessionId: 'chat', role: 'assistant', content: '', nativeMessageIndex: 9, createdAt: new Date(0),
+    attachments: [{ ...attachment, ...nativeMetadata, path: undefined, mimeType }] }
+  await act(async () => root.render(<PersistedMessageContent message={message} onSelectTool={() => undefined} />))
+  expect(host.textContent).toContain('Recorded file')
+  expect(host.textContent).toContain('Preview unavailable')
+  expect(host.querySelector('img, audio, video, a')).toBeNull()
+  expect(request).not.toHaveBeenCalled()
+})
+
+it('keeps a pending original visible and unavailable without requesting its bytes', async () => {
+  vi.stubGlobal('IntersectionObserver', undefined)
+  const message: Message = { id: 'pending-only', sessionId: 'chat', role: 'user', content: '', nativeMessageIndex: 9, createdAt: new Date(0),
+    attachments: [{ ...attachment, ...nativeMetadata, source: 'native_inline_pending', path: undefined }] }
+  await act(async () => root.render(<PersistedMessageContent message={message} onSelectTool={() => undefined} />))
+  expect(host.textContent).toContain('Recorded file')
+  expect(host.textContent).toContain('Bytes unavailable')
+  expect(request).not.toHaveBeenCalled()
+})
+
+it('requests a remote-origin owned original only by stored row identity and reports an unavailable preview', async () => {
+  request.mockResolvedValue({ ok: true, data: { available: false } })
+  const value = { ...attachment, ...nativeMetadata, path: undefined }
+  const message: Message = { id: 'owned-only', sessionId: 'chat', role: 'user', content: '', nativeMessageIndex: 12, createdAt: new Date(0), attachments: [value] }
+  act(() => root.render(<PersistedMessageContent message={message} sourceChatId="real-source" onSelectTool={() => undefined} />))
+  expect(request).not.toHaveBeenCalled()
+  await reveal()
+  expect(request).toHaveBeenCalledExactlyOnceWith({ action: 'getAttachmentImagePreview', payload: {
+    chatId: 'real-source', messageIndex: 12, attachmentId: value.id,
+  } }, false)
+  expect(host.textContent).toContain('Recorded file')
+  expect(host.textContent).toContain('Preview unavailable')
+  expect(host.querySelector('img')).toBeNull()
+})
+
+it.each(['nativeAssetKey', 'contentDigest', 'originExecutionHostId', 'nativePartKey', 'nativeToolCallId', 'nativeSourceField', 'sourceUri'] as const)('disposes an owned preview when only %s changes', async field => {
+  let complete!: (value: unknown) => void
+  request.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+  const value = { ...attachment, ...nativeMetadata, path: undefined }
+  render(7, 'source-chat', value)
+  act(() => visible([{ isIntersecting: true }]))
+  render(7, 'source-chat', { ...value, [field]: 'replacement' })
+  await act(async () => complete({ ok: true, data: validPreview }))
+  expect(URL.createObjectURL).not.toHaveBeenCalled()
+  expect(host.querySelector('img')).toBeNull()
+})
+
+it('previews a pathless SSH-origin owned image through the exact stored row, and revokes it when it becomes an opaque reference', async () => {
+  request.mockResolvedValue({ ok: true, data: validPreview })
+  const value = { ...attachment, ...nativeMetadata, path: undefined }
+  render(21, 'passive-child', value)
+  await reveal()
+  expect(request).toHaveBeenCalledExactlyOnceWith({ action: 'getAttachmentImagePreview', payload: {
+    chatId: 'passive-child', messageIndex: 21, attachmentId: value.id,
+  } }, false)
+  expect(host.querySelector('img')?.getAttribute('src')).toBe('blob:private-preview')
+  render(21, 'passive-child', { ...value, source: 'provider_uri', sourceUri: 'https://opaque.invalid/picture.png' })
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:private-preview')
+  expect(host.querySelector('img')).toBeNull()
+  expect(request).toHaveBeenCalledTimes(1)
+})
+
+it('keeps a recorded image unavailable when its stored native message index is missing', async () => {
+  const message: Message = { id: 'renderer-id-is-not-native-index-21', sessionId: 'chat', role: 'user', content: '', createdAt: new Date(0),
+    attachments: [{ ...attachment, ...nativeMetadata, path: undefined }] }
+  await act(async () => root.render(<PersistedMessageContent message={message} onSelectTool={() => undefined} />))
+  expect(host.textContent).toContain('Recorded file')
+  expect(host.textContent).toContain('Preview unavailable')
+  expect(request).not.toHaveBeenCalled()
+})
+
+it('validates native metadata strings without changing legacy path semantics or admitting payload fields', () => {
+  const raw = { ...attachment, source: 'legacy_path', sourceUri: 42, originExecutionHostId: false, nativePartKey: {},
+    nativeToolCallId: [], nativeSourceField: null, nativeAssetKey: false, contentDigest: 42, dataBase64: 'PRIVATE-BYTES' }
+  expect(sanitizeAttachment(raw)).toEqual({ ...attachment, source: 'legacy_path' })
+  expect(attachmentsEquivalent([attachment], [{ ...attachment, source: 'legacy_path' }])).toBe(true)
+  const native = sanitizeAttachment({ ...raw, ...nativeMetadata, source: 'provider_uri', sourceUri: 'gs://opaque/exact%20bytes', previewKey: 'a'.repeat(64) })!
+  expect(native.sourceUri).toBe('gs://opaque/exact%20bytes')
+  expect(native.path).toBeUndefined()
+  expect(native.previewKey).toBeUndefined()
+})
+
+it('NM-R2-01 preserves a visible legacy preview across direct absent and explicit legacy source props', async () => {
+  const raw: CppMessage = { role: 'user', content: '', createdAt: '2026-01-01', attachments: [attachment] }
+  const stored = buildMessageFromCpp('source-chat', raw, 0)
+  const retained = reconcileCppMessages('source-chat', [stored], [{ ...raw, attachments: [{ ...attachment, source: 'legacy_path' }] }], true)
+  expect(retained[0]).toBe(stored)
+  expect(retained[0].attachments?.[0].source).toBeUndefined()
+
+  request.mockResolvedValue({ ok: true, data: validPreview })
+  render()
+  await reveal()
+  const image = host.querySelector('img')
+  expect(image).not.toBeNull()
+  render(7, 'source-chat', { ...attachment, source: 'legacy_path' })
+  expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+  expect(host.querySelector('img')).toBe(image)
+  await reveal()
+  render(7, 'source-chat', attachment)
+  await reveal()
+  expect(host.querySelector('img')).toBe(image)
+  expect(request).toHaveBeenCalledTimes(1)
+  expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+})
+
+it('NM-R2-02 invalidates an owned previewKey and refetches changed cached content through the same saved-row triple', async () => {
+  const value = sanitizeAttachment({ ...attachment, ...nativeMetadata, path: undefined, previewKey: 'a'.repeat(64) })!
+  expect(value.previewKey).toBe('a'.repeat(64))
+  vi.mocked(URL.createObjectURL).mockReturnValueOnce('blob:first-cache').mockReturnValueOnce('blob:second-cache')
+  request.mockResolvedValueOnce({ ok: true, data: validPreview })
+    .mockResolvedValueOnce({ ok: true, data: { ...validPreview, dataBase64: 'bmV3', width: 3 } })
+  render(17, 'stored-owner', value)
+  await reveal()
+  expect(host.querySelector('img')?.getAttribute('src')).toBe('blob:first-cache')
+  render(17, 'stored-owner', { ...value, previewKey: 'b'.repeat(64) })
+  expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first-cache')
+  expect(host.querySelector('img')).toBeNull()
+  await reveal()
+  expect(host.querySelector('img')?.getAttribute('src')).toBe('blob:second-cache')
+  expect(host.querySelector('img')?.getAttribute('width')).toBe('3')
+  const exactRequest = [{ action: 'getAttachmentImagePreview', payload: {
+    chatId: 'stored-owner', messageIndex: 17, attachmentId: value.id,
+  } }, false]
+  expect(request.mock.calls).toEqual([exactRequest, exactRequest])
 })

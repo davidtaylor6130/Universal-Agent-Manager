@@ -1,0 +1,22 @@
+.uam-managed-panel { min-width: 0; margin-block: 8px; border-block: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
+.uam-managed-panel > details > summary { display: flex; align-items: center; gap: 8px; padding: 8px 4px; list-style: none; cursor: pointer; transition: background var(--dur-fast) var(--ease); }
+.uam-managed-panel > details > summary::-webkit-details-marker { display: none; }
+.uam-managed-panel > details > summary:hover { background: var(--surface-up); color: var(--text); }
+.uam-managed-panel > details > summary:focus-visible, .uam-managed-panel:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.uam-managed-panel__toolbar, .uam-managed-panel__row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.uam-managed-panel__toolbar { padding-block: 4px; }
+.uam-managed-panel ul { list-style: none; margin: 0; padding: 0; }
+.uam-managed-panel li { padding-block: 8px; border-top: 1px solid var(--border); }
+.uam-managed-panel p { margin: 4px; overflow-wrap: anywhere; }
+.uam-managed-panel__name { min-width: 0; justify-content: flex-start; text-align: left; overflow-wrap: anywhere; }
+.uam-managed-panel__meta, .uam-managed-panel__identity { color: var(--text-3); font-size: 11px; }
+.uam-managed-panel__identity { font-family: var(--font-mono, monospace); }
+.uam-managed-panel__error { color: var(--red); }
+@media (prefers-reduced-motion: reduce) { .uam-managed-panel > details > summary { transition: none; } }
+
+.uam-managed-panel:not(.uam-managed-panel--catalogue) .uam-managed-panel__row { flex-wrap: nowrap; }
+.uam-managed-panel:not(.uam-managed-panel--catalogue) [data-managed-stop] { flex: none; }
+.uam-managed-panel:not(.uam-managed-panel--catalogue) li { border-top: 0; padding-block: 4px; }
+.uam-managed-panel__details > summary { width: max-content; margin-left: auto; padding: 4px; cursor: pointer; color: var(--text-3); font-size: var(--fs-xs); }
+.uam-managed-panel__details > summary:hover { color: var(--text); }
+.uam-managed-panel__details > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }

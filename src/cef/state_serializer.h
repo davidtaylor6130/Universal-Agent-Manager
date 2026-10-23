@@ -29,8 +29,11 @@ class StateSerializer
 	/// Serialise the application state, optionally omitting loaded chat messages.
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
-	/// Serialise a compact state summary for push fingerprinting.
-	static nlohmann::json SerializeFingerprint(const AppState& app);
+	/// Serialise state summaries; compact catalogs are internal comparison tokens and need patch hydration.
+	static nlohmann::json SerializeFingerprint(const AppState& app, bool compact_catalogs = false);
+
+	/// Hydrate a changed chat summary with full model options for frontend patches.
+	static nlohmann::json SerializeChatSummary(const AppState& app, const ChatSession& chat);
 
 	/// <summary>Serializes bounded startup discovery metadata without private transcript payloads.</summary>
 	static nlohmann::json SerializeStartupNativeImports(const StartupNativeImportSnapshot& snapshot);

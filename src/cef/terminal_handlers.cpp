@@ -1,4 +1,5 @@
 #include "cef/uam_query_handler.h"
+#include "app/vcs_commit_service.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 
@@ -28,6 +29,7 @@
 // ---------------------------------------------------------------------------
 
 using namespace uam::query_handler_internal;
+using namespace uam::query_handler_async;
 
 namespace
 {
@@ -271,6 +273,49 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		return;
 	}
 
+	std::string baseline_error;
+	std::shared_ptr<std::stop_source> baseline_cancel;
+	const uam::ChatBaselineReadiness baseline = uam::PrepareChatRepositoryBaseline(m_app, *chat, &baseline_error, &baseline_cancel, true);
+	if (baseline == uam::ChatBaselineReadiness::Failed)
+	{
+		terminal.last_error = baseline_error;
+		cb->Success(BuildCliBindingResponse(terminal).dump());
+		return;
+	}
+	if (baseline == uam::ChatBaselineReadiness::Pending)
+	{
+		terminal.native_session_setup_cancel = baseline_cancel;
+		const std::shared_ptr<uam::ChatBaselinePreparation> task = m_app.repository_baseline_preparations.at(chat_id);
+		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+		const std::string host_id = chat->execution_host_id;
+		const std::string attachment_id = terminal.ui_attachment_id;
+		if (!RunAsyncCefQuery(m_asyncLifetime, cb,
+		    [task, baseline_cancel]
+		    {
+			    std::string error;
+			    const uam::ChatBaselineReadiness ready = uam::WaitForChatRepositoryBaseline(task, baseline_cancel->get_token(), &error);
+			    return ready == uam::ChatBaselineReadiness::Failed ? AsyncFailure(409, error) : AsyncSuccess({});
+		    },
+		    [this, browser, payload, cb, chat_id, workspace, host_id, attachment_id, baseline_cancel](AsyncCefResult& result)
+		    {
+			    ChatSession* current = ChatDomainService().FindChatById(m_app, chat_id);
+			    uam::CliTerminalState* target = FindCliTerminalByRoutingKey(m_app, chat_id, "");
+			    if (target == nullptr || target->native_session_setup_cancel != baseline_cancel || baseline_cancel->stop_requested() ||
+			        current == nullptr || current->execution_host_id != host_id || uam::paths::ResolveWorkspaceRootPath(m_app, *current) != workspace ||
+			        target->ui_attachment_id != attachment_id || !target->ui_attached)
+			    {
+				    if (target != nullptr && target->native_session_setup_cancel == baseline_cancel) target->native_session_setup_cancel.reset();
+				    result = AsyncFailure(409, "The chat changed while its repository baseline was being saved.");
+				    return;
+			    }
+			    target->native_session_setup_cancel.reset();
+			    if (!result.ok) { target->last_error = result.error; return; }
+			    result.callback_deferred = true;
+			    HandleStartCli(browser, payload, cb);
+		    })) terminal.native_session_setup_cancel.reset();
+		return;
+	}
+
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *chat);
 	if (!chat->imported_read_only && uam::ProviderSupportsInteractiveTerminal(provider) &&
 	    ProviderRuntimeRegistry::Resolve(provider).InteractiveConfigurationError(provider, m_app.settings).empty())
@@ -380,7 +425,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		terminal.native_session_setup_cancel = request;
 		terminal.last_error.clear();
 		using namespace uam::query_handler_async;
-		if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(m_asyncLifetime, cb,
+		if (!CefPostTask(TID_FILE_USER_BLOCKING, new CefQueryWorkerTask(m_asyncLifetime, cb,
 		    [workspace, provider, request, remote_host]()
 		    {
 			    std::string error;

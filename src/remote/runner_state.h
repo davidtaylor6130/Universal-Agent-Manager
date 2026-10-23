@@ -2,6 +2,7 @@
 
 #include "common/platform/platform_state_fields.h"
 #include "common/provider/provider_setup_input.h"
+#include "remote/native_history_snapshot.h"
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -127,5 +128,6 @@ namespace uam::remote
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_retiringProcesses;
 		std::unordered_map<std::string, Channel> m_channels;
 		std::unordered_map<std::string, std::shared_ptr<Upload>> m_uploads;
+		std::unordered_map<std::string, std::shared_ptr<native_history::Snapshot>> m_nativeHistorySnapshots;
 	};
 }

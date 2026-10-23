@@ -111,6 +111,15 @@ namespace uam::acp_models
 		return parsed;
 	}
 
+	/// <summary>Return exact native model-choice values; display labels and current selection are not advertised IDs.</summary>
+	inline std::vector<std::string> ConfigModelIds(const AcpConfigOptionState& option)
+	{
+		std::vector<std::string> ids;
+		for (const AcpConfigOptionChoiceState& choice : option.choices)
+			uam::ranges::PushUniqueNonEmptyString(ids, choice.value);
+		return ids;
+	}
+
 	/// <summary>Keep native IDs exact; repair only a unique advertised OpenCode casing alias.</summary>
 	inline std::optional<std::string> ResolveAdvertisedModelId(const AcpSessionState& session, std::string_view requested, std::string& error)
 	{
@@ -125,7 +134,7 @@ namespace uam::acp_models
 		std::vector<std::string> advertised;
 		if (option != session.available_config_options.end())
 		{
-			for (const AcpConfigOptionChoiceState& choice : option->choices) uam::ranges::PushUniqueNonEmptyString(advertised, choice.value);
+			advertised = ConfigModelIds(*option);
 		}
 		else
 		{

@@ -2368,7 +2368,7 @@ UAM_TEST(NativeTerminalRefreshRetriesTheSameSnapshotAfterStorageRecovers)
 	const fs::path data_root = temp.root / "data";
 	const fs::path workspace = temp.root / "workspace";
 	const fs::path gemini_home = temp.root / "gemini";
-	const fs::path source = gemini_home / "tmp" / "workspace-source";
+	const fs::path source = gemini_home / ".gemini" / "tmp" / "workspace-source";
 	fs::create_directories(workspace);
 	fs::create_directories(source / "chats");
 	UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
@@ -2385,6 +2385,14 @@ UAM_TEST(NativeTerminalRefreshRetriesTheSameSnapshotAfterStorageRecovers)
 	chat.messages.push_back(Message{MessageRole::User, "Hello"});
 	app.chats.push_back(chat);
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	// Match a hydrated saved owner: blank synthetic dates/root differ from the
+	// repository's canonical metadata and correctly look like unsaved edits.
+	const auto canonical_owner = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(canonical_owner);
+	UAM_ASSERT(!canonical_owner->created_at.empty());
+	UAM_ASSERT(!canonical_owner->branch_root_chat_id.empty());
+	chat = *canonical_owner;
+	app.chats.front() = chat;
 	ChatSession native = chat;
 	native.messages.push_back(Message{MessageRole::Assistant, "Completed"});
 	const std::string digest = uam::NativeHistorySnapshotDigest({native});

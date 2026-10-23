@@ -1,6 +1,7 @@
 #include "app/vcs_commit_service.h"
 
 #include "app/provider_resolution_service.h"
+#include "app/chat_domain_service.h"
 #include "app/provider_worker_command.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
@@ -21,6 +22,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <mutex>
+#include <thread>
 #include <cctype>
 #include <chrono>
 #include <filesystem>
@@ -29,7 +32,6 @@
 #include <optional>
 #include <set>
 #include <sstream>
-#include <thread>
 #include <utility>
 
 namespace uam
@@ -134,6 +136,8 @@ namespace uam
 
 			const std::string& WorkspaceDirectory() const { return m_workspace; }
 
+			std::string_view Platform() const { return m_host ? m_host->platform : std::string_view{}; }
+
 			bool Ready(std::string* error_out = nullptr)
 			{
 				if (m_client != nullptr && m_client->Connect(&m_error)) return true;
@@ -147,10 +151,10 @@ namespace uam
 			                           const std::vector<std::string>& argv,
 			                           const std::vector<std::pair<std::string, std::string>>& environment = {},
 			                           std::string_view standard_input = {},
-			                           int timeout_ms = kDefaultCommandTimeoutMs)
+			                           int timeout_ms = kDefaultCommandTimeoutMs, std::stop_token cancellation = {})
 			{
 				ProcessExecutionResult result;
-				if (argv.empty() || !Ready(&result.error)) return result;
+				if (cancellation.stop_requested() || argv.empty() || !Ready(&result.error)) return result;
 				const std::string session_id = "vcs-" +
 				    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 				if (!m_client->StartProcess(session_id, std::filesystem::path(working_directory),
@@ -171,7 +175,7 @@ namespace uam
 
 				const auto deadline = std::chrono::steady_clock::now() +
 				                      std::chrono::milliseconds(timeout_ms);
-				while (std::chrono::steady_clock::now() < deadline)
+				while (!cancellation.stop_requested() && std::chrono::steady_clock::now() < deadline)
 				{
 					uam::remote::ProcessPollResult polled;
 					if (!m_client->PollProcess(session_id, polled, &result.error)) break;
@@ -430,6 +434,113 @@ namespace uam
 			return (value.size() == 40 || value.size() == 64) && std::ranges::all_of(value, [](unsigned char ch) { return std::isxdigit(ch) != 0; });
 		}
 
+		std::filesystem::path ChatBaselinePath(const AppState& app, const ChatSession& chat)
+		{
+			return app.data_root / "repository-review" / (uam::hashing::Hex64(uam::hashing::Fnv1a64(chat.id)) + ".json");
+		}
+
+		std::string ChatBaselineHostIdentity(const AppState& app, const ChatSession& chat)
+		{
+			if (uam::paths::IsControllerLocalWorkspace(chat)) return "local";
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			if (!host) return "missing:" + chat.execution_host_id;
+			return nlohmann::json::array({host->id, host->transport, host->ssh_alias, host->platform, host->runner_directory}).dump();
+		}
+
+		class GitReviewIndex
+		{
+		  public:
+			explicit GitReviewIndex(const std::filesystem::path& root, std::stop_token cancellation = {}, RemoteVcsContext* remote = nullptr) : m_root(root), m_cancellation(cancellation), m_remote(remote)
+			{
+				if (m_remote)
+				{
+					const ProcessExecutionResult directory = Run({"rev-parse", "--absolute-git-dir"}, false);
+					if (CommandSucceeded(directory)) m_remoteIndex = uam::execution_hosts::JoinRemotePath(m_remote->Platform(), uam::strings::Trim(directory.output), "uam-review-" + PlatformServicesFactory::Instance().process_service.GenerateUuid());
+					return;
+				}
+				const std::optional<std::filesystem::path> temp = uam::paths::TempDirectoryPathNoThrow();
+				if (temp) m_index = *temp / ("uam-review-" + PlatformServicesFactory::Instance().process_service.GenerateUuid());
+			}
+			~GitReviewIndex()
+			{
+				if (m_remote)
+				{
+					if (m_remoteIndex.empty()) return;
+					(void)m_remote->RemoveFile(m_remoteIndex);
+					(void)m_remote->RemoveFile(m_remoteIndex + ".lock");
+					return;
+				}
+				if (m_index.empty()) return;
+				std::error_code error;
+				std::filesystem::remove(m_index, error);
+				std::filesystem::remove(m_index.string() + ".lock", error);
+			}
+			ProcessExecutionResult SeedSourceIndex() const
+			{
+				ProcessExecutionResult result = Run({"rev-parse", "--git-path", "index"}, false);
+				if (!CommandSucceeded(result)) return result;
+				const std::string source_path = uam::strings::Trim(result.output);
+				if (m_remote)
+				{
+					const std::string absolute = uam::execution_hosts::IsAbsoluteRemotePath(m_remote->Platform(), source_path) ? source_path : uam::execution_hosts::JoinRemotePath(m_remote->Platform(), uam::paths::Utf8PathString(m_root), source_path);
+					if (m_remote->CopyFile(absolute, m_remoteIndex, false, &result.error)) return Run({"rev-parse", "--git-dir"});
+					const ProcessExecutionResult entries = Run({"ls-files", "--stage"}, false);
+					if (CommandSucceeded(entries) && entries.output.empty()) return Run({"read-tree", "--empty"});
+					result.ok = false;
+					result.exit_code = 1;
+					return result;
+				}
+				const std::filesystem::path source = uam::paths::PathFromUtf8(source_path);
+				const std::filesystem::path absolute = source.is_absolute() ? source : m_root / source;
+				if (!uam::paths::PathExistsNoThrow(absolute)) return Run({"read-tree", "--empty"});
+				std::error_code error;
+				std::filesystem::copy_file(absolute, m_index, std::filesystem::copy_options::none, error);
+				result.ok = !error;
+				result.exit_code = error ? 1 : 0;
+				if (error) result.error = "Failed to copy the repository index for review: " + error.message();
+				return result;
+			}
+			ProcessExecutionResult Run(std::vector<std::string> args, bool use_index = true) const
+			{
+				if (use_index && (m_remote ? m_remoteIndex.empty() : m_index.empty()))
+				{
+					ProcessExecutionResult result;
+					result.error = "The temporary directory is unavailable for repository review.";
+					return result;
+				}
+				ProviderWorkerInvocation invocation;
+				invocation.direct_process = true;
+				invocation.argv = {"git", "-C", uam::paths::Utf8PathString(m_root)};
+				invocation.argv.insert(invocation.argv.end(), args.begin(), args.end());
+				if (use_index) invocation.environment_overrides = {{"GIT_INDEX_FILE", m_remote ? m_remoteIndex : uam::paths::Utf8PathString(m_index)}};
+				if (m_remote) return m_remote->Run(uam::paths::Utf8PathString(m_root), invocation.argv, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+				return ExecuteProviderWorkerInvocation(invocation, m_root, kDefaultCommandTimeoutMs, m_cancellation);
+			}
+		  private:
+			std::filesystem::path m_root;
+			std::filesystem::path m_index;
+			std::string m_remoteIndex;
+			std::stop_token m_cancellation;
+			RemoteVcsContext* m_remote = nullptr;
+		};
+
+		std::string SavedChatBaseline(const AppState& app, const ChatSession& chat, const std::filesystem::path& root, std::string* error_out)
+		{
+			std::string text;
+			if (!uam::io::TryReadTextFile(ChatBaselinePath(app, chat), text, 16384))
+			{
+				if (error_out) *error_out = "This chat has no saved repository baseline.";
+				return {};
+			}
+			const nlohmann::json saved = nlohmann::json::parse(text, nullptr, false);
+			if (!saved.is_object() || !saved.contains("workspace") || !saved["workspace"].is_string() || !saved.contains("ref") || !saved["ref"].is_string() || saved["workspace"].get<std::string>() != uam::paths::Utf8PathString(root) || !IsCommitId(saved["ref"].get<std::string>()) || saved.value("hostIdentity", std::string("local")) != ChatBaselineHostIdentity(app, chat))
+			{
+				if (error_out) *error_out = "The saved repository baseline does not match this workspace.";
+				return {};
+			}
+			return saved.value("ref", "");
+		}
+
 		std::vector<VcsChangedFile> ParseGitNameStatus(const std::string& output)
 		{
 			std::vector<VcsChangedFile> files;
@@ -443,15 +554,24 @@ namespace uam
 				const std::size_t path_end = output.find('\0', position);
 				if (path_end == std::string::npos) break;
 				std::string path = output.substr(position, path_end - position);
+				std::string previous_path;
 				position = path_end + 1;
 				if (!status.empty() && (status[0] == 'R' || status[0] == 'C'))
 				{
 					const std::size_t destination_end = output.find('\0', position);
 					if (destination_end == std::string::npos) break;
+					previous_path = path;
 					path = output.substr(position, destination_end - position);
 					position = destination_end + 1;
 				}
-				if (!status.empty() && !path.empty()) files.push_back({path, " " + status.substr(0, 1), false});
+				if (!status.empty() && !path.empty())
+				{
+					VcsChangedFile file;
+					file.path = std::move(path);
+					file.status = " " + status.substr(0, 1);
+					file.previous_path = std::move(previous_path);
+					files.push_back(std::move(file));
+				}
 			}
 			return files;
 		}
@@ -1012,11 +1132,63 @@ namespace uam
 				for (const VcsChangedFile& working_file : ParseGitStatus(porcelain))
 				{
 					auto existing = std::ranges::find_if(status.changed_files, [&](const VcsChangedFile& file) { return file.path == working_file.path; });
-					if (existing == status.changed_files.end()) status.changed_files.push_back(working_file);
-					else existing->staged = working_file.staged;
+					if (existing != status.changed_files.end()) existing->staged = working_file.staged;
+					else if (working_file.status == "??") status.changed_files.push_back(working_file);
 				}
 			}
 			if (include_line_stats) ApplyGitComparisonDetails(git_root, comparison_ref, status.changed_files);
+		}
+
+		bool PrepareChatReviewIndex(GitReviewIndex& index, const std::string& ref, std::string* error_out)
+		{
+			ProcessExecutionResult result = index.Run({"read-tree", ref});
+			if (CommandSucceeded(result)) result = index.Run({"add", "-A", "--", "."});
+			if (CommandSucceeded(result)) return true;
+			if (error_out) *error_out = CommandOutputOrError(result);
+			return false;
+		}
+
+		void PopulateChatComparisonDetails(const AppState& app, const ChatSession& chat, VcsCommitStatus& status, const std::filesystem::path& root, bool include_line_stats, RemoteVcsContext* remote = nullptr)
+		{
+			const std::string ref = SavedChatBaseline(app, chat, root, &status.error);
+			if (ref.empty()) return;
+			GitReviewIndex index(root, {}, remote);
+			if (!PrepareChatReviewIndex(index, ref, &status.error)) return;
+			const ProcessExecutionResult names = index.Run({"diff", "--cached", "--no-ext-diff", "--no-textconv", "--name-status", "-z", ref, "--"});
+			if (!CommandSucceeded(names))
+			{
+				status.error = CommandOutputOrError(names);
+				return;
+			}
+			status.changed_files = ParseGitNameStatus(names.output);
+			const ProcessExecutionResult working = index.Run({"--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"}, false);
+			const std::string& porcelain = working.output;
+			if (CommandSucceeded(working))
+			{
+				for (const VcsChangedFile& file : ParseGitStatus(porcelain))
+				{
+					const auto selected = std::ranges::find(status.changed_files, file.path, &VcsChangedFile::path);
+					if (selected != status.changed_files.end()) selected->staged = file.staged;
+				}
+			}
+			if (!include_line_stats) return;
+			const ProcessExecutionResult numstat = index.Run({"diff", "--cached", "--no-ext-diff", "--no-textconv", "--numstat", ref, "--"});
+			if (!CommandSucceeded(numstat))
+			{
+				status.error = CommandOutputOrError(numstat);
+				return;
+			}
+			const std::map<std::string, LineStats> stats = ParseGitNumstat(numstat.output);
+			for (VcsChangedFile& file : status.changed_files)
+			{
+				if (const auto entry = stats.find(file.path); entry != stats.end())
+				{
+					file.additions = entry->second.additions;
+					file.deletions = entry->second.deletions;
+					file.binary = entry->second.binary;
+				}
+			}
+			if (!remote) ApplyContentFingerprints(root, status.changed_files);
 		}
 
 		void PopulateSvnStatusDetails(VcsCommitStatus& status, const std::filesystem::path& workspace, bool include_line_stats, bool context_only = false)
@@ -1307,7 +1479,7 @@ namespace uam
 			ApplyRemoteGitFingerprints(context, root, files);
 		}
 
-		VcsCommitStatus RemoteStatus(RemoteVcsContext& context, const ChatSession& chat,
+		VcsCommitStatus RemoteStatus(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
 		                             const VcsType requested_type,
 		                             const bool include_line_stats,
 		                             const std::string& comparison_ref, bool context_only, const AppSettings& settings)
@@ -1379,6 +1551,13 @@ namespace uam
 				return status;
 			}
 
+			if (comparison_ref == "chat")
+			{
+				PopulateChatComparisonDetails(app, chat, status, uam::paths::PathFromUtf8(git_root), include_line_stats, &context);
+				ApplyRemoteGitFingerprints(context, git_root, status.changed_files);
+				return status;
+			}
+
 			if (!IsCommitId(comparison_ref))
 			{
 				status.error = "The saved chat comparison point is invalid.";
@@ -1400,9 +1579,8 @@ namespace uam
 				{
 					auto existing = std::ranges::find_if(status.changed_files,
 					    [&](const VcsChangedFile& file) { return file.path == working_file.path; });
-					if (existing == status.changed_files.end())
-						status.changed_files.push_back(working_file);
-					else existing->staged = working_file.staged;
+					if (existing != status.changed_files.end()) existing->staged = working_file.staged;
+					else if (working_file.status == "??") status.changed_files.push_back(working_file);
 				}
 			}
 			if (include_line_stats)
@@ -1411,11 +1589,11 @@ namespace uam
 			return status;
 		}
 
-		std::string RemoteDiff(RemoteVcsContext& context, const ChatSession& chat,
+		std::string RemoteDiff(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
 		                       const std::string& path, const VcsType type,
 		                       std::string* error_out, const std::string& comparison_ref, const AppSettings& settings)
 		{
-			const VcsCommitStatus status = RemoteStatus(context, chat, type, false,
+			const VcsCommitStatus status = RemoteStatus(context, app, chat, type, false,
 			                                                  comparison_ref, false, settings);
 			if (!status.error.empty())
 			{
@@ -1447,6 +1625,18 @@ namespace uam
 				return RemoteOutput(context, cwd, {"svn", "diff", path}, &output, error_out)
 				    ? output : "";
 			}
+			if (comparison_ref == "chat")
+			{
+				const std::filesystem::path root = uam::paths::PathFromUtf8(cwd);
+				const std::string ref = SavedChatBaseline(app, chat, root, error_out);
+				GitReviewIndex index(root, {}, &context);
+				if (ref.empty() || !PrepareChatReviewIndex(index, ref, error_out)) return {};
+				std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", ref, "--", path};
+				if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
+				const ProcessExecutionResult patch = index.Run(std::move(args));
+				if (!CommandSucceeded(patch)) { if (error_out) *error_out = CommandOutputOrError(patch); return {}; }
+				return patch.output;
+			}
 			if (selected->status == "??")
 			{
 				const ProcessExecutionResult result = context.Run(
@@ -1466,12 +1656,12 @@ namespace uam
 			return RemoteOutput(context, cwd, argv, &output, error_out) ? output : "";
 		}
 
-		VcsCommitResult RemoteCommit(RemoteVcsContext& context, const ChatSession& chat,
+		VcsCommitResult RemoteCommit(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
 		                             const VcsType type, const std::string& message,
 		                             const std::vector<std::string>& files, const AppSettings& settings)
 		{
 			VcsCommitResult result;
-			result.status = RemoteStatus(context, chat, type, true, {}, false, settings);
+			result.status = RemoteStatus(context, app, chat, type, true, {}, false, settings);
 			if (!result.status.available)
 			{
 				result.error = uam::strings::NonEmptyOrFallback(result.status.error,
@@ -1559,7 +1749,7 @@ namespace uam
 				result.error = CommandOutputOrError(committed);
 				return result;
 			}
-			CompleteSuccessfulCommit(result, RemoteStatus(context, chat, type, true, {}, false, settings),
+			CompleteSuccessfulCommit(result, RemoteStatus(context, app, chat, type, true, {}, false, settings),
 			                         committed, type == VcsType::Git
 			                             ? "Git commit created." : "SVN commit created.");
 			return result;
@@ -1576,6 +1766,202 @@ namespace uam
 		return uam::strings::TrimmedEqualsIgnoreCase(value, "svn") ? VcsType::Svn : VcsType::Git;
 	}
 
+	struct ChatBaselinePreparation
+	{
+		std::filesystem::path workspace;
+		std::string host_id;
+		std::shared_ptr<std::stop_source> cancellation = std::make_shared<std::stop_source>();
+		std::mutex mutex;
+		ChatBaselineReadiness result = ChatBaselineReadiness::Pending;
+		std::string error;
+		// Destroy the worker first so its result fields remain alive until it exits.
+		std::jthread worker;
+	};
+
+	void CancelChatRepositoryBaseline(AppState& app, const std::string& chat_id)
+	{
+		const auto found = app.repository_baseline_preparations.find(chat_id);
+		if (found != app.repository_baseline_preparations.end()) found->second->cancellation->request_stop();
+	}
+
+	ChatBaselineReadiness WaitForChatRepositoryBaseline(const std::shared_ptr<ChatBaselinePreparation>& task, std::stop_token cancellation, std::string* error_out)
+	{
+		while (!cancellation.stop_requested())
+		{
+			{
+				std::scoped_lock lock(task->mutex);
+				if (task->result != ChatBaselineReadiness::Pending)
+				{
+					if (error_out) *error_out = task->error;
+					return task->result;
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		if (error_out) *error_out = "Repository baseline capture was canceled.";
+		return ChatBaselineReadiness::Failed;
+	}
+
+	ChatBaselineReadiness PrepareChatRepositoryBaseline(AppState& app, const ChatSession& chat, std::string* error_out, std::shared_ptr<std::stop_source>* cancellation_out, bool retry_failed)
+	{
+		std::erase_if(app.retired_repository_baseline_preparations, [](const auto& task)
+		{
+			std::scoped_lock lock(task->mutex);
+			return task->result != ChatBaselineReadiness::Pending;
+		});
+		if (error_out) error_out->clear();
+		if (cancellation_out) cancellation_out->reset();
+		if (!chat.goal_owner_chat_id.empty())
+		{
+			const ChatSession* owner = ChatDomainService().FindChatById(app, chat.goal_owner_chat_id);
+			if (owner && !chat.messages.empty() && !uam::paths::PathExistsNoThrow(ChatBaselinePath(app, *owner))) return ChatBaselineReadiness::Unavailable;
+			return owner == nullptr || owner->id == chat.id || !owner->goal_owner_chat_id.empty() ? ChatBaselineReadiness::Unavailable : PrepareChatRepositoryBaseline(app, *owner, error_out, cancellation_out, retry_failed);
+		}
+		if (app.data_root.empty() || chat.id.empty()) return ChatBaselineReadiness::Unavailable;
+		if (!uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+			if (!host || host->runner_status != "ready" || host->runner_protocol_version < 3) return ChatBaselineReadiness::Unavailable;
+		}
+		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+		if (uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			std::filesystem::path ancestor = workspace;
+			while (!ancestor.empty() && !uam::paths::PathExistsNoThrow(ancestor / ".git"))
+			{
+				const std::filesystem::path parent = ancestor.parent_path();
+				if (parent == ancestor) return ChatBaselineReadiness::Unavailable;
+				ancestor = parent;
+			}
+			if (ancestor.empty()) return ChatBaselineReadiness::Unavailable;
+		}
+		auto found = app.repository_baseline_preparations.find(chat.id);
+		bool failed = false;
+		if (found != app.repository_baseline_preparations.end())
+		{
+			std::scoped_lock lock(found->second->mutex);
+			failed = found->second->result == ChatBaselineReadiness::Failed;
+		}
+		if (found != app.repository_baseline_preparations.end() &&
+		    ((retry_failed && failed) || found->second->workspace != workspace || found->second->host_id != ChatBaselineHostIdentity(app, chat) || found->second->cancellation->stop_requested()))
+		{
+			found->second->cancellation->request_stop();
+			{
+				std::scoped_lock lock(found->second->mutex);
+				if (found->second->result == ChatBaselineReadiness::Pending)
+				{
+					if (cancellation_out) *cancellation_out = found->second->cancellation;
+					return ChatBaselineReadiness::Pending;
+				}
+			}
+			app.retired_repository_baseline_preparations.push_back(found->second);
+			app.repository_baseline_preparations.erase(found);
+			found = app.repository_baseline_preparations.end();
+		}
+		if (found == app.repository_baseline_preparations.end())
+		{
+			const bool runtime_already_started = std::ranges::any_of(app.acp_sessions, [&](const auto& session) { return session && session->chat_id == chat.id && (session->running || session->processing || session->session_ready || !session->session_id.empty()); }) ||
+			    std::ranges::any_of(app.cli_terminals, [&](const auto& terminal) { return terminal && terminal->running && (terminal->frontend_chat_id == chat.id || terminal->attached_chat_id == chat.id); });
+			if (!uam::paths::PathExistsNoThrow(ChatBaselinePath(app, chat)) &&
+			    (chat.imported_read_only || !chat.messages.empty() || chat.persisted_message_count != 0 || runtime_already_started || !chat.native_session_id.empty() || chat.remote_process_exists || chat.remote_turn_reconnect_pending)) return ChatBaselineReadiness::Unavailable;
+			std::shared_ptr<ChatBaselinePreparation> task = std::make_shared<ChatBaselinePreparation>();
+			task->workspace = workspace;
+			task->host_id = ChatBaselineHostIdentity(app, chat);
+			const std::filesystem::path data_root = app.data_root;
+			const AppSettings settings = app.settings;
+			ChatSession captured_chat = chat;
+			if (uam::paths::IsGitWorktreeIsolated(captured_chat)) captured_chat.workspace_worktree_directory = uam::paths::Utf8PathString(workspace);
+			else captured_chat.workspace_directory = uam::paths::Utf8PathString(workspace);
+			ChatBaselinePreparation* target = task.get();
+			task->worker = std::jthread([target, data_root, settings, chat = std::move(captured_chat), workspace](std::stop_token stopping)
+			{
+				std::stop_callback on_shutdown(stopping, [target] { target->cancellation->request_stop(); });
+				AppState snapshot;
+				snapshot.data_root = data_root;
+				snapshot.settings = settings;
+				std::string error;
+				ChatBaselineReadiness result = ChatBaselineReadiness::Unavailable;
+				try
+				{
+					std::unique_ptr<RemoteVcsContext> remote;
+					if (!uam::paths::IsControllerLocalWorkspace(chat)) remote = std::make_unique<RemoteVcsContext>(snapshot, chat);
+					GitReviewIndex probe(workspace, target->cancellation->get_token(), remote.get());
+					const ProcessExecutionResult repository = probe.Run({"rev-parse", "--show-toplevel"});
+					if (CommandSucceeded(repository))
+					{
+						if (uam::paths::PathExistsNoThrow(ChatBaselinePath(snapshot, chat)))
+							result = SavedChatBaseline(snapshot, chat, uam::paths::PathFromUtf8(uam::strings::Trim(repository.output)), &error).empty() ? ChatBaselineReadiness::Unavailable : ChatBaselineReadiness::Ready;
+						else result = VcsCommitService().CaptureChatBaseline(snapshot, chat, &error, target->cancellation->get_token()) ? ChatBaselineReadiness::Ready : ChatBaselineReadiness::Failed;
+					}
+				}
+				catch (const std::exception& failure) { result = ChatBaselineReadiness::Failed; error = failure.what(); }
+				catch (...) { result = ChatBaselineReadiness::Failed; error = "Repository baseline capture failed."; }
+				std::scoped_lock lock(target->mutex);
+				target->result = result;
+				target->error = std::move(error);
+			});
+			found = app.repository_baseline_preparations.emplace(chat.id, std::move(task)).first;
+		}
+		if (cancellation_out) *cancellation_out = found->second->cancellation;
+		std::scoped_lock lock(found->second->mutex);
+		if (error_out) *error_out = found->second->error;
+		return found->second->result;
+	}
+
+	bool VcsCommitService::CaptureChatBaseline(const AppState& app, const ChatSession& chat, std::string* error_out, std::stop_token cancellation) const
+	{
+		if (error_out) error_out->clear();
+		if (chat.id.empty() || app.data_root.empty())
+		{
+			if (error_out) *error_out = "A chat workspace is required for a repository baseline.";
+			return false;
+		}
+		std::unique_ptr<RemoteVcsContext> remote;
+		if (!uam::paths::IsControllerLocalWorkspace(chat)) remote = std::make_unique<RemoteVcsContext>(app, chat);
+		GitReviewIndex probe(uam::paths::ResolveWorkspaceRootPath(app, chat), cancellation, remote.get());
+		const ProcessExecutionResult repository = probe.Run({"rev-parse", "--show-toplevel"});
+		const std::string root = uam::strings::Trim(repository.output);
+		if (!CommandSucceeded(repository))
+		{
+			if (error_out) *error_out = "No Git repository is available for this chat.";
+			return false;
+		}
+		const std::filesystem::path workspace = uam::paths::PathFromUtf8(root);
+		if (uam::paths::PathExistsNoThrow(ChatBaselinePath(app, chat))) return !SavedChatBaseline(app, chat, workspace, error_out).empty();
+		if (chat.imported_read_only || !chat.messages.empty() || chat.persisted_message_count != 0)
+		{
+			if (error_out) *error_out = "The original baseline is unavailable for an existing conversation. Create a new chat to record its changes.";
+			return false;
+		}
+		GitReviewIndex index(workspace, cancellation, remote.get());
+		ProcessExecutionResult result = index.SeedSourceIndex();
+		if (CommandSucceeded(result)) result = index.Run({"add", "-A", "--", "."});
+		if (CommandSucceeded(result)) result = index.Run({"write-tree"});
+		const std::string tree = uam::strings::Trim(result.output);
+		if (CommandSucceeded(result) && IsCommitId(tree)) result = index.Run({"-c", "user.name=UAM", "-c", "user.email=uam@local.invalid", "commit-tree", tree, "-m", "UAM chat review baseline"});
+		const std::string ref = uam::strings::Trim(result.output);
+		if (CommandSucceeded(result) && IsCommitId(ref)) result = index.Run({"update-ref", "refs/uam/chat-baselines/" + uam::hashing::Hex64(uam::hashing::Fnv1a64(chat.id)) + "/" + ref, ref});
+		if (!CommandSucceeded(result) || !IsCommitId(ref))
+		{
+			if (error_out) *error_out = CommandOutputOrError(result);
+			return false;
+		}
+		if (cancellation.stop_requested())
+		{
+			if (error_out) *error_out = "Repository baseline capture was canceled.";
+			return false;
+		}
+		std::error_code directory_error;
+		std::filesystem::create_directories(ChatBaselinePath(app, chat).parent_path(), directory_error);
+		const nlohmann::json saved = {{"workspace", root}, {"ref", ref}, {"hostIdentity", ChatBaselineHostIdentity(app, chat)}};
+		if (directory_error || !uam::io::AtomicWriteFileDetailed(ChatBaselinePath(app, chat), saved.dump()).success)
+		{
+			if (error_out) *error_out = "Failed to save the chat repository baseline.";
+			return false;
+		}
+		return true;
+	}
+
 	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, VcsType requested_type, bool include_line_stats, std::string_view comparison_ref, bool context_only) const
 	{
 		if (!app.settings.git_enabled && !app.settings.svn_enabled)
@@ -1587,7 +1973,7 @@ namespace uam
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
-			return RemoteStatus(context, chat, requested_type, include_line_stats,
+			return RemoteStatus(context, app, chat, requested_type, include_line_stats,
 			                    uam::strings::Trim(comparison_ref), context_only, app.settings);
 		}
 		VcsCommitStatus status;
@@ -1607,7 +1993,8 @@ namespace uam
 		if (status.active_vcs_type == VcsType::Git)
 		{
 			const std::string ref = uam::strings::Trim(comparison_ref);
-			if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
+			if (ref == "chat") PopulateChatComparisonDetails(app, chat, status, git_root, include_line_stats);
+			else if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
 			else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, git_root, include_line_stats, ref);
 			else PopulateGitStatusDetails(status, workspace, git_root, include_line_stats, context_only);
 		}
@@ -1634,7 +2021,7 @@ namespace uam
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
-			return RemoteDiff(context, chat, trimmed_path, type, error_out,
+			return RemoteDiff(context, app, chat, trimmed_path, type, error_out,
 			                  uam::strings::Trim(comparison_ref), app.settings);
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
@@ -1642,6 +2029,40 @@ namespace uam
 		if (type == VcsType::Git)
 		{
 			const std::string ref = uam::strings::Trim(comparison_ref);
+			if (ref == "chat")
+			{
+				std::string root;
+				if (!GitAvailable(workspace, &root))
+				{
+					if (error_out) *error_out = "No Git repository is available for this chat.";
+					return {};
+				}
+				const std::filesystem::path review_root = uam::paths::PathFromUtf8(root);
+				const VcsCommitStatus status = Status(app, chat, type, false, "chat");
+				if (!status.error.empty())
+				{
+					if (error_out) *error_out = status.error;
+					return {};
+				}
+				const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
+				if (selected == status.changed_files.end())
+				{
+					if (error_out) *error_out = "The selected file is no longer changed in this chat.";
+					return {};
+				}
+				const std::string saved_ref = SavedChatBaseline(app, chat, review_root, error_out);
+				GitReviewIndex index(review_root);
+				if (saved_ref.empty() || !PrepareChatReviewIndex(index, saved_ref, error_out)) return {};
+				std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", saved_ref, "--", trimmed_path};
+				if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
+				const ProcessExecutionResult patch = index.Run(std::move(args));
+				if (!CommandSucceeded(patch))
+				{
+					if (error_out) *error_out = CommandOutputOrError(patch);
+					return {};
+				}
+				return patch.output;
+			}
 			if (!ref.empty() && !IsCommitId(ref))
 			{
 				if (error_out != nullptr) *error_out = "The saved chat comparison point is invalid.";
@@ -1682,7 +2103,7 @@ namespace uam
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
 			RemoteVcsContext context(app, chat);
-			return RemoteCommit(context, chat, type, message, files, app.settings);
+			return RemoteCommit(context, app, chat, type, message, files, app.settings);
 		}
 		VcsCommitResult result;
 		result.status = Status(app, chat, type);

@@ -140,11 +140,23 @@ namespace uam::remote
 		                       std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadWorkspaceFile(const std::string& workspace, const std::string& path, nlohmann::json& file,
 		                       std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Bounded binary workspace snapshot; chunks must retain a single path, size and content fingerprint.
+		bool ReadWorkspaceAttachment(const std::string& workspace, const std::string& path, std::string& bytes,
+		    std::size_t max_bytes, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Typed HTTP control reaches only the authenticated server belonging to this owned native process.
+		bool QueryOpenCodeNative(const std::string& session_id, const nlohmann::json& operation, nlohmann::json& result,
+		    std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Read-only native TUI observation uses its own private launch-channel password, never an ACP endpoint.
+		bool ObserveOpenCodeTerminal(int port, const std::string& token, const std::string& workspace,
+		    const nlohmann::json& operation, nlohmann::json& result, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		/// <summary>Fetches one immutable accounting snapshot; pending collection returns a pending object.</summary>
 		bool ReadUsageAccountingFile(const std::filesystem::path& path, nlohmann::json& progress, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadUsageAccounting(nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
 		                  std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Reads one exact immutable native transcript, releasing its bounded runner snapshot on success or cancellation.
+		bool ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
+		    nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::string& agent_id = {});
 		bool ListDirectories(const std::filesystem::path& remote_path,
 		                     DirectoryListing& result,
 		                     std::string* error_out = nullptr);
@@ -177,7 +189,11 @@ namespace uam::remote
 		bool m_directoryBrowsing = false;
 		bool m_safePathInspection = false;
 		bool m_contextRead = false;
+		bool m_providerHistoryRead = false;
 		bool m_workspaceFileRead = false;
+		bool m_workspaceAttachmentRead = false;
+		bool m_openCodeNativeControl = false;
+		bool m_openCodeTerminalObservation = false;
 		bool m_usageAccounting = false;
 		bool m_usageAccountingStream = false;
 		bool m_projectMemory = false;
@@ -187,6 +203,8 @@ namespace uam::remote
 		bool m_leasedChannelTake = false;
 		bool m_providerNativeContext = false;
 		bool m_centralProviderConfiguration = false;
+		bool m_geminiThinkingConfiguration = false;
+		bool m_claudeTerminalFastConfiguration = false;
 		bool m_processOutputAcknowledgement = false;
 		std::unordered_map<std::string, std::string> m_processControlTokens;
 		std::unordered_map<std::string, std::uint64_t> m_processInputSequences;

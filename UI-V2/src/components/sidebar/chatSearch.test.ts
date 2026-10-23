@@ -496,3 +496,90 @@ it('parks an already failed chat but raises a fresh native wake', () => {
   chat.snoozedUntilMs = 0; chat.interactionAt = new Date()
   expect(searchModel('', [], [chat], undefined, context).activeSessionIds).toEqual(['failed'])
 })
+
+
+it('maps a restored native grandchild name to its reachable catalogue ancestor without promoting native descendants', () => {
+  const root = makeSession('native-search-root', 'Ancestor', null, now, now, false, 'codex-cli')
+  const child = { ...root, id: 'native-search-child', name: 'Immediate owner', createdAt: new Date(now.getTime() + 1000), subagentParentChatId: root.id, subagentParentCreatedAt: root.createdAt.toISOString() }
+  const grandchild = { ...child, id: 'native-search-grandchild', name: 'Unique descendant', createdAt: new Date(now.getTime() + 2000), subagentParentChatId: child.id, subagentParentCreatedAt: child.createdAt.toISOString() }
+  const sessions = [root, child, grandchild]
+  const result = searchModel('Unique descendant', [], sessions)
+  expect(result.unfolderedSessionIds).toEqual([root.id])
+  expect(result.activeSessionIds).not.toContain(child.id)
+  expect(result.activeSessionIds).not.toContain(grandchild.id)
+  expect(searchModel('', [], sessions).unfolderedSessionIds).toEqual([root.id])
+})
+
+
+it.each(['cycle', 'orphan', 'birth'])('does not manufacture a searchable ancestor from invalid native lineage: %s', invalid => {
+  const root = makeSession('invalid-tree-root', 'Ordinary ancestor', null, now, now, false, 'codex-cli')
+  const child = { ...root, id: 'invalid-tree-child', name: 'Native child', subagentParentChatId: root.id, subagentParentCreatedAt: root.createdAt.toISOString() }
+  const grandchild = { ...child, id: 'invalid-tree-grandchild', name: 'Rejected descendant', subagentParentChatId: child.id, subagentParentCreatedAt: child.createdAt.toISOString() }
+  if (invalid === 'cycle') child.subagentParentChatId = grandchild.id
+  if (invalid === 'orphan') child.subagentParentChatId = 'missing-native-parent'
+  if (invalid === 'birth') grandchild.subagentParentCreatedAt = new Date(now.getTime() + 1).toISOString()
+  const sessions = [root, child, grandchild]
+  expect(searchModel('Rejected descendant', [], sessions).unfolderedSessionIds).toEqual([])
+  expect(searchModel('', [], sessions).unfolderedSessionIds).toEqual([root.id])
+})
+
+
+it('NAV-R4-01: exposes an orphan owner separately for descendant title, deep search and matching descendant filters', () => {
+  const owner = { ...makeSession('orphan-search-owner', 'Recovery owner', null, now, now, false, 'codex-cli'), subagentParentChatId: 'missing-root', subagentParentCreatedAt: now.toISOString() }
+  const child = { ...owner, id: 'orphan-search-child', name: 'Unique recovery descendant', subagentParentChatId: owner.id, subagentParentCreatedAt: owner.createdAt.toISOString() }
+  const leaf = { ...child, id: 'orphan-search-leaf', name: 'Deeper journal leaf', subagentParentChatId: child.id, subagentParentCreatedAt: child.createdAt.toISOString() }
+  const sessions = [owner, child, leaf]
+  const title = searchModel('Unique recovery descendant', [], sessions)
+  expect(title.orphanSessionIds).toEqual([owner.id])
+  expect(title.unfolderedSessionIds).toEqual([])
+  expect(title.activeSessionIds).toEqual([])
+  expect(title.hasMatches).toBe(true)
+  const deep = buildChatSearchModel([], sessions, buildChatSearchIndex(sessions), ['journal-only'], new Set([leaf.id]))
+  expect(deep.orphanSessionIds).toEqual([owner.id])
+  const filters = { providerIds: ['codex-cli'], statusIds: ['running' as const] }
+  const context = { acpBindingBySessionId: { [child.id]: { processing: true } } }
+  expect(searchModel('Unique recovery descendant', [], sessions, filters, context).orphanSessionIds).toEqual([owner.id])
+  expect(searchModel('Recovery owner', [], sessions, filters, context).orphanSessionIds).toEqual([])
+})
+
+
+it.each(['creation', 'provider', 'host', 'workspace'])('keeps a valid descendant reachable through its orphan owner after ancestor %s mismatch', mismatch => {
+  const original = { ...makeSession('scope-root', 'Foreign ancestor', null, now, now, false, 'codex-cli'), workspaceDirectory: '/original' }
+  const owner = { ...original, id: 'scope-owner', name: 'Orphan recovery owner', subagentParentChatId: original.id, subagentParentCreatedAt: original.createdAt.toISOString() }
+  const child = { ...owner, id: 'scope-descendant', name: 'Scoped descendant', subagentParentChatId: owner.id, subagentParentCreatedAt: owner.createdAt.toISOString() }
+  const changed = { ...original,
+    ...(mismatch === 'creation' ? { createdAt: new Date(now.getTime() + 1) } : {}),
+    ...(mismatch === 'provider' ? { providerId: 'opencode-cli' } : {}),
+    ...(mismatch === 'host' ? { executionHostId: 'foreign-host' } : {}),
+    ...(mismatch === 'workspace' ? { workspaceDirectory: '/foreign' } : {}),
+  }
+  const result = searchModel('Scoped descendant', [], [changed, owner, child])
+  expect(result.orphanSessionIds).toEqual([owner.id])
+  expect(result.unfolderedSessionIds).toEqual([])
+  expect(result.activeSessionIds).toEqual([])
+})
+
+it.each(['creation', 'provider', 'host', 'workspace', 'cycle'])('keeps an invalid descendant in its own recovery path rather than nesting it under an orphan: %s', mismatch => {
+  const owner = { ...makeSession('invalid-owner', 'Recovery owner', null, now, now, false, 'codex-cli'), workspaceDirectory: '/original', subagentParentChatId: 'missing-root', subagentParentCreatedAt: now.toISOString() }
+  const child = { ...owner, id: 'invalid-descendant', name: 'Invalid descendant', subagentParentChatId: owner.id,
+    subagentParentCreatedAt: mismatch === 'creation' ? new Date(now.getTime() + 1).toISOString() : now.toISOString(),
+    ...(mismatch === 'provider' ? { providerId: 'opencode-cli' } : {}),
+    ...(mismatch === 'host' ? { executionHostId: 'foreign-host' } : {}),
+    ...(mismatch === 'workspace' ? { workspaceDirectory: '/foreign' } : {}),
+  }
+  if (mismatch === 'cycle') owner.subagentParentChatId = child.id
+  const result = searchModel('Invalid descendant', [], [owner, child])
+  expect(result.orphanSessionIds).toEqual([child.id])
+  expect(result.unfolderedSessionIds).toEqual([])
+  expect(result.activeSessionIds).toEqual([])
+})
+
+it('reports only valid native subagents that themselves match, and none without a search', () => {
+  const root = makeSession('match-root', 'Ordinary root', null, now, now, false, 'codex-cli')
+  const child = { ...root, id: 'match-child', name: 'Quiet child', subagentParentChatId: root.id, subagentParentCreatedAt: root.createdAt.toISOString() }
+  const grandchild = { ...child, id: 'match-grandchild', name: 'Findable grandchild', subagentParentChatId: child.id, subagentParentCreatedAt: child.createdAt.toISOString() }
+  const sessions = [root, child, grandchild]
+  expect([...searchModel('Findable', [], sessions).matchedSubagentChildIds]).toEqual([grandchild.id])
+  expect([...searchModel('Ordinary', [], sessions).matchedSubagentChildIds]).toEqual([])
+  expect([...searchModel('', [], sessions).matchedSubagentChildIds]).toEqual([])
+})

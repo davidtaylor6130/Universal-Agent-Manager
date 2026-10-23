@@ -39,6 +39,16 @@ namespace
 			Write();
 		}
 
+		void SetTaskChild(const std::string& child_id)
+		{
+			// OpenCode task exports carry their exact child session in state.metadata.
+			auto& tool = document["messages"][0]["parts"][1];
+			tool["tool"] = "task";
+			tool["state"]["input"] = {{"description", "Inspect provider"}, {"prompt", "Inspect the provider."}, {"subagent_type", "general"}};
+			tool["state"]["metadata"] = {{"sessionId", child_id}};
+			Write();
+		}
+
 		void SetExitCode(int code)
 		{
 #if defined(_WIN32)
@@ -193,6 +203,8 @@ UAM_TEST(OpenCodeStreamBatchPreservesExistingRefreshAndCompleteStorage)
 {
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	OpenCodeExportFixture fixture;
+	const std::string child_id = "ses_stream_fixture_child";
+	fixture.SetTaskChild(child_id);
 	uam::AppState app;
 	app.data_root = fixture.temp.root / "private data";
 	app.folders.push_back({"workspace", "Private", fixture.chat.workspace_directory, false, "local"});
@@ -222,9 +234,18 @@ UAM_TEST(OpenCodeStreamBatchPreservesExistingRefreshAndCompleteStorage)
 	auto saved = ChatRepository::LoadLocalChat(app.data_root, fixture.chat.id, true);
 	UAM_ASSERT(saved && saved->messages.size() == 12);
 	UAM_ASSERT_EQ(saved->messages.back().content, fixture.text + "11");
+	UAM_ASSERT_EQ(saved->messages.front().tool_calls.size(), std::size_t{1});
+	const ToolCall& imported_child = saved->messages.front().tool_calls.front();
+	UAM_ASSERT_EQ(imported_child.id, std::string("call-0"));
+	UAM_ASSERT_EQ(imported_child.name, std::string("task"));
+	UAM_ASSERT(imported_child.is_sub_agent);
+	UAM_ASSERT_EQ(imported_child.sub_agent_id, child_id);
+	UAM_ASSERT(!imported_child.sub_agent_children_authoritative);
+	UAM_ASSERT(imported_child.sub_agent_children.empty());
 	saved->pinned = true;
 	saved->title = "Keep local title";
 	saved->messages.front().tool_calls.front().sub_agent_title = "Keep local tool detail";
+	saved->messages.front().tool_calls.front().sub_agent_children = {{child_id, "Keep local tool detail", "running"}};
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, *saved));
 	app.chats.front() = *saved;
 	fixture.document["messages"].push_back({{"info", {{"role", "user"}, {"time", {{"created", 1787951669000}}}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "new tail"}}})}});
@@ -237,6 +258,35 @@ UAM_TEST(OpenCodeStreamBatchPreservesExistingRefreshAndCompleteStorage)
 	UAM_ASSERT(saved->pinned);
 	UAM_ASSERT_EQ(saved->title, std::string("Keep local title"));
 	UAM_ASSERT_EQ(saved->messages.front().tool_calls.front().sub_agent_title, std::string("Keep local tool detail"));
+	const ToolCall& refreshed_child = saved->messages.front().tool_calls.front();
+	UAM_ASSERT_EQ(refreshed_child.id, std::string("call-0"));
+	UAM_ASSERT_EQ(refreshed_child.name, std::string("task"));
+	UAM_ASSERT(refreshed_child.is_sub_agent);
+	UAM_ASSERT_EQ(refreshed_child.sub_agent_id, child_id);
+	UAM_ASSERT(!refreshed_child.sub_agent_children_authoritative);
+	const std::vector<SubAgentChild> expected_children = {{child_id, "Keep local tool detail", "running"}};
+	UAM_ASSERT_EQ(refreshed_child.sub_agent_children, expected_children);
+	for (std::size_t index = 0; index < 12; ++index)
+	{
+		UAM_ASSERT_EQ(saved->messages[index].content, fixture.text + std::to_string(index));
+		UAM_ASSERT_EQ(saved->messages[index].thoughts, std::string("Private reasoning"));
+		UAM_ASSERT_EQ(saved->messages[index].tool_calls.size(), std::size_t{1});
+		UAM_ASSERT_EQ(saved->messages[index].tool_calls.front().id, "call-" + std::to_string(index));
+		UAM_ASSERT_EQ(saved->messages[index].tool_calls.front().result_text, std::string("Private result"));
+	}
+	// Omission above preserves the matching child; an authoritative rejection must not.
+	ChatSession rejected = *saved;
+	ToolCall& rejected_update = rejected.messages.front().tool_calls.front();
+	rejected_update.sub_agent_id.clear();
+	rejected_update.sub_agent_title.clear();
+	rejected_update.sub_agent_children.clear();
+	rejected_update.sub_agent_children_authoritative = true;
+	ChatHistorySyncService().OverlayPreparedLocalHistory(*saved, rejected);
+	const ToolCall& rejected_child = rejected.messages.front().tool_calls.front();
+	UAM_ASSERT(rejected_child.sub_agent_children_authoritative);
+	UAM_ASSERT(rejected_child.sub_agent_id.empty());
+	UAM_ASSERT(rejected_child.sub_agent_title.empty());
+	UAM_ASSERT(rejected_child.sub_agent_children.empty());
 #endif
 }
 

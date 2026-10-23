@@ -103,3 +103,9 @@ Before an enterprise release:
   plumbing. Toggling `no_sandbox` alone would create a false control and can break startup, so this
   remains a packaging-architecture change that must be proven by both native CI matrices before it is
   enabled.
+
+## Repository publication
+
+Before publishing a branch, scan every outgoing commit as well as the final tree: deleting a credential in a later commit does not remove earlier exposure. Keep agent handoffs, scratchpads, private evidence archives, generated dependency caches and runtime data outside the tracked publication tree. Retain the feature agreements and V5 acceptance records with generic paths and synthetic connection examples. A clean source snapshot must start from the approved public base without merging private recovery ancestry; keep that history and original evidence in local backups. Repository checks do not authorize a push or establish runtime acceptance.
+
+The frontend lockfile includes patched development tooling; the `postcss-selector-parser` override keeps Tailwind 3 on a corrected parser without changing the design-system major version. Revalidate the frontend tests and generated CSS when updating or removing that override, and audit both development and production dependency scopes.

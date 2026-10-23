@@ -1,6 +1,13 @@
 #include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
+#include "common/provider/opencode/opencode_permission_policy.h"
 #include "computer_use/computer_use_mcp_config.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "app/opencode_native_activity_service.h"
+#include "app/attachment_preview_service.h"
+#include "common/provider/structured_attachments.h"
+#include "common/utils/base64.h"
+#include "common/provider/opencode_terminal_activity.h"
+#include "common/paths/workspace_root.h"
 
 #include "common/provider/provider_ids.h"
 #include "common/utils/string_utils.h"
@@ -23,6 +30,32 @@
 #include <unordered_set>
 #include "remote/runner_client.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+
+bool OpenCodeCliProviderRuntime::PrepareInteractiveLaunch(uam::AppState& app, uam::CliTerminalState& terminal, const ChatSession& chat,
+    const ExecutionHost& host, std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment, std::string*) const
+{
+	ChatSession binding;
+	binding.native_session_id = chat.native_session_id;
+	binding.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
+	uam::opencode_terminal::PrepareLaunch(terminal, binding, host, argv, environment);
+	return true;
+}
+
+ProviderTerminalActivity OpenCodeCliProviderRuntime::PollInteractiveActivity(uam::CliTerminalState& terminal, std::string_view native,
+    const std::filesystem::path& workspace, bool ambiguous) const
+{
+	return uam::opencode_terminal::Poll(terminal, native, workspace, ambiguous);
+}
+
+bool OpenCodeCliProviderRuntime::InteractiveObservationMatchesHost(const uam::CliTerminalState& terminal, const ExecutionHost& host) const
+{
+	return uam::opencode_terminal::MatchesHost(terminal, host);
+}
+
+void OpenCodeCliProviderRuntime::CheckpointInteractiveSubmission(uam::CliTerminalState& terminal) const
+{
+	uam::opencode_terminal::Checkpoint(terminal);
+}
 
 /// <summary>Count observed OpenCode prompts; its cache and reasoning counts are separate token buckets.</summary>
 bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState&, uam::AcpSessionState& session, ChatSession&,
@@ -79,8 +112,19 @@ bool OpenCodeCliProviderRuntime::OnAcpHandleResult(uam::AppState&, uam::AcpSessi
 
 bool OpenCodeCliProviderRuntime::AcpPermissionRequiresUserDecision(const uam::AcpPendingPermissionState& pending) const
 {
-	// OpenCode asks whether to continue identical repeated calls; this is not action authorization.
+	// Both the built-in question and a colliding MCP action require an explicit decision.
 	return uam::strings::ToLowerAscii(uam::strings::Trim(pending.title)) == "doom_loop";
+}
+
+bool OpenCodeCliProviderRuntime::AcpPermissionIsNonActionQuestion(const uam::AcpPendingPermissionState& pending) const
+{
+	return uam::opencode_permissions::AcpDoomLoopQuestion(pending.provider_request_method, pending.title, pending.kind, pending.provider_input_json);
+}
+
+std::optional<bool> OpenCodeCliProviderRuntime::TryWriteAcpOutOfBandMessage(uam::AcpSessionState& session,
+	const nlohmann::json& message, std::string* error) const
+{
+	return uam::OpenCodeNativeActivityService::TryWritePermissionResponse(session, message, error);
 }
 
 std::size_t OpenCodeCliProviderRuntime::AcpBackgroundTaskCount(const uam::AcpSessionState& session) const
@@ -602,4 +646,84 @@ std::string OpenCodeCliProviderRuntime::LocalCliCompatibilityError(const uam::Ap
 		return "OpenCode 1.15.13 or newer is required for reliable ACP permission mediation (installed " + state.installed_version + "). Update it in Settings.";
 	}
 	return uam::strings::NonEmptyOrFallback(state.message, "OpenCode is not installed or its version could not be determined.") + " Open Settings to check or update it.";
+}
+
+bool OpenCodeCliProviderRuntime::SupportsSavedImageRetry(const uam::AcpSessionState& session) const
+{
+	// Cold permission capture precedes native discovery; it grants no image reads or dispatch.
+	return session.protocol_kind == "opencode-acp";
+}
+
+SavedImageRetryPreflight OpenCodeCliProviderRuntime::PrepareSavedImageRetry(uam::AcpSessionState& session, const ChatSession& settings,
+    const std::vector<MessageAttachment>& images, std::string& error) const
+{
+	const auto gate = uam::OpenCodeNativeActivityService::PrepareSavedImageRetry(session, settings, images, error);
+	if (gate == uam::OpenCodeNativeGateState::Ready) return SavedImageRetryPreflight::Ready;
+	if (gate == uam::OpenCodeNativeGateState::Pending) return SavedImageRetryPreflight::Pending;
+	return SavedImageRetryPreflight::Rejected;
+}
+
+nlohmann::json OpenCodeCliProviderRuntime::SavedImageRetryMetadata(const uam::AcpSessionState& session, const ChatSession& settings) const
+{
+	return uam::OpenCodeNativeActivityService::SavedImageRetryMetadata(session, settings);
+}
+
+bool OpenCodeCliProviderRuntime::EncodePreparedSavedImageRetry(nlohmann::json& request, const nlohmann::json& prepared,
+    std::string& error, const std::vector<MessageAttachment>& images, const nlohmann::json& metadata) const
+try
+{
+	const auto text = [](const nlohmann::json& object, const char* key) -> std::string
+	{
+		const auto found = object.find(key);
+		return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
+	};
+	const auto fail = [&error]()
+	{ error = "OpenCode could not retain complete supported image input. The prompt was not sent."; return false; };
+	if (images.empty() || images.size() > 32 || !request.is_object() || text(request, "jsonrpc") != "2.0" ||
+	    text(request, "method") != "session/prompt" || !request.contains("id") || !request["id"].is_number_integer() || request["id"].get<std::int64_t>() <= 0 ||
+	    text(metadata, "phase") != "ready" || text(metadata, "lifetime").empty() || !metadata.contains("generation") || !metadata["generation"].is_number_unsigned() || metadata["generation"].get<std::uint64_t>() == 0 ||
+	    !metadata.contains("facts") || !metadata["facts"].is_object() || metadata["facts"].value("image", false) != true ||
+	    !metadata.contains("names") || !metadata["names"].is_array() || metadata["names"].size() != images.size() ||
+	    !request.contains("params") || !request["params"].is_object() || !prepared.is_object() || !prepared.contains("message") || !prepared["message"].is_object() ||
+	    !prepared["message"].contains("content") || !prepared["message"]["content"].is_array()) return fail();
+	auto& params = request["params"];
+	const auto& content = prepared["message"]["content"];
+	if (text(params, "sessionId").empty() || text(params, "sessionId") != text(metadata, "sessionId") ||
+	    !params.contains("prompt") || !params["prompt"].is_array() || params["prompt"].size() != 1 ||
+	    !params["prompt"][0].is_object() || text(params["prompt"][0], "type") != "text" || !params["prompt"][0].contains("text") || !params["prompt"][0]["text"].is_string() ||
+	    content.size() != images.size() + 1 || !content[0].is_object() || text(content[0], "type") != "text" || !content[0].contains("text") || !content[0]["text"].is_string()) return fail();
+	std::string labels;
+	std::size_t total_bytes = 0;
+	for (std::size_t index = 0; index < images.size(); ++index)
+	{
+		if (!metadata["names"][index].is_string() || metadata["names"][index] != images[index].name || images[index].kind != "image" || images[index].name.size() > 4096) return fail();
+		labels += "\nImage " + std::to_string(index + 1) + " (native image-block order): " + nlohmann::json(images[index].name).dump();
+		const auto& part = content[index + 1];
+		if (!part.is_object() || part.size() != 2 || text(part, "type") != "image" || !part.contains("source") || !part["source"].is_object()) return fail();
+		const auto& source = part["source"];
+		const auto data = text(source, "data"), mime = text(source, "media_type");
+		std::string bytes;
+		if (source.size() != 3 || text(source, "type") != "base64" || data.empty() || data.size() > 4 * 1024 * 1024 ||
+		    !uam::base64::Decode(data, bytes) || bytes.empty() || uam::base64::Encode(bytes) != data ||
+		    bytes.size() > 4 * 1024 * 1024 - total_bytes || uam::attachment_preview::ImageMime(bytes) != mime ||
+		    (mime != "image/png" && mime != "image/jpeg" && mime != "image/gif" && mime != "image/webp")) return fail();
+		total_bytes += bytes.size();
+	}
+	const auto& prepared_text = content[0]["text"].get_ref<const std::string&>();
+	if (!prepared_text.ends_with(labels)) return fail();
+	const auto body = prepared_text.substr(0, prepared_text.size() - labels.size());
+	const auto& original_text = params["prompt"][0]["text"].get_ref<const std::string&>();
+	if (body.empty() || !original_text.ends_with(body)) return fail();
+	// Keep context added by the normal ACP builder, then the worker's exact captured-name labels.
+	auto encoded = request;
+	encoded["params"]["prompt"][0]["text"] = original_text + labels;
+	uam::structured_attachments::AppendPreparedAcpImages(encoded, prepared);
+	if (encoded["params"]["prompt"].size() != images.size() + 1 || encoded.dump().size() + 1 > 4 * 1024 * 1024) return fail();
+	request = std::move(encoded);
+	return true;
+}
+catch (...)
+{
+	error = "OpenCode image input or its native evidence is invalid. The prompt was not sent.";
+	return false;
 }

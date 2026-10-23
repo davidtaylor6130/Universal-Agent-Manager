@@ -4,6 +4,7 @@
 #include "common/config/build_features.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_client.h"
+#include "remote/native_history_snapshot.h"
 
 #include "common/config/execution_host_config.h"
 #include "common/paths/path_utils.h"
@@ -87,6 +88,21 @@ namespace uam::remote
 			return exit_code == result.end() || exit_code->is_null() ||
 			    (exit_code->is_number_integer() && *exit_code >= std::numeric_limits<int>::min() &&
 			     *exit_code <= std::numeric_limits<int>::max());
+		}
+
+		// Native OpenCode responses are opaque provider values, not runner transport records.
+		// Keep generic object/field validation unchanged for every other request type.
+		bool ValidOpenCodeNativeResult(const nlohmann::json& request, const nlohmann::json& result)
+		{
+			const auto operation = request.find("operation");
+			if (operation == request.end() || !operation->is_object()) return false;
+			const auto field = operation->find("operation");
+			if (field == operation->end() || !field->is_string() || result.dump().size() > 262144) return false;
+			const std::string& kind = field->get_ref<const std::string&>();
+			if (kind == "permissions" || kind == "messages") return result.is_array();
+			if (kind == "reply") return result.is_boolean();
+			if (kind == "health" || kind == "configProviders" || kind == "session" || kind == "status" || kind == "enableTask" || kind == "disableTask") return result.is_object();
+			return false;
 		}
 	}
 
@@ -202,7 +218,11 @@ namespace uam::remote
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
 		m_safePathInspection = m_expectedProtocolVersion >= 3 && response["capabilities"].value("safePathInspection", false);
 		m_contextRead = response["capabilities"].value("contextRead", false);
+		m_providerHistoryRead = response["capabilities"].value("providerHistoryRead", false);
 		m_workspaceFileRead = response["capabilities"].value("workspaceFileRead", false);
+		m_workspaceAttachmentRead = response["capabilities"].value("workspaceAttachmentRead", false);
+		m_openCodeNativeControl = response["capabilities"].value("openCodeNativeControl", false);
+		m_openCodeTerminalObservation = response["capabilities"].value("openCodeTerminalObservation", false);
 		m_usageAccounting = response["capabilities"].value("usageAccounting", false);
 		m_usageAccountingStream = response["capabilities"].value("usageAccountingStream", false);
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
@@ -212,6 +232,8 @@ namespace uam::remote
 		m_leasedChannelTake = response["capabilities"].value("leasedChannelTake", false);
 		m_providerNativeContext = response["capabilities"].value("providerNativeContext", false);
 		m_centralProviderConfiguration = response["capabilities"].value("centralProviderConfiguration", false);
+		m_geminiThinkingConfiguration = response["capabilities"].value("geminiThinkingConfiguration", false);
+		m_claudeTerminalFastConfiguration = response["capabilities"].value("claudeTerminalFastConfiguration", false);
 		m_processOutputAcknowledgement = m_expectedProtocolVersion >= 3 &&
 		    response["capabilities"].value("processOutputAcknowledgement", false);
 		return true;
@@ -271,7 +293,9 @@ namespace uam::remote
 			return false;
 		}
 		if (request.value("type", "") != "hello" &&
-		    (!response.contains("result") || !ValidResultFields(response["result"])))
+		    (!response.contains("result") || !(request.value("type", "") == "opencode.native"
+		        ? ValidOpenCodeNativeResult(request, response["result"])
+		        : ValidResultFields(response["result"]))))
 		{
 			Disconnect();
 			if (error_out != nullptr) *error_out = "The remote runner returned malformed result fields.";
@@ -360,6 +384,12 @@ namespace uam::remote
 		if (!uam::provider_setup::ReadFile(source / "owner.json", bytes, error)) { if (error_out) *error_out = error; return false; }
 		const nlohmann::json manifest = nlohmann::json::parse(bytes, nullptr, false);
 		if (!uam::provider_setup::ValidateManifest(manifest, error)) { if (error_out) *error_out = error; return false; }
+		if ((manifest.contains("geminiThinking") && !m_geminiThinkingConfiguration) ||
+		    (manifest.contains("claudeTerminalFastMode") && !m_claudeTerminalFastConfiguration))
+		{
+			if (error_out) *error_out = "Update the SSH helper before using the required Gemini thinking or Claude terminal speed override.";
+			return false;
+		}
 		nlohmann::json response;
 		if (!Request({{"type", "configuration.prepare"}, {"directory", uam::paths::Utf8PathString(target)}, {"manifest", manifest}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
 		const nlohmann::json missing = response.value("result", nlohmann::json::object()).value("missing", nlohmann::json());
@@ -977,6 +1007,97 @@ namespace uam::remote
 		return true;
 	}
 
+	bool RunnerClient::ReadWorkspaceAttachment(const std::string& workspace, const std::string& path, std::string& bytes,
+	    std::size_t max_bytes,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		bytes.clear();
+		max_bytes = std::min<std::size_t>(max_bytes, 25 * 1024 * 1024);
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_workspaceAttachmentRead)
+		{
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to deliver image attachments.";
+			return false;
+		}
+		std::string text;
+		std::string relative_path;
+		std::string fingerprint;
+		std::size_t total = 0;
+		do
+		{
+			nlohmann::json request = {{"type", "workspace.attachment.read"}, {"workspace", workspace}, {"path", path}, {"offset", text.size()}};
+			if (!fingerprint.empty()) request["fingerprint"] = fingerprint;
+			nlohmann::json response;
+			if (!Request(request, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+			const nlohmann::json result = response.value("result", nlohmann::json{});
+			std::string chunk;
+			if (!result.is_object() || !result.contains("totalBytes") || !result["totalBytes"].is_number_integer() ||
+			    result["totalBytes"].get<std::int64_t>() < 0 || result["totalBytes"].get<std::int64_t>() > static_cast<std::int64_t>(max_bytes) ||
+			    !result.contains("offset") || !result["offset"].is_number_integer() || result["offset"] != text.size() ||
+			    !result.contains("path") || !result["path"].is_string() || result["path"].get_ref<const std::string&>().empty() ||
+			    result["path"].get_ref<const std::string&>().size() > 16384 ||
+			    !result.contains("fingerprint") || !result["fingerprint"].is_string() || result["fingerprint"].get_ref<const std::string&>().size() != 16 ||
+			    !result.contains("dataBase64") || !result["dataBase64"].is_string() ||
+			    result["dataBase64"].get_ref<const std::string&>().size() > 699052 ||
+			    !uam::base64::Decode(result["dataBase64"].get_ref<const std::string&>(), chunk))
+			{
+				if (error_out != nullptr) *error_out = "The runner returned an invalid image attachment.";
+				return false;
+			}
+			const std::size_t next_total = result["totalBytes"].get<std::size_t>();
+			if (text.size() > next_total || chunk.size() != std::min<std::size_t>(512 * 1024, next_total - text.size()) ||
+			    (!fingerprint.empty() && (result["fingerprint"] != fingerprint || result["path"] != relative_path || next_total != total)))
+			{
+				if (error_out != nullptr) *error_out = "The image changed while loading. Try again.";
+				return false;
+			}
+			total = next_total;
+			relative_path = result["path"].get<std::string>();
+			fingerprint = result["fingerprint"].get<std::string>();
+			text += chunk;
+		} while (text.size() < total);
+		if (uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(text)) != fingerprint)
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid image attachment.";
+			return false;
+		}
+		bytes = std::move(text);
+		return true;
+	}
+
+	bool RunnerClient::QueryOpenCodeNative(const std::string& session_id, const nlohmann::json& operation, nlohmann::json& result,
+	    std::string* error_out, std::stop_token stop_token)
+	{
+		result = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_openCodeNativeControl)
+		{ if (error_out != nullptr) *error_out = "Update this host's UAM runner for native OpenCode child permissions."; return false; }
+		nlohmann::json request{{"type", "opencode.native"}, {"sessionId", session_id}, {"operation", operation}};
+		if (!AddProcessControlToken(request, session_id, error_out)) return false;
+		nlohmann::json response;
+		if (!Request(std::move(request), response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
+		if (!response.contains("result") || response["result"].dump().size() > 262144)
+		{ if (error_out != nullptr) *error_out = "The native OpenCode response exceeded its bound."; return false; }
+		result = std::move(response["result"]);
+		return true;
+	}
+
+	bool RunnerClient::ObserveOpenCodeTerminal(int port, const std::string& token, const std::string& workspace,
+	    const nlohmann::json& operation, nlohmann::json& result, std::string* error_out, std::stop_token stop_token)
+	{
+		result = nullptr;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (!m_openCodeTerminalObservation)
+		{ if (error_out) *error_out = "Update this host's UAM runner for native OpenCode terminal activity."; return false; }
+		nlohmann::json response;
+		if (!Request({{"type", "opencode.terminal.observe"}, {"port", port}, {"token", token}, {"workspace", workspace}, {"operation", operation}},
+		    response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
+		if (!response.contains("result") || response["result"].dump().size() > 262144)
+		{ if (error_out) *error_out = "The native OpenCode observation exceeded its bound."; return false; }
+		result = std::move(response["result"]);
+		return true;
+	}
+
 	bool RunnerClient::ReadUsageAccountingFile(const std::filesystem::path& path, nlohmann::json& progress, std::string* error_out, std::stop_token stop_token)
 	{
 		progress = nullptr;
@@ -1127,6 +1248,77 @@ namespace uam::remote
 			{ if (error_out) *error_out = "The runner returned invalid accounting identities."; snapshot = {}; return false; }
 		}
 		return true;
+	}
+
+	bool RunnerClient::ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
+	    nlohmann::json& output, std::string* error_out, std::stop_token stop_token, const std::string& agent_id)
+	{
+		output = nullptr;
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_providerHistoryRead)
+		{
+			if (error_out) *error_out = "Update this host's UAM runner to refresh native provider history.";
+			return false;
+		}
+		std::string token, fingerprint;
+		native_history::Snapshot snapshot;
+		snapshot.provider = provider; snapshot.session_id = session; snapshot.agent_id = agent_id;
+		std::size_t total = 0;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+		const auto interrupted = [&]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline; };
+		const auto finish = [&](bool ok)
+		{
+			if (!token.empty() && m_connected && !stop_token.stop_requested())
+			{
+				nlohmann::json released;
+				std::string cleanup_error;
+				const auto cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+				(void)Request({{"type", "provider.history.release"}, {"providerId", provider}, {"sessionId", session}, {"agentId", agent_id},
+				    {"workspace", workspace}, {"snapshotId", token}}, released, &cleanup_error,
+				    [cleanup_deadline, stop_token]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= cleanup_deadline; });
+			}
+			if (!ok) output = nullptr;
+			return ok;
+		};
+		for (;;)
+		{
+			if (interrupted()) { if (error_out) *error_out = "Native history refresh was cancelled or timed out."; return finish(false); }
+			nlohmann::json response;
+			if (!Request({{"type", "provider.history.read"}, {"providerId", provider}, {"sessionId", session}, {"agentId", agent_id}, {"workspace", workspace},
+			    {"snapshotId", token}, {"fingerprint", fingerprint}, {"offset", snapshot.text.size()}}, response, error_out, interrupted)) return finish(false);
+			const auto result = response.find("result");
+			if (result == response.end() || !result->is_object()) { if (error_out) *error_out = "The runner returned an invalid native history snapshot."; return finish(false); }
+			const auto& value = *result;
+			const std::string received_token = native_history::String(value, "snapshotId");
+			const std::string received_fingerprint = native_history::String(value, "fingerprint");
+			const auto count = value.find("totalBytes"), offset = value.find("offset");
+			if (token.empty() && native_history::SafeId(received_token)) token = received_token;
+			if (count == value.end() || offset == value.end() || !count->is_number_integer() || !offset->is_number_integer() || *offset < 0 ||
+			    *count <= 0 || *count > native_history::kMaxSnapshotBytes || *offset != snapshot.text.size() ||
+			    !native_history::SafeId(received_token) || received_token != token || received_fingerprint.size() != 16 ||
+			    native_history::String(value, "providerId") != provider || native_history::String(value, "sessionId") != session || native_history::String(value, "agentId") != agent_id)
+			{ if (error_out) *error_out = "The runner returned mismatched native history ownership or size."; return finish(false); }
+			if (snapshot.text.empty())
+			{
+				total = count->get<std::size_t>(); fingerprint = received_fingerprint;
+				snapshot.workspace = native_history::String(value, "workspace");
+				snapshot.workspace_yaml = native_history::String(value, "workspaceYaml");
+				if (snapshot.workspace.empty() || snapshot.workspace_yaml.size() > 16 * 1024 || total + snapshot.workspace_yaml.size() > native_history::kMaxSnapshotBytes)
+				{ if (error_out) *error_out = "Invalid native history workspace metadata."; return finish(false); }
+			}
+			else if (count->get<std::size_t>() != total || fingerprint != received_fingerprint || snapshot.workspace != native_history::String(value, "workspace"))
+			{ if (error_out) *error_out = "The native history snapshot changed while loading."; return finish(false); }
+			std::string chunk;
+			if (!base64::Decode(native_history::String(value, "data"), chunk) || chunk.empty() || chunk.size() > native_history::kChunkBytes || chunk.size() > total - snapshot.text.size())
+			{ if (error_out) *error_out = "The runner returned an invalid native history chunk."; return finish(false); }
+			snapshot.text += chunk;
+			if (snapshot.text.size() == total) break;
+		}
+		if (native_history::Fingerprint(snapshot) != fingerprint)
+		{ if (error_out) *error_out = "The native history snapshot fingerprint did not match."; return finish(false); }
+		output = {{"providerId", provider}, {"sessionId", session}, {"agentId", agent_id}, {"workspace", std::move(snapshot.workspace)},
+		    {"text", std::move(snapshot.text)}, {"workspaceYaml", std::move(snapshot.workspace_yaml)}};
+		return finish(true);
 	}
 
 	bool RunnerClient::ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
@@ -1383,7 +1575,11 @@ namespace uam::remote
 		m_directoryBrowsing = false;
 		m_safePathInspection = false;
 		m_contextRead = false;
+		m_providerHistoryRead = false;
 		m_workspaceFileRead = false;
+		m_workspaceAttachmentRead = false;
+		m_openCodeNativeControl = false;
+		m_openCodeTerminalObservation = false;
 		m_usageAccounting = false; m_usageAccountingStream = false;
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
@@ -1392,5 +1588,7 @@ namespace uam::remote
 		m_leasedChannelTake = false;
 		m_providerNativeContext = false;
 		m_centralProviderConfiguration = false;
+		m_geminiThinkingConfiguration = false;
+		m_claudeTerminalFastConfiguration = false;
 	}
 }

@@ -14,7 +14,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[2]
-PROVIDERS = ('GEMINI', 'CODEX', 'CLAUDE', 'OPENCODE', 'COPILOT')
+PROVIDERS = ('GEMINI', 'CODEX', 'CLAUDE', 'OPENCODE', 'COPILOT', 'ANTIGRAVITY')
 FEATURES = ('COMPUTER_USE', 'SSH', 'MOBILE_COMPANION')
 TOKEN = secrets.token_urlsafe(32)
 STATE = {'running': False, 'message': 'Choose providers, features and a build folder.', 'output': '', 'artifact': '', 'dataRoot': '', 'version': ''}

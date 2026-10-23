@@ -1,4 +1,5 @@
 #include "common/paths/app_paths.h"
+#include "common/provider/gemini_history_paths.h"
 
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
@@ -218,22 +219,7 @@ std::filesystem::path AppPaths::DefaultDataRootPath()
 
 std::filesystem::path AppPaths::GeminiHomePath()
 {
-	if (const std::optional<std::filesystem::path> gemini_cli_home = uam::env::GetTrimmedPath("GEMINI_CLI_HOME"))
-	{
-		return *gemini_cli_home;
-	}
-
-	if (const std::optional<std::filesystem::path> gemini_home = uam::env::GetTrimmedPath("GEMINI_HOME"))
-	{
-		return *gemini_home;
-	}
-
-	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
-	{
-		return *home / ".gemini";
-	}
-
-	return uam::paths::CurrentPathOrDot() / ".gemini";
+	return uam::gemini::HistoryHomePath();
 }
 
 std::filesystem::path AppPaths::DefaultGeminiUniversalRootPath()

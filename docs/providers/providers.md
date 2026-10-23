@@ -24,6 +24,8 @@ Every provider checklist must account for every row. Conditional features must c
 | `models` | [Model discovery and selection](models.md) |
 | `agent-selection` | [Agent selection](agent-selection.md) |
 | `agent-history` | [Provider subagent history](agent-history.md) |
+| `subagents` | [Delegated child workflow](../chat/subagents.md) |
+| `goals` | [Continuing goals](../chat/goals.md) |
 | `resume` | [Save and resume](resuming.md) |
 | `reasoning` | [Reasoning](reasoning.md) |
 | `fast-mode` | [Fast mode](fast-mode.md) |

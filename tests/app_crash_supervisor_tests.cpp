@@ -35,8 +35,12 @@ int main(int argc, char** argv)
 	const std::string mode = argv[1];
 	if (mode == "bypass")
 	{
+		if (uam::platform::ApplicationRestartRequested() || uam::platform::RequestApplicationRestart()) return 1;
 		for (const std::string& service : {std::string("--type=renderer"), std::string("--uam-control-stdio")})
+		{
 			if (uam::platform::RunAppCrashSupervisor({argv[0], service, "--uam-supervised-gui"}).has_value()) return 1;
+			if (uam::platform::RequestApplicationRestart() || uam::platform::ApplicationRestartRequested()) return 1;
+		}
 		return 0;
 	}
 	const std::vector<std::string> launch_arguments(argv, argv + argc);
@@ -44,6 +48,7 @@ int main(int argc, char** argv)
 	if (child) (void)uam::platform::RunAppCrashSupervisor(launch_arguments);
 	if (child)
 	{
+		if (uam::platform::ApplicationRestartRequested()) return 3;
 		const char* count_file = std::getenv("UAM_SUPERVISOR_TEST_COUNT_FILE");
 		if (count_file == nullptr) return 2;
 		int count = 0;
@@ -60,6 +65,12 @@ int main(int argc, char** argv)
 			std::this_thread::sleep_for(std::chrono::seconds(60));
 		}
 		if (mode == "loop" || (mode == "once" && count == 0)) Crash();
+		if ((mode == "restart" && count == 0) || (mode == "restart_many" && count < 5))
+		{
+			if (!uam::platform::RequestApplicationRestart() || !uam::platform::ApplicationRestartRequested()) return 3;
+			if (uam::platform::RequestApplicationRestart()) return 3;
+			return uam::platform::kApplicationRestartExitCode;
+		}
 		if (mode == "term")
 		{
 #if defined(_WIN32)
@@ -89,11 +100,12 @@ int main(int argc, char** argv)
 	setenv("UAM_SUPERVISOR_TEST_COUNT_FILE", count_path.string().c_str(), 1);
 #endif
 	const std::vector<std::string> arguments = {std::filesystem::absolute(argv[0]).string(), mode};
+	if (uam::platform::RequestApplicationRestart() || uam::platform::ApplicationRestartRequested()) return 3;
 	const std::optional<int> result = uam::platform::RunAppCrashSupervisor(arguments);
 	const std::filesystem::path actual_count_path = count_path;
 	int count = 0;
 	{ std::ifstream input(actual_count_path); input >> count; }
-	const int expected_count = mode == "once" ? 2 : mode == "loop" ? 4 : 1;
+	const int expected_count = (mode == "once" || mode == "restart") ? 2 : mode == "restart_many" ? 6 : mode == "loop" ? 4 : 1;
 #if defined(_WIN32)
 	const int expected_exit = mode == "loop" ? static_cast<int>(EXCEPTION_ACCESS_VIOLATION) : mode == "term" ? static_cast<int>(0xC000013AUL) : mode == "nonzero" ? 7 : 0;
 #else

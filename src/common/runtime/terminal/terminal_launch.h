@@ -1,3 +1,4 @@
+#include "app/vcs_commit_service.h"
 #pragma once
 
 #include "app/execution_routing_integration.h"
@@ -98,12 +99,16 @@ namespace uam
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
-		if (terminal.context_preparation == nullptr && !terminal.worktree_launch_pending) StopCliTerminal(terminal);
+		const bool awaiting_baseline = terminal.repository_baseline_pending;
+		if (!awaiting_baseline && terminal.context_preparation == nullptr && !terminal.worktree_launch_pending) StopCliTerminal(terminal);
 		if (terminal.running)
 		{
 			terminal.last_error = "The previous terminal is still stopping.";
 			return false;
 		}
+		if (terminal.native_history_generation) terminal.native_history_generation->revoked.store(true, std::memory_order_release);
+		terminal.native_history_generation = std::make_shared<CliTerminalHistoryGeneration>();
+		ChatHistorySyncService().CancelTerminalNativeMediaForChat(app, chat.id);
 		if (chat.side_cleanup_requested)
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
 			                            "This side chat is closing.");
@@ -169,6 +174,37 @@ namespace uam
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, permission_flag_error);
 		}
 
+		if (runtime.ModelOptionsRequireRestart() && !chat.reasoning_effort.empty())
+		{
+			ProviderCliCompatibilityService versions;
+			versions.Poll(app);
+			const std::string provider_id = provider_ids::CanonicalCliProviderLookupId(provider.id);
+			auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, execution_host->id)];
+			const bool checked = version.checked && execution_hosts::SameConnection(version.execution_host, *execution_host);
+			if (checked && (!version.check_error.empty() || !version.supported))
+				return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, version.check_error.empty()
+				    ? "The installed CLI does not satisfy the native version manager's compatibility policy." : version.check_error);
+			if (!checked)
+			{
+				const std::pair<std::string, std::string> target{provider_id, execution_host->id};
+				const bool checking = app.runtime_cli_version_check_task.running && app.runtime_cli_version_provider_id == provider_id &&
+				    execution_hosts::SameConnection(app.runtime_cli_version_check_task.execution_host, *execution_host);
+				if (!checking)
+				{
+					std::erase(app.runtime_cli_version_check_queue, target);
+					if (app.runtime_cli_version_check_task.running) app.runtime_cli_version_check_queue.push_front(target);
+					else
+					{
+						std::string error;
+						if (!versions.StartProviderVersionCheck(app, provider_id, true, execution_host->id, &error))
+							return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, error);
+					}
+				}
+				terminal.last_error.clear(); terminal.should_launch = true;
+				return true;
+			}
+		}
+
 		const WorktreeLaunchPreparationResult workspace = PrepareWorktreeForLaunch(app, chat);
 		if (workspace.state == WorktreeLaunchPreparationState::Pending)
 		{
@@ -209,6 +245,19 @@ namespace uam
 			app.native_history_chats_dir = native_history_chats_dir;
 		}
 
+		std::string baseline_error;
+		const ChatBaselineReadiness baseline = PrepareChatRepositoryBaseline(app, chat, &baseline_error, &terminal.repository_baseline_cancel, !awaiting_baseline);
+		if (baseline == ChatBaselineReadiness::Pending)
+		{
+			terminal.repository_baseline_pending = true;
+			terminal.rows = rows;
+			terminal.cols = cols;
+			terminal.input_ready = false;
+			return true;
+		}
+		terminal.repository_baseline_pending = false;
+		terminal.repository_baseline_cancel.reset();
+		if (baseline == ChatBaselineReadiness::Failed) return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, baseline_error);
 		std::string session_id_error;
 		if (!runtime.PrepareInteractiveSession(app, chat, provider,
 		    ResolveProviderInteractiveResumeId(app, chat, provider), *execution_host, &session_id_error))
@@ -284,6 +333,8 @@ namespace uam
 		std::vector<std::pair<std::string, std::string>> launch_environment = remote
 		    ? std::vector<std::pair<std::string, std::string>>{}
 		    : runtime.BuildInteractiveEnvironment(provider);
+		if (!runtime.PrepareInteractiveLaunch(app, terminal, chat, *execution_host, provider_argv, launch_environment, &startup_error))
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, startup_error);
 		std::string context_launch_channel;
 		if (!PrepareCliProviderHandoffAsync(app, terminal, chat, *execution_host, provider_argv, launch_environment, context_launch_channel, startup_error))
 		{

@@ -15,8 +15,9 @@ class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRend
   public:
 	using FatalStartupCallback = std::function<void(const std::string&)>;
 
-	explicit UamCefApp(FatalStartupCallback on_fatal_startup = {})
+	explicit UamCefApp(FatalStartupCallback on_fatal_startup = {}, std::function<void()> on_management_ready = {})
 		: m_onFatalStartup(std::move(on_fatal_startup))
+		, m_onManagementReady(std::move(on_management_ready))
 	{
 	}
 
@@ -49,6 +50,7 @@ class UamCefApp : public CefApp, public CefBrowserProcessHandler, public CefRend
 	std::string m_trustedUiIndexUrl;
 	CefRefPtr<CefMessageRouterRendererSide> m_renderer_router;
 	FatalStartupCallback m_onFatalStartup;
+	std::function<void()> m_onManagementReady;
 
 	IMPLEMENT_REFCOUNTING(UamCefApp);
 };

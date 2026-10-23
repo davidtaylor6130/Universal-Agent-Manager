@@ -4,6 +4,7 @@
 #include "cef/uam_cef_security.h"
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
+#include "common/platform/app_crash_supervisor.h"
 
 #include "include/cef_task.h"
 #include "include/views/cef_browser_view.h"
@@ -54,6 +55,17 @@ namespace
 			callback->Failure(503, "The native window is unavailable.");
 			return;
 		}
+		if (action == "restartApplication")
+		{
+			if (!uam::platform::RequestApplicationRestart())
+			{
+				callback->Failure(409, "Automatic restart is unavailable. Close and open Universal Agent Manager again.");
+				return;
+			}
+			callback->Success("{}");
+			CefPostTask(TID_UI, new CloseWindowTask(window));
+			return;
+		}
 		std::string command;
 		if (action == "windowCommand")
 		{
@@ -85,32 +97,55 @@ namespace
 // Construction
 // ---------------------------------------------------------------------------
 
-UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url) : m_app(app), m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
+UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url)
+    : UamQueryHandler(app, std::move(trusted_ui_index_url), true)
 {
-	m_usageHistory = std::make_shared<uam::usage::MultiHostHistory>(m_app.data_root, m_app.settings.execution_hosts);
-	RefreshAllowanceTargets();
+}
+
+UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url, bool start_background_readers)
+    : m_app(app), m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
+{
+	if (start_background_readers)
+	{
+		m_usageHistory = std::make_shared<uam::usage::MultiHostHistory>(m_app.data_root, m_app.settings.execution_hosts);
+		RefreshAllowanceTargets();
+	}
 }
 
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
+	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
 #if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) m_companion->Stop();
 #endif
 }
 
-void UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
+bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 {
 #if UAM_ENABLE_MOBILE_COMPANION
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
-	m_companion = UamCompanionServer::StartFromEnvironment([this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
+	m_companion = UamCompanionService::Create(m_app.data_root, [this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
 		if (request.value("action", std::string{}) == "setVisibleChatIds" || request.value("action", std::string{}) == "releaseChatMessages")
 		{ callback->Failure(403, "Desktop transcript ownership is required."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
 		if (!DispatchAction(request.at("action").get<std::string>(), browser, request.value("payload", nlohmann::json::object()), callback))
 			callback->Failure(404, "Unknown companion action.");
-	}, m_app.data_root);
+	});
+	const nlohmann::json status = m_companion->Status();
+	return status.value("configured", false) && status.value("enabled", false);
+#else
+	return false;
+#endif
+}
+
+bool UamQueryHandler::CompanionStartupFailed() const
+{
+#if UAM_ENABLE_MOBILE_COMPANION
+	return m_companion && m_companion->Status().value("state", std::string{}) == "failed";
+#else
+	return false;
 #endif
 }
 
@@ -168,9 +203,15 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 	};
 
 	static constexpr Route kRoutes[] = {
+		{"captureChatRepositoryBaseline", &UamQueryHandler::HandleCaptureChatRepositoryBaseline},
+		{"listSpeechVoices", &UamQueryHandler::HandleListSpeechVoices},
+		{"startSpeechOutput", &UamQueryHandler::HandleStartSpeechOutput},
+		{"stopSpeechOutput", &UamQueryHandler::HandleStopSpeechOutput},
+		{"getSpeechOutputState", &UamQueryHandler::HandleGetSpeechOutputState},
 		{"getUsageHistory", &UamQueryHandler::HandleGetUsageHistory},
 		{"getProviderAllowances", &UamQueryHandler::HandleGetProviderAllowances},
 		{"getInitialState", &UamQueryHandler::HandleGetInitialState},
+		{"getChatRuntimeMetrics", &UamQueryHandler::HandleGetChatRuntimeMetrics},
 		{"getStartupNativeImports", &UamQueryHandler::HandleGetStartupNativeImports},
 		{"resolveStartupNativeImports", &UamQueryHandler::HandleResolveStartupNativeImports},
 		{"getAppPermissions", &UamQueryHandler::HandleGetAppPermissions},
@@ -212,6 +253,9 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"saveAgentDefinition", &UamQueryHandler::HandleSaveAgentDefinition},
 		{"deleteAgentDefinition", &UamQueryHandler::HandleDeleteAgentDefinition},
 		{"getManagedAgentTranscript", &UamQueryHandler::HandleGetManagedAgentTranscript},
+		{"listManagedSubagents", &UamQueryHandler::HandleListManagedSubagents},
+		{"cancelManagedSubagent", &UamQueryHandler::HandleCancelManagedSubagent},
+		{"submitManagedSubagentFollowup", &UamQueryHandler::HandleSubmitManagedSubagentFollowup},
 		{"resumeAgentRun", &UamQueryHandler::HandleResumeAgentRun},
 		{"setChatCommandSafetyTier", &UamQueryHandler::HandleSetChatCommandSafetyTier},
 		{"setChatComputerUseEnabled", &UamQueryHandler::HandleSetChatComputerUseEnabled},
@@ -224,12 +268,14 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"requestComputerUsePermission", &UamQueryHandler::HandleRequestComputerUsePermission},
 		{"openComputerUseSystemSettings", &UamQueryHandler::HandleOpenComputerUseSystemSettings},
 		{"getCompanionSettings", &UamQueryHandler::HandleGetCompanionSettings},
+		{"restartCompanion", &UamQueryHandler::HandleRestartCompanion},
 		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
 		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
 		{"setChatRemoteRecovery", &UamQueryHandler::HandleSetChatRemoteRecovery},
 		{"moveChatWorkspace", &UamQueryHandler::HandleMoveChatWorkspace},
+		{"getMemorySettings", &UamQueryHandler::HandleGetMemorySettings},
 		{"setMemorySettings", &UamQueryHandler::HandleSetMemorySettings},
 		{"readCentralInstructionFile", &UamQueryHandler::HandleReadCentralInstructionFile},
 		{"saveCentralInstructionFile", &UamQueryHandler::HandleSaveCentralInstructionFile},
@@ -338,6 +384,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"manageQueuedAcpPrompt", &UamQueryHandler::HandleManageQueuedAcpPrompt},
 		{"discoverProviderModels", &UamQueryHandler::HandleDiscoverProviderModels},
 		{"setAcpConfigOption", &UamQueryHandler::HandleSetAcpConfigOption},
+		{"setNativeModelOption", &UamQueryHandler::HandleSetNativeModelOption},
+		{"refreshNativeModelOptions", &UamQueryHandler::HandleRefreshNativeModelOptions},
 		{"cancelAcpTurn", &UamQueryHandler::HandleCancelAcpTurn},
 		{"resolveAcpPermission", &UamQueryHandler::HandleResolveAcpPermission},
 		{"resolveAcpUserInput", &UamQueryHandler::HandleResolveAcpUserInput},
@@ -387,7 +435,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	const std::string& action = parsed.request.action;
 	const nlohmann::json& payload = parsed.request.payload;
 
-	if (action == "getWindowChrome" || action == "windowCommand")
+	if (action == "getWindowChrome" || action == "windowCommand" || action == "restartApplication")
 	{
 		HandleWindowChrome(browser, action, payload, callback);
 		return true;
@@ -398,6 +446,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 	const std::shared_ptr<uam::AppState::GitPortRequest> prior_port = previous_port == m_app.git_port_requests.end() ? nullptr : previous_port->second;
 	try
 	{
+		if (action == "submitManagedSubagentFollowup")
+			m_managedFollowupQueryIdentities[callback.get()] = ChatIconQueryIdentity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
 		if (action == "searchChatMessages") m_searchQueryId = query_id;
 		if (action == "setGoal" || action == "updateGoalStatus" || action == "resumeGoal" ||
 		    action == "updateGoalObjective" || action == "setActiveGoal" || action == "removeGoal")
@@ -430,6 +480,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		callback->Failure(500, std::string("Bridge request failed: ") + ex.what());
 	}
 
+	m_managedFollowupQueryIdentities.erase(callback.get());
 	m_chatIconQueryIdentities.erase(callback.get());
 	m_goalQueryIdentities.erase(callback.get());
 	return true;
@@ -455,6 +506,12 @@ void UamQueryHandler::CancelChatIconQuery(int browser_id, const std::string& fra
 void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id)
 {
 	const ChatIconQueryIdentity goal_identity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
+	const auto followup = m_managedFollowupQueryOperations.find(goal_identity);
+	if (followup != m_managedFollowupQueryOperations.end())
+	{
+		if (const auto operation = followup->second.lock()) operation->cancelled = true;
+		m_managedFollowupQueryOperations.erase(followup);
+	}
 	const std::map<ChatIconQueryIdentity, std::weak_ptr<GoalMutationOperation>>::iterator goal_operation = m_goalQueryOperations.find(goal_identity);
 	if (goal_operation != m_goalQueryOperations.end())
 	{

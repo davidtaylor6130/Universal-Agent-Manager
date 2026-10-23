@@ -54,14 +54,14 @@ UAM_TEST(UsagePricingCacheRejectsOversizeAndCancelledDownloadsAndKeepsExplicitMa
 	TempDir temp("uam-usage-rates-validation");
 	fs::create_directories(temp.root / "usage");
 	const fs::path path = temp.root / "usage" / "reference-models-v1.json";
-	UAM_ASSERT(uam::io::WriteTextFile(path, nlohmann::json({{"version", 1}, {"aliases", nlohmann::json::array({{{"providerId", "opencode-cli"}, {"modelId", "inferdeck/normal"}, {"referenceModel", "qwen3.8-27b"}}})}}).dump()));
+	UAM_ASSERT(uam::io::WriteTextFile(path, nlohmann::json({{"version", 1}, {"aliases", nlohmann::json::array({{{"providerId", "opencode-cli"}, {"modelId", "example-provider/normal"}, {"referenceModel", "qwen3.8-27b"}}})}}).dump()));
 	int requests = 0;
 	uam::usage::PricingCache cache(temp.root, [&](std::stop_token) -> std::optional<std::string> { ++requests; return std::string(4 * 1024 * 1024 + 1, 'x'); });
 	std::stop_source stop; stop.request_stop(); cache.Refresh(kPricingAsOf, stop.get_token()); UAM_ASSERT_EQ(requests, 0);
 	cache.Refresh(kPricingAsOf); UAM_ASSERT_EQ(requests, 1); UAM_ASSERT(!fs::exists(temp.root / "usage" / "rates-v1.json"));
-	UAM_ASSERT(cache.Catalog()->Resolve({"opencode-cli", "inferdeck/normal", "standard"}, cache.Aliases()));
+	UAM_ASSERT(cache.Catalog()->Resolve({"opencode-cli", "example-provider/normal", "standard"}, cache.Aliases()));
 	UAM_ASSERT(uam::io::WriteTextFile(path, "corrupt")); cache.Refresh(kPricingAsOf + 30000);
-	UAM_ASSERT(cache.Catalog()->Resolve({"opencode-cli", "inferdeck/normal", "standard"}, cache.Aliases()));
+	UAM_ASSERT(cache.Catalog()->Resolve({"opencode-cli", "example-provider/normal", "standard"}, cache.Aliases()));
 	UAM_ASSERT(!cache.Metadata(kPricingAsOf + 30000)["aliasError"].get<std::string>().empty());
 	UAM_ASSERT(fs::remove(path)); cache.Refresh(kPricingAsOf + 60000); UAM_ASSERT(cache.Aliases().empty());
 	UAM_ASSERT_EQ(requests, 1);

@@ -398,6 +398,11 @@ void UamCefApp::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar)
 void UamCefApp::OnContextInitialized()
 {
 	CEF_REQUIRE_UI_THREAD();
+	if (m_onManagementReady)
+	{
+		m_onManagementReady();
+		return;
+	}
 	m_trustedUiIndexUrl = uam::cef::ResolveTrustedUiIndexUrl();
 	CefString exe_dir_string;
 	const std::filesystem::path exe_dir = CefGetPath(PK_DIR_EXE, exe_dir_string)

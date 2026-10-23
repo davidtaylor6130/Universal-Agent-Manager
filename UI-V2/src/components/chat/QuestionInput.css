@@ -38,6 +38,7 @@
 .qr-option input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
 .qr-number { color: var(--text-2); font-size: 12px; flex-shrink: 0; }
 .qr-option-copy { min-width: 0; overflow-wrap: anywhere; }
+.qr-option-description { display: block; margin-top: 4px; color: var(--text-2); font-size: 12px; }
 .qr-selected { display: none; }
 .qr-text-answer { margin-top: 8px; }
 .qr-text-answer label { display: block; color: var(--text-2); font-size: 12px; margin-bottom: 4px; }

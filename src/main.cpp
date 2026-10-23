@@ -1,3 +1,7 @@
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <algorithm>
+#include "common/discovery/management_discovery.h"
 #include "common/config/build_features.h"
 // UAM — CEF multiprocess entry point.
 //
@@ -13,6 +17,64 @@
 #include "include/cef_app.h"
 
 #include <cstdio>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
+namespace
+{
+/// <summary>Write only explicit discovery CLI output, preserving redirected Windows handles.</summary>
+bool WriteDiscoveryJson(const std::string& text)
+{
+#if defined(_WIN32)
+	HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+	bool owned_output = false;
+	if (!output || output == INVALID_HANDLE_VALUE || GetFileType(output) == FILE_TYPE_UNKNOWN)
+	{
+		if (!AttachConsole(ATTACH_PARENT_PROCESS) && GetLastError() != ERROR_ACCESS_DENIED) return false;
+		output = GetStdHandle(STD_OUTPUT_HANDLE);
+		if (!output || output == INVALID_HANDLE_VALUE || GetFileType(output) == FILE_TYPE_UNKNOWN)
+		{
+			output = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+			owned_output = true;
+		}
+	}
+	if (!output || output == INVALID_HANDLE_VALUE) return false;
+	std::size_t offset = 0;
+	while (offset < text.size())
+	{
+		DWORD written = 0;
+		if (!WriteFile(output, text.data() + offset, static_cast<DWORD>(text.size() - offset), &written, nullptr) || written == 0)
+		{
+			if (owned_output) CloseHandle(output);
+			return false;
+		}
+		offset += written;
+	}
+	if (owned_output) CloseHandle(output);
+	return true;
+#else
+	return std::fwrite(text.data(), 1, text.size(), stdout) == text.size();
+#endif
+}
+
+std::optional<int> DiscoveryCommand(const std::vector<std::string>& arguments)
+{
+	if (std::find(arguments.begin(), arguments.end(), "--discover-management-nodes") == arguments.end()) return std::nullopt;
+	std::string error;
+	const std::vector<uam::discovery::ManagementHint> hints = uam::discovery::BrowseManagementNodes(
+		std::find(arguments.begin(), arguments.end(), "--discovery-local-only") != arguments.end(), error);
+	nlohmann::json result = nlohmann::json::array();
+	for (const uam::discovery::ManagementHint& hint : hints)
+	{
+		std::string host = hint.host;
+		if (!host.empty() && host.back() == '.') host.pop_back();
+		result.push_back({{"name", hint.name}, {"origin", "https://" + host + (hint.port == 443 ? "" : ":" + std::to_string(hint.port))}, {"trusted", false}});
+	}
+	if (!WriteDiscoveryJson(nlohmann::json({{"nodes", result}, {"error", error}}).dump(-1, ' ', true, nlohmann::json::error_handler_t::replace) + "\n")) return 1;
+	return error.empty() ? 0 : 1;
+}
+}
 
 #if defined(__APPLE__)
 #include "common/platform/platform_application_macos.h"
@@ -54,6 +116,7 @@ namespace
 int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/)
 {
 	const std::vector<std::string> arguments = LaunchArguments();
+	if (const std::optional<int> discovery_exit = DiscoveryCommand(arguments)) return *discovery_exit;
 #if UAM_ENABLE_COMPUTER_USE
 	if (uam::computer_use::IsMcpServerInvocation(arguments))
 		return uam::computer_use::RunMcpServer(arguments);
@@ -62,7 +125,8 @@ int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR
 	CefMainArgs main_args(GetModuleHandle(nullptr));
 
 	// Run CEF sub-process entry point — returns >= 0 for sub-processes.
-	if (!uam::UamControlService::IsStdioServerInvocation(arguments))
+	if (!uam::UamControlService::IsStdioServerInvocation(arguments) &&
+	    std::find(arguments.begin(), arguments.end(), "--management-node") == arguments.end())
 	{
 		if (const std::optional<int> supervisor_exit = uam::platform::RunAppCrashSupervisor(arguments))
 			return *supervisor_exit;
@@ -93,6 +157,7 @@ int main(int argc, char* argv[])
 	}
 #endif
 	const std::vector<std::string> arguments(argv, argv + argc);
+	if (const std::optional<int> discovery_exit = DiscoveryCommand(arguments)) return *discovery_exit;
 #if UAM_ENABLE_COMPUTER_USE
 	if (uam::computer_use::IsMcpServerInvocation(arguments))
 		return uam::computer_use::RunMcpServer(arguments);
@@ -101,7 +166,8 @@ int main(int argc, char* argv[])
 	CefMainArgs main_args(argc, argv);
 
 	// Run CEF sub-process entry point — returns >= 0 for sub-processes.
-	if (!uam::UamControlService::IsStdioServerInvocation(arguments))
+	if (!uam::UamControlService::IsStdioServerInvocation(arguments) &&
+	    std::find(arguments.begin(), arguments.end(), "--management-node") == arguments.end())
 	{
 		if (const std::optional<int> supervisor_exit = uam::platform::RunAppCrashSupervisor(arguments))
 			return *supervisor_exit;

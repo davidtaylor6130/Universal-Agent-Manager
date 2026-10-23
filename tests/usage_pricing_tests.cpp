@@ -53,21 +53,21 @@ UAM_TEST(UsagePricingRejectsAmbiguousBareAliasesButHonorsCanonicalAndProviderSco
 	UAM_ASSERT(catalog.Resolve({"opencode-cli", "openai/gpt", "standard"}));
 	UAM_ASSERT(catalog.Resolve({"gemini-cli", "gemini-model", "standard"}));
 	UAM_ASSERT(!catalog.Resolve({"opencode-cli", "unknown/gpt", "standard"}));
-	const uam::usage::ModelAliases aliases{{{"opencode-cli", "inferdeck/normal"}, "one/shared"}};
-	UAM_ASSERT(catalog.Resolve({"opencode-cli", "inferdeck/normal", "standard"}, aliases));
+	const uam::usage::ModelAliases aliases{{{"opencode-cli", "example-provider/normal"}, "one/shared"}};
+	UAM_ASSERT(catalog.Resolve({"opencode-cli", "example-provider/normal", "standard"}, aliases));
 	UAM_ASSERT(!catalog.Resolve({"opencode-cli", "other/normal", "standard"}, aliases));
-	UAM_ASSERT(!catalog.Resolve({"claude-cli", "inferdeck/normal", "standard"}, aliases));
+	UAM_ASSERT(!catalog.Resolve({"claude-cli", "example-provider/normal", "standard"}, aliases));
 }
 
 UAM_TEST(UsagePricingValidatesAliasFilesAndPricesLocalQwenAsExplicitHostedReferences)
 {
 	const nlohmann::json document{{"version", 1}, {"aliases", nlohmann::json::array({
-	    {{"providerId", "opencode-cli"}, {"modelId", "inferdeck/normal"}, {"referenceModel", "qwen3.8-27b"}},
-	    {{"providerId", "opencode-cli"}, {"modelId", "inferdeck/fast"}, {"referenceModel", "qwen3.6-35b-a3b"}}})}};
+	    {{"providerId", "opencode-cli"}, {"modelId", "example-provider/normal"}, {"referenceModel", "qwen3.8-27b"}},
+	    {{"providerId", "opencode-cli"}, {"modelId", "example-provider/fast"}, {"referenceModel", "qwen3.6-35b-a3b"}}})}};
 	const std::optional<uam::usage::ModelAliases> aliases = uam::usage::RateCatalog::ParseAliases(document);
 	UAM_ASSERT(aliases);
 	uam::usage::RateCatalog catalog; catalog.AddVerifiedReferences();
-	const std::optional<uam::usage::ResolvedPrice> normal = catalog.Resolve({"opencode-cli", "inferdeck/normal", "standard"}, *aliases), fast = catalog.Resolve({"opencode-cli", "inferdeck/fast", "standard"}, *aliases);
+	const std::optional<uam::usage::ResolvedPrice> normal = catalog.Resolve({"opencode-cli", "example-provider/normal", "standard"}, *aliases), fast = catalog.Resolve({"opencode-cli", "example-provider/fast", "standard"}, *aliases);
 	UAM_ASSERT(normal && fast); UAM_ASSERT_EQ(*normal->prices.input_per_million, 0.5); UAM_ASSERT_EQ(*normal->prices.output_per_million, 3.0);
 	UAM_ASSERT_EQ(*fast->prices.input_per_million, 0.375); UAM_ASSERT_EQ(*fast->prices.output_per_million, 2.25); UAM_ASSERT(fast->cache_fallback);
 	UAM_ASSERT_EQ(normal->verified_date, std::string("2026-10-10")); UAM_ASSERT(normal->source.starts_with("https://www.alibabacloud.com/"));

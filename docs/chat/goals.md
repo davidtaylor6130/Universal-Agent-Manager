@@ -5,3 +5,7 @@ A goal is explicitly requested continuing work with recorded progress and, when 
 [Agents](../settings/central-setup/agents.md) · [Current session reference](../reference/architecture/provider-sessions.md).
 
 [Goal Loops settings](../settings/goal-loops.md).
+
+Provider integrations should let an agent inspect its chat’s current goal and request explicit goal creation through UAM’s permission boundary, while UAM supplies the objective, progress context and supported lifecycle controls. Native goals use a provider adapter where available; they must not start a second competing continuation loop or bypass user-owned pause, stop, budget or completion review. Shared goal inspection and approval-gated creation are existing routes, not proof of complete native lifecycle interoperability.
+
+Continuation and review context may compact repeated objectives, task lists and empty state fields, while retaining distinct tasks, verification requirements, budgets and user stop conditions. Attached skill and computer-use context remains associated with the original authored inputs when requests are batched.

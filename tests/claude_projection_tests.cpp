@@ -1,5 +1,6 @@
 #include "common/runtime/acp/claude_quota_continuation.h"
 #include "test_harness.h"
+#include "common/provider/native_agent_history.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/acp/acp_polling.h"
@@ -1484,6 +1485,22 @@ UAM_TEST(ClaudeQuotaNativeContinuationWritesOnlyOneNewInstructionAfterWarmOrCold
 	{
 		const bool cold = kind == "cold";
 		ClaudeQuotaFixture fixture;
+		// This positive owner represents a newly accepted turn under the current catalogue.
+		uam::SelectedPrimaryAgentSnapshot selected;
+		std::string capture_error;
+		UAM_ASSERT(uam::AgentDefinitionService::CaptureSelectedPrimary(fixture.app.data_root,
+		    uam::paths::ResolveControllerWorkspaceRootPath(fixture.app, fixture.app.chats.front()),
+		    fixture.app.chats.front().uam_agent_id, selected, capture_error));
+		UAM_ASSERT(selected.definition.built_in && selected.definition.id == "build");
+		UAM_ASSERT(!selected.definition.definition_hash.empty() && selected.definition.workspace_access == "write");
+		fixture.session->active_uam_agent_id = selected.definition.id;
+		fixture.session->active_uam_agent_definition_hash = selected.definition.definition_hash;
+		fixture.session->active_uam_agent_definition_snapshot = selected.definition.markdown_snapshot;
+		fixture.session->active_uam_agent_instructions = selected.definition.instructions;
+		fixture.session->active_uam_agent_skills = selected.definition.skills;
+		fixture.session->active_uam_agent_delegates = selected.definition.delegates;
+		fixture.session->active_uam_agent_workspace_access = selected.definition.workspace_access;
+		fixture.session->active_uam_agent_execution_capability = uam::AgentDefinitionService::ExecutionCapabilityForProvider(fixture.app.chats.front().provider_id);
 		const fs::path shim = fixture.temp.root / "claude";
 		UAM_ASSERT(uam::io::WriteTextFile(shim, "#!/bin/sh\nprintf '%s\\n' \"$@\" > launch-args.txt\nexec /bin/cat >> received.jsonl\n"));
 		fs::permissions(shim, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
@@ -1501,6 +1518,9 @@ UAM_TEST(ClaudeQuotaNativeContinuationWritesOnlyOneNewInstructionAfterWarmOrCold
 		fixture.Wait();
 		const std::string native_id = fixture.app.chats.front().native_session_id;
 		const ClaudeQuotaContinuation owner = fixture.app.chats.front().claude_quota_continuation;
+		UAM_ASSERT_EQ(owner.agent_id, selected.definition.id);
+		UAM_ASSERT_EQ(owner.agent_definition_hash, selected.definition.definition_hash);
+		UAM_ASSERT_EQ(owner.agent_workspace_access, selected.definition.workspace_access);
 		if (cold)
 		{
 			fixture.app.acp_sessions.clear();
@@ -1589,6 +1609,50 @@ UAM_TEST(ClaudeQuotaNativeContinuationWritesOnlyOneNewInstructionAfterWarmOrCold
 			UAM_ASSERT(fixture.session->queued_user_prompts.empty());
 		}
 	}
+#endif
+}
+
+UAM_TEST(ClaudeQuotaLegacyBuiltinVersionRemainsHeldWithoutNativeLaunch)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && !defined(_WIN32)
+	ClaudeQuotaFixture fixture; // Preserve the historical v1 constructor and accepted owner.
+	uam::SelectedPrimaryAgentSnapshot current;
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::CaptureSelectedPrimary(fixture.app.data_root,
+	    uam::paths::ResolveControllerWorkspaceRootPath(fixture.app, fixture.app.chats.front()),
+	    fixture.app.chats.front().uam_agent_id, current, error));
+	UAM_ASSERT_EQ(fixture.session->active_uam_agent_definition_hash, std::string("builtin-build-v1"));
+	UAM_ASSERT(current.definition.id == fixture.session->active_uam_agent_id);
+	UAM_ASSERT(current.definition.definition_hash != fixture.session->active_uam_agent_definition_hash);
+	UAM_ASSERT_EQ(current.definition.workspace_access, fixture.session->active_uam_agent_workspace_access);
+	UAM_ASSERT_EQ(uam::AgentDefinitionService::ExecutionCapabilityForProvider(fixture.app.chats.front().provider_id), fixture.session->active_uam_agent_execution_capability);
+	const fs::path launched = fixture.temp.root / "unexpected-native-launch";
+	const fs::path shim = fixture.temp.root / "claude";
+	UAM_ASSERT(uam::io::WriteTextFile(shim, "#!/bin/sh\nprintf 'started' > unexpected-native-launch\nexit 93\n"));
+	fs::permissions(shim, fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write);
+	fixture.Wait();
+	const ClaudeQuotaContinuation accepted = fixture.app.chats.front().claude_quota_continuation;
+	UAM_ASSERT_EQ(accepted.agent_definition_hash, std::string("builtin-build-v1"));
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, accepted.chat_id, true);
+	UAM_ASSERT(saved && saved->claude_quota_continuation == accepted);
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 59));
+	UAM_ASSERT(uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 60));
+	ClaudeQuotaContinuation held = accepted;
+	held.state = "held";
+	UAM_ASSERT(fixture.app.chats.front().claude_quota_continuation == held);
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages, saved->messages);
+	UAM_ASSERT_EQ(fixture.app.chats.front().native_session_id, saved->native_session_id);
+	UAM_ASSERT(!fixture.session->running && !fixture.session->processing);
+	UAM_ASSERT(fixture.session->last_process_id.empty() && fixture.session->initialize_request_id == 0);
+	UAM_ASSERT(fixture.session->queued_prompt.empty() && fixture.session->queued_user_prompts.empty());
+	UAM_ASSERT_EQ(fixture.session->active_uam_agent_definition_hash, accepted.agent_definition_hash);
+	for (int iteration = 0; iteration < 5; ++iteration)
+		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 120));
+	const auto durable = ChatRepository::LoadLocalChat(fixture.app.data_root, accepted.chat_id, true);
+	UAM_ASSERT(durable && durable->claude_quota_continuation == held);
+	UAM_ASSERT_EQ(durable->messages, saved->messages);
+	UAM_ASSERT_EQ(durable->native_session_id, saved->native_session_id);
+	UAM_ASSERT(durable->acp_queued_prompts.empty() && !fs::exists(launched));
 #endif
 }
 
@@ -2122,5 +2186,342 @@ UAM_TEST(ClaudeQuotaManualAdmissionRejectsReplacedQuotaAuthority)
 		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.ReadStdioProcessStdout(*fixture.session, bytes.data(), bytes.size(), &error) <= 0);
 		UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(fixture.app, fixture.now + 120));
 	}
+#endif
+}
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+namespace
+{
+
+constexpr const char* kClaudeDurationParent = "550e8400-e29b-41d4-a716-446655440000";
+
+nlohmann::json ClaudeDurationTool(const nlohmann::json& serialized, const std::string& tool_id)
+{
+	for (const auto& message : serialized.at("messages"))
+	{
+		if (!message.contains("toolCalls")) continue;
+		for (const auto& tool : message.at("toolCalls")) if (tool.value("id", "") == tool_id) return tool;
+	}
+	UAM_ASSERT(false);
+	return nullptr;
+}
+
+nlohmann::json ClaudeDurationChild(const nlohmann::json& tool, const std::string& child_id)
+{
+	const auto children = tool.find("subAgentChildren");
+	if (children != tool.end() && children->is_array())
+		for (const auto& child : *children) if (child.value("id", "") == child_id) return child;
+	return nullptr;
+}
+
+struct ClaudeDurationFixture
+{
+	TempDir root{"uam-claude-native-child-duration"};
+	uam::AppState app;
+	ClaudeDurationFixture()
+	{
+		app.data_root = root.root;
+		app.provider_profiles = {ProviderProfileStore::DefaultClaudeProfile()};
+		ChatSession chat;
+		chat.id = "claude-native-duration-parent";
+		chat.provider_id = "claude-cli";
+		chat.native_session_id = kClaudeDurationParent;
+		chat.execution_host_id = "local";
+		chat.messages.push_back({MessageRole::User, "Inspect the private fixture"});
+		app.chats.push_back(std::move(chat));
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = Chat().id;
+		session->provider_id = "claude-cli";
+		session->protocol_kind = "claude-code-stream-json";
+		session->session_id = kClaudeDurationParent;
+		session->running = session->processing = session->session_ready = true;
+		app.acp_sessions.push_back(std::move(session));
+	}
+	ChatSession& Chat() { return app.chats.front(); }
+	uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
+	void Send(const nlohmann::json& frame) { UAM_ASSERT(uam::ProcessAcpLineForTests(app, Session(), Chat(), frame.dump())); }
+	std::string ChildId(const std::string& task) { return uam::native_agents::BuildHistoryId("claude-cli", kClaudeDurationParent, task, "local"); }
+	void Admit(const std::string& task, const std::string& tool, bool agent = true)
+	{
+		Send({{"type", "assistant"}, {"session_id", kClaudeDurationParent}, {"uuid", tool + "-assistant"},
+		    {"message", {{"content", nlohmann::json::array({{{"type", "tool_use"}, {"id", tool}, {"name", agent ? "Agent" : "Bash"}, {"input", {{"description", "Inspect private fixture"}}}}})}}}});
+		Send({{"type", "system"}, {"subtype", "task_started"}, {"session_id", kClaudeDurationParent}, {"task_id", task}, {"tool_use_id", tool}, {"task_type", agent ? "local_agent" : "local_bash"}, {"description", "Private native child"}});
+		const auto saved = uam::StateSerializer::SerializeSession(Chat());
+		if (agent) UAM_ASSERT_EQ(ClaudeDurationTool(saved, tool).at("subAgentId"), nlohmann::json(ChildId(task)));
+	}
+	nlohmann::json Terminal(const std::string& task, const std::string& tool, const nlohmann::json& duration = nullptr, const std::string& status = "completed")
+	{
+		nlohmann::json frame = {{"type", "system"}, {"subtype", "task_notification"}, {"session_id", kClaudeDurationParent}, {"task_id", task}, {"status", status}, {"summary", "Private child result"}};
+		if (!tool.empty()) frame["tool_use_id"] = tool;
+		if (!duration.is_null()) frame["usage"] = {{"total_tokens", 7}, {"tool_uses", 1}, {"duration_ms", duration}};
+		return frame;
+	}
+	nlohmann::json ReloadedPage()
+	{
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, Chat()));
+		const auto loaded = ChatRepository::LoadLocalChat(app.data_root, Chat().id);
+		UAM_ASSERT(loaded.has_value());
+		return uam::StateSerializer::SerializeMessagePage(*loaded, 20, std::nullopt, true);
+	}
+};
+
+}
+#endif
+
+UAM_TEST(ClaudeNativeChildTerminalDurationsSurviveSavedRestoreAndDeferredProjection)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeDurationFixture fixture;
+	fixture.Admit("a0123456789abcde", "claude-duration-a");
+	fixture.Admit("a1123456789abcde", "claude-duration-b");
+	fixture.Send({{"type", "system"}, {"subtype", "task_progress"}, {"session_id", kClaudeDurationParent}, {"task_id", "a0123456789abcde"}, {"tool_use_id", "claude-duration-a"}, {"usage", {{"total_tokens", 3}, {"tool_uses", 1}, {"duration_ms", 1000}}}});
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+	const auto before = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+	UAM_ASSERT(before.has_value());
+	fixture.Chat() = *before;
+	fixture.Session().tool_calls.clear();
+	fixture.Session().tool_call_message_indices.clear();
+	fixture.Session().turn_events.clear();
+	fixture.Session().current_assistant_message_index = -1;
+	fixture.Session().turn_assistant_message_index = -1;
+	fixture.Chat().messages.push_back({MessageRole::User, "Next parent question must stay separate"});
+	// Omitted tool_use_id exercises the existing exact saved task-to-tool lookup.
+	fixture.Send(fixture.Terminal("a0123456789abcde", "", 9000));
+	fixture.Send(fixture.Terminal("a1123456789abcde", "", 21000, "failed"));
+	UAM_ASSERT(fixture.Chat().messages.back().role == MessageRole::User);
+	UAM_ASSERT(fixture.Chat().messages.back().tool_calls.empty());
+	// Restore a completed child from disk again before a contradictory late result.
+	// Its original child disposition and duration remain the first recorded result.
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+	const auto completed = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+	UAM_ASSERT(completed.has_value());
+	fixture.Chat() = *completed;
+	fixture.Session().tool_calls.clear();
+	fixture.Session().tool_call_message_indices.clear();
+	fixture.Session().turn_events.clear();
+	fixture.Session().current_assistant_message_index = -1;
+	fixture.Session().turn_assistant_message_index = -1;
+	fixture.Send(fixture.Terminal("a0123456789abcde", "", 999000, "failed"));
+	fixture.Send(fixture.Terminal("a1123456789abcde", "", 21000, "failed"));
+	const auto page = fixture.ReloadedPage();
+	const auto live = uam::StateSerializer::Serialize(fixture.app).at("chats").at(0).at("acpSession").at("toolCalls");
+	for (const auto& [task, tool_id, status, duration] : {
+	         std::tuple{std::string("a0123456789abcde"), std::string("claude-duration-a"), std::string("completed"), 9000},
+	         std::tuple{std::string("a1123456789abcde"), std::string("claude-duration-b"), std::string("failed"), 21000}})
+	{
+		const auto child = ClaudeDurationChild(ClaudeDurationTool(page, tool_id), fixture.ChildId(task));
+		UAM_ASSERT(child.is_object());
+		UAM_ASSERT_EQ(child.at("status"), nlohmann::json(status));
+		UAM_ASSERT_EQ(child.at("durationMs"), nlohmann::json(duration));
+		UAM_ASSERT(!child.contains("startedAtEpochMs") && !child.contains("finishedAtEpochMs"));
+		bool found_live = false;
+		for (const auto& tool : live) if (tool.value("id", "") == tool_id)
+		{
+			UAM_ASSERT_EQ(ClaudeDurationChild(tool, fixture.ChildId(task)), child);
+			found_live = true;
+		}
+		UAM_ASSERT(found_live);
+	}
+#endif
+}
+
+UAM_TEST(ClaudeNativeChildDurationRejectsUnownedMalformedAndNonAgentEvidence)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const auto& invalid : std::vector<nlohmann::json>{nullptr, -1, 0.5, 9007199254740992ULL, "9000", true, nlohmann::json::object()})
+	{
+		ClaudeDurationFixture fixture;
+		const std::string task = "a2123456789abcde";
+		fixture.Admit(task, "claude-invalid-duration");
+		fixture.Send(fixture.Terminal(task, "claude-invalid-duration", invalid));
+		const auto child = ClaudeDurationChild(ClaudeDurationTool(fixture.ReloadedPage(), "claude-invalid-duration"), fixture.ChildId(task));
+		UAM_ASSERT(!child.contains("durationMs") && !child.contains("startedAtEpochMs") && !child.contains("finishedAtEpochMs"));
+	}
+	for (const std::string scope : {"foreign-session", "foreign-task", "non-agent"})
+	{
+		ClaudeDurationFixture fixture;
+		const std::string task = "a3123456789abcde";
+		fixture.Admit(task, "claude-scope-duration", scope != "non-agent");
+		auto terminal = fixture.Terminal(task, "claude-scope-duration", 999000);
+		if (scope == "foreign-session") terminal["session_id"] = "55555555-5555-4555-8555-555555555555";
+		if (scope == "foreign-task") terminal["task_id"] = "a4123456789abcde";
+		fixture.Send(terminal);
+		const auto tool = ClaudeDurationTool(fixture.ReloadedPage(), "claude-scope-duration");
+		const auto children = tool.find("subAgentChildren");
+		if (children != tool.end()) for (const auto& child : *children) UAM_ASSERT(!child.contains("durationMs"));
+	}
+#endif
+}
+
+UAM_TEST(ClaudeNativeChildTerminalDurationPreservesGenuineZero)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeDurationFixture fixture;
+	const std::string task = "a5123456789abcde";
+	fixture.Admit(task, "claude-zero-duration");
+	fixture.Send(fixture.Terminal(task, "claude-zero-duration", 0));
+	const auto child = ClaudeDurationChild(ClaudeDurationTool(fixture.ReloadedPage(), "claude-zero-duration"), fixture.ChildId(task));
+	UAM_ASSERT(child.is_object());
+	UAM_ASSERT_EQ(child.at("durationMs"), nlohmann::json(0));
+	UAM_ASSERT(!child.contains("startedAtEpochMs") && !child.contains("finishedAtEpochMs"));
+#endif
+}
+
+UAM_TEST(ClaudeNativeChildForeignTaskCannotReplaceDurableAssociationBeforeOwnedCompletion)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	for (const bool saved_fallback : {false, true})
+	{
+		ClaudeDurationFixture fixture;
+		const std::string task = "a6123456789abcde";
+		const std::string foreign_task = "a7123456789abcde";
+		const std::string tool_id = "claude-original-task-tool";
+		fixture.Admit(task, tool_id);
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		if (saved_fallback)
+		{
+			const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+			UAM_ASSERT(saved.has_value());
+			fixture.Chat() = *saved;
+			fixture.Session().tool_calls.clear();
+			fixture.Session().tool_call_message_indices.clear();
+			fixture.Session().turn_events.clear();
+			fixture.Session().current_assistant_message_index = -1;
+			fixture.Session().turn_assistant_message_index = -1;
+			UAM_ASSERT(fixture.Session().tool_calls.empty());
+		}
+		else
+		{
+			UAM_ASSERT(!fixture.Session().tool_calls.empty());
+			UAM_ASSERT_EQ(fixture.Session().tool_calls.front().task_id, task);
+		}
+		fixture.Send(fixture.Terminal(foreign_task, tool_id, 999000));
+		if (saved_fallback) UAM_ASSERT(fixture.Session().tool_calls.empty());
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		const auto after_foreign = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+		UAM_ASSERT(after_foreign.has_value());
+		bool retained_original = false;
+		for (const Message& message : after_foreign->messages)
+			for (const ToolCall& tool : message.tool_calls) if (tool.id == tool_id)
+			{
+				// This durable association assertion precedes timing: rejecting a clock
+				// after corrupting the saved task link does not protect later delivery.
+				UAM_ASSERT_EQ(tool.task_id, task);
+				UAM_ASSERT_EQ(tool.sub_agent_id, fixture.ChildId(task));
+				retained_original = true;
+			}
+		UAM_ASSERT(retained_original);
+		fixture.Send(fixture.Terminal(task, "", 9000));
+		const auto page = fixture.ReloadedPage();
+		std::size_t tools = 0;
+		for (const auto& message : page.at("messages"))
+			if (message.contains("toolCalls")) for (const auto& tool : message.at("toolCalls"))
+			{
+				++tools;
+				UAM_ASSERT_EQ(tool.at("id"), nlohmann::json(tool_id));
+			}
+		UAM_ASSERT_EQ(tools, std::size_t(1));
+		const auto tool = ClaudeDurationTool(page, tool_id);
+		UAM_ASSERT_EQ(tool.at("subAgentChildren").size(), std::size_t(1));
+		const auto child = ClaudeDurationChild(tool, fixture.ChildId(task));
+		UAM_ASSERT_EQ(child.at("status"), nlohmann::json("completed"));
+		UAM_ASSERT_EQ(child.at("durationMs"), nlohmann::json(9000));
+		UAM_ASSERT(ClaudeDurationChild(tool, fixture.ChildId(foreign_task)).is_null());
+	}
+#endif
+}
+
+
+namespace uam
+{
+	// Pure observation of the actual worker future; never harvests or fabricates a receipt.
+	bool PendingChatSavePreparationForTests(const AppState& app, const std::string& chat_id, bool& ready);
+}
+
+UAM_TEST(ClaudeQuotaRevokedPreparationFailureCannotRejectLaterManualSend)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	ClaudeQuotaFixture fixture;
+	fixture.Wait();
+	StartManualQuotaSink(fixture);
+	uam::AppState& app = fixture.app;
+	std::string error;
+	const std::string first_prompt = "First manual input before revoked preparation";
+	const std::string second_prompt = "Second manual input after revoked preparation";
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, first_prompt, &error));
+	UAM_ASSERT(AwaitManualQuotaReceipt(app, app.chats.front().id));
+	const std::string first_input = DeliverManualQuotaInput(fixture, first_prompt);
+	UAM_ASSERT_EQ(std::count(first_input.begin(), first_input.end(), '\n'), 1);
+	UAM_ASSERT(fixture.session->processing);
+	// Finish earlier saves through their real barrier, so the observed worker below
+	// belongs only to the deliberately unpersistable captured message snapshot.
+	(void)uam::FlushPendingChatSaves(app, true);
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(app.chats.front().id));
+	UAM_ASSERT(!uam::acp_detail::HasActiveChatSaveWorker(app, app.chats.front().id));
+	const fs::path primary = AppPaths::UamChatFilePath(app.data_root, app.chats.front().id);
+	const std::string durable_before = ReadFile(primary);
+	UAM_ASSERT(fixture.session->turn_user_message_index >= 0);
+	const std::size_t first_row = static_cast<std::size_t>(fixture.session->turn_user_message_index);
+	UAM_ASSERT_EQ(app.chats.front().messages.at(first_row).content, first_prompt);
+	const std::vector<MessageAttachment> original_attachments = app.chats.front().messages.at(first_row).attachments;
+	MessageAttachment pending_attachment;
+	pending_attachment.id = "private-revoked-inline-original";
+	pending_attachment.name = "private-original.txt";
+	pending_attachment.kind = "file";
+	pending_attachment.mime_type = "text/plain";
+	pending_attachment.source = AttachmentSource::NativeInlinePending;
+	pending_attachment.native_part_key = "private-revoked-inline-part";
+	app.chats.front().messages.at(first_row).attachments.push_back(pending_attachment);
+	// This is real message-attachment validation failure, not a fabricated future,
+	// failed provider operation, invalid UTF-8 claim or reproduction of the earlier CAS schedule.
+	UAM_ASSERT(!ChatRepository::PrepareChatSave(app.data_root, app.chats.front()));
+	uam::acp_detail::ScheduleChatSave(app, app.chats.front(), 0.0);
+	bool preparation_exists = false;
+	bool preparation_ready = false;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		if (uam::PendingChatSavePreparationForTests(app, app.chats.front().id, preparation_ready))
+		{
+			preparation_exists = true;
+			break;
+		}
+		(void)uam::FlushPendingChatSaves(app);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(preparation_exists);
+	// Stop flushing before the actual failure becomes ready: its receipt must
+	// remain unharvested until after the terminal save and second real admission.
+	while (!preparation_ready && std::chrono::steady_clock::now() < deadline)
+	{
+		UAM_ASSERT(uam::PendingChatSavePreparationForTests(app, app.chats.front().id, preparation_ready));
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(preparation_ready);
+	UAM_ASSERT_EQ(ReadFile(primary), durable_before);
+	app.chats.front().messages.at(first_row).attachments = original_attachments;
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *fixture.session, app.chats.front(),
+	    nlohmann::json{{"type", "result"}, {"session_id", app.chats.front().native_session_id},
+	        {"subtype", "success"}, {"is_error", false}}.dump()));
+	UAM_ASSERT(!fixture.session->processing);
+	UAM_ASSERT_EQ(app.chats.front().claude_quota_continuation.state, std::string("cancelled"));
+	const auto terminal = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(terminal);
+	UAM_ASSERT_EQ(terminal->messages.at(first_row).content, first_prompt);
+	UAM_ASSERT_EQ(terminal->messages.at(first_row).attachments, original_attachments);
+	// The real terminal handler saved valid current history and revoked the old
+	// worker. Its earlier failed preparation must not fail this newer owned input.
+	UAM_ASSERT(uam::SendAcpPrompt(app, app.chats.front().id, second_prompt, &error));
+	UAM_ASSERT(AwaitManualQuotaReceipt(app, app.chats.front().id));
+	const auto durable = ChatRepository::LoadLocalChat(app.data_root, app.chats.front().id);
+	UAM_ASSERT(durable);
+	UAM_ASSERT_EQ(durable->claude_quota_continuation.state, std::string("cancelled"));
+	UAM_ASSERT_EQ(durable->messages.at(first_row).attachments, original_attachments);
+	UAM_ASSERT_EQ(durable->messages.back().content, second_prompt);
+	UAM_ASSERT(!uam::acp_detail::PollClaudeQuotaContinuations(app, fixture.now + 120));
+	const std::string input = DeliverManualQuotaInput(fixture, second_prompt);
+	UAM_ASSERT(input.find(first_prompt) == std::string::npos);
+	UAM_ASSERT(input.find("ACCEPTED-PROMPT-MUST-NOT-REPLAY") == std::string::npos);
+	UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
 #endif
 }

@@ -217,3 +217,45 @@ UAM_TEST(OpenCodeSummaryQuarantineAcceptsProviderAliasWithoutChangingOtherProvid
 		UAM_ASSERT_EQ(delta, provider == "claude-code" ? std::string("Captured text.") : std::string{});
 	}
 }
+
+
+namespace
+{
+	void CheckOpenCodeStreamingNativeIdBoundary(std::size_t length, bool accepted)
+	{
+		NativeCompactionGateFixture fixture;
+		const std::string id(length, 'x');
+		const std::string identity = accepted ? "opencode-message:" + id : std::string{};
+		SendNativeAssistantText(fixture, "First", id);
+		SendNativeAssistantText(fixture, " second", id);
+		UAM_ASSERT_EQ(fixture.session.turn_events.size(), std::size_t{1});
+		UAM_ASSERT_EQ(fixture.session.turn_events.front().request_id_json, identity);
+		UAM_ASSERT_EQ(fixture.session.turn_events.front().text, std::string("First second"));
+		const Message& message = fixture.app.chats.front().messages.back();
+		UAM_ASSERT_EQ(message.content, std::string("First second"));
+		UAM_ASSERT_EQ(message.blocks.size(), std::size_t{1});
+		UAM_ASSERT_EQ(message.blocks.front().type, std::string("assistant_text"));
+		UAM_ASSERT_EQ(message.blocks.front().request_id_json, identity);
+		UAM_ASSERT(uam::acp_detail::MessageBlocksEqual(message.blocks, uam::acp_detail::MessageBlocksFromTurnEvents(fixture.session)));
+	}
+}
+
+UAM_TEST(OpenCodeStreamingNativeIdAccepts64Characters)
+{
+	CheckOpenCodeStreamingNativeIdBoundary(64, true);
+}
+
+UAM_TEST(OpenCodeStreamingNativeIdAccepts65Characters)
+{
+	CheckOpenCodeStreamingNativeIdBoundary(65, true);
+}
+
+UAM_TEST(OpenCodeStreamingNativeIdAccepts512Characters)
+{
+	CheckOpenCodeStreamingNativeIdBoundary(512, true);
+}
+
+UAM_TEST(OpenCodeStreamingNativeIdRejects513Characters)
+{
+	CheckOpenCodeStreamingNativeIdBoundary(513, false);
+}

@@ -54,7 +54,8 @@ done
 
 npm --prefix UI-V2 ci
 
-command -v zig >/dev/null || { echo "zig is required to build Linux remote helpers." >&2; exit 1; }
+zig_compiler=$(command -v "${UAM_ZIG:-zig}") || { echo "zig is required to build Linux remote helpers." >&2; exit 1; }
+export UAM_ZIG="$zig_compiler"
 command -v x86_64-w64-mingw32-g++ >/dev/null || {
     echo "MinGW-w64 is required to build the Windows remote helper." >&2
     exit 1
@@ -63,6 +64,15 @@ command -v x86_64-w64-mingw32-g++ >/dev/null || {
 remote_artifacts="$PWD/Builds/remote-artifacts"
 runner_deps="$PWD/Builds/runner-deps"
 export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-$PWD/Builds/zig-cache}"
+zig_archive_args=(
+    "-DCMAKE_PROJECT_INCLUDE=$PWD/cmake/zig-archive-tools.cmake"
+    "-DCMAKE_AR=$PWD/cmake/zig-ar.sh"
+    "-DCMAKE_RANLIB=$PWD/cmake/zig-ranlib.sh"
+    "-DCMAKE_C_COMPILER_AR=$PWD/cmake/zig-ar.sh"
+    "-DCMAKE_C_COMPILER_RANLIB=$PWD/cmake/zig-ranlib.sh"
+    "-DCMAKE_CXX_COMPILER_AR=$PWD/cmake/zig-ar.sh"
+    "-DCMAKE_CXX_COMPILER_RANLIB=$PWD/cmake/zig-ranlib.sh"
+)
 
 build_remote_runner()
 {
@@ -87,14 +97,16 @@ build_remote_runner()
 
 build_remote_runner linux-x86_64 uam-runner \
     -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
-    -DCMAKE_C_COMPILER=zig -DCMAKE_C_COMPILER_ARG1=cc \
-    -DCMAKE_CXX_COMPILER=zig -DCMAKE_CXX_COMPILER_ARG1=c++ \
+    "-DCMAKE_C_COMPILER=$zig_compiler" -DCMAKE_C_COMPILER_ARG1=cc \
+    "-DCMAKE_CXX_COMPILER=$zig_compiler" -DCMAKE_CXX_COMPILER_ARG1=c++ \
+    "${zig_archive_args[@]}" \
     -DCMAKE_C_FLAGS=--target=x86_64-linux-musl \
     -DCMAKE_CXX_FLAGS=--target=x86_64-linux-musl
 build_remote_runner linux-arm64 uam-runner \
     -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=arm64 \
-    -DCMAKE_C_COMPILER=zig -DCMAKE_C_COMPILER_ARG1=cc \
-    -DCMAKE_CXX_COMPILER=zig -DCMAKE_CXX_COMPILER_ARG1=c++ \
+    "-DCMAKE_C_COMPILER=$zig_compiler" -DCMAKE_C_COMPILER_ARG1=cc \
+    "-DCMAKE_CXX_COMPILER=$zig_compiler" -DCMAKE_CXX_COMPILER_ARG1=c++ \
+    "${zig_archive_args[@]}" \
     -DCMAKE_C_FLAGS=--target=aarch64-linux-musl \
     -DCMAKE_CXX_FLAGS=--target=aarch64-linux-musl
 build_remote_runner windows-x86_64 uam-runner.exe \

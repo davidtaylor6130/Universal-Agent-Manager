@@ -196,6 +196,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
       {limits?.credits && <p className="text-xs uam-usage-muted" title={limits.credits.balance ?? undefined}>Credits: {limits.credits.unlimited ? 'Unlimited' : limits.credits.hasCredits ? limits.credits.balance === null ? 'Available' : formatCreditBalance(limits.credits.balance) : 'None'}</p>}
       {limits?.spendControlReached && <p className="text-xs" style={{ color: 'var(--error)' }}>Spend limit reached.</p>}
     </div>}
+    {!consumption && <p className="text-xs uam-usage-muted">Consumed tokens unavailable.</p>}
     {(context || consumption) && <details className="uam-limits-tokens text-xs">
       <summary><span className="uam-limits-label">Context and tokens</span>{consumption && <span className="tabular-nums">{compactTokens(consumption.usage.total.totalTokens)}</span>}</summary>
       <div className="grid gap-3">
@@ -213,7 +214,7 @@ function ProviderLimitCard({ provider, allowance, loading, refreshFailed, contex
             {consumption.usage.total.reasoningOutputTokens > 0 && <><dt>Reasoning</dt><dd>{consumption.usage.total.reasoningOutputTokens.toLocaleString()}</dd></>}
             <dt>Last turn</dt><dd>{consumption.usage.last ? consumption.usage.last.totalTokens.toLocaleString() : 'Unavailable'}</dd>
           </dl>
-          <p className="uam-usage-muted">{(provider === 'gemini-cli' || provider === 'opencode-cli') ? 'Observed in' : 'Used in'} {consumption.title || 'chat'}{consumptionTimeValid ? ` · ${new Date(consumption.usage.updatedAt).toLocaleString()}` : ' · Update time unavailable'}{!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
+          <p className="uam-usage-muted">{(provider === 'gemini-cli' || provider === 'opencode-cli' || provider === 'antigravity-cli') ? 'Tokens observed while attached to' : 'Tokens consumed in'} {consumption.title || 'chat'}: {consumption.usage.total.totalTokens.toLocaleString()}{consumptionTimeValid ? ` · ${new Date(consumption.usage.updatedAt).toLocaleString()}` : ' · Update time unavailable'}{!consumptionTimeValid || now - consumption.usage.updatedAt >= 300000 ? ' · Cached snapshot' : ''}</p>
         </>}
       </div>
     </details>}

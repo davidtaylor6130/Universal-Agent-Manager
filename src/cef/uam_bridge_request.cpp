@@ -2,6 +2,7 @@
 
 #include "common/utils/nlohmann_json_utils.h"
 
+#include <algorithm>
 #include <string_view>
 #include <utility>
 
@@ -61,12 +62,45 @@ namespace uam::cef
 			payload = *payload_value;
 		}
 
+		if (action == "sendAcpPrompt")
+		{
+			// Only the current envelope can supply this optional correlation hint.
+			payload.erase("_uamOriginRequestId");
+			const nlohmann::json* request_id = uam::nlohmann_json::FindField(root, "requestId");
+			if (request_id != nullptr && request_id->is_string())
+			{
+				const std::string& value = request_id->get_ref<const std::string&>();
+				if (!value.empty() && value.size() <= 128 && std::all_of(value.begin(), value.end(), [](unsigned char byte) { return byte >= 0x20 && byte <= 0x7e; }))
+					payload["_uamOriginRequestId"] = value;
+			}
+		}
+
 		BridgeRequestParseResult result;
 		result.ok = true;
 		result.status = kOkStatus;
 		result.request.action = action;
 		result.request.payload = std::move(payload);
 		return result;
+	}
+
+	bool IsCompanionChatReviewRequest(const BridgeRequest& request)
+	{
+		if (request.action != "getVcsCommitStatus" && request.action != "getVcsFileDiff") return false;
+		const nlohmann::json& payload = request.payload;
+		if (!payload.is_object() || !payload.contains("chatId") || !payload["chatId"].is_string() || payload["chatId"].get_ref<const std::string&>().empty() || !payload.contains("comparisonRef") || payload["comparisonRef"] != "chat" || payload.value("vcsType", nlohmann::json("git")) != "git") return false;
+		if (request.action == "getVcsCommitStatus") return true;
+		if (!payload.contains("path") || !payload["path"].is_string()) return false;
+		const std::string& path = payload["path"].get_ref<const std::string&>();
+		if (path.empty() || path.front() == '/' || path.front() == '\\' || path.find(':') != std::string::npos || path.find('\0') != std::string::npos) return false;
+		std::size_t start = 0;
+		while (start < path.size())
+		{
+			const std::size_t end = path.find_first_of("/\\", start);
+			if (path.substr(start, end == std::string::npos ? end : end - start) == "..") return false;
+			if (end == std::string::npos) break;
+			start = end + 1;
+		}
+		return true;
 	}
 
 } // namespace uam::cef

@@ -33,6 +33,13 @@ export type AcpAttentionKind =
   | 'generic'
 
 export interface CppMessage {
+  /** Positive historical local OS-sink write fact only; absent/false is unknown, never retry authority. */
+  inputWriteCompleted?: boolean
+  /** Inert per-input provenance; never admission/delivery/control proof. */
+  nativeInputId?: string
+  originRequestId?: string
+  /** Output-only correlation; scoped native list alone supplies child authority. */
+  managedOriginRunId?: string
   role: 'user' | 'assistant' | 'system'
   content: string
   providerId?: string
@@ -140,6 +147,11 @@ export interface CppChat {
   settledAt?: string
   snoozedUntilMs?: number
   messageCount?: number
+  /** Display-only native lineage; never provider resume or control authority. */
+  subagentParentChatId?: string
+  subagentParentCreatedAt?: string
+  managedSubagentCount?: number
+  managedSubagentRevision?: number
   messagesDigest?: string
   messages?: CppMessage[]
   cliTerminal?: {
@@ -252,6 +264,48 @@ export interface AcpModel {
   maxOutputTokens?: number | null
 }
 
+/** Native observations preserve omitted versus explicitly nullable staged values. */
+export type NativeOptionPresence<T> = { present: false } | { present: true; value: T }
+export type NativeOptionStatus = 'unknown' | 'ready' | 'invalid' | 'unsupported'
+
+export interface NativeModelOptionOwnership {
+  chatId: string
+  nativeSessionId: string
+  executionHostId: string
+  /** Public process token; never the adapter's private lifetime nonce. */
+  lifetime: string
+}
+
+export interface CopilotAutoTierDescriptor {
+  id: string
+  displayName: string
+  description: string
+  type: string
+  status: { enabled: boolean; reason?: string; message?: string }
+}
+
+export interface CopilotAutoRoutingProjection {
+  ownership?: NativeModelOptionOwnership
+  catalogStatus: NativeOptionStatus
+  stateStatus: NativeOptionStatus
+  eligibleTiers: NativeOptionPresence<CopilotAutoTierDescriptor[]>
+  providerDefault: NativeOptionPresence<string>
+  currentModel: NativeOptionPresence<string>
+  effective: NativeOptionPresence<string>
+  pending: NativeOptionPresence<string | null>
+  activating: NativeOptionPresence<string | null>
+  requestPending: boolean
+  available: boolean
+  disabledCode: string
+  disabledReason: string
+  lastAckStatus: '' | 'pending' | 'unchanged'
+  lastError: string
+}
+
+export interface NativeModelOptions {
+  autoRouting?: CopilotAutoRoutingProjection
+}
+
 export interface AcpConfigOptionChoice {
   value: string
   name: string
@@ -328,10 +382,16 @@ export interface AcpAgentInfo {
 }
 
 export interface AcpQueuedPrompt {
+  /** Inert per-input provenance; never admission/delivery/control proof. */
+  nativeInputId?: string
+  originRequestId?: string
   id?: string
   revision?: number
   prepared?: boolean
   existingUserMessageIndex?: number
+  /** Native-validated current raw-row reference; not durable identity or delivery authority. */
+  referencedMessageCreatedAt?: string
+  retryAllowed?: boolean
   text: string
   uamAgentId: string
   markdownStoreFiles: string[]
@@ -414,6 +474,14 @@ export interface AcpProviderUsage {
   rateLimits: AcpRateLimits | null
 }
 
+/** Advisory native projection; missing or malformed support is unavailable. */
+export interface ManualCompactionAvailability {
+  available: boolean
+  providerId: string
+  modelId: string
+  nativeSessionId: string
+}
+
 export interface CppAcpSession {
   lastStopReason?: string
   idleCountdownStartsAtMs?: number
@@ -429,6 +497,7 @@ export interface CppAcpSession {
   running?: boolean
   processing?: boolean
   compacting?: boolean
+  manualCompaction?: ManualCompactionAvailability
   backgroundTaskCount?: number
   readySinceLastSelect?: boolean
   attentionKind?: AcpAttentionKind | null
@@ -446,6 +515,7 @@ export interface CppAcpSession {
   currentModeId?: string
   availableModels?: AcpModel[]
   configOptions?: AcpConfigOption[]
+  nativeModelOptions?: NativeModelOptions
   modelsLoading?: boolean
   modelRefreshError?: string
   currentModelId?: string
@@ -926,6 +996,7 @@ export interface AcpBinding {
   lifecycleState: AcpLifecycleState
   processing: boolean
   compacting?: boolean
+  manualCompaction?: ManualCompactionAvailability
   backgroundTaskCount?: number
   readySinceLastSelect: boolean
   attentionKind?: AcpAttentionKind | null
@@ -944,6 +1015,7 @@ export interface AcpBinding {
   currentModeId: string
   availableModels: AcpModel[]
   configOptions?: AcpConfigOption[]
+  nativeModelOptions?: NativeModelOptions
   modelsLoading?: boolean
   modelRefreshError?: string
   currentModelId: string

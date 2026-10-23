@@ -85,7 +85,7 @@ UAM_TEST(UsageCollectionSkipsUnchangedOpenCodeDatabaseAndDetectsMutableUsageInWa
 	UAM_ASSERT_EQ(sqlite3_exec(raw, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE session(id TEXT PRIMARY KEY,time_created INTEGER); INSERT INTO session VALUES('session',50); CREATE TABLE session_message(id TEXT,session_id TEXT,time_created INTEGER,type TEXT,data TEXT)", nullptr, nullptr, nullptr), SQLITE_OK);
 	const std::function<void(int)> write = [&](int input)
 	{
-		const std::string json = nlohmann::json({{"role", "assistant"}, {"providerID", "inferdeck"}, {"modelID", "model"}, {"tokens", {{"input", input}, {"output", 5}, {"reasoning", 0}, {"cache", {{"read", 0}, {"write", 0}}}}}}).dump();
+		const std::string json = nlohmann::json({{"role", "assistant"}, {"providerID", "example-provider"}, {"modelID", "model"}, {"tokens", {{"input", input}, {"output", 5}, {"reasoning", 0}, {"cache", {{"read", 0}, {"write", 0}}}}}}).dump();
 		sqlite3_stmt* statement = nullptr;
 		UAM_ASSERT_EQ(sqlite3_prepare_v2(raw, "UPDATE session_message SET data=?1", -1, &statement, nullptr), SQLITE_OK);
 		UAM_ASSERT_EQ(sqlite3_bind_text(statement, 1, json.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);

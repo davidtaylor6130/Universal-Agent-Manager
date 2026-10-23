@@ -315,7 +315,7 @@ describe('FolderTree', () => {
     useAppStore.setState({
       executionHosts: [
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
-        { id: 'gaming-ai', label: 'Gaming AI Desktop', transport: 'ssh', sshAlias: 'gaming-ai', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
+        { id: 'gaming-ai', label: 'Windows workstation', transport: 'ssh', sshAlias: 'gaming-ai', runnerStatus: 'ready', runnerVersion: '4.5.7', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
       ],
       folders: [{ ...useAppStore.getState().folders[0], executionHostId: 'gaming-ai' }],
       sessions: Array.from({ length: 2 }, (_, index) => ({ ...makeSession(index + 1), executionHostId: 'gaming-ai' })),
@@ -326,11 +326,11 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
 
-    expect(host.querySelector('[data-testid="workspace-machine-project"]')?.getAttribute('aria-label')).toBe('Runs on Gaming AI Desktop')
+    expect(host.querySelector('[data-testid="workspace-machine-project"]')?.getAttribute('aria-label')).toBe('Runs on Windows workstation')
     expect(host.querySelectorAll('[data-testid^="workspace-machine-"]')).toHaveLength(1)
 
     act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session, index) => index === 0 ? { ...session, executionHostId: 'local' } : session) })))
-    expect(host.querySelector('[data-testid="workspace-machine-project"]')?.getAttribute('aria-label')).toBe('Runs on Gaming AI Desktop')
+    expect(host.querySelector('[data-testid="workspace-machine-project"]')?.getAttribute('aria-label')).toBe('Runs on Windows workstation')
 
     act(() => root.unmount())
     host.remove()
@@ -1307,7 +1307,7 @@ describe('FolderTree', () => {
 		setInputValue?.call(directory, '/opt/containers')
 		directory.dispatchEvent(new Event('input', { bubbles: true }))
 	  })
-	  const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create')!
+	  const create = host.querySelector<HTMLButtonElement>('button[aria-label="Create workspace"]')!
 	  expect(create.disabled).toBe(false)
 	  await act(async () => create.click())
 
@@ -1451,7 +1451,7 @@ describe('FolderTree', () => {
     useAppStore.setState({
       executionHosts: [
         { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
-        { id: 'gaming-ai', label: 'Gaming AI Desktop', transport: 'ssh', sshAlias: 'uam-windows-ai', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
+        { id: 'gaming-ai', label: 'Windows workstation', transport: 'ssh', sshAlias: 'uam-windows-ai', runnerStatus: 'ready', runnerVersion: '4.8.0-alpha-2', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' },
       ],
       folders: [{ ...makeFolder(), directory: 'C:\\Users\\david\\project', executionHostId: 'gaming-ai' }],
       sessions: [{ ...makeSession(1), workspaceDirectory: 'C:\\Users\\david\\project', executionHostId: 'gaming-ai' }],
@@ -1877,6 +1877,48 @@ describe('FolderTree', () => {
     act(() => root.unmount())
     host.remove()
     HTMLElement.prototype.scrollIntoView = previousScrollIntoView
+  })
+
+  it('uses right-aligned icon actions and clears cancelled workspace fields', async () => {
+    const addFolder = vi.fn(async () => true)
+    useAppStore.setState({ addFolder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const openForm = () => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'New workspace')?.click()
+    act(openForm)
+    const confirm = host.querySelector<HTMLButtonElement>('button[aria-label="Create workspace"]')!
+    const cancel = host.querySelector<HTMLButtonElement>('button[aria-label="Cancel new workspace"]')!
+    expect(confirm.textContent).toBe('')
+    expect(confirm.disabled).toBe(true)
+    expect(confirm.style.background).toBe('var(--accent)')
+    expect(cancel.textContent).toBe('')
+    expect(cancel.style.color).toBe('var(--error)')
+    expect(cancel.parentElement?.className).toContain('uam-inline-form__actions')
+    const setInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    const setField = (placeholder: string, value: string) => {
+      const input = host.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`)!
+      act(() => {
+        setInputValue?.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+    }
+    setField('Folder name', 'Cancelled')
+    expect(host.querySelector<HTMLButtonElement>('button[aria-label="Create workspace"]')!.disabled).toBe(true)
+    setField('Workspace directory', '/tmp/cancelled')
+    act(() => cancel.click())
+    expect(host.querySelector('input[placeholder="Folder name"]')).toBeNull()
+    expect(addFolder).not.toHaveBeenCalled()
+    act(openForm)
+    expect(host.querySelector<HTMLInputElement>('input[placeholder="Folder name"]')!.value).toBe('')
+    expect(host.querySelector<HTMLInputElement>('input[placeholder="Workspace directory"]')!.value).toBe('')
+    setField('Folder name', 'Workspace')
+    setField('Workspace directory', '/tmp/workspace')
+    await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Create workspace"]')!.click(); await Promise.resolve() })
+    expect(addFolder).toHaveBeenCalledWith('Workspace', null, '/tmp/workspace', 'local')
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('uses labelled confirm and cancel actions when naming a collection', async () => {

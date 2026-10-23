@@ -116,7 +116,7 @@ function problem(server: McpServerConfiguration): string {
     try {
       const url = new URL(server.url.trim())
       if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) throw Error()
-    } catch { return `${label}: enter an http:// or https:// URL, such as http://main.homelab.com:9001/mcp.` }
+    } catch { return `${label}: enter an http:// or https:// URL, such as http://mcp.example.com:9001/mcp.` }
   }
   if (server.workspaceDirectory.trim() && !absolutePath(server.workspaceDirectory.trim())) return `${label}: workspace must be a full path, or empty for all workspaces.`
   const refs = server.transport === 'stdio' ? server.environment : server.headers
@@ -345,7 +345,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                   <Button size="sm" className="self-start" disabled={busy} onClick={() => update(server.id, { args: [...server.args, ''] })}>+ Add argument</Button>
                   <span className="uam-set-field__hint">One value per box, no quotes.</span>
                 </div>
-              </> : text('URL', server.url, url => update(server.id, { url }), 'http://main.homelab.com:9001/mcp', 'http:// or https://. Over SSH, localhost is the remote machine.')}
+              </> : text('URL', server.url, url => update(server.id, { url }), 'http://mcp.example.com:9001/mcp', 'http:// or https://. Over SSH, localhost is the remote machine.')}
               <div className="uam-set-field"><span className="uam-set-field__label">{server.transport === 'stdio' ? 'Environment variables' : 'Headers'}</span>
                 {refs.map((ref, index) => <div key={index} className="flex gap-2 items-center">
                   <input aria-label={`Variable name ${index + 1}`} className="uam-field flex-1" placeholder={server.transport === 'stdio' ? 'API_TOKEN' : 'Authorization'} value={ref.name} disabled={busy} onChange={event => { const name = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, name } : item)) }} />
@@ -353,7 +353,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
                     <option value="value">=</option><option value="variable">from variable</option>
                   </select>
                   {ref.value !== undefined
-                    ? <input aria-label={`Value ${index + 1}`} className="uam-field flex-1" placeholder="http://main.homelab.com:8081" value={ref.value} disabled={busy} onChange={event => { const value = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, value } : item)) }} />
+                    ? <input aria-label={`Value ${index + 1}`} className="uam-field flex-1" placeholder="http://mcp.example.com:8081" value={ref.value} disabled={busy} onChange={event => { const value = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, value } : item)) }} />
                     : <input aria-label={`Source variable ${index + 1}`} className="uam-field flex-1" placeholder="MY_TOKEN" value={ref.environmentVariable} disabled={busy} onChange={event => { const environmentVariable = event.currentTarget.value; setRefs(refs.map((item, i) => i === index ? { ...item, environmentVariable } : item)) }} />}
                   <IconButton size="sm" disabled={busy} icon={<Trash2 size={13} />} label={`Remove variable ${index + 1}`} variant="danger" onClick={() => setRefs(refs.filter((_, i) => i !== index))} />
                 </div>)}

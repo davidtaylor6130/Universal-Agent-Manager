@@ -32,6 +32,7 @@ nlohmann::json IProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& sess
 
 void IProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const
 {
+	session.prompt_image_supported = false;
 	if (!result.is_object()) return;
 	const nlohmann::json agent_info = JsonObjectValue(result, "agentInfo");
 	if (agent_info.is_object())
@@ -43,6 +44,9 @@ void IProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, cons
 	const nlohmann::json agent_capabilities = JsonObjectValue(result, "agentCapabilities");
 	if (agent_capabilities.is_object())
 	{
+		const nlohmann::json prompt_capabilities = JsonObjectValue(agent_capabilities, "promptCapabilities");
+		// Protocol capability negotiation is strict: legacy string coercion is not an image opt-in.
+		session.prompt_image_supported = uam::nlohmann_json::BoolFieldStrict(prompt_capabilities, "image").value_or(false);
 		session.load_session_supported = JsonBooleanValueOr(agent_capabilities, "loadSession", false);
 		const nlohmann::json session_capabilities = JsonObjectValue(agent_capabilities, "sessionCapabilities");
 		session.resume_session_supported = session_capabilities.is_object() &&
@@ -66,10 +70,21 @@ nlohmann::json IProviderRuntime::OnAcpBuildSetupRequest(int request_id, const Ch
 	return BuildNewSessionRequest(request_id, cwd, &chat);
 }
 
+nlohmann::json IProviderRuntime::OnAcpBuildSessionSetupRequest(uam::AcpSessionState&, int request_id,
+    const ChatSession& chat, const std::string& cwd, bool can_load, std::string& out_method) const
+{
+	return OnAcpBuildSetupRequest(request_id, chat, cwd, can_load, out_method);
+}
+
 std::string IProviderRuntime::OnAcpValidateResumeId(const ChatSession& chat) const
 {
 	const std::string id = uam::strings::Trim(chat.native_session_id);
 	return uam::chat_ids::IsLocalDraftChatId(id) ? std::string{} : id;
+}
+
+bool IProviderRuntime::AcpLaunchOptionsNeedModelRestart(const uam::AcpSessionState& session, std::string_view model) const
+{
+	return ModelOptionsRequireRestart() && !session.launch_model_options_id.empty() && session.launch_model_options_id != model;
 }
 
 nlohmann::json IProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session, int request_id,
@@ -77,21 +92,24 @@ nlohmann::json IProviderRuntime::OnAcpBuildPrompt(uam::AcpSessionState& session,
 {
 	out_method = uam::acp_methods::kSessionPrompt;
 	std::string supported_effort;
-	for (const uam::AcpModelState& model : session.available_models)
+	if (!ModelOptionsRequireRestart())
 	{
-		if (model.id != chat.model_id)
+		for (const uam::AcpModelState& model : session.available_models)
 		{
-			continue;
-		}
-		for (const std::string& effort : model.supported_reasoning_efforts)
-		{
-			if (effort == chat.reasoning_effort)
+			if (model.id != chat.model_id)
 			{
-				supported_effort = effort;
-				break;
+				continue;
 			}
+			for (const std::string& effort : model.supported_reasoning_efforts)
+			{
+				if (effort == chat.reasoning_effort)
+				{
+					supported_effort = effort;
+					break;
+				}
+			}
+			break;
 		}
-		break;
 	}
 	return BuildPromptRequest(request_id, session.session_id, prompt, supported_effort);
 }
@@ -104,12 +122,26 @@ nlohmann::json IProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState& se
 	return BuildCancelNotification(session.session_id);
 }
 
+ProviderPermissionChoice IProviderRuntime::AcpPermissionChoice(const uam::AcpPendingPermissionState&, const uam::AcpPermissionOptionState& option) const
+{
+	if (option.kind == "reject_once" || option.kind == "reject_always") return ProviderPermissionChoice::Denied;
+	if (option.kind == "allow_once") return ProviderPermissionChoice::AllowedOnce;
+	return ProviderPermissionChoice::Other;
+}
+
+nlohmann::json IProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
+    const uam::AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled) const
+{
+	(void)session;
+	return uam::acp_json_rpc::SuccessResponse(
+	    uam::acp_detail::StableStringToJsonRpcId(pending.request_id_json),
+	    BuildGenericPermissionOutcomeResult(option_id, cancelled));
+}
+
 nlohmann::json IProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session,
     const std::string& option_id, bool cancelled) const
 {
-	return uam::acp_json_rpc::SuccessResponse(
-	    uam::acp_detail::StableStringToJsonRpcId(session.pending_permission.request_id_json),
-	    BuildGenericPermissionOutcomeResult(option_id, cancelled));
+	return OnAcpBuildPermissionResponse(session, session.pending_permission, option_id, cancelled);
 }
 
 bool IProviderRuntime::OnAcpTryAutoApprove(uam::AcpSessionState& session, const ChatSession& chat,

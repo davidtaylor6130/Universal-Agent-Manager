@@ -56,16 +56,24 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
   const message = messages[indices[index] - startIndex]
   const label = `${!userMessageIndices && startIndex > 0 ? 'Loaded user' : 'User'} message ${index + 1} of ${count}`
   const preview = message ? message.content.slice(0, 160) : null
-  return <div className="absolute left-0 top-4 z-10 flex w-5 items-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
+  // The visual preview is aria-hidden; the slider value carries the same text so screen readers get it once.
+  const valueText = preview === null ? `${label}. Not loaded yet. Scroll up or click to load this part of the chat.`
+    : preview.trim() ? `${label}: ${preview.replace(/\s+/g, ' ').trim()}` : label
+  // Inset 4px keeps expanded marks (6 + 48 wide) within the 64px gutter, ending at 58px.
+  return <div className="absolute left-1 top-4 z-10 flex w-5 items-center" style={{ bottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
     <div role="slider" tabIndex={busy ? -1 : 0} aria-label="Navigate user messages" aria-orientation="vertical"
-      aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={label} aria-disabled={busy}
+      aria-valuemin={1} aria-valuemax={count} aria-valuenow={index + 1} aria-valuetext={valueText} aria-disabled={busy}
       className="relative w-full cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
       style={{ height: Math.max(1, count - 1) * 8, maxHeight: '100%' }}
       onMouseMove={(event) => {
         const rect = event.currentTarget.getBoundingClientRect()
         setPreviewIndex(messageIndexAtPointer(count, rect.top, rect.height, event.clientY))
       }}
-      onMouseLeave={() => setPreviewIndex(null)}
+      onMouseLeave={(event) => {
+        if (event.currentTarget !== document.activeElement) setPreviewIndex(null)
+      }}
+      onFocus={() => setPreviewIndex(index)}
+      onBlur={() => setPreviewIndex(null)}
       onClick={(event) => {
         if (busy) return
         const rect = event.currentTarget.getBoundingClientRect()

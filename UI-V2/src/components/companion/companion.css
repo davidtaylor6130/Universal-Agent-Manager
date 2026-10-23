@@ -151,3 +151,7 @@
 
 .uam-companion-timeout-row { padding: 4px 16px; border-bottom: 1px solid var(--border); }
 .uam-companion-timeout-row:empty { display: none; }
+
+.uam-companion-settings { overflow-y: auto; }
+.uam-companion-setting { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 16px; }
+.uam-companion-setting select { background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 10px; }

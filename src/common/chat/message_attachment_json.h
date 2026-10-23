@@ -11,6 +11,14 @@ namespace uam::message_attachment_json
 	inline constexpr std::string_view kCopiedField = "copied";
 	inline constexpr std::string_view kPreviewKeyField = "previewKey";
 	inline constexpr std::string_view kPreviewOriginField = "previewOriginPath";
+	inline constexpr std::string_view kSourceField = "source";
+	inline constexpr std::string_view kSourceUriField = "sourceUri";
+	inline constexpr std::string_view kOriginHostField = "originExecutionHostId";
+	inline constexpr std::string_view kNativePartKeyField = "nativePartKey";
+	inline constexpr std::string_view kNativeToolCallIdField = "nativeToolCallId";
+	inline constexpr std::string_view kNativeSourceField = "nativeSourceField";
+	inline constexpr std::string_view kNativeAssetKeyField = "nativeAssetKey";
+	inline constexpr std::string_view kContentDigestField = "contentDigest";
 
 	namespace persisted
 	{

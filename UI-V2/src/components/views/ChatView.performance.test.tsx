@@ -67,7 +67,7 @@ describe('chat interaction code-path performance', () => {
     expect(button.disabled).toBe(false)
     expectWithinBudget('send to local pending feedback', INPUT_BUDGET_MS, () => {
       act(() => button.click())
-      expect(send).toHaveBeenCalledWith(session.id, 'Send fixture', [])
+      expect(send).toHaveBeenCalledWith(session.id, 'Send fixture', [], undefined, expect.any(Function))
       expect(button.disabled).toBe(true)
       expect(input.disabled).toBe(false)
     })

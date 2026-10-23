@@ -1,5 +1,7 @@
 # UAM companion
 
+The [native iPhone client](iOS/README.md) provides a separate SwiftUI interface over this same connection. The instructions below describe the retained browser companion and its desktop host.
+
 The companion reuses `UI-V2`: the desktop theme, chat transcript, composer and workspace tree. Activity opens first, with Chats available in the bottom navigation.
 
 Configured installations start phone access with the normal desktop app. Settings → Defaults → Phone Access contains the enable switch, connection URL and Copy token button. Restart UAM after changing the switch. The phone uses the same data root and chats as the desktop.
@@ -25,7 +27,7 @@ On iPhone, open the HTTPS companion URL in Safari and choose Share → Add to Ho
 To run the LAN endpoint on this Mac (with Caddy installed):
 
 ```sh
-python3 Mobile/start-desktop.py --desktop Builds/audit-gui/universal_agent_manager.app --lan-host 192.168.0.167
+python3 Mobile/start-desktop.py --desktop Builds/audit-gui/universal_agent_manager.app --lan-host 192.168.1.10
 ```
 
 Use the Mac's current private IPv4 address. This starts Caddy on HTTPS port 58950 alongside UAM and stops the proxy when UAM exits. A proxy failure does not terminate UAM. It does not change Tailscale, enable an exit node, create a public tunnel, or register a login service. The iPhone must have a route to this LAN address, either locally or through an advertised subnet route.

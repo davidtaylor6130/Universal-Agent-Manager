@@ -1,8 +1,10 @@
+#include "app/agent_run_scheduler.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_async.h"
 #include "cef/uam_query_handler_internal.h"
 
 #include "cef/cef_push.h"
+#include "cef/state_serializer.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/message_attachment_json.h"
 #include "common/config/execution_host_config.h"
@@ -13,6 +15,7 @@
 #include "common/platform/platform_state_fields.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
+#include "common/provider/provider_runtime.h"
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "app/uam_control_service.h"
@@ -303,6 +306,33 @@ namespace
 		return attachments;
 	}
 
+	bool StagedAttachmentSourcesSupported(const nlohmann::json& payload, std::string& error)
+	{
+		const auto items = payload.find(std::string(attachment_frontend_fields::kAttachmentsField));
+		if (items == payload.end())
+			return true;
+		const auto reject = [&error]()
+		{
+			error = "Recorded or invalid attachment sources cannot be sent as file paths. Remove them and attach files from the execution host again.";
+			return false;
+		};
+		if (!items->is_array())
+			return reject();
+		for (const auto& item : *items)
+		{
+			if (!item.is_object())
+				return reject();
+			if (const auto source = item.find(std::string(attachment_fields::kSourceField)); source != item.end() && (!source->is_string() || source->get_ref<const std::string&>() != "legacy_path"))
+				return reject();
+			// Do not erase recorded provenance and reinterpret its path as authored
+			// file input. Saved native records need a separately admitted delivery route.
+			for (const auto field : {attachment_fields::kSourceUriField, attachment_fields::kOriginHostField, attachment_fields::kNativePartKeyField, attachment_fields::kNativeToolCallIdField, attachment_fields::kNativeSourceField, attachment_fields::kNativeAssetKeyField, attachment_fields::kContentDigestField})
+				if (const auto value = item.find(std::string(field)); value != item.end() && (!value->is_string() || !value->get_ref<const std::string&>().empty()))
+					return reject();
+		}
+		return true;
+	}
+
 	struct RemoteAttachmentResult
 	{
 		bool ok = false;
@@ -474,6 +504,12 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	{
 		return;
 	}
+	std::string error;
+	if (!StagedAttachmentSourcesSupported(payload, error))
+	{
+		cb->Failure(400, error);
+		return;
+	}
 
 	using namespace uam::query_handler_async;
 	const ChatDomainService domain;
@@ -525,7 +561,6 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 
 	const std::vector<std::string> markdown_store_files = uam::nlohmann_json::StringArrayField(payload, "markdownStoreFiles");
 
-	std::string error;
 	const std::vector<MessageAttachment> attachments = ParseStagedAttachments(payload);
 	if (chat->provider_id == uam::provider_ids::kClaudeCli && chat->execution_host_id == uam::execution_hosts::kLocalHostId &&
 	    !uam::attachment_preview::ValidateImageAttachmentFiles(uam::paths::ResolveWorkspaceRootPath(m_app, *chat), attachments, error))
@@ -537,26 +572,98 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	const std::string goal_id = AcpPromptGoalIdFromPayload(payload);
 	const bool computer_use_mode = payload.value("computerUseMode", false);
 	const bool steer_now = payload.value("steerNow", false);
+	// Plain-text initial mentions use witnessed creation and one-shot owned dispatch.
+	// Saved history remains read-only; continuation requires its own admitted turn.
+	constexpr bool managed_initial_producer_enabled = true;
+	if (managed_initial_producer_enabled && chat->agent_run_id.empty() && markdown_store_files.empty() && attachments.empty() && !goal_mode && goal_id.empty() && !computer_use_mode && !steer_now)
+	{
+		const std::weak_ptr<void> lifetime = m_asyncLifetime;
+		const auto complete = [this, lifetime, browser, cb, chat_id](const uam::ManagedInitialMentionResult& result) -> bool
+		{
+			if (lifetime.expired())
+				return false;
+			nlohmann::json receipt{{"inputRecorded", result.input_recorded}, {"delegationState", result.delegation_state == uam::ManagedInitialDelegationState::Committed ? "committed" : result.delegation_state == uam::ManagedInitialDelegationState::Uncertain ? "uncertain" : "rejected"}, {"parentMessage", nullptr}, {"parentMessageIndex", nullptr}, {"error", result.error.substr(0, 4096)}};
+			if (result.input_recorded && result.parent_message)
+			{
+				ChatMessagePage page;
+				page.chat.id = chat_id;
+				page.chat.messages.push_back(*result.parent_message);
+				page.start_index = result.parent_message_index;
+				page.total_count = result.parent_message_index + 1;
+				receipt["parentMessage"] = uam::StateSerializer::SerializeDetachedMessagePage(page, false, {}, false).at("messages").at(0);
+				receipt["parentMessageIndex"] = result.parent_message_index;
+			}
+			if (result.delegation_state == uam::ManagedInitialDelegationState::Committed && !result.run_id.empty() && !result.transcript_chat_id.empty())
+			{
+				receipt["runId"] = result.run_id;
+				receipt["transcriptChatId"] = result.transcript_chat_id;
+			}
+			uam::PushStateUpdateIfChanged(browser, m_app);
+			cb->Success(nlohmann::json{{"managedMention", std::move(receipt)}}.dump());
+			return true;
+		};
+		const auto admission = uam::AgentRunScheduler::TryBeginInitialMention(m_app, chat_id, text, complete, &error);
+		if (admission == uam::ManagedInitialMentionAdmission::Pending)
+			return;
+		if (admission == uam::ManagedInitialMentionAdmission::Rejected)
+		{
+			uam::ManagedInitialMentionResult result;
+			result.error = FailureDetailOrFallback(error, "The managed request was not recorded.");
+			(void)complete(result);
+			return;
+		}
+		// Unknown @name: no task, mutation or receipt was created; retain the ordinary Send route.
+	}
+	std::optional<std::string> origin_request_id;
+	const auto origin_it = payload.find("_uamOriginRequestId");
+	if (origin_it != payload.end() && origin_it->is_string())
+		origin_request_id = origin_it->get<std::string>();
+	std::optional<uam::AcpInputAdmission> input_admission;
 	const bool sent = steer_now
 	                    ? uam::SteerAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id, computer_use_mode)
-	                    : uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id, computer_use_mode);
+	                    : uam::SendAcpPrompt(m_app, chat_id, text, markdown_store_files, attachments, goal_mode, &error, goal_id, computer_use_mode, origin_request_id, &input_admission);
 	if (!sent)
 	{
 		cb->Failure(chat_id.empty() || text.empty() ? 400 : 500, FailureDetailOrFallback(error, "Failed to send ACP prompt."));
 		return;
 	}
 
+	// This invocation's copied admission is independent of save acknowledgement.
+	const std::optional<uam::AcpInputAdmission> captured_admission = input_admission;
+	nlohmann::json response = nlohmann::json::object();
+	if (!steer_now && captured_admission)
+	{
+		const auto& admission = *captured_admission;
+		nlohmann::json value{{"nativeInputId", admission.native_input_id}};
+		if (admission.origin_request_id) value["originRequestId"] = *admission.origin_request_id;
+		switch (admission.kind)
+		{
+		case uam::AcpInputAdmission::Kind::Queued:
+			value["kind"] = "queued";
+			if (admission.queued) value["queued"] = {{"id", admission.queued->id}, {"revision", admission.queued->revision}};
+			break;
+		case uam::AcpInputAdmission::Kind::RecordedRow:
+			value["kind"] = "recordedRow";
+			if (admission.recorded_row) value["recordedRow"] = {{"rawRowIndex", admission.recorded_row->raw_row_index}, {"createdAt", admission.recorded_row->created_at}};
+			break;
+		case uam::AcpInputAdmission::Kind::PreparingWithoutRow:
+			value["kind"] = "preparingWithoutRow";
+			break;
+		}
+		response["inputAdmission"] = std::move(value);
+	}
+	const std::string response_json = response.dump();
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	const std::filesystem::path data_root = m_app.data_root;
-	if (uam::DeferChatSaveResult(m_app, chat_id, [this, lifetime, data_root, browser, cb](bool saved)
+	if (uam::DeferChatSaveResult(m_app, chat_id, [this, lifetime, data_root, browser, cb, response_json](bool saved)
 	{
 		if (lifetime.expired()) return;
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		if (saved && m_app.data_root == data_root) cb->Success("{}");
+		if (saved && m_app.data_root == data_root) cb->Success(response_json);
 		else cb->Failure(500, "Prompt was not sent because chat history could not be saved.");
 	})) return;
-	cb->Success("{}");
+	cb->Success(response_json);
 }
 
 void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -568,8 +675,120 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 		cb->Failure(400, "Invalid queued prompt action.");
 		return;
 	}
+	// A displayed receipt may precede full native history. Prepare that history for this explicit
+	// action; a detached UI page is not authority to remove or resend an authored message.
+	if ((operation == "remove" || operation == "retry") && payload.contains("expected"))
+	{
+		const auto& expected = payload["expected"];
+		if (!expected.is_object() || !expected.contains("id") || !expected["id"].is_string() ||
+		    expected["id"].get_ref<const std::string&>().empty() || !expected.contains("revision") ||
+		    !expected["revision"].is_number_integer() || expected["revision"] < 1 ||
+		    expected["revision"] > std::numeric_limits<int>::max() || !payload.contains("index") ||
+		    !payload["index"].is_number_integer() || payload["index"] < 0 || payload["index"] > std::numeric_limits<int>::max())
+		{
+			cb->Failure(400, "Invalid retained message action.");
+			return;
+		}
+		ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id);
+		const auto receipt = chat ? std::ranges::find(chat->acp_queued_prompts,
+		    expected["id"].get<std::string>(), &uam::AcpQueuedUserPromptState::id) : std::vector<uam::AcpQueuedUserPromptState>::iterator{};
+		if (chat && !chat->messages_loaded && receipt != chat->acp_queued_prompts.end() &&
+		    receipt->revision == expected["revision"].get<int>() && !receipt->prepared_for_delivery && receipt->existing_user_message_index >= 0)
+		{
+			using namespace uam::query_handler_async;
+			const ChatDomainService domain;
+			const auto preparation = domain.BeginColdHistoryPreparation(m_app, chat_id);
+			if (!preparation)
+			{
+				cb->Failure(409, "This chat is being saved or prepared. Your input is kept; try again when it finishes.");
+				return;
+			}
+			const auto incarnation = chat->metadata_incarnation;
+			const std::string queue = ChatRepository::QueueAdmissionFingerprint(*chat);
+			const auto worker = [domain, preparation]()
+			{
+				std::string error;
+				return domain.LoadColdHistoryPreparation(*preparation, error)
+				    ? AsyncSuccess(nlohmann::json::object())
+				    : AsyncFailure(409, "Saved history could not be checked for this action. Your input is kept; try again.");
+			};
+			const auto complete = [this, browser, payload, cb, domain, preparation, incarnation, queue](AsyncCefResult& result)
+			{
+				ChatSession* current = domain.FindChatById(m_app, preparation->identity.chat_id);
+				if (!result.ok || !current || current->metadata_incarnation != incarnation ||
+				    ChatRepository::QueueAdmissionFingerprint(*current) != queue)
+				{
+					(void)domain.ConsumeBranchPreparation(m_app, preparation->identity.chat_id, preparation->ownership);
+					if (result.ok) result = AsyncFailure(409, "The retained message changed while it was being checked. Your input is kept.");
+					return;
+				}
+				if (!domain.CompleteColdHistoryPreparation(m_app, *preparation))
+				{
+					result = AsyncFailure(409, "Chat history changed while it was being checked. Your input is kept; try again.");
+					return;
+				}
+				HandleManageQueuedAcpPrompt(browser, payload, cb);
+				result.callback_deferred = true;
+			};
+			const bool queued = m_queuedPromptHistoryDispatcherForTests
+			    ? m_queuedPromptHistoryDispatcherForTests(cb, worker, complete)
+			    : RunAsyncCefQuery(m_asyncLifetime, cb, worker, complete, TID_FILE_USER_BLOCKING);
+			if (!queued) (void)domain.ConsumeBranchPreparation(m_app, chat_id, preparation->ownership);
+			return;
+		}
+	}
 	std::string error;
 	bool ok = false;
+	if (operation == "editUnsent")
+	{
+		if (!payload.contains("messageIndex") || !payload["messageIndex"].is_number_integer() || payload["messageIndex"] < 0 || payload["messageIndex"] > std::numeric_limits<int>::max() || !payload.contains("expectedMessagesDigest") || !payload["expectedMessagesDigest"].is_string() || payload["expectedMessagesDigest"].get_ref<const std::string&>().size() != 16 || !payload.contains("text") || !payload["text"].is_string())
+		{
+			cb->Failure(400, "Invalid unsent input edit.");
+			return;
+		}
+		std::optional<std::vector<std::string>> retained_attachments, retained_skills;
+		const auto selection = [&](const char* field, std::optional<std::vector<std::string>>& target)
+		{
+			if (!payload.contains(field))
+				return true;
+			const auto& values = payload[field];
+			if (!values.is_array() || values.size() > 128)
+				return false;
+			target.emplace();
+			for (const auto& value : values)
+			{
+				if (!value.is_string() || value.get_ref<const std::string&>().empty() || value.get_ref<const std::string&>().size() > 16384)
+					return false;
+				target->push_back(value.get<std::string>());
+			}
+			return true;
+		};
+		if (!selection("retainedAttachmentIds", retained_attachments) || !selection("retainedMarkdownStoreFiles", retained_skills))
+		{
+			cb->Failure(400, "Invalid unsent input file or skill selection.");
+			return;
+		}
+		const int index = payload["messageIndex"].get<int>();
+		if (!uam::EditUnsentAcpMessage(m_app, chat_id, index, payload["expectedMessagesDigest"].get<std::string>(), payload["text"].get<std::string>(), &error, retained_attachments, retained_skills))
+		{
+			cb->Failure(409, FailureDetailOrFallback(error, "The unsent input could not be edited."));
+			return;
+		}
+		// This operation has already completed its full primary save. It neither
+		// schedules a queue save nor acknowledges an unrelated pending save.
+		const ChatSession* committed = ChatDomainService().FindChatById(m_app, chat_id);
+		if (!committed)
+		{
+			cb->Failure(409, "The saved chat changed. Refresh before editing again.");
+			return;
+		}
+		auto page = uam::StateSerializer::SerializeMessagePage(*committed, 1, static_cast<std::size_t>(index) + 1, true);
+		page["chatId"] = chat_id;
+		page["unchanged"] = false;
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(page.dump());
+		return;
+	}
 	if (operation == "discardUnsent")
 	{
 		if (!payload.contains("messageIndex") || !payload["messageIndex"].is_number_integer() ||
@@ -652,7 +871,7 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 	{
 		if (!payload.contains("index") || !payload["index"].is_number_integer() ||
 		    payload["index"] < 0 || payload["index"] > std::numeric_limits<int>::max() ||
-		    (operation != "remove" && operation != "steer"))
+		    (operation != "remove" && operation != "steer" && operation != "retry"))
 		{
 			cb->Failure(400, "Invalid queued prompt action.");
 			return;
@@ -671,7 +890,12 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 			}
 			expected = std::make_pair(identity["id"].get<std::string>(), identity["revision"].get<int>());
 		}
-		ok = operation == "steer"
+		if (operation == "retry")
+		{
+			if (!expected) { cb->Failure(400, "Retained message identity is required for Retry."); return; }
+			ok = uam::RetryQueuedAcpPrompt(m_app, chat_id, *expected, &error);
+		}
+		else ok = operation == "steer"
 		    ? uam::SteerQueuedAcpPrompt(m_app, chat_id, static_cast<std::size_t>(index), &error, expected)
 		    : uam::RemoveQueuedAcpPrompt(m_app, chat_id, static_cast<std::size_t>(index), &error, expected);
 	}
@@ -880,6 +1104,82 @@ void UamQueryHandler::HandleSetAcpConfigOption(CefRefPtr<CefBrowser> browser, co
 	cb->Success(nlohmann::json{{"pending", true}}.dump());
 }
 
+void UamQueryHandler::HandleSetNativeModelOption(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	HandleNativeModelOptions(browser, payload, cb, false);
+}
+
+void UamQueryHandler::HandleRefreshNativeModelOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	HandleNativeModelOptions(browser, payload, cb, true);
+}
+
+void UamQueryHandler::HandleNativeModelOptions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb, bool refresh)
+{
+	if (!payload.is_object())
+	{
+		cb->Failure(400, "Native model options require an owned session request.");
+		return;
+	}
+	nlohmann::json expected = nlohmann::json::object();
+	for (const char* key : {"chatId", "nativeSessionId", "executionHostId", "lifetime"})
+	{
+		const auto value = payload.find(key);
+		if (value == payload.end() || !value->is_string() || value->get_ref<const std::string&>().empty() || value->get_ref<const std::string&>().size() > 512)
+		{
+			cb->Failure(400, "Native model options require the current chat, session, host and lifetime.");
+			return;
+		}
+		expected[key] = *value;
+	}
+	std::string option_id;
+	if (!refresh)
+	{
+		const auto option = payload.find("optionId");
+		const auto value = payload.find("value");
+		if (option == payload.end() || !option->is_string() || option->get_ref<const std::string&>().empty() || option->get_ref<const std::string&>().size() > 128 || value == payload.end() || (!value->is_null() && (!value->is_string() || value->get_ref<const std::string&>().empty() || value->get_ref<const std::string&>().size() > 512)))
+		{
+			cb->Failure(400, "A native model option and an exact string or Default value are required.");
+			return;
+		}
+		option_id = option->get<std::string>();
+	}
+	const std::string chat_id = expected["chatId"].get<std::string>();
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	if (chat == nullptr)
+		return;
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
+	if (chat->imported_read_only || session == nullptr || session->model_discovery_only || session->goal_internal_session || !session->managed_agent_run_id.empty() || session->provider_id != chat->provider_id || session->session_id != expected["nativeSessionId"].get_ref<const std::string&>() || session->process_execution_host_id != expected["executionHostId"].get_ref<const std::string&>())
+	{
+		cb->Failure(409, "The native model option session changed. Refresh the chat and retry.");
+		return;
+	}
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
+	const nlohmann::json projection = runtime.OnAcpNativeModelOptionsForFrontend(*session);
+	bool owned = false;
+	if (projection.is_object())
+		for (auto item = projection.begin(); item != projection.end(); ++item)
+			if ((refresh || item.key() == option_id) && item->is_object() && item->contains("ownership") && (*item)["ownership"] == expected)
+			{
+				owned = true;
+				break;
+			}
+	if (!owned)
+	{
+		cb->Failure(409, "The native model option ownership changed or is unavailable. Refresh the chat and retry.");
+		return;
+	}
+	std::string error;
+	const bool admitted = refresh ? runtime.OnAcpRefreshNativeModelOptions(m_app, *session, *chat, &error) : runtime.OnAcpRequestNativeModelOption(m_app, *session, *chat, option_id, payload.at("value"), expected, &error);
+	if (!admitted)
+	{
+		cb->Failure(409, FailureDetailOrFallback(error, "The provider could not accept the native model option request."));
+		return;
+	}
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success(nlohmann::json{{"pending", true}}.dump());
+}
+
 void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	(void)browser;
@@ -949,7 +1249,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 			        ? uam::query_handler_async::AsyncSuccess(
 			              {{"attachments", result->attachments}})
 			        : uam::query_handler_async::AsyncFailure(result->status, result->error);
-		    }, complete);
+		    }, complete, TID_FILE_USER_VISIBLE);
 		return;
 	}
 
@@ -1069,7 +1369,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		}
 
 		return uam::query_handler_async::AsyncSuccess({{"attachments", staged}});
-	    }, complete);
+	    }, complete, TID_FILE_USER_VISIBLE);
 }
 
 void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

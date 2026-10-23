@@ -40,6 +40,10 @@ namespace
 			app.runtime_cli_versions_by_provider_id["codex-cli"].supported = true;
 			app.runtime_cli_versions_by_provider_id["claude-cli"].checked = true;
 			app.runtime_cli_versions_by_provider_id["claude-cli"].supported = false;
+			// Generic startup fixtures must not probe a developer's installed CLI.
+			// Native Antigravity discovery opts in with an explicitly compatible state.
+			app.runtime_cli_versions_by_provider_id["antigravity-cli"].checked = true;
+			app.runtime_cli_versions_by_provider_id["antigravity-cli"].supported = false;
 			app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 			app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
 		}
@@ -103,6 +107,24 @@ UAM_TEST(StartupModelDiscoveryDoesNotDuplicateAnExplicitRefresh)
 	UAM_ASSERT(fixture.launched.empty());
 }
 
+UAM_TEST(StartupModelDiscoveryLaunchesCompatibleAntigravityOnlyOnce)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.folders.resize(1);
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].supported = false;
+	fixture.app.runtime_cli_versions_by_provider_id["antigravity-cli"].supported = true;
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.launched.front().provider_id, std::string("antigravity-cli"));
+	UAM_ASSERT_EQ(fixture.launched.front().workspace_directory, fs::weakly_canonical(fixture.app.folders.front().directory).generic_string());
+	UAM_ASSERT_EQ(fixture.launched.front().execution_host_id, std::string("local"));
+	UAM_ASSERT(fixture.app.provider_model_catalog->IsDiscoveryPending("antigravity-cli", fixture.app.folders.front().directory));
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+}
+
 UAM_TEST(StartupModelDiscoveryDeduplicatesRegisteredScopesWithoutProviderFolderProduct)
 {
 	StartupDiscoveryFixture fixture;
@@ -115,9 +137,9 @@ UAM_TEST(StartupModelDiscoveryDeduplicatesRegisteredScopesWithoutProviderFolderP
 	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("claude-cli", nlohmann::json::array({{{"id", "claude"}}}), chat.workspace_directory));
 	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("antigravity-cli", nlohmann::json::array({{{"id", "unsupported"}}}), chat.workspace_directory));
 	const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
-	UAM_ASSERT_EQ(scopes.size(), std::size_t{4});
+	UAM_ASSERT_EQ(scopes.size(), std::size_t{5});
 	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
-	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 0);
+	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
 }
 
 UAM_TEST(StartupModelDiscoveryPrewarmsOnlyInitialNewChatWorkspaceAcrossProviders)
@@ -147,8 +169,8 @@ UAM_TEST(StartupModelDiscoveryPrewarmsOnlyInitialNewChatWorkspaceAcrossProviders
 		const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
 		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("codex-cli"), &uam::ModelDiscoveryScope::provider_id), 4);
 		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
-		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 0);
-		UAM_ASSERT_EQ(scopes.size(), std::size_t{5});
+		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
+		UAM_ASSERT_EQ(scopes.size(), std::size_t{6});
 		const std::vector<uam::ModelDiscoveryScope>::const_iterator claude = std::ranges::find(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id);
 		UAM_ASSERT_EQ(claude->workspace_directory, fs::weakly_canonical(workspace).generic_string());
 		UAM_ASSERT_EQ(claude->execution_host_id, std::string("local"));
@@ -160,8 +182,9 @@ UAM_TEST(StartupModelDiscoveryPrewarmsOnlyInitialNewChatWorkspaceAcrossProviders
 	expect_preferred(fixture.app.folders.front().directory);
 	fixture.app.new_chat_folder_id = remote_folder.id;
 	const std::vector<uam::ModelDiscoveryScope> disabled_remote = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
-	UAM_ASSERT_EQ(disabled_remote.size(), std::size_t{4});
+	UAM_ASSERT_EQ(disabled_remote.size(), std::size_t{5});
 	UAM_ASSERT_EQ(std::ranges::count(disabled_remote, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 0);
+	UAM_ASSERT_EQ(std::ranges::count(disabled_remote, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
 	UAM_ASSERT(fixture.launched.empty());
 	UAM_ASSERT(fixture.app.acp_sessions.empty());
 }
@@ -386,7 +409,8 @@ UAM_TEST(StartupModelDiscoveryDeduplicatesWindowsRemoteCaseWithoutFoldingLinuxPa
 		const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
 		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("codex-cli"), &uam::ModelDiscoveryScope::provider_id), platform == "windows" ? 1 : 2);
 		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
-		UAM_ASSERT_EQ(scopes.size(), platform == "windows" ? std::size_t{2} : std::size_t{3});
+		UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
+		UAM_ASSERT_EQ(scopes.size(), platform == "windows" ? std::size_t{3} : std::size_t{4});
 	}
 }
 
@@ -429,8 +453,9 @@ UAM_TEST(StartupModelDiscoveryPreservesRemoteLinuxLiteralBackslashesInScopeAndLa
 		fixture.app.folders.push_back(folder);
 	}
 	const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app);
-	UAM_ASSERT_EQ(scopes.size(), std::size_t{3});
+	UAM_ASSERT_EQ(scopes.size(), std::size_t{4});
 	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("claude-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
+	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("antigravity-cli"), &uam::ModelDiscoveryScope::provider_id), 1);
 	UAM_ASSERT_EQ(scopes[0].workspace_directory, paths[0]);
 	UAM_ASSERT_EQ(scopes[1].workspace_directory, paths[1]);
 	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", host.id)].checked = true;

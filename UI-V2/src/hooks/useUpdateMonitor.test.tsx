@@ -23,20 +23,20 @@ describe('useUpdateMonitor', () => {
 
   it.each(['single', 'all'] as const)('shows the native helper installation error for %s updates', async (mode) => {
     const previous = useAppStore.getState()
-    const remoteHost = { id: 'alpha', label: 'Gaming AI Desktop', transport: 'ssh' as const, sshAlias: 'alpha', runnerStatus: 'ready' as const, runnerVersion: '4.9.0-alpha-9', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' }
+    const remoteHost = { id: 'alpha', label: 'Windows workstation', transport: 'ssh' as const, sshAlias: 'alpha', runnerStatus: 'ready' as const, runnerVersion: '4.9.0-alpha-9', platform: 'windows', architecture: 'x86_64', lastSeenAt: '' }
     useAppStore.setState({ updateChecksEnabled: false, executionHosts: [remoteHost] })
     const detail = 'Stop or finish work running on this host before updating its helper.'
     window.cefQuery = ({ onFailure }) => onFailure(409, detail)
-    const updates = [{ id: 'remote-helper-alpha', remoteHostId: 'alpha', name: 'Gaming AI Desktop SSH helper', currentVersion: '4.9.0-alpha-9', latestVersion: '4.9.0-alpha-19', url: '', installable: true }]
+    const updates = [{ id: 'remote-helper-alpha', remoteHostId: 'alpha', name: 'Windows workstation SSH helper', currentVersion: '4.9.0-alpha-9', latestVersion: '4.9.0-alpha-19', url: '', installable: true }]
     function Panel() { return <UpdatesPanel monitor={{ ...useUpdateMonitor(), updates }} onClose={() => {}} /> }
     const host = document.createElement('div')
     const root = createRoot(host)
     try {
       await act(async () => root.render(<Panel />))
-      const label = mode === 'all' ? 'Update everything' : 'Update Gaming AI Desktop SSH helper to 4.9.0-alpha-19'
+      const label = mode === 'all' ? 'Update everything' : 'Update Windows workstation SSH helper to 4.9.0-alpha-19'
       await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click())
       expect(host.querySelector('[role="alert"]')?.textContent).toContain(detail)
-      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Gaming AI Desktop SSH helper')
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Windows workstation SSH helper')
       await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss update error"]')!.click())
       expect(host.querySelector('[role="alert"]')).toBeNull()
     } finally {

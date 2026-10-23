@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -18,6 +20,7 @@
 namespace uam::workspace_files
 {
 	inline constexpr std::size_t kMaxPreviewBytes = 1024 * 1024;
+	inline constexpr std::size_t kMaxAttachmentBytes = 25 * 1024 * 1024;
 
 	struct TextFile
 	{
@@ -69,9 +72,10 @@ namespace uam::workspace_files
 	}
 
 	/// Reads a bounded snapshot through owned regular-file handles inside the canonical workspace.
-	inline TextFile Read(const std::filesystem::path& workspace, std::string_view requested)
+	inline TextFile Read(const std::filesystem::path& workspace, std::string_view requested, bool binary_attachment = false, std::size_t max_bytes_override = 0)
 	{
 		TextFile result;
+		const std::size_t limit = max_bytes_override == 0 ? (binary_attachment ? kMaxAttachmentBytes : kMaxPreviewBytes) : std::min<std::size_t>(max_bytes_override, 64 * 1024 * 1024);
 		result.error = "The file is missing or cannot be read.";
 		if (workspace.empty() || workspace.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos || !workspace.is_absolute() || requested.empty() || requested.size() > 16384 ||
 		    requested.find('\0') != std::string_view::npos || requested.find_first_of("\r\n") != std::string_view::npos)
@@ -107,8 +111,8 @@ namespace uam::workspace_files
 		if (!GetFileInformationByHandle(handle.get(), &before) ||
 		    (before.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
 		{ result.error = "Only regular text files can be inspected."; return result; }
-		if (before.nFileSizeHigh != 0 || before.nFileSizeLow > kMaxPreviewBytes)
-		{ result.error = "File preview is limited to 1 MiB."; return result; }
+		if (before.nFileSizeHigh != 0 || before.nFileSizeLow > limit)
+		{ result.error = binary_attachment ? "Image attachment is limited to 25 MiB." : "File preview is limited to 1 MiB."; return result; }
 		result.text.resize(before.nFileSizeLow);
 		DWORD count = 0;
 		char extra = 0;
@@ -138,8 +142,8 @@ namespace uam::workspace_files
 		struct stat before{};
 		if (fstat(*directory, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size < 0)
 		{ result.error = "Only regular text files can be inspected."; return result; }
-		if (static_cast<std::uintmax_t>(before.st_size) > kMaxPreviewBytes)
-		{ result.error = "File preview is limited to 1 MiB."; return result; }
+		if (static_cast<std::uintmax_t>(before.st_size) > limit)
+		{ result.error = binary_attachment ? "Image attachment is limited to 25 MiB." : "File preview is limited to 1 MiB."; return result; }
 		result.text.resize(static_cast<std::size_t>(before.st_size));
 		std::size_t offset = 0;
 		while (offset < result.text.size())
@@ -159,9 +163,9 @@ namespace uam::workspace_files
 		    )
 		{ result.text.clear(); result.error = "The file changed while loading. Try again."; return result; }
 #endif
-		if (result.text.find('\0') != std::string::npos)
+		if (!binary_attachment && result.text.find('\0') != std::string::npos)
 		{ result.text.clear(); result.error = "Binary files cannot be shown as text."; return result; }
-		try { (void)nlohmann::json(result.text).dump(); }
+		try { if (!binary_attachment) (void)nlohmann::json(result.text).dump(); }
 		catch (const nlohmann::json::exception&)
 		{ result.text.clear(); result.error = "This file does not contain valid UTF-8 text."; return result; }
 		result.ok = true;

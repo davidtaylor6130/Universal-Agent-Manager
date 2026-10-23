@@ -186,6 +186,13 @@ namespace uam
 			return uam::paths::FileSizeNoThrow(path);
 		}
 
+		std::optional<AgentDefinition> BuiltInPrimary(std::string_view id, bool legacy_v1 = false)
+		{
+			if (id == "build") return AgentDefinition{.id = "build", .description = "Implement and verify changes within the chat permission policy.", .mode = legacy_v1 ? "primary" : "both", .workspace_access = "write", .instructions = "Implement the requested change and verify it.", .definition_hash = legacy_v1 ? "builtin-build-v1" : "builtin-build-v2", .markdown_snapshot = legacy_v1 ? "builtin:build:v1" : "builtin:build:v2", .built_in = true};
+			if (id == "plan") return AgentDefinition{.id = "plan", .description = "Inspect and plan without modifying the workspace.", .mode = legacy_v1 ? "primary" : "both", .workspace_access = "read", .instructions = "Inspect the task and produce a concrete read-only plan.", .definition_hash = legacy_v1 ? "builtin-plan-v1" : "builtin-plan-v2", .markdown_snapshot = legacy_v1 ? "builtin:plan:v1" : "builtin:plan:v2", .built_in = true};
+			return std::nullopt;
+		}
+
 		std::optional<AgentDefinition> ParseMarkdown(const std::filesystem::path& path,
 		                                              bool workspace_override, std::string text,
 		                                              std::string* error_out)
@@ -411,8 +418,8 @@ namespace uam
 	                                                    const std::filesystem::path& workspace_root)
 	{
 		std::map<std::string, AgentDefinition> definitions;
-		definitions.emplace("build", AgentDefinition{.id = "build", .description = "Implement and verify changes within the chat permission policy.", .mode = "primary", .workspace_access = "write", .instructions = "Implement the requested change and verify it.", .definition_hash = "builtin-build-v1", .markdown_snapshot = "builtin:build:v1", .built_in = true});
-		definitions.emplace("plan", AgentDefinition{.id = "plan", .description = "Inspect and plan without modifying the workspace.", .mode = "primary", .workspace_access = "read", .instructions = "Inspect the task and produce a concrete read-only plan.", .definition_hash = "builtin-plan-v1", .markdown_snapshot = "builtin:plan:v1", .built_in = true});
+		definitions.emplace("build", *BuiltInPrimary("build"));
+		definitions.emplace("plan", *BuiltInPrimary("plan"));
 
 		AgentDefinitionCatalog catalog;
 		ErrorCollector errors(&catalog.errors);
@@ -900,6 +907,31 @@ namespace uam
 		if (provider == provider_ids::kOpenCodeCli) return "opencode-native-agent-config";
 		if (provider == provider_ids::kCopilotCli) return "copilot-native-agent-plugin";
 		return "uam-prompt-injected";
+	}
+
+	bool AgentDefinitionService::DecodeCapturedPrimary(const std::string& agent_id, const std::string& snapshot,
+	                                                   AgentDefinition& definition, std::string* error_out)
+	{
+		std::string error;
+		if (error_out) error_out->clear();
+		// Historical captures retain their exact policy and hash; only new selection uses v2.
+		for (const bool legacy_v1 : {false, true})
+		{
+			if (const auto builtin = BuiltInPrimary(agent_id, legacy_v1); builtin && snapshot == builtin->markdown_snapshot)
+			{
+				definition = *builtin;
+				return true;
+			}
+		}
+		const auto captured = ValidId(agent_id) && !snapshot.empty() && snapshot.size() <= kMaxDefinitionBytes && !HasDisallowedControl(snapshot)
+		    ? ParseMarkdown(std::filesystem::path(agent_id + ".md"), false, snapshot, &error) : std::nullopt;
+		if (!captured || (captured->mode != "primary" && captured->mode != "both"))
+		{
+			if (error_out) *error_out = "The original captured primary agent definition is unavailable or invalid.";
+			return false;
+		}
+		definition = *captured;
+		return true;
 	}
 
 	bool AgentDefinitionService::CapturedOpenCodePermission(const std::string& agent_id, const std::string& snapshot,

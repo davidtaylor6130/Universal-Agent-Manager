@@ -1,4 +1,4 @@
-import { sendToCEF, isCefContext, createRequestId } from '../../ipc/cefBridge'
+import { sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
 import {
   applyDocumentTheme,
   normalizeCustomTheme,
@@ -165,7 +165,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       const previousTheme = get().theme
       persistTheme(theme, get().customThemes)
       set({ theme })
-      if (isCefContext()) {
+      if (isCefContext() && !isCompanionContext()) {
         const requestKey = 'setTheme'
         const requestId = createRequestId('setTheme')
         rememberPendingRequest(requestKey, requestId)

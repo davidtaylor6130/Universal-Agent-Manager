@@ -92,6 +92,14 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 			result = {{"dataBase64", uam::base64::Encode(chunk)}, {"offset", offset}, {"totalBytes", wire.size()},
 			    {"fingerprint", uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(wire))}};
 		}
+		else if ((mode == "native-result-shape" && type == "opencode.native") ||
+		         (mode == "generic-result-shape" && type == "process.poll"))
+		{
+			if (request.value("sessionId", "") != "typed-native-session" || request.value("controlToken", "") != "typed-native-control") return 8;
+			const auto path = uam::env::GetNonEmptyString("UAM_TEST_NATIVE_RESULT_PATH");
+			if (!path) return 7;
+			result = nlohmann::json::parse(ReadFile(uam::paths::PathFromUtf8(*path)));
+		}
 		else if (type == "process.write")
 		{
 			std::string decoded;
@@ -128,6 +136,10 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 		    : type == "hello"
 		    ? uam::remote::HandleRunnerRequest(request, "development", &state)
 		    : nlohmann::json{{"id", request["id"]}, {"ok", true}, {"result", result}};
+		if (mode == "native-result-missing" && type == "opencode.native") response.erase("result");
+		if (type == "configuration.prepare") response["result"]["missing"] = nlohmann::json::array();
+		if (mode == "old-gemini-options" && type == "hello") response["capabilities"].erase("geminiThinkingConfiguration");
+		if (mode == "old-claude-options" && type == "hello") response["capabilities"].erase("claudeTerminalFastConfiguration");
 		if (mode == "old-context-capability" && type == "hello") response["capabilities"].erase("providerNativeContext");
 		if (mode == "handshake-version" && type == "hello") response["runnerVersion"] = "incompatible";
 		if (mode == "handshake-protocol" && type == "hello") response["protocolVersion"] = 99;
@@ -1302,7 +1314,17 @@ UAM_TEST(RemoteDiscoveryLeaseRenewalIsolationAndExpiredBusyCleanup)
 	UAM_ASSERT(!denied.value("ok", true) && denied["error"].value("code", "") == "unauthorized");
 	std::this_thread::sleep_for(std::chrono::milliseconds(150));
 	UAM_ASSERT(state.HasManagedProcesses());
-	const nlohmann::json expired = request("process.poll", "discovery", "owned-token");
+	nlohmann::json expired = request("process.poll", "discovery", "owned-token");
+	// Expiry rejects access immediately; owned nonblocking retirement can still need confirmation.
+	const auto cleanup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!expired.value("ok", true) && expired["error"].value("code", "") == "process_retiring" &&
+	       std::chrono::steady_clock::now() < cleanup_deadline)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		expired = request("process.poll", "discovery", "owned-token");
+	}
+	if (expired.value("ok", true) || expired.value("error", nlohmann::json::object()).value("code", "") != "session_not_found")
+		throw TestFailure("Expired discovery lease poll response: " + expired.dump().substr(0, 2048));
 	UAM_ASSERT(!expired.value("ok", true) && expired["error"].value("code", "") == "session_not_found");
 	const nlohmann::json durable = request("process.poll", "user-chat", "owned-token");
 	UAM_ASSERT(durable.value("ok", false) && durable["result"].value("running", false));
@@ -2485,11 +2507,31 @@ UAM_TEST(RemoteGitInitialCommitDoesNotRequireAnExistingIndexFile)
 	chat.id = "remote-initial-git-chat";
 	chat.execution_host_id = host.id;
 	chat.workspace_directory = repository.string();
+	app.data_root = temp.root / "data";
+	const uam::VcsCommitService vcs;
+	UAM_ASSERT(vcs.CaptureChatBaseline(app, chat, &error));
+	UAM_ASSERT(!fs::exists(repository / ".git" / "index"));
+	UAM_ASSERT(vcs.Status(app, chat, uam::VcsType::Git, true, "chat").changed_files.empty());
+	UAM_ASSERT(uam::io::WriteTextFile(repository / "first.txt", "changed by chat\n"));
+	const uam::VcsCommitStatus changed = vcs.Status(app, chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(changed.error.empty());
+	UAM_ASSERT_EQ(changed.changed_files.size(), static_cast<std::size_t>(1));
+	const std::string patch = vcs.Diff(app, chat, "first.txt", uam::VcsType::Git, &error, "chat");
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT(patch.find("-first") != std::string::npos);
+	UAM_ASSERT(patch.find("+changed by chat") != std::string::npos);
+	UAM_ASSERT(!fs::exists(repository / ".git" / "index"));
 	const uam::VcsCommitResult committed = uam::VcsCommitService().Commit(
 	    app, chat, uam::VcsType::Git, "Initial remote commit", {"first.txt"});
 	if (!committed.ok) throw TestFailure(committed.error);
 	UAM_ASSERT(fs::exists(repository / ".git" / "index"));
 	UAM_ASSERT(RunGitForTest(repository, "log --oneline --grep 'Initial remote commit'"));
+	app.settings.execution_hosts.back().ssh_alias = "changed-host";
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, chat, &error) == uam::ChatBaselineReadiness::Pending);
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Unavailable);
+	UAM_ASSERT(!vcs.Status(app, chat, uam::VcsType::Git, true, "chat").error.empty());
+	app.settings.execution_hosts.back().ssh_alias = host.ssh_alias;
+	UAM_ASSERT(vcs.Status(app, chat, uam::VcsType::Git, true, "chat").error.empty());
 }
 
 UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDuplicates)
@@ -2819,6 +2861,87 @@ UAM_TEST(RemoteRunnerProxyRelaysRealProviderStdioWithoutBlockingTheAppTransport)
 	}
 	UAM_ASSERT(recovered_output.find("reply:after-reconnect\n") != std::string::npos);
 	UAM_ASSERT(reattached.RemoveProcess("acp-proxy-test", &error));
+}
+
+UAM_TEST(RemoteRunnerProxyPreservesFragmentedNativeFramesAndControlReceipts)
+{
+	TempDir temp("uam-runner-framed-proxy");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	const fs::path socket = temp.root / "runner.sock";
+	uam::platform::StdioProcessPlatformFields daemon;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(daemon, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
+	struct ProcessGuard
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~ProcessGuard()
+		{
+			auto& service = PlatformServicesFactory::Instance().process_service;
+			service.StopStdioProcess(process, true);
+			service.CloseStdioProcessHandles(process);
+		}
+	} daemon_guard{daemon};
+	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt)
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(fs::exists(socket));
+	const fs::path ssh = temp.root / "ssh";
+	UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge --socket \"$UAM_TEST_SOCKET\"\n"));
+	fs::permissions(ssh, fs::perms::owner_all);
+	const std::string token = "framed-proxy-private-token";
+	const std::string spec = uam::remote::BuildProcessProxySpec("framed-proxy", temp.root,
+	    {"/bin/sh", "-c", "exec cat", "--headless", "--stdio"}, {}, false, token);
+	uam::platform::StdioProcessPlatformFields proxy;
+	UAM_ASSERT(service.StartStdioProcess(proxy, temp.root,
+	    {runner.string(), "proxy", "--alias", "test-host", "--platform", "linux", "--version", std::string(uam::constants::kAppVersion).substr(1), "--protocol", "3"},
+	    &error, {{uam::remote::kRemoteProcessSpecEnvironment, spec},
+	        {"PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin")},
+	        {"UAM_TEST_RUNNER", runner.string()}, {"UAM_TEST_SOCKET", socket.string()}}));
+	ProcessGuard proxy_guard{proxy};
+	const std::string body = nlohmann::json{{"id", 1}, {"method", "test"}, {"params", {{"text", std::string(18000, 'x') + "\nlast"}}}}.dump();
+	const std::string frame = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+	// A small final read used to trigger the legacy line protocol flush after an
+	// incomplete native frame, losing the retained prefix on the next read.
+	const std::size_t prefix = frame.size() - 7;
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, frame.data(), prefix, &error));
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, frame.data() + prefix, 7, &error));
+	const std::string second = "Content-Length: 8\r\n\r\n{\"id\":2}";
+	const std::string delivery = uam::remote::BuildRemoteInputDeliveryLine(token, "second-frame", second);
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, delivery.data(), delivery.size(), &error));
+	std::string output;
+	std::array<char, 32768> bytes{};
+	const std::string expected = frame + second;
+	const std::string marker = std::string(uam::remote::kRemoteOutputMarkerPrefix) + token + " ";
+	const std::string receipt = std::string(uam::remote::kRemoteInputReceiptPrefix) + token + " second-frame\n";
+	bool received = false;
+	for (int attempt = 0; attempt < 500; ++attempt)
+	{
+		const auto count = service.ReadStdioProcessStdout(proxy, bytes.data(), bytes.size(), &error);
+		if (count > 0) output.append(bytes.data(), static_cast<std::size_t>(count));
+		for (auto start = output.find(marker); start != std::string::npos; start = output.find(marker))
+		{
+			const auto end = output.find('\n', start);
+			if (end == std::string::npos) break;
+			const std::string ack = std::string(uam::remote::kRemoteOutputAckPrefix) + token + " " + output.substr(start + marker.size(), end - start - marker.size()) + "\n";
+			UAM_ASSERT(service.WriteToStdioProcess(proxy, ack.data(), ack.size(), &error));
+			output.erase(start, end - start + 1);
+		}
+		if (auto start = output.find(receipt); start != std::string::npos)
+		{
+			received = true;
+			output.erase(start, receipt.size());
+		}
+		if (received && output == expected) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(received);
+	UAM_ASSERT_EQ(output, expected);
+	uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()}, std::string(uam::constants::kAppVersion).substr(1));
+	client.SetProcessControlToken("framed-proxy", token);
+	UAM_ASSERT(client.Connect(&error));
+	UAM_ASSERT(client.StopProcess("framed-proxy", &error));
+	UAM_ASSERT(client.RemoveProcess("framed-proxy", &error));
 }
 
 UAM_TEST(RemoteRunnerProxyStopsAndRemovesTheProviderOnlyOnTheExplicitControlLine)
@@ -3308,6 +3431,57 @@ UAM_TEST(RemoteTerminalPrivateContextConsumesOnceAndPreservesExecutingHostConfig
 	UAM_ASSERT(!client.TakeChannel(channel, "desktopToRemote", replay, &error));
 	UAM_ASSERT(client.RemoveProviderContext(directory, &error));
 	UAM_ASSERT(!fs::exists(directory / "conversation.md"));
+#endif
+}
+
+UAM_TEST(RemoteTerminalPrivateEnvironmentRetainsExecutingHostCliDiscovery)
+{
+#if defined(__APPLE__)
+	TempDir temp("uam-private-cli-path");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	const fs::path socket = temp.root / "runner.sock";
+	const fs::path home = temp.root / "home";
+	const fs::path executable = home / ".local/bin/uam-private-cli-fixture";
+	UAM_ASSERT(uam::io::WriteTextFile(executable, "#!/bin/sh\nprintf 'native:%s' \"$UAM_FIXTURE_AUTH\"\n"));
+	fs::permissions(executable, fs::perms::owner_all);
+	uam::platform::StdioProcessPlatformFields server;
+	std::string error;
+	UAM_ASSERT(service.StartStdioProcess(server, temp.root, {runner.string(), "serve", "--socket", socket.string()}, &error));
+	struct Guard
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~Guard()
+		{
+			auto& service = PlatformServicesFactory::Instance().process_service;
+			service.StopStdioProcess(process, true);
+			service.CloseStdioProcessHandles(process);
+		}
+	} server_guard{server};
+	for (int attempt = 0; attempt < 100 && !fs::exists(socket); ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	UAM_ASSERT(fs::exists(socket));
+	uam::remote::RunnerClient client(service, {runner.string(), "bridge", "--socket", socket.string()});
+	UAM_ASSERT(client.Connect(&error));
+	const std::string channel = "private-cli-environment";
+	UAM_ASSERT(client.OpenChannel(channel, &error, false, 60000));
+	const std::string spec = uam::remote::BuildProcessProxySpec("terminal", temp.root,
+	    {"uam-private-cli-fixture"}, {{"HOME", home.string()}, {"PATH", "/usr/bin:/bin"}, {"UAM_FIXTURE_AUTH", "leased"}});
+	UAM_ASSERT(client.WriteChannel(channel, "desktopToRemote", spec, &error));
+	uam::platform::StdioProcessPlatformFields terminal;
+	UAM_ASSERT(service.StartStdioProcess(terminal, temp.root, {runner.string(), "terminal", "--channel", channel, "--socket", socket.string()}, &error));
+	Guard terminal_guard{terminal};
+	std::string output;
+	std::array<char, 4096> buffer{};
+	int exit_code = -1;
+	for (int attempt = 0; attempt < 300; ++attempt)
+	{
+		const auto count = service.ReadStdioProcessStdout(terminal, buffer.data(), buffer.size(), &error);
+		if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+		if (service.PollStdioProcessExited(terminal, &exit_code)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT_EQ(exit_code, 0);
+	UAM_ASSERT_EQ(output, std::string("native:leased"));
 #endif
 }
 
@@ -4344,9 +4518,25 @@ namespace
 		chat.remote_turn_reconnect_pending = true;
 		chat.messages.push_back({.role = MessageRole::User, .content = "Retry safely."});
 		chat.messages.push_back({.role = MessageRole::Assistant, .content = ""});
+		chat.provider_id = "gemini-cli";
+		// Captured inert proxy ownership; no SSH alias or usable runner is configured.
+		ExecutionHost fixture_host;
+		fixture_host.id = chat.execution_host_id;
+		fixture_host.transport = "ssh";
+		fixture_host.platform = "linux";
+		fixture_host.runner_status = "missing";
+		fixture_host.runner_protocol_version = 3;
+		app.settings.execution_hosts.push_back(fixture_host);
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "private-r19-inert-proxy";
 		app.chats.push_back(chat);
 		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
 		session->chat_id = chat.id;
+		session->provider_id = app.chats.front().provider_id;
+		session->process_execution_host_id = app.chats.front().execution_host_id;
+		session->session_id = app.chats.front().native_session_id;
+		session->remote_output_delivery_token = app.chats.front().remote_process_control_token;
+		session->remote_runner_protocol_version = 3;
 		session->running = true;
 		session->processing = true;
 		session->queued_prompt = "Retry safely.";
@@ -4373,6 +4563,7 @@ namespace
 		} cleanup{app, service};
 		std::string error;
 		UAM_ASSERT(service.StartStdioProcess(*session, temp.root, argv, &error));
+		raw_session->last_process_id = uam::acp_detail::AcpProcessHandleLabel(*raw_session);
 		app.acp_sessions.push_back(std::move(session));
 		UAM_ASSERT(!(restart ? uam::acp_detail::StopAcpProcessForRestart(app, *raw_session, app.chats.front()) : uam::StopAcpSession(app, chat.id)));
 		UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
@@ -5071,7 +5262,7 @@ UAM_TEST(AcpRemoteSetupReplyPreservesOwnedPromptReceiptAcrossProviders)
 		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 		chat.provider_id = session.provider_id = codex ? "codex-cli" : "opencode-cli";
 		chat.native_session_id = session.session_id = "01a13bf6-87d5-7691-889f-79a8bf5a7b25";
-		chat.model_id = codex ? "gpt-6.1-sol" : "inferdeck/normal";
+		chat.model_id = codex ? "gpt-6.1-sol" : "example-provider/normal";
 		session.current_model_id = chat.model_id;
 		session.available_models.push_back({.id = chat.model_id});
 		chat.reasoning_effort = "medium";
@@ -5597,26 +5788,26 @@ UAM_TEST(OpenCodeAdvertisedModelResolutionPreservesExactIdsAndRejectsAmbiguousAl
 {
 	uam::AcpSessionState session;
 	session.provider_id = uam::provider_ids::kOpenCodeCli;
-	session.available_config_options.push_back({.id = "model", .category = "model", .choices = {{"inferdeck/normal", "Normal", ""}}});
+	session.available_config_options.push_back({.id = "model", .category = "model", .choices = {{"example-provider/normal", "Normal", ""}}});
 	std::string error;
-	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error).value_or(""), "inferdeck/normal");
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error).value_or(""), "example-provider/normal");
 	UAM_ASSERT(error.empty());
-	session.current_model_id = "inferdeck/Normal"; // Optimistic state is not proof that this native ID exists.
-	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error).value_or(""), "inferdeck/normal");
-	session.available_config_options.front().choices.push_back({"inferdeck/NORMAL", "Other native ID", ""});
-	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error));
+	session.current_model_id = "example-provider/Normal"; // Optimistic state is not proof that this native ID exists.
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error).value_or(""), "example-provider/normal");
+	session.available_config_options.front().choices.push_back({"example-provider/NORMAL", "Other native ID", ""});
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error));
 	UAM_ASSERT(error.find("multiple provider models") != std::string::npos);
-	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/NORMAL", error).value_or(""), "inferdeck/NORMAL");
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/NORMAL", error).value_or(""), "example-provider/NORMAL");
 	UAM_ASSERT(error.empty());
-	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Pro", error));
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Pro", error));
 	UAM_ASSERT(error.find("no longer offers") != std::string::npos);
 	session.provider_id = uam::provider_ids::kGeminiCli;
 	session.current_model_id.clear();
-	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error));
+	UAM_ASSERT(!uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error));
 	session.available_config_options.clear();
 	session.provider_id = uam::provider_ids::kOpenCodeCli;
-	session.available_models.push_back({.id = "inferdeck/normal", .name = "Normal"});
-	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "inferdeck/Normal", error).value_or(""), "inferdeck/normal");
+	session.available_models.push_back({.id = "example-provider/normal", .name = "Normal"});
+	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "example-provider/Normal", error).value_or(""), "example-provider/normal");
 	session.provider_id = uam::provider_ids::kGeminiCli;
 	UAM_ASSERT_EQ(uam::acp_models::ResolveAdvertisedModelId(session, "custom-native-model", error).value_or(""), "custom-native-model");
 }
@@ -5625,26 +5816,26 @@ UAM_TEST(OpenCodeStartupRepairsUniqueAdvertisedModelCasingBeforeFirstPrompt)
 {
 	ChatSession chat;
 	chat.provider_id = uam::provider_ids::kOpenCodeCli;
-	chat.model_id = "inferdeck/Normal";
+	chat.model_id = "example-provider/Normal";
 	uam::AcpSessionState session;
 	session.provider_id = chat.provider_id;
 	session.running = true;
 	session.session_ready = true;
 	session.session_id = "native-model-casing";
-	session.current_model_id = "inferdeck/normal";
+	session.current_model_id = "example-provider/normal";
 	session.goal_turn_model_id = chat.model_id;
-	session.available_config_options.push_back({.id = "model", .category = "model", .choices = {{"inferdeck/normal", "Normal", ""}}});
+	session.available_config_options.push_back({.id = "model", .category = "model", .choices = {{"example-provider/normal", "Normal", ""}}});
 	UAM_ASSERT(!uam::acp_detail::SendStartupModelIfNeeded(session, chat));
-	UAM_ASSERT_EQ(chat.model_id, "inferdeck/normal");
+	UAM_ASSERT_EQ(chat.model_id, "example-provider/normal");
 	UAM_ASSERT(session.last_error.empty());
 	UAM_ASSERT_EQ(session.next_request_id, 1);
-	UAM_ASSERT_EQ(session.goal_turn_model_id, "inferdeck/normal");
+	UAM_ASSERT_EQ(session.goal_turn_model_id, "example-provider/normal");
 	chat.model_id = "ordinary-chat-model";
-	session.goal_turn_model_id = "inferdeck/Normal";
+	session.goal_turn_model_id = "example-provider/Normal";
 	session.goal_turn_kind = "review";
 	session.goal_review_turn = true;
 	UAM_ASSERT(!uam::acp_detail::SendStartupModelIfNeeded(session, chat));
-	UAM_ASSERT_EQ(session.goal_turn_model_id, "inferdeck/normal");
+	UAM_ASSERT_EQ(session.goal_turn_model_id, "example-provider/normal");
 	UAM_ASSERT_EQ(chat.model_id, "ordinary-chat-model");
 }
 
@@ -5655,7 +5846,9 @@ UAM_TEST(OptInRealRemoteOpenCodeFirstMessageUsesFullSetupAndRepairsSavedModel)
 	const std::optional<std::string> workspace = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_WORKSPACE");
 	const std::optional<std::string> executable = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_EXECUTABLE");
 	const std::optional<std::string> resources = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_FIRST_MESSAGE_RESOURCES");
-	if (!alias || !workspace || !executable || !resources) return;
+	const std::optional<std::string> saved_model = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_SAVED_MODEL");
+	const std::optional<std::string> expected_model = uam::env::GetNonEmptyString("UAM_REAL_REMOTE_OPENCODE_EXPECTED_MODEL");
+	if (!alias || !workspace || !executable || !resources || !saved_model || !expected_model) return;
 	TempDir temp("uam-real-remote-first-message");
 	uam::AppState app;
 	app.data_root = temp.root / "data";
@@ -5683,7 +5876,7 @@ UAM_TEST(OptInRealRemoteOpenCodeFirstMessageUsesFullSetupAndRepairsSavedModel)
 	chat.provider_id = uam::provider_ids::kOpenCodeCli;
 	chat.execution_host_id = host.id;
 	chat.workspace_directory = *workspace;
-	chat.model_id = "inferdeck/Normal";
+	chat.model_id = *saved_model;
 	chat.approval_mode = "default";
 	chat.command_safety_tier = "yolo";
 	chat.uam_agent_id = "build";
@@ -5722,7 +5915,7 @@ UAM_TEST(OptInRealRemoteOpenCodeFirstMessageUsesFullSetupAndRepairsSavedModel)
 	UAM_ASSERT(session != nullptr);
 	UAM_ASSERT(session->last_error.empty());
 	UAM_ASSERT(session->session_ready && !session->processing && session->prompt_request_id == 0);
-	UAM_ASSERT_EQ(app.chats.front().model_id, "inferdeck/normal");
+	UAM_ASSERT_EQ(app.chats.front().model_id, *expected_model);
 	int users = 0, assistants = 0;
 	for (const Message& message : app.chats.front().messages)
 	{
@@ -5926,3 +6119,454 @@ UAM_TEST(RemoteMemoryDetailReferenceRejectsLineBreakFilenameWithoutDroppingFact)
 	UAM_ASSERT_EQ(response["result"].value("text", ""), "- First fact. Second fact.\n");
 }
 #endif
+
+
+UAM_TEST(RemoteConfigurationRequiredThinkingAndFastRejectOlderSameProtocolHelpers)
+{
+	TempDir temp("uam-required-native-options");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	for (const std::string provider : {"gemini-cli", "claude-cli"})
+	for (const bool available : {false, true})
+	{
+		const auto log = temp.root / (provider + (available ? "-new.jsonl" : "-old.jsonl"));
+		ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", log.string());
+		ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", available ? "healthy" : provider == "gemini-cli" ? "old-gemini-options" : "old-claude-options");
+		nlohmann::json manifest{{"format", 1}, {"mcpOnly", true}, {"files", nlohmann::json::object()}};
+		if (provider == "gemini-cli") manifest["geminiThinking"] = {{"model", "gemini-3.1-pro-preview"}, {"effort", "high"}, {"cliVersion", "0.64.0"}};
+		else manifest["claudeTerminalFastMode"] = false; // An explicit Standard override is required too.
+		const auto source = temp.root / uam::provider_setup::Digest(manifest.dump());
+		std::vector<std::string> missing; std::string error;
+		UAM_ASSERT(uam::provider_setup::Prepare(source, manifest, missing, error));
+		uam::remote::RunnerClient client(service, {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"}, "development", uam::remote::kRunnerProtocolVersion);
+		UAM_ASSERT_EQ(client.InstallProviderConfiguration(source, temp.root / "target", &error), available);
+		if (!available) UAM_ASSERT(error.find("Update the SSH helper") != std::string::npos);
+		client.Disconnect();
+		std::istringstream requests(ReadFile(log)); std::string line; int prepares = 0;
+		while (std::getline(requests, line)) if (nlohmann::json::parse(line).value("type", "") == "configuration.prepare") ++prepares;
+		UAM_ASSERT_EQ(prepares, available ? 1 : 0);
+	}
+}
+
+UAM_TEST(RemoteConfigurationDefaultStillWorksWithoutOptionalThinkingCapability)
+{
+	TempDir temp("uam-default-native-options-old-helper");
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	ScopedEnvVar log_env("UAM_TEST_CREATE_LOG", (temp.root / "requests.jsonl").string());
+	ScopedEnvVar mode_env("UAM_TEST_CREATE_MODE", "old-gemini-options");
+	nlohmann::json manifest{{"format", 1}, {"mcpOnly", true}, {"files", nlohmann::json::object()}};
+	const auto source = temp.root / uam::provider_setup::Digest(manifest.dump());
+	std::vector<std::string> missing; std::string error;
+	UAM_ASSERT(uam::provider_setup::Prepare(source, manifest, missing, error));
+	uam::remote::RunnerClient client(service, {service.ResolveCurrentExecutablePath().string(), "--uam-test-remote-opencode-create"}, "development", uam::remote::kRunnerProtocolVersion);
+	UAM_ASSERT(client.InstallProviderConfiguration(source, temp.root / "target", &error));
+}
+
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && (defined(__APPLE__) || defined(__linux__))
+UAM_TEST(AcpRemoteNativeMarkerFailurePreservesUnrelatedRpcRequest)
+{
+	{
+		// Constructed admission-policy fixture with an actual private runner/proxy.
+		// Native startup/UUID/image/ACK proof belongs to the separate joined Send test.
+		RemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& session = *fixture.session;
+		auto& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		chat.provider_id = session.provider_id = "claude-cli";
+		session.protocol_kind = "claude-code-stream-json";
+		UAM_ASSERT(!chat.small_model_mode); // Exercise only the ordinary deferred marker boundary.
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Native input must retain unrelated RPC state on save failure.", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(error.empty() && uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		// A valid, distinct constructed response-correlation record; it grants no
+		// process/native/delivery authority and is not a fabricated native method.
+		uam::AcpRemotePendingRequestState unrelated;
+		unrelated.request_id = 100001;
+		unrelated.method = "model/list";
+		unrelated.turn_serial = session.turn_serial;
+		chat.remote_pending_requests.push_back(unrelated);
+		session.pending_request_methods[unrelated.request_id] = unrelated.method;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const auto prior_requests = chat.remote_pending_requests;
+		const auto primary = AppPaths::UamChatFilePath(app.data_root, chat.id);
+		const auto prior_primary = ReadFile(primary);
+		const auto prior_messages = chat.messages;
+		const auto prior_native = chat.native_session_id;
+		const auto real_root = app.data_root;
+		app.data_root = fixture.temp.root / "blocked-native-marker-storage";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "This private storage root is a regular file."));
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT(uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		{
+			UAM_ASSERT(session.pending_prompt_delivery);
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (session.pending_prompt_delivery && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(app);
+				(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(!session.pending_prompt_delivery);
+			UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+		}
+		UAM_ASSERT_EQ(chat.remote_pending_requests, prior_requests);
+		UAM_ASSERT_EQ(session.pending_request_methods.at(unrelated.request_id), unrelated.method);
+		UAM_ASSERT_EQ(session.prompt_request_id, 0);
+		UAM_ASSERT(chat.remote_prompt_delivery_id.empty() && chat.remote_prompt_delivery_payload.empty());
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		UAM_ASSERT_EQ(ReadFile(primary), prior_primary);
+		UAM_ASSERT_EQ(chat.native_session_id, prior_native);
+		UAM_ASSERT_EQ(chat.messages.size(), prior_messages.size());
+		for (std::size_t index = 0; index < prior_messages.size(); ++index)
+		{
+			UAM_ASSERT_EQ(chat.messages[index].role, prior_messages[index].role);
+			UAM_ASSERT_EQ(chat.messages[index].content, prior_messages[index].content);
+			UAM_ASSERT_EQ(chat.messages[index].attachments, prior_messages[index].attachments);
+		}
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
+		UAM_ASSERT(chat.acp_queued_prompts.front().prepared_for_delivery);
+		// Drain the real failed publication before returning the private root to
+		// normal storage. No Send/dispatch is repeated to manufacture success.
+		app.data_root = real_root;
+		(void)uam::FlushPendingChatSaves(app, true);
+		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty() && app.pending_chat_save_tasks.empty());
+		UAM_ASSERT_EQ(chat.remote_pending_requests, prior_requests);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+	}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI && (defined(__APPLE__) || defined(__linux__))
+UAM_TEST(AcpRemoteRpcMarkerRequiresActualPendingRequestWitness)
+{
+	for (const bool remove_witness : {false, true})
+	{
+		RemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& session = *fixture.session;
+		auto& chat = app.chats.front();
+		std::string error;
+		UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Require the actual ACP response-correlation witness.", &error));
+		fixture.AwaitSave();
+		UAM_ASSERT(error.empty() && uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		UAM_ASSERT(session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.remote_pending_requests.size(), std::size_t{1});
+		const auto actual_request = chat.remote_pending_requests.front();
+		UAM_ASSERT(actual_request.request_id > 0 && actual_request.turn_serial == session.turn_serial && !actual_request.response_consumed);
+		UAM_ASSERT_EQ(actual_request.method, std::string("session/prompt"));
+		UAM_ASSERT(!session.pending_request_methods.contains(actual_request.request_id));
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		if (remove_witness)
+		{
+			// Revoke the actual runtime-generated request, not its host/native/ACK
+			// identity. The real nonempty method must still require this witness.
+			chat.remote_pending_requests.erase(chat.remote_pending_requests.begin());
+			UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+			UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
+			UAM_ASSERT(chat.remote_pending_requests.empty() && chat.remote_prompt_delivery_id.empty());
+			fixture.AwaitSave();
+			UAM_ASSERT(!fs::exists(fixture.input_log));
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+			UAM_ASSERT(saved && saved->messages.back().acp_prompt_not_sent && saved->remote_pending_requests.empty());
+		}
+		else
+		{
+			fixture.AwaitSave();
+			const auto saved = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+			UAM_ASSERT(saved && saved->remote_pending_requests.size() == 1);
+			UAM_ASSERT_EQ(saved->remote_pending_requests.front(), actual_request);
+			fixture.AwaitInput();
+			const auto input = ReadFile(fixture.input_log);
+			UAM_ASSERT_EQ(std::count(input.begin(), input.end(), '\n'), 1);
+			const auto wire = nlohmann::json::parse(input);
+			UAM_ASSERT_EQ(wire.at("method"), nlohmann::json(actual_request.method));
+			UAM_ASSERT_EQ(wire.at("id"), nlohmann::json(actual_request.request_id));
+			UAM_ASSERT_EQ(wire.at("params").at("sessionId"), nlohmann::json(chat.native_session_id));
+			UAM_ASSERT_EQ(session.prompt_request_id, actual_request.request_id);
+		}
+	}
+}
+#endif
+
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI && UAM_ENABLE_RUNTIME_GEMINI_CLI && (defined(__APPLE__) || defined(__linux__))
+namespace
+{
+	void CheckRemoteSynchronousInternalMarkerRollback(bool native_input)
+	{
+		// Constructed policy scope only: use the existing real private runner/proxy,
+		// and the real internal continuation queue API, not ordinary public Send.
+		RemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& session = *fixture.session;
+		auto& chat = app.chats.front();
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		if (native_input)
+		{
+			chat.provider_id = session.provider_id = "claude-cli";
+			session.protocol_kind = "claude-code-stream-json";
+		}
+		chat.small_model_mode = true; // Supported synchronous fallback; never fake readiness/sent state.
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		UAM_ASSERT(uam::acp_detail::CanQueueGoalInternalPrompt(session));
+		UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		const auto root = app.data_root;
+		const auto id = chat.id;
+		const auto incarnation = chat.metadata_incarnation;
+		const auto native = chat.native_session_id;
+		const auto process = session.last_process_id;
+		const auto* actual_session = &session;
+		struct Completion
+		{
+			int calls = 0;
+			bool accepted = false;
+			std::string error;
+		};
+		const auto completion = std::make_shared<Completion>();
+		const std::string prompt = "Keep the internal synchronous marker rollback scoped.";
+		UAM_ASSERT(uam::acp_detail::QueueGoalInternalPrompt(app, session, chat, prompt, false, "", false,
+		    [&app, root, id, incarnation, native, process, actual_session]()
+		    {
+			    const auto* current = ChatDomainService().FindChatById(app, id);
+			    const auto* runtime = uam::FindAcpSessionForChat(app, id);
+			    return app.data_root == root && current && current->metadata_incarnation == incarnation &&
+			        current->native_session_id == native && runtime == actual_session && runtime->last_process_id == process;
+		    },
+		    [completion](bool accepted, std::string error)
+		    {
+			    ++completion->calls;
+			    completion->accepted = accepted;
+			    completion->error = std::move(error);
+		    }));
+		// Only actual save polling completes the queue admission and its scheduled save.
+		// The production completion schedules before dispatch, so input remains gated.
+		fixture.AwaitSave();
+		UAM_ASSERT_EQ(completion->calls, 1);
+		UAM_ASSERT(completion->accepted && completion->error.empty());
+		UAM_ASSERT(session.processing && session.queued_prompt == prompt);
+		UAM_ASSERT_EQ(session.turn_first_user_message_index, -1);
+		UAM_ASSERT_EQ(session.turn_user_message_index, -1);
+		UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT(app.pending_chat_save_tasks.empty() && app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT(uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+
+		// Distinct valid existing tail: the native path appends nothing, while the
+		// actual ACP encoder appends one request that must alone roll back.
+		uam::AcpRemotePendingRequestState unrelated;
+		unrelated.request_id = 100001;
+		unrelated.method = "model/list";
+		unrelated.turn_serial = session.turn_serial;
+		chat.remote_pending_requests.push_back(unrelated);
+		session.pending_request_methods[unrelated.request_id] = unrelated.method;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		const auto requests = chat.remote_pending_requests;
+		const auto methods = session.pending_request_methods;
+		const auto messages = chat.messages;
+		const auto primary = AppPaths::UamChatFilePath(root, id);
+		const auto primary_bytes = ReadFile(primary);
+		const int next_request = session.next_request_id;
+		app.data_root = fixture.temp.root / "blocked-internal-marker-root";
+		UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "Private synchronous marker storage is unavailable."));
+		UAM_ASSERT(!uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+		UAM_ASSERT(uam::acp_detail::AcpSessionCanSendQueuedPrompt(session));
+		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+		// Unique target-branch error: no authored unsent-row pre-save is involved
+		// because the real internal queue gave this continuation indices -1.
+		UAM_ASSERT_EQ(session.last_error, std::string("Prompt is waiting for its remote recovery marker to be saved."));
+		UAM_ASSERT_EQ(session.next_request_id, next_request + 1);
+		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
+		UAM_ASSERT_EQ(chat.remote_pending_requests, requests);
+		UAM_ASSERT_EQ(session.pending_request_methods, methods);
+		UAM_ASSERT(!session.pending_request_methods.contains(next_request));
+		UAM_ASSERT(!chat.remote_turn_reconnect_pending);
+		UAM_ASSERT(chat.remote_prompt_delivery_session_id.empty() && chat.remote_prompt_delivery_id.empty() && chat.remote_prompt_delivery_payload.empty());
+		UAM_ASSERT_EQ(chat.native_session_id, native);
+		UAM_ASSERT_EQ(chat.messages, messages);
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && session.queued_user_prompts.empty());
+		UAM_ASSERT_EQ(ReadFile(primary), primary_bytes);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+		// Settle only the actual failed-save task; never repeat dispatch or Send.
+		app.data_root = root;
+		(void)uam::FlushPendingChatSaves(app, true);
+		UAM_ASSERT(app.pending_chat_save_tasks.empty() && app.pending_chat_save_at_by_chat_id.empty());
+		UAM_ASSERT_EQ(completion->calls, 1);
+		const auto saved = ChatRepository::LoadLocalChat(root, id, true);
+		UAM_ASSERT(saved && saved->messages == messages && saved->remote_pending_requests == requests);
+		UAM_ASSERT_EQ(saved->native_session_id, native);
+		UAM_ASSERT(saved->remote_prompt_delivery_id.empty() && saved->remote_prompt_delivery_payload.empty());
+		UAM_ASSERT_EQ(session.pending_request_methods, methods);
+		UAM_ASSERT(!fs::exists(fixture.input_log));
+	}
+}
+
+UAM_TEST(AcpRemoteSynchronousNativeInternalMarkerFailureKeepsUnrelatedRpcTail)
+{
+	CheckRemoteSynchronousInternalMarkerRollback(true);
+}
+
+UAM_TEST(AcpRemoteSynchronousRpcInternalMarkerFailureRemovesOnlyOwnRequest)
+{
+	CheckRemoteSynchronousInternalMarkerRollback(false);
+}
+#endif
+#if UAM_ENABLE_SSH
+
+namespace
+{
+	void CheckOpenCodeNativeResultFrame(const nlohmann::json& operation,
+	    const nlohmann::json& emitted, bool accepted, bool generic = false, bool missing_result = false)
+	{
+		TempDir temp("uam-native-result-shape");
+		fs::create_directories(temp.root / "tmp");
+		const fs::path result_path = temp.root / "result.json";
+		UAM_ASSERT(uam::io::WriteTextFile(result_path, emitted.dump()));
+		ScopedEnvVar mode("UAM_TEST_CREATE_MODE", generic ? "generic-result-shape" : missing_result ? "native-result-missing" : "native-result-shape");
+		ScopedEnvVar path("UAM_TEST_NATIVE_RESULT_PATH", result_path.string());
+		ScopedEnvVar log("UAM_TEST_CREATE_LOG", (temp.root / "requests.jsonl").string());
+		ScopedEnvVar private_tmp("TMPDIR", (temp.root / "tmp").string());
+		auto& service = PlatformServicesFactory::Instance().process_service;
+		const auto executable = service.ResolveCurrentExecutablePath();
+		uam::remote::RunnerClient client(service, {executable.string(), "--uam-test-remote-opencode-create"}, "development");
+		client.SetProcessControlToken("typed-native-session", "typed-native-control");
+		std::string error;
+		UAM_ASSERT(client.Connect(&error));
+		if (generic)
+		{
+			uam::remote::ProcessPollResult result;
+			result.running = true; result.stdout_cursor = 77;
+			UAM_ASSERT(!client.PollProcess("typed-native-session", result, &error));
+			UAM_ASSERT(result.running && result.stdout_cursor == 77);
+		}
+		else
+		{
+			nlohmann::json result = "Caller sentinel";
+			UAM_ASSERT_EQ(client.QueryOpenCodeNative("typed-native-session", operation, result, &error), accepted);
+			if (accepted) { UAM_ASSERT_EQ(result, emitted); UAM_ASSERT(error.empty()); }
+			else UAM_ASSERT(result.is_null());
+		}
+		if (!accepted || generic)
+		{
+			UAM_ASSERT_EQ(error, std::string("The remote runner returned malformed result fields."));
+			UAM_ASSERT(!client.IsConnected());
+		}
+		// RunnerClient destruction performs owned bridge stop before private env/files unwind.
+	}
+
+	nlohmann::json NativeResultOperation(const std::string& name)
+	{
+		nlohmann::json operation{{"operation", name}};
+		if (name == "session" || name == "messages" || name == "enableTask" || name == "disableTask") operation["nativeSessionId"] = "ses_typed_native";
+		if (name == "enableTask" || name == "disableTask") operation["readOnly"] = name == "disableTask";
+		if (name == "reply") { operation["requestId"] = "per_typed_native"; operation["reply"] = "once"; }
+		return operation;
+	}
+}
+
+UAM_TEST(RemoteOpenCodeNativeResultShapesStayTypedAcrossOperations)
+{
+	using Json = nlohmann::json;
+	for (const std::string& name : {"health", "configProviders", "session", "status", "enableTask", "disableTask"})
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json{{"native", "opaque native object"}}, true);
+	for (const std::string& name : {"permissions", "messages"})
+	{
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json::array(), true);
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json::array({Json{{"id", "native-item"}}}), true);
+	}
+	// False is valid native data; the permission owner still separately requires actual true before retirement.
+	for (const bool value : {false, true}) CheckOpenCodeNativeResultFrame(NativeResultOperation("reply"), Json(value), true);
+	Json boundary{{"data", ""}};
+	boundary["data"] = std::string(262144 - boundary.dump().size(), 'x');
+	UAM_ASSERT_EQ(boundary.dump().size(), std::size_t{262144});
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("session"), boundary, true);
+}
+
+UAM_TEST(RemoteOpenCodeNativeMalformedShapesAndUnknownOperationsRefuse)
+{
+	using Json = nlohmann::json;
+	for (const std::string& name : {"health", "configProviders", "session", "status", "enableTask", "disableTask"})
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json::array(), false);
+	for (const std::string& name : {"permissions", "messages"})
+	{
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json::object(), false);
+		CheckOpenCodeNativeResultFrame(NativeResultOperation(name), Json(true), false);
+	}
+	for (const Json& wrong : {Json::object(), Json::array(), Json(), Json("true"), Json(1)})
+		CheckOpenCodeNativeResultFrame(NativeResultOperation("reply"), wrong, false);
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("unknown-operation"), Json::object(), false);
+	CheckOpenCodeNativeResultFrame(Json::object(), Json::object(), false);
+	CheckOpenCodeNativeResultFrame(Json{{"operation", 7}}, Json::object(), false);
+	CheckOpenCodeNativeResultFrame(Json("session"), Json::object(), false);
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("permissions"), Json(), false);
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("session"), Json::object(), false, false, true);
+	Json oversized{{"data", ""}};
+	oversized["data"] = std::string(262145 - oversized.dump().size(), 'x');
+	UAM_ASSERT_EQ(oversized.dump().size(), std::size_t{262145});
+	CheckOpenCodeNativeResultFrame(NativeResultOperation("session"), oversized, false);
+}
+
+UAM_TEST(RemoteRunnerGenericResultsStillRejectNativeArraysAndBooleans)
+{
+	using Json = nlohmann::json;
+	for (const Json& emitted : {Json::array(), Json(true), Json(false), Json(), Json{{"stdoutCursor", "1"}}, Json{{"running", 1}}})
+		CheckOpenCodeNativeResultFrame(Json::object(), emitted, false, true);
+}
+
+#endif
+
+UAM_TEST(RemoteRunnerOpenCodeNativeSurfacesRespectBuildExclusion)
+{
+	using Json = nlohmann::json;
+	TempDir temp("uam-runner-opencode-build-boundary");
+	uam::remote::RunnerState state;
+	const Json hello = uam::remote::HandleRunnerRequest(
+	    {{"id", "hello-build-boundary"}, {"type", "hello"},
+	     {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "build-boundary"}},
+	    "test-version", &state);
+	UAM_ASSERT(hello.value("ok", false));
+	const auto& capabilities = hello.at("capabilities");
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	UAM_ASSERT(capabilities.value("openCodeNativeControl", false));
+	UAM_ASSERT(capabilities.value("openCodeTerminalObservation", false));
+#else
+	UAM_ASSERT(!capabilities.contains("openCodeNativeControl"));
+	UAM_ASSERT(!capabilities.contains("openCodeTerminalObservation"));
+#endif
+	// Invalid endpoint/missing process authority keep the baseline fixture offline.
+	// The excluded build must reject at its feature boundary before either route's validation.
+	const Json observation{{"id", "observe-build-boundary"}, {"type", "opencode.terminal.observe"},
+	    {"port", 80}, {"token", "private"}, {"workspace", temp.root.string()},
+	    {"operation", {{"operation", "status"}}}};
+	const Json native{{"id", "native-build-boundary"}, {"type", "opencode.native"},
+	    {"sessionId", "owned-but-absent"}, {"controlToken", "test-token"},
+	    {"operation", {{"operation", "status"}}}};
+	for (const auto& request : {observation, native})
+	{
+		const Json response = uam::remote::HandleRunnerRequest(request, "test-version", &state);
+		UAM_ASSERT(!response.value("ok", true));
+		UAM_ASSERT_EQ(response.at("id"), request.at("id"));
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		UAM_ASSERT_EQ(response.at("error").value("code", ""),
+		    request.at("type") == "opencode.terminal.observe" ? std::string("invalid_request") : std::string("session_not_found"));
+#else
+		UAM_ASSERT_EQ(response.at("error").value("code", ""), std::string("unsupported_request"));
+		const Json direct = state.HandleProcessRequest(request);
+		UAM_ASSERT(!direct.value("ok", true));
+		UAM_ASSERT_EQ(direct.at("error").value("code", ""), std::string("unsupported_request"));
+#endif
+	}
+	UAM_ASSERT(!state.HasManagedProcesses());
+}

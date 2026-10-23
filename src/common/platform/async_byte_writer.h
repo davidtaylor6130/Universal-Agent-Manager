@@ -1,11 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <stop_token>
 #include <string>
@@ -25,7 +27,26 @@ namespace uam::platform
 
 	class AsyncByteWriter
 	{
+		struct ReceiptOwner final {};
 	  public:
+		enum class WriteCompletion { Pending, Complete, Incomplete };
+
+		/// Sink acceptance of this exact queued entry; never provider processing.
+		class EnqueueReceipt final
+		{
+		  public:
+			EnqueueReceipt(const EnqueueReceipt&) = delete;
+			EnqueueReceipt& operator=(const EnqueueReceipt&) = delete;
+			WriteCompletion Completion() const
+			{
+				return m_state.load(std::memory_order_acquire);
+			}
+		  private:
+			friend class AsyncByteWriter;
+			explicit EnqueueReceipt(std::weak_ptr<const ReceiptOwner> owner) : m_owner(std::move(owner)) {}
+			const std::weak_ptr<const ReceiptOwner> m_owner;
+			std::atomic<WriteCompletion> m_state{WriteCompletion::Pending};
+		};
 		using WriteChunk = std::function<std::ptrdiff_t(const char*, std::size_t, std::string&)>;
 		using Close = std::function<void()>;
 
@@ -44,39 +65,25 @@ namespace uam::platform
 
 		bool Enqueue(const char* bytes, std::size_t len, std::string* error_out = nullptr)
 		{
+			return EnqueueImpl(bytes, len, nullptr, error_out);
+		}
+
+		/// Empty/null input cannot mint an observed-write receipt; legacy Enqueue is unchanged.
+		bool EnqueueObserved(const char* bytes, std::size_t len,
+		    std::shared_ptr<const EnqueueReceipt>& receipt_out, std::string* error_out = nullptr)
+		{
+			receipt_out.reset();
 			if (bytes == nullptr || len == 0)
 			{
-				return true;
-			}
-
-			std::lock_guard lock(m_mutex);
-			if (m_failed || m_stopping)
-			{
-				if (error_out != nullptr)
-				{
-					*error_out = m_error.empty() ? "Provider input writer is stopped." : m_error;
-				}
+				if (error_out) *error_out = "An observed input write requires nonempty bytes.";
 				return false;
 			}
-			if (len > kAsyncInputMaxQueuedBytes - std::min(m_pending_bytes, kAsyncInputMaxQueuedBytes))
-			{
-				FailLocked("Provider input exceeded the 4 MiB queue safety limit.");
-				if (error_out != nullptr)
-				{
-					*error_out = m_error;
-				}
-				m_condition.notify_all();
-				return false;
-			}
+			return EnqueueImpl(bytes, len, &receipt_out, error_out);
+		}
 
-			if (m_pending_bytes == 0)
-			{
-				m_last_progress_at = std::chrono::steady_clock::now();
-			}
-			m_queue.emplace_back(bytes, len);
-			m_pending_bytes += len;
-			m_condition.notify_one();
-			return true;
+		bool OwnsReceipt(const EnqueueReceipt& receipt) const
+		{
+			return receipt.m_owner.lock() == m_receipt_owner;
 		}
 
 		bool FailureOrStall(std::string* error_out = nullptr)
@@ -135,6 +142,7 @@ namespace uam::platform
 					return;
 				}
 				m_stopping = true;
+				FinalizePendingReceiptsLocked();
 			}
 			m_worker.request_stop();
 			m_condition.notify_all();
@@ -157,9 +165,69 @@ namespace uam::platform
 		}
 
 	  private:
+		struct QueuedBytes
+		{
+			std::string bytes;
+			std::shared_ptr<EnqueueReceipt> receipt;
+		};
+
+		bool EnqueueImpl(const char* bytes, std::size_t len,
+		    std::shared_ptr<const EnqueueReceipt>* receipt_out, std::string* error_out)
+		{
+			if (bytes == nullptr || len == 0)
+			{
+				return true;
+			}
+
+			std::lock_guard lock(m_mutex);
+			if (m_failed || m_stopping)
+			{
+				if (error_out != nullptr)
+				{
+					*error_out = m_error.empty() ? "Provider input writer is stopped." : m_error;
+				}
+				return false;
+			}
+			if (len > kAsyncInputMaxQueuedBytes - std::min(m_pending_bytes, kAsyncInputMaxQueuedBytes))
+			{
+				FailLocked("Provider input exceeded the 4 MiB queue safety limit.");
+				if (error_out != nullptr)
+				{
+					*error_out = m_error;
+				}
+				m_condition.notify_all();
+				return false;
+			}
+
+			if (m_pending_bytes == 0)
+			{
+				m_last_progress_at = std::chrono::steady_clock::now();
+			}
+			std::shared_ptr<EnqueueReceipt> receipt;
+			if (receipt_out) receipt = std::shared_ptr<EnqueueReceipt>(new EnqueueReceipt(m_receipt_owner));
+			m_queue.push_back(QueuedBytes{std::string(bytes, len), receipt});
+			if (receipt_out) *receipt_out = std::move(receipt);
+			m_pending_bytes += len;
+			m_condition.notify_one();
+			return true;
+		}
+
+		/// Called only while the existing writer mutex excludes completion publication.
+		void FinalizePendingReceiptsLocked()
+		{
+			for (const QueuedBytes& entry : m_queue)
+			{
+				if (!entry.receipt) continue;
+				WriteCompletion pending = WriteCompletion::Pending;
+				(void)entry.receipt->m_state.compare_exchange_strong(pending, WriteCompletion::Incomplete,
+				    std::memory_order_release, std::memory_order_relaxed);
+			}
+		}
+
 		void FailLocked(std::string message)
 		{
 			m_failed = true;
+			FinalizePendingReceiptsLocked();
 			m_error = std::move(message);
 		}
 
@@ -174,7 +242,8 @@ namespace uam::platform
 					return;
 				}
 
-				const std::string& front = m_queue.front();
+				const QueuedBytes& entry = m_queue.front();
+				const std::string& front = entry.bytes;
 				const std::size_t chunk_size = std::min(kAsyncInputWriteChunkBytes, front.size() - m_front_offset);
 				std::string chunk(front.data() + m_front_offset, chunk_size);
 				lock.unlock();
@@ -201,6 +270,12 @@ namespace uam::platform
 				m_condition.notify_all();
 				if (m_front_offset == front.size())
 				{
+					if (entry.receipt && !m_failed && !m_stopping)
+					{
+						WriteCompletion pending = WriteCompletion::Pending;
+						(void)entry.receipt->m_state.compare_exchange_strong(pending, WriteCompletion::Complete,
+						    std::memory_order_release, std::memory_order_relaxed);
+					}
 					m_queue.pop_front();
 					m_front_offset = 0;
 				}
@@ -212,7 +287,8 @@ namespace uam::platform
 		std::chrono::milliseconds m_no_progress_timeout;
 		mutable std::mutex m_mutex;
 		std::condition_variable_any m_condition;
-		std::deque<std::string> m_queue;
+		const std::shared_ptr<ReceiptOwner> m_receipt_owner = std::make_shared<ReceiptOwner>();
+		std::deque<QueuedBytes> m_queue;
 		std::size_t m_front_offset = 0;
 		std::size_t m_pending_bytes = 0;
 		std::chrono::steady_clock::time_point m_last_progress_at = std::chrono::steady_clock::now();

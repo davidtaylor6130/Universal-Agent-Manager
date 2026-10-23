@@ -57,9 +57,21 @@ import type {
 } from './cpp/types'
 import type { StoreApi } from 'zustand'
 
+/** Positive evidence of a guarded, immutable saved-history tail; never input authority. */
+export type AcceptedHistoryPage = {
+  chatId: string; birth: number; requestId: string; session: Session
+  summaryDigest: string | undefined; summaryCount: number | undefined
+  messagesDigest: string; startIndex: number; totalCount: number; messages: Message[]
+}
+
 export type MutationResult = { ok: boolean; error?: string }
 export type CommandSafetyTierResult = MutationResult & { cancelled?: boolean }
 export type GoalCreateResult = MutationResult & { goalId?: string }
+
+/** Optional presentation observation only; action result, child controls and delivery authority remain separate. */
+export type AcpPromptPresentationObserver = ((identity: { requestId: string; sessionId: string; createdAtMs: number }) => void) & {
+  onInputRecorded?: (identity: { requestId: string; sessionId: string; createdAtMs: number; message: Message }) => void
+}
 
 export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   providerAvailability: ProviderAvailabilityOverride[]
@@ -84,6 +96,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   consumeChatSearchJump: (chatId: string, generation: number) => boolean
   clearChatSearchNavigation: (queryRequestId?: string) => Promise<void>
   chatHistoryErrorBySessionId: Record<string, string>
+  chatHistoryReadBySessionId: Record<string, { requestId: string; birth: number }>
+  chatHistoryPageBySessionId: Record<string, AcceptedHistoryPage>
   goalsByChatId: Record<string, Goal[]>
   activeGoalIdByChatId: Record<string, string | null>
   goalModeByChatId: Record<string, boolean>
@@ -114,6 +128,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   updateLastCheckedAt: string
   dismissedUpdateVersions: Record<string, string>
   memoryLastStatus: string
+  /** Local display metadata, never native saved values or permission authority. */
+  memorySettingsUnconfirmedFields: string[]
   memoryWorkerBindings: Record<string, MemoryWorkerBinding>
   permissionReviewerProviderId: string
   permissionReviewerModelId: string
@@ -189,14 +205,15 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   acknowledgeChatAttention: (id: string, revision: string) => Promise<boolean>
   setChatSnoozedUntil: (id: string, untilMs: number) => Promise<{ ok: boolean; error?: string }>
   setChatSettled: (id: string, settled: boolean) => Promise<boolean>
-  setActiveSession: (id: string | null) => void
-  loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false> | void
+  setActiveSession: (id: string | null, navigation?: { preserveSubagentRoute?: boolean; leafId?: string }) => void
+  loadSessionMessages: (id: string, force?: boolean, refreshNative?: boolean) => Promise<void | false | AcceptedHistoryPage> | void
   loadOlderSessionMessages: (id: string) => Promise<boolean>
   unloadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic', options?: CreateSessionOptions) => Promise<boolean>
-  branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[]) => Promise<string | null>
+  branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => Promise<string | null>
   retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
   discardUnsentMessage: (id: string, messageIndex: number, expectedMessageId: string) => Promise<boolean>
+  editUnsentMessage: (id: string, messageIndex: number, expectedMessage: Message, text: string, retainedAttachments: Attachment[]) => Promise<{ ok: boolean; error?: string }>
   renameSession: (id: string, name: string) => void
   setSessionPinned: (id: string, pinned: boolean) => Promise<boolean>
   setSessionProvider: (id: string, providerId: string) => Promise<boolean>
@@ -216,6 +233,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setSessionMemoryEnabled: (id: string, enabled: boolean) => Promise<boolean>
   setSessionMemoryLevel: (id: string, level: MemoryLevel) => Promise<boolean>
   setSessionSmallModelMode: (id: string, enabled: boolean) => Promise<boolean>
+  /** Internal display observation/overlay; never publication or native mutation authority. */
+  reconcileMemorySettingsProjection: (projection: Partial<AppState>, suppliedNativeSettings?: Partial<CppSettings>) => Partial<AppState>
   setMemorySettings: (settings: Partial<Pick<AppState, 'memoryEnabledDefault' | 'memoryLevelDefault' | 'memoryIdleDelaySeconds' | 'memoryRecallBudgetBytes' | 'goalMaxLoopIterations' | 'acpSetupInactivityTimeoutSeconds' | 'acpTurnOutputLimitMiB' | 'memoryWorkerBindings' | 'permissionReviewerProviderId' | 'permissionReviewerModelId'>>) => Promise<boolean>
   setUpdateSettings: (settings: Partial<Pick<AppState, 'automaticProviderUpdates' | 'updateChecksEnabled' | 'updateLastCheckedAt' | 'dismissedUpdateVersions'>>) => Promise<boolean>
   setSessionCodexOptions: (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }) => Promise<boolean>
@@ -319,8 +338,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   // ACP actions
   stageChatContextReference: (sessionId: string, reference: ContextReference) => boolean
   stageChatAttachments: (sessionId: string, items: ChatAttachmentInput[]) => Promise<Attachment[]>
-  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => Promise<boolean>
+  sendAcpPrompt: (sessionId: string, text: string, attachments?: Attachment[], steerNow?: boolean, onStarted?: AcpPromptPresentationObserver) => Promise<boolean>
   removeQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
+  retryUnsentAcpPrompt: (sessionId: string, expected: { id: string; revision: number }) => Promise<boolean>
   steerQueuedAcpPrompt: (sessionId: string, index: number, expected?: { id: string; revision: number }) => Promise<boolean>
   resumeQueuedAcpPrompts: (sessionId: string, expected: { id: string; revision: number }[]) => Promise<boolean>
   editQueuedAcpPrompt: (sessionId: string, promptId: string, expectedRevision: number, text: string, retainedAttachmentIds?: string[]) => Promise<boolean>

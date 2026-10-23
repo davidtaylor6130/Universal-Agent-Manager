@@ -107,6 +107,20 @@ namespace
 
 }
 
+namespace
+{
+	void AssertInstallerBlockReason(const uam::AppState& app, const std::string& host_id,
+	    uam::remote_install::HostRuntimeBlockReason expected, bool allow_quiesce = false)
+	{
+		using Reason = uam::remote_install::HostRuntimeBlockReason;
+		Reason reason = Reason::VcsLease;
+		const bool blocked = uam::remote_install::HostHasActiveRuntimeWork(app, host_id, allow_quiesce, &reason);
+		UAM_ASSERT(blocked == uam::remote_install::HostHasActiveRuntimeWork(app, host_id, allow_quiesce));
+		UAM_ASSERT(reason == expected);
+		UAM_ASSERT(blocked == (reason != Reason::None));
+	}
+}
+
 UAM_TEST(InstallerQuiesceAdmitsOnlyOwnedHiddenDiscovery)
 {
 	uam::AppState app;
@@ -164,6 +178,10 @@ UAM_TEST(InstallerQuiesceBlocksHostCliMaintenance)
 		}
 		UAM_ASSERT(uam::remote_install::HostHasActiveRuntimeWork(app, host.id, true));
 		UAM_ASSERT(!uam::remote_install::HostHasActiveRuntimeWork(app, "another-host", true));
+		using Reason = uam::remote_install::HostRuntimeBlockReason;
+		const Reason reasons[] = {Reason::CliVersionCheck, Reason::CliInstall, Reason::CliUpdate, Reason::CliVerification};
+		AssertInstallerBlockReason(app, host.id, reasons[kind], true);
+		AssertInstallerBlockReason(app, "another-host", Reason::None, true);
 	}
 }
 
@@ -182,10 +200,17 @@ UAM_TEST(InstallerQuiesceWaitsForBackgroundHistoryScan)
 	app.startup_native_import_service->Initialize(app);
 	const bool blocks = uam::remote_install::HostHasActiveRuntimeWork(app, InstallerHost().id);
 	const bool can_wait = !uam::remote_install::HostHasActiveRuntimeWork(app, InstallerHost().id, true);
+	uam::remote_install::HostRuntimeBlockReason scan_reason, quiesce_reason;
+	const bool diagnosed_blocks = uam::remote_install::HostHasActiveRuntimeWork(app, InstallerHost().id, false, &scan_reason);
+	const bool diagnosed_wait = !uam::remote_install::HostHasActiveRuntimeWork(app, InstallerHost().id, true, &quiesce_reason);
 	release->set_value();
 	WaitInstallerScan(*app.startup_native_import_service, app);
 	UAM_ASSERT(blocks);
 	UAM_ASSERT(can_wait);
+	UAM_ASSERT(diagnosed_blocks == blocks);
+	UAM_ASSERT(diagnosed_wait == can_wait);
+	UAM_ASSERT(scan_reason == uam::remote_install::HostRuntimeBlockReason::BackgroundScan);
+	UAM_ASSERT(quiesce_reason == uam::remote_install::HostRuntimeBlockReason::None);
 	UAM_ASSERT(!uam::remote_install::HostHasActiveRuntimeWork(app, InstallerHost().id));
 }
 
@@ -209,6 +234,8 @@ UAM_TEST(InstallerQuiesceBlocksExplicitSelectedImports)
 	UAM_ASSERT(uam::remote_install::HostHasActiveRuntimeWork(app, InstallerHost().id, true));
 	UAM_ASSERT(!uam::remote_install::HostHasActiveRuntimeWork(app, "another-host", true));
 	UAM_ASSERT(app.startup_native_import_service->ImportPending());
+	AssertInstallerBlockReason(app, InstallerHost().id, uam::remote_install::HostRuntimeBlockReason::SelectedImport, true);
+	AssertInstallerBlockReason(app, "another-host", uam::remote_install::HostRuntimeBlockReason::None, true);
 }
 
 UAM_TEST(InstallerQuiesceRejectsNewSelectionWithoutLosingCandidates)
@@ -586,4 +613,93 @@ UAM_TEST(InstallerQuiesceDeferredScanRejectsChangedConnection)
 		UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{1});
 		UAM_ASSERT_EQ(service.Snapshot().candidates.front().execution_host_id, other.id);
 	}
+}
+
+UAM_TEST(InstallerBlockReasonPreservesFirstMatchAndHostScope)
+{
+	using Reason = uam::remote_install::HostRuntimeBlockReason;
+	uam::AppState app;
+	const std::string host = InstallerHost().id;
+	ChatSession chat = InstallerHistory();
+	chat.remote_stop_cleanup_pending = true;
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->process_execution_host_id = host;
+	session->remote_stop_unconfirmed = true;
+	app.acp_sessions.push_back(std::move(session));
+	std::shared_ptr<void> lease = std::make_shared<int>(1);
+	app.remote_vcs_operation_leases_by_host_id[host] = lease;
+	AssertInstallerBlockReason(app, host, Reason::VcsLease, true);
+	AssertInstallerBlockReason(app, "another-host", Reason::None, true);
+	lease.reset();
+	AssertInstallerBlockReason(app, host, Reason::ChatStopCleanup, true);
+	app.chats.front().remote_process_exists = true;
+	AssertInstallerBlockReason(app, host, Reason::ChatProcess, true);
+	app.chats.front().remote_process_exists = false;
+	app.chats.front().remote_stop_cleanup_pending = false;
+	AssertInstallerBlockReason(app, host, Reason::SessionUnconfirmedStop, true);
+	app.acp_sessions.front()->remote_stop_pending = true;
+	AssertInstallerBlockReason(app, host, Reason::SessionRemoteStop, true);
+	app.acp_sessions.front()->running = true;
+	AssertInstallerBlockReason(app, host, Reason::SessionRunning, true);
+	app.acp_sessions.front()->running = false;
+	app.acp_sessions.front()->remote_stop_pending = false;
+	app.acp_sessions.front()->remote_stop_unconfirmed = false;
+	app.acp_sessions.front()->reconnect_pending = true;
+	AssertInstallerBlockReason(app, host, Reason::SessionReconnect, true);
+	app.acp_sessions.front()->reconnect_pending = false;
+	AssertInstallerBlockReason(app, host, Reason::None, true);
+}
+
+UAM_TEST(InstallerBlockReasonRetainsQuiesceAndUnknownStopAuthority)
+{
+	using Reason = uam::remote_install::HostRuntimeBlockReason;
+	uam::AppState app;
+	uam::AcpSessionState& session = InstallerDiscovery(app);
+	const std::string host = InstallerHost().id;
+	AssertInstallerBlockReason(app, host, Reason::None, true);
+	AssertInstallerBlockReason(app, host, Reason::ChatProcess);
+	// Stopped is insufficient: the retained hidden process authority cannot quiesce.
+	session.running = false;
+	AssertInstallerBlockReason(app, host, Reason::ChatProcess, true);
+	app.model_discovery_chats.clear();
+	auto stop = std::make_unique<uam::PendingAcpRemoteStop>();
+	stop->chat_id = session.chat_id;
+	app.pending_acp_remote_stops.push_back(std::move(stop));
+	AssertInstallerBlockReason(app, host, Reason::PendingRemoteStop, true);
+	AssertInstallerBlockReason(app, "another-host", Reason::None, true);
+	app.acp_sessions.clear();
+	AssertInstallerBlockReason(app, host, Reason::UnknownStopOwner, true);
+	AssertInstallerBlockReason(app, "another-host", Reason::UnknownStopOwner, true);
+	app.pending_acp_remote_stops.clear();
+	AssertInstallerBlockReason(app, host, Reason::None, true);
+}
+
+UAM_TEST(InstallerBlockReasonDistinguishesPhysicalCleanupAndTerminal)
+{
+	using Reason = uam::remote_install::HostRuntimeBlockReason;
+	uam::AppState app;
+	const std::string host = InstallerHost().id;
+	app.chats.push_back(InstallerHistory());
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = app.chats.front().id;
+	terminal->should_launch = true;
+	app.cli_terminals.push_back(std::move(terminal));
+	uam::AsyncAcpProcessStopTask stop;
+	stop.execution_host_id = host;
+	stop.finished = std::make_shared<std::atomic<bool>>(false);
+	stop.result = std::make_shared<uam::platform::ObservedProcessStopResult>();
+	app.acp_process_stop_tasks.push_back(std::move(stop));
+	AssertInstallerBlockReason(app, host, Reason::PhysicalStop, true);
+	AssertInstallerBlockReason(app, "another-host", Reason::None, true);
+	app.acp_process_stop_tasks.front().finished->store(true);
+	AssertInstallerBlockReason(app, host, Reason::PhysicalStop, true);
+	app.acp_process_stop_tasks.front().result->exit_confirmed = true;
+	AssertInstallerBlockReason(app, host, Reason::TerminalLaunch, true);
+	app.cli_terminals.front()->running = true;
+	AssertInstallerBlockReason(app, host, Reason::TerminalRunning, true);
+	app.cli_terminals.front()->running = false;
+	app.cli_terminals.front()->should_launch = false;
+	AssertInstallerBlockReason(app, host, Reason::None, true);
 }

@@ -131,10 +131,12 @@ class CefQueryWorkerTask : public CefTask
 	IMPLEMENT_REFCOUNTING(CefQueryWorkerTask);
 };
 
+/// User requests require immediate results, including when no BrowserView exists.
+/// CEF may indefinitely defer BACKGROUND work while the application is idle.
 template <typename Worker>
 bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker)
 {
-	if (!CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker))))
+	if (!CefPostTask(TID_FILE_USER_BLOCKING, new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker))))
 	{
 		if (callback) callback->Failure(503, "The background task queue is unavailable.");
 		return false;
@@ -143,7 +145,7 @@ bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBr
 }
 
 template <typename Worker, typename Completion>
-bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion, CefThreadId thread_id = TID_FILE_BACKGROUND)
+bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion, CefThreadId thread_id = TID_FILE_USER_BLOCKING)
 {
 	if (!CefPostTask(thread_id,
 	                 new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion))))

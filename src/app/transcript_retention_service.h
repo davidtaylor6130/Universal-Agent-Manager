@@ -14,6 +14,7 @@
 
 namespace uam
 {
+	class ManagedSubagentSnapshot;
 	/// <summary>Derived, bounded frontend tails live in existing summary files and never replace provider history.</summary>
 	class MessageTailCache
 	{
@@ -26,6 +27,10 @@ namespace uam
 
 	struct ManagedAgentTranscriptReadIdentity
 	{
+		std::shared_ptr<const ManagedSubagentSnapshot> initial_history;
+		std::string history_transcript_birth;
+		std::string history_error;
+		std::filesystem::path history_data_root;
 		std::string root_chat_id;
 		std::string root_provider_id;
 		std::string root_execution_host_id;

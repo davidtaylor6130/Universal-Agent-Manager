@@ -3,7 +3,9 @@ import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser
 import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
-import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { subscribeChatGridLayout } from '../../utils/chatGridStorage'
+import { subscribeSubagentNavigation } from '../../utils/subagentNavigation'
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { PanelLeftClose, PanelLeftOpen, Settings2, GitBranch, ArrowUpCircle, Bell, CheckCheck, CheckCircle2, AlertTriangle, Info, X, XCircle, ChartNoAxesCombined } from 'lucide-react'
 import './panels.css'
@@ -60,23 +62,134 @@ const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').t
 
 type TransientAlert = { id: string; tone: 'error' | 'info'; message: string; actionLabel: string; action: 'notifications' | 'updates' }
 
+const ALERT_EXPIRY_MS = 8000
+
 /** The one shared transient alert for app-wide messages; every message is also kept in the notifications panel. */
-function TransientAlertSurface({ alert, onAction, onDismiss }: { alert: TransientAlert | null; onAction: (action: TransientAlert['action']) => void; onDismiss: () => void }) {
+function TransientAlertSurface({ alert, notice, onAction, onDismiss, onHeldChange, fallbackId, onFallbackChange }: { alert: TransientAlert | null; notice: Pick<TransientAlert, 'id' | 'message'> | null; onAction: (action: TransientAlert['action']) => void; onDismiss: () => void; onHeldChange: (held: boolean) => void; fallbackId: string; onFallbackChange: (fallback: boolean) => void }) {
   const { mounted, closing } = usePresence(alert !== null)
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const [hovered, setHovered] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const [placement, setPlacement] = useState<{ right: number; width: number; height: number; fits: boolean } | null>(null)
+  const [announcement, setAnnouncement] = useState<{ id: string; message: string } | null>(null)
+  // Keep the existing rail-relative horizontal anchor, with the popup at the GUI's bottom edge.
+  // David explicitly permits covering Send; composer growth and first-send FLIP do not lift it.
+  useLayoutEffect(() => {
+    if (!mounted || !alert || !surfaceRef.current) {
+      setPlacement(null)
+      onFallbackChange(false)
+      return
+    }
+    const surface = surfaceRef.current
+    const app = surface.closest('.uam-app')
+    let frame: number | null = null
+    let observed: Element[] = []
+    const visibleRect = (element: Element) => {
+      const rect = element.getBoundingClientRect()
+      return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight ? rect : null
+    }
+    const measure = () => {
+      const rail = app?.querySelector('.uam-side-rail--right')
+      const bell = app?.querySelector<HTMLElement>('[data-notification-bell]')
+      const railRect = rail ? visibleRect(rail) : null
+      const bellRect = bell ? visibleRect(bell) : null
+      const rightEdge = Math.min(window.innerWidth - 16, (railRect?.left ?? window.innerWidth) - 8)
+      const width = Math.max(0, Math.min(360, rightEdge - 16))
+      const left = rightEdge - width
+      const overlaps = (rect: DOMRect) => rect.left < rightEdge && rect.right > left
+      const bottomEdge = window.innerHeight
+      const appRect = app?.getBoundingClientRect()
+      const stripHeight = app ? Number.parseFloat(getComputedStyle(app).paddingTop) || 0 : 0
+      let topEdge = Math.max(16, (appRect?.top ?? 0) + stripHeight + 8)
+      for (const header of app?.querySelectorAll('.uam-chat-pane__header') ?? []) {
+        const rect = visibleRect(header)
+        if (rect && overlaps(rect) && rect.top < bottomEdge) topEdge = Math.max(topEdge, rect.bottom + 8)
+      }
+      const height = Math.max(0, bottomEdge - topEdge)
+      const buttons = Array.from(surface.querySelectorAll('button')).map((button) => button.getBoundingClientRect())
+      const actionWidth = buttons.reduce((sum, rect) => sum + rect.width, 0) + 32
+      const actionHeight = Math.max(26, ...buttons.map((rect) => rect.height)) + 10
+      const fits = Boolean(railRect && bellRect && width >= actionWidth + 64 && height >= actionHeight)
+      const next = { right: window.innerWidth - rightEdge, width, height, fits }
+      setPlacement((current) => current && Object.keys(next).every((key) => current[key as keyof typeof next] === next[key as keyof typeof next]) ? current : next)
+      onFallbackChange(!fits)
+      if (!fits) setHovered(false)
+      if (!fits && surface.contains(document.activeElement)) {
+        bell?.focus()
+        setFocused(false)
+      }
+    }
+    const schedule = () => {
+      if (frame === null) frame = window.requestAnimationFrame(() => { frame = null; bind(); measure() })
+    }
+    const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule)
+    const bind = () => {
+      const next = [surface, ...(app ? [app, ...app.querySelectorAll('.uam-side-rail--right, .uam-chat-pane__header')] : [])]
+      if (next.length === observed.length && next.every((element, index) => element === observed[index])) return
+      resize?.disconnect()
+      observed = next
+      observed.forEach((element) => resize?.observe(element))
+    }
+    bind()
+    // Existing layout/selection notifications cover mount replacement; do not observe transcript mutations.
+    const unsubscribeGrid = subscribeChatGridLayout(schedule)
+    const unsubscribeChild = subscribeSubagentNavigation(schedule)
+    const unsubscribeStore = useAppStore.subscribe((state, previous) => {
+      if (state.activeSessionId !== previous.activeSessionId || state.isSettingsOpen !== previous.isSettingsOpen ||
+          (state.sessions !== previous.sessions && state.sessions.map((session) => `${session.id}:${session.viewMode}`).join('|') !==
+            previous.sessions.map((session) => `${session.id}:${session.viewMode}`).join('|'))) schedule()
+    })
+    window.addEventListener('resize', schedule)
+    measure()
+    return () => {
+      resize?.disconnect()
+      unsubscribeGrid()
+      unsubscribeChild()
+      unsubscribeStore()
+      window.removeEventListener('resize', schedule)
+      if (frame !== null) window.cancelAnimationFrame(frame)
+    }
+  }, [mounted, alert?.id, onFallbackChange])
+  // Publish into the already-mounted live region once per distinct notice, independently of placement.
+  // The retained-notification instruction stays true whether the visible alert fits or falls back to the bell.
+  useEffect(() => {
+    if (!notice) return
+    setAnnouncement((previous) => previous?.id === notice.id && previous.message === notice.message
+      ? previous : { id: notice.id, message: notice.message })
+  }, [notice?.id, notice?.message])
+  // Hover or focus inside the alert holds the expiry timer so its actions never vanish under the pointer or keyboard.
+  const held = alert !== null && (hovered || focused)
+  useEffect(() => { onHeldChange(held) }, [held, onHeldChange])
+  useEffect(() => {
+    if (alert) return
+    setHovered(false)
+    setFocused(false)
+  }, [alert])
   // Keep the last alert on screen while it animates out.
   const lastAlert = useRef(alert)
   if (alert) lastAlert.current = alert
   const current = lastAlert.current
-  if (!mounted || !current) return null
-  return (
-    <div role="status" aria-live="polite" data-testid="transient-alert" data-state={closing ? 'closed' : 'open'}
-      className="uam-transient-alert fixed bottom-4 left-4 flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
-      style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, width: 360, maxWidth: 'calc(100vw - 32px)', background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
-      <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere', color: current.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>{current.message}</span>
-      <Button variant="ghost" size="sm" onClick={() => { onAction(current.action); onDismiss() }}>{current.actionLabel}</Button>
-      <IconButton icon={<X size={13} />} size="sm" label="Dismiss alert" onClick={onDismiss} />
+  const liveRegion = <span id={fallbackId} data-testid="transient-alert-announcer" role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement && <span key={announcement.id}>{announcement.message} Saved in Notifications. Use the Notifications button to read it.</span>}</span>
+  if (!mounted || !current) return liveRegion
+  // A focused control is about to unmount; hand focus to the bell rather than dropping it to the document.
+  const finish = (run: () => void) => {
+    const hadFocus = surfaceRef.current?.contains(document.activeElement)
+    run()
+    if (hadFocus) document.querySelector<HTMLElement>('[data-notification-bell]')?.focus()
+  }
+  return <>
+    {liveRegion}
+    <div ref={surfaceRef} data-testid="transient-alert" data-state={closing ? 'closed' : 'open'}
+      aria-hidden={!placement?.fits || undefined}
+      onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false) }}
+      className="uam-transient-alert fixed flex items-center gap-2 rounded-md py-1 pl-3 pr-1 text-xs"
+      style={{ zIndex: VIEWPORT_MENU_Z_INDEX + 1, right: placement?.right ?? 16, bottom: 0, width: placement?.width ?? 360, maxHeight: placement?.height, visibility: placement?.fits ? 'visible' : 'hidden', background: 'var(--surface-up)', color: 'var(--text)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-2)' }}>
+      <span tabIndex={0} role="region" aria-label="Notification message" className="min-w-0 flex-1 focus-visible:ring-1 focus-visible:ring-[var(--accent)]" style={{ overflowWrap: 'anywhere', overflowY: 'auto', maxHeight: Math.max(0, (placement?.height ?? 0) - 10), color: current.tone === 'error' ? 'var(--error)' : 'var(--text)' }}>{current.message}</span>
+      <Button className="shrink-0" variant="ghost" size="sm" onClick={() => finish(() => { onAction(current.action); onDismiss() })}>{current.actionLabel}</Button>
+      <IconButton className="shrink-0" icon={<X size={13} />} size="sm" label="Dismiss alert" onClick={() => finish(onDismiss)} />
     </div>
-  )
+  </>
 }
 
 const SIDEBAR_WIDTH_MIN = 260
@@ -461,7 +574,7 @@ function NotificationsPanel({
   )
 }
 
-function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onToggleCommit, onToggleAlerts, onToggleUpdates }: { alertCount: number; alertsOpen: boolean; monitor: UpdateMonitor; updatesOpen: boolean; onToggleCommit: () => void; onToggleAlerts: () => void; onToggleUpdates: () => void }) {
+function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onToggleCommit, onToggleAlerts, onToggleUpdates, notificationDescriptionId }: { notificationDescriptionId?: string; alertCount: number; alertsOpen: boolean; monitor: UpdateMonitor; updatesOpen: boolean; onToggleCommit: () => void; onToggleAlerts: () => void; onToggleUpdates: () => void }) {
   const commitPanelOpen = useAppStore((s) => s.commitPanelOpen)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const getChatWorktreeStatus = useAppStore((s) => s.getChatWorktreeStatus)
@@ -497,6 +610,8 @@ function RightActivityRail({ alertCount, alertsOpen, monitor, updatesOpen, onTog
         <IconButton
           icon={<Bell size={17} />}
           label={alertCount > 0 ? `${alertCount} alert${alertCount === 1 ? '' : 's'}` : 'No new alerts'}
+          data-notification-bell=""
+          aria-describedby={notificationDescriptionId}
           tooltipSide="left"
           active={alertsOpen}
           onClick={onToggleAlerts}
@@ -552,6 +667,9 @@ export function AppShell() {
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [appFailures, setAppFailures] = useState<AppFailure[]>([])
   const [transientAlert, setTransientAlert] = useState<TransientAlert | null>(null)
+  const [alertHeld, setAlertHeld] = useState(false)
+  const [alertFallback, setAlertFallback] = useState(false)
+  const alertFallbackId = useId()
 
   useEffect(() => {
     const onFailure = (event: Event) => {
@@ -564,10 +682,10 @@ export function AppShell() {
   }, [])
 
   useEffect(() => {
-    if (!transientAlert) return
-    const timer = window.setTimeout(() => setTransientAlert(null), 8000)
+    if (!transientAlert || alertHeld) return
+    const timer = window.setTimeout(() => setTransientAlert(null), ALERT_EXPIRY_MS)
     return () => window.clearTimeout(timer)
-  }, [transientAlert])
+  }, [transientAlert, alertHeld])
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)
   const updateNoticeId = updateMonitor.updates.length > 0 ? updateNotificationId(updateMonitor.updates) : ''
@@ -727,6 +845,9 @@ export function AppShell() {
   const commitPresence = usePresence(commitPanelOpen)
   const alertsPresence = usePresence(alertsOpen)
   const updatesPresence = usePresence(updatesOpen)
+  // Any open right-side panel sits beside the rail; the alert would cover it. The bell keeps the message and unread count.
+  const alertSuppressed = transientAlert !== null && (alertsOpen || updatesOpen || commitPanelOpen)
+  useEffect(() => { if (alertSuppressed) setTransientAlert(null) }, [alertSuppressed])
 
   const toggleSettings = () => {
     if (usageOpen) { setUsageOpen(false); if (!isSettingsOpen) setSettingsOpen(true); return }
@@ -895,6 +1016,7 @@ export function AppShell() {
       )}
 
       <RightActivityRail
+        notificationDescriptionId={alertFallback ? alertFallbackId : undefined}
         alertCount={alertCount}
         alertsOpen={alertsOpen}
         monitor={updateMonitor}
@@ -917,7 +1039,7 @@ export function AppShell() {
       />
 
       <StartupNativeImportChooser />
-      <TransientAlertSurface alert={transientAlert} onAction={(action) => action === 'updates' ? openUpdates() : openNotifications()} onDismiss={() => setTransientAlert(null)} />
+      <TransientAlertSurface alert={alertSuppressed ? null : transientAlert} notice={transientAlert} fallbackId={alertFallbackId} onFallbackChange={setAlertFallback} onHeldChange={setAlertHeld} onAction={(action) => action === 'updates' ? openUpdates() : openNotifications()} onDismiss={() => setTransientAlert(null)} />
 
       {/* Modals */}
       <Presence open={isNewChatModalOpen}><InterfaceErrorBoundary panel onDismiss={() => useAppStore.getState().setNewChatModalOpen(false)}><Suspense fallback={null}><NewChatModal /></Suspense></InterfaceErrorBoundary></Presence>

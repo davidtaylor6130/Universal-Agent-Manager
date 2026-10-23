@@ -56,7 +56,7 @@ describe('NewChatModal', () => {
     }
   })
 
-  it('keeps cached models with live selection and config, tolerates legacy bindings, and refreshes independently', async () => {
+  it('keeps cached models and live config without live selection, tolerates legacy bindings, and refreshes independently', async () => {
     const optionsSpy = vi.spyOn(modelOptions, 'buildModelOptions')
     const discoverProviderModels = vi.fn().mockResolvedValue(true)
     useAppStore.setState({ discoverProviderModels })
@@ -81,7 +81,7 @@ describe('NewChatModal', () => {
       await act(async () => { root.render(<NewChatModal />) })
       expect(host.querySelector('[data-testid="model-options"]')?.textContent).toContain('Cached Model')
       expect(host.textContent).toContain('Discovering models')
-      expect(optionsSpy.mock.calls.filter(([, , , id]) => id === 'gemini-cli').at(-1)?.[0]).toMatchObject({ currentModelId: 'cached-model', configOptions: [{ currentValue: 'live-config' }] })
+      expect(optionsSpy.mock.calls.filter(([, , , id]) => id === 'gemini-cli').at(-1)?.[0]).toMatchObject({ currentModelId: undefined, availableModels: [{ id: 'cached-model' }], configOptions: [{ currentValue: 'live-config' }] })
       act(() => {
         const binding = { ...useAppStore.getState().acpBindingBySessionId.active }
         Reflect.deleteProperty(binding, 'availableModels')
@@ -572,6 +572,69 @@ describe('NewChatModal', () => {
     expect(host.querySelector<HTMLInputElement>('input[placeholder="/absolute/path/on/selected/host"]')?.value).toBe('/srv')
     act(() => root.unmount())
     host.remove()
+  })
+
+  it.each(['default', 'explicit'] as const)('keeps new-chat %s reasoning independent of another live chat model', async (selection) => {
+    const previous = useAppStore.getState()
+    const addSession = vi.fn().mockResolvedValue(false)
+    const discoverProviderModels = vi.fn().mockResolvedValue(true)
+    const models = [
+      { id: 'model-a', name: 'Catalog default A', description: 'Provider catalog default.', supportedReasoningEfforts: ['low'], defaultReasoningEffort: 'low' },
+      { id: 'model-b', name: 'Live chat B', description: 'Another chat selected this model.', supportedReasoningEfforts: ['high'], defaultReasoningEffort: 'high' },
+    ]
+    useAppStore.setState({
+      addSession,
+      discoverProviderModels,
+      defaultNewChatProviderId: 'codex-cli',
+      providerChatDefaults: { 'codex-cli': { modelId: '', reasoningEffort: '', approvalMode: 'default', commandSafetyTier: 'off', memoryEnabled: true, serviceTier: '' } },
+      sessions: [{ id: 'other-chat', name: 'Other chat', providerId: 'codex-cli', folderId: 'project', workspaceDirectory: '/tmp/project', viewMode: 'chat', createdAt: new Date(), updatedAt: new Date() }],
+      acpBindingBySessionId: { 'other-chat': {
+        sessionId: 'other-native', threadId: '', providerId: 'codex-cli', protocolKind: 'codex-app-server',
+        running: true, lifecycleState: 'ready', processing: true, processingStartedAtMs: null,
+        readySinceLastSelect: false, lastError: '', recentStderr: '', lastExitCode: null,
+        diagnostics: [], toolCalls: [], planEntries: [], availableModes: [], currentModeId: 'default',
+        availableModels: models, currentModelId: 'model-b', turnEvents: [], turnUserMessageIndex: -1,
+        turnAssistantMessageIndex: -1, turnSerial: 1, pendingPermission: null, pendingUserInput: null,
+        agentInfo: null, modelsLoading: false, modelRefreshError: '',
+      } },
+      providerModelCatalogs: [{ providerId: 'codex-cli', workspaceDirectory: '/tmp/project', executionHostId: 'local', availableModels: models, currentModelId: 'model-a', modelsLoading: false, modelRefreshError: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<NewChatModal />) })
+      const selectedLabel = selection === 'default' ? 'Default' : 'Live chat B'
+      const model = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+        .find((option) => option.querySelector('.uam-np-model__name > span')?.textContent === selectedLabel)
+      expect(model).toBeDefined()
+      act(() => model!.click())
+      expect(host.querySelector('[role="menuitemradio"][aria-checked="true"]')?.textContent).toContain(selectedLabel)
+      expect(addSession).not.toHaveBeenCalled()
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+
+      const expectedEffort = selection === 'default' ? 'low' : 'high'
+      const expectedLabel = selection === 'default' ? 'Low' : 'High'
+      const reasoning = host.querySelector<HTMLButtonElement>('button[aria-label="Reasoning effort"]')!
+      expect(reasoning).not.toBeNull()
+      expect.soft(reasoning.textContent).toContain(expectedLabel)
+      act(() => reasoning.click())
+      const list = document.querySelector('[role="listbox"][aria-label="Reasoning effort"]')!
+      expect(list).not.toBeNull()
+      expect.soft(Array.from(list.querySelectorAll('[role="option"]')).map((option) => option.querySelector('span.block')?.textContent)).toEqual([expectedLabel])
+      act(() => list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+
+      const create = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Create chat')!
+      await act(async () => { create.click() })
+      expect(addSession).toHaveBeenCalledTimes(1)
+      expect.soft(addSession).toHaveBeenCalledWith('New chat', 'project', 'codex-cli', selection === 'default' ? '' : 'model-b', expectedEffort, 'chat')
+      expect(useAppStore.getState().acpBindingBySessionId['other-chat'].currentModelId).toBe('model-b')
+      expect(discoverProviderModels).not.toHaveBeenCalled()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState(previous, true)
+    }
   })
 
   it('creates with the provider-default model and runtime-default effort shown when saved defaults are empty', () => {

@@ -105,6 +105,8 @@ ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
 	persisted.is_sub_agent = tool_call.is_sub_agent;
 	persisted.sub_agent_id = tool_call.sub_agent_id;
 	persisted.sub_agent_title = tool_call.sub_agent_title;
+	persisted.sub_agent_children = tool_call.sub_agent_children;
+	persisted.sub_agent_children_authoritative = tool_call.sub_agent_children_authoritative;
 	return persisted;
 }
 

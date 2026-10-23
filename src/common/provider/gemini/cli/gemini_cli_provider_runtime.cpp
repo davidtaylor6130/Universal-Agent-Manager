@@ -2,12 +2,16 @@
 #include "common/runtime/acp/acp_session_internal.h"
 
 #include "common/config/approval_modes.h"
+#include "common/config/execution_host_config.h"
 #include "common/chat/chat_ids.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
 #include "common/provider/gemini/base/gemini_history_loader.h"
 #include "common/provider/provider_ids.h"
+#include "common/provider/structured_attachments.h"
+#include "common/platform/async_byte_writer.h"
+#include "common/utils/base64.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/json_runtime.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
@@ -27,6 +31,48 @@ namespace fs = std::filesystem;
 
 namespace
 {
+	nlohmann::json GeminiSavedImageOwner(const uam::AcpSessionState& session, const ChatSession& settings)
+	{
+		const auto process = uam::acp_detail::AcpProcessHandleLabel(session);
+		if (session.protocol_kind != "gemini-acp" || !uam::provider_ids::IsCliProviderAliasOf(session.provider_id, uam::provider_ids::kGeminiCli) ||
+		    !session.running || !session.initialized || !session.session_ready || !session.prompt_image_supported || session.cancel_requested || session.local_stop_pending ||
+		    settings.workspace_directory.empty() || process.empty() || process != session.last_process_id ||
+		    session.session_id.empty() || session.session_id != settings.native_session_id) return nullptr;
+		const bool local = session.process_execution_host_id == "local" && settings.execution_host_id == "local";
+		if (local)
+		{
+			if (!uam::paths::PathFromUtf8(settings.workspace_directory).is_absolute()) return nullptr;
+		}
+		else
+		{
+			// Only the invocation captured by the shared owner/connection fences may select remote input.
+			if (!session.saved_image_retry || !session.saved_image_retry->remote_scope) return nullptr;
+			const auto& permission = *session.saved_image_retry;
+			const auto& scope = *permission.remote_scope;
+			if (scope.host.id.empty() || scope.host.id == "local" || scope.host.transport != "ssh" || scope.host.ssh_alias.empty() ||
+			    permission.execution_host_id != scope.host.id || settings.execution_host_id != scope.host.id || session.process_execution_host_id != scope.host.id ||
+			    scope.native_session_id != settings.native_session_id || scope.runtime_session_id != session.session_id || scope.process_id != process ||
+			    scope.proxy_token.empty() || scope.proxy_token != session.remote_output_delivery_token || scope.proxy_protocol < 3 ||
+			    scope.proxy_protocol != session.remote_runner_protocol_version || scope.proxy_protocol != scope.host.runner_protocol_version ||
+			    !uam::execution_hosts::IsAbsoluteRemotePath(scope.host.platform, settings.workspace_directory)) return nullptr;
+		}
+		// ACP's negotiated image capability is the native contract; model names imply no vision guarantee.
+		nlohmann::json owner = {{"protocol", session.protocol_kind}, {"image", session.prompt_image_supported},
+		    {"sessionId", session.session_id}, {"savedNativeSessionId", settings.native_session_id},
+		    {"processId", process}, {"executionHostId", session.process_execution_host_id},
+		    {"workspace", settings.workspace_directory}, {"agentVersion", session.agent_version},
+		    {"currentModelId", session.current_model_id}, {"currentModeId", session.current_mode_id},
+		    {"modelId", settings.model_id}, {"reasoningEffort", settings.reasoning_effort},
+		    {"approvalMode", settings.approval_mode}, {"serviceTier", settings.service_tier},
+		    {"serviceTierExplicit", settings.service_tier_explicit}};
+		if (!local)
+		{
+			owner["remoteOwnedRetry"] = true;
+			owner["executionPlatform"] = session.saved_image_retry->remote_scope->host.platform;
+		}
+		return owner;
+	}
+
 	std::string RebuiltGeminiSessionNoteText(bool has_tool_calls, bool is_subagent)
 	{
 		std::string note_text = "Note: This session was rebuilt from UAM's source of truth.";
@@ -86,6 +132,115 @@ namespace
 	}
 
 } // namespace
+
+bool GeminiCliProviderRuntime::SupportsSavedImageRetry(const uam::AcpSessionState& session) const
+{
+	// Cold eligibility precedes initialize. Known current-process rejection must
+	// refuse before row admission; a new process still needs fresh negotiation.
+	return session.protocol_kind == "gemini-acp" && (!session.running || !session.initialized || session.prompt_image_supported);
+}
+
+bool GeminiCliProviderRuntime::SupportsRemoteOwnedImageRetry(const uam::AcpSessionState& session) const
+{
+	// Opt-in is capability only; the shared invocation scope still owns process and delivery authority.
+	return session.protocol_kind == "gemini-acp" && session.running && session.initialized && session.session_ready && session.prompt_image_supported;
+}
+
+SavedImageRetryPreflight GeminiCliProviderRuntime::PrepareSavedImageRetry(uam::AcpSessionState& session,
+    const ChatSession& settings, const std::vector<MessageAttachment>& images, std::string& error) const
+{
+	if (images.empty() || images.size() > 32 || GeminiSavedImageOwner(session, settings).is_null())
+	{
+		error = session.saved_image_retry && session.saved_image_retry->remote_scope
+		    ? "Gemini saved-image Retry requires current negotiated ACP image support in its same ready SSH native session. The prompt was not sent."
+		    : "Gemini saved-image Retry requires current negotiated ACP image support in its ready local native session. The prompt was not sent.";
+		return SavedImageRetryPreflight::Rejected;
+	}
+	error.clear();
+	return SavedImageRetryPreflight::Ready;
+}
+
+nlohmann::json GeminiCliProviderRuntime::SavedImageRetryMetadata(const uam::AcpSessionState& session,
+    const ChatSession& settings) const
+{
+	return GeminiSavedImageOwner(session, settings);
+}
+
+bool GeminiCliProviderRuntime::EncodePreparedSavedImageRetry(nlohmann::json& request,
+    const nlohmann::json& prepared, std::string& error, const std::vector<MessageAttachment>& images,
+    const nlohmann::json& metadata) const
+try
+{
+	const auto text = [](const nlohmann::json& object, const char* key) -> std::string
+	{
+		const auto found = object.find(key);
+		return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
+	};
+	const auto fail = [&error]()
+	{
+		error = "Gemini could not retain complete negotiated image input. The prompt was not sent.";
+		return false;
+	};
+	const auto limit = uam::platform::kAsyncInputMaxQueuedBytes;
+	if (images.empty() || images.size() > 32 || !request.is_object() || text(request, "jsonrpc") != "2.0" ||
+	    text(request, "method") != "session/prompt" || !request.contains("id") || !request["id"].is_number_integer() || request["id"].get<std::int64_t>() <= 0 ||
+	    !metadata.is_object() || text(metadata, "protocol") != "gemini-acp" || metadata.value("image", false) != true ||
+	    text(metadata, "processId").empty() || text(metadata, "executionHostId").empty() ||
+	    text(metadata, "sessionId").empty() || text(metadata, "sessionId") != text(metadata, "savedNativeSessionId") ||
+	    !request.contains("params") || !request["params"].is_object() || !prepared.is_object() || !prepared.contains("message") || !prepared["message"].is_object() ||
+	    !prepared["message"].contains("content") || !prepared["message"]["content"].is_array()) return fail();
+	const bool remote = text(metadata, "executionHostId") != "local";
+	if (remote && (!metadata.value("remoteOwnedRetry", false) ||
+	    !uam::execution_hosts::IsAbsoluteRemotePath(text(metadata, "executionPlatform"), text(metadata, "workspace")))) return fail();
+	const auto& params = request["params"];
+	const auto& content = prepared["message"]["content"];
+	if (text(params, "sessionId") != text(metadata, "sessionId") ||
+	    !params.contains("prompt") || !params["prompt"].is_array() || params["prompt"].size() != 1 ||
+	    !params["prompt"][0].is_object() || text(params["prompt"][0], "type") != "text" || !params["prompt"][0].contains("text") || !params["prompt"][0]["text"].is_string() ||
+	    content.size() != images.size() + 1 || !content[0].is_object() || text(content[0], "type") != "text" || !content[0].contains("text") || !content[0]["text"].is_string()) return fail();
+	const auto& prepared_text = content[0]["text"].get_ref<const std::string&>();
+	if (prepared_text.size() > limit) return fail();
+	std::string labels;
+	std::size_t total_bytes = 0;
+	for (std::size_t index = 0; index < images.size(); ++index)
+	{
+		if (images[index].kind != "image" || images[index].name.size() > limit ||
+		    (remote && (images[index].source != AttachmentSource::OwnedNativeAsset ||
+		        images[index].origin_execution_host_id != text(metadata, "executionHostId")))) return fail();
+		const std::string prefix = "\nImage " + std::to_string(index + 1) + " (native image-block order): ";
+		const std::string name = nlohmann::json(images[index].name).dump();
+		if (prefix.size() > limit - labels.size() || name.size() > limit - labels.size() - prefix.size()) return fail();
+		labels += prefix + name;
+		const auto& part = content[index + 1];
+		if (!part.is_object() || part.size() != 2 || text(part, "type") != "image" || !part.contains("source") || !part["source"].is_object()) return fail();
+		const auto& source = part["source"];
+		if (source.size() != 3 || text(source, "type") != "base64" || !source.contains("data") || !source["data"].is_string()) return fail();
+		const auto& data = source["data"].get_ref<const std::string&>();
+		const auto mime = text(source, "media_type");
+		std::string decoded;
+		if (data.empty() || data.size() > limit || (mime != "image/png" && mime != "image/jpeg" && mime != "image/gif" && mime != "image/webp") ||
+		    !uam::base64::Decode(data, decoded) || decoded.empty() || decoded.size() > limit - total_bytes || uam::base64::Encode(decoded) != data) return fail();
+		total_bytes += decoded.size();
+	}
+	if (!prepared_text.ends_with(labels)) return fail();
+	const auto body = prepared_text.substr(0, prepared_text.size() - labels.size());
+	const auto& original_text = params["prompt"][0]["text"].get_ref<const std::string&>();
+	if (!original_text.ends_with(body)) return fail();
+	// The owned worker already verified/decoded the originals. Preserve the ordinary ACP
+	// builder's context and append its exact captured-name labels and native image blocks.
+	auto encoded = request;
+	encoded["params"]["prompt"][0]["text"] = original_text + labels;
+	uam::structured_attachments::AppendPreparedAcpImages(encoded, prepared);
+	if (encoded["params"]["prompt"].size() != images.size() + 1 || encoded.dump().size() >= limit) return fail();
+	request = std::move(encoded);
+	error.clear();
+	return true;
+}
+catch (...)
+{
+	error = "Gemini image input or its negotiated session evidence is invalid. The prompt was not sent.";
+	return false;
+}
 
 const ProviderCliPolicy* GeminiCliProviderRuntime::CliVersionPolicy() const
 {

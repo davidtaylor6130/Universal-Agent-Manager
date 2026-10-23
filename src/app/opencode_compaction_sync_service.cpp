@@ -5,6 +5,7 @@
 #include "app/provider_worker_command.h"
 #include "common/config/execution_host_config.h"
 #include "common/paths/workspace_root.h"
+#include "common/provider/opencode/opencode_native_identity.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -329,8 +330,10 @@ namespace
 			const Summary& summary = item.second;
 			if (!summary.ready || summary.text.empty()) continue;
 			const std::string id = "acp-compaction:" + summary.id;
+			// Empty quarantine receipts are omitted from saved blocks and contain no native text to veto legacy proof.
 			if (std::ranges::any_of(blocks, [&](const Block& block)
-			{ return block.request_id_json == "opencode-message:" + summary.id ||
+			{ return (block.request_id_json == "opencode-message:" + summary.id &&
+			        !(block.type == "context_compaction_summary" && block.text.empty())) ||
 			    (block.type == "context_compaction" && (block.request_id_json == id || block.request_id_json == summary.id) && block.text == summary.text); })) continue;
 			if (summary.requires_tool && summary.previous_tool.empty()) continue;
 			std::size_t begin = 0;
@@ -425,8 +428,7 @@ namespace
 
 	bool PortableId(const nlohmann::json& value)
 	{
-		return value.is_string() && value.get_ref<const std::string&>().size() <= 512 &&
-		    execution_hosts::IsPortableId(value.get_ref<const std::string&>()) && !value.get_ref<const std::string&>().starts_with('-');
+		return value.is_string() && opencode::IsNativeId(value.get_ref<const std::string&>());
 	}
 }
 
@@ -811,10 +813,12 @@ struct OpenCodeCompactionSyncService::State
 		std::erase_if(owner.completed, [&](const std::pair<const Cursor, Summary>& item)
 		{
 			const Summary& summary = item.second;
-			return summary.ready && !summary.text.empty() && !context.pending.contains(summary.id) &&
+			const bool published = summary.ready && !summary.text.empty() && !context.pending.contains(summary.id) &&
 			    std::ranges::any_of(message.blocks, [&](const MessageBlock& block)
 			    { return block.type == "context_compaction" && block.text == summary.text &&
 			        (block.request_id_json == summary.id || block.request_id_json == "acp-compaction:" + summary.id); });
+			if (published) context.identified.erase(summary.id);
+			return published;
 		});
 		if (!owner.live && owner.scan_complete && !unresolved && context.pending.empty())
 		{ context.finished_turn = owner.serial; context.owner.reset(); }
@@ -1243,13 +1247,18 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 			{
 				context.identified.clear(); context.inspected.clear(); context.inspected_turn = session->turn_serial;
 			}
+			std::set<std::string> published;
+			if (context.owner->assistant >= 0)
+				for (const MessageBlock& block : chat->messages[context.owner->assistant].blocks)
+					if (block.type == "context_compaction" && !block.text.empty())
+						published.insert(block.request_id_json.starts_with("acp-compaction:") ? block.request_id_json.substr(15) : block.request_id_json);
 			for (const AcpTurnEventState& event : session->turn_events)
 			{
 				if (context.identified.size() >= kPendingLimit) break;
 				if ((event.type != "assistant_text" && event.type != "context_compaction_summary") ||
 				    !event.request_id_json.starts_with("opencode-message:")) continue;
 				const std::string id = event.request_id_json.substr(17);
-				if (PortableId(id) && !context.inspected.contains(id)) context.identified.insert(id);
+				if (PortableId(id) && !context.inspected.contains(id) && !published.contains(id)) context.identified.insert(id);
 			}
 		}
 		if (!context.error.empty() || !context.owner || !context.owner->live || !m_state->Owns(app, *session, *chat, context))

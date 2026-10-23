@@ -126,10 +126,10 @@ class GoalService
 
 	/// <summary>
 	/// Build the continuation prompt text to inject before the next provider turn.
-	/// Returns empty string if no active goal or no objective.
+	/// Returns empty string if no objective; omit its text when the user message already supplies it.
 	/// </summary>
 	static std::string BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
-	                                           bool small_model_mode = false, const std::string& next_step = "");
+	                                           bool small_model_mode = false, const std::string& next_step = "", bool include_objective = true);
 	static std::string BuildReadOnlyTerminalPrompt(const Goal& goal);
 	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
 	                                     const std::string& recent_assistant_text, int repeated_output_count = 0,

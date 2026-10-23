@@ -1,3 +1,4 @@
+#include "app/agent_run_scheduler.h"
 #include "chat_lifecycle_service.h"
 
 #include "core/chat_import_utils.h"
@@ -66,6 +67,8 @@ namespace
 
 	bool ChatHasDeletionBlockingRuntime(const uam::AppState& app, const std::string& chat_id, const ChatSession* known_chat = nullptr)
 	{
+		if (uam::AgentRunScheduler::HasPendingInitialMention(app, chat_id))
+			return true;
 		for (const uam::CliContextPreparationTask& task : app.cli_context_preparation_tasks)
 		{
 			if (task.state && task.state->chat_id == chat_id && !task.state->finished.load()) return true;
@@ -186,6 +189,48 @@ namespace
 		});
 	}
 
+	bool DeletionRewritesUnconfirmedInitialRoot(const uam::AppState& app, const std::unordered_set<std::string>& deleted_ids)
+	{
+		std::unordered_map<std::string, const ChatSession*> protected_roots;
+		for (const ChatSession& chat : app.chats)
+			if (!deleted_ids.contains(chat.id) && uam::AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat))
+				protected_roots.emplace(chat.id, &chat);
+		if (protected_roots.empty())
+			return false;
+
+		// Match the existing deletion normalization exactly without copying transcript bodies.
+		// These are the fields read by ChatBranching and its native-history identity lookup.
+		std::vector<ChatSession> lineage;
+		lineage.reserve(app.chats.size());
+		for (const ChatSession& chat : app.chats)
+		{
+			ChatSession projected;
+			projected.id = chat.id;
+			projected.parent_chat_id = chat.parent_chat_id;
+			projected.branch_root_chat_id = chat.branch_root_chat_id;
+			projected.branch_from_message_index = chat.branch_from_message_index;
+			projected.provider_id = chat.provider_id;
+			projected.native_session_id = chat.native_session_id;
+			projected.execution_host_id = chat.execution_host_id;
+			projected.workspace_directory = chat.workspace_directory;
+			projected.workspace_worktree_directory = chat.workspace_worktree_directory;
+			lineage.push_back(std::move(projected));
+		}
+		ChatBranching::ReparentChildrenAfterDeletes(lineage, deleted_ids);
+		std::erase_if(lineage, [&](const ChatSession& chat) { return deleted_ids.contains(chat.id); });
+		ChatBranching::Normalize(lineage);
+		for (const ChatSession& chat : lineage)
+		{
+			const auto found = protected_roots.find(chat.id);
+			if (found == protected_roots.end())
+				continue;
+			const ChatSession& original = *found->second;
+			if (chat.parent_chat_id != original.parent_chat_id || chat.branch_root_chat_id != original.branch_root_chat_id || chat.branch_from_message_index != original.branch_from_message_index)
+				return true;
+		}
+		return false;
+	}
+
 	void CaptureDeletionChatLocation(const uam::AppState& app, ChatSession& snapshot)
 	{
 		const std::string resolved = uam::ResolvedNativeSessionIdForChat(app, snapshot);
@@ -241,6 +286,7 @@ namespace
 
 		for (const std::string& deleted_chat_id : deleted_chat_ids)
 		{
+			uam::CancelChatRepositoryBaseline(app, deleted_chat_id);
 			app.resolved_native_sessions_by_chat_id.erase(deleted_chat_id);
 			app.chats_with_unseen_updates.erase(deleted_chat_id);
 			app.collapsed_branch_chat_ids.erase(deleted_chat_id);
@@ -996,7 +1042,9 @@ namespace
 	{
 		if (!ContainsDeletedChatId(deleted_chat_ids, selected_before_id))
 		{
-			ChatDomainService().SelectChatById(app, selected_before_id);
+			// The vector has already changed; its former index may now name another chat.
+			app.selected_chat_index = ChatDomainService().FindChatIndexById(app, selected_before_id);
+			ChatDomainService().RefreshRememberedSelection(app);
 			return;
 		}
 
@@ -1006,12 +1054,11 @@ namespace
 	void ApplyDeletedChatsToUiState(uam::AppState& app,
 	                                const std::unordered_set<std::string>& deleted_chat_ids,
 	                                const std::string& selected_before_id,
-	                                int selected_before_index,
-	                                bool clear_composer)
+	                                int selected_before_index)
 	{
 		SelectAfterDeletingChats(app, deleted_chat_ids, selected_before_id, selected_before_index);
 
-		if (clear_composer)
+		if (ContainsDeletedChatId(deleted_chat_ids, selected_before_id))
 		{
 			app.composer_text.clear();
 		}
@@ -1660,14 +1707,20 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	return ChatProviderSwitchResult::Changed;
 }
 
-bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out, const std::optional<std::string>& operation_id, std::string* warning_out, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch)
+bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out, const std::optional<std::string>& operation_id, std::string* warning_out, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch, bool select_chat, bool regenerate)
+{
+	return BranchFromMessageAndRetry(app, source_chat_id, message_index, replacement_content, branch_id_out, error_out, operation_id, warning_out, retained_attachment_ids, prepared_source, prepared_existing_branch, nullptr, std::nullopt, select_chat, regenerate);
+}
+
+bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out, const std::optional<std::string>& operation_id, std::string* warning_out, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch, uam::PreparedBranchOriginals* prepared_originals, const std::optional<std::vector<std::string>>& retained_markdown_store_files, bool select_chat, bool regenerate)
 {
 	if (branch_id_out != nullptr) branch_id_out->clear();
 	if (error_out != nullptr) error_out->clear();
 	if (warning_out != nullptr) warning_out->clear();
 	const std::string previous_selected_chat_id = ChatDomainService().SelectedChatId(app);
 	bool reused_existing_branch = false;
-	if (!ChatDomainService().CreateBranchFromMessage(app, source_chat_id, message_index, replacement_content, operation_id, &reused_existing_branch, retained_attachment_ids, prepared_source, prepared_existing_branch))
+	std::string created_branch_id;
+	if (!ChatDomainService().CreateBranchFromMessage(app, source_chat_id, message_index, replacement_content, operation_id, &reused_existing_branch, retained_attachment_ids, prepared_source, prepared_existing_branch, prepared_originals, retained_markdown_store_files, select_chat, &created_branch_id))
 	{
 		if (error_out != nullptr)
 		{
@@ -1676,12 +1729,12 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 		return false;
 	}
 
-	const ChatSession* branch = ChatDomainService().SelectedChat(app);
+	const ChatSession* branch = ChatDomainService().FindChatById(app, created_branch_id);
 	if (branch == nullptr)
 	{
 		if (error_out != nullptr)
 		{
-			*error_out = "Branch was created but could not be selected.";
+			*error_out = "Branch was created but could not be found.";
 		}
 		return false;
 	}
@@ -1690,6 +1743,7 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	{
 		*branch_id_out = branch_id;
 	}
+	if (!regenerate) return true;
 	if (reused_existing_branch)
 	{
 		if (branch->branch_retry_error.empty()) return true;
@@ -1738,11 +1792,11 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 		return false;
 	}
 
-	ChatDomainService().SelectChatById(app, previous_selected_chat_id);
+	if (select_chat) ChatDomainService().SelectChatById(app, previous_selected_chat_id);
 	if (!PersistenceCoordinator().SaveSettings(app))
 	{
 		const bool history_restored = SaveChatHistories(app, {branch_snapshot});
-		ChatDomainService().SelectChatById(app, branch_id);
+		if (select_chat) ChatDomainService().SelectChatById(app, branch_id);
 		ChatDomainService().RefreshRememberedSelection(app);
 		app.status_line = retry_error + " Branch selection rollback failed, so the branch was kept." +
 		                  (history_restored ? "" : " Its local history could not be restored.");
@@ -1756,7 +1810,7 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	if (!uam::GitWorktreeService().RemoveUnusedBranchWorktree(app, branch_snapshot, &worktree_cleanup_error))
 	{
 		const bool history_restored = SaveChatHistories(app, {branch_snapshot});
-		ChatDomainService().SelectChatById(app, branch_id);
+		if (select_chat) ChatDomainService().SelectChatById(app, branch_id);
 		(void)PersistenceCoordinator().SaveSettings(app);
 		app.status_line = retry_error + " Branch worktree contains changes or could not be removed, so the branch was kept: " +
 		                  worktree_cleanup_error + (history_restored ? "" : " Its local history could not be restored.");
@@ -1765,7 +1819,12 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	}
 
 	std::erase_if(app.chats, [&branch_id](const ChatSession& chat) { return chat.id == branch_id; });
-	ChatDomainService().SelectChatById(app, previous_selected_chat_id);
+	if (select_chat) ChatDomainService().SelectChatById(app, previous_selected_chat_id);
+	else
+	{
+		app.selected_chat_index = ChatDomainService().FindChatIndexById(app, previous_selected_chat_id);
+		ChatDomainService().RefreshRememberedSelection(app);
+	}
 	app.status_line = retry_error;
 	if (error_out != nullptr)
 	{
@@ -1877,6 +1936,11 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 		}
 	}
 	DeletedChatsSelection deleted = CollectChatsInFolder(app, target_folder_ids);
+	if (DeletionRewritesUnconfirmedInitialRoot(app, deleted.ids))
+	{
+		app.status_line = "Wait for the saved request to be confirmed before deleting its ancestor.";
+		return false;
+	}
 	for (const std::string& id : deleted.ids)
 	{
 		CancelWorktreeLaunchPreparation(app, id);
@@ -1962,6 +2026,11 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 	if (target_chat_ids.empty())
 	{
 		app.status_line = "Chat id is required.";
+		return false;
+	}
+	if (DeletionRewritesUnconfirmedInitialRoot(app, deleted_chat_ids))
+	{
+		app.status_line = "Wait for the saved request to be confirmed before deleting its ancestor.";
 		return false;
 	}
 	if (HasActiveDependentAgentRun(app, deleted_chat_ids))
@@ -2060,6 +2129,15 @@ bool uam::StageWorkspaceDeletion(WorkspaceDeletionTask& task)
 
 void uam::CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task)
 {
+	if (DeletionRewritesUnconfirmedInitialRoot(app, task.deleted_ids))
+	{
+		// A real protected survivor may have appeared while the worker staged selected ancestors.
+		// Preserve the existing transaction and commit-rejected recovery boundary; do not reparent or save it.
+		task.commit_rejected = true;
+		app.worktree_operation_chat_ids.insert(task.deleted_ids.begin(), task.deleted_ids.end());
+		app.status_line = "Deletion is pending because a surviving chat's saved request is still unconfirmed.";
+		return;
+	}
 	const std::string selected_chat_id = ChatDomainService().SelectedChatId(app);
 	const int previous_selected_chat_index = app.selected_chat_index;
 	const DeletionIntent intent{{task.deleted_ids.begin(), task.deleted_ids.end()}, task.folder_ids};
@@ -2084,7 +2162,7 @@ void uam::CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task)
 	}
 	std::vector<ChatFolder> next_folders;
 	task.metadata_saved = CommitDeletionMetadataInPlace(app, intent, next_folders, task.snapshot.chats, task.retained_native_keys);
-	ApplyDeletedChatsToUiState(app, task.deleted_ids, selected_chat_id, previous_selected_chat_index, !task.deleted_ids.empty());
+	ApplyDeletedChatsToUiState(app, task.deleted_ids, selected_chat_id, previous_selected_chat_index);
 	if (std::ranges::find(task.folder_ids, uam::strings::Trim(app.new_chat_folder_id)) != task.folder_ids.end())
 		app.new_chat_folder_id.clear();
 	task.settings_saved = PersistenceCoordinator().SaveSettings(app);

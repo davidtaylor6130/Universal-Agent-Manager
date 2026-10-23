@@ -6,29 +6,31 @@ Claude Code CLI uses stream JSON. Common behaviour is defined once in the [provi
 
 | Capability | Delivery | Implementation | Limit or route |
 |---|---|---|---|
-| `structured-chat` | Both | Implemented | Native protocol normalised into UAM messages. |
+| `structured-chat` | Both | Partial | Native stream input normalises into UAM messages and retains durable admission without RPC-only correlation for native envelopes; ordinary SSH image delivery has private helper-backed verification, while failure controls and broader acceptance remain pending. Shared [input delivery](../structured-chat.md#input-delivery) is Partial. |
 | `terminal-view` | Both | Implemented | Native CLI in an embedded PTY. |
-| `terminal-sync` | Both | Needs verification | Native resume/transcript identity across both views is not established in this trial. |
+| `terminal-sync` | Both | Partial | Exact local and SSH native transcript refresh preserves the bound session and existing history; live continuation and platform acceptance remain pending. [Shared history recency](../../chat/native-imports.md#history-recency) remains under verification. |
 | `chat-lifecycle` | UAM | Implemented | Shared create/select/rename/delete and catalogue services; cleanup acceptance is separate. |
 | `concurrency` | Both | Implemented | Managed independent provider instances; real host combinations remain unverified. |
-| `branching` | UAM | Partial | Shared branching exists; empty-chat and compacted-context follow-ups retain outstanding work/acceptance. |
-| `editing-messages` | UAM | Partial | Delivered edits branch and known-unsent edits have a route; recovery cases retain outstanding acceptance. |
+| `branching` | UAM | Implemented | Guarded chosen-prefix branches preserve source history, compacted context and branch-owned originals; supported local regeneration exists, while native/model/SSH continuation and acceptance retain their explicit limits. |
+| `editing-messages` | UAM | Implemented | Definitely-unsent edits save locally; delivered edits branch with independently selected files and captured skills; unsupported recorded-source delivery refuses explicitly and visual/platform/user acceptance remains pending. |
 | `mcp-connections` | Both | Implemented | Shared launch setup supplies connections; transport and observed status vary. |
-| `skills` | UAM | Partial | Shared resource/index delivery exists; attached-skill discovery and live model compliance remain open. |
-| `attachments` | Both | Needs verification | Context and delivery routes exist; complete file/image consumption across local and SSH is unverified. |
-| `compaction` | Both | Partial | Native compacting status parsing exists; manual route and full continuation parity need verification. |
+| `skills` | UAM | Implemented | Complete resources and indexes are delivered locally or over SSH; attached requests use captured instructions and immutable references, subject to native permissions and model compliance. |
+| `attachments` | Both | Partial | Native images and file references use executing-host sources; selected local saved-image Retry reads owner-scoped originals, while other recorded sources refuse explicitly; ordinary SSH image input preserves exact bytes through the durable-admission route; private helper-backed indexed owned-image Retry is verified on the same bound process, while cold or replacement-process remote Retry and live acceptance remain pending. |
+| `compaction` | Both | Implemented | Advertised native manual compaction requires an owned completion boundary; no-op, interruption and failure never fabricate a completed summary. |
 | `computer-use` | UAM | Implemented | Local UAM companion route exists; SSH desktop control is outside the current supported scope. |
 | `side-chats` | UAM | Implemented | Shared related conversations; no automatic worktree request. |
-| `models` | Both | Partial | Configured choices apply on the next stream launch; native stream reports the active model, not a complete discovery catalogue. |
-| `agent-selection` | Both | Partial | Shared selection/adaptation exists; native import restrictions and GUI acceptance remain open. |
-| `agent-history` | Both | Partial | Tool recognition and addressable children vary; full native/remote history is not established. |
+| `models` | Both | Implemented | Native initialization supplies model choices and capabilities; selected changes apply through the next stream launch. |
+| `agent-selection` | Both | Partial | Shared selection/adaptation exists; native import restrictions and GUI acceptance remain open. Shared [built-in delegation](../../settings/central-setup/agents.md#built-in-delegation) retains parent ceilings. |
+| `agent-history` | Both | Implemented | Verified parent and agent identifiers open rich local or SSH child journals as read-only transcripts without invented resumable session IDs. Shared inline presentation remains pending integration and acceptance. |
+| `subagents` | Both | Partial | Native terminal task durations are retained per exact child; nested catalogue and child-only panes include text follow-up for eligible locally owned named-model managed children; restart history and native journals retain their control limits; [same-child follow-up, lineage and acceptance remain partial](../../chat/subagents.md). Shared [active-turn wait](../../chat/subagents.md#active-turn-result-wait) is source-integrated with focused private fixtures; canonical verification, this provider's long-call deadline and live local/SSH invocation remain unverified. |
+| `goals` | UAM | Partial | Shared goal inspection, approval-gated creation and bounded continuation exist; native lifecycle interoperability and full runtime verification remain outstanding. |
 | `resume` | Both | Implemented | UAM history plus a returned native session ID; invalid or unavailable IDs require an explicit outcome. |
-| `reasoning` | Both | Needs verification | Display emitted reasoning; verify supported effort choices against the selected model. |
-| `fast-mode` | Unverified | Needs verification | No speed-tier guarantee inferred from model selection; verify an actual provider/UAM equivalent. |
-| `permissions` | Both | Partial | Native auto-review is mapped; print-mode interactive callback limitations prevent a blanket UAM-mediation claim. |
+| `reasoning` | Both | Implemented | Only advertised effort choices appear and the saved choice reaches native launch configuration. |
+| `fast-mode` | Both | Implemented | Advertised fast mode uses acknowledged native settings in structured Chat; explicit terminal speed choices merge inline or bounded executing-host file settings into an immutable snapshot without changing the original file or other keys, with live acceptance pending. |
+| `permissions` | Both | Partial | Native control requests carry typed tool decisions and questions, with confirmed native auto review; the [captured-read boundary](../permissions/permissions.md#captured-read-restrictions) is implemented with protocol verification and scoped source review, while complete environment scoping and desktop/live/platform acceptance remain open. |
 | `usage` | Both | Partial | Token/history, declared allowance events and independent local OAuth usage reads exist; custom commands, remote acquisition and platform acceptance remain limited. |
 | `memory` | UAM | Implemented | Shared policy, recall and extraction; inherited choices and remote publication retain their boundaries. |
 | `central-setup` | UAM | Implemented | Shared immutable launch resources; running sessions retain their captured setup. |
-| `remote-execution` | Both | Needs verification | SSH helper route exists; this trial does not establish live platform/CLI combinations or helper acceptance. |
+| `remote-execution` | Both | Needs verification | Private helper-backed ordinary image Send verifies launch, native initialization, durable input and saved response; same-process indexed retained-image Retry is verified privately, and cold resume and live platform/CLI combinations remain pending. |
 
 **Source:** [provider runtime](../../../src/common/provider/claude/cli/claude_cli_provider_runtime.cpp), [shared source map](../../reference/source-map.md) and [retained parity evidence](../../reference/provider-runtime-parity.md). Detailed acceptance and existing owners stay in the V5 log.

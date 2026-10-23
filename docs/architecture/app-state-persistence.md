@@ -7,3 +7,9 @@ UAM persists chat history and lightweight catalogue metadata separately from tra
 [Engineering reference](../reference/architecture/app-state-persistence.md).
 
 [Source-of-truth records](source-of-truth.md) distinguish canonical transcripts, durable metadata overlays, delivery journals and derived indexes; not every file named a cache is disposable.
+
+Native media originals are stored separately under the data root and remain bound to the saved UAM chat identity. Message and archival queued-input references preserve their native provenance without becoming execution-host paths or URI-fetch authority. A portable import prepares new originals for its final chat identity and retains them conservatively if primary publication is uncertain; ordinary passive loading still suppresses runnable queued input. Preserve the bounded archival metadata independently of that runnable state through hydration and metadata saves, with the current primary archive retaining authority over stale copies.
+
+An opt-in execution-binding save can retain a witness of its own serialized primary and published file object. Its worker verifies bounded content on that same opened object; completion checks that the canonical primary still names the verified publication. Ordinary save callers retain their existing path, and summary overlays and indexes retain their existing transaction. This receipt proves a specific storage publication rather than native session identity or permission to submit input. The observer source awaits runtime verification; cold-image startup and permission integration remain unfinished.
+
+A stopped-session launch preparation must retain the complete saved conversation and companion ownership evidence through its own publication; a storage receipt does not authorize starting or feeding a provider. Missing, conflicting or uncertain evidence leaves the operation unconfirmed and must preserve foreign replacements.

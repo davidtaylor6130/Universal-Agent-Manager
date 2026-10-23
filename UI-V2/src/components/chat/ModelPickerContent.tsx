@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import { Check, Search, Star } from 'lucide-react'
+import { Check, RefreshCw, Search, Star } from 'lucide-react'
+import { Button } from '../ui'
 import type { Provider } from '../../types/provider'
 import type { ProviderModelCatalog } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
@@ -29,7 +30,7 @@ export function matchingModelCatalog(catalogs: ProviderModelCatalog[], providerI
 }
 
 /** T3-style provider rail and model list; browsing never changes the running provider. */
-export function ModelPickerContent({ providers, providerId, currentModelId, activeOptions, activeLoading, activeError, modelDisabled, canChangeProvider, workspaceDirectory, executionHostId, listHeight = LIST_HEIGHT, onSelect, onClose }: {
+export function ModelPickerContent({ providers, providerId, currentModelId, activeOptions, activeLoading, activeError, modelDisabled, canChangeProvider, workspaceDirectory, executionHostId, listHeight = LIST_HEIGHT, onRefreshActive, onSelect, onClose }: {
   providers: Provider[]
   providerId: string
   currentModelId: string
@@ -41,6 +42,8 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   workspaceDirectory: string
   executionHostId: string
   listHeight?: number
+  /** Refresh the owning chat runtime; omitted by standalone catalogue-only callers. */
+  onRefreshActive?: () => Promise<boolean>
   onSelect:(providerId: string, modelId: string) => void
   onClose: () => void
 }) {
@@ -62,6 +65,16 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
   const [glideY, setGlideY] = useState(0)
   const pendingFocus = useRef(false)
   const requestedCatalogs = useRef(new Set<string>())
+  // The owning chat supplies a stable callback. Active runtime requests belong to that mounted owner;
+  // nonactive requests still belong to the existing provider/host/workspace catalogue identity.
+  const activeOwner = useRef({ callback: onRefreshActive, version: 0 })
+  if (activeOwner.current.callback !== onRefreshActive)
+    activeOwner.current = { callback: onRefreshActive, version: activeOwner.current.version + 1 }
+  const requestUiKey = (id: string, catalogKey: string) => id === providerId
+    ? JSON.stringify(['active', activeOwner.current.version, catalogKey]) : catalogKey
+  const pendingCatalogs = useRef(new Set<string>())
+  const [pendingScopes, setPendingScopes] = useState<Set<string>>(() => new Set())
+  const [requestErrors, setRequestErrors] = useState<Record<string, string>>({})
   const optionsByProvider = useMemo(() => new Map(providers.map((provider) => {
     const catalog = matchingModelCatalog(catalogs, provider.id, executionHostId, workspaceDirectory, hostPlatform)
     const options = provider.id === providerId ? activeOptions
@@ -80,8 +93,25 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
     return candidates.filter((option) => matching.has(option))
   }, [selectedProvider, favorites, optionsByProvider, query])
   const catalog = matchingModelCatalog(catalogs, selectedProvider, executionHostId, workspaceDirectory, hostPlatform)
-  const loading = selectedProvider === providerId ? activeLoading : catalog?.modelsLoading
-  const error = selectedProvider === providerId ? activeError : catalog?.modelRefreshError
+  const selectedScope = requestUiKey(selectedProvider, modelCatalogKey(selectedProvider, executionHostId, workspaceDirectory, hostPlatform))
+  const authoritativeLoading = Boolean(selectedProvider === providerId ? activeLoading : catalog?.modelsLoading)
+  const authoritativeError = selectedProvider === providerId ? activeError : catalog?.modelRefreshError
+  const loading = Boolean(pendingScopes.has(selectedScope) || authoritativeLoading)
+  const error = authoritativeError || requestErrors[selectedScope]
+  const observedRefresh = useRef({ scope: selectedScope, loading: authoritativeLoading })
+  useEffect(() => {
+    const previous = observedRefresh.current
+    observedRefresh.current = { scope: selectedScope, loading: authoritativeLoading }
+    // Only a matching observed refresh completion retires local failure feedback.
+    // An unrelated catalogue, a new object or clearing an error alone is insufficient.
+    if (previous.scope !== selectedScope || !previous.loading || authoritativeLoading || authoritativeError) return
+    setRequestErrors(previousErrors => {
+      if (!previousErrors[selectedScope]) return previousErrors
+      const next = { ...previousErrors }
+      delete next[selectedScope]
+      return next
+    })
+  }, [selectedScope, authoritativeLoading, authoritativeError])
   const disabled = (option: PickerModel) => Boolean(option.disabled || modelDisabled || (option.providerId !== providerId && !canChangeProvider))
   // Favourites group under provider headers, so they render unwindowed (small lists); flat provider lists window.
   const grouped = selectedProvider === 'favorites'
@@ -100,6 +130,29 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
     rowRefs.current.get(highlight)?.focus()
   }, [highlight, scrollTop, models])
 
+  const requestCatalog = async (id: string) => {
+    if (id === 'favorites') return
+    const scopedCatalog = matchingModelCatalog(catalogs, id, executionHostId, workspaceDirectory, hostPlatform)
+    const catalogKey = modelCatalogKey(id, executionHostId, workspaceDirectory, hostPlatform)
+    const scopeKey = requestUiKey(id, catalogKey)
+    const ownerVersion = id === providerId ? activeOwner.current.version : undefined
+    const ownsActiveUi = () => ownerVersion === undefined || activeOwner.current.version === ownerVersion
+    if (pendingCatalogs.current.has(scopeKey) || (id === providerId ? activeLoading : scopedCatalog?.modelsLoading)) return
+    if (id === providerId && !onRefreshActive) return
+    requestedCatalogs.current.add(catalogKey)
+    pendingCatalogs.current.add(scopeKey)
+    setPendingScopes(new Set(pendingCatalogs.current))
+    setRequestErrors(previous => ({ ...previous, [scopeKey]: '' }))
+    try {
+      const started = id === providerId ? await onRefreshActive!() : await discover('', id, workspaceDirectory, executionHostId)
+      if (!started && ownsActiveUi()) setRequestErrors(previous => ({ ...previous, [scopeKey]: 'Could not refresh models. Try again.' }))
+    } catch {
+      if (ownsActiveUi()) setRequestErrors(previous => ({ ...previous, [scopeKey]: 'Could not refresh models. Try again.' }))
+    } finally {
+      pendingCatalogs.current.delete(scopeKey)
+      setPendingScopes(new Set(pendingCatalogs.current))
+    }
+  }
   const selectProvider = (id: string) => {
     setSelectedProvider(id)
     setQuery('')
@@ -110,8 +163,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
     const cachedChoices = Boolean(scopedCatalog?.availableModels.length || scopedCatalog?.configOptions?.some((option) => (option.category === 'model' || option.id === 'model') && option.options.length))
     const scopeKey = modelCatalogKey(id, executionHostId, workspaceDirectory, hostPlatform)
     if (id !== 'favorites' && id !== providerId && !cachedChoices && !scopedCatalog?.modelsLoading && !requestedCatalogs.current.has(scopeKey)) {
-      requestedCatalogs.current.add(scopeKey)
-      void discover('', id, workspaceDirectory, executionHostId)
+      void requestCatalog(id)
     }
   }
   const choose = (option: PickerModel | undefined) => { if (option && !disabled(option)) onSelect(option.providerId, option.id) }
@@ -188,7 +240,13 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
         <input ref={searchRef} type="search" aria-label="Search models" placeholder="Search models…" value={query}
           onChange={(event) => { setQuery(event.target.value); setHighlight(0); setScrollTop(0); if (listRef.current) listRef.current.scrollTop = 0 }} />
       </div>
-      {!grouped && <div className="uam-np-group">{providerLabel(selectedProvider)}</div>}
+      {!grouped && <div className="flex items-center justify-between gap-2">
+        <div className="uam-np-group">{providerLabel(selectedProvider)}</div>
+        {(selectedProvider !== providerId || onRefreshActive) && <Button type="button" variant="ghost" size="sm"
+          leadingIcon={<RefreshCw size={13} aria-hidden />} loading={loading} disabled={modelDisabled}
+          aria-label={`${error ? 'Retry' : 'Refresh'} models for ${providerLabel(selectedProvider)}`}
+          onClick={() => void requestCatalog(selectedProvider)}>{error ? 'Retry' : 'Refresh'}</Button>}
+      </div>}
       {loading && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--accent)' }}>Discovering models…</div>}
       {error && <div role="status" className="px-2 py-1 text-xs" style={{ color: 'var(--yellow)' }}>{error}</div>}
       <div ref={listRef} data-testid="model-options" style={{ maxHeight: listHeight, overflowY: 'auto' }} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
